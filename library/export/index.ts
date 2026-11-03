@@ -10,7 +10,10 @@
 //                pkg/workingset/workingset.go), as YAML and JSON
 //   toolhive/    a registry in ToolHive's upstream format (stacklok/toolhive-
 //                core upstream-registry.schema.json, read 27 Oct 2026)
-//   registry.json the official registry's list shape (openapi.yaml ServerList)
+//   registry.json the official registry's list shape (openapi.yaml ServerList),
+//                without deleted servers; registry-include-deleted.json with
+//                them, as the list answers `include_deleted=true`
+// A deleted entry (a takedown, library/takedown/) is in no other export.
 // Every export is a pure function of the catalog; nothing is fetched.
 import type { Catalog, LoadedEntry, DermMeta } from "../validate/types.ts";
 import { getMeta, isRecord } from "../validate/types.ts";
@@ -34,7 +37,9 @@ function json(v: unknown): string {
   return JSON.stringify(v, null, 2) + "\n";
 }
 
-function setEntries(catalog: Catalog, setId: string): { set: { title: string; description: string; entries: string[] }; entries: LoadedEntry[] } {
+/** A set's entries. A deleted entry (a takedown, library/takedown/) is left
+ *  out unless `includeDeleted`, which only the registry list asks for. */
+function setEntries(catalog: Catalog, setId: string, o: { includeDeleted?: boolean } = {}): { set: { title: string; description: string; entries: string[] }; entries: LoadedEntry[] } {
   const set = catalog.sets.sets[setId];
   if (!set) throw new Error(`no set ${setId}`);
   const byId = new Map(catalog.entries.map((e) => [e.id, e]));
@@ -43,7 +48,7 @@ function setEntries(catalog: Catalog, setId: string): { set: { title: string; de
     if (!e) throw new Error(`set ${setId} names ${id}, which is not in the catalog`);
     return e;
   });
-  return { set, entries };
+  return { set, entries: o.includeDeleted ? entries : entries.filter((e) => metaOf(e).status !== "deleted") };
 }
 
 function metaOf(e: LoadedEntry): DermMeta {
@@ -309,15 +314,22 @@ export function exportToolhive(catalog: Catalog, setId: string, opts: ExportOpti
 // ---- The official registry's list shape
 
 export function exportRegistry(catalog: Catalog, setId: string, opts: ExportOptions): ExportFile[] {
-  const { entries } = setEntries(catalog, setId);
+  const { entries } = setEntries(catalog, setId, { includeDeleted: true });
   const now = opts.now ?? new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-  const servers = entries
+  const all = entries
     .filter((e) => e.kind === "server")
     .map((e) => ({
       server: e.data,
       _meta: { "io.modelcontextprotocol.registry/official": { status: metaOf(e).status, publishedAt: now, updatedAt: now, isLatest: true } },
     }));
-  return [{ path: "registry.json", content: json({ servers, metadata: { count: servers.length } }) }];
+  // As the official list: deleted servers only with include_deleted
+  // (servers.go:43-50 at 9c4a96c), which a static file cannot take as a
+  // query, so it is a second file.
+  const servers = all.filter((s) => s._meta["io.modelcontextprotocol.registry/official"].status !== "deleted");
+  return [
+    { path: "registry.json", content: json({ servers, metadata: { count: servers.length } }) },
+    { path: "registry-include-deleted.json", content: json({ servers: all, metadata: { count: all.length } }) },
+  ];
 }
 
 /** All five exports of a set, under `<set>/`. */

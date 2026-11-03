@@ -1,6 +1,7 @@
 // derm library command line (lane E).
 //   node library/cli.ts validate [catalog-dir]
 //   node library/cli.ts export <set|all> <out-dir> [catalog-dir]
+//   node library/cli.ts takedown <id> --reason <one line> --report <#n | issue URL | private>
 // Runs on Node 22.18+ with type stripping; no build step. Exit 1 on an error
 // finding, 2 on usage. Nothing here touches the network or runs a program
 // unless asked: DERM_LIBRARY_ONLINE=1 posts each server to the registry's
@@ -13,9 +14,12 @@ import { CATALOG_DIR, catalogHasErrors, loadBrands, loadCatalog, optInChecks, va
 import type { Finding } from "./validate/index.ts";
 import { PLACEHOLDER_SHA, exportSet, type ExportFile } from "./export/index.ts";
 import { REPO_ROOT } from "./validate/schemas.ts";
+import { takedown } from "./takedown/takedown.ts";
 
 function usage(): never {
-  console.error("usage: node library/cli.ts validate [catalog-dir]\n       node library/cli.ts export <set|all> <out-dir> [catalog-dir]");
+  console.error(
+    "usage: node library/cli.ts validate [catalog-dir]\n       node library/cli.ts export <set|all> <out-dir> [catalog-dir]\n       node library/cli.ts takedown <id> --reason <one line> --report <#n | issue URL | private>",
+  );
   process.exit(2);
 }
 
@@ -74,6 +78,27 @@ if (cmd === "validate") {
       writeFileSync(path, f.content);
       console.log(`wrote ${path}`);
     }
+  }
+} else if (cmd === "takedown") {
+  // T4.4: library/takedown/takedown.ts. Writes the manifest and appends to
+  // library/TAKEDOWNS.md; the commit and the pull request are yours.
+  let id: string | undefined;
+  let reason: string | undefined;
+  let report: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "--reason" && reason === undefined) reason = rest[++i];
+    else if (a === "--report" && report === undefined) report = rest[++i];
+    else if (a !== undefined && !a.startsWith("-") && id === undefined) id = a;
+    else usage();
+  }
+  if (!id || reason === undefined || report === undefined) usage();
+  try {
+    const r = takedown({ id, reason, report });
+    console.log(`${r.manifest}\n  ${r.diff.join("\n  ")}\nlogged: ${r.logLine}`);
+  } catch (e) {
+    console.error(`takedown refused: ${(e as Error).message}`);
+    process.exit(1);
   }
 } else {
   usage();
