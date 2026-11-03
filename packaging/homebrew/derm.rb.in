@@ -39,6 +39,6 @@ class Derm < Formula
   end
 
   test do
-    assert_match "derm", shell_output("#{bin}/derm --help")
+    assert_equal "derm #{version}", shell_output("#{bin}/derm --version").strip
   end
 end

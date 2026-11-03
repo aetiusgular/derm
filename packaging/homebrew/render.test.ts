@@ -31,6 +31,12 @@ describe("homebrew formula", () => {
     }
   });
 
+  it("tests the install with --version, which exits 0 (--help exits 2)", () => {
+    const f = render("0.1.0", sums);
+    expect(f).toContain('assert_equal "derm #{version}", shell_output("#{bin}/derm --version").strip');
+    expect(f).not.toContain("--help");
+  });
+
   it("refuses a template placeholder it does not know", () => {
     expect(() => render("0.1.0", sums, 'x "@VERSION@" "@OTHER@"')).toThrow(/@OTHER@ not filled/);
   });
