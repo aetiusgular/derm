@@ -1,0 +1,35 @@
+# derm
+
+> derm is a skin for AI agents: a gate that allows, asks or denies each tool call from one policy file (~/.derm/policy.json), a boundary that starts an agent under a sandbox (derm run), and an audit daemon (derm-daemon) that keeps one log of what every agent did. It works with Claude Code, Codex, Pi, OpenCode, Gemini CLI, Kilo Code, oh-my-pi, Hermes Agent and OpenClaw, and from outside with any other CLI agent. MIT.
+
+The daemon makes no outbound connection. The gate fails closed where the agent lets it; Codex and Gemini CLI let a call through when their hook crashes, and derm says so. Nothing derm installs starts on its own: the user unit is installed and not enabled.
+
+## Docs
+
+- [Overview](https://github.com/aetiusgular/derm/blob/main/docs/README.md): what derm is and where each part is documented
+- [Install on Linux](https://github.com/aetiusgular/derm/blob/main/docs/install/linux.md): the static binaries and the .deb
+- [Install on macOS](https://github.com/aetiusgular/derm/blob/main/docs/install/macos.md): the signed and notarized binaries
+- [The agent adapters](https://github.com/aetiusgular/derm/blob/main/docs/install/agents.md): one install line per agent
+- [Privacy](https://github.com/aetiusgular/derm/blob/main/docs/privacy.md): what reaches the network, with its switch
+
+## Commands
+
+- [derm connect](https://github.com/aetiusgular/derm/blob/main/docs/verbs/connect.md): add an MCP server or a gateway to an agent's config, dry run by default
+- [derm run](https://github.com/aetiusgular/derm/blob/main/docs/verbs/run.md): start an agent under sbx, srt or no boundary, with a chat token
+- [derm watch and derm status](https://github.com/aetiusgular/derm/blob/main/docs/verbs/watch.md): the live feed, the report, the terminal approver, each agent's gate
+- [derm cu](https://github.com/aetiusgular/derm/blob/main/docs/verbs/cu.md): computer use on macOS, status and stop
+- [derm-daemon](https://github.com/aetiusgular/derm/blob/main/docs/verbs/daemon.md): the daemon, its files and its user service
+- [The library](https://github.com/aetiusgular/derm/blob/main/docs/verbs/library.md): validate, export, mirror, publish, trust records, takedowns
+
+## Specifications
+
+- [The policy file](https://github.com/aetiusgular/derm/blob/main/contracts/policy.md): rules, name matching, the reject list, asks
+- [The daemon protocol](https://github.com/aetiusgular/derm/blob/main/contracts/daemon-protocol.md): the socket, tokens, events, approvals
+- [Events](https://github.com/aetiusgular/derm/blob/main/contracts/events.md): what the emitters record
+- [Agent hook dialects](https://github.com/aetiusgular/derm/blob/main/contracts/hook-dialects.md): how each agent's gate is registered and answered
+
+## Optional
+
+- [Benchmarks](https://github.com/aetiusgular/derm/blob/main/docs/benchmarks.md): deferred against direct tools on a local 27B model, raw data included
+- [Release notes](https://github.com/aetiusgular/derm/blob/main/docs/release-notes.md)
+- [Takedowns](https://github.com/aetiusgular/derm/blob/main/library/TAKEDOWNS.md): the library's public log
