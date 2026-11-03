@@ -34,7 +34,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|--version> ...");
             2
         }
     }

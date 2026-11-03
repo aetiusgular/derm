@@ -1,8 +1,48 @@
 # derm
 
-Working name. A local control plane for AI coding harnesses (a gate, a daemon with one audit log, `derm connect`, `derm run`) and a curated tool library on the official MCP registry's format.
+derm is a skin for AI agents: a gate, a boundary and an audit around any coding agent.
 
-Status: wave 1 merged to `main`; wave 2 integrated on `integration/w2`, not merged to `main`. Wave 1 ran in a Linux cloud workspace, then on the box (Pi in the TUI and in Orca, a real OpenCode, the systemd user unit) and on the Mac (the Claude Code and Codex plugins, MonoCode with Claude Code). Wave 2 ran in the cloud only; its box test and Mac test come next. Built in parallel lanes; each crate and package says which lane owns it (`scripts/lane-ownership.json`).
+- **The gate** runs before each tool call an agent makes and answers allow, ask or deny from one policy (`~/.derm/policy.json`), for every agent derm attaches to.
+- **The boundary**: `derm run` starts an agent inside Docker's sbx or Anthropic's srt, or with none, and records what it ran.
+- **The audit**: `derm-daemon` keeps one hash-chained activity log of tool calls, approvals, the agents' own telemetry and, on Linux, the OS feed from auditd. `derm watch` reads it.
+- **The library**: a curated catalog of MCP servers, skills and bundles in the official MCP registry's format, with trust records and takedowns.
+
+No telemetry, no account. What derm records stays on your machine ([privacy](docs/privacy.md)).
+
+Status: waves 1 and 2 are on `main`, tested in a Linux cloud workspace, on a Linux box (Pi in the TUI and in Orca, OpenCode, the systemd user unit) and on a Mac (the Claude Code and Codex plugins, Claude Code in MonoCode). The first release, v0.1.0, is being prepared on `release/w3`: Linux x86_64 (a static tarball and a `.deb`) and a signed, notarized macOS zip. Nothing is published yet; the adapters install from a clone. Built in parallel lanes; each crate and package says which lane owns it (`scripts/lane-ownership.json`).
+
+## Docs
+
+- Install: [Linux](docs/install/linux.md), [macOS](docs/install/macos.md), [the agents](docs/install/agents.md)
+- Commands: [`derm connect`](docs/verbs/connect.md), [`derm run`](docs/verbs/run.md), [`derm watch` and `derm status`](docs/verbs/watch.md), [`derm cu`](docs/verbs/cu.md), [`derm-daemon`](docs/verbs/daemon.md), [the library](docs/verbs/library.md)
+- [Privacy](docs/privacy.md): what reaches the network, what was measured and what was read
+- [Benchmarks](docs/benchmarks.md): deferred tools on a local 27B model
+- [Release notes](docs/release-notes.md); [`docs/llms.txt`](docs/llms.txt) for agents
+
+## Open security items
+
+Read these before relying on derm. Each is tracked in the status docs under `plans/parallel/`; the owner is the lane or session that fixes it.
+
+| Item | Risk | What | Until fixed |
+|---|---|---|---|
+| S2 | High | An approver started outside an agent's process tree (a double fork, `setsid`, a terminal multiplexer) can answer that agent's `ask`s | Run `derm watch --approve` only from your own terminal. Computer use is not shipped because of it |
+| W2-R1 | Medium | OpenCode's, Kilo's and oh-my-pi's single-underscore tool names cannot tell `exa_evil` from `exa` (owner: wave 4 lane Q) | Give servers names without `_` or `-` in those agents |
+| Fails open | Medium | Codex lets a call through when its hook process dies; Gemini CLI on every hook failure | `derm status` marks them; Gemini's user policy file is the second layer |
+| S6 | Medium | Under `derm run --boundary srt`, the agent's whole state folder is writable, and it holds the gate's own switches, so an agent inside srt can switch derm off for its next session (owner: wave 4 lane R) | Use `sbx` where that matters |
+| Chat token | Medium, by design | A chat's token sits in the agent's environment, so the agent's shell can read it and post records into its own chat. It cannot approve, mint tokens, read other chats or switch the OS feed off | Treat a chat's own records as what that chat's processes said; OS-feed, run and approval records cannot be posted with it |
+| Redactors | Medium | Secret redaction in run records, the OS feed and `derm connect`'s output is best-effort: multi-line TOML and YAML values and a key and value on two lines can still print | Keep `DERM_LOG_CONTENT` off; read a dry run before `--write` |
+| Later hooks | Low to medium | In oh-my-pi, Kilo, Gemini CLI and Hermes a hook or extension that runs after derm's can still change a call's input after derm decided | Do not install other tool-call hooks beside derm's there |
+| io_uring | Low to medium | File opens and connects done through io_uring are not seen by the auditd feed | None in this release |
+| S16 | Low | The managed Claude Code fragment force-enables `derm@derm` without pinning where the `derm` marketplace comes from (owner: the Claude Code adapter) | Pin the source in managed settings ([the agents page](docs/install/agents.md#claude-code-under-managed-settings)) |
+| S12 | Low | A catalog entry's `{anything}` placeholder becomes `${ANYTHING}`, so a stranger's entry could send any variable in your environment to its host (owner: wave 4 lane Q) | `derm connect` shows it in the diff and writes only on `--write` and a yes in your terminal: read the header lines |
+| S15 | Low | Codex's hooks put `${PLUGIN_ROOT}` into a shell string, and Codex lets the call through if that shell cannot find `node` (exit 127) (owner: `derm doctor`, wave 4 lane R) | Check that `node` resolves from the shell Codex runs hooks in |
+| BW2's residue | Low | A record the agent posts under an id of its own still counts in the chat's totals (a second decision for the same call is flagged) | Read `derm watch report`'s `GATE CONFLICT` lines |
+| W2-S10 | Low | `trust.yml` installs its scanners without `--require-hashes` (owner: the release session; manual runs only) | Run `trust.yml` only by hand. W2-S8, W2-S9's residue and W2-S11's info items are in `plans/parallel/tk_integration_w2.md` |
+| Backups | Low | `derm connect`'s backups in `~/.derm/backups` (0600 in 0700) have no retention | Clear them yourself |
+
+## Build
+
+`cargo test --workspace`, `npm ci --ignore-scripts`, `npx tsc --noEmit`, `npx vitest run`, `python3 -m unittest discover -s packages/derm-hermes-plugin/tests`. Node 22.19 or later (the hooks and `library/cli.ts` run through Node's type stripping); CI runs Node 24. The release artifacts are built by `.github/workflows/release.yml` (`packaging/`).
 
 | Path | What |
 |---|---|
@@ -14,27 +54,15 @@ Status: wave 1 merged to `main`; wave 2 integrated on `integration/w2`, not merg
 | `packages/derm-claude-plugin`, `derm-codex-plugin`, `derm-opencode-plugin` | Claude Code, Codex and OpenCode adapters; the canonical hook core is `derm-claude-plugin/src/core/` |
 | `packages/derm-gemini-extension`, `derm-hermes-plugin`, `derm-openclaw-plugin`, `derm-kilo-plugin` | Gemini CLI, Hermes Agent, OpenClaw and Kilo Code adapters (wave 2) |
 | `packages/derm-hooks-claude-compat`, `derm-hooks-native`, `derm-amp-plugin`, `derm-cline` | Scaffolds for wave 4 (the hook core is synced in; nothing runs yet) |
-| `library/` | Schema, validator, exports, catalog; the registry mirror (`library/mirror/`), publish (`library/publish/`), trust records (`library/trust/`), the static browser (`library/site/`) |
+| `library/` | Schema, validator, exports, catalog, takedowns (`library/takedown/`, logged in `library/TAKEDOWNS.md`); the registry mirror (`library/mirror/`), publish (`library/publish/`), trust records (`library/trust/`), the static browser (`library/site/`) |
 | `contracts/` | What the parts agree on, with fixtures; `hook-dialects.md` for wave 4's agents |
 | `tests/cli-contract/` | Checks against the real harness CLIs with fake model servers |
 | `tests/integration/` | Cross-lane checks with the real daemon, `derm` and Pi |
-| `macos/` | The activity collector and the computer-use helper, own workspaces |
+| `tests/measure/` | The benchmark's scripts and results |
+| `macos/` | The activity collector and the computer-use helper, own workspaces; not in the release |
+| `docs/`, `packaging/` | The docs pages; the `.deb`, the release checks and the NOTICE generator |
 
-Build: `cargo test --workspace`, `npm ci --ignore-scripts`, `npx tsc --noEmit`, `npx vitest run`, `python3 -m unittest discover -s packages/derm-hermes-plugin/tests`. Node 22.19 or later (the hooks and `library/cli.ts` run through Node's type stripping); CI runs Node 24.
-
-Install from a clone (no published packages yet):
-
-- Pi: `pi install /abs/path/derm/packages/derm-pi` (a git source cannot name a subfolder).
-- Claude Code: `claude plugin marketplace add /abs/path/derm`, then `claude plugin install derm@derm`.
-- Codex: `codex plugin marketplace add /abs/path/derm`, then `codex plugin add derm@derm`, then trust both hooks in `/hooks`.
-- OpenCode: `"plugin": ["file:///abs/path/derm/packages/derm-opencode-plugin"]` in `~/.config/opencode/opencode.json` (`opencode.fragment.json`).
-- oh-my-pi: `omp install /abs/path/derm/packages/derm-pi`.
-- Gemini CLI: `gemini extensions install /abs/path/derm/packages/derm-gemini-extension --consent`, then save the user policy it prints.
-- Kilo Code: `"plugin": ["file:///abs/path/derm/packages/derm-kilo-plugin"]` in `~/.config/kilo/kilo.json`, or the one line in `~/.config/kilo/plugin/derm.ts` (its README).
-- Hermes Agent: `cp -r /abs/path/derm/packages/derm-hermes-plugin ~/.hermes/plugins/derm && hermes plugins enable derm` (Node on Hermes's PATH).
-- OpenClaw: `openclaw plugins install --link /abs/path/derm/packages/derm-openclaw-plugin --force`, then `openclaw plugins enable derm`.
-
-The library's commands run with Node, not as `derm` subcommands yet: `node library/cli.ts validate`, `node library/publish/cli.ts publish <entry-dir> --library <clone>` (what the plan calls `derm publish`; prints the pull request's steps unless `--open-pr`), `node library/mirror/cli.ts pull --out <dir>`, `node library/trust/cli.ts record|scan|osv|pin`, `node library/site/build.ts <out-dir>`.
+Install the gates from a clone: one line per agent in [docs/install/agents.md](docs/install/agents.md). The library's commands run with Node, not as `derm` subcommands yet: `node library/cli.ts validate|export|takedown`, `node library/publish/cli.ts publish <entry-dir> --library <clone>` (prints the pull request's steps unless `--open-pr`), `node library/mirror/cli.ts pull --out <dir>`, `node library/trust/cli.ts record|scan|osv|pin`, `node library/site/build.ts <out-dir>` ([the library's page](docs/verbs/library.md)). Report a catalog entry with the "Report an entry" issue form.
 
 ## Harness coverage
 

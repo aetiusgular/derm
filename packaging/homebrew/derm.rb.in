@@ -1,0 +1,44 @@
+# Homebrew formula for derm, rendered by packaging/homebrew/render.mjs from a
+# release's SHA256SUMS. It goes in aetiusgular/homebrew-tap as Formula/derm.rb.
+#
+# Prebuilt binaries from the GitHub release: the macOS zip (universal, signed,
+# notarized) and the Linux x86_64 musl tarball. Homebrew marks only casks as
+# quarantined (Library/Homebrew/cask/download.rb), so Gatekeeper does not check
+# these. The daemon is not started by the install: `brew services start derm`.
+class Derm < Formula
+  desc "Gate, boundary and audit around any coding agent"
+  homepage "https://github.com/aetiusgular/derm"
+  version "@VERSION@"
+  license "MIT"
+
+  on_macos do
+    url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-macos.zip"
+    sha256 "@MACOS_SHA256@"
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "@LINUX_SHA256@"
+    end
+  end
+
+  def install
+    bin.install "derm", "derm-daemon"
+    bin.install "derm-audit-feed" if OS.linux?
+    doc.install "README.md", "NOTICE"
+  end
+
+  # Runs as you. The daemon makes its folder 0700 and its files 0600 itself;
+  # Homebrew's service block has no umask, unlike the plist in the zip.
+  service do
+    run [opt_bin/"derm-daemon", "--foreground"]
+    keep_alive true
+    process_type :background
+    error_log_path var/"log/derm-daemon.log"
+  end
+
+  test do
+    assert_match "derm", shell_output("#{bin}/derm --help")
+  end
+end

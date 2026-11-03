@@ -1,0 +1,48 @@
+# The Debian package of derm (release T6.2). Not a workspace member: it holds
+# only the package's metadata. The binaries are built by the workspace first;
+# cargo-deb 3.8.0 then packs them without building:
+#
+#   cargo build --release --target <triple> -p derm-cli -p derm-daemon -p derm-audit-linux
+#   CARGO_TARGET_DIR=$PWD/target cargo deb --manifest-path packaging/deb/Cargo.toml \
+#     --no-build --target <triple> --deb-version <version>
+#
+# cargo-deb maps the `target/release/` prefix below to the real target folder
+# for the triple (its README, "assets"). The user unit is installed and not
+# enabled: the package has no maintainer scripts, so nothing starts on install.
+[package]
+name = "derm"
+version = "0.1.0"
+edition = "2021"
+description = "A gate, a boundary and an audit around any coding agent"
+license = "MIT"
+homepage = "https://github.com/aetiusgular/derm"
+repository = "https://github.com/aetiusgular/derm"
+authors = ["Aetius Gular <aetiusgular@gmail.com>"]
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
+
+[package.metadata.deb]
+maintainer = "Aetius Gular <aetiusgular@gmail.com>"
+copyright = "2026, Aetius Gular"
+license-file = "../../LICENSE"
+section = "devel"
+priority = "optional"
+depends = ""
+extended-description = """\
+derm puts a gate, a boundary and an audit around coding agents: a policy \
+that allows, asks or denies each tool call, a daemon that records what \
+agents run, and adapters for Claude Code, Codex, Pi, Gemini CLI, OpenCode \
+and others. The daemon makes no outbound connection. Its systemd user unit \
+is installed and not enabled: systemctl --user enable --now derm-daemon."""
+assets = [
+  ["target/release/derm", "usr/bin/", "755"],
+  ["target/release/derm-daemon", "usr/bin/", "755"],
+  ["target/release/derm-audit-feed", "usr/bin/", "755"],
+  ["derm-daemon.service", "usr/lib/systemd/user/derm-daemon.service", "644"],
+  ["../../NOTICE", "usr/share/doc/derm/NOTICE", "644"],
+  ["../../README.md", "usr/share/doc/derm/README.md", "644"],
+]

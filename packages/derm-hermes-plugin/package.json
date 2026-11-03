@@ -1,10 +1,10 @@
 {
   "name": "@aetiusgular/derm-hermes-plugin",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "MIT",
   "description": "Hermes Agent plugin: pre_tool_call and transform_tool_result in Python, deciding through derm's shared gate core in Node (wave 2, lane I, T2.4)",
-  "files": ["plugin.yaml", "__init__.py", "derm_gate.py", "bin/derm-decide.mjs", "src/decide.ts", "src/control.ts", "src/core/", "README.md"],
+  "files": ["plugin.yaml", "__init__.py", "derm_gate.py", "bin/derm-decide.mjs", "src/decide.ts", "src/control.ts", "src/core/", "README.md", "NOTICE"],
   "engines": { "node": ">=22.19.0" }
 }

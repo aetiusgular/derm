@@ -1,6 +1,6 @@
 {
   "name": "derm",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "derm policy gate: PreToolUse checks every tool call against ~/.derm/policy.json; PostToolUse redacts secret-like values and records the call in the derm daemon.",
   "author": { "name": "Aetius Gular" },
   "license": "MIT"

@@ -1,0 +1,45 @@
+name: Report an entry
+description: Report a library entry for malware, abuse, impersonation, a trademark or a copyright claim.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to report an entry in the derm library (`library/catalog/`). We answer within 7 days.
+        This issue is public. If the report itself would put people at risk (a live exploit, a secret, personal data), do not file it here: use "Report a vulnerability" under this repository's Security tab instead.
+        A takedown sets the entry's status to `deleted`, keeps its metadata in the repository, and logs the date, the reason and this issue in `library/TAKEDOWNS.md`.
+  - type: input
+    id: entry
+    attributes:
+      label: Entry
+      description: The folder name under library/catalog/, or the server's registry name.
+      placeholder: "exa, or io.github.aetiusgular/exa"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is wrong
+      options:
+        - Malware or harmful behaviour
+        - Impersonates another project or brand
+        - Trademark or copyright claim
+        - Endpoint dead or taken over by someone else
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: What you saw, with links, versions and dates. No secrets, keys or personal data.
+    validations:
+      required: true
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: Trademark or copyright claims
+      options:
+        - label: I own the right I am claiming, or I am authorised to act for its owner.
+          required: false
+title: "[report] "
+labels: ["takedown-report"]
