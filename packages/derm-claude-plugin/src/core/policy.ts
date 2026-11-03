@@ -445,6 +445,11 @@ export const SHELL_TOOLS = ["bash", "shell", "exec_command", "local_shell", "run
 export const CONTROL_PATHS = [
   ".derm/",
   "derm/daemon.",
+  // The old name's folders: derm never reads them, and while a tk install
+  // or a tk-daemon is left on the machine its policy and token stay guarded
+  // (rename review R1). Narrowing only.
+  ".tk/",
+  "tk/daemon.",
   "derm/otlp.endpoint",
   "derm_policy",
   "derm_chat_token",

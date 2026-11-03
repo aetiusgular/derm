@@ -268,12 +268,20 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 ".netrc",
                 ".git-credentials",
                 ".derm",
+                // The old name's folder, hidden while a tk install may be left
+                // (rename review R1). derm never reads it.
+                ".tk",
             ]
             .iter()
             .map(|r| under_home(r))
             .collect();
             if let Some(d) = &i.daemon_dir {
                 deny_read.push(d.clone());
+                // `$XDG_RUNTIME_DIR/tk` beside `$XDG_RUNTIME_DIR/derm`: a
+                // tk-daemon's token (R1).
+                if let Some(rt) = d.strip_suffix("/derm") {
+                    deny_read.push(format!("{rt}/tk"));
+                }
             }
             for other in HARNESSES.iter().filter(|o| o.id != h.id) {
                 if let Some(c) = other.credential {
@@ -654,6 +662,10 @@ mod tests {
             "/home/u/.ssh",
             "/home/u/.derm",
             "/run/user/1000/derm",
+            // The old name's folders, hidden while a tk install may be left
+            // (rename review R1).
+            "/home/u/.tk",
+            "/run/user/1000/tk",
             "/home/u/.claude/.credentials.json",
             "/home/u/.codex/auth.json",
         ] {

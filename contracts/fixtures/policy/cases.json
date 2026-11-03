@@ -162,6 +162,12 @@
       "note": "no agent's separator is exempt until its gate is built: Copilot's - could be inside a server name (integration w2's re-review, W2-R1)" },
     { "id": 60, "call": { "tool": "exa.evil_search", "harness": "mistral-vibe", "inputText": "" },
       "expect": { "action": "ask", "normalizedTool": "exa/evil_search", "reasonPrefix": "ambiguous server name" },
-      "note": "nor Mistral Vibe's .; cases 24 and 25 (Droid's ___) ask for the same reason since integration w2 (W2-R1)" }
+      "note": "nor Mistral Vibe's .; cases 24 and 25 (Droid's ___) ask for the same reason since integration w2 (W2-R1)" },
+    { "id": 61, "call": { "tool": "bash", "harness": "pi", "inputText": "cat ~/.tk/policy.json" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
+      "note": "the old name's policy stays a control file after the rename: derm never reads it, an agent must not use or change it unasked (rename review R1)" },
+    { "id": 62, "call": { "tool": "bash", "harness": "pi", "inputText": "cat /run/user/1000/tk/daemon.token" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
+      "note": "a tk-daemon left running holds a daemon token with mint and approve scope (rename review R1)" }
   ]
 }

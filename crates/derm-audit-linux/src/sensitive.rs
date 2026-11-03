@@ -14,6 +14,9 @@ pub const HOME_DIRS: &[&str] = &[
     ".password-store",
     ".local/share/keyrings",
     ".derm/run",
+    // The old name's token folder, while a tk install may be left (rename
+    // review R1). derm never reads it.
+    ".tk/run",
 ];
 
 /// Files under the home that are secrets. The agent credential files:
@@ -60,7 +63,8 @@ pub fn is_sensitive(path: &str, home: &str, runtime_dir: Option<&str>) -> bool {
         return true;
     }
     if let Some(rt) = runtime_dir {
-        if under(path, &format!("{}/derm", rt.trim_end_matches('/'))) {
+        let rt = rt.trim_end_matches('/');
+        if under(path, &format!("{rt}/derm")) || under(path, &format!("{rt}/tk")) {
             return true;
         }
     }
@@ -149,6 +153,9 @@ mod tests {
             "/home/ubuntu/.claude/.credentials.json",
             "/home/ubuntu/.derm/run/derm/daemon.token",
             "/run/user/1000/derm/daemon.token",
+            // A tk-daemon left running (rename review R1).
+            "/home/ubuntu/.tk/run/tk/daemon.token",
+            "/run/user/1000/tk/daemon.token",
             "/etc/shadow",
             "/etc/sudoers.d/90-x",
             "/srv/app/.env.local",

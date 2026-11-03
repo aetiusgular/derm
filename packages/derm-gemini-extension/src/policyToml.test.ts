@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { parsePolicy, type LoadedPolicy, type PolicyFile } from "./core/policy.ts";
 import { policyToToml } from "./policyToml.ts";
 
@@ -50,5 +51,23 @@ describe("policyToToml", () => {
 
   it("stays inside Gemini's priority range (0 to 999)", () => {
     for (const m of toml.matchAll(/priority = (\d+)/g)) expect(Number(m[1])).toBeLessThanOrEqual(999);
+  });
+});
+
+describe("the extension's own policies/derm.toml", () => {
+  // Gemini matches argsPattern as a JavaScript regex against the call's
+  // arguments as JSON. Both deny rules name derm's folder and, since the
+  // rename, the old name's, which derm never reads (rename review R1).
+  const file = readFileSync(new URL("../policies/derm.toml", import.meta.url), "utf8");
+  const patterns = [...file.matchAll(/^argsPattern = '([^']*)'$/gm)].map((m) => new RegExp(m[1] ?? ""));
+
+  it("denies writes and shell text that name .derm/ or .tk/", () => {
+    expect(patterns).toHaveLength(2);
+    const [write, shell] = patterns as [RegExp, RegExp];
+    for (const p of ["/home/u/.derm/policy.json", "/home/u/.tk/policy.json"]) {
+      expect(write.test(JSON.stringify({ file_path: p, content: "{}" }))).toBe(true);
+      expect(shell.test(JSON.stringify({ command: `cat ${p}` }))).toBe(true);
+    }
+    expect(write.test(JSON.stringify({ file_path: "/home/u/proj/tk/notes.md" }))).toBe(false);
   });
 });

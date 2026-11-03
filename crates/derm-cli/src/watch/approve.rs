@@ -398,7 +398,16 @@ fn flush_tty_input() {
 /// leaves the tree (a double fork, `setsid`, a terminal multiplexer started
 /// before the chat) is not seen here; that is S2.
 pub fn inside_a_chat() -> Option<String> {
-    for var in ["DERM_CHAT_ID", "DERM_CHAT_TOKEN", "DERM_CHAT_TOKEN_FILE"] {
+    // The `TK_` forms are what `tk run` set before the rename; a chat left
+    // running still carries them (rename review R2). Refusing only.
+    for var in [
+        "DERM_CHAT_ID",
+        "DERM_CHAT_TOKEN",
+        "DERM_CHAT_TOKEN_FILE",
+        "TK_CHAT_ID",
+        "TK_CHAT_TOKEN",
+        "TK_CHAT_TOKEN_FILE",
+    ] {
         if std::env::var_os(var).is_some() {
             return Some(format!("{var} is set"));
         }

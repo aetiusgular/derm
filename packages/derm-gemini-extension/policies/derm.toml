@@ -13,16 +13,19 @@
 # ~/.derm/policy.json go in the user tier: `node bin/derm-gemini-policy.mjs` prints
 # them for ~/.gemini/policies/derm.toml.
 
+# `.tk/` is the old name's folder: derm never reads it, and while a tk install
+# is left on the machine its policy and token stay out of reach (rename review R1).
+
 [[rule]]
 toolName = ["write_file", "replace"]
-argsPattern = '"file_path":"[^"]*(\.derm/|\.gemini/|gemini-cli/)'
+argsPattern = '"file_path":"[^"]*(\.derm/|\.tk/|\.gemini/|gemini-cli/)'
 decision = "deny"
 priority = 900
 denyMessage = "derm: a write to derm's or Gemini's control files is refused by the derm extension's policy"
 
 [[rule]]
 toolName = "run_shell_command"
-argsPattern = '"(command|dir_path)":"[^"]*(\.derm/|\.gemini/|gemini-cli/)'
+argsPattern = '"(command|dir_path)":"[^"]*(\.derm/|\.tk/|\.gemini/|gemini-cli/)'
 decision = "deny"
 priority = 900
 denyMessage = "derm: a shell command that names derm's or Gemini's control files is refused by the derm extension's policy"

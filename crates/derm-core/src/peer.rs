@@ -94,15 +94,21 @@ pub fn ancestors(pid: u32) -> Vec<u32> {
     out
 }
 
-/// The nearest ancestor of `pid` whose program is named `derm`. Only `derm run`
-/// starts other programs that last (a harness and its shells), so such an
-/// ancestor means `pid` runs inside a chat.
+/// The nearest ancestor of `pid` whose program is named `derm`, or `tk`, the
+/// old name of the same binary. Only `derm run` (and `tk run` before the
+/// rename) starts other programs that last (a harness and its shells), so
+/// such an ancestor means `pid` runs inside a chat. A `tk run` chat left
+/// running counts: its agent must not answer derm's asks (rename review R2).
 pub fn derm_run_ancestor(pid: u32) -> Option<u32> {
     ancestors(pid).into_iter().find(|p| {
         program(*p)
             .and_then(|path| {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().trim_end_matches(" (deleted)") == "derm")
+                path.file_name().map(|n| {
+                    matches!(
+                        n.to_string_lossy().trim_end_matches(" (deleted)"),
+                        "derm" | "tk"
+                    )
+                })
             })
             .unwrap_or(false)
     })
@@ -327,16 +333,17 @@ mod tests {
         assert!(!up.is_empty() && !up.contains(&me), "{up:?}");
     }
 
+    /// Starts a copy of `sh` named `name` with a sleep under it, and returns
+    /// what `derm_run_ancestor` says of the sleep, and the copy's pid.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn a_child_under_a_program_named_derm_is_seen_inside_a_chat() {
+    fn ancestor_seen_under(name: &str) -> (Option<u32>, u32) {
         // A copy of `sleep` named `derm` stands in for `derm run`; its child
         // asks for its own derm ancestor through a shell that prints its pid.
-        let dir = std::env::temp_dir().join(format!("derm-peer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("derm-peer-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sh = which("sh");
-        let fake_derm = dir.join("derm");
+        let fake_derm = dir.join(name);
         std::fs::copy(&sh, &fake_derm).unwrap();
         // `derm -c 'sleep 5 & wait'`: the copy of sh, named derm, is the parent
         // of a sleep.
@@ -375,9 +382,25 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(found, Some(derm_pid));
+        (found, derm_pid)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_under_a_program_named_derm_is_seen_inside_a_chat() {
+        let (found, pid) = ancestor_seen_under("derm");
+        assert_eq!(found, Some(pid));
         // And this test process itself is not under a `derm`.
         assert_eq!(derm_run_ancestor(std::process::id()), None);
+    }
+
+    /// A `tk run` chat left running from before the rename: its agent must
+    /// not become derm's approver (rename review R2).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_under_the_old_name_tk_is_seen_inside_a_chat() {
+        let (found, pid) = ancestor_seen_under("tk");
+        assert_eq!(found, Some(pid));
     }
 
     /// Mac test w2, MW1: the macOS halves of `start_time` and

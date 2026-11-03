@@ -524,6 +524,10 @@ pub const SHELL_TOOLS: &[&str] = &[
 pub const CONTROL_PATHS: &[&str] = &[
     ".derm/",
     "derm/daemon.",
+    // The old name's folders, never read; guarded while left installed
+    // (rename review R1).
+    ".tk/",
+    "tk/daemon.",
     "derm/otlp.endpoint",
     "derm_policy",
     "derm_chat_token",

@@ -140,7 +140,7 @@ impl HelperLauncher for SystemLauncher {
         // A fresh private folder per launch for the socket. $TMPDIR is this
         // user's own; the random name keeps a stale or planted socket out.
         let dir = std::env::temp_dir().join(format!(
-            "tkcu-{}",
+            "dermcu-{}",
             &uuid::Uuid::new_v4().simple().to_string()[..10]
         ));
         std::fs::DirBuilder::new()

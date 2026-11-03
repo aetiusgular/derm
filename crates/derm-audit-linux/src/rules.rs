@@ -124,6 +124,9 @@ pub fn render(input: &RulesInput) -> (String, Vec<String>) {
             "dir",
             &format!("{}/derm", rt.trim_end_matches('/')),
         );
+        // The old name's token folder, while a tk-daemon may be left running
+        // (rename review R1).
+        sens(&mut out, "dir", &format!("{}/tk", rt.trim_end_matches('/')));
     }
     for f in HOME_FILES {
         sens(&mut out, "path", &format!("{home}/{f}"));
@@ -159,6 +162,7 @@ mod tests {
         });
         assert!(text.contains("\n-c\n"), "keeps loading past a failed rule");
         assert!(skipped.contains(&"/run/user/1000/derm".to_string()));
+        assert!(skipped.contains(&"/run/user/1000/tk".to_string()));
         assert!(text
             .contains("-a always,exit -F arch=b64 -S execve,execveat -F uid=1000 -k derm_exec\n"));
         assert!(text.contains("-F arch=b32 -S socketcall -F a0=3 -F uid=1000 -k derm_net\n"));

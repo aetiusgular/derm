@@ -386,6 +386,10 @@ export function unquote(text: string): string {
 export const CONTROL_PATH_MARKERS = [
   ".derm/",
   "derm/daemon.",
+  // The old name's folders, never read; guarded while left installed
+  // (rename review R1).
+  ".tk/",
+  "tk/daemon.",
   "derm/otlp.endpoint",
   "derm_policy",
   "derm_chat_token",
