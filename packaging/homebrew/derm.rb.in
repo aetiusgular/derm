@@ -11,9 +11,17 @@ class Derm < Formula
   version "@VERSION@"
   license "MIT"
 
+  # One universal zip for both; brew style allows url only under on_arm and
+  # on_intel inside on_macos (FormulaAudit/ComponentsOrder).
   on_macos do
-    url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-macos.zip"
-    sha256 "@MACOS_SHA256@"
+    on_arm do
+      url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-macos.zip"
+      sha256 "@MACOS_SHA256@"
+    end
+    on_intel do
+      url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-macos.zip"
+      sha256 "@MACOS_SHA256@"
+    end
   end
 
   on_linux do
