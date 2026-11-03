@@ -9,7 +9,7 @@ derm is a skin for AI agents: a gate, a boundary and an audit around any coding 
 
 No telemetry, no account. What derm records stays on your machine ([privacy](docs/privacy.md)).
 
-Status: waves 1 and 2 are on `main`, tested in a Linux cloud workspace, on a Linux box (Pi in the TUI and in Orca, OpenCode, the systemd user unit) and on a Mac (the Claude Code and Codex plugins, Claude Code in MonoCode). The first release, v0.1.0, is being prepared on `release/w3`: Linux x86_64 (a static tarball and a `.deb`) and a signed, notarized macOS zip. Nothing is published yet; the adapters install from a clone. Built in parallel lanes; each crate and package says which lane owns it (`scripts/lane-ownership.json`).
+Status: released on GitHub ([releases](https://github.com/aetiusgular/derm/releases)): Linux x86_64 as a static tarball and a `.deb`, macOS as a signed, notarized zip, and on macOS through Homebrew (`brew install aetiusgular/tap/derm`). The gates install from this repository: Claude Code and Codex take it as a plugin marketplace by name, the others from a folder of the release's source ([the agents](docs/install/agents.md)); none is on npm yet. Tested in a Linux cloud workspace, on a Linux box (Pi in the TUI and in Orca, OpenCode, the systemd user unit) and on a Mac (the Claude Code and Codex plugins, the released zip and the Homebrew install). Built in parallel lanes; each crate and package says which lane owns it (`scripts/lane-ownership.json`).
 
 ## Docs
 
@@ -62,7 +62,7 @@ Read these before relying on derm. Each is tracked in the status docs under `pla
 | `macos/` | The activity collector and the computer-use helper, own workspaces; not in the release |
 | `docs/`, `packaging/` | The docs pages; the `.deb`, the release checks and the NOTICE generator |
 
-Install the gates from a clone: one line per agent in [docs/install/agents.md](docs/install/agents.md). The library's commands run with Node, not as `derm` subcommands yet: `node library/cli.ts validate|export|takedown`, `node library/publish/cli.ts publish <entry-dir> --library <clone>` (prints the pull request's steps unless `--open-pr`), `node library/mirror/cli.ts pull --out <dir>`, `node library/trust/cli.ts record|scan|osv|pin`, `node library/site/build.ts <out-dir>` ([the library's page](docs/verbs/library.md)). Report a catalog entry with the "Report an entry" issue form.
+Install the gates: one line per agent in [docs/install/agents.md](docs/install/agents.md). The library's commands run with Node, not as `derm` subcommands yet: `node library/cli.ts validate|export|takedown`, `node library/publish/cli.ts publish <entry-dir> --library <clone>` (prints the pull request's steps unless `--open-pr`), `node library/mirror/cli.ts pull --out <dir>`, `node library/trust/cli.ts record|scan|osv|pin`, `node library/site/build.ts <out-dir>` ([the library's page](docs/verbs/library.md)). Report a catalog entry with the "Report an entry" issue form.
 
 ## Harness coverage
 

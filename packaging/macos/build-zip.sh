@@ -5,7 +5,8 @@
 #
 #   packaging/macos/build-zip.sh <version> [keychain-profile]   (default tk-notary)
 #
-# Writes target/dist-macos/derm-<version>-macos.zip, its sha256 line in
+# Writes target/dist-macos/derm-<version>-macos.zip (one top folder,
+# derm-<version>-macos/), its sha256 line in
 # SHA256SUMS.macos beside it, and the notary log in notary-log.json.
 # The identity is read from the keychain and passed to codesign; this script
 # never prints it. No stapling: a ticket cannot be stapled to a bare binary.
@@ -19,7 +20,11 @@ profile=${2:-tk-notary}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 out=target/dist-macos
-stage=$out/stage
+# One top folder in the zip, as the Linux tarball has: Safari's auto-unpack
+# and a second download otherwise land in a folder named after the zip's cut
+# name (release check RC5).
+stage_root=$out/stage
+stage=$stage_root/derm-$version-macos
 zip=$out/derm-$version-macos.zip
 rm -rf "$out"
 mkdir -p "$stage"
@@ -50,8 +55,9 @@ unset identity
 install -m 0644 crates/derm-daemon/units/io.github.aetiusgular.derm.daemon.plist LICENSE NOTICE README.md "$stage/"
 chmod 0755 "$stage/derm" "$stage/derm-daemon"
 
-# ditto keeps the signatures intact (Apple's notarization docs use it).
-(cd "$stage" && ditto -c -k --norsrc --noextattr . "../$(basename "$zip")")
+# ditto keeps the signatures intact; --keepParent keeps the top folder
+# (Apple, Customizing the notarization workflow: ditto -c -k --keepParent).
+(cd "$stage_root" && ditto -c -k --norsrc --noextattr --keepParent "derm-$version-macos" "../$(basename "$zip")")
 
 xcrun notarytool submit "$zip" --keychain-profile "$profile" --wait --output-format json > "$out/notary-submit.json"
 sub=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$out/notary-submit.json")

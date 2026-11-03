@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  launchd user agent for derm-daemon (macOS). Lane B wrote it; the Mac test
-  installs it once lane K lands. Not run in a build session.
+  launchd user agent for derm-daemon (macOS). Homebrew users can run
+  `brew services start derm` instead, which writes its own agent.
 
   launchd expands neither ~ nor $HOME in these paths, so replace
   __DERM_DAEMON__ (the absolute path of the built binary) and __HOME__ (your
