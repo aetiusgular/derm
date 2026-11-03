@@ -8,10 +8,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: derm-daemon --foreground [--socket PATH] [--data-dir PATH]\n       derm-daemon cu-mcp\n       derm-daemon collector-plan --binary ABSOLUTE_PATH";
+const USAGE: &str = "usage: derm-daemon --version\n       derm-daemon --foreground [--socket PATH] [--data-dir PATH]\n       derm-daemon cu-mcp\n       derm-daemon collector-plan --binary ABSOLUTE_PATH";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--version") {
+        println!("derm-daemon {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     // The computer-use MCP server a harness starts (lane K's relay; request
     // 1 to integration w2). It reads the chat token `derm run` gave the
     // harness and the bridge address beside the daemon's socket; with

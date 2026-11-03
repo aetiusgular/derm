@@ -10,7 +10,7 @@ With Homebrew: `brew install aetiusgular/tap/derm`. Homebrew marks only casks as
 shasum -a 256 -c --ignore-missing SHA256SUMS
 unzip derm-<version>-macos.zip -d derm
 install -m 0755 derm/derm derm/derm-daemon ~/.local/bin/
-derm --help
+derm --version    # derm 0.1.0
 ```
 
 A notarization ticket cannot be stapled to a bare binary ("it's not currently possible to staple tickets to them", Apple, Customizing the notarization workflow), so the first time a binary from the zip runs, Gatekeeper looks its ticket up online. That first run needs a network connection; later runs do not.

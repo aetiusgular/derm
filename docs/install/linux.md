@@ -15,6 +15,7 @@ gh attestation verify derm_<version>_amd64.deb --repo aetiusgular/derm
 
 ```sh
 sudo apt install ./derm_<version>_amd64.deb
+derm --version    # derm 0.1.0
 ```
 
 It installs the binaries in `/usr/bin` and the systemd user unit in `/usr/lib/systemd/user/derm-daemon.service`. It runs no script on install, enables nothing and starts nothing. To run the daemon as your user:

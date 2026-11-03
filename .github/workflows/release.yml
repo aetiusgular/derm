@@ -31,11 +31,29 @@ jobs:
       - run: rustup target add "$TARGET"
       - name: version
         shell: bash
+        # The workspace version is the release's (the binaries print it with
+        # --version, packaging/version.test.ts holds the manifests to it). A
+        # tag must name it; a branch build is <it>~<sha>, which sorts before
+        # the release in dpkg's order.
         run: |
-          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0~${GITHUB_SHA::12}"; fi
+          crate=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "derm-cli") | .version')
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+            [ "$v" = "$crate" ] || { echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $crate (Cargo.toml)"; exit 1; }
+          else
+            v="$crate~${GITHUB_SHA::12}"
+          fi
           case "$v" in *[!0-9A-Za-z.+~-]*|"") echo "::error::bad version $v"; exit 1;; esac
           echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "CRATE_VERSION=$crate" >> "$GITHUB_ENV"
       - run: cargo build --release --locked --target "$TARGET" -p derm-cli -p derm-daemon -p derm-audit-linux
+      - name: each binary prints the release version
+        shell: bash
+        run: |
+          for b in derm derm-daemon derm-audit-feed; do
+            got=$("target/$TARGET/release/$b" --version)
+            [ "$got" = "$b $CRATE_VERSION" ] || { echo "::error::$b --version printed '$got', want '$b $CRATE_VERSION'"; exit 1; }
+          done
       # The peer checks (SO_PEERCRED, SO_PEERPIDFD, pidfd_send_signal) compile
       # against musl through libc 0.2.189; running the tests on the musl build
       # shows they behave as on glibc.

@@ -36,8 +36,12 @@ fn main() -> ExitCode {
         Some("rules") => cmd_rules(&args[1..]),
         Some("run") => cmd_run(&args[1..]),
         Some("parse") => cmd_parse(&args[1..]),
+        Some("--version") => {
+            println!("derm-audit-feed {}", env!("CARGO_PKG_VERSION"));
+            0
+        }
         _ => {
-            eprintln!("usage: derm-audit-feed <rules|run|parse> ...");
+            eprintln!("usage: derm-audit-feed <rules|run|parse|--version> ...");
             2
         }
     };
