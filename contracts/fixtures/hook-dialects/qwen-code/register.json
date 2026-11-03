@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/tk-hook",
+            "command": "/ABSOLUTE/PATH/TO/derm-hook",
             "name": "security-check",
             "description": "Run security checks before tool execution",
             "timeout": 30

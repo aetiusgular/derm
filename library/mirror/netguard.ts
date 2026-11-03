@@ -170,7 +170,7 @@ export function guardedRequest(url: string, opts: GuardedRequest): Promise<Guard
           port: u.port || 443,
           path: u.pathname + u.search,
           method: opts.method,
-          headers: { "user-agent": "tk-library/0 (+https://github.com/aetiusgular/tk)", ...(opts.headers ?? {}) },
+          headers: { "user-agent": "derm-library/0 (+https://github.com/aetiusgular/derm)", ...(opts.headers ?? {}) },
           servername: u.hostname,
           agent: false,
           // Every connection dials the addresses checked above, never a

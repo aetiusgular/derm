@@ -1,13 +1,13 @@
 {
-  "name": "tk-fixture-bundle",
+  "name": "derm-fixture-bundle",
   "version": "0.0.1",
-  "description": "Fixture bundle for the tk contract tests: one skill.",
+  "description": "Fixture bundle for the derm contract tests: one skill.",
   "author": { "name": "Aetius Gular" },
   "license": "MIT",
-  "repository": "https://github.com/aetiusgular/tk",
+  "repository": "https://github.com/aetiusgular/derm",
   "skills": ["./skills/"],
   "metadata": {
-    "io.github.aetiusgular.tk": {
+    "io.github.aetiusgular.derm": {
       "kind": "bundle",
       "tier": "own",
       "status": "active",

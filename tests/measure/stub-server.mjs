@@ -84,7 +84,7 @@ process.stdin.on("data", (d) => {
         ok({
           protocolVersion: m.params?.protocolVersion || recorded.protocolVersion || "2025-06-18",
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: `${recorded.serverInfo?.name || server} (tk-measure stub)`, version: recorded.serverInfo?.version || "0" },
+          serverInfo: { name: `${recorded.serverInfo?.name || server} (derm-measure stub)`, version: recorded.serverInfo?.version || "0" },
           ...(recorded.instructions ? { instructions: recorded.instructions } : {}),
         });
         break;

@@ -1,17 +1,17 @@
-// tk library trust command line (lane H; toolkit plan T4.1 to T4.3).
+// derm library trust command line (lane H; toolkit plan T4.1 to T4.3).
 //
 //   node library/trust/cli.ts names [catalog-dir]           name rules on every entry; exit 1 on an error
 //   node library/trust/cli.ts record [catalog-dir]          record each server version's manifest; exit 1 on a reused version
 //   node library/trust/cli.ts drift <id>                     what changed between the last two recorded versions
 //   node library/trust/cli.ts pin <id> --harness pi [--tool <name>]...   print the policy rules that pin descriptions
 //   node library/trust/cli.ts due [catalog-dir]              which scans are due
-//   node library/trust/cli.ts scan [catalog-dir]             run the due scans (TK_TRUST_SCAN=1 only)
-//   node library/trust/cli.ts osv [catalog-dir]              look up each package in OSV (TK_TRUST_ONLINE=1 only)
+//   node library/trust/cli.ts scan [catalog-dir]             run the due scans (DERM_TRUST_SCAN=1 only)
+//   node library/trust/cli.ts osv [catalog-dir]              look up each package in OSV (DERM_TRUST_ONLINE=1 only)
 //   node library/trust/cli.ts card <id> [catalog-dir]        the card's trust lines
 //
-// Writes only under library/trust/records/ (or TK_TRUST_RECORDS). Never writes
+// Writes only under library/trust/records/ (or DERM_TRUST_RECORDS). Never writes
 // the policy file, a harness config or the catalog: pins are printed for the
-// user or `tk connect`. Runs no program and makes no outbound call unless the
+// user or `derm connect`. Runs no program and makes no outbound call unless the
 // variable named on the line asks (rules section 5, items 2 and 8).
 
 import { dirname, resolve } from "node:path";
@@ -32,7 +32,7 @@ function usage(): never {
   process.exit(2);
 }
 
-const store = new RecordStore(process.env["TK_TRUST_RECORDS"] ? resolve(process.env["TK_TRUST_RECORDS"]) : RECORDS_DIR);
+const store = new RecordStore(process.env["DERM_TRUST_RECORDS"] ? resolve(process.env["DERM_TRUST_RECORDS"]) : RECORDS_DIR);
 const versionOf = (e: LoadedEntry) => (typeof e.data["version"] === "string" ? (e.data["version"] as string) : "0.0.0");
 
 /** Scan targets: each server with a tool record, each skill whose SKILL.md is in this repository. */
@@ -104,7 +104,7 @@ if (cmd === "names") {
     const pins = pinsFor(m, id, harness, tools.length > 0 ? tools : undefined);
     console.log(JSON.stringify({ rules: pins.rules }, null, 2));
     for (const s of pins.skipped) console.error(`not pinned: ${s.tool}: ${s.reason}`);
-    console.error("Printed only. Merge these rules into ~/.tk/policy.json yourself; tk never writes it.");
+    console.error("Printed only. Merge these rules into ~/.derm/policy.json yourself; derm never writes it.");
   } catch (e) {
     console.error((e as Error).message);
     process.exit(1);
@@ -118,8 +118,8 @@ if (cmd === "names") {
     console.log(`${due.length} scan(s) due`);
     process.exit(0);
   }
-  if (process.env["TK_TRUST_SCAN"] !== "1") {
-    console.error("scan runs the pinned scanners (library/trust/scanners.json) and is off unless TK_TRUST_SCAN=1; SkillSpector's OSV lookup reaches api.osv.dev");
+  if (process.env["DERM_TRUST_SCAN"] !== "1") {
+    console.error("scan runs the pinned scanners (library/trust/scanners.json) and is off unless DERM_TRUST_SCAN=1; SkillSpector's OSV lookup reaches api.osv.dev");
     process.exit(2);
   }
   let failed = 0;
@@ -137,8 +137,8 @@ if (cmd === "names") {
   }
   process.exit(failed > 0 ? 1 : 0);
 } else if (cmd === "osv") {
-  if (process.env["TK_TRUST_ONLINE"] !== "1") {
-    console.error("osv posts package names and versions to https://api.osv.dev/v1/querybatch and is off unless TK_TRUST_ONLINE=1");
+  if (process.env["DERM_TRUST_ONLINE"] !== "1") {
+    console.error("osv posts package names and versions to https://api.osv.dev/v1/querybatch and is off unless DERM_TRUST_ONLINE=1");
     process.exit(2);
   }
   const catalog = loadCatalog(catalogArg(0));

@@ -1,7 +1,7 @@
 // The content hash of a published entry (lane G, T3.3).
 //
 // contentSha256 is the SHA-256 of the RFC 8785 form of what the publisher
-// wrote: the manifest with tk's `trust` record taken out (it holds the hash
+// wrote: the manifest with derm's `trust` record taken out (it holds the hash
 // itself, and scans and liveness that change without the content changing),
 // and the SHA-256 of every other file in the entry's folder, by path. For a
 // skill whose SKILL.md lives elsewhere in the repository, that text too.
@@ -11,17 +11,17 @@ import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { canonicalJson, sha256Hex } from "../mirror/canonical.ts";
 import type { LoadedEntry } from "../validate/types.ts";
-import { PUBLISHER_PROVIDED, TK_META_KEY, isRecord } from "../validate/types.ts";
+import { PUBLISHER_PROVIDED, DERM_META_KEY, isRecord } from "../validate/types.ts";
 
 export const PROOF_FILE = "publish-proof.json";
 export const MAX_FILES = 500;
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
-/** The manifest with tk's trust record removed. */
+/** The manifest with derm's trust record removed. */
 export function withoutTrust(kind: LoadedEntry["kind"], data: Record<string, unknown>): Record<string, unknown> {
   const copy = structuredClone(data);
   const holder = kind === "bundle" ? copy["metadata"] : isRecord(copy["_meta"]) ? (copy["_meta"] as Record<string, unknown>)[PUBLISHER_PROVIDED] : undefined;
-  if (isRecord(holder) && isRecord(holder[TK_META_KEY])) delete (holder[TK_META_KEY] as Record<string, unknown>)["trust"];
+  if (isRecord(holder) && isRecord(holder[DERM_META_KEY])) delete (holder[DERM_META_KEY] as Record<string, unknown>)["trust"];
   return copy;
 }
 

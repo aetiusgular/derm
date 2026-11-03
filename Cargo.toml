@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/tk-core",
-    "crates/tk-daemon",
-    "crates/tk-cli",
-    "crates/tk-audit-linux",
+    "crates/derm-core",
+    "crates/derm-daemon",
+    "crates/derm-cli",
+    "crates/derm-audit-linux",
 ]
 # The two macos/ crates are their own workspaces (each has [workspace] in its
 # Cargo.toml), as in the fork. `cargo check` at the root never builds them.
@@ -15,7 +15,7 @@ version = "0.0.0"
 edition = "2021"
 rust-version = "1.97"
 license = "MIT"
-repository = "https://github.com/aetiusgular/tk"
+repository = "https://github.com/aetiusgular/derm"
 
 # Versions are exact and match the fork's Cargo.lock at w3/integration 159ef3e,
 # so the copied modules compile against what they were tested with.

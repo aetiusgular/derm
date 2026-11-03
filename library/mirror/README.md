@@ -1,8 +1,8 @@
 # library/mirror
 
 The hourly mirror of the official MCP registry (toolkit plan T3.2, lane G).
-tk's library is a subregistry: it copies the registry's servers, keeps their
-status current, records liveness and flags, and writes a tk entry for each
+derm's library is a subregistry: it copies the registry's servers, keeps their
+status current, records liveness and flags, and writes a derm entry for each
 latest version. It runs in CI on a schedule (`ci/mirror.yml`, a proposal
 integration installs), never from the daemon.
 
@@ -33,7 +33,7 @@ node library/mirror/cli.ts probe <url>
 |---|---|
 | `state.json` | the source, the watermark (the greatest `updatedAt` of a finished pull), the last runs, counts |
 | `servers/<name>/<version>.json` | each version as the registry served it: the publisher's `server` and the registry's `_meta[official]` |
-| `entries/<name>.json` | tk's entry for the latest version: the publisher's server.json, any object under tk's own key removed, tk's record (`tier: mirrored`) added |
+| `entries/<name>.json` | derm's entry for the latest version: the publisher's server.json, any object under derm's own key removed, derm's record (`tier: mirrored`) added |
 | `liveness.json` | the last probe of each remote URL: state, reason, HTTP statuses, era; a URL the probe refuses is recorded `unknown`, "not probed: <why>", outside the budget |
 | `index.json` | per server: latest version, version count, status, liveness, flags, `missingUpstream`; and `bulkPublishers`, each over-cap publisher and day with its count, kept once here so one more version does not rewrite every row of that publisher |
 | `skipped.json` | records the last run refused, with the reason |
@@ -56,13 +56,13 @@ server a full pull no longer returns is flagged `missingUpstream`.
   of order (inference). Reading a version twice changes nothing.
 - **The watermark moves only when every page arrived.** A failed run keeps the
   files it wrote and the next run re-reads them.
-- **A publisher's object under `io.github.aetiusgular.tk`** (in any spelling
-  that folds to it) is removed and flagged `tk-key-removed`; tk's own record is
+- **A publisher's object under `io.github.aetiusgular.derm`** (in any spelling
+  that folds to it) is removed and flagged `derm-key-removed`; derm's own record is
   the only one under that key.
 - **Flags, never verdicts:** `duplicate-remote`, `duplicate-description` (across
   publishers), `bulk-publisher` (more than `--cap`, default 20, versions first
   published by one publisher in one UTC day; the row names the publisher, day
-  and cap, the count is in `bulkPublishers`), `tk-key-removed`, `reject-list`
+  and cap, the count is in `bulkPublishers`), `derm-key-removed`, `reject-list`
   (the server.json names a key of `contracts/policy.md` section 3.1 or
   install-time execution, as `library/validate/rejects.ts` reads them).
 - **Liveness** uses the contract's states: `alive` when the remote answers

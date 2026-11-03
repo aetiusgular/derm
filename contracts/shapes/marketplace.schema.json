@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aetiusgular/tk/contracts/shapes/marketplace.schema.json",
-  "title": "Claude Code marketplace.json, the fields tk exports",
-  "description": "Read 27 Oct 2026 from https://code.claude.com/docs/en/plugins/marketplace-reference. Location .claude-plugin/marketplace.json. Required: name (letters, digits, ., _, -, starting with a letter or digit, no ..), owner {name}, plugins[]. An entry requires name and source. A source is a ./-relative path or an object whose own source key is github {repo, ref?, sha?}, url {url, ref?, sha?}, git-subdir {url, path, ref?, sha?}, npm {package, version?, registry?}, archive {url, sha256?} or command {command, timeout?, mode?}. Reserved marketplace names are listed on that page; tk's own name must avoid them. sha is a full 40-character lowercase commit; tk exports always pin it (Plugin4Shell, note AP section 5). Codex also reads this file at the legacy .claude-plugin/ path (note AP section 3).",
+  "$id": "https://github.com/aetiusgular/derm/contracts/shapes/marketplace.schema.json",
+  "title": "Claude Code marketplace.json, the fields derm exports",
+  "description": "Read 27 Oct 2026 from https://code.claude.com/docs/en/plugins/marketplace-reference. Location .claude-plugin/marketplace.json. Required: name (letters, digits, ., _, -, starting with a letter or digit, no ..), owner {name}, plugins[]. An entry requires name and source. A source is a ./-relative path or an object whose own source key is github {repo, ref?, sha?}, url {url, ref?, sha?}, git-subdir {url, path, ref?, sha?}, npm {package, version?, registry?}, archive {url, sha256?} or command {command, timeout?, mode?}. Reserved marketplace names are listed on that page; derm's own name must avoid them. sha is a full 40-character lowercase commit; derm exports always pin it (Plugin4Shell, note AP section 5). Codex also reads this file at the legacy .claude-plugin/ path (note AP section 3).",
   "type": "object",
   "required": ["name", "owner", "plugins"],
   "properties": {

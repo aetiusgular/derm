@@ -1,6 +1,6 @@
 {
-  "name": "tk",
+  "name": "derm",
   "plugins": [
-    { "name": "tk", "source": { "source": "local", "path": "./packages/tk-codex-plugin" } }
+    { "name": "derm", "source": { "source": "local", "path": "./packages/derm-codex-plugin" } }
   ]
 }

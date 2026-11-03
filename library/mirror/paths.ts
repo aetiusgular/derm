@@ -44,7 +44,7 @@ export function versionPath(name: string, version: string): string {
   return `servers/${encodeSegment(name)}/${encodeSegment(version)}.json`;
 }
 
-/** `entries/<encoded name>.json`: the tk entry for the latest version. */
+/** `entries/<encoded name>.json`: the derm entry for the latest version. */
 export function entryPath(name: string): string {
   return `entries/${encodeSegment(name)}.json`;
 }

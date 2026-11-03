@@ -1,6 +1,6 @@
 import type { PluginAPI } from '@ampcode/plugin'
 
-export const description = 'tk gate'
+export const description = 'derm gate'
 
 export default function (amp: PluginAPI) {
 	amp.on('tool.call', async (event, ctx) => {

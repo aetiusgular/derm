@@ -121,7 +121,7 @@ describe("netguard", () => {
 
 describe("liveness", () => {
   it("sends server/discover with the headers the 2026-07-28 binding requires and no credential", async () => {
-    handler = (_q, _b, res) => (res.writeHead(200, { "content-type": "application/json" }), res.end(JSON.stringify({ jsonrpc: "2.0", id: "tk-liveness", result: { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: {} } })));
+    handler = (_q, _b, res) => (res.writeHead(200, { "content-type": "application/json" }), res.end(JSON.stringify({ jsonrpc: "2.0", id: "derm-liveness", result: { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: {} } })));
     const d = await probe("https://a.example.com/mcp", local);
     expect(d).toMatchObject({ state: "alive", era: "modern", reason: "discover result" });
     const post = seen.at(-1)!;
@@ -135,7 +135,7 @@ describe("liveness", () => {
   });
 
   it("reads a result from an SSE body", async () => {
-    handler = (_q, _b, res) => (res.writeHead(200, { "content-type": "text/event-stream" }), res.end('event: message\ndata: {"jsonrpc":"2.0","id":"tk-liveness","result":{}}\n\n'));
+    handler = (_q, _b, res) => (res.writeHead(200, { "content-type": "text/event-stream" }), res.end('event: message\ndata: {"jsonrpc":"2.0","id":"derm-liveness","result":{}}\n\n'));
     expect((await probe("https://a.example.com/mcp", local)).state).toBe("alive");
   });
 

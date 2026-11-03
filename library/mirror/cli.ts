@@ -1,4 +1,4 @@
-// tk library mirror command line (lane G, T3.2).
+// derm library mirror command line (lane G, T3.2).
 //   node library/mirror/cli.ts pull --out <dir> [--full] [--no-probe]
 //        [--probe-budget N] [--cap N] [--base-url <https url>] [--max-pages N]
 //        [--attempts N]

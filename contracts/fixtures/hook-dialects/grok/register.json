@@ -4,7 +4,7 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "/ABSOLUTE/PATH/TO/tk-hook", "timeout": 10, "failClosed": true }
+          { "type": "command", "command": "/ABSOLUTE/PATH/TO/derm-hook", "timeout": 10, "failClosed": true }
         ]
       }
     ]

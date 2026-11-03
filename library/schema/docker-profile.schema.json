@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aetiusgular/tk/library/schema/docker-profile.schema.json",
+  "$id": "https://github.com/aetiusgular/derm/library/schema/docker-profile.schema.json",
   "title": "Docker MCP Gateway profile file (version 1)",
   "description": "Written 27 Oct 2026 from docker/mcp-gateway at 7e0f34277c91855ad861eeff536b4fdc77420593: pkg/workingset/workingset.go (WorkingSet: version 1, id, name, servers[], secrets{}; Server.type is registry|image|remote with source, image or endpoint required per type; tools, config, secrets, catalog_ref, snapshot optional) and docs/profiles.md (\"Profile File Format\"). `docker mcp profile import` runs this struct's validation and resolves a snapshot for every image server without one by reading the image's io.docker.server.metadata label (workingset.go ResolveSnapshot), so a profile that must import without a pull carries the snapshot. The YAML key for the catalog reference is catalog_ref; the JSON key is catalogRef (struct tags). Lane E.",
   "type": "object",

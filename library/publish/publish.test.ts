@@ -16,7 +16,7 @@ import { verifyEntry } from "./verify.ts";
 
 const REPO_CATALOG = join(import.meta.dirname, "..", "catalog");
 const PP = "io.modelcontextprotocol.registry/publisher-provided";
-const TK = "io.github.aetiusgular.tk";
+const DERM = "io.github.aetiusgular.derm";
 
 function ed25519Pem(): string {
   return generateKeyPairSync("ed25519").privateKey.export({ format: "pem", type: "pkcs8" }).toString();
@@ -27,7 +27,7 @@ function p384Pem(): string {
 
 /** A library clone with the real seed catalog, and an entry folder beside it. */
 function fixture(server: Record<string, unknown>, id: string) {
-  const root = mkdtempSync(join(tmpdir(), "tk-publish-"));
+  const root = mkdtempSync(join(tmpdir(), "derm-publish-"));
   const lib = join(root, "lib");
   mkdirSync(join(lib, "library"), { recursive: true });
   cpSync(REPO_CATALOG, join(lib, "library", "catalog"), { recursive: true });
@@ -37,7 +37,7 @@ function fixture(server: Record<string, unknown>, id: string) {
   return { root, lib, dir };
 }
 
-function server(name: string, extra: Record<string, unknown> = {}, tk: Record<string, unknown> = {}): Record<string, unknown> {
+function server(name: string, extra: Record<string, unknown> = {}, derm: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     $schema: "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
     name,
@@ -46,7 +46,7 @@ function server(name: string, extra: Record<string, unknown> = {}, tk: Record<st
     repository: { url: "https://github.com/alice/weather-tool", source: "github" },
     remotes: [{ type: "streamable-http", url: "https://weather.example.com/mcp" }],
     ...extra,
-    _meta: { [PP]: { [TK]: { kind: "server", tier: "curated", status: "active", runner: { kind: "remote" }, exposure: { default: "deferred" }, trust: { contentSha256: "0".repeat(64), scans: [], liveness: { state: "unknown" } }, ...tk } } },
+    _meta: { [PP]: { [DERM]: { kind: "server", tier: "curated", status: "active", runner: { kind: "remote" }, exposure: { default: "deferred" }, trust: { contentSha256: "0".repeat(64), scans: [], liveness: { state: "unknown" } }, ...derm } } },
   };
 }
 
@@ -128,7 +128,7 @@ describe("namespace", () => {
 });
 
 describe("upstream copy", () => {
-  it("trims tk's own object until the publisher object fits the registry's 4,096 bytes, measured as Go writes it", () => {
+  it("trims derm's own object until the publisher object fits the registry's 4,096 bytes, measured as Go writes it", () => {
     const scans = Array.from({ length: 60 }, (_, i) => ({ scanner: "s<&>", scannerVersion: "1", date: "2026-10-28T00:00:00Z", findings: i }));
     const s = server("io.github.alice/weather-tool", {}, { trust: { contentSha256: "a".repeat(64), scans, liveness: { state: "alive" } } });
     ((s["_meta"] as any)[PP] as any)["com.other/data"] = { keep: true };
@@ -138,14 +138,14 @@ describe("upstream copy", () => {
     expect(t.bytes).toBeLessThanOrEqual(UPSTREAM_META_CAP);
     expect(goJsonLength((t.server["_meta"] as any)[PP])).toBe(t.bytes);
     expect((t.server["_meta"] as any)[PP]["com.other/data"]).toEqual({ keep: true });
-    expect((s["_meta"] as any)[PP][TK].trust.scans).toHaveLength(60); // the input is untouched
+    expect((s["_meta"] as any)[PP][DERM].trust.scans).toHaveLength(60); // the input is untouched
   });
   it("says so when other publishers' keys alone are over the cap", () => {
     const s = server("io.github.alice/weather-tool");
     ((s["_meta"] as any)[PP] as any)["com.other/big"] = { blob: "x".repeat(5000) };
     const t = trimForUpstream(s);
-    expect(t.dropped).toContain(TK);
-    expect(t.error).toMatch(/without tk's data/);
+    expect(t.dropped).toContain(DERM);
+    expect(t.error).toMatch(/without derm's data/);
   });
 });
 
@@ -209,7 +209,7 @@ describe("content digest", () => {
     const e1 = loadEntry(a.dir, a.lib)!;
     const d1 = entryDigest(e1);
     const reordered = JSON.parse(readFileSync(join(a.dir, "server.json"), "utf8"));
-    reordered._meta[PP][TK].trust.contentSha256 = "f".repeat(64);
+    reordered._meta[PP][DERM].trust.contentSha256 = "f".repeat(64);
     writeFileSync(join(a.dir, "server.json"), JSON.stringify(Object.fromEntries(Object.entries(reordered).reverse())));
     writeFileSync(join(a.dir, PROOF_FILE), "{}");
     expect(entryDigest(loadEntry(a.dir, a.lib)!).contentSha256).toBe(d1.contentSha256);
@@ -220,16 +220,16 @@ describe("content digest", () => {
   });
 });
 
-describe("tk publish", () => {
+describe("derm publish", () => {
   it("publishes a curated GitHub-namespace server with the logged-in owner's proof", async () => {
     const fx = fixture(server("io.github.alice/weather-tool"), "weather-tool");
     const r = await publish({ dir: fx.dir, library: fx.lib, proof: "github" }, { gh: ghAs("alice"), fetchImpl: noPackages, now: () => new Date("2026-10-28T18:00:00Z") });
     expect(r.findings.filter((f) => f.severity === "error")).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.proof?.namespace).toEqual({ method: "github-oauth", subject: "alice" });
-    const tk = (r.manifest!["_meta"] as any)[PP][TK];
-    expect(tk.trust.contentSha256).toBe(r.proof!.contentSha256);
-    expect(tk.trust.namespaceProof).toBe("github-oauth");
+    const derm = (r.manifest!["_meta"] as any)[PP][DERM];
+    expect(derm.trust.contentSha256).toBe(r.proof!.contentSha256);
+    expect(derm.trust.namespaceProof).toBe("github-oauth");
   });
 
   it("refuses another user's namespace, the mirror's tier, and a lookalike of a verified brand", async () => {
@@ -287,7 +287,7 @@ describe("tk publish", () => {
 
 describe("the pull request", () => {
   it("is argument lists in the publisher's clone, staging only the entry", () => {
-    const proof = { version: 1 as const, entry: "weather-tool", kind: "server" as const, name: "io.github.alice/weather-tool", entryVersion: "1.0.0+build/../x", contentSha256: "a".repeat(64), files: {}, namespace: { method: "github-oauth" as const, subject: "alice" }, packages: [], createdAt: "t", tool: "tk publish" as const };
+    const proof = { version: 1 as const, entry: "weather-tool", kind: "server" as const, name: "io.github.alice/weather-tool", entryVersion: "1.0.0+build/../x", contentSha256: "a".repeat(64), files: {}, namespace: { method: "github-oauth" as const, subject: "alice" }, packages: [], createdAt: "t", tool: "derm publish" as const };
     expect(branchFor(proof)).toBe("publish/weather-tool-1.0.0-build-.-x");
     const steps = prSteps({ clone: "/c", entryDir: "/in/weather-tool", manifestFile: "server.json", manifest: {}, proof, body: "b", headOwner: "alice" });
     const argvs = steps.filter((s) => "argv" in s).map((s) => (s as { argv: string[] }).argv);
@@ -314,7 +314,7 @@ describe("the pull request", () => {
 describe("the library's check", () => {
   async function published(name = "io.github.alice/weather-tool", id = "weather-tool", deps: Parameters<typeof publish>[1] = { gh: ghAs("alice"), fetchImpl: noPackages }, proof: "github" | "dns" = "github", pem?: string) {
     const fx = fixture(server(name), id);
-    const base = mkdtempSync(join(tmpdir(), "tk-base-"));
+    const base = mkdtempSync(join(tmpdir(), "derm-base-"));
     cpSync(fx.lib, base, { recursive: true });
     const r = await publish({ dir: fx.dir, library: fx.lib, proof, ...(pem ? { privateKeyPem: pem } : {}) }, deps);
     expect(r.ok).toBe(true);
@@ -350,7 +350,7 @@ describe("the library's check", () => {
     const p = await published();
     const path = join(p.pr, "library", "catalog", p.id, "server.json");
     const m = JSON.parse(readFileSync(path, "utf8"));
-    m._meta[PP][TK].tier = "own";
+    m._meta[PP][DERM].tier = "own";
     writeFileSync(path, JSON.stringify(m));
     expect((await verifyEntry({ prLibrary: p.pr, baseLibrary: p.base, id: p.id, prAuthor: "alice" }, { fetchImpl: noPackages })).map((f) => f.rule)).toContain("verify/tier");
     writeFileSync(join(p.pr, "library", "catalog", p.id, PROOF_FILE), "{}");

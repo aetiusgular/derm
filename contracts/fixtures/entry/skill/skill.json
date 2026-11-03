@@ -7,18 +7,18 @@
   "status": "active",
   "license": "MIT",
   "allowedTools": ["exa/web_search_exa"],
-  "repository": { "url": "https://github.com/aetiusgular/tk", "type": "git" },
+  "repository": { "url": "https://github.com/aetiusgular/derm", "type": "git" },
   "packages": [
     {
       "registryType": "git",
-      "url": "https://github.com/aetiusgular/tk",
+      "url": "https://github.com/aetiusgular/derm",
       "ref": "main",
       "subfolder": "contracts/fixtures/entry/skill/web-search"
     }
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "skill",
         "tier": "own",
         "status": "active",

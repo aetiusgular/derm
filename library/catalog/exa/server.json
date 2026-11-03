@@ -21,7 +21,7 @@
           "description": "Exa API key; the gateway holds it, the model never sees it",
           "variables": {
             "exa_api_key": {
-              "description": "Exa API key, read from EXA_API_KEY by tk connect",
+              "description": "Exa API key, read from EXA_API_KEY by derm connect",
               "isSecret": true,
               "isRequired": true
             }
@@ -32,7 +32,7 @@
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "server",
         "tier": "own",
         "status": "active",

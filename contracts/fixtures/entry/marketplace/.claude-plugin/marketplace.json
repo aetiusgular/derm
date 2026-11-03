@@ -1,14 +1,14 @@
 {
-  "name": "tk-fixture-marketplace",
-  "description": "Fixture marketplace for the tk contract tests",
+  "name": "derm-fixture-marketplace",
+  "description": "Fixture marketplace for the derm contract tests",
   "owner": { "name": "Aetius Gular" },
   "plugins": [
     {
-      "name": "tk-fixture-bundle",
+      "name": "derm-fixture-bundle",
       "description": "One skill",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/aetiusgular/tk.git",
+        "url": "https://github.com/aetiusgular/derm.git",
         "path": "contracts/fixtures/entry/bundle",
         "ref": "main",
         "sha": "0000000000000000000000000000000000000000"

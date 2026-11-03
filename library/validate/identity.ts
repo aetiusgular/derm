@@ -3,7 +3,7 @@
 // library/trust/identity.ts copied them. Integration w2 moved them here so
 // the validator and the trust rules read one copy (lane H's request).
 
-import type { Kind, TkMeta } from "./types.ts";
+import type { Kind, DermMeta } from "./types.ts";
 import { isRecord } from "./types.ts";
 
 export function namespaceOf(kind: Kind, data: Record<string, unknown>): string {
@@ -29,7 +29,7 @@ export function hostsOf(data: Record<string, unknown>): string[] {
   return hosts;
 }
 
-export function imagesOf(data: Record<string, unknown>, meta: TkMeta | undefined): string[] {
+export function imagesOf(data: Record<string, unknown>, meta: DermMeta | undefined): string[] {
   const images: string[] = [];
   if (meta?.runner.kind === "image") images.push(meta.runner.image);
   const packages = data["packages"];

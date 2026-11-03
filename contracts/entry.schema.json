@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aetiusgular/tk/contracts/entry.schema.json",
-  "title": "tk library data for one entry",
-  "description": "The object at _meta[\"io.modelcontextprotocol.registry/publisher-provided\"][\"io.github.aetiusgular.tk\"] in a server.json or skill.json, or at metadata[\"io.github.aetiusgular.tk\"] in a plugin.json. One object per entry, not per package (ToolHive keys its data per package identifier; tk keeps one server.json per entry). Contract written by tk session 0 from plans/toolkit_layer_plan.md T3.1 and note AP sections 3 and 8. Lane E owns the library; changes are requests for integration.",
+  "$id": "https://github.com/aetiusgular/derm/contracts/entry.schema.json",
+  "title": "derm library data for one entry",
+  "description": "The object at _meta[\"io.modelcontextprotocol.registry/publisher-provided\"][\"io.github.aetiusgular.derm\"] in a server.json or skill.json, or at metadata[\"io.github.aetiusgular.derm\"] in a plugin.json. One object per entry, not per package (ToolHive keys its data per package identifier; derm keeps one server.json per entry). Contract written by tk session 0 from plans/toolkit_layer_plan.md T3.1 and note AP sections 3 and 8. Lane E owns the library; changes are requests for integration.",
   "type": "object",
   "additionalProperties": false,
   "required": ["kind", "tier", "status", "runner", "exposure", "trust"],
@@ -18,7 +18,7 @@
     },
     "runner": { "$ref": "#/$defs/runner" },
     "exposure": {
-      "description": "How each harness should load this entry's tools. Keys are harness ids from the preset table (crates/tk-cli/src/connect/presets/); `default` applies to any harness not named. Pi's own values (docs/mcp.md at 1.4.0).",
+      "description": "How each harness should load this entry's tools. Keys are harness ids from the preset table (crates/derm-cli/src/connect/presets/); `default` applies to any harness not named. Pi's own values (docs/mcp.md at 1.4.0).",
       "type": "object",
       "required": ["default"],
       "properties": { "default": { "enum": ["codemode", "deferred", "direct", "hidden"] } },
@@ -68,7 +68,7 @@
     },
     "trust": { "$ref": "#/$defs/trust" },
     "harnessPresets": {
-      "description": "Per harness id: overrides to the entry tk connect writes (for example a different server name where a harness splits on underscores). Lane C defines the keys",
+      "description": "Per harness id: overrides to the entry derm connect writes (for example a different server name where a harness splits on underscores). Lane C defines the keys",
       "type": "object",
       "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
       "additionalProperties": { "type": "object" }

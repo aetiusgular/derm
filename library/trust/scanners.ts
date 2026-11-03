@@ -11,7 +11,7 @@
 // - Cisco AI Defense MCP Scanner 4.8.7 on a server's recorded tool list,
 //   without connecting: `mcp-scanner --analyzers yara --format raw static
 //   --tools <file>` (README, docs/static-scanning.md, mcpscanner/cli.py:1545-1653
-//   at b27af3b). It writes no SARIF and exits 0 whatever it finds; tk turns its
+//   at b27af3b). It writes no SARIF and exits 0 whatever it finds; derm turns its
 //   raw JSON into SARIF (`ciscoToSarif`). YARA alone makes no outbound call.
 //
 // Neither is trusted to decide anything. Trail of Bits built skills that passed
@@ -115,7 +115,7 @@ export async function scanSkill(skillDir: string, opts: RunOptions = {}): Promis
   const timeoutMs = opts.timeoutMs ?? 300_000;
   const st = lstatSync(skillDir);
   if (!st.isDirectory()) return { ok: false, scanner: "skillspector", reason: `${skillDir} is not a folder` };
-  const work = mkdtempSync(join(tmpdir(), "tk-scan-"));
+  const work = mkdtempSync(join(tmpdir(), "derm-scan-"));
   try {
     const v = await exec(bin, ["--version"], { env, cwd: work, timeoutMs: 30_000 });
     const version = parseSkillSpectorVersion(v.stdout);
@@ -163,7 +163,7 @@ export async function scanServerTools(tools: ToolsRecord, opts: RunOptions = {})
   }
   const env = scannerEnv("cisco-mcp-scanner", opts.env);
   const timeoutMs = opts.timeoutMs ?? 300_000;
-  const work = mkdtempSync(join(tmpdir(), "tk-scan-"));
+  const work = mkdtempSync(join(tmpdir(), "derm-scan-"));
   try {
     const input = join(work, "tools-list.json");
     writeFileSync(input, JSON.stringify({ tools: tools.tools }), { flag: "wx", mode: 0o600 });
@@ -201,7 +201,7 @@ function firstJson(stdout: string): unknown {
  * Cisco's raw JSON (docs/output-formats.md at b27af3b: `scan_results[]` with
  * `status`, `tool_name`, `findings{<analyzer>: {severity, threat_names[],
  * threat_summary, total_findings}}`) as a SARIF 2.1.0 log, one result per
- * analyzer and threat with a non-SAFE severity. `is_safe` is not carried: tk
+ * analyzer and threat with a non-SAFE severity. `is_safe` is not carried: derm
  * records findings, never a verdict. A tool whose scan did not complete
  * becomes a failed invocation's notification.
  */
@@ -252,7 +252,7 @@ export function ciscoToSarif(stdout: string, version: string): SarifLog | string
         tool: { driver: { name: "cisco-mcp-scanner", version, informationUri: "https://github.com/cisco-ai-defense/mcp-scanner", rules: [...rules].map(([id, name]) => ({ id, shortDescription: { text: name } })) } },
         results,
         invocations: [{ executionSuccessful: notifications.length === 0, toolExecutionNotifications: notifications }],
-        properties: { convertedBy: "tk library/trust/scanners.ts ciscoToSarif", analyzers: ["yara"] },
+        properties: { convertedBy: "derm library/trust/scanners.ts ciscoToSarif", analyzers: ["yara"] },
       },
     ],
   };

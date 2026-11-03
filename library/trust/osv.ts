@@ -3,7 +3,7 @@
 // POST https://api.osv.dev/v1/querybatch with one query per package version;
 // the batch answer lists vulnerability ids per query (OSV API docs,
 // google.github.io/osv.dev/api; the research for this item is in the status
-// doc). Off unless TK_TRUST_ONLINE=1: it sends package names and versions,
+// doc). Off unless DERM_TRUST_ONLINE=1: it sends package names and versions,
 // public catalog data, to Google's OSV service (rules section 5, item 8).
 // Only packages with an exact version are looked up; an unpinned package is
 // shown on the card as not looked up, because a query without a version asks

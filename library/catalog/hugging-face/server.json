@@ -22,7 +22,7 @@
           "description": "Optional user token for gated or private repositories",
           "variables": {
             "hf_token": {
-              "description": "Hugging Face token, read from HF_TOKEN by tk connect",
+              "description": "Hugging Face token, read from HF_TOKEN by derm connect",
               "isSecret": true,
               "isRequired": false
             }
@@ -33,7 +33,7 @@
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "server",
         "tier": "own",
         "status": "active",

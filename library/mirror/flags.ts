@@ -8,7 +8,7 @@
 //                          endpoints)
 //   bulk-publisher         a publisher first published more than `cap`
 //                          servers on one UTC day
-//   tk-key-removed         the publisher put an object under tk's own _meta key
+//   derm-key-removed         the publisher put an object under derm's own _meta key
 //   reject-list            the server.json names a key of the reject list
 //                          (contracts/policy.md section 3.1) or install-time
 //                          execution, as lane E's validator reads them
@@ -22,7 +22,7 @@ export type Flag =
   | { flag: "duplicate-remote"; of: string[]; key: string }
   | { flag: "duplicate-description"; of: string[] }
   | { flag: "bulk-publisher"; publisher: string; day: string; count: number; cap: number }
-  | { flag: "tk-key-removed" }
+  | { flag: "derm-key-removed" }
   | { flag: "reject-list"; keys: string[] };
 
 export const DEFAULT_CAP = 20;
@@ -67,7 +67,7 @@ export function computeFlags(latest: ServerRecord[], opts: { cap?: number; all?:
   for (const r of latest) {
     const name = r.server.name;
     const { server, hadTkKey } = stripTkKey(r.server);
-    if (hadTkKey) add(name, { flag: "tk-key-removed" });
+    if (hadTkKey) add(name, { flag: "derm-key-removed" });
     const hits = scanRejects(canonicalJson(server));
     if (hits.length) add(name, { flag: "reject-list", keys: [...new Set(hits.map((h) => h.key))].sort() });
     for (const url of remoteUrls(server)) {

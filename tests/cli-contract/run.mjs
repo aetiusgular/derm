@@ -24,10 +24,10 @@ import { claudeTurnEndChecks } from "./checks/claudeTurnEnd.mjs";
 // [w3-b] imports
 // [w3-c] imports
 import { computerUseClaudeChecks as computerUseClaudeChecks_w3c, computerUseCodexChecks as computerUseCodexChecks_w3c } from "./checks/computerUse.mjs";
-// [tk-F] imports: the tk plugin checks (lane F). They import the fake daemon from
-// packages/tk-claude-plugin/src/testing/fakeDaemon.ts, so Node 22.18 or later.
-import { tkClaudeChecks } from "./checks/tkClaude.mjs";
-import { tkCodexChecks } from "./checks/tkCodex.mjs";
+// [derm-F] imports: the derm plugin checks (lane F). They import the fake daemon from
+// packages/derm-claude-plugin/src/testing/fakeDaemon.ts, so Node 22.18 or later.
+import { dermClaudeChecks } from "./checks/dermClaude.mjs";
+import { dermCodexChecks } from "./checks/dermCodex.mjs";
 
 // [integration w1] Lane folders. Every .mjs file in checks/<LANE>/ (one
 // capital letter: I in wave 2; L, N, P, R in wave 4) exports `checks`, an
@@ -122,8 +122,8 @@ async function main() {
   // [w3-b] codex-plan
   // [w3-c] codex-plan
   for (const c of computerUseCodexChecks_w3c) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
-  // [tk-F] codex-plan
-  for (const c of tkCodexChecks) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
+  // [derm-F] codex-plan
+  for (const c of dermCodexChecks) plan.push({ ...c, harness: "codex", bin: codexVersion ? args.codex : null, cliVersion: codexVersion });
   const claudes = args.claude.length ? args.claude : [null];
   for (const bin of claudes) {
     const v = bin && existsSync(bin) ? version(bin) : null;
@@ -134,8 +134,8 @@ async function main() {
     // [w3-b] claude-plan
     // [w3-c] claude-plan
     for (const c of computerUseClaudeChecks_w3c) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
-    // [tk-F] claude-plan
-    for (const c of tkClaudeChecks) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
+    // [derm-F] claude-plan
+    for (const c of dermClaudeChecks) plan.push({ ...c, harness: "claude", bin: v ? bin : null, cliVersion: v, id: v ? `${c.id}@${v.split(" ")[0]}` : c.id, baseId: c.id });
   }
   // [integration w1] lane folders
   for (const c of await laneChecks()) {

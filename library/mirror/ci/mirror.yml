@@ -66,6 +66,6 @@ jobs:
           cd data
           git add -A
           if git diff --cached --quiet; then echo "no change"; exit 0; fi
-          git -c user.name="tk mirror" -c user.email="tk-mirror@users.noreply.github.com" \
+          git -c user.name="derm mirror" -c user.email="derm-mirror@users.noreply.github.com" \
             commit -q -m "mirror: $(jq -r '"\(.mode) pull, \(.new) new, \(.changed) changed, \(.probed) probed"' ../pull-report.json)"
           git push -q origin HEAD:mirror/data

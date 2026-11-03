@@ -30,12 +30,12 @@ export type ProbeDetail = {
 
 export const DISCOVER_BODY = JSON.stringify({
   jsonrpc: "2.0",
-  id: "tk-liveness",
+  id: "derm-liveness",
   method: "server/discover",
   params: {
     _meta: {
       "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
-      "io.modelcontextprotocol/clientInfo": { name: "tk-library-mirror", version: "0" },
+      "io.modelcontextprotocol/clientInfo": { name: "derm-library-mirror", version: "0" },
       "io.modelcontextprotocol/clientCapabilities": {},
     },
   },

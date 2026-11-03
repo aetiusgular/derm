@@ -2,7 +2,7 @@
 //
 //   state.json                     source, watermark, last runs, counts
 //   servers/<name>/<version>.json  each version as the registry served it
-//   entries/<name>.json            tk's entry for the server's latest version
+//   entries/<name>.json            derm's entry for the server's latest version
 //   liveness.json                  the last probe of each remote URL
 //   index.json                     one line per server: latest, status, flags
 //   skipped.json                   records the last run refused, with why

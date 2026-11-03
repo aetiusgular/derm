@@ -11,20 +11,20 @@
     "exa/web_fetch_exa"
   ],
   "repository": {
-    "url": "https://github.com/aetiusgular/tk",
+    "url": "https://github.com/aetiusgular/derm",
     "type": "git"
   },
   "packages": [
     {
       "registryType": "git",
-      "url": "https://github.com/aetiusgular/tk",
+      "url": "https://github.com/aetiusgular/derm",
       "ref": "main",
-      "subfolder": "library/catalog/tk-connectors/skills/web-search"
+      "subfolder": "library/catalog/derm-connectors/skills/web-search"
     }
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "skill",
         "tier": "own",
         "status": "active",

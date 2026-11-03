@@ -62,7 +62,7 @@
       "mark": "V"
     },
     {
-      "claim": "Hook env strips any variable whose NAME matches one of /API_KEY/i,/SECRET/i,/TOKEN/i,/PASSWORD/i,/ANTHROPIC_/i,/COMMANDCODE_API/i,/OAUTH/i,/CREDENTIAL/i,/PRIVATE_KEY/i,/(^|_)AUTH(_|$)/i,/(^|_)AUTHORIZATION(_|$)/i,/(^|_)BEARER(_|$)/i,/AWS_ACCESS_KEY/i,/AWS_SECRET/i,/AWS_SESSION_TOKEN/i. TK_CHAT_TOKEN_FILE matches /TOKEN/i and is stripped",
+      "claim": "Hook env strips any variable whose NAME matches one of /API_KEY/i,/SECRET/i,/TOKEN/i,/PASSWORD/i,/ANTHROPIC_/i,/COMMANDCODE_API/i,/OAUTH/i,/CREDENTIAL/i,/PRIVATE_KEY/i,/(^|_)AUTH(_|$)/i,/(^|_)AUTHORIZATION(_|$)/i,/(^|_)BEARER(_|$)/i,/AWS_ACCESS_KEY/i,/AWS_SECRET/i,/AWS_SESSION_TOKEN/i. DERM_CHAT_TOKEN_FILE matches /TOKEN/i and is stripped",
       "source": "npm:command-code@1.88.1 package/dist/cli.mjs:2 sanitizeHookEnv and mC array",
       "mark": "V"
     },

@@ -14,7 +14,7 @@ import type { Brand } from "../trust/names.ts";
 
 export const CATALOG_DIR = join(LIBRARY_DIR, "catalog");
 export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
-const TK_REPO_URLS = ["https://github.com/aetiusgular/tk", "https://github.com/aetiusgular/tk.git"];
+const DERM_REPO_URLS = ["https://github.com/aetiusgular/derm", "https://github.com/aetiusgular/derm.git"];
 
 /** Reads one entry folder. Returns undefined when the folder holds no manifest. */
 export function loadEntry(dir: string, repoRoot = REPO_ROOT): LoadedEntry | undefined {
@@ -64,7 +64,7 @@ function findSkillMd(data: Record<string, unknown>, dir: string, repoRoot: strin
       if (!isRecord(p) || p["registryType"] !== "git") continue;
       const url = p["url"];
       const sub = p["subfolder"];
-      if (typeof url === "string" && TK_REPO_URLS.includes(url) && typeof sub === "string" && !sub.includes("..") && !sub.startsWith("/")) {
+      if (typeof url === "string" && DERM_REPO_URLS.includes(url) && typeof sub === "string" && !sub.includes("..") && !sub.startsWith("/")) {
         const abs = resolve(repoRoot, sub);
         if (abs === repoRoot || abs.startsWith(repoRoot + sep)) candidates.push(join(abs, "SKILL.md"));
       }

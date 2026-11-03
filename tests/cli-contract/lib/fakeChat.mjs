@@ -36,7 +36,7 @@ export function startFakeChat({ script, model = "fake-model" } = {}) {
         body = {};
       }
       const isTurn = Array.isArray(body.tools) && body.tools.length > 0;
-      const reply = isTurn ? script(body, turn++) : { text: "tk" };
+      const reply = isTurn ? script(body, turn++) : { text: "derm" };
       requests.push({ kind: isTurn ? "turn" : "side", url, body });
       const id = `chatcmpl-${requests.length}`;
       const created = Math.floor(Date.now() / 1000);

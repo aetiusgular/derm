@@ -1,6 +1,6 @@
-# The tk library
+# The derm library
 
-A curated subregistry of the official MCP registry, plus skills and bundles, with the control plane's data (`tier`, `runner`, `exposure`, `entrySkill`, `annotationsOverride`, `permissions`, `trust`, `harnessPresets`) under one reverse-DNS key: `_meta["io.modelcontextprotocol.registry/publisher-provided"]["io.github.aetiusgular.tk"]` (`contracts/entry.schema.json`). Not a registry: the official one is designed to be mirrored and says so (`plans/toolkit_layer_plan.md` section 1; `research-notes/AP_tool_library_prior_art.md` section 8). Lane E built the format, the validator, the exports and the seed catalog in wave 1 (T3.1, T3.4); the mirror and the publish flow (lane G), the trust records (lane H) and the browser (lane J) come in wave 2.
+A curated subregistry of the official MCP registry, plus skills and bundles, with the control plane's data (`tier`, `runner`, `exposure`, `entrySkill`, `annotationsOverride`, `permissions`, `trust`, `harnessPresets`) under one reverse-DNS key: `_meta["io.modelcontextprotocol.registry/publisher-provided"]["io.github.aetiusgular.derm"]` (`contracts/entry.schema.json`). Not a registry: the official one is designed to be mirrored and says so (`plans/toolkit_layer_plan.md` section 1; `research-notes/AP_tool_library_prior_art.md` section 8). Lane E built the format, the validator, the exports and the seed catalog in wave 1 (T3.1, T3.4); the mirror and the publish flow (lane G), the trust records (lane H) and the browser (lane J) come in wave 2.
 
 ## The inclusion rule
 
@@ -21,7 +21,7 @@ Trust records (`trust`) are shown with their dates and never called a verdict (p
 
 ```
 library/
-  schema/     the vendored upstream schema, ToolHive's, and tk's own (schema/README.md)
+  schema/     the vendored upstream schema, ToolHive's, and derm's own (schema/README.md)
   validate/   the validator: schemas.ts, upstream.ts, skill-md.ts, rejects.ts, names.ts, lookalikes.ts, catalog.ts, index.ts
   export/     the exporters: index.ts, yaml.ts
   catalog/    the entries, sets.json, brands.json (catalog/README.md)
@@ -36,9 +36,9 @@ Rule names are stable and tested one by one (`validate/validate.test.ts`, `valid
 
 | Family | Rules |
 |---|---|
-| `schema/*` | `schema/upstream` (the vendored 2025-12-11 schema, draft-07), `schema/tk-server`, `schema/tk-skill`, `schema/tk-bundle`, `schema/tools`, `schema/sets`, `schema/marketplace` |
-| `upstream/*` | The registry's semantic checks transcribed from `internal/validators/validators.go` at `9c4a96c`: `server-name`, `version`, `repository`, `package`, `remote`, `meta-size` (the 4 KB publish limit on `_meta`, a warning here). `upstream/online/*` when `TK_LIBRARY_ONLINE=1` calls `POST /v0.1/validate` |
-| `skill/*` | The Agent Skills specification as `skills-ref` 0.1.0 applies it: `frontmatter`, `unexpected-field`, `name`, `dir-name`, `description`, `compatibility`, `metadata`, `allowed-tools`, `missing`, `name-matches-index`, `empty-body`; `skill/skills-ref` when `TK_LIBRARY_SKILLS_REF=1` and the binary is on PATH |
+| `schema/*` | `schema/upstream` (the vendored 2025-12-11 schema, draft-07), `schema/derm-server`, `schema/derm-skill`, `schema/derm-bundle`, `schema/tools`, `schema/sets`, `schema/marketplace` |
+| `upstream/*` | The registry's semantic checks transcribed from `internal/validators/validators.go` at `9c4a96c`: `server-name`, `version`, `repository`, `package`, `remote`, `meta-size` (the 4 KB publish limit on `_meta`, a warning here). `upstream/online/*` when `DERM_LIBRARY_ONLINE=1` calls `POST /v0.1/validate` |
+| `skill/*` | The Agent Skills specification as `skills-ref` 0.1.0 applies it: `frontmatter`, `unexpected-field`, `name`, `dir-name`, `description`, `compatibility`, `metadata`, `allowed-tools`, `missing`, `name-matches-index`, `empty-body`; `skill/skills-ref` when `DERM_LIBRARY_SKILLS_REF=1` and the binary is on PATH |
 | `lib/*` | `meta`, `id`, `id-matches-name`, `reject`, `literal-secret`, `image-digest`, `entry-skill`, `liveness`, `tools-record`, `tool-name-charset`, `tool-name-unique`, `annotations`, `annotations-override`, `output-schema`, `exposure-direct`, `host-process`, `license`, `lookalike`, `server-id-unique`, `allowed-tools-known`, `set-entry` |
 
 Nothing reads the network or runs a program unless the two environment variables above turn it on.

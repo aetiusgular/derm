@@ -2,7 +2,7 @@
 //
 // UpGuard (2 Jul 2026, note AP section 5) counted 3 to 15 unverified
 // lookalikes per brand across four registries; the official registry has "no
-// formal verified property". This module is the check `tk publish` (lane G,
+// formal verified property". This module is the check `derm publish` (lane G,
 // T3.3) and the library validator run on a name. It returns findings in the
 // validator's own shape (library/validate/types.ts) and decides nothing else.
 //

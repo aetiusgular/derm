@@ -1,4 +1,4 @@
-// Box test w1, BX1: TK_LIBRARY_ONLINE=1 and TK_LIBRARY_SKILLS_REF=1 changed
+// Box test w1, BX1: DERM_LIBRARY_ONLINE=1 and DERM_LIBRARY_SKILLS_REF=1 changed
 // nothing, because the validate path never called the two checks. These run
 // the real command line and the exported pass.
 import { execFile } from "node:child_process";
@@ -13,14 +13,14 @@ const run = promisify(execFile);
 const CLI = resolve(import.meta.dirname, "../cli.ts");
 
 describe("opt-in checks in the validate path", () => {
-  it("node library/cli.ts validate runs skills-ref on every skill when TK_LIBRARY_SKILLS_REF=1", async () => {
-    const bin = mkdtempSync(join(tmpdir(), "tk-skillsref-"));
+  it("node library/cli.ts validate runs skills-ref on every skill when DERM_LIBRARY_SKILLS_REF=1", async () => {
+    const bin = mkdtempSync(join(tmpdir(), "derm-skillsref-"));
     const seen = join(bin, "seen");
     // A fake skills-ref: records each folder, fails each with one finding.
     writeFileSync(join(bin, "skills-ref"), `#!/bin/sh\necho "$2" >> '${seen}'\necho "Validation failed for $2:" >&2\necho "  - fake finding" >&2\nexit 1\n`);
     chmodSync(join(bin, "skills-ref"), 0o755);
-    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, TK_LIBRARY_SKILLS_REF: "1" };
-    delete env["TK_LIBRARY_ONLINE"];
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, DERM_LIBRARY_SKILLS_REF: "1" };
+    delete env["DERM_LIBRARY_ONLINE"];
     const r = await run(process.execPath, [CLI, "validate"], { env }).then(
       (x) => ({ code: 0, out: x.stdout }),
       (e: { code: number; stdout: string }) => ({ code: e.code, out: e.stdout }),
@@ -31,7 +31,7 @@ describe("opt-in checks in the validate path", () => {
     expect(r.code).toBe(1);
   });
 
-  it("posts every server to the registry's validate only with TK_LIBRARY_ONLINE=1", async () => {
+  it("posts every server to the registry's validate only with DERM_LIBRARY_ONLINE=1", async () => {
     const catalog = loadCatalog(CATALOG_DIR);
     const servers = catalog.entries.filter((e) => e.kind === "server");
     const posted: string[] = [];
@@ -39,16 +39,16 @@ describe("opt-in checks in the validate path", () => {
       posted.push((JSON.parse(init.body) as { name: string }).name);
       return new Response(JSON.stringify({ valid: false, issues: [{ type: "semantic", path: "", message: "deprecated", severity: "warning", reference: "schema-version-deprecated" }] }), { status: 200 });
     }) as unknown as typeof fetch;
-    delete process.env["TK_LIBRARY_ONLINE"];
+    delete process.env["DERM_LIBRARY_ONLINE"];
     expect((await optInChecks(catalog, { fetchImpl })).size).toBe(0);
     expect(posted).toEqual([]);
-    process.env["TK_LIBRARY_ONLINE"] = "1";
+    process.env["DERM_LIBRARY_ONLINE"] = "1";
     try {
       const found = await optInChecks(catalog, { fetchImpl });
       expect(posted.length).toBe(servers.length);
       for (const s of servers) expect(found.get(s.id)?.[0]?.rule).toBe("upstream/online/schema-version-deprecated");
     } finally {
-      delete process.env["TK_LIBRARY_ONLINE"];
+      delete process.env["DERM_LIBRARY_ONLINE"];
     }
   });
 
@@ -59,11 +59,11 @@ describe("opt-in checks in the validate path", () => {
       seen.push(args);
       return { stdout: "", stderr: "" };
     }) as never;
-    process.env["TK_LIBRARY_SKILLS_REF"] = "1";
+    process.env["DERM_LIBRARY_SKILLS_REF"] = "1";
     try {
       await optInChecks(loadCatalog(CATALOG_DIR), { exec });
     } finally {
-      delete process.env["TK_LIBRARY_SKILLS_REF"];
+      delete process.env["DERM_LIBRARY_SKILLS_REF"];
     }
     expect(seen.length).toBeGreaterThan(0);
     for (const a of seen) {

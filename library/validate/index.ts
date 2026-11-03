@@ -1,6 +1,6 @@
-// The tk library validator (lane E, T3.1). Rules, by family:
+// The derm library validator (lane E, T3.1). Rules, by family:
 //   schema/*    the entry's shape (vendored upstream server.json 2025-12-11,
-//               ToolHive's skill.json, Claude Code's plugin.json, tk's _meta)
+//               ToolHive's skill.json, Claude Code's plugin.json, derm's _meta)
 //   upstream/*  the official registry's semantic rules, transcribed (upstream.ts)
 //   skill/*     SKILL.md per the Agent Skills specification (skill-md.ts)
 //   lib/*       the library's own rules (plan T3.1; note AP section 8):
@@ -19,7 +19,7 @@ import { SERVER_ID, TOOL_NAME_CHARSET, mangle, policyKey } from "./names.ts";
 import { SECRET_LIKE, isEnvReference, scanRejects } from "./rejects.ts";
 import { REPO_ROOT, checkTkSchema, checkUpstreamServerSchema } from "./schemas.ts";
 import { allowedToolsOf, parseSkillMd, validateSkillFrontmatter } from "./skill-md.ts";
-import type { Catalog, Finding, Kind, LoadedEntry, TkMeta } from "./types.ts";
+import type { Catalog, Finding, Kind, LoadedEntry, DermMeta } from "./types.ts";
 import { finding, getMeta, hasErrors, isRecord } from "./types.ts";
 import { checkSkillsRef, checkUpstreamOnline, checkUpstreamSemantics } from "./upstream.ts";
 
@@ -46,7 +46,7 @@ export type ValidateOptions = { brands?: Brand[]; reserved?: Reserved[]; catalog
  *  need no other entry. Catalog-wide rules are in `validateCatalog`. */
 /** `$`, `{env:` and `{file:`: forms a harness expands (lane C, spec.rs). */
 const EXPANDS = /\$|\{env:|\{file:/i;
-/** An upstream placeholder value: an optional literal prefix and one `{var}` at the end (what tk connect accepts). */
+/** An upstream placeholder value: an optional literal prefix and one `{var}` at the end (what derm connect accepts). */
 const UPSTREAM_REF = /^[^{}$]*\{[A-Za-z_][A-Za-z0-9_]*\}$/;
 
 export function validateEntry(entry: LoadedEntry, opts: ValidateOptions = {}): Finding[] {
@@ -56,24 +56,24 @@ export function validateEntry(entry: LoadedEntry, opts: ValidateOptions = {}): F
   // 1. Shape.
   if (kind === "server") {
     out.push(...checkUpstreamServerSchema(data));
-    out.push(...checkTkSchema("tk-server", data));
+    out.push(...checkTkSchema("derm-server", data));
     out.push(...checkUpstreamSemantics(data));
     if (entry.tools) out.push(...checkTkSchema("tools", entry.tools).map((f) => ({ ...f, path: "tools.json" + f.path })));
   } else if (kind === "skill") {
-    out.push(...checkTkSchema("tk-skill", data));
+    out.push(...checkTkSchema("derm-skill", data));
   } else {
-    out.push(...checkTkSchema("tk-bundle", data));
+    out.push(...checkTkSchema("derm-bundle", data));
   }
   const meta = getMeta(kind, data);
   if (!meta) {
-    out.push(finding("lib/meta", "error", "", `no tk entry object (${kind === "bundle" ? "metadata" : "_meta"}[io.github.aetiusgular.tk])`));
+    out.push(finding("lib/meta", "error", "", `no derm entry object (${kind === "bundle" ? "metadata" : "_meta"}[io.github.aetiusgular.derm])`));
     return out;
   }
 
   // 2. Identity: the folder id, the manifest name and the harness-safe server id.
   const shortName = shortNameOf(kind, data);
   if (!SERVER_ID.test(entry.id)) out.push(finding("lib/id", "error", "", `entry id '${entry.id}' must match ${SERVER_ID} (letters, digits, hyphens; Gemini splits server names at '_', note AP section 4)`));
-  if (shortName !== undefined && shortName !== entry.id) out.push(finding("lib/id-matches-name", "error", "/name", `the folder is '${entry.id}' but the manifest name ends in '${shortName}'; they must match so tk connect and the policy file name one thing`));
+  if (shortName !== undefined && shortName !== entry.id) out.push(finding("lib/id-matches-name", "error", "/name", `the folder is '${entry.id}' but the manifest name ends in '${shortName}'; they must match so derm connect and the policy file name one thing`));
 
   // 3. The reject list over everything the entry ships as text.
   const texts: { where: string; text: string }[] = [{ where: entry.file, text: JSON.stringify(data) }];
@@ -109,7 +109,7 @@ export function validateEntry(entry: LoadedEntry, opts: ValidateOptions = {}): F
   // its placeholders are `{var}` declared in the item's `variables`
   // (schema InputWithVariables). `$`, `{env:` and `{file:` are what harnesses
   // expand from your environment or disk (Claude Code, Gemini, Qwen, Crush,
-  // Pi, OpenCode; lane C's recordings), so tk connect refuses them and so does
+  // Pi, OpenCode; lane C's recordings), so derm connect refuses them and so does
   // the library. `_meta` and descriptions are not values and are skipped.
   if (kind === "server") {
     walkObjects(data, "", (path, obj) => {
@@ -131,14 +131,14 @@ export function validateEntry(entry: LoadedEntry, opts: ValidateOptions = {}): F
     });
   }
 
-  // 5. The tk data object.
+  // 5. The derm data object.
   if (meta.runner.kind === "image" && !meta.runner.imageDigest && meta.tier !== "mirrored") {
-    out.push(finding("lib/image-digest", "warning", "/_meta/runner", "an image runner without imageDigest is not pinned; tk connect cannot verify what it starts"));
+    out.push(finding("lib/image-digest", "warning", "/_meta/runner", "an image runner without imageDigest is not pinned; derm connect cannot verify what it starts"));
   }
   if (meta.entrySkill === undefined && kind === "server" && meta.exposure.default !== "hidden") {
     out.push(finding("lib/entry-skill", "warning", "/_meta/entrySkill", "no entry skill: the catalog will cost tool definitions instead of about 100 tokens (plan R3)"));
   }
-  if (meta.trust.liveness.state === "dead") out.push(finding("lib/liveness", "warning", "/_meta/trust/liveness", "the last liveness probe found the remote dead (corner case 58); the card says so and tk connect warns"));
+  if (meta.trust.liveness.state === "dead") out.push(finding("lib/liveness", "warning", "/_meta/trust/liveness", "the last liveness probe found the remote dead (corner case 58); the card says so and derm connect warns"));
 
   // 6. Tools: names, annotations, outputSchema.
   if (kind === "server") {
@@ -281,8 +281,8 @@ export function validateCatalog(catalog: Catalog, brands: Brand[], reserved: Res
 
 /** The two checks that leave the process, each only when its variable is
  *  set: every server through the registry's `/v0.1/validate`
- *  (`TK_LIBRARY_ONLINE=1`) and every skill folder holding a SKILL.md
- *  through `skills-ref validate` (`TK_LIBRARY_SKILLS_REF=1`). The command
+ *  (`DERM_LIBRARY_ONLINE=1`) and every skill folder holding a SKILL.md
+ *  through `skills-ref validate` (`DERM_LIBRARY_SKILLS_REF=1`). The command
  *  line merges them into `validateCatalog`'s findings; until the box test
  *  found it (BX1), nothing called them outside their unit tests. */
 export async function optInChecks(
@@ -314,7 +314,7 @@ export function catalogHasErrors(result: { byEntry: Map<string, Finding[]>; cata
 /** True when the entry's repository is this one: the library authors the server and answers for its schema. */
 function authoredHere(data: Record<string, unknown>): boolean {
   const repo = data["repository"];
-  return isRecord(repo) && typeof repo["url"] === "string" && /^https:\/\/github\.com\/aetiusgular\/tk(\.git)?\/?$/.test(repo["url"]);
+  return isRecord(repo) && typeof repo["url"] === "string" && /^https:\/\/github\.com\/aetiusgular\/derm(\.git)?\/?$/.test(repo["url"]);
 }
 
 function shortNameOf(kind: Kind, data: Record<string, unknown>): string | undefined {
@@ -323,7 +323,7 @@ function shortNameOf(kind: Kind, data: Record<string, unknown>): string | undefi
   return kind === "server" ? name.split("/").at(-1) : name;
 }
 
-function checkLicense(kind: Kind, license: unknown, meta: TkMeta, out: Finding[]): void {
+function checkLicense(kind: Kind, license: unknown, meta: DermMeta, out: Finding[]): void {
   if (typeof license === "string") {
     if (!PERMISSIVE_LICENSES.has(license)) out.push(finding("lib/license", "error", "/license", `'${license}' is not a permissive licence the library includes (README, inclusion rule)`));
   } else if (meta.tier !== "mirrored") {

@@ -1,20 +1,20 @@
 // Contract checks for computer use, run by tests/cli-contract/run.mjs.
 // Copied from the fork (wave 3, lane C), where they tested MONOCODE_CU_*;
-// rewritten by integration w2 for tk (lane K's request 9): tk's relay
-// (`tk-daemon cu-mcp`, crates/tk-daemon/src/computer_use/relay.rs) reads the
-// chat token `tk run` puts on the harness, TK_CHAT_TOKEN (or the file
-// TK_CHAT_TOKEN_FILE names), and finds the bridge in `cu.endpoint` beside the
+// rewritten by integration w2 for derm (lane K's request 9): derm's relay
+// (`derm-daemon cu-mcp`, crates/derm-daemon/src/computer_use/relay.rs) reads the
+// chat token `derm run` puts on the harness, DERM_CHAT_TOKEN (or the file
+// DERM_CHAT_TOKEN_FILE names), and finds the bridge in `cu.endpoint` beside the
 // daemon's socket, so no endpoint variable is involved.
 //
-// cu-env-*: does the stdio MCP server a harness starts see TK_CHAT_TOKEN? A
+// cu-env-*: does the stdio MCP server a harness starts see DERM_CHAT_TOKEN? A
 // harness that drops it leaves computer use unreachable.
 //
 // cu-shell-*: does the agent's own shell see it? A chat token is the
-// agent's too (rules case 66): under tk it is expected in Claude Code's Bash
+// agent's too (rules case 66): under derm it is expected in Claude Code's Bash
 // (Claude Code passes its whole environment and has no per-variable
 // exclude), so that check reports info. Codex can exclude it from its shell
 // with shell_environment_policy.exclude; the check tests that mechanism,
-// which `tk run codex` does not set yet (wave 4 lane R). The token's value is
+// which `derm run codex` does not set yet (wave 4 lane R). The token's value is
 // a dummy and is never printed.
 
 import { spawn } from "node:child_process";
@@ -28,11 +28,11 @@ import { startFakeMessages, textBlock, toolUse, isSideRequest as claudeSide } fr
 import { startFakeResponses, text, call, isSideRequest as codexSide } from "../lib/fakeResponses.mjs";
 import { codexShellEnvArgs } from "./otel.mjs";
 
-const TOKEN = "TK_CHAT_TOKEN";
-const TK_SHELL_EXCLUDES = ["TK_CHAT_TOKEN", "TK_CHAT_TOKEN_FILE"];
+const TOKEN = "DERM_CHAT_TOKEN";
+const DERM_SHELL_EXCLUDES = ["DERM_CHAT_TOKEN", "DERM_CHAT_TOKEN_FILE"];
 const FAKE_TOKEN = "contract-check-token-not-a-secret";
-// Claude Code reserves the name computer-use (lane C); tk's server is tk_cu.
-const SERVER = "tk_cu";
+// Claude Code reserves the name computer-use (lane C); derm's server is derm_cu.
+const SERVER = "derm_cu";
 
 // A stdio MCP server that writes whether it was given the chat token, and
 // answers initialize and tools/list.
@@ -81,7 +81,7 @@ async function codexProbe(codexPath, withEnvVars) {
   writeFileSync(probe, PROBE);
   const fake = await startFakeResponses({ script: () => [text("ok")] });
   writeFileSync(path.join(dirs.codexHome, "config.toml"), codexHomeConfig({ baseUrl: fake.baseUrl }));
-  // tk's server entry for Codex (`tk connect codex`, an env_vars list).
+  // derm's server entry for Codex (`derm connect codex`, an env_vars list).
   const args = [
     "app-server",
     "-c",
@@ -100,7 +100,7 @@ async function codexProbe(codexPath, withEnvVars) {
   let id = 1;
   const send = (method, params) => child.stdin.write(`${JSON.stringify(params === undefined ? { method } : { id: id++, method, params })}\n`);
   try {
-    send("initialize", { clientInfo: { name: "tk", title: "tk contract check", version: "0.1.0" }, capabilities: { experimentalApi: true } });
+    send("initialize", { clientInfo: { name: "derm", title: "derm contract check", version: "0.1.0" }, capabilities: { experimentalApi: true } });
     await new Promise((r) => setTimeout(r, 500));
     child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
     send("thread/start", { cwd: dirs.work });
@@ -134,7 +134,7 @@ async function claudeEnvCheck({ claudePath }) {
   const out = path.join(dirs.root, "seen.json");
   writeFileSync(probe, PROBE);
   const fake = await startFakeMessages({ script: () => [textBlock("ok")] });
-  // A user-level stdio entry, as `tk connect claude-code` writes it.
+  // A user-level stdio entry, as `derm connect claude-code` writes it.
   const config = JSON.stringify({ mcpServers: { [SERVER]: { type: "stdio", command: process.execPath, args: [probe, out] } } });
   const s = new ClaudeSession({
     claudePath,
@@ -185,7 +185,7 @@ async function claudeShellCheck({ claudePath }) {
       return hasResult ? [textBlock("done")] : [toolUse("Bash", { command: SHELL_COMMAND, description: "Count a variable" })];
     },
   });
-  // As `tk run claude-code` starts a chat: the chat token on the process.
+  // As `derm run claude-code` starts a chat: the chat token on the process.
   const s = new ClaudeSession({ claudePath, dirs, baseUrl: fake.baseUrl, env: { [TOKEN]: FAKE_TOKEN } });
   try {
     await s.send("Run the check command.", 120000);
@@ -210,7 +210,7 @@ async function claudeShellCheck({ claudePath }) {
       count === null && !leaked
         ? "Could not read the Bash command's output."
         : seen
-          ? `Claude Code's Bash tool sees ${TOKEN} (count ${count}${leaked ? ", value in the output" : ""}), as expected under tk: Claude Code passes its whole environment to Bash, and a chat token is the agent's too (rules case 66; it posts only into its own chat and an app grant still needs an approver's yes).`
+          ? `Claude Code's Bash tool sees ${TOKEN} (count ${count}${leaked ? ", value in the output" : ""}), as expected under derm: Claude Code passes its whole environment to Bash, and a chat token is the agent's too (rules case 66; it posts only into its own chat and an app grant still needs an approver's yes).`
           : `Claude Code's Bash tool does not see ${TOKEN}; Claude Code changed how it passes its environment, so recheck case 66's notes.`,
     seen: { count, leaked },
   };
@@ -226,7 +226,7 @@ async function codexShellRun(codexPath, args) {
       return hasOutput ? [text("done")] : [call("exec_command", { cmd: SHELL_COMMAND }, "cu1")];
     },
   });
-  // The chat token goes on Codex's process, as `tk run codex` sets it. The
+  // The chat token goes on Codex's process, as `derm run codex` sets it. The
   // driver starts Codex with its own environment, so a wrapper adds it.
   const launcher = path.join(dirs.root, "codex-with-env.sh");
   const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
@@ -248,8 +248,8 @@ async function codexShellRun(codexPath, args) {
 }
 
 async function codexShellCheck({ codexPath }) {
-  // The server's env_vars, and Codex's shell excludes with tk's two
-  // variables added: the exclude wave 4 lane R is to set in `tk run codex`.
+  // The server's env_vars, and Codex's shell excludes with derm's two
+  // variables added: the exclude wave 4 lane R is to set in `derm run codex`.
   const stub = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "lib", "stubMcp.mjs");
   const serverArgs = [
     "-c",
@@ -260,7 +260,7 @@ async function codexShellCheck({ codexPath }) {
     `mcp_servers.${SERVER}.env_vars=${JSON.stringify([TOKEN])}`,
   ];
   const excludeArgs = codexShellEnvArgs();
-  excludeArgs[1] = excludeArgs[1].replace(/\]$/, `, ${TK_SHELL_EXCLUDES.map((v) => JSON.stringify(v)).join(", ")}]`);
+  excludeArgs[1] = excludeArgs[1].replace(/\]$/, `, ${DERM_SHELL_EXCLUDES.map((v) => JSON.stringify(v)).join(", ")}]`);
   const withExclude = await codexShellRun(codexPath, [...excludeArgs, ...serverArgs]);
   const without = await codexShellRun(codexPath, serverArgs);
   const seen = withExclude.leaked || (withExclude.count ?? 0) > 0;
@@ -268,7 +268,7 @@ async function codexShellCheck({ codexPath }) {
     status: withExclude.count === null && !withExclude.leaked ? "error" : seen ? "fail" : "pass",
     finding:
       `With ${TOKEN} in shell_environment_policy.exclude, exec_command saw it: ${withExclude.count === null ? "unknown" : withExclude.count > 0 ? "yes" : "no"}. ` +
-      `Without the exclude: ${without.count === null ? "unknown" : without.count > 0 ? "yes" : "no"}. tk run codex does not set the exclude yet (wave 4 lane R).`,
+      `Without the exclude: ${without.count === null ? "unknown" : without.count > 0 ? "yes" : "no"}. derm run codex does not set the exclude yet (wave 4 lane R).`,
     seen: { withExclude, without },
   };
 }

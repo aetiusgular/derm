@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aetiusgular/tk/contracts/shapes/skill.schema.json",
-  "title": "skill.json, ToolHive's shape plus tk's _meta",
-  "description": "Fields read 27 Oct 2026 from the stacklok/toolhive-registry README: namespace, name (equals the folder), title, description, version, status, license, allowedTools (server/tool names), repository {url, type}, icons [{src, type}], packages [{registryType, url, ref, subfolder}]. SKILL.md sits in a skill/ subfolder beside skill.json; packages[].subfolder points at it. tk adds _meta in the server.json position; that is a tk decision, not ToolHive's. The README lists no required set; this schema requires what the library needs.",
+  "$id": "https://github.com/aetiusgular/derm/contracts/shapes/skill.schema.json",
+  "title": "skill.json, ToolHive's shape plus derm's _meta",
+  "description": "Fields read 27 Oct 2026 from the stacklok/toolhive-registry README: namespace, name (equals the folder), title, description, version, status, license, allowedTools (server/tool names), repository {url, type}, icons [{src, type}], packages [{registryType, url, ref, subfolder}]. SKILL.md sits in a skill/ subfolder beside skill.json; packages[].subfolder points at it. derm adds _meta in the server.json position; that is a derm decision, not ToolHive's. The README lists no required set; this schema requires what the library needs.",
   "type": "object",
   "required": ["namespace", "name", "description", "version", "packages", "_meta"],
   "properties": {
@@ -43,8 +43,8 @@
       "properties": {
         "io.modelcontextprotocol.registry/publisher-provided": {
           "type": "object",
-          "required": ["io.github.aetiusgular.tk"],
-          "properties": { "io.github.aetiusgular.tk": { "$ref": "../entry.schema.json" } }
+          "required": ["io.github.aetiusgular.derm"],
+          "properties": { "io.github.aetiusgular.derm": { "$ref": "../entry.schema.json" } }
         }
       }
     }

@@ -1,0 +1,24 @@
+[package]
+name = "derm-audit-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Linux OS feed: auditd records to daemon events (lane D)"
+
+[[bin]]
+name = "derm-audit-feed"
+path = "src/bin/derm-audit-feed.rs"
+
+[dependencies]
+derm-core = { path = "../derm-core" }
+serde.workspace = true
+serde_json.workspace = true
+# geteuid for the daemon token's owner check (the fork's version, as pinned
+# in the workspace).
+libc.workspace = true
+
+[dev-dependencies]
+# Only to hold `client::socket_path` equal to lane B's `socket_path`.
+derm-daemon = { path = "../derm-daemon" }

@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const script = join(dirname(fileURLToPath(import.meta.url)), "lane-scope.mjs");
-const repo = mkdtempSync(join(tmpdir(), "tk-scope-"));
+const repo = mkdtempSync(join(tmpdir(), "derm-scope-"));
 const git = (...a) => execFileSync("git", a, { cwd: repo, encoding: "utf8" });
 const write = (p, text) => {
   mkdirSync(dirname(join(repo, p)), { recursive: true });
@@ -18,7 +18,7 @@ const write = (p, text) => {
 };
 
 const cargo = `[package]
-name = "tk-cli"
+name = "derm-cli"
 
 [features]
 default = []
@@ -27,7 +27,7 @@ fork-docker-mcp = []
 # [lane-D]
 
 [dependencies]
-tk-core = { path = "../tk-core" }
+derm-core = { path = "../derm-core" }
 # [lane-C]
 # [lane-D]
 
@@ -40,18 +40,18 @@ git("init", "-q", "-b", "main");
 git("config", "user.name", "scope test");
 git("config", "user.email", "scope@test.invalid");
 for (const [p, t] of Object.entries({
-  "crates/tk-cli/Cargo.toml": cargo,
-  "crates/tk-cli/src/main.rs": "fn main() {}\n",
-  "crates/tk-cli/src/connect/mod.rs": "// c\n",
-  "crates/tk-cli/src/run/mod.rs": "// d\n",
-  "crates/tk-daemon/src/lib.rs": "// b\n",
-  "crates/tk-daemon/src/computer_use/mod.rs": "// k\n",
-  "packages/tk-pi/extensions/gate.ts": "// a\n",
-  "packages/tk-pi/extensions/memory.ts": "// k\n",
+  "crates/derm-cli/Cargo.toml": cargo,
+  "crates/derm-cli/src/main.rs": "fn main() {}\n",
+  "crates/derm-cli/src/connect/mod.rs": "// c\n",
+  "crates/derm-cli/src/run/mod.rs": "// d\n",
+  "crates/derm-daemon/src/lib.rs": "// b\n",
+  "crates/derm-daemon/src/computer_use/mod.rs": "// k\n",
+  "packages/derm-pi/extensions/gate.ts": "// a\n",
+  "packages/derm-pi/extensions/memory.ts": "// k\n",
   "library/src/validate.ts": "// e\n",
-  "crates/tk-cli/src/connect/presets/droid.json": "{}\n",
-  "crates/tk-cli/src/connect/presets/continue.json": "{}\n",
-  "packages/tk-hooks-claude-compat/src/core/policy.ts": "// core\n",
+  "crates/derm-cli/src/connect/presets/droid.json": "{}\n",
+  "crates/derm-cli/src/connect/presets/continue.json": "{}\n",
+  "packages/derm-hooks-claude-compat/src/core/policy.ts": "// core\n",
   "contracts/policy.md": "# p\n",
   "package.json": "{}\n",
   "README.md": "# r\n",
@@ -61,34 +61,34 @@ git("commit", "-q", "-m", "base");
 const base = git("rev-parse", "HEAD").trim();
 
 const cases = [
-  ["own file edited (A)", "A", () => write("packages/tk-pi/extensions/gate.ts", "// a2\n"), 0, "clean"],
-  ["new file in own folder (B)", "B", () => write("crates/tk-daemon/src/socket.rs", "// s\n"), 0, "clean"],
+  ["own file edited (A)", "A", () => write("packages/derm-pi/extensions/gate.ts", "// a2\n"), 0, "clean"],
+  ["new file in own folder (B)", "B", () => write("crates/derm-daemon/src/socket.rs", "// s\n"), 0, "clean"],
   ["new .test.ts in own folder (E)", "E", () => write("library/src/x.test.ts", "//\n"), 0, "clean"],
-  ["new .test.tsx refused (A)", "A", () => write("packages/tk-pi/extensions/x.test.tsx", "//\n"), 1, "vitest collects only"],
-  ["new .test.mjs refused (F)", "F", () => write("packages/tk-claude-plugin/x.test.mjs", "//\n"), 1, "vitest collects only"],
-  ["another lane's file (C edits run/)", "C", () => write("crates/tk-cli/src/run/mod.rs", "// x\n"), 1, "owned by lane D"],
-  ["excepted file (A edits memory.ts)", "A", () => write("packages/tk-pi/extensions/memory.ts", "// x\n"), 1, "owned by lane K"],
-  ["excepted folder (B edits computer_use)", "B", () => write("crates/tk-daemon/src/computer_use/mod.rs", "// x\n"), 1, "owned by lane K"],
+  ["new .test.tsx refused (A)", "A", () => write("packages/derm-pi/extensions/x.test.tsx", "//\n"), 1, "vitest collects only"],
+  ["new .test.mjs refused (F)", "F", () => write("packages/derm-claude-plugin/x.test.mjs", "//\n"), 1, "vitest collects only"],
+  ["another lane's file (C edits run/)", "C", () => write("crates/derm-cli/src/run/mod.rs", "// x\n"), 1, "owned by lane D"],
+  ["excepted file (A edits memory.ts)", "A", () => write("packages/derm-pi/extensions/memory.ts", "// x\n"), 1, "owned by lane K"],
+  ["excepted folder (B edits computer_use)", "B", () => write("crates/derm-daemon/src/computer_use/mod.rs", "// x\n"), 1, "owned by lane K"],
   ["new file outside every lane", "D", () => write("docs/x.md", "x\n"), 1, "owned by no lane"],
   ["no-lane file: contracts", "B", () => write("contracts/policy.md", "# changed\n"), 1, "no lane edits this"],
   ["no-lane file: root package.json", "E", () => write("package.json", "{\"x\":1}\n"), 1, "no lane edits this"],
-  ["no-lane file: main.rs", "C", () => write("crates/tk-cli/src/main.rs", "fn main() { }\n"), 1, "no lane edits this"],
+  ["no-lane file: main.rs", "C", () => write("crates/derm-cli/src/main.rs", "fn main() { }\n"), 1, "no lane edits this"],
   ["deleted file of another lane", "A", () => unlinkSync(join(repo, "library/src/validate.ts")), 1, "owned by lane E"],
   // Wave 4 (integration w2): a lane's preset files are its own by name, and
   // `except` takes them out of lane Q's connect/ folder.
-  ["preset file of lane L edited by L", "L", () => write("crates/tk-cli/src/connect/presets/droid.json", "{\"id\":\"droid\"}\n"), 0, "clean"],
-  ["preset file of lane L edited by Q", "Q", () => write("crates/tk-cli/src/connect/presets/droid.json", "{\"id\":\"droid\"}\n"), 1, "owned by lane C, L"],
-  ["lane Q's own preset file", "Q", () => write("crates/tk-cli/src/connect/presets/continue.json", "{\"id\":\"continue\"}\n"), 0, "clean"],
-  ["synced core copy edited by its package's lane", "L", () => write("packages/tk-hooks-claude-compat/src/core/policy.ts", "// changed\n"), 1, "owned by no lane"],
-  ["shared Cargo.toml, own section (C)", "C", () => write("crates/tk-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\nregex = \"=1.11.1\"\n# [lane-D]\n\n[dev")), 0, "clean"],
-  ["shared Cargo.toml, C drops its feature flag", "C", () => write("crates/tk-cli/Cargo.toml", cargo.replace("fork-docker-mcp = []\n", "")), 0, "clean"],
-  ["shared Cargo.toml, D drops C's feature flag", "D", () => write("crates/tk-cli/Cargo.toml", cargo.replace("fork-docker-mcp = []\n", "")), 1, "lane C's section changed"],
-  ["shared Cargo.toml, own dev section (D)", "D", () => write("crates/tk-cli/Cargo.toml", cargo.replace(/# \[lane-D\]\n$/, "# [lane-D]\ntempfile = \"=3.20.0\"\n")), 0, "clean"],
-  ["shared Cargo.toml, other lane's section (C writes under D)", "C", () => write("crates/tk-cli/Cargo.toml", cargo.replace("# [lane-D]\n\n[dev", "# [lane-D]\nregex = \"=1.11.1\"\n\n[dev")), 1, "lane D's section changed"],
-  ["shared Cargo.toml, outside sections", "D", () => write("crates/tk-cli/Cargo.toml", cargo.replace("tk-core =", "serde = \"1\"\ntk-core =")), 1, "changed outside"],
-  ["shared Cargo.toml, marker removed", "C", () => write("crates/tk-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-D]\n\n[dev")), 1, "changed outside"],
-  ["shared Cargo.toml, lane without a section (A)", "A", () => write("crates/tk-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\nx = \"1\"\n# [lane-D]\n\n[dev")), 1, "has no section"],
-  ["shared Cargo.toml, new section marker", "C", () => write("crates/tk-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\n# [lane-E]\n# [lane-D]\n\n[dev")), 1, "changed outside"],
+  ["preset file of lane L edited by L", "L", () => write("crates/derm-cli/src/connect/presets/droid.json", "{\"id\":\"droid\"}\n"), 0, "clean"],
+  ["preset file of lane L edited by Q", "Q", () => write("crates/derm-cli/src/connect/presets/droid.json", "{\"id\":\"droid\"}\n"), 1, "owned by lane C, L"],
+  ["lane Q's own preset file", "Q", () => write("crates/derm-cli/src/connect/presets/continue.json", "{\"id\":\"continue\"}\n"), 0, "clean"],
+  ["synced core copy edited by its package's lane", "L", () => write("packages/derm-hooks-claude-compat/src/core/policy.ts", "// changed\n"), 1, "owned by no lane"],
+  ["shared Cargo.toml, own section (C)", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\nregex = \"=1.11.1\"\n# [lane-D]\n\n[dev")), 0, "clean"],
+  ["shared Cargo.toml, C drops its feature flag", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("fork-docker-mcp = []\n", "")), 0, "clean"],
+  ["shared Cargo.toml, D drops C's feature flag", "D", () => write("crates/derm-cli/Cargo.toml", cargo.replace("fork-docker-mcp = []\n", "")), 1, "lane C's section changed"],
+  ["shared Cargo.toml, own dev section (D)", "D", () => write("crates/derm-cli/Cargo.toml", cargo.replace(/# \[lane-D\]\n$/, "# [lane-D]\ntempfile = \"=3.20.0\"\n")), 0, "clean"],
+  ["shared Cargo.toml, other lane's section (C writes under D)", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-D]\n\n[dev", "# [lane-D]\nregex = \"=1.11.1\"\n\n[dev")), 1, "lane D's section changed"],
+  ["shared Cargo.toml, outside sections", "D", () => write("crates/derm-cli/Cargo.toml", cargo.replace("derm-core =", "serde = \"1\"\nderm-core =")), 1, "changed outside"],
+  ["shared Cargo.toml, marker removed", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-D]\n\n[dev")), 1, "changed outside"],
+  ["shared Cargo.toml, lane without a section (A)", "A", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\nx = \"1\"\n# [lane-D]\n\n[dev")), 1, "has no section"],
+  ["shared Cargo.toml, new section marker", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\n# [lane-E]\n# [lane-D]\n\n[dev")), 1, "changed outside"],
 ];
 
 let failed = 0;

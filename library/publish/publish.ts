@@ -1,7 +1,7 @@
-// `tk publish` (lane G, T3.3): validate an entry, run the rejects, prove its
+// `derm publish` (lane G, T3.3): validate an entry, run the rejects, prove its
 // namespace, record provenance and the content hash, and lay out the pull
-// request against tk's library. Upstream publishing stays the publisher's own
-// `mcp-publisher` run; tk prints the trimmed copy for it.
+// request against derm's library. Upstream publishing stays the publisher's own
+// `mcp-publisher` run; derm prints the trimmed copy for it.
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { FetchLike } from "../mirror/registry.ts";
@@ -25,7 +25,7 @@ export type PublishProof = {
   namespace: { method: ProofMethod; subject?: string; signedAt?: string; signature?: string; record?: string };
   packages: PackageReport[];
   createdAt: string;
-  tool: "tk publish";
+  tool: "derm publish";
 };
 
 export type PublishDeps = {
@@ -39,7 +39,7 @@ export type PublishDeps = {
 export type PublishOptions = {
   /** The entry folder to publish. */
   dir: string;
-  /** A clone of tk's library repository; the catalog the entry joins. */
+  /** A clone of derm's library repository; the catalog the entry joins. */
   library: string;
   /** How to prove the namespace: `github` (gh's login), `dns` or `http` (a key file). */
   proof: "github" | "dns" | "http" | "none";
@@ -51,7 +51,7 @@ export type PublishResult = {
   ok: boolean;
   findings: Finding[];
   proof?: PublishProof;
-  /** The manifest with tk's trust record filled in. */
+  /** The manifest with derm's trust record filled in. */
   manifest?: Record<string, unknown>;
   upstream?: Trimmed;
   id?: string;
@@ -102,12 +102,12 @@ export async function publish(o: PublishOptions, deps: PublishDeps = {}): Promis
   const fetchImpl = deps.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
   const libraryRoot = resolve(o.library);
   const catalogDir = join(libraryRoot, "library", "catalog");
-  if (!existsSync(catalogDir)) return { ok: false, findings: [f("publish/library", "error", `${libraryRoot} is not a clone of tk's library (no library/catalog)`)] };
+  if (!existsSync(catalogDir)) return { ok: false, findings: [f("publish/library", "error", `${libraryRoot} is not a clone of derm's library (no library/catalog)`)] };
   const entry = loadEntry(resolve(o.dir), libraryRoot);
   if (!entry) return { ok: false, findings: [f("publish/no-manifest", "error", "no server.json, skill.json or .claude-plugin/plugin.json in the folder")] };
   const findings: Finding[] = [];
   const meta = getMeta(entry.kind, entry.data);
-  if (!meta) return { ok: false, findings: [f("publish/no-tk-meta", "error", "the manifest has no tk object; add one as contracts/entry.schema.json describes")] };
+  if (!meta) return { ok: false, findings: [f("publish/no-derm-meta", "error", "the manifest has no derm object; add one as contracts/entry.schema.json describes")] };
   if (meta.tier !== "curated" && meta.tier !== "own") findings.push(f("publish/tier", "error", "a published entry is `curated` (or `own` for the library's owner); `mirrored` is the mirror's", "/tier"));
 
   // 1. The library's own rules, the entry alone and with the catalog it joins.
@@ -174,8 +174,8 @@ export async function publish(o: PublishOptions, deps: PublishDeps = {}): Promis
   // 5. The record.
   const first = packages.find((p) => p.provenance.kind !== "none");
   const manifest = structuredClone(entry.data);
-  const tk = getMeta(entry.kind, manifest)!;
-  tk.trust = { ...tk.trust, contentSha256: digest.contentSha256, namespaceProof: ns.method, provenance: first ? first.provenance : { kind: "none" } };
+  const derm = getMeta(entry.kind, manifest)!;
+  derm.trust = { ...derm.trust, contentSha256: digest.contentSha256, namespaceProof: ns.method, provenance: first ? first.provenance : { kind: "none" } };
   const proof: PublishProof = {
     version: 1,
     entry: entry.id,
@@ -187,7 +187,7 @@ export async function publish(o: PublishOptions, deps: PublishDeps = {}): Promis
     namespace: ns,
     packages,
     createdAt: signedAt,
-    tool: "tk publish",
+    tool: "derm publish",
   };
   const upstream = entry.kind === "server" ? trimForUpstream(manifest) : undefined;
   if (upstream?.error) findings.push(f("publish/upstream-meta", "warning", upstream.error));
@@ -195,9 +195,9 @@ export async function publish(o: PublishOptions, deps: PublishDeps = {}): Promis
   return { ok, findings, proof, manifest, ...(upstream ? { upstream } : {}), id: entry.id };
 }
 
-/** True when `x` looks like a proof file tk wrote. */
+/** True when `x` looks like a proof file derm wrote. */
 export function isProof(x: unknown): x is PublishProof {
-  return isRecord(x) && x["version"] === 1 && x["tool"] === "tk publish" && typeof x["contentSha256"] === "string" && isRecord(x["namespace"]);
+  return isRecord(x) && x["version"] === 1 && x["tool"] === "derm publish" && typeof x["contentSha256"] === "string" && isRecord(x["namespace"]);
 }
 
 export { PROOF_FILE };

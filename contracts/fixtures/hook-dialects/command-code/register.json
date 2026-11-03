@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/ABSOLUTE/PATH/TO/tk-hook",
+            "command": "/ABSOLUTE/PATH/TO/derm-hook",
             "timeout": 5,
             "failClosed": true
           }
