@@ -1,15 +1,25 @@
 # The agent adapters
 
-Each adapter is the gate inside one agent: it reads `~/.derm/policy.json` before every tool call and answers allow, ask or deny in that agent's own terms. An `ask` goes to the agent's own prompt where the agent has one, else to the daemon's approver (`derm watch --approve`), else it becomes a deny. The adapters live in `packages/` and install from a clone of this repository until they are published to npm as `@aetiusgular/derm-*`.
+Each adapter is the gate inside one agent: it reads `~/.derm/policy.json` before every tool call and answers allow, ask or deny in that agent's own terms. An `ask` goes to the agent's own prompt where the agent has one, else to the daemon's approver (`derm watch --approve`), else it becomes a deny. The adapters live in `packages/` of this repository; none is on npm yet (`@aetiusgular/derm-*` when they are).
+
+Claude Code and Codex take the published repository as a plugin marketplace by name. The other agents install from a folder: the source of a release, or a clone.
 
 ```sh
+# The source of a release (GitHub's "Source code (tar.gz)" of the tag)
+v=<version>
+curl -L -o derm-$v-src.tar.gz https://github.com/aetiusgular/derm/archive/refs/tags/v$v.tar.gz
+tar -xzf derm-$v-src.tar.gz && cd derm-$v
+
+# Or a clone
 git clone https://github.com/aetiusgular/derm && cd derm
 ```
 
+GitHub makes the source archive from the tag on request: it is not in `SHA256SUMS` and has no attestation. Where that matters, use a clone and `git checkout v<version>`.
+
 | Agent | Install | Fails open? |
 |---|---|---|
-| Claude Code | `claude plugin marketplace add "$PWD"`, then `claude plugin install derm@derm` | No: `onFailure: "block"` |
-| Codex | `codex plugin marketplace add "$PWD"`, then `codex plugin add derm@derm`, then trust both hooks in `/hooks` | Yes: Codex lets a call through when its hook process dies |
+| Claude Code | `claude plugin marketplace add aetiusgular/derm`, then `claude plugin install derm@derm` (from a folder: `claude plugin marketplace add "$PWD"`) | No: `onFailure: "block"` |
+| Codex | `codex plugin marketplace add aetiusgular/derm`, then `codex plugin add derm@derm`, then trust both hooks in `/hooks` (from a folder: `codex plugin marketplace add "$PWD"`) | Yes: Codex lets a call through when its hook process dies |
 | Pi | `pi install "$PWD/packages/derm-pi"` (Pi cannot install a subfolder of a git source) | No: Pi blocks on a handler error |
 | oh-my-pi | `omp install "$PWD/packages/derm-pi"` | No |
 | OpenCode | add `"file://$PWD/packages/derm-opencode-plugin"` to `plugin` in `~/.config/opencode/opencode.json` (see `opencode.fragment.json`) | No |
@@ -18,6 +28,8 @@ git clone https://github.com/aetiusgular/derm && cd derm
 | Hermes Agent | `cp -r packages/derm-hermes-plugin ~/.hermes/plugins/derm && hermes plugins enable derm` (Node on Hermes's PATH) | No |
 | OpenClaw | `openclaw plugins install --link "$PWD/packages/derm-openclaw-plugin" --force`, then `openclaw plugins enable derm` | No |
 | Any other CLI agent | `derm run --boundary <sbx\|srt\|none> -- <command>`: no gate inside it, the boundary and the audit outside | n/a |
+
+A marketplace added by name reads the repository's default branch, which can be ahead of the release you installed. Codex pins a tag with `--ref v<version>` (OpenAI, [Build plugins](https://developers.openai.com/codex/plugins/build.md)). The folder installs (`--link`, `file://`, `pi install <folder>`) read the folder in place, so keep it where it is.
 
 ## Claude Code under managed settings
 

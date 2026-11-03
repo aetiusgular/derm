@@ -201,7 +201,7 @@ fn claude(env: &Env, home: &Path) -> Registered {
             installed.display()
         )),
         (None, None) => Registered::No(
-            "derm@derm is not installed: claude plugin marketplace add <derm clone>, then claude plugin install derm@derm".into(),
+            "derm@derm is not installed: claude plugin marketplace add aetiusgular/derm, then claude plugin install derm@derm".into(),
         ),
         (Some(other), _) => Registered::Unknown(format!(
             "enabledPlugins[\"derm@derm\"] in {} is {other}, not true or false",
@@ -240,9 +240,9 @@ fn codex(env: &Env, home: &Path) -> Registered {
         Ok(Some(t)) => t,
         Ok(None) => {
             return Registered::No(format!(
-                "no {}: codex plugin marketplace add <derm clone>, then codex plugin add derm@derm",
-                config.display()
-            ))
+            "no {}: codex plugin marketplace add aetiusgular/derm, then codex plugin add derm@derm",
+            config.display()
+        ))
         }
         Err(e) => return Registered::Unknown(e),
     };
@@ -320,7 +320,7 @@ fn pi(env: &Env, home: &Path) -> Registered {
         Ok(Some(v)) => v,
         Ok(None) => {
             return Registered::No(format!(
-                "no {}: pi install /abs/path/to/derm/packages/derm-pi",
+                "no {}: pi install <folder>/packages/derm-pi, from the release's source archive or a clone (docs/install/agents.md)",
                 settings.display()
             ))
         }
@@ -362,7 +362,7 @@ fn pi(env: &Env, home: &Path) -> Registered {
         }
     }
     Registered::No(format!(
-        "no derm-pi in packages of {}: pi install /abs/path/to/derm/packages/derm-pi",
+        "no derm-pi in packages of {}: pi install <folder>/packages/derm-pi, from the release's source archive or a clone (docs/install/agents.md)",
         settings.display()
     ))
 }
@@ -531,6 +531,34 @@ mod tests {
     fn put(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    /// Release check RC4: a release user has no clone. The hints name the
+    /// published repository where the agent takes it as a marketplace, and
+    /// the install page for Pi, which takes a folder.
+    #[test]
+    fn the_install_hints_work_without_a_clone() {
+        let (h, env) = home("hints");
+        let claude = check("claude-code", &env).detail().unwrap();
+        assert!(
+            claude.contains("claude plugin marketplace add aetiusgular/derm"),
+            "{claude}"
+        );
+        let codex = check("codex", &env).detail().unwrap();
+        assert!(
+            codex.contains("codex plugin marketplace add aetiusgular/derm"),
+            "{codex}"
+        );
+        let pi = check("pi", &env).detail().unwrap();
+        put(&h.0.join(".pi/agent/settings.json"), r#"{"packages":[]}"#);
+        let pi_listed = check("pi", &env).detail().unwrap();
+        for hint in [&claude, &codex, &pi, &pi_listed] {
+            assert!(!hint.contains("<derm clone>"), "{hint}");
+            assert!(!hint.contains("/abs/path/to/derm"), "{hint}");
+        }
+        for hint in [&pi, &pi_listed] {
+            assert!(hint.contains("docs/install/agents.md"), "{hint}");
+        }
     }
 
     #[test]
