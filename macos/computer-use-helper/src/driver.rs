@@ -22,9 +22,9 @@ use std::path::{Path, PathBuf};
 /// never the release helper's (the user's decision 1). MonoCode's manifest
 /// never names either.
 pub const HELPER_BUNDLE_ID: &str = if cfg!(debug_assertions) {
-    "com.monocode.computer-use-helper.dev"
+    "io.github.aetiusgular.derm.computer-use-helper.dev"
 } else {
-    "com.monocode.computer-use-helper"
+    "io.github.aetiusgular.derm.computer-use-helper"
 };
 
 /// One process to start: program, arguments, and the environment to set on
@@ -132,9 +132,9 @@ mod tests {
         assert_eq!(
             HELPER_BUNDLE_ID,
             if cfg!(debug_assertions) {
-                "com.monocode.computer-use-helper.dev"
+                "io.github.aetiusgular.derm.computer-use-helper.dev"
             } else {
-                "com.monocode.computer-use-helper"
+                "io.github.aetiusgular.derm.computer-use-helper"
             }
         );
     }

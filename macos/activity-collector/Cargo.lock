@@ -52,6 +52,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derm-activity-collector"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -107,17 +118,6 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
-]
-
-[[package]]
-name = "monocode-activity-collector"
-version = "0.0.0"
-dependencies = [
- "flate2",
- "libc",
- "serde",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

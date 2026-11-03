@@ -19,8 +19,8 @@ use serde_json::json;
 
 use super::types::ProcessKind;
 
-pub const REGISTER_SOCKET: &str = "/var/run/monocode-activity/register.sock";
-pub const READ_SOCKET: &str = "/var/run/monocode-activity/read.sock";
+pub const REGISTER_SOCKET: &str = "/var/run/derm-activity/register.sock";
+pub const READ_SOCKET: &str = "/var/run/derm-activity/read.sock";
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LIVE: usize = 4_096;
 const MAX_GRANTS: usize = 64;

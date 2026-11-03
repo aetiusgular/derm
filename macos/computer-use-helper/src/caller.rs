@@ -2,14 +2,14 @@
 //! (note W, section 4). Agents can start the helper with open(1) and connect
 //! to its socket; the check is what refuses them.
 
-/// The bundle id of the MonoCode the helper answers: `MONOCODE_APP_ID` at
-/// build time, else `com.monocode.desktop`, or `com.monocode.desktop.dev` for
+/// The bundle id of the MonoCode the helper answers: `DERM_APP_ID` at
+/// build time, else `io.github.aetiusgular.derm`, or `io.github.aetiusgular.derm.dev` for
 /// a debug helper (the user's decision 1). `bundle.sh` sets it the same way.
-pub fn monocode_app_id() -> Option<&'static str> {
-    let id = option_env!("MONOCODE_APP_ID").unwrap_or(if cfg!(debug_assertions) {
-        "com.monocode.desktop.dev"
+pub fn derm_app_id() -> Option<&'static str> {
+    let id = option_env!("DERM_APP_ID").unwrap_or(if cfg!(debug_assertions) {
+        "io.github.aetiusgular.derm.dev"
     } else {
-        "com.monocode.desktop"
+        "io.github.aetiusgular.derm"
     });
     plain_id(id).then_some(id)
 }
@@ -28,7 +28,7 @@ fn plain_id(id: &str) -> bool {
 
 /// The code requirement MonoCode's signature must meet, built in at build
 /// time from the certificate both apps are signed with
-/// (`MONOCODE_HELPER_CERT_SHA1`, set by `bundle.sh`; plan section 3, call 4).
+/// (`DERM_HELPER_CERT_SHA1`, set by `bundle.sh`; plan section 3, call 4).
 /// Absent in a build without one.
 #[cfg_attr(
     all(not(target_os = "macos"), not(test)),
@@ -38,8 +38,8 @@ pub fn built_requirement() -> Option<&'static str> {
     static BUILT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     BUILT
         .get_or_init(|| {
-            let sha1 = option_env!("MONOCODE_HELPER_CERT_SHA1")?;
-            requirement_for(monocode_app_id()?, sha1)
+            let sha1 = option_env!("DERM_HELPER_CERT_SHA1")?;
+            requirement_for(derm_app_id()?, sha1)
         })
         .as_deref()
 }
@@ -144,18 +144,18 @@ mod tests {
     }
 
     #[test]
-    fn the_requirement_names_the_monocode_app_id_built_in() {
+    fn the_requirement_names_the_derm_app_id_built_in() {
         // Debug helpers answer the dev build of MonoCode (the user's
-        // decision 1); `MONOCODE_APP_ID` set at build time wins.
-        let expected = option_env!("MONOCODE_APP_ID").unwrap_or(if cfg!(debug_assertions) {
-            "com.monocode.desktop.dev"
+        // decision 1); `DERM_APP_ID` set at build time wins.
+        let expected = option_env!("DERM_APP_ID").unwrap_or(if cfg!(debug_assertions) {
+            "io.github.aetiusgular.derm.dev"
         } else {
-            "com.monocode.desktop"
+            "io.github.aetiusgular.derm"
         });
-        assert_eq!(monocode_app_id(), Some(expected));
+        assert_eq!(derm_app_id(), Some(expected));
         assert_eq!(
-            requirement_for("com.monocode.desktop.dev", "0123456789abcdef0123456789abcdef01234567").unwrap(),
-            "identifier \"com.monocode.desktop.dev\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
+            requirement_for("io.github.aetiusgular.derm.dev", "0123456789abcdef0123456789abcdef01234567").unwrap(),
+            "identifier \"io.github.aetiusgular.derm.dev\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
         );
         for bad in [
             "",
@@ -174,12 +174,12 @@ mod tests {
 
     #[test]
     fn the_built_requirement_pins_the_built_in_certificate() {
-        match option_env!("MONOCODE_HELPER_CERT_SHA1") {
+        match option_env!("DERM_HELPER_CERT_SHA1") {
             // A plain `cargo test` builds none in, and so answers no one.
             None => assert_eq!(built_requirement(), None),
             Some(sha1) => assert_eq!(
                 built_requirement().map(str::to_string),
-                requirement_for(monocode_app_id().unwrap(), sha1)
+                requirement_for(derm_app_id().unwrap(), sha1)
             ),
         }
     }
@@ -187,17 +187,17 @@ mod tests {
     #[test]
     fn requirement_text() {
         assert_eq!(
-            requirement_for("com.monocode.desktop", "0123456789abcdef0123456789abcdef01234567").unwrap(),
-            "identifier \"com.monocode.desktop\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
+            requirement_for("io.github.aetiusgular.derm", "0123456789abcdef0123456789abcdef01234567").unwrap(),
+            "identifier \"io.github.aetiusgular.derm\" and certificate leaf = H\"0123456789ABCDEF0123456789ABCDEF01234567\""
         );
         // A name, a quote trick, a short hash: all refused.
-        assert!(requirement_for("com.monocode.desktop", "MonoCode Dev").is_none());
-        assert!(requirement_for("com.monocode.desktop", "x\" or true or \"").is_none());
+        assert!(requirement_for("io.github.aetiusgular.derm", "MonoCode Dev").is_none());
+        assert!(requirement_for("io.github.aetiusgular.derm", "x\" or true or \"").is_none());
         assert!(requirement_for(
-            "com.monocode.desktop",
+            "io.github.aetiusgular.derm",
             "0123456789abcdef0123456789abcdef0123456"
         )
         .is_none());
-        assert!(requirement_for("com.monocode.desktop", " ").is_none());
+        assert!(requirement_for("io.github.aetiusgular.derm", " ").is_none());
     }
 }

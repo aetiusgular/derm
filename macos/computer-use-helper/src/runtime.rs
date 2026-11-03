@@ -823,9 +823,10 @@ fn iso8601_utc(ms: u64) -> String {
     )
 }
 
-/// A bounded v3 manifest that never names MonoCode, never shows the whole
-/// display, never asks for another mode, and grants no files. MonoCode writes
-/// it; this only stops a mistake from reaching Cua.
+/// A bounded v3 manifest that never names MonoCode or derm's own ids, never
+/// shows the whole display, never asks for another mode, and grants no files.
+/// derm-daemon writes it (`computer_use/manifest.rs`); this only stops a
+/// mistake from reaching Cua.
 pub fn manifest_acceptable(manifest: &str) -> bool {
     let lower = manifest.to_ascii_lowercase();
     // Exactly one `display:` key, and it says false; no other value form
@@ -836,11 +837,12 @@ pub fn manifest_acceptable(manifest: &str) -> bool {
         .collect();
     manifest.len() <= MAX_MANIFEST
         && manifest.is_ascii()
-        && lower.lines().next() == Some("# written by monocode for one chat. do not edit.")
+        && lower.lines().next() == Some("# written by derm for one chat. do not edit.")
         && lower.contains("\nversion: 3\n")
         && display.len() == 1
         && display[0].trim() == "display: false"
         && !lower.contains("com.monocode")
+        && !lower.contains("io.github.aetiusgular.derm")
         && !lower.contains("unrestricted")
         && !lower.contains("mode:")
         && !lower.contains("bypass")
@@ -944,7 +946,7 @@ done
         (root, runtimes)
     }
 
-    const MANIFEST: &str = "# Written by MonoCode for one chat. Do not edit.\nversion: 3\nexpires_after: \"8h\"\nresources:\n  desktop:\n    display: false\n";
+    const MANIFEST: &str = "# Written by derm for one chat. Do not edit.\nversion: 3\nexpires_after: \"8h\"\nresources:\n  desktop:\n    display: false\n";
 
     #[test]
     fn starts_lists_only_relayable_tools_calls_and_stops() {
@@ -1003,7 +1005,7 @@ done
             "  files:\n    write:\n      - dir: \"{}\"\n        recursive: true\n",
             dir.display()
         )));
-        let head = "# Written by MonoCode for one chat. Do not edit.\nversion: 3\n";
+        let head = "# Written by derm for one chat. Do not edit.\nversion: 3\n";
         for bad in [
             format!("{head}resources:\n  desktop:\n    display: false\n  apps: []\n"),
             format!("{head}resources:\n  desktop:\n    display: false"),
@@ -1040,10 +1042,16 @@ done
         assert!(runtimes
             .start("rt", &"x".repeat(MAX_MANIFEST + 1), &StillMouse)
             .is_err());
-        let head = "# Written by MonoCode for one chat. Do not edit.\nversion: 3\n";
+        let head = "# Written by derm for one chat. Do not edit.\nversion: 3\n";
         for bad in [
             format!(
                 "{head}  - bundle_id: \"com.monocode.desktop\"\n  desktop:\n    display: false\n"
+            ),
+            // derm's own ids, since the rename (the daemon's never-list too):
+            // the good manifest with one of them granted.
+            MANIFEST.replace(
+                "resources:\n",
+                "resources:\n  apps:\n    - bundle_id: \"io.github.aetiusgular.derm.activity-collector\"\n",
             ),
             format!("{head}  desktop:\n    display: true\n"),
             format!("{head}  desktop:\n    display: yes\n"),

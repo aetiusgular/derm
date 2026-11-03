@@ -381,7 +381,7 @@ done
 say eof
 "#;
 
-    const MANIFEST: &str = "# Written by MonoCode for one chat. Do not edit.\nversion: 3\nexpires_after: \"8h\"\nresources:\n  desktop:\n    display: false\n";
+    const MANIFEST: &str = "# Written by derm for one chat. Do not edit.\nversion: 3\nexpires_after: \"8h\"\nresources:\n  desktop:\n    display: false\n";
 
     /// MonoCode's manifest with a line that steers the fake driver.
     fn manifest_with(marker: &str) -> String {
@@ -768,7 +768,7 @@ say eof
         assert!(none["app"].is_null());
         let start = handle(
             &shared,
-            &json!({"id": 3, "op": "start", "runtime": "rt", "manifest": "# Written by MonoCode for one chat. Do not edit.\nversion: 3\n  desktop:\n    display: false\n"}),
+            &json!({"id": 3, "op": "start", "runtime": "rt", "manifest": "# Written by derm for one chat. Do not edit.\nversion: 3\n  desktop:\n    display: false\n"}),
         );
         assert_eq!(start["ok"], false, "no driver");
         assert!(start["error"].as_str().unwrap().contains("missing"));

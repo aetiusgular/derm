@@ -147,6 +147,23 @@ mod tests {
         }
     }
 
+    /// The helper refuses a manifest whose first line is not the one it
+    /// expects (`macos/computer-use-helper/src/runtime.rs`,
+    /// `manifest_acceptable`). It is a separate workspace, so the check reads
+    /// its source, as the tool-list check in `mod.rs` does. Until the rename,
+    /// the daemon wrote tk's line and the helper expected MonoCode's.
+    #[test]
+    fn the_helper_accepts_the_first_line_the_daemon_writes() {
+        let source = include_str!("../../../../macos/computer-use-helper/src/runtime.rs");
+        let yaml = manifest_yaml(&[grant("com.apple.calculator")]).unwrap();
+        let first = yaml.lines().next().unwrap().to_ascii_lowercase();
+        let expected = format!("lower.lines().next() == Some(\"{first}\")");
+        assert!(
+            source.contains(&expected),
+            "helper does not accept {first:?}"
+        );
+    }
+
     #[test]
     fn no_grants_no_manifest() {
         assert_eq!(manifest_yaml(&[]), None);

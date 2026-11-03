@@ -312,7 +312,7 @@ fn initialize_result(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": true } },
-        "serverInfo": { "name": "monocode-computer-use", "version": env!("CARGO_PKG_VERSION") },
+        "serverInfo": { "name": "derm-computer-use", "version": env!("CARGO_PKG_VERSION") },
         "instructions": "Computer use on this Mac, through derm. Each app needs the user's approval for this chat: call request_app_access with the app's bundle id or name first. derm, its helper and Cua's own app are never available. The user can stop computer use at any time."
     })
 }

@@ -108,10 +108,10 @@ pub fn follow(daemon: &Arc<Daemon>, mut each: impl FnMut(Event)) {
 ///   the running `derm-daemon`.
 ///
 /// The plist is staged in `<data>/activity/install/` (0600), as the fork
-/// staged it in the app's data folder. The names are still MonoCode's
-/// (`com.monocode.desktop.activity-collector`) until the toolkit's name is
-/// settled (toolkit plan, section 11, call 1): the collector's own
-/// identifiers and socket paths change with them, in one commit.
+/// staged it in the app's data folder. The names are derm's since the
+/// rename (label `io.github.aetiusgular.derm.activity-collector`, sockets in
+/// `/var/run/derm-activity`); the collector's own identifiers and socket
+/// paths changed with them, in one commit.
 pub fn install_plan(
     paths: &Paths,
     binary: &std::path::Path,
@@ -187,7 +187,7 @@ fn explanation(
         "The commands check the collector binary and the plist against the hashes shown here before anything starts. The binary installed is {binary}, SHA-256 {binary_sha}."
     ));
     lines.push(format!(
-        "Its names are still MonoCode's: the label {label}, /var/run/monocode-activity and /Library/Application Support/MonoCode/activity, until derm's name is settled (toolkit plan, section 11, call 1)."
+        "Its names: the label {label}, its sockets in /var/run/derm-activity and its log in /Library/Application Support/derm/activity."
     ));
     lines.push(format!(
         "This plan ran no command. It wrote one file, the staged plist at {staged} (0600), which the first command copies."
@@ -402,7 +402,7 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let binary = root.join("monocode-activity-collector");
+        let binary = root.join("derm-activity-collector");
         std::fs::write(&binary, b"not really a collector").unwrap();
         let peer = root.join("derm-daemon");
         std::fs::write(&peer, b"daemon").unwrap();
@@ -480,7 +480,7 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let binary = root.join("monocode-activity-collector");
+        let binary = root.join("derm-activity-collector");
         std::fs::write(&binary, b"not really a collector").unwrap();
         let peer = root.join("derm-daemon");
         std::fs::write(&peer, b"daemon").unwrap();
@@ -504,7 +504,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("com.monocode.desktop.activity-collector"),
+            text.contains("io.github.aetiusgular.derm.activity-collector"),
             "{text}"
         );
         let _ = std::fs::remove_dir_all(root);

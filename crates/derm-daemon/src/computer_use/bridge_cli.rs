@@ -38,7 +38,7 @@ pub const STOPPED_TEXT: &str =
     "Computer use stopped for this chat. Ask the user before trying again.";
 /// The id prefix of the `initialize` the relay replays after a reconnect.
 /// Its reply is the relay's, not the harness's.
-const REPLAY_ID: &str = "monocode-relay-init-";
+const REPLAY_ID: &str = "derm-relay-init-";
 
 /// Where to connect, from the variable's value. Loopback only.
 pub fn endpoint(raw: Option<&str>) -> Result<SocketAddr, String> {
@@ -386,7 +386,7 @@ fn local_answer(method: &str, id: Value, request: &Value, text: &str) -> Value {
             json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": true } },
-                "serverInfo": { "name": "monocode-computer-use", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "derm-computer-use", "version": env!("CARGO_PKG_VERSION") }
             })
         }
         "ping" => json!({}),

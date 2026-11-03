@@ -23,9 +23,9 @@ use super::types::{ActivityEvent, ActivitySource};
 
 /// The signed release's identifier. The daemon's names follow the running
 /// app's identifier (`app.config().identifier`), so a dev build
-/// (`com.monocode.desktop.dev`, decision 1) installs its own label.
-pub const RELEASE_IDENTIFIER: &str = "com.monocode.desktop";
-pub const BINARY_NAME: &str = "monocode-activity-collector";
+/// (`io.github.aetiusgular.derm.dev`, decision 1) installs its own label.
+pub const RELEASE_IDENTIFIER: &str = "io.github.aetiusgular.derm";
+pub const BINARY_NAME: &str = "derm-activity-collector";
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// An `events` reply waits while the collector verifies every day file in
 /// the range before it answers (`log.rs` `read_events`).
@@ -366,8 +366,8 @@ pub fn bundled_plist_text(names: &Names) -> String {
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
 <plist version=\"1.0\">\n<dict>\n\
 \t<key>Label</key>\n\t<string>{label}</string>\n\
-\t<key>BundleProgram</key>\n\t<string>Contents/MacOS/monocode-activity-collector</string>\n\
-\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>monocode-activity-collector</string>\n\t\t<string>run</string>\n\t</array>\n\
+\t<key>BundleProgram</key>\n\t<string>Contents/MacOS/derm-activity-collector</string>\n\
+\t<key>ProgramArguments</key>\n\t<array>\n\t\t<string>derm-activity-collector</string>\n\t\t<string>run</string>\n\t</array>\n\
 \t<key>AssociatedBundleIdentifiers</key>\n\t<array>\n\t\t<string>{app}</string>\n\t</array>\n\
 \t<key>RunAtLoad</key>\n\t<true/>\n\
 \t<key>KeepAlive</key>\n\t<true/>\n\
@@ -461,9 +461,8 @@ pub fn removal_commands(names: &Names) -> Vec<String> {
             "/usr/bin/sudo /bin/rm -f {} {}",
             names.plist_path, names.daemon_path
         ),
-        "/usr/bin/sudo /bin/rm -rf /var/run/monocode-activity".into(),
-        "# The log stays in /Library/Application Support/MonoCode/activity until you delete it."
-            .into(),
+        "/usr/bin/sudo /bin/rm -rf /var/run/derm-activity".into(),
+        "# The log stays in /Library/Application Support/derm/activity until you delete it.".into(),
     ]
 }
 
@@ -620,10 +619,11 @@ pub fn file_sha256(path: &Path) -> std::io::Result<String> {
 mod tests {
     use super::*;
 
-    const LABEL: &str = "com.monocode.desktop.activity-collector";
+    const LABEL: &str = "io.github.aetiusgular.derm.activity-collector";
     const DAEMON_PATH: &str =
-        "/Library/PrivilegedHelperTools/com.monocode.desktop.activity-collector";
-    const PLIST_PATH: &str = "/Library/LaunchDaemons/com.monocode.desktop.activity-collector.plist";
+        "/Library/PrivilegedHelperTools/io.github.aetiusgular.derm.activity-collector";
+    const PLIST_PATH: &str =
+        "/Library/LaunchDaemons/io.github.aetiusgular.derm.activity-collector.plist";
 
     fn plan(binary: &str, hash: &str, staged: &str, peer: &str) -> Result<InstallPlan, String> {
         terminal_plan(&Names::release(), binary, hash, staged, peer)
@@ -636,20 +636,25 @@ mod tests {
         assert_eq!(release.label, LABEL);
         assert_eq!(release.daemon_path, DAEMON_PATH);
         assert_eq!(release.plist_path, PLIST_PATH);
-        let dev = Names::for_identifier("com.monocode.desktop.dev").unwrap();
-        assert_eq!(dev.label, "com.monocode.desktop.dev.activity-collector");
+        let dev = Names::for_identifier("io.github.aetiusgular.derm.dev").unwrap();
+        assert_eq!(
+            dev.label,
+            "io.github.aetiusgular.derm.dev.activity-collector"
+        );
         assert_eq!(
             dev.plist_path,
-            "/Library/LaunchDaemons/com.monocode.desktop.dev.activity-collector.plist"
+            "/Library/LaunchDaemons/io.github.aetiusgular.derm.dev.activity-collector.plist"
         );
         let plan =
             terminal_plan(&dev, "/a/c", &"a".repeat(64), "/s/c.plist", "/m/MonoCode").unwrap();
         assert!(plan
             .plist
-            .contains("<string>com.monocode.desktop.dev.activity-collector</string>"));
-        assert!(plan.commands[2].contains("bootstrap system /Library/LaunchDaemons/com.monocode.desktop.dev.activity-collector.plist"));
+            .contains("<string>io.github.aetiusgular.derm.dev.activity-collector</string>"));
+        assert!(plan.commands[2].contains("bootstrap system /Library/LaunchDaemons/io.github.aetiusgular.derm.dev.activity-collector.plist"));
         assert_eq!(plan.daemon_path, dev.daemon_path);
-        assert!(bundled_plist_text(&dev).contains("<string>com.monocode.desktop.dev</string>"));
+        assert!(
+            bundled_plist_text(&dev).contains("<string>io.github.aetiusgular.derm.dev</string>")
+        );
         for bad in ["", "a b", "a/b", "..x", "a;rm", ".a"] {
             assert!(Names::for_identifier(bad).is_none(), "{bad}");
         }
@@ -750,7 +755,7 @@ mod tests {
     fn the_bundled_plist_file_matches_and_names_no_dev_path() {
         let text = bundled_plist_text(&Names::release());
         assert!(text.contains("<key>BundleProgram</key>"));
-        assert!(text.contains("<string>com.monocode.desktop</string>"));
+        assert!(text.contains("<string>io.github.aetiusgular.derm</string>"));
         assert!(!text.contains("dev-peer"));
         let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../macos/activity-collector/bundle")
@@ -837,12 +842,25 @@ mod tests {
         assert!(matched.contains(&format!(
             "start it with: sudo /bin/launchctl bootstrap system {PLIST_PATH}"
         )));
-        // Every tool by absolute path; nothing found on PATH.
+        // Every tool by absolute path; nothing found on PATH. A tool's name
+        // inside a longer word is not a command (`rm` in `derm`, the label).
         for tool in ["shasum", "cut", "launchctl", "rm", "mv"] {
             for (at, _) in step.match_indices(tool) {
-                assert_eq!(&step[at - 1..at], "/", "{tool} not by absolute path");
+                let before = step[..at].chars().next_back().unwrap_or(' ');
+                if before.is_ascii_alphanumeric() || matches!(before, '-' | '_' | '.') {
+                    continue;
+                }
+                assert_eq!(before, '/', "{tool} not by absolute path");
             }
         }
+        // The narrower match still catches a bare tool name.
+        let bare = step.replacen("/bin/rm -f", "rm -f", 1);
+        assert!(["rm"]
+            .iter()
+            .any(|tool| bare.match_indices(tool).any(|(at, _)| {
+                let before = bare[..at].chars().next_back().unwrap_or(' ');
+                !(before.is_ascii_alphanumeric() || matches!(before, '-' | '_' | '.' | '/'))
+            })));
         for command in &plan.commands {
             assert!(command.starts_with("/usr/bin/sudo "));
         }

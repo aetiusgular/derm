@@ -54,7 +54,7 @@ use self::helper_client::{EventSink, HelperClient};
 
 /// The helper's bundle name, as `macos/computer-use-helper/bundle.sh` builds
 /// it. Renamed with the toolkit (toolkit plan, section 11, call 1).
-pub const HELPER_APP: &str = "MonoCode Computer Use.app";
+pub const HELPER_APP: &str = "derm Computer Use.app";
 /// The bridge's endpoint file, beside the daemon's socket (0600).
 pub const ENDPOINT_FILE: &str = "cu.endpoint";
 /// The MCP server name to register `derm-daemon cu-mcp` under. Claude Code
@@ -114,7 +114,7 @@ impl HelperLauncher for SystemLauncher {
     /// section 5, item 2: a process the daemon starts outside any sandbox).
     /// Launch Services makes the helper its own app, so macOS credits the
     /// Accessibility and Screen Recording grants to it, not to the daemon.
-    /// `--monocode-pid` is the helper's own flag name: the daemon's pid.
+    /// `--derm-pid` is the helper's own flag name: the daemon's pid.
     #[cfg(target_os = "macos")]
     fn launch(&self, events: EventSink) -> Result<HelperClient, String> {
         use std::os::unix::fs::DirBuilderExt;
@@ -155,7 +155,7 @@ impl HelperLauncher for SystemLauncher {
             .arg("serve")
             .arg("--socket")
             .arg(&socket)
-            .arg("--monocode-pid")
+            .arg("--derm-pid")
             .arg(std::process::id().to_string())
             .arg("--data")
             .arg(&data)
@@ -229,7 +229,7 @@ mod tests {
         if std::env::var_os("DERM_CU_HELPER").is_none() {
             assert_eq!(
                 helper_location(),
-                Some(PathBuf::from("/Applications/MonoCode Computer Use.app"))
+                Some(PathBuf::from("/Applications/derm Computer Use.app"))
             );
         }
     }

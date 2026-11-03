@@ -1,8 +1,8 @@
 //! Which apps a chat may be granted, and which carry a warning.
 //!
-//! An app is named by its bundle id. MonoCode itself and the helper that holds
-//! the macOS grants are never granted: an agent that could drive MonoCode
-//! could approve its own cards.
+//! An app is named by its bundle id. MonoCode, derm's own ids and the helper
+//! that holds the macOS grants are never granted: an agent that could drive
+//! one of them could approve its own cards.
 
 /// The longest bundle id taken. macOS has no documented limit; 255 matches a
 /// file name and is far past any real one.
@@ -16,6 +16,11 @@ const NEVER: &[&str] = &[
     "com.monocode.desktop.dev",
     "com.monocode.computer-use-helper",
     "com.monocode.computer-use-helper.dev",
+    // derm's own: the collector, the helper and anything signed under its
+    // namespace (the rename, 2 Nov). MonoCode stays above: it is still an app
+    // on the Mac that approves cards.
+    "io.github.aetiusgular.derm.",
+    "io.github.aetiusgular.derm",
     // Cua's own app. MonoCode embeds the driver in its helper instead, and
     // the standalone app's grants are what note W warns against.
     "com.trycua.",
@@ -208,6 +213,22 @@ mod tests {
             assert_eq!(parse_bundle_id(never), Err(AppRefusal::Never), "{never}");
         }
         assert!(parse_bundle_id("com.monocodex.app").is_ok());
+    }
+
+    #[test]
+    fn never_grants_derms_own_ids() {
+        // The rename moved the collector and the helper under derm's
+        // namespace; an agent that drives either could approve its own asks.
+        for never in [
+            "io.github.aetiusgular.derm",
+            "io.github.aetiusgular.derm.activity-collector",
+            "io.github.aetiusgular.derm.computer-use-helper",
+            "io.github.aetiusgular.derm.computer-use-helper.dev",
+            "IO.GITHUB.AETIUSGULAR.DERM.DEV",
+        ] {
+            assert_eq!(parse_bundle_id(never), Err(AppRefusal::Never), "{never}");
+        }
+        assert!(parse_bundle_id("io.github.aetiusgular.dermatology").is_ok());
     }
 
     #[test]

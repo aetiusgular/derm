@@ -143,7 +143,7 @@ impl McpClient {
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {},
-                "clientInfo": {"name": "monocode-computer-use-helper", "version": env!("CARGO_PKG_VERSION")}
+                "clientInfo": {"name": "derm-computer-use-helper", "version": env!("CARGO_PKG_VERSION")}
             }),
             timeout,
         )?;

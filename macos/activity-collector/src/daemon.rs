@@ -28,9 +28,9 @@ use crate::tree::{TrackError, Tracker};
 /// The fixed eslogger binary.
 pub const ESLOGGER: &str = "/usr/bin/eslogger";
 /// Default socket folder.
-pub const SOCKET_DIR: &str = "/var/run/monocode-activity";
+pub const SOCKET_DIR: &str = "/var/run/derm-activity";
 /// Default log folder.
-pub const LOG_DIR: &str = "/Library/Application Support/MonoCode/activity";
+pub const LOG_DIR: &str = "/Library/Application Support/derm/activity";
 /// An eslogger line longer than this is skipped.
 pub const MAX_ESLOGGER_LINE: usize = 1 << 20;
 /// Lines queued between the eslogger reader and the processor.

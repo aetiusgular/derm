@@ -1,8 +1,8 @@
 #!/bin/bash
-# Builds and signs "MonoCode Computer Use.app" (wave 3, lane C, item C1).
+# Builds and signs "derm Computer Use.app" (wave 3, lane C, item C1).
 #
 #   CUA_DRIVER_BIN=/path/to/verified/cua-driver \
-#   MONOCODE_HELPER_IDENTITY="MonoCode Dev" \
+#   DERM_HELPER_IDENTITY="MonoCode Dev" \
 #   macos/computer-use-helper/bundle.sh <output folder>
 #
 # - Runs on the Mac only. It downloads nothing: CUA_DRIVER_BIN is a cua-driver
@@ -13,11 +13,11 @@
 #   only caller the helper answers. The same identity must sign MonoCode, and
 #   macOS keeps the helper's grants across rebuilds only while it stays the
 #   same.
-# - MONOCODE_APP_ID is the bundle id of the MonoCode the helper answers:
-#   com.monocode.desktop by default, com.monocode.desktop.dev with
+# - DERM_APP_ID is the bundle id of the MonoCode the helper answers:
+#   io.github.aetiusgular.derm by default, io.github.aetiusgular.derm.dev with
 #   HELPER_DEBUG=1 (the user's decision 1).
 # - HELPER_DEBUG=1 builds a debug helper, bundle id
-#   com.monocode.computer-use-helper.dev, signed ad hoc, with no signing
+#   io.github.aetiusgular.derm.computer-use-helper.dev, signed ad hoc, with no signing
 #   requirement built in: it checks its caller by pid only and says so in its
 #   log. No identity and no keychain lookup. For a dev build of MonoCode.
 #   Never ship it. An ad hoc signature changes with every build, so macOS may
@@ -28,36 +28,36 @@ set -euo pipefail
 
 out="${1:-}"
 if [ -z "$out" ]; then
-  echo "usage: CUA_DRIVER_BIN=... MONOCODE_HELPER_IDENTITY=... $0 <output folder>" >&2
+  echo "usage: CUA_DRIVER_BIN=... DERM_HELPER_IDENTITY=... $0 <output folder>" >&2
   exit 2
 fi
 debug=0
 [ "${HELPER_DEBUG:-}" = 1 ] && debug=1
-identity="${MONOCODE_HELPER_IDENTITY:-}"
+identity="${DERM_HELPER_IDENTITY:-}"
 driver="${CUA_DRIVER_BIN:-}"
 if [ -z "$driver" ]; then
   echo "Set CUA_DRIVER_BIN." >&2
   exit 2
 fi
 if [ "$debug" = 1 ]; then
-  helper_id=com.monocode.computer-use-helper.dev
-  app_id="${MONOCODE_APP_ID:-com.monocode.desktop.dev}"
+  helper_id=io.github.aetiusgular.derm.computer-use-helper.dev
+  app_id="${DERM_APP_ID:-io.github.aetiusgular.derm.dev}"
 else
-  helper_id=com.monocode.computer-use-helper
-  app_id="${MONOCODE_APP_ID:-com.monocode.desktop}"
+  helper_id=io.github.aetiusgular.derm.computer-use-helper
+  app_id="${DERM_APP_ID:-io.github.aetiusgular.derm}"
   if [ -z "$identity" ]; then
-    echo "Set MONOCODE_HELPER_IDENTITY (or HELPER_DEBUG=1 for a debug helper)." >&2
+    echo "Set DERM_HELPER_IDENTITY (or HELPER_DEBUG=1 for a debug helper)." >&2
     exit 2
   fi
 fi
 # The id goes inside a quoted code requirement: plain reverse-DNS only.
 if ! [[ "$app_id" =~ ^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$ ]]; then
-  echo "MONOCODE_APP_ID must be a plain bundle id." >&2
+  echo "DERM_APP_ID must be a plain bundle id." >&2
   exit 2
 fi
 
 here="$(cd "$(dirname "$0")" && pwd)"
-app="$out/MonoCode Computer Use.app"
+app="$out/derm Computer Use.app"
 
 run() {
   if [ "${DRY_RUN:-}" = 1 ]; then
@@ -121,18 +121,18 @@ fi
 
 if [ "$debug" = 1 ]; then
   profile=debug
-  run env MONOCODE_APP_ID="$app_id" \
+  run env DERM_APP_ID="$app_id" \
     cargo build --manifest-path "$here/Cargo.toml" --target aarch64-apple-darwin
 else
   profile=release
-  run env MONOCODE_APP_ID="$app_id" MONOCODE_HELPER_CERT_SHA1="$sha1" \
+  run env DERM_APP_ID="$app_id" DERM_HELPER_CERT_SHA1="$sha1" \
     cargo build --release --manifest-path "$here/Cargo.toml" --target aarch64-apple-darwin
 fi
 run rm -rf "$app"
 run mkdir -p "$app/Contents/MacOS"
 run cp "$here/bundle/Info.plist" "$app/Contents/Info.plist"
 run /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $helper_id" "$app/Contents/Info.plist"
-run cp "$here/target/aarch64-apple-darwin/$profile/monocode-computer-use-helper" "$app/Contents/MacOS/"
+run cp "$here/target/aarch64-apple-darwin/$profile/derm-computer-use-helper" "$app/Contents/MacOS/"
 run cp "$driver" "$app/Contents/MacOS/cua-driver"
 # Inside out: the driver first, then the bundle, both with the hardened runtime.
 run codesign --force --options runtime --timestamp=none --sign "$sign" "$app/Contents/MacOS/cua-driver"
@@ -140,4 +140,4 @@ run codesign --force --options runtime --timestamp=none --sign "$sign" \
   --identifier "$helper_id" "$app"
 run codesign --verify --strict --verbose=2 "$app"
 echo "Built $app ($helper_id, answers $app_id)"
-echo "Place it at MonoCode.app/Contents/Helpers/, or set MONOCODE_COMPUTER_USE_HELPER to it for a dev build."
+echo "Place it at MonoCode.app/Contents/Helpers/, or set DERM_CU_HELPER to it for a dev build."

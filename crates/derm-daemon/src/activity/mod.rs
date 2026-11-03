@@ -30,7 +30,7 @@ static LOG: OnceLock<store::ActivityLog> = OnceLock::new();
 static CHATS: OnceLock<Mutex<HashMap<String, check::ChatContext>>> = OnceLock::new();
 static SCREENSHOT_FLOOR: AtomicU64 = AtomicU64::new(retention::DEFAULT_SCREENSHOT_FLOOR_BYTES);
 /// The app's data folder and identifier, read once in `init`. The dev build
-/// has its own (`com.monocode.desktop.dev`, decision 1), so nothing here
+/// has its own (`io.github.aetiusgular.derm.dev`, decision 1), so nothing here
 /// hard-codes the release one.
 static DATA_DIR: OnceLock<String> = OnceLock::new();
 static IDENTIFIER: OnceLock<String> = OnceLock::new();

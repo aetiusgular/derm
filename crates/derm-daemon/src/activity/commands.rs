@@ -255,7 +255,7 @@ pub fn activity_collector_status() -> CollectorStatus {
 /// a fixed number of folders below it (Mac test 3.4).
 const SOURCE_TREE_COLLECTOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../macos/activity-collector/target/release/monocode-activity-collector"
+    "/../../macos/activity-collector/target/release/derm-activity-collector"
 );
 
 fn regular_file(path: &Path) -> bool {
@@ -263,7 +263,7 @@ fn regular_file(path: &Path) -> bool {
 }
 
 /// The collector binary to install. A release build takes only the one
-/// beside its executable. A debug build, in order: `MONOCODE_COLLECTOR_BIN`
+/// beside its executable. A debug build, in order: `DERM_COLLECTOR_BIN`
 /// (an absolute path to a regular file), the source tree's release build,
 /// beside the executable, then the old build layouts above it. The install
 /// still checks its hash, and the plan names the path and the hash.
@@ -304,7 +304,7 @@ fn built_collector_from(
 
 fn built_collector(exe: &Path) -> Option<PathBuf> {
     if cfg!(debug_assertions) {
-        let env_bin = std::env::var("MONOCODE_COLLECTOR_BIN").ok();
+        let env_bin = std::env::var("DERM_COLLECTOR_BIN").ok();
         built_collector_from(
             exe,
             env_bin.as_deref(),
@@ -424,7 +424,7 @@ mod tests {
     use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
     use serde_json::json;
 
-    const DATA: &str = "/Users/t/Library/Application Support/com.monocode.desktop";
+    const DATA: &str = "/Users/t/Library/Application Support/io.github.aetiusgular.derm";
 
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("activity-cmd-{name}-{}", std::process::id()));
@@ -560,7 +560,7 @@ mod tests {
         writer
             .write(&Entry::Event(runtime), day - 3_600_000)
             .unwrap();
-        let rec = "/Users/t/Library/Application Support/com.monocode.desktop/computer-use/recordings/rt1/turn-00009/after.png";
+        let rec = "/Users/t/Library/Application Support/io.github.aetiusgular.derm/computer-use/recordings/rt1/turn-00009/after.png";
         let write = |id: &str, pid: u32| ActivityEvent {
             id: id.into(),
             at: day + 10,
@@ -715,7 +715,7 @@ mod tests {
             Some(tree_bin)
         );
         assert!(SOURCE_TREE_COLLECTOR
-            .ends_with("/../macos/activity-collector/target/release/monocode-activity-collector"));
+            .ends_with("/../macos/activity-collector/target/release/derm-activity-collector"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
