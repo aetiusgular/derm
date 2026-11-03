@@ -19,7 +19,7 @@ GitHub makes the source archive from the tag on request: it is not in `SHA256SUM
 | Agent | Install | Fails open? |
 |---|---|---|
 | Claude Code | `claude plugin marketplace add aetiusgular/derm`, then `claude plugin install derm@derm` (from a folder: `claude plugin marketplace add "$PWD"`) | No: `onFailure: "block"` |
-| Codex | `codex plugin marketplace add aetiusgular/derm`, then `codex plugin add derm@derm`, then trust both hooks in `/hooks` (from a folder: `codex plugin marketplace add "$PWD"`) | Yes: Codex lets a call through when its hook process dies |
+| Codex | `codex plugin marketplace add aetiusgular/derm --ref v<version>`, then `codex plugin add derm@derm`, then trust both hooks in `/hooks` (from a folder: `codex plugin marketplace add "$PWD"`) | Yes: Codex lets a call through when its hook process dies |
 | Pi | `pi install "$PWD/packages/derm-pi"` (Pi cannot install a subfolder of a git source) | No: Pi blocks on a handler error |
 | oh-my-pi | `omp install "$PWD/packages/derm-pi"` | No |
 | OpenCode | add `"file://$PWD/packages/derm-opencode-plugin"` to `plugin` in `~/.config/opencode/opencode.json` (see `opencode.fragment.json`) | No |
@@ -29,7 +29,7 @@ GitHub makes the source archive from the tag on request: it is not in `SHA256SUM
 | OpenClaw | `openclaw plugins install --link "$PWD/packages/derm-openclaw-plugin" --force`, then `openclaw plugins enable derm` | No |
 | Any other CLI agent | `derm run --boundary <sbx\|srt\|none> -- <command>`: no gate inside it, the boundary and the audit outside | n/a |
 
-A marketplace added by name reads the repository's default branch, which can be ahead of the release you installed. Codex pins a tag with `--ref v<version>` (OpenAI, [Build plugins](https://developers.openai.com/codex/plugins/build.md)). The folder installs (`--link`, `file://`, `pi install <folder>`) read the folder in place, so keep it where it is.
+Codex pins the marketplace to the release's tag with `--ref v<version>` (OpenAI, [Build plugins](https://developers.openai.com/codex/plugins/build.md); `derm status` prints it with your version). Claude Code's marketplace added by name follows the repository's default branch, which can be ahead of the release you installed; to pin it, add a folder checked out at the tag instead. The folder installs (`--link`, `file://`, `pi install <folder>`) read the folder in place, so keep it where it is.
 
 ## Claude Code under managed settings
 

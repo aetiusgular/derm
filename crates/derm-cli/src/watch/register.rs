@@ -201,7 +201,7 @@ fn claude(env: &Env, home: &Path) -> Registered {
             installed.display()
         )),
         (None, None) => Registered::No(
-            "derm@derm is not installed: claude plugin marketplace add aetiusgular/derm, then claude plugin install derm@derm".into(),
+            "derm@derm is not installed: claude plugin marketplace add aetiusgular/derm (it follows the repository's default branch), then claude plugin install derm@derm".into(),
         ),
         (Some(other), _) => Registered::Unknown(format!(
             "enabledPlugins[\"derm@derm\"] in {} is {other}, not true or false",
@@ -240,8 +240,9 @@ fn codex(env: &Env, home: &Path) -> Registered {
         Ok(Some(t)) => t,
         Ok(None) => {
             return Registered::No(format!(
-            "no {}: codex plugin marketplace add aetiusgular/derm, then codex plugin add derm@derm",
-            config.display()
+            "no {}: codex plugin marketplace add aetiusgular/derm --ref v{}, then codex plugin add derm@derm",
+            config.display(),
+            env!("CARGO_PKG_VERSION")
         ))
         }
         Err(e) => return Registered::Unknown(e),
@@ -545,10 +546,13 @@ mod tests {
             "{claude}"
         );
         let codex = check("codex", &env).detail().unwrap();
-        assert!(
-            codex.contains("codex plugin marketplace add aetiusgular/derm"),
-            "{codex}"
+        // Fix pass review F5: pinned to this release's tag, not the branch.
+        let pinned = format!(
+            "codex plugin marketplace add aetiusgular/derm --ref v{}",
+            env!("CARGO_PKG_VERSION")
         );
+        assert!(codex.contains(&pinned), "{codex}");
+        assert!(claude.contains("default branch"), "{claude}");
         let pi = check("pi", &env).detail().unwrap();
         put(&h.0.join(".pi/agent/settings.json"), r#"{"packages":[]}"#);
         let pi_listed = check("pi", &env).detail().unwrap();

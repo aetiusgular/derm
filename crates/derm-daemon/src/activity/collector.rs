@@ -108,6 +108,10 @@ pub struct EventsReply {
     pub chain_ok: bool,
     /// The reply ended with its closing line.
     pub complete: bool,
+    /// The socket connected and the request went out. `false` only from
+    /// `fetch_events`'s error arm: nothing was read, so nothing was cut short
+    /// (release check RC1; fix pass review F4).
+    pub connected: bool,
     /// Why there is no complete reply: `timeout`, `truncated`, `not running`
     /// or the collector's own error (`refused`). `None` when complete.
     pub problem: Option<String>,
@@ -116,7 +120,10 @@ pub struct EventsReply {
 /// Reads an `events` reply. Lines that are not an `eslogger` event are
 /// skipped, so the collector cannot put another source's record in the log.
 pub fn parse_events_reply(reader: impl BufRead, limit: usize) -> EventsReply {
-    let mut reply = EventsReply::default();
+    let mut reply = EventsReply {
+        connected: true,
+        ..EventsReply::default()
+    };
     let mut lines = reader.lines();
     loop {
         let line = match lines.next() {

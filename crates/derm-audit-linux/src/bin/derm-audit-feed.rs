@@ -62,12 +62,25 @@ fn home() -> Option<String> {
 /// The runtime folder for `uid` as a string, the way `socket_path` finds
 /// the daemon's (`derm_core::runtime`).
 fn runtime_dir_for(uid: u32) -> Option<String> {
-    derm_core::runtime::runtime_dir_with(
+    runtime_dir_for_with(
         std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
         uid,
+        derm_core::runtime::current_uid(),
         Path::new(derm_core::runtime::RUN_USER),
     )
-    .and_then(|p| p.to_str().map(str::to_string))
+}
+
+fn runtime_dir_for_with(
+    xdg: Option<&std::ffi::OsStr>,
+    uid: u32,
+    caller: u32,
+    run_user: &Path,
+) -> Option<String> {
+    // The caller's variable names the caller's folder; for another uid only
+    // that uid's own private `/run/user/<uid>` counts (fix pass review F2).
+    let xdg = if uid == caller { xdg } else { None };
+    derm_core::runtime::runtime_dir_with(xdg, uid, run_user)
+        .and_then(|p| p.to_str().map(str::to_string))
 }
 
 fn cmd_rules(args: &[String]) -> u8 {
@@ -368,3 +381,35 @@ fn follow(path: &Path, from_start: bool, tx: &mpsc::Sender<Msg>) -> std::io::Res
 }
 
 use std::io::Read as _;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// Fix pass review F2: `rules --uid N` run by root (or by `sudo -E`)
+    /// carries the caller's `XDG_RUNTIME_DIR`, which is not N's folder; the
+    /// rule would watch the wrong user's token. Only N's own private
+    /// `/run/user/N` counts then.
+    #[test]
+    fn another_uids_rules_ignore_the_callers_variable() {
+        let root = std::env::temp_dir().join(format!("derm-feed-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let me = derm_core::runtime::current_uid();
+        let xdg = Some(std::ffi::OsStr::new("/run/user/0"));
+        // Our own rules: the variable wins, as everywhere.
+        assert_eq!(
+            runtime_dir_for_with(xdg, me, me, &root).as_deref(),
+            Some("/run/user/0")
+        );
+        // Another uid's: not the caller's variable; that uid's folder is not
+        // ours here (owned by the caller), so none.
+        let other = me.wrapping_add(1);
+        let dir = root.join(other.to_string());
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(runtime_dir_for_with(xdg, other, me, &root), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

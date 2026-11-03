@@ -8,6 +8,8 @@ Fixes from the release check of v0.1.0 (3 Nov 2026). No change to the policy, th
 - **`derm watch report` on a Mac** said "truncated" over an empty log: an absent collector (none ships yet) counted as a cut-short reply. It no longer does; a timeout or a reply that stopped mid-way still does, and the collector line says why.
 - **`derm status`** gives install lines that work without a clone: `claude plugin marketplace add aetiusgular/derm` and `codex plugin marketplace add aetiusgular/derm`; for Pi, a folder of the release's source (`docs/install/agents.md`).
 - **The macOS zip** unpacks to one folder, `derm-0.1.1-macos/`, as the Linux tarball does. Safari named 0.1.0's folder `derm-0` and merged a second download into it.
+- `derm connect` reads the daemon's token with the same checks as `derm run` (a regular file you own, 0600), and `derm-audit-feed rules --uid <n>` no longer takes the caller's `XDG_RUNTIME_DIR` for another user's rules.
+- `derm status` pins the Codex marketplace to the release's tag (`--ref v0.1.1`).
 - The README, the install pages and the comments in the launchd plist and the tarball's systemd unit describe the published release, not the build.
 
 Earlier notes follow.

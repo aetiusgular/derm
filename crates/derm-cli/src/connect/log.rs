@@ -74,12 +74,13 @@ fn summary(r: &Record) -> String {
 /// Sends the record as one `event`. Any failure returns `Err`; the caller
 /// falls back to the file.
 fn to_daemon(socket: &Path, r: &Record) -> Result<(), String> {
-    let token_path = socket.with_file_name("daemon.token");
-    let token = std::fs::read_to_string(&token_path).map_err(|e| e.to_string())?;
-    let token = token.trim();
-    if !derm_core::token::well_formed(token) {
-        return Err("daemon token malformed".into());
-    }
+    // `derm run`'s checks: a regular file you own, no group or other bits,
+    // well formed (fix pass review F7).
+    let dir = socket
+        .parent()
+        .ok_or_else(|| "the socket has no folder".to_string())?;
+    let token = derm_audit_linux::client::read_daemon_token(dir).map_err(|e| e.to_string())?;
+    let token = token.as_str();
     let mut s = UnixStream::connect(socket).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(DAEMON_TIMEOUT))
         .map_err(|e| e.to_string())?;
@@ -195,7 +196,7 @@ mod tests {
     fn a_running_daemon_gets_hello_then_one_event() {
         let d = scratch("daemon");
         let sock = d.join("daemon.sock");
-        std::fs::write(d.join("daemon.token"), "1".repeat(64)).unwrap();
+        private_token(&d);
         let listener = UnixListener::bind(&sock).unwrap();
         let server = std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();
@@ -223,11 +224,42 @@ mod tests {
         assert!(!d.join("connect.log").exists());
     }
 
+    fn private_token(d: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let t = d.join("daemon.token");
+        std::fs::write(&t, "1".repeat(64)).unwrap();
+        std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    /// Fix pass review F7: the token beside the socket is read with
+    /// `derm run`'s checks. One another user could write (group or other
+    /// bits, or a link) is not ours: no connection, the file gets the record.
+    #[test]
+    fn a_token_others_could_write_is_not_used() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("loosetoken");
+        let sock = d.join("daemon.sock");
+        let t = d.join("daemon.token");
+        std::fs::write(&t, "1".repeat(64)).unwrap();
+        std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let listener = UnixListener::bind(&sock).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let log = d.join("connect.log");
+        assert_eq!(
+            record(&sock, &log, &rec()).unwrap(),
+            log.display().to_string()
+        );
+        assert!(
+            listener.accept().is_err(),
+            "nothing connected with a loose token"
+        );
+    }
+
     #[test]
     fn a_daemon_that_refuses_falls_back_to_the_file() {
         let d = scratch("refuse");
         let sock = d.join("daemon.sock");
-        std::fs::write(d.join("daemon.token"), "1".repeat(64)).unwrap();
+        private_token(&d);
         let listener = UnixListener::bind(&sock).unwrap();
         std::thread::spawn(move || {
             let (s, _) = listener.accept().unwrap();

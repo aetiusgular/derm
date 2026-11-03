@@ -18,7 +18,7 @@ sudo apt install ./derm_<version>_amd64.deb
 derm --version    # derm <version>
 ```
 
-Run it from a folder the `_apt` user can read, such as `/tmp`; from your home folder apt still installs it and warns that the download is "performed unsandboxed as root". It installs the binaries in `/usr/bin` and the systemd user unit in `/usr/lib/systemd/user/derm-daemon.service`. It runs no script on install, enables nothing and starts nothing. To run the daemon as your user:
+From your home folder apt installs it and warns that the download is "performed unsandboxed as root", because its `_apt` user cannot read the file there. To avoid the warning, check and install it from a folder of your own that `_apt` can read, not from `/tmp` itself, where another user could put a file of the same name first: `d=$(mktemp -d) && chmod 755 "$d"`, then download into `$d`, run `sha256sum -c` there and `sudo apt install "$d"/derm_<version>_amd64.deb`. It installs the binaries in `/usr/bin` and the systemd user unit in `/usr/lib/systemd/user/derm-daemon.service`. It runs no script on install, enables nothing and starts nothing. To run the daemon as your user:
 
 ```sh
 systemctl --user enable --now derm-daemon

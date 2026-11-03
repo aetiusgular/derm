@@ -169,8 +169,9 @@ pub fn flags_report(
         }
         // A socket that never connected cut nothing short (release check
         // RC1); a timeout, a cut reply or a refusal leaves the window partial.
-        let never_connected = reply.problem.as_deref() == Some(collector::NOT_RUNNING);
-        report.truncated |= reply.truncated || (!reply.complete && !never_connected);
+        // Keyed on the flag, not the reason, which can be the collector's own
+        // words (fix pass review F4).
+        report.truncated |= reply.truncated || (!reply.complete && reply.connected);
         for mut event in reply.events {
             if let Some(chat) = chats.get(&event.chat_id) {
                 event.harness = chat.harness.clone();
@@ -518,6 +519,7 @@ mod tests {
             truncated: false,
             chain_ok: true,
             complete: true,
+            connected: true,
             problem: None,
         };
         let report = flags_report(
@@ -581,6 +583,7 @@ mod tests {
             truncated: false,
             chain_ok: true,
             complete: true,
+            connected: true,
             problem: None,
         };
         let report = flags_report(
@@ -744,6 +747,7 @@ mod tests {
             truncated: false,
             chain_ok: false,
             complete: false,
+            connected: true,
             problem: Some("timeout".into()),
         };
         let report = flags_report(
@@ -807,8 +811,29 @@ mod tests {
         );
         assert_eq!(report.collector_reachable, Reachable::No);
         assert_eq!(report.collector_reason.as_deref(), Some("not running"));
+        // Fix pass review F4: the reason is the collector's own words, so a
+        // peer that connected and then said "not running" is still partial.
+        let said = collector::parse_events_reply(
+            std::io::Cursor::new(b"{\"ok\":false,\"error\":\"not running\"}\n".to_vec()),
+            10,
+        );
+        let report = flags_report(
+            &dir,
+            None,
+            None,
+            0,
+            1_000,
+            &HashMap::new(),
+            Some(said),
+            2_000,
+        );
+        assert!(
+            report.truncated,
+            "a connected collector's own error stays partial"
+        );
         for problem in ["timeout", "truncated", "refused"] {
             let partial = collector::EventsReply {
+                connected: true,
                 problem: Some(problem.into()),
                 ..collector::EventsReply::default()
             };
