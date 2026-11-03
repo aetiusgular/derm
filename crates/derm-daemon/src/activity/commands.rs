@@ -167,7 +167,10 @@ pub fn flags_report(
         if reply.complete {
             report.collector_chain_ok = Some(reply.chain_ok);
         }
-        report.truncated |= reply.truncated || !reply.complete;
+        // A socket that never connected cut nothing short (release check
+        // RC1); a timeout, a cut reply or a refusal leaves the window partial.
+        let never_connected = reply.problem.as_deref() == Some(collector::NOT_RUNNING);
+        report.truncated |= reply.truncated || (!reply.complete && !never_connected);
         for mut event in reply.events {
             if let Some(chat) = chats.get(&event.chat_id) {
                 event.harness = chat.harness.clone();
@@ -774,6 +777,53 @@ mod tests {
         );
         assert_eq!(report.collector_reachable, Reachable::No);
         assert_eq!(report.collector_reason.as_deref(), Some("not running"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Release check RC1: a Mac with no collector (none ships in 0.1.0)
+    /// printed "truncated" over an empty log. A socket that never connected
+    /// holds no events and cut nothing short; the panel's reason says why.
+    /// A reply that did connect and stopped early stays a truncation.
+    #[test]
+    fn an_absent_collector_is_not_a_truncated_window() {
+        let dir = temp("rc1");
+        let gone = collector::EventsReply {
+            problem: Some(collector::NOT_RUNNING.into()),
+            ..collector::EventsReply::default()
+        };
+        let report = flags_report(
+            &dir,
+            None,
+            None,
+            0,
+            1_000,
+            &HashMap::new(),
+            Some(gone),
+            2_000,
+        );
+        assert!(
+            !report.truncated,
+            "an absent collector must not read as a truncated window"
+        );
+        assert_eq!(report.collector_reachable, Reachable::No);
+        assert_eq!(report.collector_reason.as_deref(), Some("not running"));
+        for problem in ["timeout", "truncated", "refused"] {
+            let partial = collector::EventsReply {
+                problem: Some(problem.into()),
+                ..collector::EventsReply::default()
+            };
+            let report = flags_report(
+                &dir,
+                None,
+                None,
+                0,
+                1_000,
+                &HashMap::new(),
+                Some(partial),
+                2_000,
+            );
+            assert!(report.truncated, "{problem} still marks the window partial");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

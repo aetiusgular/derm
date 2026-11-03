@@ -76,6 +76,8 @@ impl Names {
 }
 const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 10_000;
+/// `EventsReply::problem` when the collector's socket did not connect.
+pub const NOT_RUNNING: &str = "not running";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,7 +210,7 @@ pub fn fetch_events(since: i64, until: i64, chat_id: Option<&str>, limit: usize)
         ) {
             Ok(reader) => parse_events_reply(reader, limit.min(MAX_EVENTS)),
             Err(_) => EventsReply {
-                problem: Some("not running".into()),
+                problem: Some(NOT_RUNNING.into()),
                 ..EventsReply::default()
             },
         }
@@ -217,7 +219,7 @@ pub fn fetch_events(since: i64, until: i64, chat_id: Option<&str>, limit: usize)
     {
         let _ = (since, until, chat_id, limit);
         EventsReply {
-            problem: Some("not running".into()),
+            problem: Some(NOT_RUNNING.into()),
             ..EventsReply::default()
         }
     }
