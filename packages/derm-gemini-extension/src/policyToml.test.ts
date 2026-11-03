@@ -69,5 +69,9 @@ describe("the extension's own policies/derm.toml", () => {
       expect(shell.test(JSON.stringify({ command: `cat ${p}` }))).toBe(true);
     }
     expect(write.test(JSON.stringify({ file_path: "/home/u/proj/tk/notes.md" }))).toBe(false);
+    // The .tk web domain is not the old folder: a hard deny would refuse it
+    // (the rename re-review, F3).
+    expect(write.test(JSON.stringify({ file_path: "/home/u/site.tk/index.html" }))).toBe(false);
+    expect(shell.test(JSON.stringify({ command: "curl https://example.tk/api" }))).toBe(false);
   });
 });
