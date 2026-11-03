@@ -8,7 +8,6 @@
 class Derm < Formula
   desc "Gate, boundary and audit around any coding agent"
   homepage "https://github.com/aetiusgular/derm"
-  version "@VERSION@"
   license "MIT"
 
   # One universal zip for both; brew style allows url only under on_arm and

@@ -15,7 +15,8 @@ const sums = [
 describe("homebrew formula", () => {
   it("fills the version and both hashes, nothing left over", () => {
     const f = render("0.1.0", sums);
-    expect(f).toContain('version "0.1.0"');
+    // brew audit --strict: the version is scanned from the URL; a version line is redundant.
+    expect(f).not.toMatch(/^  version /m);
     // The universal zip under both on_arm and on_intel (brew style's ComponentsOrder).
     expect(f.split(`releases/download/v0.1.0/derm-0.1.0-macos.zip"\n      sha256 "${mac}"`).length - 1).toBe(2);
     expect(f).toContain(`derm-0.1.0-x86_64-unknown-linux-musl.tar.gz"\n      sha256 "${lin}"`);
