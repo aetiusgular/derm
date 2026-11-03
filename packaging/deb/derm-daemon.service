@@ -1,0 +1,22 @@
+# systemd user unit for derm-daemon, as the .deb installs it
+# (/usr/lib/systemd/user/). Installed, not enabled. To start it:
+#
+#   systemctl --user enable --now derm-daemon.service
+#
+# The socket is $XDG_RUNTIME_DIR/derm/daemon.sock, the log ~/.local/share/derm
+# (or $XDG_DATA_HOME/derm). The daemon makes no outbound connection.
+# To keep it running after logout: loginctl enable-linger <user>.
+
+[Unit]
+Description=derm daemon: OTLP receiver, activity log and approval socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/derm-daemon --foreground
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

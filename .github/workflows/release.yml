@@ -1,0 +1,106 @@
+name: release
+
+# The Linux artifacts of a derm release (plans/parallel_build_tk.md, section
+# 7b, release step 4). A push to a release/ branch builds and checks them and
+# keeps them as a workflow artifact; a v* tag also attests them and opens a
+# draft GitHub release. Publishing the draft is Tony's. The macOS zip is built,
+# signed and notarized on the Mac (the certificate stays there) and added to
+# the draft by hand, with its line in SHA256SUMS.
+#
+# Every action is pinned by commit (lightweight tags, read with git ls-remote
+# on 2 Nov 2026).
+on:
+  push:
+    tags: ["v*"]
+    branches: ["release/**"]
+
+permissions:
+  contents: read
+
+env:
+  TARGET: x86_64-unknown-linux-musl
+  CARGO_DEB: "3.8.0"
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # rust-toolchain.toml pins the compiler; the musl target is pure Rust
+      # here (no crate in the tree builds C code), so no musl-gcc is needed.
+      - run: rustup target add "$TARGET"
+      - name: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="0.0.0~${GITHUB_SHA::12}"; fi
+          case "$v" in *[!0-9A-Za-z.+~-]*|"") echo "::error::bad version $v"; exit 1;; esac
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked --target "$TARGET" -p derm-cli -p derm-daemon -p derm-audit-linux
+      # The peer checks (SO_PEERCRED, SO_PEERPIDFD, pidfd_send_signal) compile
+      # against musl through libc 0.2.189; running the tests on the musl build
+      # shows they behave as on glibc.
+      - name: cargo test on musl
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --target "$TARGET" --workspace 2>&1 | tee test.log || {
+            grep -E -A4 "^test .* FAILED|panicked at" test.log | head -60 | sed 's/^/::error::/'
+            exit 1
+          }
+      - name: the binaries are static
+        shell: bash
+        run: |
+          for b in derm derm-daemon derm-audit-feed; do
+            f="target/$TARGET/release/$b"
+            if readelf -d "$f" | grep -q NEEDED; then echo "::error::$b links a shared library"; readelf -d "$f"; exit 1; fi
+          done
+      - run: cargo install cargo-deb --version "$CARGO_DEB" --locked
+      - name: .deb
+        run: CARGO_TARGET_DIR="$PWD/target" cargo deb --manifest-path packaging/deb/Cargo.toml --no-build --target "$TARGET" --deb-version "$VERSION"
+      - name: assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          name="derm-$VERSION-$TARGET"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage"
+          install -m 0755 target/$TARGET/release/derm target/$TARGET/release/derm-daemon target/$TARGET/release/derm-audit-feed "$stage/"
+          install -m 0644 LICENSE NOTICE README.md crates/derm-daemon/units/derm-daemon.service "$stage/"
+          tar -C "$RUNNER_TEMP" --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
+          # cargo-deb 3.8.0 writes target/debian/ even with --target (run 2 Nov).
+          cp target/debian/*.deb dist/
+          node packaging/check-dist.mjs dist
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux
+          path: dist/
+          if-no-files-found: error
+
+  draft:
+    if: github.ref_type == 'tag'
+    needs: linux
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          sparse-checkout: docs/release-notes.md
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux
+          path: dist
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "derm $GITHUB_REF_NAME" --notes-file docs/release-notes.md dist/*
