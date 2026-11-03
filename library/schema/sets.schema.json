@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aetiusgular/tk/library/schema/sets.schema.json",
-  "title": "tk catalog sets (library/catalog/sets.json)",
+  "$id": "https://github.com/aetiusgular/derm/library/schema/sets.schema.json",
+  "title": "derm catalog sets (library/catalog/sets.json)",
   "description": "Named sets of catalog entries that the exporters turn into one marketplace.json, one Docker profile, one Pi package and one ToolHive registry each. An id is the entry's folder name under library/catalog/. Lane E, 27 Oct 2026.",
   "type": "object",
   "additionalProperties": false,

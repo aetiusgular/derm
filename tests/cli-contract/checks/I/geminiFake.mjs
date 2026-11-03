@@ -37,7 +37,7 @@ export const checks = [
     title: "The fake Gemini API serves a headless Gemini CLI turn with a tool call",
     harness: "gemini",
     async run({ binPath }) {
-      const marker = "tk-gemini-ok";
+      const marker = "derm-gemini-ok";
       const fake = await startFakeGemini({
         script: (body, n) => (n === 0 ? [functionCall("run_shell_command", { command: `echo ${marker}` })] : [text("done")]),
       });

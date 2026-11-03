@@ -1,7 +1,7 @@
 // The library's own check of a publish pull request (lane G, T3.3).
 //
 // A proof made on the publisher's machine is self-reported. This runs in
-// tk's CI, from the base branch's code, over the pull request's files as
+// derm's CI, from the base branch's code, over the pull request's files as
 // data (ci/verify-pr.yml), and re-derives each claim:
 //   - the entry passes the library's rules and the catalog rules;
 //   - the content hash, recomputed, equals the proof's and the manifest's;
@@ -53,7 +53,7 @@ export async function verifyEntry(o: { prLibrary: string; baseLibrary: string; i
   if (!isProof(proofRaw)) {
     // The library's owner edits own entries without the publish flow.
     if (tier === "own" && o.prAuthor.toLowerCase() === LIBRARY_OWNER) return [f("verify/own", "warning", "an own entry changed by the library's owner; no proof expected")];
-    return [f("verify/no-proof", "error", `library/catalog/${o.id}/${PROOF_FILE} is missing or not a tk publish proof`)];
+    return [f("verify/no-proof", "error", `library/catalog/${o.id}/${PROOF_FILE} is missing or not a derm publish proof`)];
   }
   const proof = proofRaw;
   if (tier === "mirrored") out.push(f("verify/tier", "error", "`mirrored` is the mirror's tier, never a pull request's"));

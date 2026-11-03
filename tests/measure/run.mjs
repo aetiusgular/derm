@@ -8,8 +8,8 @@
 //     [--state <dir shared with the proxy>] [--tag <run id prefix>]
 //
 // Expects the proxy (proxy.mjs) to be running with --state <out>/state.
-// Paths to Pi, Claude Code and the tk packages come from the environment
-// (TKM_PI, TKM_CLAUDE, TKM_TK); see README.md.
+// Paths to Pi, Claude Code and the derm packages come from the environment
+// (DERMM_PI, DERMM_CLAUDE, DERMM_DERM); see README.md.
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -28,10 +28,10 @@ const only = arg("tasks") && arg("tasks") !== "all" ? arg("tasks").split(",") : 
 const timeoutMs = Number(arg("timeout", "480")) * 1000;
 const proxy = arg("proxy", "http://127.0.0.1:8091");
 const model = arg("model", "qwen27b-q4");
-const PI = process.env.TKM_PI || "pi";
-const CLAUDE = process.env.TKM_CLAUDE || "claude";
-const TK = process.env.TKM_TK; // a tk checkout
-if (!TK) throw new Error("set TKM_TK to a tk checkout");
+const PI = process.env.DERMM_PI || "pi";
+const CLAUDE = process.env.DERMM_CLAUDE || "claude";
+const DERM = process.env.DERMM_DERM; // a derm checkout
+if (!DERM) throw new Error("set DERMM_DERM to a derm checkout");
 
 const spec = JSON.parse(readFileSync(join(here, "tasks.json"), "utf8"));
 const tasks = spec.tasks.filter((t) => !only || only.includes(t.id));
@@ -49,10 +49,10 @@ const stubEntry = (name) => ({
 function piAgentDir(exposure) {
   const dir = join(out, `pi-agent-${exposure}`);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "settings.json"), JSON.stringify({ enableInstallTelemetry: false, packages: [join(TK, "packages/tk-pi")] }, null, 2));
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ enableInstallTelemetry: false, packages: [join(DERM, "packages/derm-pi")] }, null, 2));
   writeFileSync(
     join(dir, "models.json"),
-    JSON.stringify({ providers: { tkm: { baseUrl: `${proxy}/v1`, api: "openai-completions", apiKey: "none", models: [{ id: model, name: `${model} via tk-measure proxy`, contextWindow: 131072, maxTokens: 16384, reasoning: true }] } } }, null, 2),
+    JSON.stringify({ providers: { tkm: { baseUrl: `${proxy}/v1`, api: "openai-completions", apiKey: "none", models: [{ id: model, name: `${model} via derm-measure proxy`, contextWindow: 131072, maxTokens: 16384, reasoning: true }] } } }, null, 2),
   );
   const mcpServers = {};
   for (const s of Object.keys(SERVERS)) mcpServers[s] = { ...stubEntry(s), exposure };
@@ -77,9 +77,9 @@ const piDirs = { "pi-deferred": piAgentDir("deferred"), "pi-direct": piAgentDir(
 const cc = ccSetup();
 
 function command(cond, prompt) {
-  const base = { ...process.env, TK_POLICY: policy, PI_TELEMETRY: "0", TKM_STATE: state };
-  delete base.TK_CHAT_TOKEN;
-  delete base.TK_CHAT_TOKEN_FILE;
+  const base = { ...process.env, DERM_POLICY: policy, PI_TELEMETRY: "0", DERMM_STATE: state };
+  delete base.DERM_CHAT_TOKEN;
+  delete base.DERM_CHAT_TOKEN_FILE;
   if (cond.startsWith("pi-")) {
     return { cmd: PI, argv: ["--mode", "json", "--no-session", "--model", `tkm/${model}`, prompt], env: { ...base, PI_CODING_AGENT_DIR: piDirs[cond] } };
   }
@@ -87,7 +87,7 @@ function command(cond, prompt) {
     ...base,
     CLAUDE_CONFIG_DIR: cc.dir,
     ANTHROPIC_BASE_URL: proxy,
-    ANTHROPIC_AUTH_TOKEN: "tk-measure-local",
+    ANTHROPIC_AUTH_TOKEN: "derm-measure-local",
     ANTHROPIC_MODEL: model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
     ANTHROPIC_DEFAULT_SONNET_MODEL: model,
@@ -105,7 +105,7 @@ function command(cond, prompt) {
     "-p", prompt,
     "--output-format", "stream-json", "--verbose",
     "--mcp-config", cc.mcp, "--strict-mcp-config",
-    "--plugin-dir", join(TK, "packages/tk-claude-plugin"),
+    "--plugin-dir", join(DERM, "packages/derm-claude-plugin"),
     "--disallowedTools", "WebFetch,WebSearch",
   ];
   return { cmd: CLAUDE, argv, env };

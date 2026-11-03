@@ -136,7 +136,7 @@ createServer((req, res) => {
       rec.error = String(e);
       appendFileSync(join(state, "requests.jsonl"), JSON.stringify(rec) + "\n");
       res.writeHead(502, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: `tk-measure proxy: ${e}` } }));
+      res.end(JSON.stringify({ error: { message: `derm-measure proxy: ${e}` } }));
       return;
     }
     const outHeaders = {};
@@ -161,4 +161,4 @@ createServer((req, res) => {
     if (up.status >= 400) rec.errorBody = text.slice(0, 600);
     appendFileSync(join(state, "requests.jsonl"), JSON.stringify(rec) + "\n");
   });
-}).listen(listen, "127.0.0.1", () => console.log(`tk-measure proxy on 127.0.0.1:${listen} -> ${upstream.href}`));
+}).listen(listen, "127.0.0.1", () => console.log(`derm-measure proxy on 127.0.0.1:${listen} -> ${upstream.href}`));

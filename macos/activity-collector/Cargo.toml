@@ -3,7 +3,7 @@
 # app's. macOS only at run time; its logic is tested in the cloud against
 # recorded eslogger JSON.
 [package]
-name = "monocode-activity-collector"
+name = "derm-activity-collector"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"

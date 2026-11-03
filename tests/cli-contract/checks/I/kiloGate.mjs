@@ -1,11 +1,11 @@
-// Lane I: contract checks for the tk Kilo plugin (T2.4) against the real
+// Lane I: contract checks for the derm Kilo plugin (T2.4) against the real
 // Kilo CLI, driven by `kilo run --format json` against a fake OpenAI
-// chat-completions server (../../lib/fakeChat.mjs) with a fake tk daemon. Kilo's own
-// permission for bash is `allow` in every run, so tk's gate is the only check
+// chat-completions server (../../lib/fakeChat.mjs) with a fake derm daemon. Kilo's own
+// permission for bash is `allow` in every run, so derm's gate is the only check
 // (Orca has no full-access entry for Kilo, note AQ section 8; this is the
 // closest).
 //
-//   node tests/cli-contract/run.mjs --cli kilo=/path/to/kilo --only kilo-tk-deny,...
+//   node tests/cli-contract/run.mjs --cli kilo=/path/to/kilo --only kilo-derm-deny,...
 
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -13,10 +13,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
-import { startFakeDaemon } from "../../../../packages/tk-claude-plugin/src/testing/fakeDaemon.ts";
+import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "tk-kilo-plugin");
+const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-kilo-plugin");
 
 function run(bin, args, env, cwd, seconds = 150) {
   return new Promise((resolve) => {
@@ -42,16 +42,16 @@ function run(bin, args, env, cwd, seconds = 150) {
 async function kiloTurn(bin, { policy, script, approve = "none", install = "config", extraPlugins = {}, daemon: withDaemon = true }) {
   const fake = await startFakeChat({ script });
   const daemon = await startFakeDaemon({ approve, root: "/tmp" });
-  const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "kilo-tk-"));
+  const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "kilo-derm-"));
   const home = path.join(root, "home");
   const work = path.join(root, "work");
   const pluginDir = path.join(home, ".config", "kilo", "plugin");
-  mkdirSync(path.join(home, ".tk"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(home, ".derm"), { recursive: true, mode: 0o700 });
   mkdirSync(pluginDir, { recursive: true });
   mkdirSync(work);
-  const policyFile = path.join(home, ".tk", "policy.json");
+  const policyFile = path.join(home, ".derm", "policy.json");
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
-  if (install === "dir") writeFileSync(path.join(pluginDir, "tk.ts"), `export { default } from ${JSON.stringify(pathToFileURL(path.join(PLUGIN, "src", "plugin.ts")).href)};\n`);
+  if (install === "dir") writeFileSync(path.join(pluginDir, "derm.ts"), `export { default } from ${JSON.stringify(pathToFileURL(path.join(PLUGIN, "src", "plugin.ts")).href)};\n`);
   for (const [name, text] of Object.entries(extraPlugins)) writeFileSync(path.join(pluginDir, name), text);
   const config = {
     provider: { fake: { npm: "@ai-sdk/openai-compatible", name: "Fake", options: { baseURL: fake.baseUrl, apiKey: "x" }, models: { "fake-model": { name: "fake", tool_call: true } } } },
@@ -67,8 +67,8 @@ async function kiloTurn(bin, { policy, script, approve = "none", install = "conf
     XDG_DATA_HOME: path.join(home, ".local", "share"),
     KILO_CONFIG_CONTENT: JSON.stringify(config),
     NO_COLOR: "1",
-    TK_POLICY: policyFile,
-    ...(withDaemon ? daemon.env() : { TK_DAEMON_SOCKET: path.join(root, "absent.sock") }),
+    DERM_POLICY: policyFile,
+    ...(withDaemon ? daemon.env() : { DERM_DAEMON_SOCKET: path.join(root, "absent.sock") }),
   };
   try {
     const r = await run(bin, ["run", "--format", "json", "run the step"], env, work);
@@ -85,7 +85,7 @@ const ALLOW = { version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action
 
 export const checks = [
   {
-    id: "kilo-tk-allow",
+    id: "kilo-derm-allow",
     title: "Loaded from the config's plugin array, an allowed bash call runs and the daemon gets both records",
     harness: "kilo",
     async run({ binPath }) {
@@ -97,18 +97,18 @@ export const checks = [
     },
   },
   {
-    id: "kilo-tk-deny",
-    title: "Loaded from ~/.config/kilo/plugin/, a denied bash call does not run and the model gets tk's reason",
+    id: "kilo-derm-deny",
+    title: "Loaded from ~/.config/kilo/plugin/, a denied bash call does not run and the model gets derm's reason",
     harness: "kilo",
     async run({ binPath }) {
       const t = await kiloTurn(binPath, { install: "dir", policy: { version: 1, rules: [{ tool: "bash", action: "deny" }] }, script: bash("echo kilo-denied-ran") });
       const ran = t.results.some((x) => x.includes("kilo-denied-ran"));
-      const reason = t.results.some((x) => x.includes("tk: rule bash"));
+      const reason = t.results.some((x) => x.includes("derm: rule bash"));
       return { status: !ran && reason ? "pass" : "fail", finding: `ran ${ran}; reason ${reason}; ${JSON.stringify(t.results).slice(0, 200)}` };
     },
   },
   {
-    id: "kilo-tk-reject",
+    id: "kilo-derm-reject",
     title: "The reject list blocks a write of an endpoint key under an allow rule",
     harness: "kilo",
     async run({ binPath }) {
@@ -118,8 +118,8 @@ export const checks = [
     },
   },
   {
-    id: "kilo-tk-ask",
-    title: "An ask is the tk approver's yes; with no approver it is a deny (Kilo never fires permission.ask)",
+    id: "kilo-derm-ask",
+    title: "An ask is the derm approver's yes; with no approver it is a deny (Kilo never fires permission.ask)",
     harness: "kilo",
     async run({ binPath }) {
       const policy = { version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }] };
@@ -132,7 +132,7 @@ export const checks = [
     },
   },
   {
-    id: "kilo-tk-control",
+    id: "kilo-derm-control",
     title: "An allowed command that drops a file into Kilo's plugin folder asks, and is denied with no approver",
     harness: "kilo",
     async run({ binPath }) {
@@ -142,28 +142,28 @@ export const checks = [
     },
   },
   {
-    id: "kilo-tk-beside-plugin",
-    title: "Beside another plugin's tool.execute.before (an observer), a deny still wins and tk's gate runs once (case 75)",
+    id: "kilo-derm-beside-plugin",
+    title: "Beside another plugin's tool.execute.before (an observer), a deny still wins and derm's gate runs once (case 75)",
     harness: "kilo",
     async run({ binPath }) {
       const observer = 'export default { id: "observer", server: async () => ({ "tool.execute.before": async () => {} }) };\n';
       const t = await kiloTurn(binPath, { install: "dir", extraPlugins: { "observer.ts": observer }, policy: { version: 1, rules: [{ tool: "bash", action: "deny" }] }, script: bash("echo kilo-observer-ran") });
       const ran = t.results.some((x) => x.includes("kilo-observer-ran"));
       const decisions = t.daemon.events.filter((e) => e.kind === "approval").length;
-      return { status: !ran && decisions === 1 ? "pass" : "fail", finding: `ran ${ran}; tk decisions ${decisions}` };
+      return { status: !ran && decisions === 1 ? "pass" : "fail", finding: `ran ${ran}; derm decisions ${decisions}` };
     },
   },
   {
-    id: "kilo-tk-later-plugin",
-    title: "A plugin that loads after tk can change a call's input after tk allowed it (rules case 88, recorded)",
+    id: "kilo-derm-later-plugin",
+    title: "A plugin that loads after derm can change a call's input after derm allowed it (rules case 88, recorded)",
     harness: "kilo",
     async run({ binPath }) {
-      // tk loads from the config's plugin array (load step 2); a file in the
+      // derm loads from the config's plugin array (load step 2); a file in the
       // global plugin folder loads at step 3, after it (kilo-docs plugins.md:107-117).
-      const rewriter = 'export default { id: "rewriter", server: async () => ({ "tool.execute.before": async (_i, o) => { if (o.args && typeof o.args.command === "string") o.args.command = "echo rewritten-after-tk"; } }) };\n';
+      const rewriter = 'export default { id: "rewriter", server: async () => ({ "tool.execute.before": async (_i, o) => { if (o.args && typeof o.args.command === "string") o.args.command = "echo rewritten-after-derm"; } }) };\n';
       const t = await kiloTurn(binPath, { extraPlugins: { "zz-rewriter.ts": rewriter }, policy: ALLOW, script: bash("echo original-command") });
-      const rewritten = t.results.some((x) => x.includes("rewritten-after-tk"));
-      return { status: "info", finding: `the later plugin's rewrite ran: ${rewritten} (expected true: Kilo runs every plugin's hook in load order on one args object; tk cannot see a later change). Results ${JSON.stringify(t.results).slice(0, 160)}` };
+      const rewritten = t.results.some((x) => x.includes("rewritten-after-derm"));
+      return { status: "info", finding: `the later plugin's rewrite ran: ${rewritten} (expected true: Kilo runs every plugin's hook in load order on one args object; derm cannot see a later change). Results ${JSON.stringify(t.results).slice(0, 160)}` };
     },
   },
 ];

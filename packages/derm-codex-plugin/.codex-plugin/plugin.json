@@ -1,0 +1,5 @@
+{
+  "name": "derm",
+  "version": "0.0.0",
+  "description": "derm policy gate: PreToolUse checks every tool call against ~/.derm/policy.json; PostToolUse redacts secret-like output and records the call in the derm daemon."
+}

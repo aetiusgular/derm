@@ -1,5 +1,5 @@
 // The library browser's data (lane J, T5): one card per catalog entry, built
-// from library/catalog/ and the preset table (crates/tk-cli/src/connect/presets/,
+// from library/catalog/ and the preset table (crates/derm-cli/src/connect/presets/,
 // assembled by contracts/presets.ts) at build time.
 // Everything a card shows is computed here, as plain strings, so the page
 // (page.ts) only escapes and lays them out and the browser runs no logic on
@@ -48,7 +48,7 @@ export type Site = {
 
 const ZERO_HASH = "0".repeat(64);
 
-/** The harnesses `tk connect` knows, in the preset table's order. */
+/** The harnesses `derm connect` knows, in the preset table's order. */
 export function loadHarnesses(dir: string = PRESETS_DIR): Harness[] {
   const t = loadPresetTable(dir) as unknown as { harnesses: { id: string; name: string; write: string }[] };
   return t.harnesses.map((h) => ({ id: h.id, name: h.name, write: h.write === "print" ? "print" : "write" }));
@@ -143,7 +143,7 @@ function trustRows(entry: LoadedEntry): { label: string; value: string }[] {
   return rows;
 }
 
-/** The `tk connect` line per harness for a server, from the root of a tk
+/** The `derm connect` line per harness for a server, from the root of a derm
  *  clone. A host-runner server (the gateway, computer use) has no `--from`
  *  form (integration w1, finding X5); skills and bundles install through an
  *  export. */
@@ -162,22 +162,22 @@ export function addLines(entry: LoadedEntry, harnesses: Harness[]): { lines: Add
         lines: harnesses.map((h) => ({
           harness: h.id,
           name: h.name,
-          line: `tk connect ${h.id} --gateway docker --profile <profile>`,
+          line: `derm connect ${h.id} --gateway docker --profile <profile>`,
           note: h.write === "print" ? "prints the entry; paste it yourself" : undefined,
         })),
         note: "The gateway is connected by profile, not from this file. Dry run by default; --write asks first.",
       };
     }
-    return { lines: [], note: "Runs on your machine as you; it has no tk connect --from line yet (wave 2 lane K for computer use)." };
+    return { lines: [], note: "Runs on your machine as you; it has no derm connect --from line yet (wave 2 lane K for computer use)." };
   }
   return {
     lines: harnesses.map((h) => ({
       harness: h.id,
       name: h.name,
-      line: `tk connect ${h.id} --from ${shellQuote(rel)}`,
+      line: `derm connect ${h.id} --from ${shellQuote(rel)}`,
       note: h.write === "print" ? "prints the entry; paste it yourself" : undefined,
     })),
-    note: "Run from the root of a tk clone. Each line is a dry run: it prints the file and the diff. Add --write to apply it to your user-level file after a yes.",
+    note: "Run from the root of a derm clone. Each line is a dry run: it prints the file and the diff. Add --write to apply it to your user-level file after a yes.",
   };
 }
 

@@ -2,7 +2,7 @@
 
 The measurement in `plans/toolkit_layer_plan.md` T3.5: 20 tasks on Qwen3.8 27B through Pi with the library's MCP servers `deferred` against the same servers `direct`, k of 3, and the same tasks through Claude Code with `ENABLE_TOOL_SEARCH` unset, `auto` and `false`. Results and the host spec are in `plans/parallel/tk_measurement.md` (the project's status doc) and in `results/`.
 
-Nothing here is part of tk. It runs on a machine with the model, not in CI.
+Nothing here is part of derm. It runs on a machine with the model, not in CI.
 
 ## Parts
 
@@ -13,7 +13,7 @@ Nothing here is part of tk. It runs on a machine with the model, not in CI.
 | `tasks.json` | 20 tasks: 16 that need the MCP tools (6 of them two calls in a row, 1 across two servers) and 4 controls that need only built-in tools. Every entity is made up |
 | `stub-server.mjs` | A stdio MCP server that replays one recorded server and answers from the running task. The token a task needs is only in the reply to the right tool with the right arguments. Logs every call |
 | `proxy.mjs` | A loopback pass-through to the model server that records, per request, how many tools were declared, their bytes, the deferred ones, the betas, and the usage the server reported. It stores no prompt text. `--fold-system` moves Claude Code's `role: system` messages into the top-level `system` (see below) |
-| `policy.json` | tk's gate policy for both harnesses: built-ins, `tool_search`/`ToolSearch` and the four servers allowed |
+| `policy.json` | derm's gate policy for both harnesses: built-ins, `tool_search`/`ToolSearch` and the four servers allowed |
 | `run.mjs` | Runs every task under each condition k times, one at a time (k outer, then task, then condition), and appends one scored line per run to `<out>/results.jsonl`; raw harness output to `<out>/raw/` |
 | `summarize.mjs` | The tables |
 
@@ -23,13 +23,13 @@ Nothing here is part of tk. It runs on a machine with the model, not in CI.
 # the model server (llama-swap on 127.0.0.1:8080), then two proxies sharing one state folder
 node proxy.mjs --listen 8091 --upstream http://127.0.0.1:8080 --state $OUT/state
 node proxy.mjs --listen 8093 --upstream http://127.0.0.1:8080 --state $OUT/state --fold-system
-export TKM_PI=$(command -v pi) TKM_CLAUDE=/path/to/claude TKM_TK=/path/to/tk
+export DERMM_PI=$(command -v pi) DERMM_CLAUDE=/path/to/claude DERMM_DERM=/path/to/derm
 node run.mjs --out $OUT/pi --state $OUT/state --tag pi- --conditions pi-deferred,pi-direct --k 3 --tasks all
 node run.mjs --out $OUT/cc --state $OUT/state --tag cc- --proxy http://127.0.0.1:8093 --conditions cc-unset,cc-auto,cc-false --k 3 --tasks all
 node summarize.mjs $OUT/pi/results.jsonl $OUT/cc/results.jsonl
 ```
 
-Pi runs with `PI_CODING_AGENT_DIR` in the output folder (its own `settings.json` with `tk-pi`, `models.json` pointing at the proxy, `mcp.json` with the four stubs at the condition's exposure); Claude Code with `CLAUDE_CONFIG_DIR` there, `ANTHROPIC_BASE_URL` at the proxy, `--mcp-config` with the stubs, tk's plugin through `--plugin-dir`, and `WebFetch` and `WebSearch` disallowed because Pi has neither. Your own `~/.pi/agent`, `~/.claude` and `~/.tk/policy.json` are not read.
+Pi runs with `PI_CODING_AGENT_DIR` in the output folder (its own `settings.json` with `derm-pi`, `models.json` pointing at the proxy, `mcp.json` with the four stubs at the condition's exposure); Claude Code with `CLAUDE_CONFIG_DIR` there, `ANTHROPIC_BASE_URL` at the proxy, `--mcp-config` with the stubs, derm's plugin through `--plugin-dir`, and `WebFetch` and `WebSearch` disallowed because Pi has neither. Your own `~/.pi/agent`, `~/.claude` and `~/.derm/policy.json` are not read.
 
 ## What a pass means
 

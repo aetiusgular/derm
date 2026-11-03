@@ -55,6 +55,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "derm-audit-linux"
+version = "0.0.0"
+dependencies = [
+ "derm-core",
+ "derm-daemon",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "derm-cli"
+version = "0.0.0"
+dependencies = [
+ "derm-audit-linux",
+ "derm-core",
+ "derm-daemon",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml_edit",
+ "uuid",
+]
+
+[[package]]
+name = "derm-core"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "derm-daemon"
+version = "0.0.0"
+dependencies = [
+ "base64",
+ "derm-core",
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,58 +357,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "tk-audit-linux"
-version = "0.0.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "tk-core",
- "tk-daemon",
-]
-
-[[package]]
-name = "tk-cli"
-version = "0.0.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "tk-audit-linux",
- "tk-core",
- "tk-daemon",
- "toml_edit",
- "uuid",
-]
-
-[[package]]
-name = "tk-core"
-version = "0.0.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "tk-daemon"
-version = "0.0.0"
-dependencies = [
- "base64",
- "libc",
- "objc2",
- "objc2-foundation",
- "serde",
- "serde_json",
- "sha2",
- "tk-core",
- "toml",
- "uuid",
 ]
 
 [[package]]

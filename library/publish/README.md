@@ -1,10 +1,10 @@
 # library/publish
 
-`tk publish` (toolkit plan T3.3, lane G): put an entry into tk's library by
+`derm publish` (toolkit plan T3.3, lane G): put an entry into derm's library by
 pull request, with the records a reader needs to judge it.
 
 ```
-node library/publish/cli.ts publish <entry-dir> --library <your clone of aetiusgular/tk>
+node library/publish/cli.ts publish <entry-dir> --library <your clone of aetiusgular/derm>
                             --proof github|dns|http [--key-file <path> | --key-stdin]
                             [--upstream <file>] [--open-pr] [--head-owner <login>]
 node library/publish/cli.ts record (--key-file <path> | --key-stdin)
@@ -26,7 +26,7 @@ node library/publish/cli.ts verify --pr <clone> --base <clone> --author <login> 
    subject is the tarball npm serves and its source is the entry's
    repository; for PyPI, refuses a release with no wheel and records a PEP 740
    attestation on the same terms. Other package kinds (OCI, NuGet, mcpb) are
-   recorded as not checked. tk records what an attestation says and checks it
+   recorded as not checked. derm records what an attestation says and checks it
    is about this package; it does not verify the Sigstore chain
    (`npm audit signatures` does).
 4. **Namespace**, as the official registry decides it:
@@ -40,17 +40,17 @@ node library/publish/cli.ts verify --pr <clone> --base <clone> --author <login> 
      uses. `record` prints the line for a key.
    - github.io never proves a namespace; IP addresses and single labels never do.
 5. **Records** `contentSha256` (SHA-256 of the RFC 8785 form of the manifest
-   without tk's trust record, plus every other file in the folder),
+   without derm's trust record, plus every other file in the folder),
    `namespaceProof` and `provenance` into the manifest, and writes
    `publish-proof.json` beside it.
 6. **The pull request**, in your clone: a branch `publish/<id>-<version>`, the
    folder copied to `library/catalog/<id>/`, one commit in your git identity,
-   a push of that branch, `gh pr create --repo aetiusgular/tk`. Printed by
+   a push of that branch, `gh pr create --repo aetiusgular/derm`. Printed by
    default; `--open-pr` runs it. Every step is an argument list.
-7. **Upstream** (`--upstream <file>`): a copy of server.json with tk's object
+7. **Upstream** (`--upstream <file>`): a copy of server.json with derm's object
    trimmed until the publisher `_meta` object fits the official registry's
    4,096 bytes as Go measures it, and the `mcp-publisher` lines to publish it
-   with your own login. tk never publishes upstream and never opens a pull
+   with your own login. derm never publishes upstream and never opens a pull
    request against `modelcontextprotocol/registry` (its README: publishing
    never happens there by pull request).
 

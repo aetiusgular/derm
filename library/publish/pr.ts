@@ -1,4 +1,4 @@
-// The pull request `tk publish` opens against tk's library (lane G, T3.3).
+// The pull request `derm publish` opens against derm's library (lane G, T3.3).
 //
 // In the publisher's own clone of the library (a fork, or the repository
 // itself for its owner): a branch, the entry copied to library/catalog/<id>/
@@ -14,7 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { stableText } from "../mirror/store.ts";
 import { PROOF_FILE, type PublishProof } from "./publish.ts";
 
-export const LIBRARY_REPO = "aetiusgular/tk";
+export const LIBRARY_REPO = "aetiusgular/derm";
 
 export type Step = { argv: string[]; why: string } | { copy: { from: string; to: string }; why: string } | { write: { path: string; text: string; exclusive?: boolean }; why: string };
 
@@ -44,7 +44,7 @@ export function prSteps(o: { clone: string; entryDir: string; manifestFile: stri
   const dest = join(clone, "library", "catalog", o.proof.entry);
   const branch = branchFor(o.proof);
   // Outside the clone, so it is never committed; a fresh name, opened exclusively.
-  const bodyPath = join(tmpdir(), `tk-publish-${randomUUID()}.md`);
+  const bodyPath = join(tmpdir(), `derm-publish-${randomUUID()}.md`);
   return [
     { argv: ["git", "-C", clone, "checkout", "-b", branch], why: "a branch for this version" },
     { copy: { from: resolve(o.entryDir), to: dest }, why: "the entry into the catalog" },

@@ -11,7 +11,7 @@
 #
 # Network: GitHub, PyPI and github.com for the installs; SkillSpector's OSV
 # lookup reaches api.osv.dev (no off switch in 2.13.2); Cisco's YARA scan
-# makes no call. `osv` (TK_TRUST_ONLINE) is not run here.
+# makes no call. `osv` (DERM_TRUST_ONLINE) is not run here.
 #
 # Action pins are lane G's (library/mirror/ci/mirror.yml on wip/G-mirror at
 # e4e3b3f), taken as G recorded them.
@@ -60,7 +60,7 @@ jobs:
         run: node library/trust/cli.ts names
       - name: Scans due
         env:
-          TK_TRUST_SCAN: "1"
+          DERM_TRUST_SCAN: "1"
         run: |
           node library/trust/cli.ts due
           node library/trust/cli.ts scan

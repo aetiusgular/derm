@@ -7,7 +7,7 @@
 // serves them online as POST /v0.1/validate (docs/reference/api/
 // official-registry-api.md:125, handler internal/api/handlers/v0/validate.go),
 // used by `mcp-publisher validate`; that endpoint is not in openapi.yaml.
-// `checkUpstreamOnline` calls it only when TK_LIBRARY_ONLINE=1, because the
+// `checkUpstreamOnline` calls it only when DERM_LIBRARY_ONLINE=1, because the
 // daemon and the validator make no outbound call by default (rules section 5,
 // item 8); the cloud workspace cannot reach the host at all.
 import { execFile } from "node:child_process";
@@ -134,9 +134,9 @@ export function checkUpstreamSemantics(data: Record<string, unknown>): Finding[]
 
 export type UpstreamResult = { valid: boolean; issues: { type: string; path: string; message: string; severity: string; reference: string }[] };
 
-/** POST /v0.1/validate. Only when TK_LIBRARY_ONLINE=1; `fetchImpl` is injectable for tests. */
+/** POST /v0.1/validate. Only when DERM_LIBRARY_ONLINE=1; `fetchImpl` is injectable for tests. */
 export async function checkUpstreamOnline(data: unknown, fetchImpl: typeof fetch = fetch): Promise<Finding[]> {
-  if (process.env["TK_LIBRARY_ONLINE"] !== "1") return [];
+  if (process.env["DERM_LIBRARY_ONLINE"] !== "1") return [];
   let result: UpstreamResult;
   try {
     const res = await fetchImpl(UPSTREAM_VALIDATE_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
@@ -149,9 +149,9 @@ export async function checkUpstreamOnline(data: unknown, fetchImpl: typeof fetch
 }
 
 /** `skills-ref validate <dir>` (agentskills reference library 0.1.0), when it
- *  is on PATH and TK_LIBRARY_SKILLS_REF=1. Exit 1 means errors on stderr. */
+ *  is on PATH and DERM_LIBRARY_SKILLS_REF=1. Exit 1 means errors on stderr. */
 export async function checkSkillsRef(skillDir: string, exec: typeof execFileAsync = execFileAsync): Promise<Finding[]> {
-  if (process.env["TK_LIBRARY_SKILLS_REF"] !== "1") return [];
+  if (process.env["DERM_LIBRARY_SKILLS_REF"] !== "1") return [];
   try {
     await exec("skills-ref", ["validate", skillDir], { timeout: 30_000 });
     return [];

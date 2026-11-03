@@ -12,8 +12,8 @@
 // changes after approval (note AP section 5).
 //
 // The pin is the hash every matcher checks: SHA-256 of the description's
-// UTF-8 bytes, unnormalized (packages/tk-claude-plugin/src/core/policy.ts:454,
-// packages/tk-pi/src/policy.ts:367, crates/tk-core/src/policy.rs:557).
+// UTF-8 bytes, unnormalized (packages/derm-claude-plugin/src/core/policy.ts:454,
+// packages/derm-pi/src/policy.ts:367, crates/derm-core/src/policy.rs:557).
 
 import { createHash } from "node:crypto";
 import type { ToolsRecord } from "../validate/types.ts";
@@ -190,7 +190,7 @@ export function capabilityDrift(prev: Manifest, next: Manifest): { fromVersion: 
 /**
  * Harnesses whose gate hands the matcher the tool's description, so a pin can
  * hold there. Pi's gate reads it from `pi.getAllTools()`
- * (packages/tk-pi/extensions/gate.ts:79). The Claude Code, Codex and OpenCode
+ * (packages/derm-pi/extensions/gate.ts:79). The Claude Code, Codex and OpenCode
  * hooks pass none (their hook input carries none), and a pinned `allow` with
  * no description on the call is `ask` (contracts/policy.md section 5 step 6),
  * so a pin there would turn every allow into an ask.
@@ -231,7 +231,7 @@ export type Pins = { rules: PinRule[]; skipped: { tool: string; reason: string }
  * The rules that pin each approved tool's description for one harness. The
  * caller passes the tools the user approved; a tool with no recorded
  * description gets no pin (it would always ask) and is listed. Printed for the
- * user or for `tk connect`; lane H never writes the policy file, which is a
+ * user or for `derm connect`; lane H never writes the policy file, which is a
  * control file the gate guards (contracts/policy.md section 4 step 7a).
  */
 export function pinsFor(manifest: Manifest, serverId: string, harness: string, approved: readonly string[] = manifest.tools.map((t) => t.name)): Pins {

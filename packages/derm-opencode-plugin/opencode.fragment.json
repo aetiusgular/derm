@@ -1,0 +1,10 @@
+{
+  "$comment": "A fragment for ~/.config/opencode/opencode.json. `plugin` loads the derm gate from your clone: replace /ABSOLUTE/PATH/TO/derm with the clone's absolute path (OpenCode 1.19.4 loads a file: URL or path, plugin/shared.ts:171-189; a bare name is fetched from npm as <name>@latest, shared.ts:207-212, and derm-opencode-plugin is not published; integration w2, lane J's request 3; the box test ran F1 this way); `permission` keeps OpenCode's own prompts as a second layer for the tools that run or write (keys from OpenCode 1.19.4, packages/core/src/v1/config/permission.ts). derm connect prints this; it never writes a project-level opencode.json.",
+  "plugin": ["file:///ABSOLUTE/PATH/TO/derm/packages/derm-opencode-plugin"],
+  "permission": {
+    "bash": "ask",
+    "edit": "ask",
+    "webfetch": "ask",
+    "external_directory": "ask"
+  }
+}

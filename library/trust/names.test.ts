@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { domainToASCII } from "node:url";
 import { describe, expect, it } from "vitest";
-import { fold as coreFold } from "../../packages/tk-claude-plugin/src/core/fold.ts";
+import { fold as coreFold } from "../../packages/derm-claude-plugin/src/core/fold.ts";
 import { loadCatalog } from "../validate/catalog.ts";
 import { fold, skeleton } from "./fold.ts";
 import { CATALOG_DIR, identityOf, loadBrands, loadReserved, mergeBrands, TRUST_DIR } from "./identity.ts";
@@ -138,8 +138,8 @@ describe("lookalikes (plan T4.3; UpGuard, note AP section 5)", () => {
   });
 
   it("compares short brands by equality only", () => {
-    expect(likeness("tq", "tk")).toBeUndefined();
-    expect(likeness("tk", "tk")?.kind).toBe("equal");
+    expect(likeness("tq", "derm")).toBeUndefined();
+    expect(likeness("derm", "derm")?.kind).toBe("equal");
   });
 });
 
@@ -183,7 +183,7 @@ describe("reserved names", () => {
     const anthropic: Identity = { namespace: "io.github.anthropics", hosts: [], images: [], packages: [] };
     expect(checkName({ id: "claude-code", identity: anthropic }, { brands: [], reserved })).toEqual([]);
     const tony: Identity = { namespace: "io.github.aetiusgular", hosts: [], images: [], packages: [] };
-    expect(checkName({ id: "tk-computer-use", identity: tony }, { brands: [], reserved })).toEqual([]);
+    expect(checkName({ id: "derm-computer-use", identity: tony }, { brands: [], reserved })).toEqual([]);
   });
 });
 
@@ -227,7 +227,7 @@ describe("brand lists", () => {
   });
 
   it("holds lane E's seed brands and the reserved list", () => {
-    expect(brands.map((b) => b.name)).toEqual(expect.arrayContaining(["exa", "context7", "hubspot", "tk"]));
+    expect(brands.map((b) => b.name)).toEqual(expect.arrayContaining(["exa", "context7", "hubspot", "derm"]));
     for (const r of reserved) {
       expect(r.name).toMatch(/^[a-z0-9-]+$/);
       expect(Array.isArray(r.namespaces)).toBe(true);

@@ -31,8 +31,8 @@
         {
           "type": "named",
           "name": "--profile",
-          "value": "tk",
-          "description": "The profile tk connect exported (library/export/docker-profile.ts); HTTP mode on the box is --transport streaming with MCP_GATEWAY_AUTH_TOKEN (box plan 5.5), reachable at http://127.0.0.1:8811/mcp, which upstream will not list as a remote (https only)"
+          "value": "derm",
+          "description": "The profile derm connect exported (library/export/docker-profile.ts); HTTP mode on the box is --transport streaming with MCP_GATEWAY_AUTH_TOKEN (box plan 5.5), reachable at http://127.0.0.1:8811/mcp, which upstream will not list as a remote (https only)"
         }
       ],
       "transport": {
@@ -42,7 +42,7 @@
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "server",
         "tier": "own",
         "status": "active",

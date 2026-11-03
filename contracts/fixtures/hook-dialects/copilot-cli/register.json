@@ -5,7 +5,7 @@
       {
         "type": "command",
         "matcher": "bash",
-        "bash": "/ABSOLUTE/PATH/TO/tk-hook",
+        "bash": "/ABSOLUTE/PATH/TO/derm-hook",
         "timeoutSec": 30
       }
     ]

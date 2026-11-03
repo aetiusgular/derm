@@ -6,7 +6,7 @@
 // Checks the lane's committed work (merge-base of <base> and HEAD to HEAD)
 // against scripts/lane-ownership.json:
 //   - every added, changed or deleted path is inside the lane's folders;
-//   - a shared file (crates/tk-cli/Cargo.toml) changes only inside the
+//   - a shared file (crates/derm-cli/Cargo.toml) changes only inside the
 //     lane's own `# [lane-X]` section, and no marker moves or disappears;
 //   - no new test file under packages/ or library/ that vitest would not
 //     collect (*.test.tsx, *.test.js, *.test.mjs, *.spec.*).

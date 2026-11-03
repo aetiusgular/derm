@@ -1,7 +1,9 @@
 # Activity collector protocol
 
-Wave 3, lane B. The contract between MonoCode (`src-tauri/src/activity/`) and
-the collector daemon in this folder. Both sides build against this file.
+Wave 3, lane B, written for MonoCode (`src-tauri/src/activity/`); since the
+toolkit build the other side is derm-daemon (`crates/derm-daemon/src/activity/`).
+The contract between it and the collector daemon in this folder. Both sides
+build against this file.
 
 Detection only. Nothing here blocks an action.
 
@@ -9,10 +11,10 @@ Detection only. Nothing here blocks an action.
 
 | What | Where | Owner, mode |
 |---|---|---|
-| The daemon | `/Library/PrivilegedHelperTools/com.monocode.desktop.activity-collector` | root:wheel 0755 |
-| Its launchd job | `/Library/LaunchDaemons/com.monocode.desktop.activity-collector.plist`, label `com.monocode.desktop.activity-collector` | root:wheel 0644 |
-| Sockets | `/var/run/monocode-activity/register.sock`, `/var/run/monocode-activity/read.sock` | folder root:wheel 0755, sockets 0666 (every caller is checked, see below) |
-| Log | `/Library/Application Support/MonoCode/activity/es-YYYY-MM-DD.jsonl`, rolled to `.jsonl.gz` | folder root:wheel 0700, files 0600 |
+| The daemon | `/Library/PrivilegedHelperTools/io.github.aetiusgular.derm.activity-collector` | root:wheel 0755 |
+| Its launchd job | `/Library/LaunchDaemons/io.github.aetiusgular.derm.activity-collector.plist`, label `io.github.aetiusgular.derm.activity-collector` | root:wheel 0644 |
+| Sockets | `/var/run/derm-activity/register.sock`, `/var/run/derm-activity/read.sock` | folder root:wheel 0755, sockets 0666 (every caller is checked, see below) |
+| Log | `/Library/Application Support/derm/activity/es-YYYY-MM-DD.jsonl`, rolled to `.jsonl.gz` | folder root:wheel 0700, files 0600 |
 
 When installed through `SMAppService`, the binary and plist live in the app
 bundle and launchd runs them from there; the sockets and log are the same.
@@ -32,10 +34,11 @@ stands in for writes).
 
 ## Caller check
 
-Both sockets accept a connection only from MonoCode. On macOS the daemon reads
+Both sockets accept a connection only from derm-daemon. On macOS the daemon reads
 the peer's audit token (`LOCAL_PEERTOKEN`) and checks its code signature
 against a requirement built from the daemon's own designated requirement, with
-the identifier swapped for the app's (`com.monocode.desktop`). So the peer must
+the identifier swapped for the peer's (`io.github.aetiusgular.derm`, `caller.rs`
+`PEER_ID`). So the peer must
 be signed by the same certificate as the daemon. A daemon whose own
 requirement cannot be read, or does not start with `identifier "<own id>" and `,
 refuses every caller (fail closed).

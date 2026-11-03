@@ -12,7 +12,7 @@
 //                core upstream-registry.schema.json, read 27 Oct 2026)
 //   registry.json the official registry's list shape (openapi.yaml ServerList)
 // Every export is a pure function of the catalog; nothing is fetched.
-import type { Catalog, LoadedEntry, TkMeta } from "../validate/types.ts";
+import type { Catalog, LoadedEntry, DermMeta } from "../validate/types.ts";
 import { getMeta, isRecord } from "../validate/types.ts";
 import { toYaml, type YamlValue } from "./yaml.ts";
 
@@ -27,7 +27,7 @@ export type ExportOptions = {
   now?: string;
 };
 
-const DEFAULT_REPO = "https://github.com/aetiusgular/tk.git";
+const DEFAULT_REPO = "https://github.com/aetiusgular/derm.git";
 export const PLACEHOLDER_SHA = "0".repeat(40);
 
 function json(v: unknown): string {
@@ -46,15 +46,15 @@ function setEntries(catalog: Catalog, setId: string): { set: { title: string; de
   return { set, entries };
 }
 
-function metaOf(e: LoadedEntry): TkMeta {
+function metaOf(e: LoadedEntry): DermMeta {
   const m = getMeta(e.kind, e.data);
-  if (!m) throw new Error(`${e.id}: no tk meta`);
+  if (!m) throw new Error(`${e.id}: no derm meta`);
   return m;
 }
 
 /**
  * The environment variable a placeholder or a valueless secret header reads,
- * named as tk connect names it (crates/tk-cli/src/connect/spec.rs
+ * named as derm connect names it (crates/derm-cli/src/connect/spec.rs
  * `env_name_for`): upper case, anything not a letter or digit becomes `_`.
  */
 export function envNameFor(name: string): string {
@@ -66,7 +66,7 @@ export function envNameFor(name: string): string {
  * placeholder form (integration w1): a value `prefix{var}` becomes
  * `prefix${VAR}`, a secret header with no value becomes `${NAME}`, a plain
  * literal stays. Anything else (more than one placeholder, a placeholder
- * mid-value) is left out, as tk connect refuses it.
+ * mid-value) is left out, as derm connect refuses it.
  */
 function headerValue(h: Record<string, unknown>): string | undefined {
   const name = h["name"] as string;
@@ -154,7 +154,7 @@ export function exportMarketplace(catalog: Catalog, setId: string, opts: ExportO
         version: String(e.data["version"] ?? "0.0.0"),
         source: { source: "git-subdir", url: opts.repoUrl ?? DEFAULT_REPO, path: `library/catalog/${e.id}`, ref: "main", sha: opts.sha },
         strict: true,
-        metadata: { "io.github.aetiusgular.tk": { kind: meta.kind, tier: meta.tier, runner: meta.runner } },
+        metadata: { "io.github.aetiusgular.derm": { kind: meta.kind, tier: meta.tier, runner: meta.runner } },
       });
     } else if (e.kind === "server") {
       const server = pluginMcpServer(e, meta);
@@ -163,10 +163,10 @@ export function exportMarketplace(catalog: Catalog, setId: string, opts: ExportO
         name: e.id,
         version: String(e.data["version"] ?? "0.0.0"),
         description: String(e.data["description"] ?? "") + (meta.runner.kind === "host" ? " Runs as you, outside every sandbox." : ""),
-        author: { name: "tk library export" },
+        author: { name: "derm library export" },
         license: "MIT",
         mcpServers: { [e.id]: server },
-        metadata: { "io.github.aetiusgular.tk": meta },
+        metadata: { "io.github.aetiusgular.derm": meta },
       };
       files.push({ path: `claude/plugins/${e.id}/.claude-plugin/plugin.json`, content: json(manifest) });
       plugins.push({
@@ -182,7 +182,7 @@ export function exportMarketplace(catalog: Catalog, setId: string, opts: ExportO
   }
   const marketplace = {
     // One marketplace per set: a user registers one marketplace per name.
-    name: `tk-${setId}`,
+    name: `derm-${setId}`,
     description: `${set.title}: ${set.description}`,
     owner: { name: "Aetius Gular", url: "https://github.com/aetiusgular" },
     metadata: { version: "0.1.0" },
@@ -193,7 +193,7 @@ export function exportMarketplace(catalog: Catalog, setId: string, opts: ExportO
 }
 
 /** The mcpServers entry Claude Code's plugin.json takes (code.claude.com/docs/en/plugins/manifest-reference, as session 0 read it). */
-function pluginMcpServer(e: LoadedEntry, meta: TkMeta): Record<string, unknown> | undefined {
+function pluginMcpServer(e: LoadedEntry, meta: DermMeta): Record<string, unknown> | undefined {
   const remote = remoteOf(e);
   if (remote) {
     const headers: Record<string, string> = {};
@@ -226,7 +226,7 @@ export function exportPi(catalog: Catalog, setId: string, opts: ExportOptions): 
       files.push({ path: `pi/${e.id}/package.json`, content: json(pkg) });
       files.push({
         path: `pi/${e.id}/README.md`,
-        content: `# ${e.id}\n\nA Pi package of the skills in the tk bundle \`${e.id}\`. Install with \`pi install git:github.com/aetiusgular/tk@${opts.sha.slice(0, 12)}\` once the package sits at a repository root, or copy this folder beside the bundle's \`skills/\` and run \`pi install ./${e.id}\`.\n\nThe skills come from \`library/catalog/${e.id}/skills/\` at ${opts.sha}.\n`,
+        content: `# ${e.id}\n\nA Pi package of the skills in the derm bundle \`${e.id}\`. Install with \`pi install git:github.com/aetiusgular/derm@${opts.sha.slice(0, 12)}\` once the package sits at a repository root, or copy this folder beside the bundle's \`skills/\` and run \`pi install ./${e.id}\`.\n\nThe skills come from \`library/catalog/${e.id}/skills/\` at ${opts.sha}.\n`,
       });
     } else if (e.kind === "server") {
       const exposure = meta.exposure["pi"] ?? meta.exposure.default;
@@ -246,7 +246,7 @@ export function exportPi(catalog: Catalog, setId: string, opts: ExportOptions): 
   files.push({ path: "pi/mcp.json", content: json({ mcpServers }) });
   files.push({
     path: "pi/README.md",
-    content: `# Pi export of the set \`${setId}\` (${set.title})\n\n\`mcp.json\` is a fragment of \`~/.pi/agent/mcp.json\` (Pi docs/mcp.md at v1.4.0): every server of the set with its description and exposure. \`tk connect pi\` (lane C) is what writes it; by hand, merge the \`mcpServers\` entries and run \`pi mcp list\`. Secrets stay \`\${VAR}\` references. Each bundle folder is a Pi package (\`pi install ./<bundle>\` beside the bundle's skills).\n`,
+    content: `# Pi export of the set \`${setId}\` (${set.title})\n\n\`mcp.json\` is a fragment of \`~/.pi/agent/mcp.json\` (Pi docs/mcp.md at v1.4.0): every server of the set with its description and exposure. \`derm connect pi\` (lane C) is what writes it; by hand, merge the \`mcpServers\` entries and run \`pi mcp list\`. Secrets stay \`\${VAR}\` references. Each bundle folder is a Pi package (\`pi install ./<bundle>\` beside the bundle's skills).\n`,
   });
   return files;
 }
@@ -275,8 +275,8 @@ export function exportDockerProfile(catalog: Catalog, setId: string): ExportFile
       skipped.push(e.id);
     }
   }
-  const profile: Record<string, YamlValue> = { version: 1, id: `tk-${setId}`, name: `tk: ${set.title}`, servers };
-  const readme = `# Docker MCP Gateway profile for the set \`${setId}\`\n\nImport: \`docker mcp profile import ./profile.yaml\` (or \`profile.json\`), then \`docker mcp gateway run --profile tk-${setId}\` or \`docker mcp client connect <client> --profile tk-${setId}\`. The profiles feature must be on (\`docker mcp feature enable profiles\`; Docker Desktop: the MCPWorkingSets flag). Format: version 1 of docker/mcp-gateway pkg/workingset at 7e0f342 (27 Oct 2026): image servers carry a snapshot so the import needs no pull; remote servers import without one; \`tools\` lists the recorded tool names so the gateway exposes nothing else.\n\n${skipped.length ? `Not in the profile (they run as you, outside the gateway): ${skipped.join(", ")}.\n` : ""}Secrets are not in the profile: the gateway's secret store holds them (\`docker mcp secret set\`).\n`;
+  const profile: Record<string, YamlValue> = { version: 1, id: `derm-${setId}`, name: `derm: ${set.title}`, servers };
+  const readme = `# Docker MCP Gateway profile for the set \`${setId}\`\n\nImport: \`docker mcp profile import ./profile.yaml\` (or \`profile.json\`), then \`docker mcp gateway run --profile derm-${setId}\` or \`docker mcp client connect <client> --profile derm-${setId}\`. The profiles feature must be on (\`docker mcp feature enable profiles\`; Docker Desktop: the MCPWorkingSets flag). Format: version 1 of docker/mcp-gateway pkg/workingset at 7e0f342 (27 Oct 2026): image servers carry a snapshot so the import needs no pull; remote servers import without one; \`tools\` lists the recorded tool names so the gateway exposes nothing else.\n\n${skipped.length ? `Not in the profile (they run as you, outside the gateway): ${skipped.join(", ")}.\n` : ""}Secrets are not in the profile: the gateway's secret store holds them (\`docker mcp secret set\`).\n`;
   return [
     { path: "docker/profile.yaml", content: toYaml(profile) },
     { path: "docker/profile.json", content: json(profile) },
@@ -284,7 +284,7 @@ export function exportDockerProfile(catalog: Catalog, setId: string): ExportFile
   ];
 }
 
-function hostsWithPorts(meta: TkMeta): string[] {
+function hostsWithPorts(meta: DermMeta): string[] {
   const out = meta.permissions?.network?.outbound;
   if (!out?.allow_host) return [];
   const ports = out.allow_port && out.allow_port.length ? out.allow_port : [443];

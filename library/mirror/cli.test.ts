@@ -26,7 +26,7 @@ describe("mirror command line", () => {
     reg.publish(remoteServer("io.github.tt/two", "2.0.0", "https://two.example.com/mcp"));
     const { server, baseUrl } = await reg.listen();
     try {
-      const out = mkdtempSync(join(tmpdir(), "tk-mirror-cli-"));
+      const out = mkdtempSync(join(tmpdir(), "derm-mirror-cli-"));
       const r = await run(["pull", "--out", out, "--base-url", baseUrl, "--no-probe"]);
       expect(r.code, r.stderr).toBe(0);
       const report = JSON.parse(r.stdout);
@@ -41,7 +41,7 @@ describe("mirror command line", () => {
   it("exits 2 on a bad argument and 1 on an unreachable registry without moving state", async () => {
     expect((await run(["pull"])).code).toBe(2);
     expect((await run(["pull", "--out", "x", "--cap", "-3"])).code).toBe(2);
-    const out = mkdtempSync(join(tmpdir(), "tk-mirror-cli-"));
+    const out = mkdtempSync(join(tmpdir(), "derm-mirror-cli-"));
     const r = await run(["pull", "--out", out, "--base-url", "http://127.0.0.1:9", "--no-probe", "--max-pages", "1", "--attempts", "1"]);
     expect(r.code).toBe(1);
     expect(existsSync(join(out, "state.json"))).toBe(false);

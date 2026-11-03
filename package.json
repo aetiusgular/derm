@@ -1,5 +1,5 @@
 {
-  "name": "tk-workspace",
+  "name": "derm-workspace",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -7,18 +7,18 @@
     "node": ">=22.19.0"
   },
   "workspaces": [
-    "packages/tk-pi",
-    "packages/tk-claude-plugin",
-    "packages/tk-codex-plugin",
-    "packages/tk-opencode-plugin",
-    "packages/tk-gemini-extension",
-    "packages/tk-hermes-plugin",
-    "packages/tk-openclaw-plugin",
-    "packages/tk-kilo-plugin",
-    "packages/tk-hooks-claude-compat",
-    "packages/tk-hooks-native",
-    "packages/tk-amp-plugin",
-    "packages/tk-cline",
+    "packages/derm-pi",
+    "packages/derm-claude-plugin",
+    "packages/derm-codex-plugin",
+    "packages/derm-opencode-plugin",
+    "packages/derm-gemini-extension",
+    "packages/derm-hermes-plugin",
+    "packages/derm-openclaw-plugin",
+    "packages/derm-kilo-plugin",
+    "packages/derm-hooks-claude-compat",
+    "packages/derm-hooks-native",
+    "packages/derm-amp-plugin",
+    "packages/derm-cline",
     "library"
   ],
   "scripts": {

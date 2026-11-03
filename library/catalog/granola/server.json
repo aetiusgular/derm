@@ -18,7 +18,7 @@
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "server",
         "tier": "own",
         "status": "active",

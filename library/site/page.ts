@@ -107,7 +107,7 @@ function card(c: Card): string {
   const trust = c.trust.map((t) => row(t.label, t.value)).join("");
   const warnings = c.warnings.length ? `<ul class="warn">${c.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
   const add = c.add.length
-    ? `<details><summary>Add with tk connect</summary><p class="meta">${esc(c.addNote)}</p><table>${c.add
+    ? `<details><summary>Add with derm connect</summary><p class="meta">${esc(c.addNote)}</p><table>${c.add
         .map((a) => `<tr><td>${esc(a.name)}</td><td><code class="line">${esc(a.line)}</code>${a.note ? ` <span class="meta">${esc(a.note)}</span>` : ""}</td></tr>`)
         .join("")}</table></details>`
     : `<p class="meta">${esc(c.addNote)}</p>`;
@@ -130,12 +130,12 @@ export function renderPage(site: Site): string {
 <meta http-equiv="Content-Security-Policy" content="${esc(csp())}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>tk library</title>
+<title>derm library</title>
 <style>${STYLE}</style>
 </head>
 <body>
 <header>
-<h1>tk library</h1>
+<h1>derm library</h1>
 <p class="sub">${site.cards.length} entries. Built ${esc(site.builtAt)} from commit <code>${esc(site.commit.slice(0, 12))}</code>. Records are shown with their dates; none of them says an entry is safe.</p>
 <div class="bar">
 <input id="q" type="search" placeholder="Search names, tools, descriptions" aria-label="Search">

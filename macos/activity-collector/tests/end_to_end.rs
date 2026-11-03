@@ -11,9 +11,9 @@ use std::io::{BufReader, Cursor};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use monocode_activity_collector::event::ActivityEvent;
-use monocode_activity_collector::log::{self, LogWriter};
-use monocode_activity_collector::replay::{self, Setup};
+use derm_activity_collector::event::ActivityEvent;
+use derm_activity_collector::log::{self, LogWriter};
+use derm_activity_collector::replay::{self, Setup};
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -164,7 +164,7 @@ fn log_verifies_then_catches_edit_and_cut() {
     assert_eq!(report.first_bad_line, Some(events.len()));
 
     // The `verify` mode reports the same.
-    let bin = env!("CARGO_BIN_EXE_monocode-activity-collector");
+    let bin = env!("CARGO_BIN_EXE_derm-activity-collector");
     let good = Command::new(bin).arg("verify").arg(&path).output().unwrap();
     assert!(good.status.success());
     let v: serde_json::Value = serde_json::from_slice(&good.stdout).unwrap();
@@ -191,7 +191,7 @@ fn log_verifies_then_catches_edit_and_cut() {
 
 #[test]
 fn parse_fixture_mode_matches_the_library() {
-    let bin = env!("CARGO_BIN_EXE_monocode-activity-collector");
+    let bin = env!("CARGO_BIN_EXE_derm-activity-collector");
     let out = Command::new(bin)
         .args([
             "parse-fixture",

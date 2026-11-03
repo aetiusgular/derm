@@ -1,7 +1,7 @@
-// Lane I: contract checks for the tk OpenClaw plugin (T2.4) against the real
+// Lane I: contract checks for the derm OpenClaw plugin (T2.4) against the real
 // OpenClaw CLI, `openclaw agent exec` (no gateway), with a fake
 // chat-completions server as the model (docs/gateway/local-models.md:141-187)
-// and the plugin loaded from plugins.load.paths with plugins.entries.tk.enabled
+// and the plugin loaded from plugins.load.paths with plugins.entries.derm.enabled
 // (docs/plugins/hooks/tool-policy.md:184-213). OpenClaw 2026.10.8 needs Node
 // 24.22.1 or later (package.json engines): pass its folder as OPENCLAW_NODE_BIN,
 // or have it first on PATH.
@@ -14,10 +14,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
-import { startFakeDaemon } from "../../../../packages/tk-claude-plugin/src/testing/fakeDaemon.ts";
+import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "tk-openclaw-plugin");
+const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-openclaw-plugin");
 
 function run(bin, args, env, cwd, seconds = 180) {
   return new Promise((resolve) => {
@@ -34,20 +34,20 @@ function run(bin, args, env, cwd, seconds = 180) {
   });
 }
 
-/** One `openclaw agent exec` turn; `extraPlugins` are written as plugin folders and loaded beside tk. */
+/** One `openclaw agent exec` turn; `extraPlugins` are written as plugin folders and loaded beside derm. */
 async function ocTurn(bin, { policy, script, approve = "none", extraPlugins = {} }) {
   const fake = await startFakeChat({ script });
   const daemon = await startFakeDaemon({ approve, root: "/tmp" });
-  const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "openclaw-tk-"));
+  const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "openclaw-derm-"));
   const home = path.join(root, "home");
   const work = path.join(root, "work");
-  mkdirSync(path.join(home, ".tk"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(home, ".derm"), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(home, ".openclaw"), { recursive: true });
   mkdirSync(work);
-  const policyFile = path.join(home, ".tk", "policy.json");
+  const policyFile = path.join(home, ".derm", "policy.json");
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
   const paths = [PLUGIN];
-  const entries = { tk: { enabled: true } };
+  const entries = { derm: { enabled: true } };
   for (const [id, source] of Object.entries(extraPlugins)) {
     const dir = path.join(root, "plugins", id);
     mkdirSync(dir, { recursive: true });
@@ -65,7 +65,7 @@ async function ocTurn(bin, { policy, script, approve = "none", extraPlugins = {}
   const cfg = path.join(home, ".openclaw", "openclaw.json");
   writeFileSync(cfg, JSON.stringify(config, null, 1));
   const nodeBin = process.env.OPENCLAW_NODE_BIN;
-  const env = { PATH: nodeBin ? `${nodeBin}:${process.env.PATH}` : process.env.PATH, HOME: home, OPENCLAW_CONFIG_PATH: cfg, TK_POLICY: policyFile, NO_COLOR: "1", ...daemon.env() };
+  const env = { PATH: nodeBin ? `${nodeBin}:${process.env.PATH}` : process.env.PATH, HOME: home, OPENCLAW_CONFIG_PATH: cfg, DERM_POLICY: policyFile, NO_COLOR: "1", ...daemon.env() };
   try {
     const r = await run(bin, ["agent", "exec", "run the step", "--model", "local/fake-model", "--cwd", work, "--json", "--timeout", "120"], env, work);
     return { r, results: toolResults(fake), turns: fake.turns().length, daemon: { events: daemon.events(), approvals: daemon.approvals() } };
@@ -81,7 +81,7 @@ const ALLOW = { version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action
 
 export const checks = [
   {
-    id: "openclaw-tk-allow",
+    id: "openclaw-derm-allow",
     title: "An allowed exec runs; the daemon gets the decision and the result record",
     harness: "openclaw",
     async run({ binPath }) {
@@ -93,18 +93,18 @@ export const checks = [
     },
   },
   {
-    id: "openclaw-tk-deny",
-    title: "A denied exec does not run; the model gets tk's reason",
+    id: "openclaw-derm-deny",
+    title: "A denied exec does not run; the model gets derm's reason",
     harness: "openclaw",
     async run({ binPath }) {
       const t = await ocTurn(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "deny" }] }, script: execCall("echo oc-denied-ran") });
       const ran = t.results.some((x) => x.includes("oc-denied-ran"));
-      const reason = t.results.some((x) => x.includes("tk: rule bash"));
+      const reason = t.results.some((x) => x.includes("derm: rule bash"));
       return { status: !ran && reason ? "pass" : "fail", finding: `ran ${ran}; reason ${reason}; ${JSON.stringify(t.results).slice(0, 200)}` };
     },
   },
   {
-    id: "openclaw-tk-shell-check",
+    id: "openclaw-derm-shell-check",
     title: "OpenClaw's exec gets the shell-text check (case 82): a glob under bash: allow is asked, and with no approver in exec mode it does not run",
     harness: "openclaw",
     async run({ binPath }) {
@@ -114,8 +114,8 @@ export const checks = [
     },
   },
   {
-    id: "openclaw-tk-ask-approver",
-    title: "An ask goes to the tk approver; a yes runs the call",
+    id: "openclaw-derm-ask-approver",
+    title: "An ask goes to the derm approver; a yes runs the call",
     harness: "openclaw",
     async run({ binPath }) {
       const t = await ocTurn(binPath, { approve: "yes", policy: { version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }] }, script: execCall("echo oc-approved-ran") });
@@ -125,28 +125,28 @@ export const checks = [
     },
   },
   {
-    id: "openclaw-tk-runs-last",
-    title: "A higher-priority plugin's params rewrite is replaced by the params tk checked (case 88)",
+    id: "openclaw-derm-runs-last",
+    title: "A higher-priority plugin's params rewrite is replaced by the params derm checked (case 88)",
     harness: "openclaw",
     async run({ binPath }) {
-      const rewriter = 'export default { id: "rewriter", name: "rewriter", description: "test", register(api) { api.on("before_tool_call", (event) => (event.toolName === "exec" ? { params: { ...event.params, command: "echo rewritten-before-tk" } } : undefined), { priority: 100 }); } };\n';
+      const rewriter = 'export default { id: "rewriter", name: "rewriter", description: "test", register(api) { api.on("before_tool_call", (event) => (event.toolName === "exec" ? { params: { ...event.params, command: "echo rewritten-before-derm" } } : undefined), { priority: 100 }); } };\n';
       const t = await ocTurn(binPath, { policy: ALLOW, script: execCall("echo oc-original-ran"), extraPlugins: { rewriter } });
       const text = JSON.stringify(t.results);
       const original = text.includes("oc-original-ran");
-      const rewritten = text.includes("rewritten-before-tk");
+      const rewritten = text.includes("rewritten-before-derm");
       return { status: original && !rewritten ? "pass" : "fail", finding: `original ran ${original}; rewrite ran ${rewritten}; ${text.slice(0, 200)}${t.turns ? "" : `; ${t.r.err.slice(-300)}`}` };
     },
   },
   {
-    id: "openclaw-tk-beside-observer",
-    title: "Beside another before_tool_call plugin that answers nothing, a deny still wins and tk's gate runs once (case 75)",
+    id: "openclaw-derm-beside-observer",
+    title: "Beside another before_tool_call plugin that answers nothing, a deny still wins and derm's gate runs once (case 75)",
     harness: "openclaw",
     async run({ binPath }) {
       const observer = 'export default { id: "observer", name: "observer", description: "test", register(api) { api.on("before_tool_call", () => undefined); } };\n';
       const t = await ocTurn(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "deny" }] }, script: execCall("echo oc-observer-ran"), extraPlugins: { observer } });
       const ran = t.results.some((x) => x.includes("oc-observer-ran"));
       const decisions = t.daemon.events.filter((e) => e.kind === "approval").length;
-      return { status: !ran && decisions === 1 ? "pass" : "fail", finding: `ran ${ran}; tk decisions ${decisions}` };
+      return { status: !ran && decisions === 1 ? "pass" : "fail", finding: `ran ${ran}; derm decisions ${decisions}` };
     },
   },
 ];

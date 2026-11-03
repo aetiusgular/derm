@@ -16,7 +16,7 @@ const ajv = new Ajv2020({ strict: true, allErrors: true });
 ajv.addSchema(entrySchema);
 const validTrust = ajv.compile({ $ref: `${entrySchema.$id}#/$defs/trust` });
 
-const work = mkdtempSync(join(tmpdir(), "tk-scanners-"));
+const work = mkdtempSync(join(tmpdir(), "derm-scanners-"));
 afterAll(() => rmSync(work, { recursive: true, force: true }));
 const skillDir = join(work, "web-search");
 mkdirSync(skillDir);
@@ -206,7 +206,7 @@ describe("the card (records, never a verdict)", () => {
 
 describe("rescans", () => {
   it("are due for a version never scanned and daily after", () => {
-    const root = mkdtempSync(join(tmpdir(), "tk-due-"));
+    const root = mkdtempSync(join(tmpdir(), "derm-due-"));
     try {
       const store = new RecordStore(join(root, "records"));
       store.putScan("web-search", "1.0.0", { scanner: "skillspector", scannerVersion: "2.13.2", date: "2026-10-28T10:00:00Z", findings: 0 }, undefined);

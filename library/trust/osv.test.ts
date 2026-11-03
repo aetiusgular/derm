@@ -66,17 +66,17 @@ describe("the command line", () => {
   });
 
   it("records manifests, then the same again, into a scratch store", () => {
-    const dir = mkdtempSync(join(tmpdir(), "tk-cli-"));
+    const dir = mkdtempSync(join(tmpdir(), "derm-cli-"));
     try {
-      const first = run(["record"], { TK_TRUST_RECORDS: dir });
+      const first = run(["record"], { DERM_TRUST_RECORDS: dir });
       expect(first.code, first.out).toBe(0);
       expect(first.out.match(/^new /gm)).toHaveLength(8);
-      const second = run(["record"], { TK_TRUST_RECORDS: dir });
+      const second = run(["record"], { DERM_TRUST_RECORDS: dir });
       expect(second.out.match(/^same /gm)).toHaveLength(8);
-      const pin = run(["pin", "exa", "--harness", "claude-code"], { TK_TRUST_RECORDS: dir });
+      const pin = run(["pin", "exa", "--harness", "claude-code"], { DERM_TRUST_RECORDS: dir });
       expect(pin.code).toBe(1);
       expect(pin.out).toMatch(/does not see a tool's description/);
-      expect(run(["due"], { TK_TRUST_RECORDS: dir }).out).toMatch(/scan\(s\) due/);
+      expect(run(["due"], { DERM_TRUST_RECORDS: dir }).out).toMatch(/scan\(s\) due/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

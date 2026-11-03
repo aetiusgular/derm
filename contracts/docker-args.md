@@ -1,6 +1,6 @@
 # Contract: `docker mcp` argument shapes, from the fork
 
-Transcribed by tk session 0, 27 Oct 2026, from the fork at `w3/integration` `159ef3e`: `src/features/gateway-connectors/model/dockerArgs.ts` (508 lines, TypeScript builders) and `src-tauri/src/docker_mcp.rs` (897 lines, the Rust allowlist that runs them; copied to `crates/tk-cli/src/connect/gateway/docker_mcp.rs`). Lane C owns the Rust side. The TypeScript file is not copied; this page is its record.
+Transcribed by tk session 0, 27 Oct 2026, from the fork at `w3/integration` `159ef3e`: `src/features/gateway-connectors/model/dockerArgs.ts` (508 lines, TypeScript builders) and `src-tauri/src/docker_mcp.rs` (897 lines, the Rust allowlist that runs them; copied to `crates/derm-cli/src/connect/gateway/docker_mcp.rs`). Lane C owns the Rust side. The TypeScript file is not copied; this page is its record.
 
 ## 1. Names
 
@@ -17,7 +17,7 @@ Transcribed by tk session 0, 27 Oct 2026, from the fork at `w3/integration` `159
 | Catalogs | `mcp/docker-mcp-catalog`, `monocode/extra` | `:8, 14` |
 | Server ref | `catalog://<catalog>/<server name>` for one of the two catalogs; the Rust side also takes `file://<absolute path>` to a catalog file under the user's Docker MCP folder, no `..`, no control characters, at most 1,024 bytes | `:54-58`; `docker_mcp.rs:354-380` |
 
-For tk, lane C renames the prefix `monocode_` to `tk_` and the user catalog `monocode/extra` to `tk/extra`, and records it. Profiles outside the prefix stay untouchable.
+For tk, lane C renames the prefix `monocode_` to `derm_` and the user catalog `monocode/extra` to `derm/extra`, and records it. Profiles outside the prefix stay untouchable.
 
 ## 2. `SECRET_LIKE`
 
@@ -61,10 +61,10 @@ Each is the whole argv after `docker`. `*` is one value checked by the pattern n
 
 Timeouts are the Rust constants (`docker_mcp.rs:24-29`, `:154-245`). Everything not listed is refused (`_ => None`).
 
-Not on the run list: `mcp gateway run --profile <profile id>` (`dockerArgs.ts:318-321`). It is the stdio command a harness config gets as its server entry; the app never runs it. `tk connect` writes it into configs the same way.
+Not on the run list: `mcp gateway run --profile <profile id>` (`dockerArgs.ts:318-321`). It is the stdio command a harness config gets as its server entry; the app never runs it. `derm connect` writes it into configs the same way.
 
-Secrets go in by stdin only and never appear in an argument, a log or an error message (rules, section 5, item 1). On 10 Oct `docker mcp client connect` printed other servers' keys; `client connect` is not on the list, and `tk connect` writes harness configs itself.
+Secrets go in by stdin only and never appear in an argument, a log or an error message (rules, section 5, item 1). On 10 Oct `docker mcp client connect` printed other servers' keys; `client connect` is not on the list, and `derm connect` writes harness configs itself.
 
 ## 4. What lane C must replace in the copied file
 
-`cargo check -p tk-cli --features fork-docker-mcp` at the base gives four errors: `crate::dirs_home` (the fork's `lib.rs:139`), `crate::harness::{exec_output_with_stdin, gui_search_path}` (the fork's `harness.rs`), and two `#[tauri::command]` attributes (`docker_mcp.rs:69, 82`). Lane C supplies the two helpers in `src/connect/` and drops the attributes.
+`cargo check -p derm-cli --features fork-docker-mcp` at the base gives four errors: `crate::dirs_home` (the fork's `lib.rs:139`), `crate::harness::{exec_output_with_stdin, gui_search_path}` (the fork's `harness.rs`), and two `#[tauri::command]` attributes (`docker_mcp.rs:69, 82`). Lane C supplies the two helpers in `src/connect/` and drops the attributes.

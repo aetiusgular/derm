@@ -1,8 +1,8 @@
 // The harness preset table, assembled from one file per agent in
-// crates/tk-cli/src/connect/presets/ (integration w2 split the old
+// crates/derm-cli/src/connect/presets/ (integration w2 split the old
 // contracts/harness-presets.json so each wave 4 lane owns its agents' rows
 // by file). index.json names the two lists and their order. The same rules
-// as `assemble` in crates/tk-cli/src/connect/presets.rs: every listed id has
+// as `assemble` in crates/derm-cli/src/connect/presets.rs: every listed id has
 // a file whose `id` is its name, no id is listed twice, and every file is
 // listed. The assembled object follows harness-presets.schema.json.
 
@@ -10,7 +10,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const PRESETS_DIR = fileURLToPath(new URL("../crates/tk-cli/src/connect/presets/", import.meta.url));
+export const PRESETS_DIR = fileURLToPath(new URL("../crates/derm-cli/src/connect/presets/", import.meta.url));
 
 export type PresetTable = { $comment?: string; version: number; harnesses: Record<string, unknown>[]; planned: Record<string, unknown>[] };
 

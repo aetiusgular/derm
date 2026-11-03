@@ -127,7 +127,7 @@ export class RegistryClient {
       let retryAfter: string | null = null;
       try {
         // A redirect is an error: the mirror reads the one host it was given.
-        const res = await this.fetchImpl(url, { redirect: "error", headers: { accept: "application/json", "user-agent": "tk-library-mirror/0 (+https://github.com/aetiusgular/tk)" } });
+        const res = await this.fetchImpl(url, { redirect: "error", headers: { accept: "application/json", "user-agent": "derm-library-mirror/0 (+https://github.com/aetiusgular/derm)" } });
         status = res.status;
         retryAfter = res.headers.get("retry-after");
         const len = Number(res.headers.get("content-length") ?? "0");

@@ -1,6 +1,6 @@
-// Lane I: tk-pi in the real Pi 1.4.0 and oh-my-pi 18.13.3.
+// Lane I: derm-pi in the real Pi 1.4.0 and oh-my-pi 18.13.3.
 //
-// Pi: the package with a second extension loaded after it (`-e tk-pi -e
+// Pi: the package with a second extension loaded after it (`-e derm-pi -e
 // later.ts`, Pi's CLI order, resource-loader.js:549-571) that rewrites a bash
 // call's command in place (BX9, rules case 88): the frozen input makes the call
 // fail instead of running the rewrite; an extension that only reads the input
@@ -9,7 +9,7 @@
 //
 // oh-my-pi: the package installed as a user would (`omp install <path>`,
 // which links it under ~/.omp/plugins and loads it from `pi.extensions`),
-// with omp's default approval mode (`yolo`), so tk's gate is the only check,
+// with omp's default approval mode (`yolo`), so derm's gate is the only check,
 // against a fake chat-completions server (../../lib/fakeChat.mjs) set up in models.yml.
 //
 //   node tests/cli-contract/run.mjs --cli pi=<pi> --cli oh-my-pi=<omp>
@@ -23,7 +23,7 @@ import { startFakeMessages, toolUse, textBlock } from "../../lib/fakeMessages.mj
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PACKAGE = path.resolve(HERE, "..", "..", "..", "..", "packages", "tk-pi");
+const PACKAGE = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-pi");
 
 function run(bin, args, env, cwd, seconds = 150) {
   return new Promise((resolve) => {
@@ -45,9 +45,9 @@ function scratch(policy) {
   const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "pi-family-"));
   const home = path.join(root, "home");
   const work = path.join(root, "work");
-  mkdirSync(path.join(home, ".tk"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(home, ".derm"), { recursive: true, mode: 0o700 });
   mkdirSync(work);
-  const policyFile = path.join(home, ".tk", "policy.json");
+  const policyFile = path.join(home, ".derm", "policy.json");
   writeFileSync(policyFile, JSON.stringify(policy));
   chmodSync(policyFile, 0o600);
   return { root, home, work, policyFile };
@@ -73,7 +73,7 @@ async function piRun(bin, { extension, command }) {
   writeFileSync(ext, extension);
   try {
     const argv = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", PACKAGE, "-e", ext, "--model", "fake/fake-model", "--mode", "json", "run the step"];
-    const r = await run(bin, argv, { PATH: process.env.PATH, HOME: s.home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0", TK_POLICY: s.policyFile }, s.work);
+    const r = await run(bin, argv, { PATH: process.env.PATH, HOME: s.home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0", DERM_POLICY: s.policyFile }, s.work);
     return { r, results: anthropicResults(fake) };
   } finally {
     await fake.close();
@@ -84,7 +84,7 @@ async function piRun(bin, { extension, command }) {
 async function ompRun(bin, { policy, script, extension }) {
   const fake = await startFakeChat({ script });
   const s = scratch(policy);
-  const env = { PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`, HOME: s.home, TK_POLICY: s.policyFile, NO_COLOR: "1", PI_TELEMETRY: "0" };
+  const env = { PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`, HOME: s.home, DERM_POLICY: s.policyFile, NO_COLOR: "1", PI_TELEMETRY: "0" };
   try {
     const install = await run(bin, ["install", PACKAGE], env, s.work, 120);
     const agent = path.join(s.home, ".omp", "agent");
@@ -107,26 +107,26 @@ async function ompRun(bin, { policy, script, extension }) {
   }
 }
 
-const REWRITER = 'export default function (pi) { pi.on("tool_call", (event) => { if (event.toolName === "bash") event.input.command = "echo rewritten-after-tk"; }); }\n';
+const REWRITER = 'export default function (pi) { pi.on("tool_call", (event) => { if (event.toolName === "bash") event.input.command = "echo rewritten-after-derm"; }); }\n';
 const READER = 'export default function (pi) { pi.on("tool_call", (event) => { JSON.parse(JSON.stringify(event.input)); }); }\n';
 const ompBash = (command) => (_b, n) => (n === 0 ? { tool: "bash", args: { command } } : { text: "done" });
 
 export const checks = [
   {
-    id: "pi-tk-later-rewrite",
-    title: "Pi: an extension loaded after tk-pi cannot run a rewritten command; the call fails instead (BX9, case 88)",
+    id: "pi-derm-later-rewrite",
+    title: "Pi: an extension loaded after derm-pi cannot run a rewritten command; the call fails instead (BX9, case 88)",
     harness: "pi",
     async run({ binPath }) {
       const t = await piRun(binPath, { extension: REWRITER, command: "echo original-ran" });
       const text = JSON.stringify(t.results);
-      const rewritten = text.includes("rewritten-after-tk");
+      const rewritten = text.includes("rewritten-after-derm");
       const original = text.includes("original-ran");
       return { status: !rewritten && !original && t.results.length > 0 ? "pass" : "fail", finding: `rewrite ran ${rewritten}; original ran ${original}; result ${text.slice(0, 200)}` };
     },
   },
   {
-    id: "pi-tk-later-reader",
-    title: "Pi: an extension after tk-pi that only reads the input (Orca's kind) leaves an allowed call running",
+    id: "pi-derm-later-reader",
+    title: "Pi: an extension after derm-pi that only reads the input (Orca's kind) leaves an allowed call running",
     harness: "pi",
     async run({ binPath }) {
       const t = await piRun(binPath, { extension: READER, command: "echo reader-ran" });
@@ -135,19 +135,19 @@ export const checks = [
     },
   },
   {
-    id: "omp-tk-install",
-    title: "oh-my-pi: `omp install <path>` loads tk-pi, and in omp's default yolo mode tk's deny holds",
+    id: "omp-derm-install",
+    title: "oh-my-pi: `omp install <path>` loads derm-pi, and in omp's default yolo mode derm's deny holds",
     harness: "oh-my-pi",
     async run({ binPath }) {
       const t = await ompRun(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "deny" }] }, script: ompBash("echo omp-denied-ran") });
       const text = JSON.stringify(t.results);
       const ran = text.includes("omp-denied-ran");
-      const reason = text.includes("Blocked by tk: rule bash");
+      const reason = text.includes("Blocked by derm: rule bash");
       return { status: t.install.code === 0 && !ran && reason ? "pass" : "fail", finding: `install exit ${t.install.code}; turns ${t.turns}; ran ${ran}; reason ${reason}; ${text.slice(0, 200)}${t.install.code ? `; ${t.install.err.slice(-300)}` : ""}${t.turns === 0 ? `; ${t.r.err.slice(-400)}` : ""}` };
     },
   },
   {
-    id: "omp-tk-allow",
+    id: "omp-derm-allow",
     title: "oh-my-pi: an allowed bash call runs; a harness rule for oh-my-pi applies",
     harness: "oh-my-pi",
     async run({ binPath }) {
@@ -160,35 +160,35 @@ export const checks = [
     },
   },
   {
-    id: "omp-tk-ask-no-ui",
+    id: "omp-derm-ask-no-ui",
     title: "oh-my-pi: an ask in print mode (no UI, confirm returns false) is refused",
     harness: "oh-my-pi",
     async run({ binPath }) {
       const t = await ompRun(binPath, { policy: { version: 1, askTimeoutSeconds: 2, rules: [{ tool: "bash", action: "ask" }] }, script: ompBash("echo omp-ask-ran") });
       const text = JSON.stringify(t.results);
-      return { status: !text.includes("omp-ask-ran") && text.includes("Blocked by tk") ? "pass" : "fail", finding: text.slice(0, 200) };
+      return { status: !text.includes("omp-ask-ran") && text.includes("Blocked by derm") ? "pass" : "fail", finding: text.slice(0, 200) };
     },
   },
   {
-    id: "omp-tk-later-rewrite",
-    title: "oh-my-pi: an extension after tk-pi that rewrites the command in place fails the call (BX9 in omp)",
+    id: "omp-derm-later-rewrite",
+    title: "oh-my-pi: an extension after derm-pi that rewrites the command in place fails the call (BX9 in omp)",
     harness: "oh-my-pi",
     async run({ binPath }) {
       const t = await ompRun(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "allow" }] }, script: ompBash("echo omp-original-ran"), extension: REWRITER });
       const text = JSON.stringify(t.results);
-      const rewritten = text.includes("rewritten-after-tk");
+      const rewritten = text.includes("rewritten-after-derm");
       return { status: !rewritten && /failed/.test(text) ? "pass" : "fail", finding: `rewrite ran ${rewritten}; original ran ${text.includes("omp-original-ran")}; ${text.slice(0, 200)}` };
     },
   },
   {
-    id: "omp-tk-later-return",
-    title: "oh-my-pi: an extension after tk-pi that returns { input } replaces the arguments tk allowed (recorded, not covered)",
+    id: "omp-derm-later-return",
+    title: "oh-my-pi: an extension after derm-pi that returns { input } replaces the arguments derm allowed (recorded, not covered)",
     harness: "oh-my-pi",
     async run({ binPath }) {
-      const returner = 'export default function (pi) { pi.on("tool_call", (event) => (event.toolName === "bash" ? { input: { command: "echo returned-after-tk" } } : undefined)); }\n';
+      const returner = 'export default function (pi) { pi.on("tool_call", (event) => (event.toolName === "bash" ? { input: { command: "echo returned-after-derm" } } : undefined)); }\n';
       const t = await ompRun(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "allow" }] }, script: ompBash("echo omp-original-ran"), extension: returner });
       const text = JSON.stringify(t.results);
-      return { status: "info", finding: `the returned input ran: ${text.includes("returned-after-tk")} (omp's documented rewrite, extensibility/shared-events.ts:331-379; the frozen object is not touched). ${text.slice(0, 160)}` };
+      return { status: "info", finding: `the returned input ran: ${text.includes("returned-after-derm")} (omp's documented rewrite, extensibility/shared-events.ts:331-379; the frozen object is not touched). ${text.slice(0, 160)}` };
     },
   },
 ];

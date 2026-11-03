@@ -8,7 +8,7 @@
 # macOS calls it needs (the caller's code signature, the mouse buttons) are
 # plain C APIs, declared in `src/macos.rs`.
 [package]
-name = "monocode-computer-use-helper"
+name = "derm-computer-use-helper"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"

@@ -144,16 +144,16 @@ describe("upstream rules (registry 9c4a96c)", () => {
     const big = { name: "a/b", version: "1", _meta: { "io.modelcontextprotocol.registry/publisher-provided": { x: "y".repeat(5000) } } };
     expect(checkUpstreamSemantics(big).map((f) => f.rule)).toContain("upstream/meta-size");
   });
-  it("makes no network call unless TK_LIBRARY_ONLINE=1, and maps the registry's answer when it does", async () => {
+  it("makes no network call unless DERM_LIBRARY_ONLINE=1, and maps the registry's answer when it does", async () => {
     let called = 0;
     const fetchImpl = (async () => {
       called++;
       return new Response(JSON.stringify({ valid: false, issues: [{ type: "semantic", path: "packages[0].transport.url", message: "bad", severity: "error", reference: "invalid-templated-url" }] }), { status: 200 });
     }) as unknown as typeof fetch;
-    delete process.env["TK_LIBRARY_ONLINE"];
+    delete process.env["DERM_LIBRARY_ONLINE"];
     expect(await checkUpstreamOnline({}, fetchImpl)).toEqual([]);
     expect(called).toBe(0);
-    process.env["TK_LIBRARY_ONLINE"] = "1";
+    process.env["DERM_LIBRARY_ONLINE"] = "1";
     try {
       const f = await checkUpstreamOnline({}, fetchImpl);
       expect(called).toBe(1);
@@ -161,13 +161,13 @@ describe("upstream rules (registry 9c4a96c)", () => {
       const down = (async () => { throw new Error("no route"); }) as unknown as typeof fetch;
       expect((await checkUpstreamOnline({}, down))[0]?.severity).toBe("warning");
     } finally {
-      delete process.env["TK_LIBRARY_ONLINE"];
+      delete process.env["DERM_LIBRARY_ONLINE"];
     }
   });
   it("runs skills-ref only when asked, and reports a missing binary as a warning", async () => {
-    delete process.env["TK_LIBRARY_SKILLS_REF"];
+    delete process.env["DERM_LIBRARY_SKILLS_REF"];
     expect(await checkSkillsRef("/nowhere")).toEqual([]);
-    process.env["TK_LIBRARY_SKILLS_REF"] = "1";
+    process.env["DERM_LIBRARY_SKILLS_REF"] = "1";
     try {
       const missing = (async () => { throw Object.assign(new Error("spawn skills-ref ENOENT"), { code: "ENOENT" }); }) as never;
       expect((await checkSkillsRef("/nowhere", missing))[0]?.severity).toBe("warning");
@@ -175,7 +175,7 @@ describe("upstream rules (registry 9c4a96c)", () => {
       const f = await checkSkillsRef("/x", failing);
       expect(f).toEqual([{ rule: "skill/skills-ref", severity: "error", path: "", message: "Field 'name' must be lowercase" }]);
     } finally {
-      delete process.env["TK_LIBRARY_SKILLS_REF"];
+      delete process.env["DERM_LIBRARY_SKILLS_REF"];
     }
   });
 });

@@ -1,6 +1,6 @@
 [[hooks]]
-name = "tk-gate"
+name = "derm-gate"
 type = "pre_tool"
-command = "/ABSOLUTE/PATH/TO/tk-hook"
+command = "/ABSOLUTE/PATH/TO/derm-hook"
 timeout = 60.0
 strict = true

@@ -15,11 +15,11 @@ Run with Node 22.18 or later (type stripping, no build), from the repository roo
 | `node library/trust/cli.ts drift <id>` | What changed between the last two recorded versions, as the contract's `capabilityDrift` plus details | None |
 | `node library/trust/cli.ts pin <id> --harness pi [--tool <name>]...` | Prints policy rules that pin each approved tool's description. Never writes the policy file | None |
 | `node library/trust/cli.ts due [catalog]` | Which scans are due: each version once, then daily | None |
-| `node library/trust/cli.ts scan [catalog]` | Runs the due scans with the pinned scanners | Only with `TK_TRUST_SCAN=1`. Runs SkillSpector (its OSV lookup reaches `api.osv.dev`) and Cisco's MCP scanner (YARA, offline) |
-| `node library/trust/cli.ts osv [catalog]` | Looks up each package version in OSV | Only with `TK_TRUST_ONLINE=1`. Posts package names and versions to `https://api.osv.dev/v1/querybatch` |
+| `node library/trust/cli.ts scan [catalog]` | Runs the due scans with the pinned scanners | Only with `DERM_TRUST_SCAN=1`. Runs SkillSpector (its OSV lookup reaches `api.osv.dev`) and Cisco's MCP scanner (YARA, offline) |
+| `node library/trust/cli.ts osv [catalog]` | Looks up each package version in OSV | Only with `DERM_TRUST_ONLINE=1`. Posts package names and versions to `https://api.osv.dev/v1/querybatch` |
 | `node library/trust/cli.ts card <id> [catalog]` | The card's trust lines | None |
 
-`TK_TRUST_RECORDS` points the store elsewhere (tests use a scratch folder).
+`DERM_TRUST_RECORDS` points the store elsewhere (tests use a scratch folder).
 
 ## Files
 
@@ -28,11 +28,11 @@ Run with Node 22.18 or later (type stripping, no build), from the repository roo
 | `fold.ts` | The gate's own fold (imported from the hook core, Unicode confusables.txt 17.0.0) and the name skeleton |
 | `names.ts` | `checkName`: rules `trust/lookalike`, `trust/reserved`, `trust/reserved-prefix`, `trust/mixed-script`, `trust/punycode-namespace` |
 | `identity.ts` | What an entry points at; the brand and reserved loaders |
-| `reserved.json` | Reserved names: tk's own, the vendors', Claude Code's reserved marketplace names |
+| `reserved.json` | Reserved names: derm's own, the vendors', Claude Code's reserved marketplace names |
 | `brands.directory.json`, `brands.docker.json` | Generated brand seeds from Anthropic's connector directory and Docker's catalog (`gen/gen-brands.mjs`); lane E's seed stays in `library/catalog/brands.json` |
 | `manifest.ts` | Per-version manifests, the drift diff, `capabilityDrift`, description pins |
 | `records.ts` | The record store under `records/`: immutable versions, SARIF files, no link followed |
-| `sarif.ts` | The part of SARIF 2.1.0 tk counts |
+| `sarif.ts` | The part of SARIF 2.1.0 derm counts |
 | `scanners.ts`, `scanners.json` | The two pinned scanners, run by argument list with a fixed environment |
 | `osv.ts` | OSV batch lookups, stored as SARIF |
 | `card.ts` | Card lines and the rescan schedule |
@@ -45,7 +45,7 @@ The gate checks `sha256(description)` on a pinned `allow` and asks when it diffe
 
 | Scanner | Version | Reads | Off switch | Outbound |
 |---|---|---|---|---|
-| NVIDIA SkillSpector | 2.13.2 (git `abd8293`; not on PyPI) | a skill folder, `--no-llm`, SARIF | `TK_TRUST_SCAN` | `api.osv.dev` (its OSV lookup has no off switch) |
-| Cisco AI Defense MCP Scanner | 4.8.7 (PyPI `cisco-ai-mcp-scanner`) | a server's recorded `tools/list`, `--analyzers yara static`, converted to SARIF | `TK_TRUST_SCAN` | None |
+| NVIDIA SkillSpector | 2.13.2 (git `abd8293`; not on PyPI) | a skill folder, `--no-llm`, SARIF | `DERM_TRUST_SCAN` | `api.osv.dev` (its OSV lookup has no off switch) |
+| Cisco AI Defense MCP Scanner | 4.8.7 (PyPI `cisco-ai-mcp-scanner`) | a server's recorded `tools/list`, `--analyzers yara static`, converted to SARIF | `DERM_TRUST_SCAN` | None |
 
 A scanner sees no variable of yours but `PATH` and `HOME`, so no key reaches it. A scan of a tool record that holds names only is not run: it would read as a clean result.

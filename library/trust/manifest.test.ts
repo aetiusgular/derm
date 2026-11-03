@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { afterEach, describe, expect, it } from "vitest";
-import * as core from "../../packages/tk-claude-plugin/src/core/policy.ts";
-import * as pi from "../../packages/tk-pi/src/policy.ts";
+import * as core from "../../packages/derm-claude-plugin/src/core/policy.ts";
+import * as pi from "../../packages/derm-pi/src/policy.ts";
 import { loadCatalog } from "../validate/catalog.ts";
 import { policyKey } from "../validate/names.ts";
 import type { ToolsRecord } from "../validate/types.ts";
@@ -201,7 +201,7 @@ describe("the record store", () => {
     root = "";
   });
   const fresh = () => {
-    root = mkdtempSync(join(tmpdir(), "tk-trust-"));
+    root = mkdtempSync(join(tmpdir(), "derm-trust-"));
     return new RecordStore(join(root, "records"));
   };
 
@@ -236,7 +236,7 @@ describe("the record store", () => {
     expect(() => store.putScan("x", "1.0.0", { scanner: "a/b", scannerVersion: "1", date: "2026-10-28T18:30:00Z", findings: 0 }, undefined)).toThrow(/scanner id/);
     expect(() => store.putScan("x", "1.0.0", { scanner: "a", scannerVersion: "1", date: "28 Oct", findings: 0 }, undefined)).toThrow(/date/);
     mkdirSync(join(root, "records"), { recursive: true });
-    const outside = mkdtempSync(join(tmpdir(), "tk-outside-"));
+    const outside = mkdtempSync(join(tmpdir(), "derm-outside-"));
     symlinkSync(outside, join(root, "records", "evil"));
     expect(() => store.putManifest("evil", manifestOf(server("1.0.0"), tools()))).toThrow(/is a link/);
     rmSync(outside, { recursive: true, force: true });

@@ -1,4 +1,4 @@
-// Namespace proof for `tk publish` (lane G, T3.3).
+// Namespace proof for `derm publish` (lane G, T3.3).
 //
 // The rules are the official registry's (read at 9c4a96c, live 1.8.6):
 //   io.github.<login>/*  a GitHub login, or an org whose membership role is
@@ -14,9 +14,9 @@
 //   IP literals and single-label names never do (common.go:403-415).
 //
 // What differs, and why: upstream signs a timestamp inside a 15 s window to
-// mint a login token. A library pull request is reviewed later, so tk's
+// mint a login token. A library pull request is reviewed later, so derm's
 // publisher signs a statement that names the entry and its content hash with
-// the same key; tk's CI checks that signature against the live record when the
+// the same key; derm's CI checks that signature against the live record when the
 // pull request is opened and again before merge.
 import { createPrivateKey, createPublicKey, ECDH, sign as cryptoSign, verify as cryptoVerify, type KeyObject } from "node:crypto";
 import { promises as dns } from "node:dns";
@@ -95,10 +95,10 @@ export function recordFor(privatePem: string): string {
 export type Statement = { name: string; version: string; contentSha256: string; signedAt: string };
 
 /** The bytes a domain proof signs. A newline cannot occur in a server name,
- *  a version tk publishes, a hash or a time, so the fields cannot run together. */
+ *  a version derm publishes, a hash or a time, so the fields cannot run together. */
 export function statementBytes(s: Statement): Buffer {
   for (const v of Object.values(s)) if (/[\r\n]/.test(v)) throw new Error("a statement field holds a line break");
-  return Buffer.from(`tk-publish:v1\n${s.name}\n${s.version}\n${s.contentSha256}\n${s.signedAt}`, "utf8");
+  return Buffer.from(`derm-publish:v1\n${s.name}\n${s.version}\n${s.contentSha256}\n${s.signedAt}`, "utf8");
 }
 
 /** Signs with Ed25519, or ECDSA P-384 over SHA-384 as raw r||s (the

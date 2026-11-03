@@ -8,4 +8,4 @@ metadata:
   version: "0.0.1"
 ---
 
-Fixture skill for the tk contract tests. Call `web_search_exa` with a short query, read the top results, and cite the page you used.
+Fixture skill for the derm contract tests. Call `web_search_exa` with a short query, read the top results, and cite the page you used.

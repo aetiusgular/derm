@@ -1,4 +1,4 @@
-// Lane I: contract checks for the tk Hermes plugin (T2.4) against a real
+// Lane I: contract checks for the derm Hermes plugin (T2.4) against a real
 // Hermes Agent. NOT RUN by lane I: installing Hermes (Python 3.14 and its
 // dependencies, from source) was refused in the lane's workspace, so these
 // are written from Hermes v0.22.5's source and docs (bf0203a7) and first run
@@ -6,7 +6,7 @@
 // (pyproject.toml:567; the in-process runner, no gateway; it loads Python
 // plugins through model_tools' discovery, model_tools.py:155-165).
 //
-// Each run: a scratch HERMES_HOME with the plugin copied into plugins/tk and
+// Each run: a scratch HERMES_HOME with the plugin copied into plugins/derm and
 // enabled in config.yaml (plugins.enabled is opt-in,
 // hermes_cli/plugins_discovery.py:112-131), the fake chat-completions server
 // as the model (agent/legacy_cli.py:36-55: --base-url, --api-key, --model),
@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "tk-hermes-plugin");
+const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hermes-plugin");
 
 function run(bin, args, env, cwd, seconds = 180) {
   return new Promise((resolve) => {
@@ -39,17 +39,17 @@ function run(bin, args, env, cwd, seconds = 180) {
 
 async function hermesTurn(bin, { policy, command }) {
   const fake = await startFakeChat({ script: (_b, n) => (n === 0 ? { tool: "terminal", args: { command } } : { text: "done" }) });
-  const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "hermes-tk-"));
+  const root = mkdtempSync(path.join(process.env.CLI_CONTRACT_TMP ?? tmpdir(), "hermes-derm-"));
   const home = path.join(root, "hermes");
   const work = path.join(root, "work");
   mkdirSync(path.join(home, "plugins"), { recursive: true });
-  mkdirSync(path.join(root, ".tk"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(root, ".derm"), { recursive: true, mode: 0o700 });
   mkdirSync(work);
-  cpSync(PLUGIN, path.join(home, "plugins", "tk"), { recursive: true, filter: (p) => !p.includes("node_modules") && !p.endsWith(".test.ts") && !p.includes(`${path.sep}tests`) });
-  writeFileSync(path.join(home, "config.yaml"), "plugins:\n  enabled:\n    - tk\n");
-  const policyFile = path.join(root, ".tk", "policy.json");
+  cpSync(PLUGIN, path.join(home, "plugins", "derm"), { recursive: true, filter: (p) => !p.includes("node_modules") && !p.endsWith(".test.ts") && !p.includes(`${path.sep}tests`) });
+  writeFileSync(path.join(home, "config.yaml"), "plugins:\n  enabled:\n    - derm\n");
+  const policyFile = path.join(root, ".derm", "policy.json");
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
-  const env = { PATH: process.env.PATH, HOME: root, HERMES_HOME: home, TK_POLICY: policyFile, NO_COLOR: "1" };
+  const env = { PATH: process.env.PATH, HOME: root, HERMES_HOME: home, DERM_POLICY: policyFile, NO_COLOR: "1" };
   try {
     const r = await run(bin, ["--base-url", fake.baseUrl, "--api-key", "dummy", "--model", "fake-model", "--enabled-toolsets", "terminal", "--max-turns", "3", "--query", "run the step"], env, work);
     return { r, results: toolResults(fake), turns: fake.turns().length };
@@ -61,18 +61,18 @@ async function hermesTurn(bin, { policy, command }) {
 
 export const checks = [
   {
-    id: "hermes-tk-deny",
-    title: "Hermes: a denied terminal call does not run; the model gets tk's block message",
+    id: "hermes-derm-deny",
+    title: "Hermes: a denied terminal call does not run; the model gets derm's block message",
     harness: "hermes",
     async run({ binPath }) {
       const t = await hermesTurn(binPath, { policy: { version: 1, rules: [{ tool: "terminal", action: "deny" }] }, command: "echo hermes-denied-ran" });
       const text = JSON.stringify(t.results);
-      const ok = !text.includes("hermes-denied-ran\\n") && text.includes("tk: rule terminal");
+      const ok = !text.includes("hermes-denied-ran\\n") && text.includes("derm: rule terminal");
       return { status: ok ? "pass" : "fail", finding: `exit ${t.r.code}; turns ${t.turns}; ${text.slice(0, 200)}${ok ? "" : `; ${t.r.err.slice(-300)}`}` };
     },
   },
   {
-    id: "hermes-tk-allow",
+    id: "hermes-derm-allow",
     title: "Hermes: an allowed terminal call runs",
     harness: "hermes",
     async run({ binPath }) {
@@ -82,8 +82,8 @@ export const checks = [
     },
   },
   {
-    id: "hermes-tk-ask-unattended",
-    title: "Hermes: an ask with no tk approver in the in-process runner (no human) is refused",
+    id: "hermes-derm-ask-unattended",
+    title: "Hermes: an ask with no derm approver in the in-process runner (no human) is refused",
     harness: "hermes",
     async run({ binPath }) {
       const t = await hermesTurn(binPath, { policy: { version: 1, askTimeoutSeconds: 2, rules: [{ tool: "terminal", action: "ask" }] }, command: "echo hermes-ask-ran" });

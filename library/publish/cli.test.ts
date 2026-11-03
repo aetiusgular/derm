@@ -30,7 +30,7 @@ describe("publish command line", () => {
   });
 
   it("warns on a key file others can read", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "tk-pubcli-"));
+    const dir = mkdtempSync(join(tmpdir(), "derm-pubcli-"));
     const file = join(dir, "key.pem");
     writeFileSync(file, generateKeyPairSync("ed25519").privateKey.export({ format: "pem", type: "pkcs8" }).toString());
     chmodSync(file, 0o644);
@@ -56,7 +56,7 @@ describe("publish command line", () => {
   });
 
   it("stops with exit 1 and prints the steps of no pull request when gh is not there", async () => {
-    const root = mkdtempSync(join(tmpdir(), "tk-pubcli-"));
+    const root = mkdtempSync(join(tmpdir(), "derm-pubcli-"));
     mkdirSync(join(root, "lib", "library"), { recursive: true });
     cpSync(join(import.meta.dirname, "..", "catalog"), join(root, "lib", "library", "catalog"), { recursive: true });
     const dir = join(root, "weather-tool");
@@ -69,7 +69,7 @@ describe("publish command line", () => {
         description: "Current weather and forecasts for a place, through a hosted endpoint.",
         version: "1.0.0",
         remotes: [{ type: "streamable-http", url: "https://weather.example.com/mcp" }],
-        _meta: { "io.modelcontextprotocol.registry/publisher-provided": { "io.github.aetiusgular.tk": { kind: "server", tier: "curated", status: "active", runner: { kind: "remote" }, exposure: { default: "deferred" }, trust: { contentSha256: "0".repeat(64), scans: [], liveness: { state: "unknown" } } } } },
+        _meta: { "io.modelcontextprotocol.registry/publisher-provided": { "io.github.aetiusgular.derm": { kind: "server", tier: "curated", status: "active", runner: { kind: "remote" }, exposure: { default: "deferred" }, trust: { contentSha256: "0".repeat(64), scans: [], liveness: { state: "unknown" } } } } },
       }),
     );
     const r = await run(["publish", dir, "--library", join(root, "lib"), "--proof", "github"], { env: { PATH: "/nonexistent" } });

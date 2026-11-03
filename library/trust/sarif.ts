@@ -1,6 +1,6 @@
-// The part of SARIF 2.1.0 tk reads (OASIS SARIF v2.1.0; lane H, T4.1).
+// The part of SARIF 2.1.0 derm reads (OASIS SARIF v2.1.0; lane H, T4.1).
 //
-// tk stores each scanner's log byte for byte and records one number from it,
+// derm stores each scanner's log byte for byte and records one number from it,
 // `findings`, for the card. The count is of results that report a problem and
 // are not suppressed. `kind` defaults to `fail`; only `fail` is a problem
 // (`pass`, `notApplicable`, `informational`, `review` and `open` are not).
@@ -8,7 +8,7 @@
 // suppression's `status` is absent or `accepted`. SARIF 2.1.0 says a consumer
 // "SHALL examine the status properties" (section 3.27.23) and defines
 // `accepted`, `underReview` and `rejected` (section 3.35.3), but not what an
-// absent status means; tk reads it as accepted (SkillSpector writes baseline
+// absent status means; derm reads it as accepted (SkillSpector writes baseline
 // suppressions with `kind: external` and no status), and a list holding any
 // `underReview` or `rejected` as not suppressed, so a mixed list is counted:
 // the side that fails safe (rules section 9, item 7). Levels are counted apart
@@ -43,7 +43,7 @@ export type SarifRun = {
 
 export type SarifLog = { $schema?: string; version: "2.1.0"; runs: SarifRun[] };
 
-/** Parses and shape-checks a log. Returns the reason when it is not one tk can count. */
+/** Parses and shape-checks a log. Returns the reason when it is not one derm can count. */
 export function parseSarif(text: string): SarifLog | string {
   let raw: unknown;
   try {

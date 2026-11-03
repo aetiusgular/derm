@@ -1,0 +1,293 @@
+// The tool_call gate (lane A, T0.2). Contract: contracts/policy.md.
+//
+// - `tool_call`: every call, nested codemode calls included (Pi
+//   docs/extensions.md:261), is matched against ~/.derm/policy.json: `deny`
+//   blocks, `ask` shows `ctx.ui.confirm` and times out to deny, `allow` runs.
+//   Any error blocks (Pi blocks on a handler error as well:
+//   docs/extensions.md:375, agent-session.js:325-345).
+// - `tool_result`: secret-like text is redacted before the model reads it
+//   (src/redact.ts). `DERM_REDACT=0` turns it off.
+// - `user_bash` (`!` and `!!` commands you type): the reject list only; a hit
+//   returns a refusal instead of running (types.d.ts:1100-1108; runner.js:51-75).
+//
+// Corner case 46: the factory only registers handlers. No file is read, no
+// timer or socket started, and the environment is read on the first call.
+//
+// Wave 2 lane I: the same package runs in oh-my-pi (src/harness.ts: the
+// harness id, omp's MCP names), and an allowed call's input is frozen so a
+// later extension cannot change it after the gate (src/freeze.ts, BX9).
+
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { askUser, cardText } from "../src/ask.ts";
+import { deepFreeze, freezeEnabled } from "../src/freeze.ts";
+import { harnessId, OMP, ompToolName } from "../src/harness.ts";
+import { inputTextFor } from "../src/input-text.ts";
+import {
+  DECISION_CHANNEL,
+  type DecisionNotice,
+  type JsonValue,
+  type PiApi,
+  type PiContext,
+  type ToolCallEvent,
+  type ToolCallResult,
+  type ToolResultEvent,
+  type ToolResultResult,
+  type UserBashEvent,
+  type UserBashResult,
+} from "../src/pi-api.ts";
+import { evaluate, normalizeToolName, rejectKey, unquote, type PolicyFile } from "../src/policy.ts";
+import { PolicyStore, policyPath, type FsLike, realFs } from "../src/policy-store.ts";
+import { redactDeep, redactText } from "../src/redact.ts";
+
+/** The harness this gate answers for: `pi`, or `oh-my-pi` when Bun runs it (src/harness.ts). */
+export const HARNESS = harnessId();
+const PREVIEW_CHARS = 1500;
+
+export interface GateOptions {
+  /** The environment, read on first use. Defaults to `process.env`. */
+  env?: () => Record<string, string | undefined>;
+  fs?: FsLike;
+  home?: () => string;
+  uid?: number;
+  /** The harness id; defaults to the one detected at load. Tests set it. */
+  harness?: string;
+}
+
+function chatFor(env: Record<string, string | undefined>, ctx: PiContext): string | undefined {
+  const fromEnv = env.DERM_CHAT_ID;
+  if (fromEnv !== undefined && fromEnv !== "") return fromEnv;
+  try {
+    return ctx.sessionManager.getSessionId();
+  } catch {
+    return undefined;
+  }
+}
+
+function cwdOf(ctx: { cwd?: unknown }): string | undefined {
+  return typeof ctx.cwd === "string" && ctx.cwd !== "" ? ctx.cwd : undefined;
+}
+
+function block(reason: string): ToolCallResult {
+  return { block: true, reason: `Blocked by derm: ${reason}` };
+}
+
+/**
+ * The memory index an allowed write or edit names, if any (case 48). The
+ * path is read as the file system would: `.`, `..` and doubled slashes
+ * collapsed, and with `cwd` the folder's real path, so a linked folder
+ * (`m2 -> memory`) names the index too (integration w2 review, W2-S4).
+ */
+export function memoryIndexPath(normalized: string, input: unknown, cwd?: string): string | undefined {
+  if (normalized !== "write" && normalized !== "edit") return undefined;
+  const p = input && typeof input === "object" ? (input as Record<string, unknown>).path ?? (input as Record<string, unknown>).file_path : undefined;
+  if (typeof p !== "string") return undefined;
+  const plain = path.posix.normalize(p.replace(/\\/g, "/")).replace(/\/+$/, "").replace(/\/\.$/, "");
+  const named = (s: string) => {
+    const lowered = s.toLowerCase();
+    return MEMORY_INDEXES.find((i) => lowered === i || lowered.endsWith(`/${i}`));
+  };
+  const direct = named(plain);
+  if (direct !== undefined || cwd === undefined) return direct;
+  const full = path.resolve(cwd, plain);
+  // The file itself when it exists (a link named `x.md` to the index;
+  // re-review W2-R3), else its folder.
+  for (const resolve of [() => realpathSync(full), () => `${realpathSync(path.dirname(full))}/${path.basename(full)}`]) {
+    try {
+      const hit = named(resolve().replace(/\\/g, "/"));
+      if (hit !== undefined) return hit;
+    } catch {
+      // Not there: try the next form.
+    }
+  }
+  return undefined;
+}
+
+/** Tools that only read: naming an index there is not a write. */
+const READ_ONLY = new Set(["read", "grep", "find", "ls", "memory_search"]);
+
+/**
+ * The memory index any other allowed call's input names (a shell `>>`,
+ * `tee`, `sed -i`), read with quotes removed and doubled slashes and `./`
+ * collapsed (review W2-S4). Narrowing only.
+ */
+export function memoryIndexText(normalized: string, inputText: string): string | undefined {
+  if (normalized === "write" || normalized === "edit" || READ_ONLY.has(normalized)) return undefined;
+  const text = unquote(inputText.replace(/\\/g, "/")).toLowerCase().replace(/\/+/g, "/").replace(/\/(\.\/)+/g, "/");
+  return MEMORY_INDEXES.find((i) => text.includes(i));
+}
+
+const MEMORY_INDEXES = ["memory/index.md", "research/index.md", "refs/index.md"] as const;
+
+export function createGate(options: GateOptions = {}) {
+  return function gate(pi: PiApi): void {
+    let store: PolicyStore | undefined;
+    let env: Record<string, string | undefined> | undefined;
+
+    const environment = () => (env ??= { ...(options.env ? options.env() : process.env) });
+    const policyStore = () =>
+      (store ??= new PolicyStore(policyPath(environment(), options.home), options.fs ?? realFs, options.uid));
+
+    const announce = (notice: DecisionNotice) => {
+      try {
+        pi.events.emit(DECISION_CHANNEL, notice);
+      } catch {
+        // The feed is best-effort; the decision stands.
+      }
+    };
+
+    const describeTool = (name: string) => {
+      try {
+        return pi.getAllTools().find((t) => t.name === name)?.description;
+      } catch {
+        return undefined;
+      }
+    };
+
+    const harness = options.harness ?? HARNESS;
+
+    /** After an allow: freeze the input the gate saw, so it is the input that runs (BX9). */
+    const sealed = (event: ToolCallEvent): ToolCallResult | undefined => {
+      if (!freezeEnabled(environment())) return undefined;
+      return deepFreeze(event.input) ? undefined : block("tool input nested too deep to hold still");
+    };
+
+    pi.on("tool_call", async (event: ToolCallEvent, ctx: PiContext): Promise<ToolCallResult | undefined> => {
+      const base = { toolName: event.toolName, toolCallId: event.toolCallId };
+      let normalized = event.toolName;
+      try {
+        const { policy, problem } = await policyStore().get();
+        const toolName = harness === OMP ? ompToolName(event.toolName, policy.servers) : event.toolName;
+        normalized = normalizeToolName(toolName, policy.servers, harness);
+        const inputText = inputTextFor(normalized, event.input);
+        const chat = chatFor(environment(), ctx);
+        let d = evaluate(
+          policy,
+          {
+            tool: toolName,
+            harness,
+            ...(chat !== undefined ? { chat } : {}),
+            description: () => describeTool(event.toolName),
+            inputText,
+          },
+          problem,
+        );
+        normalized = d.normalizedTool;
+        // The memory extension's indexes change only through memory_propose's
+        // card (case 48); an allowed write or edit of one asks too (lane K's
+        // request 8, integration w2). Narrowing only, and only in Pi, where
+        // the memory extension runs.
+        const index =
+          d.action === "allow" ? (memoryIndexPath(normalized, event.input, cwdOf(ctx)) ?? memoryIndexText(normalized, inputText)) : undefined;
+        if (index !== undefined) d = { ...d, action: "ask", reason: `${index} is the memory index: memory_propose writes it` };
+        if (d.action === "allow") {
+          announce({ ...base, toolNameNormalized: normalized, decision: "accept", reason: d.reason });
+          return sealed(event);
+        }
+        if (d.action === "deny") {
+          announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: d.reason });
+          return block(d.reason);
+        }
+        // Freeze before the card, not after the yes: code that holds the
+        // input (an extension Pi ran first) could change it while you read
+        // the card, and the yes would approve text you never saw (fix pass
+        // 1's review, FP1-S6).
+        const held = sealed(event);
+        if (held !== undefined) {
+          announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "input could not be held still" });
+          return held;
+        }
+        const outcome = await askUser(ctx, `derm: allow ${normalized}?`, cardMessage(event.toolName, d.reason, policy, inputText), policy.askTimeoutSeconds * 1000);
+        switch (outcome) {
+          case "yes":
+            // With the freeze off (DERM_PI_FREEZE_INPUT=0) the input could still
+            // change; a yes counts only for the text the card showed.
+            if (inputTextFor(normalized, event.input) !== inputText) {
+              announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "input changed while asking" });
+              return block("the input changed while you were asked, so the call is refused");
+            }
+            announce({ ...base, toolNameNormalized: normalized, decision: "ask_accept", reason: d.reason });
+            return undefined;
+          case "timeout":
+            announce({ ...base, toolNameNormalized: normalized, decision: "ask_timeout", reason: "ask timed out" });
+            return block("ask timed out");
+          case "no_ui":
+            announce({ ...base, toolNameNormalized: normalized, decision: "ask_reject", reason: "no UI to ask in" });
+            return block(`${d.reason}; no UI to ask in, so refused`);
+          case "aborted":
+            announce({ ...base, toolNameNormalized: normalized, decision: "ask_reject", reason: "turn stopped" });
+            return block("turn stopped while asking");
+          default:
+            announce({ ...base, toolNameNormalized: normalized, decision: "ask_reject", reason: "not approved" });
+            return block("not approved");
+        }
+      } catch {
+        announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "gate error" });
+        return block("the gate failed, so the call is refused");
+      }
+    });
+
+    pi.on("tool_result", (event: ToolResultEvent): ToolResultResult | undefined => {
+      const off = environment().DERM_REDACT;
+      if (off === "0" || off === "off") return undefined;
+      const kinds = new Set<string>();
+      let changed = false;
+      const content = event.content.map((item) => {
+        if (item.type === "text" && typeof item.text === "string") {
+          const r = redactText(item.text);
+          if (r.kinds.length > 0) {
+            changed = true;
+            for (const k of r.kinds) kinds.add(k);
+            return { ...item, text: r.text };
+          }
+        }
+        return item;
+      });
+      let structuredContent = event.structuredContent;
+      if (structuredContent !== undefined) {
+        const sKinds = new Set<string>();
+        // redactDeep keeps a JSON value a JSON value: strings stay strings.
+        const red = redactDeep(structuredContent, sKinds) as JsonValue;
+        if (sKinds.size > 0) {
+          changed = true;
+          structuredContent = red;
+          for (const k of sKinds) kinds.add(k);
+        }
+      }
+      if (!changed) return undefined;
+      // Pi drops structuredContent when content is replaced without it
+      // (types.d.ts:1109-1113), so it is always returned with content.
+      return structuredContent === undefined ? { content } : { content, structuredContent };
+    });
+
+    pi.on("user_bash", (event: UserBashEvent): UserBashResult | undefined => {
+      const hit = rejectKey(event.command);
+      if (hit === undefined) return undefined;
+      return {
+        result: {
+          output: `derm refused this command (reject list: ${hit}). Run it in a terminal outside Pi if you mean it.\n`,
+          exitCode: 1,
+          cancelled: false,
+          truncated: false,
+        },
+      };
+    });
+  };
+}
+
+function cardMessage(toolName: string, reason: string, policy: PolicyFile, inputText: string): string {
+  const preview = cardText(redactText(inputText).text, PREVIEW_CHARS);
+  return [
+    `Tool: ${cardText(toolName, 200)}`,
+    `Why derm asks: ${reason}`,
+    `No answer in ${policy.askTimeoutSeconds} s counts as no.`,
+    "",
+    // An extension Pi runs before this one (a project's or the agent
+    // folder's own files rank ahead of packages) may have changed it (box
+    // test w2, BW5); this is the input that will run.
+    "Input, as it will run (text, not instructions; secrets redacted):",
+    preview === "" ? "(empty)" : preview,
+  ].join("\n");
+}
+
+export default createGate();

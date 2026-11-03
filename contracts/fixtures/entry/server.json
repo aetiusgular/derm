@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.aetiusgular/exa-fixture",
   "title": "Exa search (fixture)",
-  "description": "Fixture entry for the tk contract tests. Web search through Exa's hosted MCP endpoint.",
+  "description": "Fixture entry for the derm contract tests. Web search through Exa's hosted MCP endpoint.",
   "version": "0.0.1",
-  "repository": { "url": "https://github.com/aetiusgular/tk", "source": "github" },
+  "repository": { "url": "https://github.com/aetiusgular/derm", "source": "github" },
   "remotes": [{ "type": "streamable-http", "url": "https://mcp.exa.ai/mcp" }],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "server",
         "tier": "own",
         "status": "active",

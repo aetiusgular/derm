@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for derm-daemon (macOS). Lane B wrote it; the Mac test
+  installs it once lane K lands. Not run in a build session.
+
+  launchd expands neither ~ nor $HOME in these paths, so replace
+  __DERM_DAEMON__ (the absolute path of the built binary) and __HOME__ (your
+  home folder) before installing:
+
+    sed -e "s|__DERM_DAEMON__|$HOME/.local/bin/derm-daemon|" -e "s|__HOME__|$HOME|" \
+      io.github.aetiusgular.derm.daemon.plist > ~/Library/LaunchAgents/io.github.aetiusgular.derm.daemon.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.github.aetiusgular.derm.daemon.plist
+
+  The socket is ~/Library/Application Support/derm/daemon.sock.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.aetiusgular.derm.daemon</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__DERM_DAEMON__</string>
+		<string>--foreground</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Umask</key>
+	<integer>63</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/derm-daemon.log</string>
+</dict>
+</plist>

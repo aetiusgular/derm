@@ -15,20 +15,20 @@
     "vercel/search_vercel_documentation"
   ],
   "repository": {
-    "url": "https://github.com/aetiusgular/tk",
+    "url": "https://github.com/aetiusgular/derm",
     "type": "git"
   },
   "packages": [
     {
       "registryType": "git",
-      "url": "https://github.com/aetiusgular/tk",
+      "url": "https://github.com/aetiusgular/derm",
       "ref": "main",
-      "subfolder": "library/catalog/tk-connectors/skills/deployments"
+      "subfolder": "library/catalog/derm-connectors/skills/deployments"
     }
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "io.github.aetiusgular.tk": {
+      "io.github.aetiusgular.derm": {
         "kind": "skill",
         "tier": "own",
         "status": "active",

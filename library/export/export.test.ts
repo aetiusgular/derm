@@ -34,13 +34,13 @@ describe("marketplace export (Claude Code and Codex)", () => {
 
   it("validates against the contract's marketplace shape and names no reserved marketplace", () => {
     expect(checkMarketplaceShape(m)).toEqual([]);
-    expect(m.name).toBe("tk-tony-connectors");
+    expect(m.name).toBe("derm-tony-connectors");
     expect(["claude-code-marketplace", "claude-plugins-official", "claude-community", "npm", "github", "gh"]).not.toContain(m.name);
   });
   it("pins every git source to a full sha and lists the bundle and the six servers", () => {
-    const bundle = m.plugins.find((p) => p.name === "tk-connectors")!;
-    expect(bundle.source).toEqual({ source: "git-subdir", url: "https://github.com/aetiusgular/tk.git", path: "library/catalog/tk-connectors", ref: "main", sha: SHA });
-    expect(m.plugins.map((p) => p.name).sort()).toEqual(["context7", "exa", "granola", "hugging-face", "shopify-dev", "tk-connectors", "vercel"]);
+    const bundle = m.plugins.find((p) => p.name === "derm-connectors")!;
+    expect(bundle.source).toEqual({ source: "git-subdir", url: "https://github.com/aetiusgular/derm.git", path: "library/catalog/derm-connectors", ref: "main", sha: SHA });
+    expect(m.plugins.map((p) => p.name).sort()).toEqual(["context7", "derm-connectors", "exa", "granola", "hugging-face", "shopify-dev", "vercel"]);
     for (const p of m.plugins) if (typeof p.source === "string") expect(p.source).toMatch(/^\.\/plugins\/[a-z0-9-]+$/);
   });
   it("refuses an unpinned source: the contract shape requires sha", () => {
@@ -60,9 +60,9 @@ describe("marketplace export (Claude Code and Codex)", () => {
     }
   });
   // Integration w1: the catalog holds upstream placeholders; each export
-  // writes the target's reference, named as tk connect names it (C's
+  // writes the target's reference, named as derm connect names it (C's
   // env_name_for: upper case, anything else `_`), so a key set once serves both.
-  it("upstream placeholders become ${VAR} references with tk connect's names", () => {
+  it("upstream placeholders become ${VAR} references with derm connect's names", () => {
     const h = (id: string) => (parse(files, `plugins/${id}/.claude-plugin/plugin.json`) as { mcpServers: Record<string, { headers?: Record<string, string> }> }).mcpServers[id]!.headers;
     expect(h("exa")).toEqual({ "x-api-key": "${EXA_API_KEY}" });
     expect(h("hugging-face")).toEqual({ Authorization: "Bearer ${HF_TOKEN}" });
@@ -77,7 +77,7 @@ describe("marketplace export (Claude Code and Codex)", () => {
 describe("Pi export", () => {
   const files = exportPi(catalog, "tony-connectors", { sha: SHA });
   it("one package per bundle with the pi-package keyword and the pi field (docs/packages.md at v1.4.0)", () => {
-    const pkg = parse(files, "pi/tk-connectors/package.json") as { keywords: string[]; pi: { skills: string[] } };
+    const pkg = parse(files, "pi/derm-connectors/package.json") as { keywords: string[]; pi: { skills: string[] } };
     expect(pkg.keywords).toContain("pi-package");
     expect(pkg.pi.skills).toEqual(["./skills"]);
   });
@@ -116,7 +116,7 @@ describe("Docker profile export", () => {
   it("an image runner carries a snapshot so import needs no pull", () => {
     const withImage = loadCatalog();
     const exa = withImage.entries.find((e) => e.id === "exa")!;
-    const meta = (exa.data["_meta"] as Record<string, Record<string, Record<string, unknown>>>)["io.modelcontextprotocol.registry/publisher-provided"]!["io.github.aetiusgular.tk"]!;
+    const meta = (exa.data["_meta"] as Record<string, Record<string, Record<string, unknown>>>)["io.modelcontextprotocol.registry/publisher-provided"]!["io.github.aetiusgular.derm"]!;
     meta["runner"] = { kind: "image", image: "mcp/exa", imageDigest: "sha256:" + "b".repeat(64) };
     const p = JSON.parse(file(exportDockerProfile(withImage, "tony-connectors"), "docker/profile.json").content) as { servers: { type: string; image?: string; snapshot?: { server: { name: string; type: string; allowHosts: string[] } } }[] };
     const image = p.servers.find((s) => s.type === "image")!;
@@ -160,16 +160,16 @@ describe("ToolHive-shaped registry and the official list shape", () => {
 
 describe("exportSet", () => {
   it("writes every format under the set's folder and uses the placeholder sha only when none is given", () => {
-    const files = exportSet(catalog, "tk-own");
+    const files = exportSet(catalog, "derm-own");
     const paths = files.map((f) => f.path);
-    for (const p of ["tk-own/claude/.claude-plugin/marketplace.json", "tk-own/pi/mcp.json", "tk-own/docker/profile.yaml", "tk-own/docker/profile.json", "tk-own/toolhive/registry.json", "tk-own/registry.json"]) expect(paths).toContain(p);
+    for (const p of ["derm-own/claude/.claude-plugin/marketplace.json", "derm-own/pi/mcp.json", "derm-own/docker/profile.yaml", "derm-own/docker/profile.json", "derm-own/toolhive/registry.json", "derm-own/registry.json"]) expect(paths).toContain(p);
     expect(file(files, "pi/README.md").content).not.toContain(PLACEHOLDER_SHA);
     expect(() => exportSet(catalog, "no-such-set")).toThrow(/no set/);
   });
-  it("tk's own servers run as you: the Docker profile lists none of them and the plugins say so", () => {
-    const files = exportSet(catalog, "tk-own");
+  it("derm's own servers run as you: the Docker profile lists none of them and the plugins say so", () => {
+    const files = exportSet(catalog, "derm-own");
     expect((parse(files, "docker/profile.json")["servers"] as unknown[]).length).toBe(0);
-    expect(file(files, "docker/README.md").content).toContain("tk-computer-use, docker-mcp-gateway");
-    expect(file(files, "plugins/tk-computer-use/.claude-plugin/plugin.json").content).toContain("Runs as you");
+    expect(file(files, "docker/README.md").content).toContain("derm-computer-use, docker-mcp-gateway");
+    expect(file(files, "plugins/derm-computer-use/.claude-plugin/plugin.json").content).toContain("Runs as you");
   });
 });

@@ -12,7 +12,7 @@ import { mirroredEntry, stripTkKey, runnerOf } from "./entry.ts";
 import { computeFlags, descriptionKey, remoteKey } from "./flags.ts";
 import { checkTkSchema, checkUpstreamServerSchema } from "../validate/schemas.ts";
 
-const tmp = () => mkdtempSync(join(tmpdir(), "tk-mirror-"));
+const tmp = () => mkdtempSync(join(tmpdir(), "derm-mirror-"));
 const quiet = { intervalMs: 0, sleep: async () => {} };
 
 describe("canonical JSON (RFC 8785 order)", () => {
@@ -166,7 +166,7 @@ describe("pull", () => {
     const index = store.read("index.json") as { servers: Record<string, { status: string }> };
     expect(index.servers["io.github.t/aa"]?.status).toBe("deleted");
     const entry = store.read("entries/io.github.t%2Faa.json") as Record<string, any>;
-    expect(entry["_meta"]["io.modelcontextprotocol.registry/publisher-provided"]["io.github.aetiusgular.tk"].status).toBe("deleted");
+    expect(entry["_meta"]["io.modelcontextprotocol.registry/publisher-provided"]["io.github.aetiusgular.derm"].status).toBe("deleted");
   });
 
   it("flags, never deletes, a server a full pull no longer returns", async () => {
@@ -274,22 +274,22 @@ describe("the bulk-publisher count (box test w2, BW7)", () => {
 describe("mirrored entries", () => {
   const rec = (server: Record<string, unknown> & { name: string; version: string }): ServerRecord => ({ server, _meta: { [OFFICIAL_KEY]: { status: "active", updatedAt: "2026-10-01T00:00:00Z", publishedAt: "2026-10-01T00:00:00Z", isLatest: true } } });
 
-  it("takes out a publisher's object under tk's key, in any spelling, and flags it", () => {
+  it("takes out a publisher's object under derm's key, in any spelling, and flags it", () => {
     const spoof = remoteServer("io.github.evil/xx", "1", "https://x.example.com/", {
-      _meta: { "io.modelcontextprotocol.registry/publisher-provided": { "io.github.aetiusgular.tk": { tier: "own" }, "IO.GITHUB.AETIUSGULAR.​TK": { tier: "own" }, "com.other/keep": { a: 1 } } },
+      _meta: { "io.modelcontextprotocol.registry/publisher-provided": { "io.github.aetiusgular.derm": { tier: "own" }, "IO.GITHUB.AETIUSGULAR.​DERM": { tier: "own" }, "com.other/keep": { a: 1 } } },
     });
     const { server, hadTkKey } = stripTkKey(spoof);
     expect(hadTkKey).toBe(true);
     expect(Object.keys((server["_meta"] as any)["io.modelcontextprotocol.registry/publisher-provided"])).toEqual(["com.other/keep"]);
     const entry = mirroredEntry(rec(spoof), { state: "unknown" }) as any;
-    expect(entry._meta["io.modelcontextprotocol.registry/publisher-provided"]["io.github.aetiusgular.tk"].tier).toBe("mirrored");
-    expect(computeFlags([rec(spoof)]).get("io.github.evil/xx")).toContainEqual({ flag: "tk-key-removed" });
+    expect(entry._meta["io.modelcontextprotocol.registry/publisher-provided"]["io.github.aetiusgular.derm"].tier).toBe("mirrored");
+    expect(computeFlags([rec(spoof)]).get("io.github.evil/xx")).toContainEqual({ flag: "derm-key-removed" });
   });
 
-  it("writes an entry that passes upstream's schema and tk's", () => {
+  it("writes an entry that passes upstream's schema and derm's", () => {
     const entry = mirroredEntry(rec(remoteServer("io.github.t/aa", "1.0.0", "https://a.example.com/mcp")), { state: "alive", checkedAt: "2026-10-28T00:00:00Z" });
     expect(checkUpstreamServerSchema(entry)).toEqual([]);
-    expect(checkTkSchema("tk-server", entry)).toEqual([]);
+    expect(checkTkSchema("derm-server", entry)).toEqual([]);
   });
 
   it("says a bare package runs as you and an OCI image is an image (plan R2)", () => {

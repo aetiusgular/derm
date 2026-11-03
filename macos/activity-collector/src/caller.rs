@@ -9,9 +9,9 @@
 use std::path::Path;
 
 /// The daemon's own signing identifier.
-pub const OWN_ID: &str = "com.monocode.desktop.activity-collector";
+pub const OWN_ID: &str = "io.github.aetiusgular.derm.activity-collector";
 /// The app's signing identifier: the only accepted peer.
-pub const PEER_ID: &str = "com.monocode.desktop";
+pub const PEER_ID: &str = "io.github.aetiusgular.derm";
 
 /// The peer's requirement: the daemon's designated requirement with the
 /// identifier swapped for the peer's. `None` (refuse every caller) unless
@@ -355,13 +355,13 @@ pub mod ffi {
 mod tests {
     use super::*;
 
-    const DR: &str = "identifier \"com.monocode.desktop.activity-collector\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"";
+    const DR: &str = "identifier \"io.github.aetiusgular.derm.activity-collector\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"";
 
     #[test]
     fn swaps_the_identifier() {
         assert_eq!(
             peer_requirement(DR, OWN_ID, PEER_ID).as_deref(),
-            Some("identifier \"com.monocode.desktop\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"")
+            Some("identifier \"io.github.aetiusgular.derm\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"")
         );
     }
 
@@ -371,13 +371,13 @@ mod tests {
             "",
             "anchor apple generic",
             "identifier \"com.other\" and anchor apple generic",
-            "identifier \"com.monocode.desktop.activity-collector\" and ",
-            "identifier \"com.monocode.desktop.activity-collector\" and    ",
-            "identifier \"com.monocode.desktop.activity-collector\" or anchor apple",
-            "identifier com.monocode.desktop.activity-collector and anchor apple",
-            " identifier \"com.monocode.desktop.activity-collector\" and anchor apple",
-            "identifier \"com.monocode.desktop.activity-collector\" and anchor\0apple",
-            "identifier \"com.monocode.desktop.activity-collector\"and anchor apple",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" and ",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" and    ",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" or anchor apple",
+            "identifier io.github.aetiusgular.derm.activity-collector and anchor apple",
+            " identifier \"io.github.aetiusgular.derm.activity-collector\" and anchor apple",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" and anchor\0apple",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\"and anchor apple",
         ] {
             assert_eq!(peer_requirement(dr, OWN_ID, PEER_ID), None, "{dr:?}");
         }

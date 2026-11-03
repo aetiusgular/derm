@@ -10,7 +10,7 @@ import { csp, esc, renderPage } from "./page.ts";
 
 const dirs: string[] = [];
 function tmp(): string {
-  const d = mkdtempSync(join(tmpdir(), "tk-site-"));
+  const d = mkdtempSync(join(tmpdir(), "derm-site-"));
   dirs.push(d);
   return d;
 }
@@ -23,17 +23,17 @@ function hashOf(s: string): string {
 }
 
 describe("the library browser", () => {
-  it("has a card for every catalog entry and a tk connect line per harness for a remote server", () => {
+  it("has a card for every catalog entry and a derm connect line per harness for a remote server", () => {
     const html = readFileSync(build(tmp(), CATALOG_DIR, "a".repeat(40)), "utf8");
     const catalog = loadCatalog();
     for (const e of catalog.entries) expect(html).toContain(`id="${encodeURIComponent(e.id)}"`);
-    expect(html).toContain("tk connect claude-code --from library/catalog/exa/server.json");
-    expect(html).toContain("tk connect pi --from library/catalog/exa/server.json");
+    expect(html).toContain("derm connect claude-code --from library/catalog/exa/server.json");
+    expect(html).toContain("derm connect pi --from library/catalog/exa/server.json");
     // Print-only harnesses say so.
-    expect(html).toMatch(/tk connect hermes --from library\/catalog\/exa\/server\.json<\/code> <span class="meta">prints the entry/);
+    expect(html).toMatch(/derm connect hermes --from library\/catalog\/exa\/server\.json<\/code> <span class="meta">prints the entry/);
     // Skills install through an export; the gateway by profile.
     expect(html).toContain("installs through an export");
-    expect(html).toContain("tk connect codex --gateway docker --profile &lt;profile&gt;");
+    expect(html).toContain("derm connect codex --gateway docker --profile &lt;profile&gt;");
   });
 
   it("states trust as dated records and placeholders, never as safe", () => {

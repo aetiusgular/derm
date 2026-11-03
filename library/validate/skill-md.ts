@@ -8,7 +8,7 @@
 // uses strictyaml; here the frontmatter is parsed with `yaml` 2.9.1 in its
 // strict core schema, so implicit typing differences are reported as findings
 // rather than hidden. `skills-ref validate` itself runs only when it is on
-// PATH and TK_LIBRARY_SKILLS_REF=1 (upstream.ts).
+// PATH and DERM_LIBRARY_SKILLS_REF=1 (upstream.ts).
 import { parse as parseYaml } from "yaml";
 import type { Finding } from "./types.ts";
 import { finding, isRecord } from "./types.ts";

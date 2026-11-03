@@ -1,4 +1,4 @@
-tk
+derm
 Copyright (c) 2026 Aetius Gular. MIT licence (LICENSE).
 
 Parts of this repository were copied from the MonoCode fork
@@ -13,15 +13,15 @@ Source commit: w3/integration 159ef3e17f9abac6539b3b311576910ef1f513ed
 
 | Here | From the fork | Lines |
 |---|---|---|
-| crates/tk-daemon/src/otel_receiver/mod.rs | src-tauri/src/otel_receiver.rs | 870 |
-| crates/tk-daemon/src/otel_receiver/ (decode, harness_env, normalize, tests, fixtures) | src-tauri/src/otel_receiver/ | 4072 |
-| crates/tk-daemon/src/activity/ | src-tauri/src/activity/ | 6600 |
-| crates/tk-daemon/src/computer_use/mod.rs | src-tauri/src/computer_use.rs | 659 |
-| crates/tk-daemon/src/computer_use/ | src-tauri/src/computer_use/ | 4832 |
+| crates/derm-daemon/src/otel_receiver/mod.rs | src-tauri/src/otel_receiver.rs | 870 |
+| crates/derm-daemon/src/otel_receiver/ (decode, harness_env, normalize, tests, fixtures) | src-tauri/src/otel_receiver/ | 4072 |
+| crates/derm-daemon/src/activity/ | src-tauri/src/activity/ | 6600 |
+| crates/derm-daemon/src/computer_use/mod.rs | src-tauri/src/computer_use.rs | 659 |
+| crates/derm-daemon/src/computer_use/ | src-tauri/src/computer_use/ | 4832 |
 | macos/activity-collector/ | macos/activity-collector/ | 5052 |
 | macos/computer-use-helper/ | macos/computer-use-helper/ | 4356 |
 | macos/README.md | macos/README.md | 11 |
-| crates/tk-cli/src/connect/gateway/docker_mcp.rs | src-tauri/src/docker_mcp.rs | 897 |
+| crates/derm-cli/src/connect/gateway/docker_mcp.rs | src-tauri/src/docker_mcp.rs | 897 |
 | tests/cli-contract/ | tests/cli-contract/ | 3844 |
 | tests/fixtures/otlp/ | src-tauri/src/otel_receiver/fixtures/ | 1847 |
 
@@ -36,8 +36,8 @@ Third-party data and schemas, added by integration w1 (27 Oct 2026):
 
 | Here | What | Source | Licence |
 |---|---|---|---|
-| packages/tk-pi/src/confusables.ts; packages/tk-claude-plugin/src/core/confusables.ts and its copies in the src/core/ folders of tk-codex-plugin, tk-opencode-plugin, tk-gemini-extension, tk-kilo-plugin, tk-hermes-plugin and tk-openclaw-plugin (the last four from wave 2); crates/tk-core/src/fold_tables.rs (its CONFUSABLES table); contracts/fixtures/policy/fold.json | Mappings derived from Unicode confusables.txt 17.0.0 (2025-07-22), sha256 091c7f82fc39ef208faf8f94d29c244de99254675e09de163160c810d13ef22a | unicode-org/unicodetools at 578f6c0, unicodetools/data/security/17.0.0/confusables.txt | Unicode License V3, LICENSES/Unicode-3.0.txt |
-| crates/tk-core/src/fold_tables.rs (its DECOMP and MARKS tables) | NFKD decompositions and general categories Mn and Me, Unicode 17.0, generated from Node 22.23.4's ICU 78.3 | The Unicode Character Database, through ICU | Unicode License V3, LICENSES/Unicode-3.0.txt |
+| packages/derm-pi/src/confusables.ts; packages/derm-claude-plugin/src/core/confusables.ts and its copies in the src/core/ folders of derm-codex-plugin, derm-opencode-plugin, derm-gemini-extension, derm-kilo-plugin, derm-hermes-plugin and derm-openclaw-plugin (the last four from wave 2); crates/derm-core/src/fold_tables.rs (its CONFUSABLES table); contracts/fixtures/policy/fold.json | Mappings derived from Unicode confusables.txt 17.0.0 (2025-07-22), sha256 091c7f82fc39ef208faf8f94d29c244de99254675e09de163160c810d13ef22a | unicode-org/unicodetools at 578f6c0, unicodetools/data/security/17.0.0/confusables.txt | Unicode License V3, LICENSES/Unicode-3.0.txt |
+| crates/derm-core/src/fold_tables.rs (its DECOMP and MARKS tables) | NFKD decompositions and general categories Mn and Me, Unicode 17.0, generated from Node 22.23.4's ICU 78.3 | The Unicode Character Database, through ICU | Unicode License V3, LICENSES/Unicode-3.0.txt |
 | library/schema/server.schema.json | The official MCP registry's server.json schema, version 2025-12-11, byte for byte | modelcontextprotocol/registry at 9c4a96c90fbcd3c3a169cdcd5443419c7a0c39d7, internal/validators/schemas/2025-12-11.json | MIT and Apache-2.0 (that repository's LICENSE); LICENSES/Apache-2.0.txt |
 | library/schema/thv-registry.schema.json, thv-skill.schema.json, thv-plugin.schema.json | ToolHive's registry, skill and plugin schemas, byte for byte | stacklok/toolhive-core main, registry/types/data/, fetched 27 Oct 2026 (sha256 in plans/parallel/tk_lane_E.md) | Apache-2.0, LICENSES/Apache-2.0.txt |
 

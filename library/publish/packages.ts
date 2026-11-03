@@ -1,4 +1,4 @@
-// What `tk publish` reads about an entry's packages (lane G, T3.3): install
+// What `derm publish` reads about an entry's packages (lane G, T3.3): install
 // scripts and provenance. Only the two package registries whose APIs were
 // read are asked; every other kind is recorded as not checked.
 //
@@ -17,7 +17,7 @@
 //         Publisher, the statement's subject digest is the file's sha256 (run
 //         on mcp-server-fetch 2025.4.7, 28 Oct 2026).
 //
-// tk records what the attestation says and checks that it is bound to this
+// derm records what the attestation says and checks that it is bound to this
 // package (the digest) and to the entry (the repository). It does not verify
 // the Sigstore signature chain; `npm audit signatures` and PyPI do. The
 // record says so.
@@ -169,7 +169,7 @@ export async function checkPypi(project: string, version: string, repoUrl: strin
   return report;
 }
 
-/** Every package of a server.json, checked where tk knows how. */
+/** Every package of a server.json, checked where derm knows how. */
 export async function checkPackages(server: Record<string, unknown>, fetchImpl: FetchLike): Promise<PackageReport[]> {
   const out: PackageReport[] = [];
   const repo = isRecord(server["repository"]) && typeof server["repository"]["url"] === "string" ? server["repository"]["url"] : undefined;
@@ -188,7 +188,7 @@ export async function checkPackages(server: Record<string, unknown>, fetchImpl: 
         ...(version ? { version } : {}),
         provenance: { kind: "none" },
         checked: false,
-        findings: [{ rule: "publish/package-not-checked", severity: "warning", message: `${type || "this"} package${base ? ` on ${base}` : ""} is not checked by tk publish yet: no install-script or provenance record` }],
+        findings: [{ rule: "publish/package-not-checked", severity: "warning", message: `${type || "this"} package${base ? ` on ${base}` : ""} is not checked by derm publish yet: no install-script or provenance record` }],
       });
   }
   return out;

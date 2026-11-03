@@ -16,14 +16,14 @@
         "hf-hub",
         "meeting-notes",
         "deployments",
-        "tk-connectors"
+        "derm-connectors"
       ]
     },
-    "tk-own": {
-      "title": "tk's own servers",
-      "description": "The servers tk itself provides: the computer-use helper and the Docker MCP gateway.",
+    "derm-own": {
+      "title": "derm's own servers",
+      "description": "The servers derm itself provides: the computer-use helper and the Docker MCP gateway.",
       "entries": [
-        "tk-computer-use",
+        "derm-computer-use",
         "docker-mcp-gateway"
       ]
     }

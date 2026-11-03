@@ -1,4 +1,4 @@
-// Shared types of the tk library validator (lane E, T3.1).
+// Shared types of the derm library validator (lane E, T3.1).
 
 export type Kind = "server" | "skill" | "bundle";
 
@@ -9,12 +9,12 @@ export type Severity = "error" | "warning";
  *  repeats a secret-like value. */
 export type Finding = { rule: string; severity: Severity; path: string; message: string };
 
-export const TK_META_KEY = "io.github.aetiusgular.tk";
+export const DERM_META_KEY = "io.github.aetiusgular.derm";
 export const PUBLISHER_PROVIDED = "io.modelcontextprotocol.registry/publisher-provided";
 
-/** The tk data object of contracts/entry.schema.json, typed loosely: the
+/** The derm data object of contracts/entry.schema.json, typed loosely: the
  *  schema is the contract; this type names the fields the rules read. */
-export type TkMeta = {
+export type DermMeta = {
   kind: Kind;
   tier: "own" | "curated" | "mirrored";
   status: "active" | "deprecated" | "deleted";
@@ -63,19 +63,19 @@ export type Catalog = {
   brands: string[];
 };
 
-export function getMeta(kind: Kind, data: Record<string, unknown>): TkMeta | undefined {
+export function getMeta(kind: Kind, data: Record<string, unknown>): DermMeta | undefined {
   if (kind === "bundle") {
     const metadata = data["metadata"];
     if (!isRecord(metadata)) return undefined;
-    const m = metadata[TK_META_KEY];
-    return isRecord(m) ? (m as unknown as TkMeta) : undefined;
+    const m = metadata[DERM_META_KEY];
+    return isRecord(m) ? (m as unknown as DermMeta) : undefined;
   }
   const meta = data["_meta"];
   if (!isRecord(meta)) return undefined;
   const pp = meta[PUBLISHER_PROVIDED];
   if (!isRecord(pp)) return undefined;
-  const m = pp[TK_META_KEY];
-  return isRecord(m) ? (m as unknown as TkMeta) : undefined;
+  const m = pp[DERM_META_KEY];
+  return isRecord(m) ? (m as unknown as DermMeta) : undefined;
 }
 
 export function isRecord(v: unknown): v is Record<string, unknown> {

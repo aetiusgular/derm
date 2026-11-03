@@ -25,7 +25,7 @@ const init = {
   jsonrpc: "2.0",
   id: 1,
   method: "initialize",
-  params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "tk-measure-recorder", version: "0.0.0" } },
+  params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "derm-measure-recorder", version: "0.0.0" } },
 };
 
 function parseBody(text, contentType) {

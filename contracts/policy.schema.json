@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/aetiusgular/tk/contracts/policy.schema.json",
-  "title": "tk policy file (~/.tk/policy.json)",
+  "$id": "https://github.com/aetiusgular/derm/contracts/policy.schema.json",
+  "title": "derm policy file (~/.derm/policy.json)",
   "description": "Contract: contracts/policy.md",
   "type": "object",
   "additionalProperties": false,

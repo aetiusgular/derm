@@ -2,14 +2,14 @@
 //
 // The gate's matchers fold text with the hook core's algorithm and the full
 // Unicode confusables.txt 17.0.0 table (contracts/policy.md section 3;
-// packages/tk-claude-plugin/src/core/fold.ts, confusables.ts). Wave 1's
+// packages/derm-claude-plugin/src/core/fold.ts, confusables.ts). Wave 1's
 // library validator carried a hand-picked subset of that table
 // (library/validate/rejects.ts, lane E's open item). The library now uses the
 // same function the gate uses, imported from the canonical core rather than
 // copied a fourth time, so a name or key the gate folds one way is folded the
 // same way at publish.
 
-import { fold as coreFold } from "../../packages/tk-claude-plugin/src/core/fold.ts";
+import { fold as coreFold } from "../../packages/derm-claude-plugin/src/core/fold.ts";
 
 export { coreFold as fold };
 

@@ -3,12 +3,12 @@
 // against a fake; this starts lane B's real daemon and drives the other
 // lanes' clients into it:
 //
-//   - lane D's `tk run` starting a real Pi with lane A's package (run.start,
+//   - lane D's `derm run` starting a real Pi with lane A's package (run.start,
 //     Pi's OTLP records, run.stop, all in one chat);
 //   - lane F's Claude Code hook (approve through a real approver, the
 //     adapter record, and no fallback to the daemon's own token);
-//   - lane C's `tk connect --write` logging `config.write`;
-//   - lane C's `tk connect` reading lane E's catalog entries;
+//   - lane C's `derm connect --write` logging `config.write`;
+//   - lane C's `derm connect` reading lane E's catalog entries;
 //   - a chat token revoked at `run.stop`.
 //
 //   node tests/integration/w1.mjs --pi /path/to/pi [--bin target/release] [--json]
@@ -36,9 +36,9 @@ const opt = (name, dflt) => {
 const PI = opt("--pi") ? resolve(opt("--pi")) : undefined;
 const BIN = resolve(ROOT, opt("--bin", "target/release"));
 const JSON_OUT = args.includes("--json");
-const TK = join(BIN, "tk");
-const DAEMON = join(BIN, "tk-daemon");
-for (const b of [TK, DAEMON]) {
+const DERM = join(BIN, "derm");
+const DAEMON = join(BIN, "derm-daemon");
+for (const b of [DERM, DAEMON]) {
   if (!existsSync(b)) {
     console.error(`missing ${b}: run cargo build --release first, or pass --bin`);
     process.exit(2);
@@ -67,14 +67,14 @@ async function until(fn, ms, step = 50) {
 
 // ------------------------------------------------------------ the sandbox
 
-const top = mkdtempSync(join(tmpdir(), "tk-int-w1-"));
+const top = mkdtempSync(join(tmpdir(), "derm-int-w1-"));
 const HOME = join(top, "home");
 const RUN = join(top, "run");
 const DATA = join(top, "data");
 const WORK = join(HOME, "work");
 for (const d of [HOME, RUN, DATA, WORK]) mkdirSync(d, { recursive: true, mode: 0o700 });
 chmodSync(RUN, 0o700);
-const SOCK_DIR = join(RUN, "tk");
+const SOCK_DIR = join(RUN, "derm");
 const SOCK = join(SOCK_DIR, "daemon.sock");
 const baseEnv = { PATH: process.env.PATH, HOME, XDG_RUNTIME_DIR: RUN, XDG_DATA_HOME: DATA, LANG: "C.UTF-8" };
 
@@ -216,16 +216,16 @@ try {
   });
   check("approver registers", (await appr.c.send({ op: "approver" })).ok === true);
 
-  const policyDir = join(HOME, ".tk");
+  const policyDir = join(HOME, ".derm");
   mkdirSync(policyDir, { recursive: true, mode: 0o700 });
   const POLICY = join(policyDir, "policy.json");
   writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }), { mode: 0o600 });
 
-  // ---- 1. tk run (lane D) + real Pi + tk-pi (lane A) -> daemon (lane B)
+  // ---- 1. derm run (lane D) + real Pi + derm-pi (lane A) -> daemon (lane B)
   if (!PI) {
-    info("tk run with Pi", "not run: no --pi given");
+    info("derm run with Pi", "not run: no --pi given");
   } else {
-    model = await fakeModel({ name: "bash", input: { command: "echo tk-int-ok" } });
+    model = await fakeModel({ name: "bash", input: { command: "echo derm-int-ok" } });
     const agent = join(HOME, ".pi", "agent");
     mkdirSync(agent, { recursive: true });
     writeFileSync(
@@ -235,10 +235,10 @@ try {
     // Pi's own ask has no UI in JSON mode, so bash is allowed for this run.
     writeFileSync(POLICY, JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
     const env = { ...baseEnv, PATH: `${dirname(PI)}${delimiter}${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0" };
-    const piArgs = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", join(ROOT, "packages", "tk-pi"), "--model", "fake/fake-model", "--mode", "json", "run the step"];
+    const piArgs = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", join(ROOT, "packages", "derm-pi"), "--model", "fake/fake-model", "--mode", "json", "run the step"];
     const chat = "int-pi-1";
-    const r = await runCmd(TK, ["run", "pi", "--boundary", "none", "--chat", chat, "--cwd", WORK, "--", ...piArgs], env);
-    check("tk run pi --boundary none exits 0", r.code === 0, `code ${r.code}; ${r.err.split("\n").filter(Boolean).slice(-2).join(" | ")}`);
+    const r = await runCmd(DERM, ["run", "pi", "--boundary", "none", "--chat", chat, "--cwd", WORK, "--", ...piArgs], env);
+    check("derm run pi --boundary none exits 0", r.code === 0, `code ${r.code}; ${r.err.split("\n").filter(Boolean).slice(-2).join(" | ")}`);
     await until(() => events.some((e) => e.chatId === chat && e.kind === "run.stop"), 5000);
     const mine = events.filter((e) => e.chatId === chat);
     const start = mine.find((e) => e.source === "run" && e.kind === "run.start");
@@ -255,14 +255,14 @@ try {
     model = undefined;
   }
 
-  // A chat token for the hook checks, as `tk run` would mint it.
+  // A chat token for the hook checks, as `derm run` would mint it.
   const mint = await tail.c.send({ op: "token.mint", chat: "int-cc-1", harness: "claude-code" });
   check("token.mint for a claude-code chat", mint.ok === true && /^[0-9a-f]{64}$/.test(mint.token ?? ""));
   writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }), { mode: 0o600 });
 
   // ---- 2. lane F's Claude Code hook -> real daemon
-  const hookBin = join(ROOT, "packages", "tk-claude-plugin", "bin", "tk-hook.mjs");
-  const hookEnv = (extra) => ({ ...baseEnv, TK_POLICY: POLICY, ...extra });
+  const hookBin = join(ROOT, "packages", "derm-claude-plugin", "bin", "derm-hook.mjs");
+  const hookEnv = (extra) => ({ ...baseEnv, DERM_POLICY: POLICY, ...extra });
   const pre = (id) => JSON.stringify({ hook_event_name: "PreToolUse", session_id: "s-int", tool_name: "Bash", tool_input: { command: "ls" }, tool_use_id: id, permission_mode: "default", cwd: WORK });
   const reason = (out) => {
     try {
@@ -280,9 +280,9 @@ try {
     }
   };
   const before = asked.length;
-  let h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ TK_CHAT_TOKEN: mint.token, TK_CHAT_ID: "int-cc-1" }), pre("toolu_int1"));
+  let h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ DERM_CHAT_TOKEN: mint.token, DERM_CHAT_ID: "int-cc-1" }), pre("toolu_int1"));
   check("hook ask with a chat token reaches the real approver and allows", decision(h.out) === "allow" && asked.length === before + 1 && asked.at(-1)?.chat === "int-cc-1", `decision ${decision(h.out)}; asked ${asked.length - before}; chat ${asked.at(-1)?.chat}; ${reason(h.out)} ${h.err.trim().slice(0, 120)}`);
-  h = await runCmd(process.execPath, ["--no-warnings", hookBin, "post"], hookEnv({ TK_CHAT_TOKEN: mint.token, TK_CHAT_ID: "int-cc-1" }), JSON.stringify({ hook_event_name: "PostToolUse", session_id: "s-int", tool_name: "Bash", tool_use_id: "toolu_int1", tool_input: { command: "ls" }, tool_response: { stdout: "a", stderr: "", interrupted: false, isImage: false } }));
+  h = await runCmd(process.execPath, ["--no-warnings", hookBin, "post"], hookEnv({ DERM_CHAT_TOKEN: mint.token, DERM_CHAT_ID: "int-cc-1" }), JSON.stringify({ hook_event_name: "PostToolUse", session_id: "s-int", tool_name: "Bash", tool_use_id: "toolu_int1", tool_input: { command: "ls" }, tool_response: { stdout: "a", stderr: "", interrupted: false, isImage: false } }));
   const rec = await until(() => events.find((e) => e.chatId === "int-cc-1" && e.source === "adapter" && e.kind === "tool.call"), 3000);
   check("hook's adapter record lands in the token's chat", Boolean(rec), rec ? `${rec.id} by ${rec.harness}` : `post exit ${h.code}`);
 
@@ -293,57 +293,57 @@ try {
   h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({}), pre("toolu_int2"));
   check("hook without a chat token does not use the daemon's token", asked.length === before2 && decision(h.out) === "ask", `decision ${decision(h.out)}; approver asked ${asked.length - before2} time(s); ${reason(h.out)}`);
 
-  // A chat token in a file that `tk run` wrote (TK_CHAT_TOKEN_FILE), for
+  // A chat token in a file that `derm run` wrote (DERM_CHAT_TOKEN_FILE), for
   // harnesses that strip secret-named variables (rules case 76).
   const tokDir = join(top, "chat-token");
   mkdirSync(tokDir, { mode: 0o700 });
   writeFileSync(join(tokDir, "token"), `${mint.token}\n`, { mode: 0o600 });
   const before3 = asked.length;
-  h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ TK_CHAT_TOKEN_FILE: join(tokDir, "token"), TK_CHAT_ID: "int-cc-1" }), pre("toolu_int3"));
-  check("hook reads the chat token from TK_CHAT_TOKEN_FILE", decision(h.out) === "allow" && asked.length === before3 + 1, `decision ${decision(h.out)}; asked ${asked.length - before3}; ${reason(h.out)}`);
+  h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ DERM_CHAT_TOKEN_FILE: join(tokDir, "token"), DERM_CHAT_ID: "int-cc-1" }), pre("toolu_int3"));
+  check("hook reads the chat token from DERM_CHAT_TOKEN_FILE", decision(h.out) === "allow" && asked.length === before3 + 1, `decision ${decision(h.out)}; asked ${asked.length - before3}; ${reason(h.out)}`);
 
-  // ---- 3. lane C's tk connect --write -> daemon log
+  // ---- 3. lane C's derm connect --write -> daemon log
   const entry = join(top, "entry.json");
   writeFileSync(entry, readFileSync(join(ROOT, "contracts", "fixtures", "entry", "server.json"), "utf8"));
-  const cmd = `${TK} connect pi --from ${entry} --write`;
+  const cmd = `${DERM} connect pi --from ${entry} --write`;
   const connectEnv = PI ? { ...baseEnv, PATH: `${dirname(PI)}${delimiter}${process.env.PATH}` } : { ...baseEnv };
   const w = await runCmd("script", ["-qec", cmd, "/dev/null"], connectEnv, "y\n");
   const wrote = existsSync(join(HOME, ".pi", "agent", "mcp.json"));
   const cw = await until(() => events.find((e) => e.kind === "config.write"), 3000);
-  check("tk connect --write in a terminal writes and logs config.write to the daemon", wrote && Boolean(cw), `wrote ${wrote}; event ${cw ? `${cw.source}/${cw.kind}` : "none"}; exit ${w.code}; ${w.out.split("\n").filter(Boolean).slice(-1)[0] ?? ""}`.slice(0, 220));
-  check("no fallback ~/.tk/connect.log while the daemon runs", !existsSync(join(HOME, ".tk", "connect.log")));
+  check("derm connect --write in a terminal writes and logs config.write to the daemon", wrote && Boolean(cw), `wrote ${wrote}; event ${cw ? `${cw.source}/${cw.kind}` : "none"}; exit ${w.code}; ${w.out.split("\n").filter(Boolean).slice(-1)[0] ?? ""}`.slice(0, 220));
+  check("no fallback ~/.derm/connect.log while the daemon runs", !existsSync(join(HOME, ".derm", "connect.log")));
 
-  // ---- 4. lane E's catalog through lane C's tk connect (dry run)
+  // ---- 4. lane E's catalog through lane C's derm connect (dry run)
   const catalog = join(ROOT, "library", "catalog");
   const outcomes = [];
   for (const id of readdirSync(catalog).sort()) {
     const f = join(catalog, id, "server.json");
     if (!existsSync(f)) continue;
     for (const harness of ["pi", "claude-code", "codex"]) {
-      const r = await runCmd(TK, ["connect", harness, "--from", f], { ...baseEnv });
+      const r = await runCmd(DERM, ["connect", harness, "--from", f], { ...baseEnv });
       outcomes.push({ id, harness, code: r.code, why: (r.err.split("\n").find((l) => l.trim()) ?? "").slice(0, 140) });
     }
   }
-  // `registryType: "host"` is tk's own label for a local command (upstream's
-  // registryType is a free string); tk connect writes only npm and pypi
+  // `registryType: "host"` is derm's own label for a local command (upstream's
+  // registryType is a free string); derm connect writes only npm and pypi
   // packages in wave 1 and refuses the rest. The gateway is connected with
-  // `tk connect --gateway docker`, computer use waits for wave 2's `tk cu`.
-  const HOST_ONLY = new Set(["docker-mcp-gateway", "tk-computer-use"]);
+  // `derm connect --gateway docker`, computer use waits for wave 2's `derm cu`.
+  const HOST_ONLY = new Set(["docker-mcp-gateway", "derm-computer-use"]);
   const refused = outcomes.filter((o) => o.code !== 0 && !HOST_ONLY.has(o.id));
   const hostRight = outcomes.filter((o) => HOST_ONLY.has(o.id)).every((o) => o.code !== 0 && /registry type Some\("host"\)/.test(o.why));
-  check("every catalog server dry-runs through tk connect for pi, claude-code and codex", refused.length === 0, refused.length ? refused.map((o) => `${o.id}/${o.harness}: ${o.why}`).join(" ; ") : `${outcomes.filter((o) => o.code === 0).length} dry runs`);
+  check("every catalog server dry-runs through derm connect for pi, claude-code and codex", refused.length === 0, refused.length ? refused.map((o) => `${o.id}/${o.harness}: ${o.why}`).join(" ; ") : `${outcomes.filter((o) => o.code === 0).length} dry runs`);
   check("the two host-command entries are refused by name, not by accident", hostRight, [...HOST_ONLY].join(", "));
-  // The variable a header reads is the one the export names (lane E) and tk
+  // The variable a header reads is the one the export names (lane E) and derm
   // connect writes (lane C): one key, set once, serves both.
-  const exa = await runCmd(TK, ["connect", "claude-code", "--from", join(catalog, "exa", "server.json")], { ...baseEnv });
-  check("tk connect reads exa's key from EXA_API_KEY, as the export does", /EXA_API_KEY/.test(exa.out) && !/exa_api_key/.test(exa.out), exa.out.split("\n").find((l) => /api.key/i.test(l))?.trim());
+  const exa = await runCmd(DERM, ["connect", "claude-code", "--from", join(catalog, "exa", "server.json")], { ...baseEnv });
+  check("derm connect reads exa's key from EXA_API_KEY, as the export does", /EXA_API_KEY/.test(exa.out) && !/exa_api_key/.test(exa.out), exa.out.split("\n").find((l) => /api.key/i.test(l))?.trim());
 
   // ---- 5. chat token revoked at run.stop (lane D's request 2)
   const fakeBin = join(top, "fakebin");
   mkdirSync(fakeBin);
   const dump = join(top, "dump.txt");
-  writeFileSync(join(fakeBin, "pi"), `#!/bin/sh\nprintf '%s' "$TK_CHAT_TOKEN" > '${dump}'\nexit 0\n`, { mode: 0o755 });
-  const r5 = await runCmd(TK, ["run", "pi", "--boundary", "none", "--chat", "int-revoke", "--cwd", WORK], { ...baseEnv, PATH: `${fakeBin}${delimiter}${process.env.PATH}` });
+  writeFileSync(join(fakeBin, "pi"), `#!/bin/sh\nprintf '%s' "$DERM_CHAT_TOKEN" > '${dump}'\nexit 0\n`, { mode: 0o755 });
+  const r5 = await runCmd(DERM, ["run", "pi", "--boundary", "none", "--chat", "int-revoke", "--cwd", WORK], { ...baseEnv, PATH: `${fakeBin}${delimiter}${process.env.PATH}` });
   const leaked = existsSync(dump) ? readFileSync(dump, "utf8").trim() : "";
   await until(() => events.some((e) => e.chatId === "int-revoke" && e.kind === "run.stop"), 3000);
   if (!/^[0-9a-f]{64}$/.test(leaked)) {

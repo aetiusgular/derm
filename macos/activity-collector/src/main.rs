@@ -15,13 +15,13 @@ use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use monocode_activity_collector::{daemon, log, protocol, replay};
+use derm_activity_collector::{daemon, log, protocol, replay};
 
 const USAGE: &str = "usage:
-  monocode-activity-collector run [--dev-peer-path <abs path>] [--log-dir <dir>] [--socket-dir <dir>]
-  monocode-activity-collector parse-fixture <file> --pid <n> --chat <id> [--grant <chat> <bundle id> <app path>]...
-  monocode-activity-collector verify <log file>
-  monocode-activity-collector --version";
+  derm-activity-collector run [--dev-peer-path <abs path>] [--log-dir <dir>] [--socket-dir <dir>]
+  derm-activity-collector parse-fixture <file> --pid <n> --chat <id> [--grant <chat> <bundle id> <app path>]...
+  derm-activity-collector verify <log file>
+  derm-activity-collector --version";
 
 fn usage() -> ExitCode {
     eprintln!("{USAGE}");
@@ -159,7 +159,7 @@ fn cmd_verify(args: &[String]) -> ExitCode {
 fn cmd_run(args: RunArgs) -> ExitCode {
     // macOS glue: the signature check (caller::ffi, not compiled in the
     // cloud) gates every socket connection.
-    use monocode_activity_collector::caller::ffi::Checker;
+    use derm_activity_collector::caller::ffi::Checker;
     use std::os::fd::AsRawFd;
     use std::sync::Arc;
     let checker = Checker::new(args.dev_peer_path);
@@ -181,7 +181,7 @@ fn cmd_run(args: RunArgs) -> ExitCode {
 
 #[cfg(not(target_os = "macos"))]
 fn cmd_run(_args: RunArgs) -> ExitCode {
-    eprintln!("monocode-activity-collector: run works only on macOS");
+    eprintln!("derm-activity-collector: run works only on macOS");
     ExitCode::from(2)
 }
 
@@ -192,7 +192,7 @@ fn main() -> ExitCode {
     };
     match mode.as_str() {
         "--version" => {
-            println!("monocode-activity-collector {}", env!("CARGO_PKG_VERSION"));
+            println!("derm-activity-collector {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         "run" => match parse_run(rest) {

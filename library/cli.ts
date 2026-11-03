@@ -1,10 +1,10 @@
-// tk library command line (lane E).
+// derm library command line (lane E).
 //   node library/cli.ts validate [catalog-dir]
 //   node library/cli.ts export <set|all> <out-dir> [catalog-dir]
 // Runs on Node 22.18+ with type stripping; no build step. Exit 1 on an error
 // finding, 2 on usage. Nothing here touches the network or runs a program
-// unless asked: TK_LIBRARY_ONLINE=1 posts each server to the registry's
-// /v0.1/validate, TK_LIBRARY_SKILLS_REF=1 runs skills-ref on each skill
+// unless asked: DERM_LIBRARY_ONLINE=1 posts each server to the registry's
+// /v0.1/validate, DERM_LIBRARY_SKILLS_REF=1 runs skills-ref on each skill
 // (validate only; integration w1 fix pass, box test BX1).
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";

@@ -27,7 +27,7 @@ function validator() {
   return ajv;
 }
 
-const base = "https://github.com/aetiusgular/tk/contracts/";
+const base = "https://github.com/aetiusgular/derm/contracts/";
 
 function check(schemaId: string, data: unknown): string[] {
   const ajv = validator();
@@ -61,7 +61,7 @@ describe("policy contract", () => {
 });
 
 describe("entry contract", () => {
-  it("the server fixture validates as server.json with tk's _meta", () => {
+  it("the server fixture validates as server.json with derm's _meta", () => {
     expect(check("shapes/server.min.schema.json", read("fixtures/entry/server.json"))).toEqual([]);
   });
 
@@ -121,35 +121,35 @@ describe("daemon exchange", () => {
   });
 });
 
-// Integration w1: the repository is its own marketplace for tk's plugins, so
-// `claude plugin install tk@tk` and `codex plugin add tk@tk` work from a
+// Integration w1: the repository is its own marketplace for derm's plugins, so
+// `claude plugin install derm@derm` and `codex plugin add derm@derm` work from a
 // clone (run with Claude Code 2.1.311 and Codex 0.163.0 on 27 Oct; Claude
-// Code's `plugin validate` passed). The id must stay tk@tk: the managed
+// Code's `plugin validate` passed). The id must stay derm@derm: the managed
 // settings fragment and Codex's hook trust keys name it.
-describe("tk's own marketplaces", () => {
+describe("derm's own marketplaces", () => {
   const root = join(here, "..");
   const claude = JSON.parse(readFileSync(join(root, ".claude-plugin", "marketplace.json"), "utf8")) as { name: string; plugins: { name: string; source: string }[] };
   const codex = JSON.parse(readFileSync(join(root, ".agents", "plugins", "marketplace.json"), "utf8")) as { name: string; plugins: { name: string; source: { source: string; path: string } }[] };
-  it("Claude Code's names tk and points at the Claude Code plugin", () => {
+  it("Claude Code's names derm and points at the Claude Code plugin", () => {
     expect(check("shapes/marketplace.schema.json", claude)).toEqual([]);
-    expect(claude.name).toBe("tk");
-    expect(claude.plugins).toEqual([expect.objectContaining({ name: "tk", source: "./packages/tk-claude-plugin" })]);
-    const manifest = JSON.parse(readFileSync(join(root, "packages", "tk-claude-plugin", ".claude-plugin", "plugin.json"), "utf8")) as { name: string };
-    expect(manifest.name).toBe("tk");
+    expect(claude.name).toBe("derm");
+    expect(claude.plugins).toEqual([expect.objectContaining({ name: "derm", source: "./packages/derm-claude-plugin" })]);
+    const manifest = JSON.parse(readFileSync(join(root, "packages", "derm-claude-plugin", ".claude-plugin", "plugin.json"), "utf8")) as { name: string };
+    expect(manifest.name).toBe("derm");
   });
-  it("Codex's names tk and points at the Codex plugin", () => {
-    expect(codex.name).toBe("tk");
-    expect(codex.plugins).toEqual([{ name: "tk", source: { source: "local", path: "./packages/tk-codex-plugin" } }]);
-    const manifest = JSON.parse(readFileSync(join(root, "packages", "tk-codex-plugin", ".codex-plugin", "plugin.json"), "utf8")) as { name: string };
-    expect(manifest.name).toBe("tk");
+  it("Codex's names derm and points at the Codex plugin", () => {
+    expect(codex.name).toBe("derm");
+    expect(codex.plugins).toEqual([{ name: "derm", source: { source: "local", path: "./packages/derm-codex-plugin" } }]);
+    const manifest = JSON.parse(readFileSync(join(root, "packages", "derm-codex-plugin", ".codex-plugin", "plugin.json"), "utf8")) as { name: string };
+    expect(manifest.name).toBe("derm");
   });
-  it("the managed settings fragment enables exactly tk@tk", () => {
-    const frag = readFileSync(join(root, "packages", "tk-claude-plugin", "managed-settings.fragment.json"), "utf8");
-    expect(frag).toContain('"tk@tk"');
+  it("the managed settings fragment enables exactly derm@derm", () => {
+    const frag = readFileSync(join(root, "packages", "derm-claude-plugin", "managed-settings.fragment.json"), "utf8");
+    expect(frag).toContain('"derm@derm"');
   });
 });
 
-// Integration w1: the coverage fields lane J's `tk status` reads (note AQ section 4).
+// Integration w1: the coverage fields lane J's `derm status` reads (note AQ section 4).
 describe("harness coverage", () => {
   type Row = { id: string; coverage: { tier: string | null; orcaId: string | null; gate: { status: string } } };
   const data = loadPresetTable() as unknown as { harnesses: Row[]; planned: Row[] };

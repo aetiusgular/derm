@@ -1,4 +1,4 @@
-// tk publish command line (lane G, T3.3).
+// derm publish command line (lane G, T3.3).
 //   node library/publish/cli.ts publish <entry-dir> --library <clone> --proof github|dns|http
 //        [--key-file <path> | --key-stdin] [--upstream <file>] [--open-pr] [--head-owner <login>]
 //   node library/publish/cli.ts record (--key-file <path> | --key-stdin)
