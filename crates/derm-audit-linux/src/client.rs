@@ -52,18 +52,11 @@ impl From<std::io::Error> for ClientError {
     }
 }
 
-/// Where the daemon's socket lives (contract section 1). Kept equal to
-/// `derm_daemon::socket_path` by `tests/client_contract.rs`.
+/// Where the daemon's socket lives (contract section 1): the one function
+/// in `derm_core::runtime`, which `derm_daemon::socket_path` also calls
+/// (`tests/client_contract.rs`).
 pub fn socket_path() -> Option<PathBuf> {
-    if cfg!(target_os = "macos") {
-        let home = std::env::var_os("HOME")?;
-        Some(PathBuf::from(home).join("Library/Application Support/derm/daemon.sock"))
-    } else {
-        let dir = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".derm/run")))?;
-        Some(dir.join("derm/daemon.sock"))
-    }
+    derm_core::runtime::socket_path()
 }
 
 /// Reads `daemon.token` beside the socket. Refused unless it is a regular

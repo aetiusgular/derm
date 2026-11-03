@@ -76,6 +76,8 @@ impl Names {
 }
 const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 10_000;
+/// `EventsReply::problem` when the collector's socket did not connect.
+pub const NOT_RUNNING: &str = "not running";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +108,10 @@ pub struct EventsReply {
     pub chain_ok: bool,
     /// The reply ended with its closing line.
     pub complete: bool,
+    /// The socket connected and the request went out. `false` only from
+    /// `fetch_events`'s error arm: nothing was read, so nothing was cut short
+    /// (release check RC1; fix pass review F4).
+    pub connected: bool,
     /// Why there is no complete reply: `timeout`, `truncated`, `not running`
     /// or the collector's own error (`refused`). `None` when complete.
     pub problem: Option<String>,
@@ -114,7 +120,10 @@ pub struct EventsReply {
 /// Reads an `events` reply. Lines that are not an `eslogger` event are
 /// skipped, so the collector cannot put another source's record in the log.
 pub fn parse_events_reply(reader: impl BufRead, limit: usize) -> EventsReply {
-    let mut reply = EventsReply::default();
+    let mut reply = EventsReply {
+        connected: true,
+        ..EventsReply::default()
+    };
     let mut lines = reader.lines();
     loop {
         let line = match lines.next() {
@@ -208,7 +217,7 @@ pub fn fetch_events(since: i64, until: i64, chat_id: Option<&str>, limit: usize)
         ) {
             Ok(reader) => parse_events_reply(reader, limit.min(MAX_EVENTS)),
             Err(_) => EventsReply {
-                problem: Some("not running".into()),
+                problem: Some(NOT_RUNNING.into()),
                 ..EventsReply::default()
             },
         }
@@ -217,7 +226,7 @@ pub fn fetch_events(since: i64, until: i64, chat_id: Option<&str>, limit: usize)
     {
         let _ = (since, until, chat_id, limit);
         EventsReply {
-            problem: Some("not running".into()),
+            problem: Some(NOT_RUNNING.into()),
             ..EventsReply::default()
         }
     }

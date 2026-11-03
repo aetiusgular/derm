@@ -24,19 +24,11 @@ pub mod service;
 pub mod socket;
 
 /// Where the daemon's socket lives, per OS (contract, section 1). The
-/// function only computes the path; it creates nothing.
+/// function only computes the path; it creates nothing. On Linux the folder
+/// is `$XDG_RUNTIME_DIR`, else a private `/run/user/<uid>`, else
+/// `~/.derm/run` (`derm_core::runtime`; release check RC6).
 pub fn socket_path() -> Option<std::path::PathBuf> {
-    if cfg!(target_os = "macos") {
-        let home = std::env::var_os("HOME")?;
-        Some(std::path::PathBuf::from(home).join("Library/Application Support/derm/daemon.sock"))
-    } else {
-        let dir = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".derm/run"))
-            })?;
-        Some(dir.join("derm/daemon.sock"))
-    }
+    derm_core::runtime::socket_path()
 }
 
 #[cfg(test)]

@@ -239,6 +239,7 @@ fn go(home: &Path, env: &MapEnv, answer: bool, args: &[&str]) -> Run {
         home: home.to_path_buf(),
         macos: false,
         env,
+        run_user: home.join("no-run-user"),
         confirm: &mut a,
         out: String::new(),
         err: String::new(),

@@ -1,12 +1,14 @@
-# systemd user unit for derm-daemon (Linux). Lane B wrote it; the box test
-# installs it. Not run in a build session.
+# systemd user unit for derm-daemon (Linux), for the static tarball. The .deb
+# installs its own copy in /usr/lib/systemd/user/.
 #
 #   install -D -m 0644 derm-daemon.service ~/.config/systemd/user/derm-daemon.service
-#   install -D -m 0755 <built>/derm-daemon ~/.local/bin/derm-daemon
+#   install -D -m 0755 derm-daemon ~/.local/bin/derm-daemon
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now derm-daemon.service
 #
-# The socket is $XDG_RUNTIME_DIR/derm/daemon.sock, the log ~/.local/share/derm
+# The socket is $XDG_RUNTIME_DIR/derm/daemon.sock (systemd sets it to
+# /run/user/<uid>; derm finds that folder too from a shell that does not set
+# the variable, such as Tailscale SSH), the log ~/.local/share/derm
 # (or $XDG_DATA_HOME/derm). The daemon makes no outbound connection.
 # To keep it running after logout: loginctl enable-linger <user>.
 

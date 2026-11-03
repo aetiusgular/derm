@@ -15,10 +15,10 @@ gh attestation verify derm_<version>_amd64.deb --repo aetiusgular/derm
 
 ```sh
 sudo apt install ./derm_<version>_amd64.deb
-derm --version    # derm 0.1.0
+derm --version    # derm <version>
 ```
 
-It installs the binaries in `/usr/bin` and the systemd user unit in `/usr/lib/systemd/user/derm-daemon.service`. It runs no script on install, enables nothing and starts nothing. To run the daemon as your user:
+From your home folder apt installs it and warns that the download is "performed unsandboxed as root", because its `_apt` user cannot read the file there. To avoid the warning, check and install it from a folder of your own that `_apt` can read, not from `/tmp` itself, where another user could put a file of the same name first: `d=$(mktemp -d) && chmod 755 "$d"`, then download into `$d`, run `sha256sum -c` there and `sudo apt install "$d"/derm_<version>_amd64.deb`. It installs the binaries in `/usr/bin` and the systemd user unit in `/usr/lib/systemd/user/derm-daemon.service`. It runs no script on install, enables nothing and starts nothing. To run the daemon as your user:
 
 ```sh
 systemctl --user enable --now derm-daemon
@@ -45,9 +45,13 @@ The unit in the tarball starts `~/.local/bin/derm-daemon`; the one in the .deb s
 | What | Where |
 |---|---|
 | Your policy | `~/.derm/policy.json` (`DERM_POLICY` moves it) |
-| The daemon's socket, token and OTLP port | `$XDG_RUNTIME_DIR/derm/` (0700; the files 0600) |
+| The daemon's socket, token and OTLP port | `$XDG_RUNTIME_DIR/derm/`; when the variable is unset, `/run/user/<uid>/derm/` if that folder is yours and 0700, else `~/.derm/run/derm/` (0700; the files 0600) |
 | The activity log | `$XDG_DATA_HOME/derm` or `~/.local/share/derm` |
 | Backups of configs `derm connect` changed | `~/.derm/backups/` |
+
+### Over SSH
+
+The systemd user unit runs with `XDG_RUNTIME_DIR=/run/user/<uid>`. A shell that did not come through PAM's `pam_systemd`, such as one from Tailscale SSH, has no `XDG_RUNTIME_DIR`. Since 0.1.1 derm then looks in `/run/user/<uid>` when that folder exists, belongs to you and is 0700, so `derm status`, `derm watch` and `derm run` find the unit's daemon from such a shell. 0.1.0 looked in `~/.derm/run` and said "not reachable"; there, `export XDG_RUNTIME_DIR=/run/user/$(id -u)` first. A daemon started by hand picks its folder by the same rule.
 
 ## The audit feed (optional, root)
 

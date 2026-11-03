@@ -34,6 +34,7 @@ pub const OWNED_VARS: &[&str] = &[
     "DERM_BOUNDARY",
     "DERM_OTLP_ENDPOINT",
     "DERM_GATEWAY_URL",
+    "DERM_DAEMON_SOCKET",
 ];
 
 pub struct Inputs<'a> {
@@ -48,6 +49,10 @@ pub struct Inputs<'a> {
     pub gateway: Option<String>,
     /// The daemon's folder (socket, token), hidden under srt.
     pub daemon_dir: Option<String>,
+    /// The socket `derm run` minted the chat token through, named to the
+    /// harness's hooks under `--boundary none` (`DERM_DAEMON_SOCKET`; release
+    /// check RC6).
+    pub daemon_socket: Option<String>,
     /// Where srt's settings file for this chat goes.
     pub settings_path: String,
     /// Where the chat token is written for hooks (`DERM_CHAT_TOKEN_FILE`),
@@ -214,7 +219,9 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             names.retain(|n| *n != "DERM_CHAT_TOKEN" || i.token.is_some());
             // A host path means nothing inside the sandbox.
             names.retain(|n| {
-                *n != "DERM_CHAT_TOKEN_FILE" && *n != "GEMINI_CLI_DERM_CHAT_TOKEN_FILE"
+                *n != "DERM_CHAT_TOKEN_FILE"
+                    && *n != "GEMINI_CLI_DERM_CHAT_TOKEN_FILE"
+                    && *n != "DERM_DAEMON_SOCKET"
             });
             names.retain(|n| *n != "DERM_OTLP_ENDPOINT" || otlp.is_some());
             names.retain(|n| *n != "DERM_GATEWAY_URL" || gateway.is_some());
@@ -352,6 +359,12 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
         env.push(("DERM_CHAT_TOKEN".into(), t.clone()));
         if i.args.boundary == Boundary::None {
             env.push(("DERM_CHAT_TOKEN_FILE".into(), i.token_file.clone()));
+            // The socket this token came from, so the hook does not work it
+            // out again from an environment that may not name the runtime
+            // folder (release check RC6). The path only.
+            if let Some(sock) = &i.daemon_socket {
+                env.push(("DERM_DAEMON_SOCKET".into(), sock.clone()));
+            }
             // Gemini CLI drops every variable named like a token from a
             // hook's environment under its env redaction, and always keeps
             // GEMINI_CLI_* (gemini-cli v0.66.0
@@ -479,6 +492,7 @@ mod tests {
             otlp: Some("http://127.0.0.1:4318".into()),
             gateway: Some("http://127.0.0.1:8811/mcp".into()),
             daemon_dir: Some("/run/user/1000/derm".into()),
+            daemon_socket: Some("/run/user/1000/derm/daemon.sock".into()),
             settings_path: "/run/user/1000/derm/srt/chat-b.json".into(),
             token_file: "/run/user/1000/derm/chats/chat-b.token".into(),
             policy: "/home/u/.derm/policy.json".into(),
@@ -539,6 +553,34 @@ mod tests {
         i.token = None;
         assert!(env(&build(&i).unwrap(), "DERM_CHAT_TOKEN_FILE").is_none());
         assert!(OWNED_VARS.contains(&"DERM_CHAT_TOKEN_FILE"));
+    }
+
+    /// Release check RC6: `derm run` found the daemon through a private
+    /// `/run/user/<uid>` that the harness's own environment does not name
+    /// (an SSH shell with no `XDG_RUNTIME_DIR`), so the hook must be told
+    /// which socket minted its token. Only the bare boundary reaches the
+    /// host's socket; an inherited value is cleared everywhere.
+    #[test]
+    fn the_daemon_socket_is_named_only_for_the_bare_boundary_and_only_with_a_token() {
+        let sock = "/run/user/1000/derm/daemon.sock";
+        for (b, want) in [("none", true), ("srt", false), ("sbx", false)] {
+            let args = a(&["claude-code", "--boundary", b]);
+            let p = build(&inputs(&args)).unwrap();
+            assert_eq!(env(&p, "DERM_DAEMON_SOCKET"), want.then_some(sock), "{b}");
+            assert!(
+                !p.args.iter().any(|x| x.contains("DERM_DAEMON_SOCKET")),
+                "{b}: never an sbx -e name or an argument"
+            );
+            assert!(
+                p.env_remove.iter().any(|r| r == "DERM_DAEMON_SOCKET"),
+                "{b}"
+            );
+        }
+        let args = a(&["claude-code", "--boundary", "none"]);
+        let mut i = inputs(&args);
+        i.token = None;
+        assert!(env(&build(&i).unwrap(), "DERM_DAEMON_SOCKET").is_none());
+        assert!(OWNED_VARS.contains(&"DERM_DAEMON_SOCKET"));
     }
 
     /// Lane I's request 1: Gemini's hook gets the token file under the name

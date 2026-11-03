@@ -1,7 +1,7 @@
 {
   "name": "derm",
   "owner": { "name": "Aetius Gular" },
-  "description": "derm's own plugins, installed from a clone of this repository: claude plugin marketplace add /abs/path/derm, then claude plugin install derm@derm. Added by integration w1 so the plugin id is derm@derm, as packages/derm-claude-plugin/managed-settings.fragment.json expects.",
+  "description": "derm's own plugins: claude plugin marketplace add aetiusgular/derm (or a clone's path), then claude plugin install derm@derm. The plugin id is derm@derm, as packages/derm-claude-plugin/managed-settings.fragment.json expects.",
   "plugins": [
     {
       "name": "derm",
