@@ -2,7 +2,7 @@
 
 The release has `derm-<version>-macos.zip`: `derm` and `derm-daemon` as universal binaries (Apple silicon and Intel), each signed with a Developer ID and the hardened runtime, and the zip notarized by Apple; beside them the launchd agent `io.github.aetiusgular.derm.daemon.plist`, `LICENSE`, `NOTICE` and `README.md`.
 
-With Homebrew: `brew install aetiusgular/tap/derm`. Homebrew marks only casks as downloaded from the internet, not formulae, so Gatekeeper does not check these binaries when they come through brew; `brew services start derm` runs the daemon (not started by the install).
+With Homebrew, once the tap `aetiusgular/homebrew-tap` is published: `brew install aetiusgular/tap/derm`. Homebrew marks only casks as downloaded from the internet, not formulae, so Gatekeeper does not check these binaries when they come through brew; `brew services start derm` runs the daemon (not started by the install).
 
 ## Download and check
 

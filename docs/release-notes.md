@@ -10,13 +10,15 @@ The first release. derm is a skin for AI agents: a gate, a boundary and an audit
 - Gates for Claude Code, Codex, Pi, oh-my-pi, OpenCode, Kilo Code, Gemini CLI, Hermes Agent and OpenClaw, installed from a clone of the repository for now (`docs/install/agents.md`).
 - The library: a catalog in the official MCP registry's format, its validator, exports, mirror, publish, trust records and takedowns.
 
+On macOS also through Homebrew once the tap is up: `brew install aetiusgular/tap/derm`.
+
 Check a download against `SHA256SUMS`. The Linux files carry GitHub build provenance: `gh attestation verify <file> --repo aetiusgular/derm`.
 
 ## Not in this release
 
 - The macOS activity collector and the computer-use helper (built from `macos/`, not shipped).
 - aarch64 Linux.
-- The adapters on npm, and a Homebrew formula.
+- The adapters on npm.
 - The coverage wave: the gates for OpenClaude, Qwen Code, Droid, Command Code, Kimi Code, Auggie, Copilot CLI, Grok Build, Cursor, Antigravity, goose, Mistral Vibe, Crush, Kiro, Amp, Cline, Continue, Rovo Dev and Codebuff, `derm acp` and `derm doctor`.
 
 ## Known issues
