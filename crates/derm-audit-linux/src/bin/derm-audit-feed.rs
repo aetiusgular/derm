@@ -59,6 +59,17 @@ fn home() -> Option<String> {
     std::env::var("HOME").ok().filter(|h| h.starts_with('/'))
 }
 
+/// The runtime folder for `uid` as a string, the way `socket_path` finds
+/// the daemon's (`derm_core::runtime`).
+fn runtime_dir_for(uid: u32) -> Option<String> {
+    derm_core::runtime::runtime_dir_with(
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        uid,
+        Path::new(derm_core::runtime::RUN_USER),
+    )
+    .and_then(|p| p.to_str().map(str::to_string))
+}
+
 fn cmd_rules(args: &[String]) -> u8 {
     // SAFETY: getuid has no preconditions and cannot fail.
     let mut uid = unsafe { libc::getuid() };
@@ -93,7 +104,9 @@ fn cmd_rules(args: &[String]) -> u8 {
         return 2;
     }
     let exists = |p: &str| Path::new(p).exists();
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
+    // The daemon's folder for that uid: `$XDG_RUNTIME_DIR`, else its own
+    // private `/run/user/<uid>` (release check RC6).
+    let runtime_dir = runtime_dir_for(uid);
     let (text, skipped) = render(&RulesInput {
         uid,
         home: &home,
@@ -262,7 +275,8 @@ fn cmd_run(args: &[String]) -> u8 {
         });
     }
     drop(tx);
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let runtime_dir = runtime_dir_for(unsafe { libc::getuid() });
     let mut feed = Feed::new(&home, runtime_dir.as_deref());
     let mut last_prune = Instant::now();
     let mut failed_posts: u64 = 0;

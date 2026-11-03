@@ -7,7 +7,7 @@ Written by tk session 0, 27 Oct 2026; brought to what lane B built, and to integ
 | OS | Socket |
 |---|---|
 | macOS | `~/Library/Application Support/derm/daemon.sock` |
-| Linux | `$XDG_RUNTIME_DIR/derm/daemon.sock`, else `~/.derm/run/derm/daemon.sock` |
+| Linux | `$XDG_RUNTIME_DIR/derm/daemon.sock` when the variable is an absolute path, else `/run/user/<uid>/derm/daemon.sock` when `/run/user/<uid>` is a folder (not a link) owned by the uid with no group or other bits, else `~/.derm/run/derm/daemon.sock` (`derm_core::runtime`; release check RC6, 0.1.1). The daemon and every client resolve it the same way; nothing creates `/run/user/<uid>` |
 
 Beside the socket: `daemon.pid`, `daemon.token`, `otlp.endpoint`, each 0600, and on Linux `chats/<chat>.token` while a `derm run --boundary none` chat runs (section 2, rule 4). The activity log is elsewhere on Linux: `$XDG_DATA_HOME/derm/activity`, else `~/.local/share/derm/activity`. On macOS everything is under `~/Library/Application Support/derm/`. `derm-daemon --foreground [--socket PATH] [--data-dir PATH]`; the two flags are for tests.
 
@@ -45,7 +45,7 @@ The `report` object (lane B): `{since, until, chat, events, flags, bySource, byK
 
 `tail`: with `since`, the backlog is the log on disk plus the in-memory ring of the last 4,096 events, the last copy per (chat, id), at most 5,000; without `since`, live events only. A tail more than 4,096 lines behind is dropped; ingest never waits for a reader.
 
-Variables `derm run` sets in the harness (lane D, integration w1), each removed from what the child inherits first: `DERM_CHAT_ID`, `DERM_HARNESS`, `DERM_BOUNDARY`, `DERM_CHAT_TOKEN`, `DERM_CHAT_TOKEN_FILE` (`--boundary none` only), `GEMINI_CLI_DERM_CHAT_TOKEN_FILE` (the same path, Gemini only, because Gemini's env redaction drops names holding `TOKEN` and keeps `GEMINI_CLI_*`; lane I, integration w2), `DERM_OTLP_ENDPOINT`, `DERM_GATEWAY_URL`. Readers may also honour `DERM_POLICY` and `DERM_DAEMON_SOCKET`; a hook refuses either when it points inside the session folder, and since integration w2 refuses any daemon socket path inside the session folder or relative, whichever variable produced it (`XDG_RUNTIME_DIR` too; security finding S14).
+Variables `derm run` sets in the harness (lane D, integration w1), each removed from what the child inherits first: `DERM_CHAT_ID`, `DERM_HARNESS`, `DERM_BOUNDARY`, `DERM_CHAT_TOKEN`, `DERM_CHAT_TOKEN_FILE` (`--boundary none` only), `GEMINI_CLI_DERM_CHAT_TOKEN_FILE` (the same path, Gemini only, because Gemini's env redaction drops names holding `TOKEN` and keeps `GEMINI_CLI_*`; lane I, integration w2), `DERM_OTLP_ENDPOINT`, `DERM_GATEWAY_URL`, and `DERM_DAEMON_SOCKET` (the socket `derm run` minted the chat token through, `--boundary none` only, since 0.1.1: release check RC6). Readers may also honour `DERM_POLICY` and `DERM_DAEMON_SOCKET`; a hook refuses either when it points inside the session folder, and since integration w2 refuses any daemon socket path inside the session folder or relative, whichever variable produced it (`XDG_RUNTIME_DIR` too; security finding S14).
 
 ## 3. The event
 

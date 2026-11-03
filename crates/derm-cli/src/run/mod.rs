@@ -342,6 +342,10 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
         otlp,
         gateway,
         daemon_dir: dir.as_ref().and_then(|d| d.to_str()).map(str::to_string),
+        daemon_socket: daemon
+            .as_ref()
+            .and_then(|d| d.socket.to_str())
+            .map(str::to_string),
         settings_path: settings_path.to_string_lossy().into_owned(),
         token_file: token_path.to_string_lossy().into_owned(),
         policy: env

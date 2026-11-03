@@ -46,18 +46,12 @@ fn random_hex() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// The socket, as `contracts/daemon-protocol.md` section 1 places it. Kept
-/// here rather than taken from `derm-daemon`, so the CLI does not link the
-/// daemon (`derm_daemon::socket_path` is the same rule).
-pub fn socket_path(home: &Path, xdg_runtime: Option<&Path>, macos: bool) -> PathBuf {
-    if macos {
-        home.join("Library/Application Support/derm/daemon.sock")
-    } else {
-        xdg_runtime
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| home.join(".derm/run"))
-            .join("derm/daemon.sock")
-    }
+/// The socket, as `contracts/daemon-protocol.md` section 1 places it, from
+/// the runtime folder `derm_core::runtime::runtime_dir_with` resolved
+/// (`$XDG_RUNTIME_DIR`, else a private `/run/user/<uid>`).
+pub fn socket_path(home: &Path, runtime: Option<&Path>, macos: bool) -> PathBuf {
+    derm_core::runtime::socket_path_with(Some(home), runtime.map(Path::to_path_buf), macos)
+        .unwrap_or_else(|| home.join(".derm/run/derm/daemon.sock"))
 }
 
 fn detail(r: &Record) -> serde_json::Value {

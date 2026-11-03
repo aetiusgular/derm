@@ -7,7 +7,7 @@ derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] [--gateway-ur
          [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] [--dry-run] [-- harness args...]
 ```
 
-It asks the daemon for a chat token, records `run.start` (the boundary, the agent and its arguments, with every word that is not a flag reduced to its length unless `DERM_LOG_CONTENT=1`), starts the agent with `DERM_CHAT_ID`, `DERM_CHAT_TOKEN` and `DERM_CHAT_TOKEN_FILE` (a 0600 file holding the same token, for agents that strip secret-named variables from a hook's environment), `DERM_OTLP_ENDPOINT` and, with `--gateway-url`, `DERM_GATEWAY_URL` in its environment, and records `run.stop` when it ends. SIGINT, SIGTERM and SIGHUP sent to `derm` reach the agent. `--dry-run` prints the program, its arguments, its environment and the boundary's settings, and starts nothing.
+It asks the daemon for a chat token, records `run.start` (the boundary, the agent and its arguments, with every word that is not a flag reduced to its length unless `DERM_LOG_CONTENT=1`), starts the agent with `DERM_CHAT_ID`, `DERM_CHAT_TOKEN` and `DERM_CHAT_TOKEN_FILE` (a 0600 file holding the same token, for agents that strip secret-named variables from a hook's environment), `DERM_OTLP_ENDPOINT`, under `--boundary none` `DERM_DAEMON_SOCKET` (the daemon's socket, so the agent's hooks reach the daemon that gave the token), and, with `--gateway-url`, `DERM_GATEWAY_URL` in its environment, and records `run.stop` when it ends. SIGINT, SIGTERM and SIGHUP sent to `derm` reach the agent. `--dry-run` prints the program, its arguments, its environment and the boundary's settings, and starts nothing.
 
 ## Boundaries
 
