@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Cline CLI: the approval-file responder (an SDK plugin beforeTool as the fallback) on lane F's gate core (wave 4, lane P, T2.7)",
+  "description": "Cline CLI: an SDK plugin beforeTool as the gate, and the approval-file responder, on derm's shared gate core (wave 4, lane P, T2.7)",
+  "main": "./src/plugin.ts",
+  "cline": {
+    "plugins": [{ "paths": ["./src/plugin.ts"], "capabilities": ["hooks"] }]
+  },
+  "files": ["src/plugin.ts", "src/cline.ts", "src/control.ts", "src/responder.ts", "src/core/", "bin/", "README.md", "NOTICE"],
   "engines": {
     "node": ">=22.19.0"
   }
