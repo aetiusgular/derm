@@ -134,8 +134,9 @@ export type Redaction = { text: string; count: number };
 // followed by a maximal run of [A-Z0-9 ] that ends in "PRIVATE KEY" and is
 // followed by five dashes (the run cannot hold a dash, so the expression
 // could match no shorter run). The match is the first valid header and the
-// first valid footer after it, as the lazy expression's was; when no footer
-// follows a header, no later header has one either, so the scan stops.
+// first valid footer after it, as the lazy expression's was. When no footer
+// follows a header, the key runs to the end of the text and the scan stops
+// (re-review W4-R6: until then such a key was left as it was).
 const PEM_RUN = /[A-Z0-9 ]*/y;
 const PEM_TAIL = "PRIVATE KEY";
 const DASHES = "-----";
@@ -164,7 +165,15 @@ function redactPem(text: string): { text: string; count: number } {
       footerEnd = pemLabelEnd(text, e, END);
       if (footerEnd >= 0) break;
     }
-    if (footerEnd < 0) break;
+    if (footerEnd < 0) {
+      // No END line: a key cut short (tool output through `head`) is still
+      // a key, so the rest of the text goes (re-review W4-R6; derm-pi's own
+      // scan does the same).
+      out += text.slice(from, b) + REDACTED;
+      count++;
+      from = text.length;
+      break;
+    }
     out += text.slice(from, b) + REDACTED;
     count++;
     from = footerEnd;

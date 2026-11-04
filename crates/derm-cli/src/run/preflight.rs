@@ -150,6 +150,27 @@ pub fn companion(
     }
 }
 
+/// The PATH the companion runs with: the entries of `path_var` that are
+/// absolute and not inside a folder the sandbox can write, in order. The
+/// companion's own interpreter is checked by `companion`, but what it starts
+/// by name later (a `#!/bin/sh` wrapper's `exec node`, an asdf shim's
+/// `#!/usr/bin/env bash`) is looked up on this PATH, so a program planted in
+/// a writable folder on the user's PATH is never found there (re-review
+/// W4-R1).
+pub fn companion_path(path_var: &str, writable: &[String]) -> String {
+    path_var
+        .split(':')
+        .filter(|d| d.starts_with('/'))
+        .filter(|d| {
+            let real = std::fs::canonicalize(d)
+                .map(|r| r.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| d.to_string());
+            !writable.iter().any(|w| under(&real, w) || under(d, w))
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// One program, found and held to the companion's rule, as an absolute path.
 fn checked(
     program: &str,
@@ -374,6 +395,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("can write"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Re-review W4-R1: the companion's PATH keeps only absolute entries
+    /// outside the folders the sandbox can write.
+    #[test]
+    fn the_companions_path_drops_relative_and_writable_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "derm-pre-path-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let work = root.join("work");
+        std::fs::create_dir_all(work.join("node_modules/.bin")).unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let w = s(&work);
+        let path =
+            format!("node_modules/.bin::{w}/node_modules/.bin:/usr/local/bin:/usr/bin:.:/tmp/x");
+        assert_eq!(
+            companion_path(&path, &[w.clone(), "/tmp".to_string()]),
+            "/usr/local/bin:/usr/bin"
+        );
+        // Under no boundary nothing is writable to the sandbox; relative
+        // and empty entries still go.
+        assert_eq!(
+            companion_path(&path, &[]),
+            format!("{w}/node_modules/.bin:/usr/local/bin:/usr/bin:/tmp/x")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

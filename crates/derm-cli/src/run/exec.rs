@@ -117,6 +117,7 @@ pub fn spawn_companion(
     args: &[String],
     plan: &Plan,
     cwd: &str,
+    path: &str,
 ) -> std::io::Result<Child> {
     let mut cmd = Command::new(program);
     cmd.args(args).current_dir(cwd);
@@ -126,6 +127,9 @@ pub fn spawn_companion(
     for (k, v) in &plan.env_set {
         cmd.env(k, v);
     }
+    // Only entries the sandbox cannot write (`preflight::companion_path`;
+    // re-review W4-R1).
+    cmd.env("PATH", path);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
@@ -348,6 +352,7 @@ mod tests {
             ],
             &plan,
             dir.to_str().unwrap(),
+            "/usr/bin:/bin",
         )
         .unwrap();
         let t0 = std::time::Instant::now();

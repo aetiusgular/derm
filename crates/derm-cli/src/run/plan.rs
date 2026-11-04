@@ -526,6 +526,16 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             // line 537); a literal entry is a path, never a pattern, and holds
             // for a file that does not exist yet (line 584).
             let mut deny_write: Vec<String> = h.control.iter().map(|c| under_home(c)).collect();
+            // The chat's folder is writable too, and an agent loads a
+            // project's own copy of its control files (Cline its
+            // `.cline/plugins` and `.cline/hooks` with no trust prompt,
+            // `packages/derm-cline/src/control.ts`), so the same paths there
+            // are read-only, and Cline's `.clinerules` (re-review W4-R3).
+            let cwd = i.cwd.trim_end_matches('/');
+            deny_write.extend(h.control.iter().map(|c| format!("{cwd}/{c}")));
+            if h.id == "cline" {
+                deny_write.push(format!("{cwd}/.clinerules"));
+            }
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
             deny_write.sort();
@@ -1247,6 +1257,40 @@ mod tests {
                 allow.iter().any(|w| file.starts_with(w.as_str().unwrap())),
                 "{id}"
             );
+        }
+    }
+
+    /// Re-review W4-R3: the chat's folder is writable under srt, and an
+    /// agent loads a project's own copy of its control files (Cline its
+    /// `.cline/plugins` and `.cline/hooks` with no trust prompt), so the
+    /// same paths under the chat's folder are read-only too.
+    #[test]
+    fn srt_keeps_the_projects_copies_of_the_control_files_read_only() {
+        for (id, files) in [
+            (
+                "cline",
+                &[
+                    "/home/u/proj dir/.cline/plugins",
+                    "/home/u/proj dir/.cline/hooks",
+                    "/home/u/proj dir/.clinerules",
+                ][..],
+            ),
+            (
+                "claude-code",
+                &["/home/u/proj dir/.claude/settings.json"][..],
+            ),
+        ] {
+            let args = a(&[id, "--boundary", "srt"]);
+            let p = build(&inputs(&args)).unwrap();
+            let v: serde_json::Value =
+                serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+            let deny = v["filesystem"]["denyWrite"].as_array().unwrap();
+            for want in files {
+                assert!(
+                    deny.contains(&json!({"path": want, "literal": true})),
+                    "{id}: {want} in {deny:?}"
+                );
+            }
         }
     }
 

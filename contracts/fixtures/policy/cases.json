@@ -210,6 +210,12 @@
       "note": "a doubled slash before the daemon's token: the same file (review W4-S5)" },
     { "id": 76, "call": { "tool": "bash", "harness": "pi", "inputText": "rm -r .agents/./hooks.json" },
       "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file (.agents/hooks.json)" },
-      "note": "`/./` inside a control path: the same file (review W4-S5)" }
+      "note": "`/./` inside a control path: the same file (review W4-S5)" },
+    { "id": 77, "call": { "tool": "bash", "harness": "pi", "inputText": "cp /tmp/e.sh .git/refs/../hooks/pre-commit" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file (.git/hooks/)" },
+      "note": "`<folder>/..` inside a control path: the same file (re-review W4-R4)" },
+    { "id": 78, "call": { "tool": "bash", "harness": "pi", "inputText": "cat .config/htop/../goose/config.yaml" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file (.config/goose/)" },
+      "note": "`<folder>/..` before a control folder (re-review W4-R4)" }
   ]
 }

@@ -34,8 +34,11 @@ function oldRedactText(text: string): { text: string; count: number } {
 }
 
 // The PEM shape as one expression, before integration w4's review (W4-S2):
-// many BEGIN lines with no END made it quadratic (256 KB took 1.5 s).
-const OLD_PEM = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+// many BEGIN lines with no END made it quadratic (256 KB took 1.5 s). Since
+// the re-review (W4-R6) a key with no END line is redacted to the end of the
+// text, as derm-pi's own scan does (`|$`), so tool output cut short by `head`
+// does not print it; the oracle carries the same `|$`.
+const OLD_PEM = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
 
 describe("the PEM scan (review W4-S2)", () => {
   const parts = ["-----BEGIN ", "-----END ", "PRIVATE KEY-----", "RSA ", "EC ", "-----", "-", " ", "\n", "MIIB", "x", "PRIVATE KEY", "BEGIN", "END"];
@@ -48,6 +51,10 @@ describe("the PEM scan (review W4-S2)", () => {
       for (let j = 0; j < n; j++) t += parts[rand(parts.length)];
       expect(redactText(t), JSON.stringify(t)).toEqual(oldRedactText(t));
     }
+  });
+  it("redacts a key cut off before its END line, to the end of the text (W4-R6)", () => {
+    const cut = "ok\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n";
+    expect(redactText(cut)).toEqual({ text: `ok\n${REDACTED}`, count: 1 });
   });
   it("redacts a whole key and keeps the text around it", () => {
     const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----";

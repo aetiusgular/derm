@@ -690,11 +690,35 @@ pub fn with_collapsed_slashes(texts: &[String]) -> Vec<String> {
                 c.push_str(&t[start..i]);
             }
         }
+        let d = without_dot_dot(&c);
+        let dropped = d != c;
         if c != *t {
             out.push(c);
         }
+        if dropped {
+            out.push(d);
+        }
     }
     out
+}
+
+/// `a/b/../c` read as `a/c`, lexically: each `..` part drops the part before
+/// it unless that is empty, `.` or `..` (re-review W4-R4); the hook core's
+/// `withoutDotDot`.
+pub fn without_dot_dot(text: &str) -> String {
+    if !text.contains("..") {
+        return text.to_string();
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for part in text.split('/') {
+        match out.last() {
+            Some(last) if part == ".." && !matches!(*last, "" | "." | "..") => {
+                out.pop();
+            }
+            _ => out.push(part),
+        }
+    }
+    out.join("/")
 }
 
 /// Whether folded `text` names the control path `entry` (contract, section 4,

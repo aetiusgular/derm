@@ -533,8 +533,27 @@ export function withCollapsedSlashes(texts: string[]): string[] {
   for (const t of texts) {
     const c = t.replace(/\/(?:\.?\/)+/g, "/");
     if (c !== t) out.push(c);
+    const d = withoutDotDot(c);
+    if (d !== c) out.push(d);
   }
   return out;
+}
+
+/**
+ * `a/b/../c` read as `a/c`, lexically: each `..` part drops the part before
+ * it unless that is empty, `.` or `..` (re-review W4-R4). One pass over the
+ * parts, so linear; the text is the whole input, so a part may hold spaces,
+ * and a wrong drop only adds a text to look in.
+ */
+export function withoutDotDot(text: string): string {
+  if (!text.includes("..")) return text;
+  const out: string[] = [];
+  for (const part of text.split("/")) {
+    const last = out[out.length - 1];
+    if (part === ".." && last !== undefined && last !== "" && last !== "." && last !== "..") out.pop();
+    else out.push(part);
+  }
+  return out.join("/");
 }
 
 export function namesControlPath(text: string, entry: string): boolean {
