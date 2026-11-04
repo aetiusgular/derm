@@ -261,7 +261,10 @@ fn a_planned_gate_is_said_and_live_is_not_built() {
     let h = home("planned");
     // Cline's gate is built since wave 4 (lane P, integration w4); Rovo Dev
     // has none after wave 4 and stays the planned example.
-    assert_eq!(find_row("cline").unwrap()["coverage"]["gate"]["status"], "built");
+    assert_eq!(
+        find_row("cline").unwrap()["coverage"]["gate"]["status"],
+        "built"
+    );
     let row = find_row("rovo-dev").unwrap();
     let r = doctor(&row, &env(&h), &probes(), true, false);
     assert_eq!(r["gate"]["status"], "planned");

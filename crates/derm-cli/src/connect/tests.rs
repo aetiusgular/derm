@@ -1201,7 +1201,10 @@ fn promoted_rows_are_verified_and_in_harnesses() {
             .find(|r| r["id"] == *id)
             .unwrap_or_else(|| panic!("{id} is not in `harnesses`"));
         assert!(!planned.iter().any(|r| r["id"] == *id), "{id}");
-        assert!(row.get("mcpFile").is_none(), "{id}: mcpFile was the planned row's");
+        assert!(
+            row.get("mcpFile").is_none(),
+            "{id}: mcpFile was the planned row's"
+        );
         assert!(row.get("coverage").is_some(), "{id}: keeps its coverage");
         assert!(!row.to_string().contains("\"TODO\""), "{id}");
         let p = promoted(id);

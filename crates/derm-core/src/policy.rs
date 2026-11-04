@@ -289,7 +289,14 @@ pub fn narrowing_names(raw: &str, servers: &[String], harness: &str) -> (Vec<Str
         // A shell under another name is also `bash` (integration w4; the
         // hook core's rule): a `bash` deny or ask narrows it.
         let other = primary != "bash" && SHELL_TOOLS.contains(&primary.as_str());
-        return (if other { vec!["bash".to_string()] } else { Vec::new() }, false);
+        return (
+            if other {
+                vec!["bash".to_string()]
+            } else {
+                Vec::new()
+            },
+            false,
+        );
     };
     let lowered = lower_name(raw);
     let mut splits: Vec<(String, String)> =
