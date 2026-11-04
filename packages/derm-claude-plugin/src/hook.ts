@@ -11,7 +11,7 @@
 //   sees, in the tool's own output shape.
 
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
 import { decideCall, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
@@ -176,13 +176,25 @@ const HOOKS_NATIVE_PACKAGE = "@aetiusgular/derm-hooks-native";
  * equal to `is_derm_cursor_entry` in `crates/derm-cli/src/watch/register.rs`.
  */
 export function isDermCursorCommand(command: string): boolean {
-  const m = /^\S+ --no-warnings "(\/[^"]*\/bin\/derm-hook\.mjs)" cursor\s*$/.exec(command);
-  const file = m?.[1];
-  if (!file) return false;
-  if (file.split("/").some((part) => part === ".." || part === ".")) return false;
+  const m = /^(\S+) --no-warnings "([^"]*)" cursor\s*$/.exec(command);
+  const node = m?.[1];
+  const file = m?.[2];
+  if (!node || !file) return false;
+  // Plain paths only, as --hook and --node take them (re-review FP5-R3: no
+  // `$`, backtick or `\\` a shell would expand), and no `.` or `..` part.
+  const plain = (p: string) => /^[A-Za-z0-9._/@+~-]+$/.test(p) && !p.split("/").some((part) => part === ".." || part === ".");
+  if (!plain(node) || !plain(file) || !file.startsWith("/") || !file.endsWith("/bin/derm-hook.mjs")) return false;
   try {
     const uid = typeof process.getuid === "function" ? process.getuid() : -1;
     const closed = (st: { uid: number; mode: number }) => (st.uid === uid || st.uid === 0) && (st.mode & 0o022) === 0;
+    // The first word is node: bare, or a path whose last part starts with
+    // `node` to a real file of yours or root's (re-review FP5-R3: any word
+    // passed, `true --no-warnings "<hook>" cursor` too).
+    if (node !== "node") {
+      if (!node.startsWith("/") || !path.basename(node).startsWith("node")) return false;
+      const nst = statSync(realpathSync(node));
+      if (!nst.isFile() || !closed(nst)) return false;
+    }
     const st = lstatSync(file);
     if (!st.isFile() || !closed(st)) return false;
     const pkgFile = path.join(path.dirname(path.dirname(file)), "package.json");

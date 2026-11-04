@@ -304,6 +304,10 @@ describe("Claude Code's hook run by Cursor", () => {
     writeFileSync(path.join(other, "package.json"), JSON.stringify({ name: "something-else" }));
     writeFileSync(otherHook, "// not derm\n");
     for (const command of [
+      // Re-review FP5-R3: the first word must be node.
+      `true --no-warnings "${hookFile}" cursor`,
+      `true|| --no-warnings "${hookFile}" cursor`,
+      `/bin/true --no-warnings "${hookFile}" cursor`,
       "true derm-hook.mjs cursor",
       'node --no-warnings "/p/derm-hooks-native/bin/derm-hook.mjs" cursor',
       `node --no-warnings "${otherHook}" cursor`,
@@ -316,6 +320,10 @@ describe("Claude Code's hook run by Cursor", () => {
     register(entry(true), entry(true));
     expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(2);
     chmodSync(hookFile, 0o644);
+    expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(0);
+    // A node named by path, as --node writes it, counts when it is a real
+    // file of yours that no one else can write.
+    register(entryFor(`${process.execPath} --no-warnings "${hookFile}" cursor`, true), entry(true));
     expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(0);
   });
 

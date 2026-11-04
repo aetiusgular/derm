@@ -317,50 +317,101 @@ pub fn is_derm_cursor_entry(e: &Value) -> bool {
 }
 
 fn is_derm_cursor_command(c: &str) -> bool {
+    derm_cursor_command_parts(c).is_some()
+}
+
+/// The node and the hook file of a command `derm connect cursor --gate`
+/// wrote, when it is one (`is_derm_cursor_entry`): the first word is `node`
+/// or an absolute path whose last part starts with `node` and whose real
+/// file is a regular file of yours or root's that no one else can write
+/// (re-review FP5-R3: any first word passed, so `true --no-warnings
+/// "<hook>" cursor` counted); both paths are plain (letters, digits and
+/// `._/@+~ -`, as `--hook` and `--node` take them, so no `$`, backtick or
+/// `\`); the hook file is a regular file of yours or root's, writable by no
+/// one else, in a folder whose `package.json` names derm-hooks-native.
+pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
     use std::os::unix::fs::MetadataExt;
     let c = c.trim_end();
-    let Some(rest) = c.strip_suffix("\" cursor") else {
-        return false;
+    let rest = c.strip_suffix("\" cursor")?;
+    let (node, file) = rest.split_once(" --no-warnings \"")?;
+    let plain = |p: &str| {
+        !p.is_empty()
+            && p.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "._/@+~-".contains(ch))
+            && !p.split('/').any(|part| part == ".." || part == ".")
     };
-    let Some((head, file)) = rest.split_once(" --no-warnings \"") else {
-        return false;
-    };
-    if head.is_empty() || head.contains(char::is_whitespace) || file.contains('"') {
-        return false;
+    if !plain(node) || !plain(file) {
+        return None;
     }
-    if !file.starts_with('/')
-        || !file.ends_with("/bin/derm-hook.mjs")
-        || file.split('/').any(|p| p == ".." || p == ".")
-    {
-        return false;
+    if !file.starts_with('/') || !file.ends_with("/bin/derm-hook.mjs") {
+        return None;
     }
     // SAFETY: getuid takes no arguments and cannot fail.
     let uid = unsafe { libc::getuid() };
     let closed = |m: &std::fs::Metadata| (m.uid() == uid || m.uid() == 0) && m.mode() & 0o022 == 0;
+    if node != "node" {
+        let name = node.rsplit('/').next().unwrap_or("");
+        if !node.starts_with('/') || !name.starts_with("node") {
+            return None;
+        }
+        let real = std::fs::canonicalize(node).ok()?;
+        let m = std::fs::metadata(&real).ok()?;
+        if !m.is_file() || !closed(&m) {
+            return None;
+        }
+    }
     let file = Path::new(file);
-    let Ok(m) = std::fs::symlink_metadata(file) else {
-        return false;
-    };
+    let m = std::fs::symlink_metadata(file).ok()?;
     if !m.is_file() || !closed(&m) {
-        return false;
+        return None;
     }
-    let Some(pkg) = file
-        .parent()
-        .and_then(Path::parent)
-        .map(|d| d.join("package.json"))
-    else {
-        return false;
-    };
-    let Ok(pm) = std::fs::symlink_metadata(&pkg) else {
-        return false;
-    };
+    let pkg = file.parent()?.parent()?.join("package.json");
+    let pm = std::fs::symlink_metadata(&pkg).ok()?;
     if !pm.is_file() || !closed(&pm) || pm.len() > 1024 * 1024 {
-        return false;
+        return None;
     }
-    std::fs::read_to_string(&pkg)
+    let named = std::fs::read_to_string(&pkg)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .is_some_and(|v| v["name"] == "@aetiusgular/derm-hooks-native")
+        .is_some_and(|v| v["name"] == "@aetiusgular/derm-hooks-native");
+    named.then(|| (node.to_string(), file.to_path_buf()))
+}
+
+/// What derm's registered Cursor gate runs, for srt to keep read-only
+/// (re-review FP5-R2): each derm entry's hook package folder and, when it is
+/// named by path, its node. Empty when `~/.cursor/hooks.json` is missing,
+/// too large or unreadable, or holds no derm entry.
+pub fn derm_cursor_gate_paths(home: &Path) -> Vec<String> {
+    let file = home.join(".cursor/hooks.json");
+    let Ok(Some(v)) = read_json(&file, false) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for event in ["preToolUse", "beforeMCPExecution"] {
+        for e in v
+            .pointer(&format!("/hooks/{event}"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some((node, hook)) = e
+                .get("command")
+                .and_then(Value::as_str)
+                .and_then(derm_cursor_command_parts)
+            else {
+                continue;
+            };
+            if let Some(pkg) = hook.parent().and_then(Path::parent) {
+                out.push(pkg.to_string_lossy().into_owned());
+            }
+            if node.starts_with('/') {
+                out.push(node);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Where a `derm@derm` install record in `installed_plugins.json` stands for
@@ -1227,6 +1278,10 @@ mod cursor_tests {
         // that runs more after it, or a file others can write is not derm's.
         let other = native(&dir, "other");
         for command in [
+            // Re-review FP5-R3: the first word must be node.
+            format!("true --no-warnings \"{}\" cursor", hook.display()),
+            format!("true|| --no-warnings \"{}\" cursor", hook.display()),
+            format!("/bin/true --no-warnings \"{}\" cursor", hook.display()),
             "true derm-hook.mjs cursor".to_string(),
             r#"node --no-warnings "/h/pkg/bin/derm-hook.mjs" cursor"#.to_string(),
             format!("node --no-warnings \"{}\" cursor", other.display()),

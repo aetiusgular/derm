@@ -192,6 +192,11 @@ pub struct Inputs<'a> {
     /// responder by absolute path when one was found on PATH.
     pub cline_dir: String,
     pub cline_responder: Option<String>,
+    /// Absolute paths of what the harness's registered derm gate runs (for
+    /// Cursor, the hook package folder and the node `~/.cursor/hooks.json`
+    /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
+    /// read-only wherever they sit (re-review FP5-R2).
+    pub gate_paths: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -542,15 +547,23 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             // the Mac, Mac test w4, MW4-5), so those stay read-only in the
             // chat's folder (fix pass 1's review, FP4-S1). They are not
             // Cursor's state, so they are not in its control list.
+            // The whole `.claude` folder (re-review FP5-R4, FP5-R5: its hook
+            // scripts, and a missing folder made as a link elsewhere; srt
+            // mounts a read-only folder there on Linux and covers new paths
+            // on macOS).
             if h.id == "cursor" {
                 for c in [
                     ".claude/settings.json",
                     ".claude/settings.local.json",
                     ".claude/plugins",
+                    ".claude",
                 ] {
                     deny_write.push(format!("{cwd}/{c}"));
                 }
             }
+            // What derm's registered gate runs, wherever it sits (re-review
+            // FP5-R2): a chat folder that is a derm clone holds the gate.
+            deny_write.extend(i.gate_paths.iter().filter(|p| p.starts_with('/')).cloned());
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
             deny_write.sort();
@@ -755,6 +768,7 @@ mod tests {
             goose_mode: None,
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
+            gate_paths: Vec::new(),
         }
     }
 
@@ -1263,6 +1277,13 @@ mod tests {
             ("cursor", "/home/u/.cursor/skills"),
             ("cursor", "/home/u/.cursor/commands"),
             ("cursor", "/home/u/.cursor/rules"),
+            // Re-review FP5-R1: Cursor's own protected list is every
+            // `.cursor/**/*.json` (https://cursor.com/docs/reference/sandbox.md,
+            // read 4 Nov 2026), which a literal list cannot cover, so all of
+            // `~/.cursor` is read-only under srt.
+            ("cursor", "/home/u/.cursor"),
+            // Re-review FP5-R4: Claude Code's hook scripts.
+            ("claude-code", "/home/u/.claude/hooks"),
         ] {
             let args = a(&[id, "--boundary", "srt"]);
             let p = build(&inputs(&args)).unwrap();
@@ -1322,8 +1343,14 @@ mod tests {
                     "/home/u/proj dir/.claude/settings.json",
                     "/home/u/proj dir/.claude/settings.local.json",
                     "/home/u/proj dir/.claude/plugins",
+                    // Re-review FP5-R1, R4, R5: the whole folders, so a
+                    // `worktrees.json` or `sandbox.json`, a hook script, or
+                    // a folder made as a link is no way round.
+                    "/home/u/proj dir/.cursor",
+                    "/home/u/proj dir/.claude",
                 ][..],
             ),
+            ("claude-code", &["/home/u/proj dir/.claude/hooks"][..]),
         ] {
             let args = a(&[id, "--boundary", "srt"]);
             let p = build(&inputs(&args)).unwrap();
@@ -1336,6 +1363,35 @@ mod tests {
                     "{id}: {want} in {deny:?}"
                 );
             }
+        }
+    }
+
+    /// Re-review FP5-R2: the files derm's registered gate runs (Cursor's
+    /// `hooks.json` names a hook file and a node by absolute path) are
+    /// read-only under srt, wherever they sit, so an agent whose chat folder
+    /// is a derm clone cannot rewrite its own gate.
+    #[test]
+    fn srt_keeps_the_gates_own_files_read_only() {
+        let args = a(&["cursor", "--boundary", "srt"]);
+        let i = Inputs {
+            gate_paths: vec![
+                "/home/u/proj dir/packages/derm-hooks-native".into(),
+                "/home/u/.local/node/bin/node".into(),
+            ],
+            ..inputs(&args)
+        };
+        let p = build(&i).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap();
+        for want in [
+            "/home/u/proj dir/packages/derm-hooks-native",
+            "/home/u/.local/node/bin/node",
+        ] {
+            assert!(
+                deny.contains(&json!({"path": want, "literal": true})),
+                "{want} in {deny:?}"
+            );
         }
     }
 

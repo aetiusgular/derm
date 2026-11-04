@@ -627,6 +627,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         goose_mode: env.goose_mode.clone(),
         cline_dir,
         cline_responder: env.cline_responder.clone(),
+        // Re-review FP5-R2: what derm's registered Cursor gate runs stays
+        // read-only under srt.
+        gate_paths: if a.harness.id == "cursor" && a.boundary == Boundary::Srt {
+            crate::watch::register::derm_cursor_gate_paths(Path::new(&home))
+        } else {
+            Vec::new()
+        },
     };
     let inputs = plan::Inputs {
         policy_regular: regular_private_file(Path::new(&inputs.policy)),

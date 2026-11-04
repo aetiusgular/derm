@@ -943,6 +943,8 @@ fn plugin_agents_print_the_marketplace_of_the_folder_given() {
         r#"{"name":"derm","description":"see ./packages/derm-claude-plugin","plugins":[{"name":"derm","source":"./elsewhere"}]}"#,
         r#"{"name":"other","plugins":[{"name":"derm","source":"./packages/derm-claude-plugin"}]}"#,
         r#"{"name":"derm","plugins":[{"name":"evil","source":"./packages/derm-claude-plugin"}]}"#,
+        // Re-review FP5-R7: two plugins named derm, one of them elsewhere.
+        r#"{"name":"derm","plugins":[{"name":"derm","source":"./packages/derm-claude-plugin"},{"name":"derm","source":"./elsewhere"}]}"#,
     ] {
         fs::write(clone.join(".claude-plugin/marketplace.json"), text).unwrap();
         let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);

@@ -111,6 +111,9 @@ pub const HARNESSES: &[Harness] = &[
             ".claude/settings.json",
             ".claude/settings.local.json",
             ".claude/plugins",
+            // Hook scripts the settings name (`$CLAUDE_PROJECT_DIR/.claude/
+            // hooks/`, Claude Code's convention, inferred; re-review FP5-R4).
+            ".claude/hooks",
         ],
         launch: Launch::None,
     },
@@ -245,6 +248,7 @@ pub const HARNESSES: &[Harness] = &[
             ".openclaude/settings.json",
             ".openclaude/settings.local.json",
             ".openclaude/plugins",
+            ".openclaude/hooks",
         ],
         launch: Launch::None,
     },
@@ -306,7 +310,16 @@ pub const HARNESSES: &[Harness] = &[
         }),
         state: &[".cursor"],
         credential: None,
+        // Re-review FP5-R1: Cursor itself write-protects every
+        // `.cursor/**/*.json` and `.cursor/.workspace-trusted`
+        // (https://cursor.com/docs/reference/sandbox.md, read 4 Nov 2026),
+        // among them `sandbox.json`, which widens Cursor's own sandbox, and
+        // `worktrees.json`, whose setup commands Cursor runs
+        // (https://cursor.com/docs/configuration/worktrees). srt takes
+        // literal paths on Linux, so the whole of `~/.cursor` is read-only:
+        // the entries below name what is known to matter.
         control: &[
+            ".cursor",
             ".cursor/hooks.json",
             ".cursor/mcp.json",
             ".cursor/cli-config.json",

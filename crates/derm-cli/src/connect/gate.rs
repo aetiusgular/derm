@@ -440,21 +440,23 @@ fn lists_derm(root: &Path, file: &str, rel: &str, uid: u32) -> bool {
             p == rel
         }
     };
+    // Exactly one plugin named derm, and it is this folder (re-review
+    // FP5-R7: a second `derm` elsewhere would be the one installed).
     v["name"] == "derm"
         && v["plugins"].as_array().is_some_and(|ps| {
-            ps.iter().any(|p| {
-                p["name"] == "derm"
-                    && match &p["source"] {
-                        serde_json::Value::String(s) => want(s),
-                        serde_json::Value::Object(o) => {
-                            o.get("source").and_then(serde_json::Value::as_str) == Some("local")
-                                && o.get("path")
-                                    .and_then(serde_json::Value::as_str)
-                                    .is_some_and(want)
-                        }
-                        _ => false,
+            let derms: Vec<&serde_json::Value> =
+                ps.iter().filter(|p| p["name"] == "derm").collect();
+            derms.len() == 1
+                && derms.iter().all(|p| match &p["source"] {
+                    serde_json::Value::String(s) => want(s),
+                    serde_json::Value::Object(o) => {
+                        o.get("source").and_then(serde_json::Value::as_str) == Some("local")
+                            && o.get("path")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(want)
                     }
-            })
+                    _ => false,
+                })
         })
 }
 
