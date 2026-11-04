@@ -307,11 +307,18 @@ mod tests {
         assert!(parse(&s(&["vim", "--boundary", "none"]))
             .unwrap_err()
             .contains("unknown harness"));
-        for app in ["cursor", "zed"] {
-            assert!(parse(&s(&[app, "--boundary", "none"]))
-                .unwrap_err()
-                .contains("derm run does not start"));
-        }
+        assert!(parse(&s(&["zed", "--boundary", "none"]))
+            .unwrap_err()
+            .contains("derm run does not start"));
+        // Cursor's CLI is started since fix pass 1 for the Mac test w4
+        // (MW4-8); it was refused here with Zed until then.
+        assert_eq!(
+            parse(&s(&["cursor", "--boundary", "none"]))
+                .unwrap()
+                .harness
+                .command,
+            "cursor-agent"
+        );
         assert!(parse(&s(&["pi", "--boundary", "none", "--model", "x"]))
             .unwrap_err()
             .contains("after --"));

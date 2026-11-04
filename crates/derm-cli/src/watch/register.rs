@@ -77,6 +77,7 @@ pub fn check(id: &str, env: &Env) -> Registered {
         "codex" => codex(env, home),
         "pi" => pi(env, home),
         "opencode" => opencode(env, home),
+        "cursor" => cursor(home),
         other => Registered::Unknown(format!("no registration check for {other} yet")),
     }
 }
@@ -230,6 +231,63 @@ fn claude(env: &Env, home: &Path) -> Registered {
             }
         )),
     }
+}
+
+/// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
+/// two entries in `~/.cursor/hooks.json` (`connect/gates.json`, its
+/// `json-array-entry` steps: `preToolUse` and `beforeMCPExecution`, each
+/// `failClosed: true`), found by the row's marker `derm-hook.mjs` and the
+/// dialect word `cursor` at the end of the command. Other entries (Orca's)
+/// are left alone. A project's `.cursor/hooks.json` is not derm's (case 78)
+/// and is not read here.
+fn cursor(home: &Path) -> Registered {
+    let file = home.join(".cursor/hooks.json");
+    let v = match read_json(&file, false) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Registered::No(format!(
+                "{} does not exist: derm connect cursor --gate --hook <derm-hooks-native folder> --write",
+                file.display()
+            ))
+        }
+        Err(e) => return Registered::Unknown(e),
+    };
+    for event in ["preToolUse", "beforeMCPExecution"] {
+        let ours: Vec<&Value> = v
+            .pointer(&format!("/hooks/{event}"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|e| is_derm_cursor_entry(e))
+            .collect();
+        if ours.is_empty() {
+            return Registered::No(format!(
+                "{} has no derm entry under hooks.{event}: derm connect cursor --gate --hook <derm-hooks-native folder> --write",
+                file.display()
+            ));
+        }
+        if !ours
+            .iter()
+            .all(|e| e.get("failClosed") == Some(&Value::Bool(true)))
+        {
+            return Registered::No(format!(
+                "derm's hooks.{event} entry in {} is not failClosed: true, so Cursor lets a call through when the gate crashes or times out; run --gate again",
+                file.display()
+            ));
+        }
+    }
+    Registered::Yes(format!(
+        "derm's preToolUse and beforeMCPExecution entries in {}, failing closed",
+        file.display()
+    ))
+}
+
+/// A `hooks.json` entry `derm connect cursor --gate` wrote: a command entry
+/// naming derm's hook file with the dialect word `cursor` last.
+pub fn is_derm_cursor_entry(e: &Value) -> bool {
+    e.get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.contains("derm-hook.mjs") && c.trim_end().ends_with(" cursor"))
 }
 
 /// Whether `recorded` names the folder `cwd`, as written or by real path.
@@ -982,5 +1040,68 @@ mod tests {
         let v: Value = serde_json::from_str(&t).unwrap();
         assert_eq!(v["a"], "x//y /*z*/");
         assert_eq!(v["b"], serde_json::json!([1, 2]));
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    fn env_in(dir: &Path) -> Env {
+        Env {
+            home: Some(dir.to_path_buf()),
+            path: String::new(),
+            vars: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    fn entry(fail_closed: bool) -> String {
+        format!(
+            r#"{{"type":"command","command":"node --no-warnings \"/h/pkg/bin/derm-hook.mjs\" cursor","timeout":120,"failClosed":{fail_closed}}}"#
+        )
+    }
+
+    /// Mac test w4, 4.3 (lane Q's Q7, lane N's N4): Cursor showed `unknown`
+    /// after `derm connect cursor --gate --write`. derm's gate is its two
+    /// entries in `~/.cursor/hooks.json`, beside anything else there (Orca's),
+    /// each failing closed.
+    #[test]
+    fn cursor_reads_derms_two_entries_in_its_hooks_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "derm-reg-cursor-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let env = env_in(&dir);
+        let file = dir.join(".cursor/hooks.json");
+        assert_eq!(check("cursor", &env).word(), "no");
+        let orca = r#"{"command":"/Users/x/.orca/agent-hooks/cursor-hook.sh","timeout":10}"#;
+        let write = |pre: &str, mcp: &str| {
+            std::fs::write(
+                &file,
+                format!(
+                    r#"{{"version":1,"hooks":{{"preToolUse":[{orca},{pre}],"beforeMCPExecution":[{mcp}],"stop":[{orca}]}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(&entry(true), &entry(true));
+        let r = check("cursor", &env);
+        assert_eq!(r.word(), "yes", "{:?}", r.detail());
+        // Only one of the two: MCP calls would be decided by no derm hook.
+        write(&entry(true), orca);
+        let r = check("cursor", &env);
+        assert_eq!(r.word(), "no", "{:?}", r.detail());
+        assert!(r.detail().unwrap().contains("beforeMCPExecution"));
+        // An entry that fails open is not derm's gate as registered.
+        write(&entry(true), &entry(false));
+        let r = check("cursor", &env);
+        assert_eq!(r.word(), "no", "{:?}", r.detail());
+        assert!(r.detail().unwrap().contains("failClosed"));
+        std::fs::write(&file, "{ not json").unwrap();
+        assert_eq!(check("cursor", &env).word(), "unknown");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

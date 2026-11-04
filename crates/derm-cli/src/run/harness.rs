@@ -274,6 +274,33 @@ pub const HARNESSES: &[Harness] = &[
     // `contracts/hook-dialects.md` section 2). sbx's built-in agents
     // include droid and kiro (https://docs.docker.com/reference/cli/sbx/run/,
     // read 27 Oct 2026 by lane D); the other four have no sbx form here.
+    // Cursor's CLI (Mac test w4, MW4-8). Command: `cursor-agent`, the one
+    // Cursor's install page names (https://docs.cursor.com/en/cli/installation,
+    // read 4 Nov 2026); the installer also links a bare `agent`, which other
+    // CLIs use too, so `agent` is not matched (a program of that name under
+    // srt would get Cursor's state). sbx: `cursor` is one of `sbx run`'s
+    // built-in agents (the list at the top of this file). State: `~/.cursor`,
+    // where the CLI writes `cli-config.json` (seen on the Mac and the rig, 4
+    // Nov) and reads `mcp.json` (its preset row) and `hooks.json` (derm's
+    // gate, lane N). Control: those three, since `cli-config.json` holds the
+    // CLI's own approval mode and allowlist (seen, Mac test w4). What else
+    // the CLI keeps there was not read (NF): srt with Cursor is not run.
+    Harness {
+        id: "cursor",
+        command: "cursor-agent",
+        sbx: Some(Sbx {
+            agent: "cursor",
+            kit: None,
+        }),
+        state: &[".cursor"],
+        credential: None,
+        control: &[
+            ".cursor/hooks.json",
+            ".cursor/mcp.json",
+            ".cursor/cli-config.json",
+        ],
+        launch: Launch::None,
+    },
     Harness {
         id: "grok",
         command: "grok",
@@ -366,9 +393,10 @@ pub const HARNESSES: &[Harness] = &[
     },
 ];
 
-/// Ids in the presets that `derm run` does not start: Cursor (no CLI in its
-/// preset row) and Zed (its `zed` command opens the editor app, not an
-/// agent; lane C's row names it for `derm connect`). Integration w1 renamed
+/// Ids in the presets that `derm run` does not start: Zed (its `zed` command
+/// opens the editor app, not an agent; lane C's row names it for `derm
+/// connect`). Cursor was here until its row named `cursor-agent` (fix pass 1
+/// for the Mac test w4, MW4-8). Integration w1 renamed
 /// lane D's `NO_CLI` when the verified table gave Zed a `cli`. A row whose
 /// `cli` is still `TODO` is not started either, until its lane fills it.
 /// Codebuff (`codebuff`) and Continue (`cn`) got a `cli` when integration w4
@@ -377,7 +405,7 @@ pub const HARNESSES: &[Harness] = &[
 /// folders were not read, so `derm run` gives them no state, control or
 /// credential entries: `derm run --boundary <b> -- codebuff` runs it as an
 /// unknown program, with the outside shape only (case 80).
-pub const NOT_RUN: &[&str] = &["cursor", "zed", "codebuff", "continue"];
+pub const NOT_RUN: &[&str] = &["zed", "codebuff", "continue"];
 
 pub fn find(id: &str) -> Option<&'static Harness> {
     HARNESSES.iter().find(|h| h.id == id)
@@ -459,6 +487,26 @@ mod tests {
         for h in HARNESSES.iter().chain(std::iter::once(&OTHER)) {
             assert!(derm_core::harness::id(h.id).is_some(), "{}", h.id);
         }
+    }
+
+    /// Mac test w4, MW4-8: Cursor's CLI had no command here, so a Cursor
+    /// chat could get no token: no ask reached an approver and no decision
+    /// reached the daemon. It runs as `cursor-agent`, the name Cursor's
+    /// install page gives, and its gate and permission files stay read-only
+    /// under srt.
+    #[test]
+    fn cursor_runs_as_cursor_agent_with_its_gate_files_read_only() {
+        let h = find("cursor").expect("cursor");
+        assert_eq!(h.command, "cursor-agent");
+        assert!(!NOT_RUN.contains(&"cursor"));
+        for c in [
+            ".cursor/hooks.json",
+            ".cursor/mcp.json",
+            ".cursor/cli-config.json",
+        ] {
+            assert!(h.control.contains(&c), "{c}");
+        }
+        assert_eq!(by_command("agent").map(|h| h.id), None);
     }
 
     #[test]
