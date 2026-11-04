@@ -10,16 +10,20 @@
     "orcaId": "kiro",
     "gate": {
       "family": "command-hook",
-      "where": "a version 1 hook file in ~/.kiro/hooks/, PreToolUse, exit codes only",
+      "where": "~/.kiro/hooks/derm.json (CLI V3 global hooks), PreToolUse, exit codes only (packages/derm-hooks-native/registration/kiro/derm.json)",
       "status": "planned",
       "wave": 4,
-      "lane": "N"
+      "lane": "N",
+      "package": "packages/derm-hooks-native"
     },
     "failMode": "blocks",
     "failSwitch": null,
     "ask": "approver-or-deny",
-    "shellAliases": [],
-    "verifiedAt": "2.34.0, docs",
-    "note": "stdout on exit 0 goes into the model's context; needs an account"
+    "shellAliases": [
+      "execute_bash",
+      "execute_pwsh"
+    ],
+    "verifiedAt": "docs (hooks/actions 10 Oct 2026, CLI 2.36.0 and V3), 3 Nov 2026; unverified, not run",
+    "note": "stdout on exit 0 goes into the model's context, so derm prints nothing on allow; V3 blocks a PreToolUse call on any non-zero exit (the June CLI page said other exits only warn); headless needs KIRO_API_KEY, a paid tier"
   }
 }

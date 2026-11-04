@@ -1,0 +1,7 @@
+[[hooks]]
+name = "derm-gate"
+type = "pre_tool"
+command = "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" mistral-vibe"
+timeout = 120.0
+strict = true
+description = "derm policy gate; strict, so a failed gate denies"

@@ -35,16 +35,19 @@
     "orcaId": "cursor",
     "gate": {
       "family": "command-hook",
-      "where": "~/.cursor/hooks.json version 1: preToolUse, beforeShellExecution, beforeMCPExecution",
+      "where": "~/.cursor/hooks.json version 1: preToolUse and beforeMCPExecution, failClosed: true (packages/derm-hooks-native/registration/cursor/hooks.json)",
       "status": "planned",
       "wave": 4,
-      "lane": "N"
+      "lane": "N",
+      "package": "packages/derm-hooks-native"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "failClosed: true",
     "ask": "own-prompt",
-    "shellAliases": [],
-    "verifiedAt": "2026.10.22, docs",
-    "note": "needs an account: fixtures only unless call 8 buys a seat"
+    "shellAliases": [
+      "Shell"
+    ],
+    "verifiedAt": "docs, 3 Nov 2026 (CLI changelog v2026.10.22); unverified, not run",
+    "note": "needs an account: fixtures only unless call 8 buys a seat. preToolUse names an MCP tool MCP:<tool> with no server and does not enforce ask, so derm decides MCP calls in beforeMCPExecution (own prompt for ask) and other tools in preToolUse (ask to derm's approver, else deny); that beforeMCPExecution fires in the CLI is a forum reading, not run"
   }
 }

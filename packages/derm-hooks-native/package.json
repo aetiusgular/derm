@@ -4,7 +4,19 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Command hooks in each agent's own reply shape for Cursor, Antigravity, goose, Mistral Vibe, Crush and Kiro: lane F's gate core plus one dialect per agent (wave 4, lane N, T2.6)",
+  "description": "derm's gate as a command hook in each agent's own dialect for Cursor, Antigravity, goose, Mistral Vibe, Crush and Kiro: lane F's gate core plus one dialect per agent (wave 4, lane N, T2.6)",
+  "bin": {
+    "derm-hook-native": "bin/derm-hook.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "!src/testing.ts",
+    "registration/",
+    "README.md",
+    "NOTICE"
+  ],
   "engines": {
     "node": ">=22.19.0"
   }

@@ -1,0 +1,17 @@
+{
+  "derm": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" antigravity",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
