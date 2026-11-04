@@ -238,12 +238,13 @@ pub const CODEX_HOOK_KEYS: [&str; 2] = [
 #[derive(Debug, PartialEq)]
 enum Marketplace {
     Absent,
-    /// derm's repository at this release's tag, or with no ref.
+    /// derm's repository at this release's tag.
     Ours,
-    /// derm's repository at another ref.
+    /// derm's repository at another ref, or with none (the default branch).
     OursOtherRef,
-    /// A folder on this machine: the documented clone route. Its contents
-    /// are not checked here.
+    /// A folder on this machine: the documented clone route. derm cannot
+    /// tell from config.toml whether the folder holds derm, so a plugin from
+    /// it is never reported as registered (release recheck review, H1).
     Local,
     /// Anything else, a value that is not a table included.
     Foreign,
@@ -271,9 +272,8 @@ fn codex_marketplace(doc: &toml_edit::DocumentMut) -> Marketplace {
                 return Marketplace::Foreign;
             }
             match str_of("ref") {
-                None => Marketplace::Ours,
                 Some(r) if r == format!("v{}", env!("CARGO_PKG_VERSION")) => Marketplace::Ours,
-                Some(_) => Marketplace::OursOtherRef,
+                _ => Marketplace::OursOtherRef,
             }
         }
         _ => Marketplace::Foreign,
@@ -338,6 +338,10 @@ fn codex(env: &Env, home: &Path) -> Registered {
                     "[marketplaces.derm] in {} is pinned to another release than v{version}: {readd}",
                     config.display()
                 ),
+                Marketplace::Local => format!(
+                    "{} has no [plugins.\"derm@derm\"]: codex plugin add derm@derm (its marketplace is a local folder, which derm cannot check)",
+                    config.display()
+                ),
                 _ => format!(
                     "{} has no [plugins.\"derm@derm\"]: codex plugin add derm@derm",
                     config.display()
@@ -381,10 +385,19 @@ fn codex(env: &Env, home: &Path) -> Registered {
             trusted.len()
         ));
     }
-    Registered::Yes(format!(
+    let done = format!(
         "derm@derm installed, on and both hooks trusted in {}; whether each trusted hash still matches hooks.json is not checked here (Codex re-asks when it changes)",
         config.display()
-    ))
+    );
+    match marketplace {
+        Marketplace::Local => Registered::Unknown(format!(
+            "{done}; but its marketplace is a local folder, and derm cannot check that the folder holds derm"
+        )),
+        Marketplace::OursOtherRef => Registered::Yes(format!(
+            "{done}; its marketplace is pinned to another release than v{version}: {readd}"
+        )),
+        _ => Registered::Yes(done),
+    }
 }
 
 fn pi(env: &Env, home: &Path) -> Registered {
@@ -677,7 +690,7 @@ mod tests {
             "[marketplaces]\nderm = {{ {git}, ref = \"v{v}\" }}\n"
         )));
         plugin_only(hint(&format!("marketplaces.derm.source_type = \"git\"\nmarketplaces.derm.source = \"https://github.com/aetiusgular/derm\"\nmarketplaces.derm.ref = \"v{v}\"\n")));
-        plugin_only(hint("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://GitHub.com/AetiusGular/derm.git\"\n"));
+        plugin_only(hint(&format!("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://GitHub.com/AetiusGular/derm.git\"\nref = \"v{v}\"\n")));
         // The folder form, as Codex 0.166.0 wrote it on the box.
         plugin_only(hint(
             "[marketplaces.derm]\nsource_type = \"local\"\nsource = \"/home/u/derm-0.1.1\"\n",
@@ -714,6 +727,30 @@ mod tests {
         // The same installed and trusted plugin from derm's own marketplace is.
         let r = hint(&format!("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\nref = \"v{v}\"\n{installed}"));
         assert_eq!(r.word(), "yes", "{:?}", r.detail());
+        // No ref follows the default branch: another release, before and
+        // after the plugin is installed (second review, H2 and H3).
+        let other = "[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\n";
+        let r = hint(other);
+        assert!(
+            r.detail().unwrap().contains("pinned to another release"),
+            "{:?}",
+            r.detail()
+        );
+        let r = hint(&format!("{other}{installed}"));
+        let d = r.detail().unwrap();
+        assert_eq!(r.word(), "yes", "{d}");
+        assert!(
+            d.contains("pinned to another release") && d.contains(&pinned),
+            "{d}"
+        );
+        // A local folder is never "yes": derm cannot check what it holds, and
+        // its path is not printed (second review, H1).
+        let r = hint(&format!(
+            "[marketplaces.derm]\nsource_type = \"local\"\nsource = \"/tmp/evil-x\"\n{installed}"
+        ));
+        let d = r.detail().unwrap();
+        assert_eq!(r.word(), "unknown", "{d}");
+        assert!(d.contains("local folder") && !d.contains("evil-x"), "{d}");
     }
 
     #[test]
