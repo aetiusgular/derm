@@ -201,6 +201,15 @@
       "note": "Monitor runs a command: a shell tool, so a `bash` deny reaches it (lane L's request 5)" },
     { "id": 73, "call": { "tool": "Monitor", "harness": "claude-code", "inputText": "tail -f x.log" },
       "expect": { "action": "ask", "normalizedTool": "monitor", "reasonPrefix": "no rule" },
-      "note": "a `bash` allow does not widen another shell tool: Monitor with no rule of its own asks (integration w4)" }
+      "note": "a `bash` allow does not widen another shell tool: Monitor with no rule of its own asks (integration w4)" },
+    { "id": 74, "call": { "tool": "bash", "harness": "pi", "inputText": "rm -rf /home/u/.config//goose" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file (.config/goose/)" },
+      "note": "a doubled slash inside a control folder: the path the shell opens is the same (review W4-S5)" },
+    { "id": 75, "call": { "tool": "bash", "harness": "pi", "inputText": "cat /run/user/1000/derm//daemon.token" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file (derm/daemon.)" },
+      "note": "a doubled slash before the daemon's token: the same file (review W4-S5)" },
+    { "id": 76, "call": { "tool": "bash", "harness": "pi", "inputText": "rm -r .agents/./hooks.json" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file (.agents/hooks.json)" },
+      "note": "`/./` inside a control path: the same file (review W4-S5)" }
   ]
 }

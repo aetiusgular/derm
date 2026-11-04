@@ -510,6 +510,7 @@ export const CONTROL_PATH_MARKERS = [
   "cline_tool_approval",
   "cline_plugin_",
   "cline-approvals/",
+  "derm-approval/",
 ] as const;
 
 // A folder entry's bare name, for `mv ~/.derm old` and `cd ~/.derm && cp x
@@ -524,6 +525,18 @@ const NAME_CHAR = /[a-z0-9_-]/;
 const LEFT_NAME_CHAR = /[a-z0-9_.-]/;
 
 /** Whether folded `text` names the control path `entry` (contract section 4, step 7a). */
+// The path the shell opens is the same with `//` or `/./` in it, so a
+// control path is also looked for in the text with those collapsed to `/`
+// (review W4-S5). Only ever adds an ask.
+export function withCollapsedSlashes(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) {
+    const c = t.replace(/\/(?:\.?\/)+/g, "/");
+    if (c !== t) out.push(c);
+  }
+  return out;
+}
+
 export function namesControlPath(text: string, entry: string): boolean {
   if (text.includes(entry)) return true;
   if (!entry.endsWith("/")) return false;
@@ -644,7 +657,8 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
   }
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
-  const control = CONTROL_PATH_MARKERS.find((m) => namesControlPath(folded, m) || namesControlPath(unquoted, m));
+  const texts = withCollapsedSlashes([folded, unquoted]);
+  const control = CONTROL_PATH_MARKERS.find((m) => texts.some((t) => namesControlPath(t, m)));
   if (control !== undefined) {
     return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   }

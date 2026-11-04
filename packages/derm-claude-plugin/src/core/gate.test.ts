@@ -4,7 +4,7 @@
 // cannot carry a control path the command leaves out.
 
 import { describe, expect, it } from "vitest";
-import { decideCall, inputTextFor } from "./gate.ts";
+import { decideCall, inputTextFor, resolveAsk, type GateAnswer } from "./gate.ts";
 import { parsePolicy, type LoadedPolicy, type PolicyFile } from "./policy.ts";
 
 const policy = parsePolicy({ version: 1, rules: [{ tool: "bash", action: "allow" }] }) as PolicyFile;
@@ -48,6 +48,34 @@ describe("full access", () => {
       expect(decideCall(ask, { harness: "copilot-cli", tool: "read", toolInput: { path: "a" } }).action).toBe("allow");
       // A secret-like value in a command asks, so it is denied too.
       expect(decideCall(loaded, { ...call, toolInput: { command: "TOKEN=abc ls" } }).action).toBe("deny");
+    } finally {
+      if (before === undefined) delete process.env.DERM_FULL_ACCESS;
+      else process.env.DERM_FULL_ACCESS = before;
+    }
+  });
+
+  // Review W4-S3: adapters also make asks after decideCall (an unresolved
+  // name, a secret they cannot rewrite) and hand them to resolveAsk; under
+  // full access none of them may go back to the agent's own prompt, which is
+  // off, nor wait for an approver.
+  it("denies an ask that reaches resolveAsk, without asking anyone", async () => {
+    const answer = decideCall(ask, { harness: "grok", tool: "bash", toolInput: { command: "ls" } }) as GateAnswer;
+    expect(answer.action).toBe("ask");
+    let asked = 0;
+    const none = async () => (asked++, { answer: "no" as const, by: "none" as const });
+    const call = { harness: "grok", tool: "bash", toolInput: { command: "ls" } };
+    expect((await resolveAsk(answer, call, true, none)).kind).toBe("harness");
+    asked = 0;
+    const r = await resolveAsk(answer, { ...call, fullAccess: true }, true, none);
+    expect(r.kind).toBe("deny");
+    expect(r.reason).toMatch(/full access/);
+    expect(asked).toBe(0);
+    const before = process.env.DERM_FULL_ACCESS;
+    process.env.DERM_FULL_ACCESS = "1";
+    try {
+      const yes = async () => (asked++, { answer: "yes" as const, by: "approver" as const });
+      expect((await resolveAsk(answer, call, true, yes)).kind).toBe("deny");
+      expect(asked).toBe(0);
     } finally {
       if (before === undefined) delete process.env.DERM_FULL_ACCESS;
       else process.env.DERM_FULL_ACCESS = before;

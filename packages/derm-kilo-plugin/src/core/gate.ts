@@ -103,7 +103,15 @@ export function inputTextFor(normalizedTool: string, toolInput: unknown): string
 export const FULL_ACCESS_NOTE = "the chat runs in full access (DERM_FULL_ACCESS=1), so derm denies what it would ask";
 
 export function decideCall(loaded: LoadedPolicy, call: GateCall): GateAnswer {
-  const answer = decideCallInner(loaded, call);
+  return denyAskInFullAccess(decideCallInner(loaded, call), call);
+}
+
+/**
+ * Under full access, an ask becomes a deny. decideCall applies it; an
+ * adapter that turns an answer into an ask after decideCall applies it again
+ * before it hands the ask to its agent (review W4-S3).
+ */
+export function denyAskInFullAccess(answer: GateAnswer, call: GateCall): GateAnswer {
   const full = call.fullAccess ?? process.env.DERM_FULL_ACCESS === "1";
   if (full && answer.action === "ask") {
     answer.action = "deny";
@@ -167,6 +175,12 @@ export async function resolveAsk(
   harnessCanAsk: boolean,
   approveFn: (r: ApproveRequest) => Promise<ApproveOutcome> = (r) => approve(r),
 ): Promise<AskResolution> {
+  // Under full access the agent's own prompt is off, so an ask an adapter
+  // makes after decideCall (an unresolved name, a secret it cannot rewrite)
+  // is a deny here too, before any approver (review W4-S3; case 83).
+  if (call.fullAccess ?? process.env.DERM_FULL_ACCESS === "1") {
+    return { kind: "deny", reason: `${answer.reason}; ${FULL_ACCESS_NOTE}` };
+  }
   const request: ApproveRequest = {
     id: `ap-${call.harness}-${call.toolUseId ?? randomUUID()}`,
     chat: call.chat ?? "",

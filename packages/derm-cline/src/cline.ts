@@ -36,7 +36,7 @@
 // splits them at the run of underscores.
 
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
+import { decideCall, denyAskInFullAccess, inputTextFor, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { overBudget } from "./budget.ts";
 import { narrowForControl } from "./control.ts";
@@ -182,7 +182,7 @@ export function decide(call: GateCall, rawTool: string, deps: Pick<Deps, "loadPo
       answer.reason = "secret-like value in input";
     }
   }
-  return answer;
+  return denyAskInFullAccess(answer, call);
 }
 
 // ------------------------------------------------------------ the SDK plugin

@@ -573,6 +573,7 @@ export const CONTROL_PATHS = [
   "cline_tool_approval",
   "cline_plugin_",
   "cline-approvals/",
+  "derm-approval/",
 ] as const;
 
 // A folder entry's bare name, for `mv ~/.derm old` and `cd ~/.derm && cp x
@@ -585,6 +586,18 @@ export const CONTROL_PATHS = [
 // match the same way; the policy fixtures hold the three equal.
 const NAME_CHAR = /[a-z0-9_-]/;
 const LEFT_NAME_CHAR = /[a-z0-9_.-]/;
+
+// The path the shell opens is the same with `//` or `/./` in it, so a
+// control path is also looked for in the text with those collapsed to `/`
+// (review W4-S5). Only ever adds an ask.
+export function withCollapsedSlashes(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) {
+    const c = t.replace(/\/(?:\.?\/)+/g, "/");
+    if (c !== t) out.push(c);
+  }
+  return out;
+}
 
 /** Whether folded `text` names the control path `entry` (contract section 4, step 7a). */
 export function namesControlPath(text: string, entry: string): boolean {
@@ -737,7 +750,8 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
   if (top.action === "allow") {
     const folded = fold(decodeEscapes(call.inputText));
     const unquoted = unquote(folded);
-    const control = CONTROL_PATHS.find((p) => namesControlPath(folded, p) || namesControlPath(unquoted, p));
+    const texts = withCollapsedSlashes([folded, unquoted]);
+    const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
     if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
     // On the folded text, so `＄HOME` asks: stricter than the raw input, the
     // side that fails safe (integration w1; derm-core and derm-pi do the same).

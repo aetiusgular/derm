@@ -19,8 +19,8 @@ export const TOKEN_SHAPES: readonly RegExp[] = [
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, // AWS access key ids
   /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g, // Anthropic API keys
   /\bxox[abposr]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
-  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, // PEM private keys (RFC 7468)
 ];
+// PEM private keys (RFC 7468) are found by `redactPem`, after these.
 
 // Two pair forms are redacted, in this order:
 //   "key": "value"   (JSON, also with single quotes; the value's quote closes it, `\` escapes)
@@ -126,6 +126,53 @@ function redactBare(text: string): { text: string; count: number } {
 
 export type Redaction = { text: string; count: number };
 
+// PEM private keys. Until integration w4's review (W4-S2) this was the
+// expression `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END
+// [A-Z0-9 ]*PRIVATE KEY-----` among the shapes above; with many BEGIN lines
+// and no END each one searched to the end of the text (256 KB took 1.5 s,
+// past Cline's 3 s hook limit at 640 KB). A header or footer is the label
+// followed by a maximal run of [A-Z0-9 ] that ends in "PRIVATE KEY" and is
+// followed by five dashes (the run cannot hold a dash, so the expression
+// could match no shorter run). The match is the first valid header and the
+// first valid footer after it, as the lazy expression's was; when no footer
+// follows a header, no later header has one either, so the scan stops.
+const PEM_RUN = /[A-Z0-9 ]*/y;
+const PEM_TAIL = "PRIVATE KEY";
+const DASHES = "-----";
+
+function pemLabelEnd(text: string, at: number, label: string): number {
+  const start = at + label.length;
+  PEM_RUN.lastIndex = start;
+  PEM_RUN.exec(text);
+  const runEnd = PEM_RUN.lastIndex;
+  if (runEnd - start < PEM_TAIL.length || !text.startsWith(PEM_TAIL, runEnd - PEM_TAIL.length)) return -1;
+  return text.startsWith(DASHES, runEnd) ? runEnd + DASHES.length : -1;
+}
+
+function redactPem(text: string): { text: string; count: number } {
+  const BEGIN = "-----BEGIN ";
+  const END = "-----END ";
+  let out = "";
+  let count = 0;
+  let from = 0;
+  for (let b = text.indexOf(BEGIN); b >= 0; b = text.indexOf(BEGIN, b + 1)) {
+    if (b < from) continue;
+    const headerEnd = pemLabelEnd(text, b, BEGIN);
+    if (headerEnd < 0) continue;
+    let footerEnd = -1;
+    for (let e = text.indexOf(END, headerEnd); e >= 0; e = text.indexOf(END, e + 1)) {
+      footerEnd = pemLabelEnd(text, e, END);
+      if (footerEnd >= 0) break;
+    }
+    if (footerEnd < 0) break;
+    out += text.slice(from, b) + REDACTED;
+    count++;
+    from = footerEnd;
+    b = footerEnd - 1;
+  }
+  return count === 0 ? { text, count } : { text: out + text.slice(from), count };
+}
+
 /** Redacts secret-like values in one string, in time linear in its length. */
 export function redactText(text: string): Redaction {
   const quoted = redactQuoted(text);
@@ -138,7 +185,8 @@ export function redactText(text: string): Redaction {
       return REDACTED;
     });
   }
-  return { text: out, count };
+  const pem = redactPem(out);
+  return { text: pem.text, count: count + pem.count };
 }
 
 /**

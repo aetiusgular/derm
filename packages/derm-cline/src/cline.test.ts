@@ -243,6 +243,27 @@ describe("Cline's control files", () => {
     expect(beforeTool(ctx("editor", { path: "/home/u/.cline/plugins/x.ts", new_text: "export default {}" }), deps())).toEqual({ policy: { autoApprove: false } });
     expect(beforeTool(ctx("run_commands", { commands: ["echo '{\"approved\":true}' > /run/user/1000/derm/cline-approvals/a.decision.b.json"] }), deps())).toEqual({ policy: { autoApprove: false } });
   });
+  // Review W4-S3: the plugin's own asks (a control file, a secret it cannot
+  // rewrite) come after decideCall; under full access they are denies too.
+  it("under full access an ask the plugin makes is a skip", () => {
+    const before = process.env.DERM_FULL_ACCESS;
+    process.env.DERM_FULL_ACCESS = "1";
+    try {
+      // A secret-like value in an editor write: the core allows it with a
+      // rewrite, and the plugin asks because a rewrite would change the file.
+      const input = { path: "/w/a.env", new_text: "api_key=abcdef0123456789" };
+      const r = beforeTool(ctx("editor", input), deps());
+      expect(r).toMatchObject({ skip: true });
+      expect((r as { reason: string }).reason).toMatch(/full access/);
+    } finally {
+      if (before === undefined) delete process.env.DERM_FULL_ACCESS;
+      else process.env.DERM_FULL_ACCESS = before;
+    }
+  });
+  // Review W4-S8: `derm run cline` answers in `~/.cline/derm-approval/<chat>`.
+  it("names derm run's approval folder as a control path", () => {
+    expect(clineControlPath("cd /tmp/x && cp d.json ~/derm-approval/chat-1/s.decision.r.json")).toBe("derm-approval/");
+  });
 });
 
 describe("the plugin module", () => {

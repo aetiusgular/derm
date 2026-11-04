@@ -655,7 +655,47 @@ pub const CONTROL_PATHS: &[&str] = &[
     "cline_tool_approval",
     "cline_plugin_",
     "cline-approvals/",
+    "derm-approval/",
 ];
+
+/// The path the shell opens is the same with `//` or `/./` in it, so a
+/// control path is also looked for in the text with those collapsed to `/`
+/// (review W4-S5). Only ever adds an ask; the hook core's
+/// `withCollapsedSlashes`.
+pub fn with_collapsed_slashes(texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = texts.to_vec();
+    for t in texts {
+        let mut c = String::with_capacity(t.len());
+        let b = t.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'/' {
+                c.push('/');
+                i += 1;
+                // Skip any run of `/` and `./` after it.
+                loop {
+                    if i < b.len() && b[i] == b'/' {
+                        i += 1;
+                    } else if i + 1 < b.len() && b[i] == b'.' && b[i + 1] == b'/' {
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                let start = i;
+                while i < b.len() && b[i] != b'/' {
+                    i += 1;
+                }
+                c.push_str(&t[start..i]);
+            }
+        }
+        if c != *t {
+            out.push(c);
+        }
+    }
+    out
+}
 
 /// Whether folded `text` names the control path `entry` (contract, section 4,
 /// step 7a). A folder entry also matches its bare name where the name stands
@@ -976,9 +1016,10 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     }
     // Control files before shell text (contract, section 4, step 7).
     let unquoted = unquote(&folded);
+    let texts = with_collapsed_slashes(&[folded.clone(), unquoted]);
     if let Some(control) = CONTROL_PATHS
         .iter()
-        .find(|p| names_control_path(&folded, p) || names_control_path(&unquoted, p))
+        .find(|p| texts.iter().any(|t| names_control_path(t, p)))
     {
         return decide(
             Action::Ask,

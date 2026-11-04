@@ -24,6 +24,9 @@
 // - `cline-approvals/`: the folder derm's approval responder answers in
 //   (responder.ts APPROVAL_FOLDER_NAME): a decision file written there is an
 //   answer Cline reads.
+// - `derm-approval/`: the folder `derm run cline` gives the responder,
+//   `~/.cline/derm-approval/<chat>` (crates/derm-cli/src/run/mod.rs; review
+//   W4-S8: the two names differed).
 
 import { decodeEscapes, fold } from "./core/fold.ts";
 import { unquote, type Action } from "./core/policy.ts";
@@ -38,6 +41,7 @@ export const CLINE_CONTROL_PATHS = [
   "cline_tool_approval",
   "cline_plugin_",
   "cline-approvals/",
+  "derm-approval/",
 ] as const;
 
 /**

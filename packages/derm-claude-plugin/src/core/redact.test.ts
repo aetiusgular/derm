@@ -24,7 +24,7 @@ function oldRedactText(text: string): { text: string; count: number } {
     count++;
     return `${head}${REDACTED}`;
   });
-  for (const shape of TOKEN_SHAPES) {
+  for (const shape of [...TOKEN_SHAPES, OLD_PEM]) {
     out = out.replace(shape, () => {
       count++;
       return REDACTED;
@@ -32,6 +32,42 @@ function oldRedactText(text: string): { text: string; count: number } {
   }
   return { text: out, count };
 }
+
+// The PEM shape as one expression, before integration w4's review (W4-S2):
+// many BEGIN lines with no END made it quadratic (256 KB took 1.5 s).
+const OLD_PEM = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g;
+
+describe("the PEM scan (review W4-S2)", () => {
+  const parts = ["-----BEGIN ", "-----END ", "PRIVATE KEY-----", "RSA ", "EC ", "-----", "-", " ", "\n", "MIIB", "x", "PRIVATE KEY", "BEGIN", "END"];
+  it("gives the old expression's output on 30,000 random strings of PEM fragments", () => {
+    let seed = 7;
+    const rand = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), seed % n);
+    for (let i = 0; i < 30_000; i++) {
+      let t = "";
+      const n = 1 + rand(12);
+      for (let j = 0; j < n; j++) t += parts[rand(parts.length)];
+      expect(redactText(t), JSON.stringify(t)).toEqual(oldRedactText(t));
+    }
+  });
+  it("redacts a whole key and keeps the text around it", () => {
+    const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----";
+    expect(redactText(`a ${key} b ${key} c`)).toEqual({ text: `a ${REDACTED} b ${REDACTED} c`, count: 2 });
+  });
+  for (const [name, text] of [
+    ["BEGIN lines with no END", "-----BEGIN PRIVATE KEY-----\n".repeat(9_000)],
+    ["BEGIN lines and END lines that never close a key", "-----BEGIN PRIVATE KEY-----\n-----END X-----\n".repeat(6_000)],
+    ["BEGIN headers that never finish", "-----BEGIN RSA PRIVATE KEY".repeat(10_000)],
+  ] as [string, string][]) {
+    it(`redacts 256 KB of ${name} in under 100 ms`, () => {
+      const big = text.repeat(Math.ceil(256_000 / text.length)).slice(0, 256_000);
+      redactText(big.slice(0, 1_000));
+      const t0 = performance.now();
+      redactText(big);
+      const ms = performance.now() - t0;
+      expect(ms, `${ms.toFixed(1)} ms`).toBeLessThan(100);
+    });
+  }
+});
 
 // A small deterministic generator, so a failure names its seed.
 function rng(seed: number): () => number {

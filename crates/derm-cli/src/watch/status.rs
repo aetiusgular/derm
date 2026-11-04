@@ -743,7 +743,7 @@ fn render_daemon(d: &Value) -> String {
                     // Security review L6; since integration w4 the hook
                     // core acts on DERM_FULL_ACCESS too (lane R's request 1).
                     format!(
-                        ", FULL ACCESS ({}): derm's gates deny what they would ask",
+                        ", FULL ACCESS ({}): derm's hook gates deny what they would ask (derm-pi shows its own card)",
                         full_words.join(" ")
                     )
                 };
@@ -847,7 +847,7 @@ mod tests {
         );
         assert!(
             out.contains(
-                "FULL ACCESS (--dangerously-skip-permissions): derm's gates deny what they would ask"
+                "FULL ACCESS (--dangerously-skip-permissions): derm's hook gates deny what they would ask (derm-pi shows its own card)"
             ),
             "{out}"
         );
