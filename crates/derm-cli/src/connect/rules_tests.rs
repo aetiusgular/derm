@@ -215,7 +215,8 @@ fn gemini_gets_its_deny_rules_in_a_file_of_its_own() {
         [
             "mcpName = \"GitHub.Tools\"\ntoolName = \"delete_repo\"\ndecision = \"deny\"\npriority = 221\ndenyMessage = \"derm: rule github_tools/delete_repo\"",
             "mcpName = \"evil\"\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 121\ndenyMessage = \"derm: rule evil/*\"",
-            "toolName = \"run_shell_command\"\ndecision = \"deny\"\npriority = 521\ndenyMessage = \"derm: rule bash harness=gemini\"",
+            // A bash deny outranks every allow, as in the hook (review W4-S6; 521 before).
+            "toolName = \"run_shell_command\"\ndecision = \"deny\"\npriority = 950\ndenyMessage = \"derm: rule bash harness=gemini\"",
         ],
         "{t}"
     );

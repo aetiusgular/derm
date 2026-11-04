@@ -446,7 +446,15 @@ pub fn gemini_toml(policy: &derm_core::policy::PolicyFile) -> (String, Vec<Strin
             ));
             continue;
         };
-        let priority = 1 + if r.harness.is_some() { 300 } else { 0 } + spec * 100 + 20;
+        // A `bash` deny narrows run_shell_command whatever rule allows it
+        // (the hook's step 3a), so it outranks every rule `priorityOf` ranks,
+        // as the extension's printout does (`BASH_DENY_PRIORITY`; review
+        // W4-S6).
+        let priority = if r.tool == "bash" {
+            950
+        } else {
+            1 + if r.harness.is_some() { 300 } else { 0 } + spec * 100 + 20
+        };
         out.push("[[rule]]".into());
         out.push(sel);
         out.push("decision = \"deny\"".into());

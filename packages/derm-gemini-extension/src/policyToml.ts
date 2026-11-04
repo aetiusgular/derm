@@ -39,6 +39,10 @@ function serverName(normalized: string, servers: readonly string[]): string {
   return servers.find((s) => lowerName(s) === normalized) ?? normalized;
 }
 
+/** A `bash` deny, above every rule priorityOf ranks; a `bash` ask, above every allow and ask. */
+export const BASH_DENY_PRIORITY = 950;
+export const BASH_ASK_PRIORITY = 522;
+
 export function policyToToml(loaded: LoadedPolicy): string {
   const lines: string[] = [
     "# derm policy for Gemini CLI, user tier. Generated from your derm policy by",
@@ -50,6 +54,13 @@ export function policyToToml(loaded: LoadedPolicy): string {
   if (loaded.problem) lines.push(`# The derm policy did not load cleanly: ${loaded.problem}`, "");
   const { policy } = loaded;
   let hasCatchAll = false;
+  // In the hook a `bash` deny or ask narrows run_shell_command whatever rule
+  // allows it (step 3a), so here a bash deny outranks every rule and a bash
+  // ask every allow and ask (the highest priorityOf gives is 521). A bash ask
+  // must not outrank a deny that reaches the shell, so with one in the policy
+  // it keeps its own rank (review W4-S6).
+  const applies = (r: (typeof policy.rules)[number]) => r.chat === undefined && (r.harness === undefined || r.harness === HARNESS);
+  const denyReachesShell = policy.rules.some((r) => applies(r) && r.action === "deny" && (r.tool === "run_shell_command" || r.tool === "*"));
   for (const rule of policy.rules) {
     if (rule.chat !== undefined) {
       lines.push(`# skipped: ${rule.tool} ${rule.action} for one chat (Gemini rules have no chat)`, "");
@@ -79,7 +90,11 @@ export function policyToToml(loaded: LoadedPolicy): string {
     } else {
       out.push(`toolName = ${tomlString(rule.tool === "bash" ? "run_shell_command" : rule.tool)}`);
     }
-    out.push(`decision = "${DECISION[action]}"`, `priority = ${priorityOf(rule, action)}`);
+    let priority = priorityOf(rule, action);
+    if (rule.tool === "bash" && action === "deny") priority = BASH_DENY_PRIORITY;
+    else if (rule.tool === "bash" && !denyReachesShell) priority = BASH_ASK_PRIORITY;
+    else if (rule.tool === "bash") lines.push("# bash ask: kept at its own rank, because a deny in your policy reaches run_shell_command and must outrank it; a run_shell_command allow above it is not asked about here (the hook still asks)");
+    out.push(`decision = "${DECISION[action]}"`, `priority = ${priority}`);
     if (action === "deny") out.push(`denyMessage = ${tomlString(`derm: rule ${rule.tool}${rule.harness ? ` harness=${rule.harness}` : ""}`)}`);
     if (action !== rule.action) lines.push(`# ${rule.tool}: allow with a description pin; Gemini cannot check the pin, so it asks`);
     lines.push(...out, "");

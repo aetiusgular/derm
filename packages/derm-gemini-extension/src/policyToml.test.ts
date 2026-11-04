@@ -55,11 +55,34 @@ describe("policyToToml", () => {
     const t = policyToToml(
       loaded({ version: 1, rules: [{ tool: "bash", action: "deny" }, { tool: "bash", harness: "gemini", action: "ask" }, { tool: "bash", action: "allow" }] }),
     );
-    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "deny"\npriority = 221\ndenyMessage = "derm: rule bash"');
-    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "ask_user"\npriority = 511');
+    // Ranks since review W4-S6 (221 and 511 before): above every allow.
+    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "deny"\npriority = 950\ndenyMessage = "derm: rule bash"');
+    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "ask_user"\npriority = 522');
     expect(t).toContain("# skipped: bash allow");
     expect(t).not.toContain('toolName = "bash"');
     expect(t).not.toMatch(/toolName = "run_shell_command"\ndecision = "allow"/);
+  });
+
+  // Review W4-S6: in the hook a `bash` deny narrows run_shell_command
+  // whatever rule allows it, so in the printout it outranks every allow; a
+  // `bash` ask outranks every allow too, unless a deny could reach the shell,
+  // which it must not outrank (it then keeps its own rank, and says so).
+  it("ranks a bash deny above every allow, and a bash ask above every allow when no deny reaches the shell", () => {
+    const rank = (t: string, decision: string) =>
+      Number(new RegExp(`toolName = "run_shell_command"\\ndecision = "${decision}"\\npriority = (\\d+)`).exec(t)?.[1]);
+    const deny = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "run_shell_command", harness: "gemini", action: "allow" }, { tool: "bash", action: "deny" }] }),
+    );
+    expect(rank(deny, "deny")).toBeGreaterThan(rank(deny, "allow"));
+    const ask = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "run_shell_command", harness: "gemini", action: "allow" }, { tool: "bash", action: "ask" }] }),
+    );
+    expect(rank(ask, "ask_user")).toBeGreaterThan(rank(ask, "allow"));
+    const both = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "run_shell_command", action: "deny" }, { tool: "bash", action: "ask" }] }),
+    );
+    expect(rank(both, "ask_user")).toBeLessThan(rank(both, "deny"));
+    expect(both).toContain("# bash ask: kept at its own rank");
   });
 
   it("stays inside Gemini's priority range (0 to 999)", () => {
