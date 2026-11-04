@@ -744,3 +744,33 @@ fn minted_tokens_are_fresh_and_name_their_chat() {
     );
     assert_eq!(normalize::short_name("pi.tool_result"), "tool_result");
 }
+
+/// Mac test w4, MW4-6: the daemon minted tokens only for the 14 ids of
+/// session 0's table, so `derm run` could not start 9 of its 21 agents, nor
+/// an unknown program (case 80). Every id of the preset table, in either
+/// list, and `derm run`'s `other` are harness ids a token can carry.
+#[test]
+fn every_preset_id_and_other_can_get_a_token() {
+    let index: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../derm-cli/src/connect/presets/index.json"
+    ))
+    .unwrap();
+    let mut ids: Vec<String> = Vec::new();
+    for list in ["harnesses", "planned"] {
+        for id in index[list].as_array().unwrap() {
+            ids.push(id.as_str().unwrap().to_string());
+        }
+    }
+    ids.push("other".into());
+    let missing: Vec<&String> = ids
+        .iter()
+        .filter(|id| harness_env::harness_id(id).is_none())
+        .collect();
+    assert!(missing.is_empty(), "no token for {missing:?}");
+    let f = fixture(true);
+    for id in &ids {
+        let h = harness_env::harness_id(id).unwrap();
+        let t = f.receiver.mint("c-mw46", h).unwrap();
+        assert_eq!(f.receiver.holder_of(&t), Some(("c-mw46".to_string(), h)));
+    }
+}

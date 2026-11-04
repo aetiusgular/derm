@@ -435,6 +435,32 @@ mod tests {
         assert_eq!(named, HARNESSES.len());
     }
 
+    /// Mac test w4, MW4-6: every harness `derm run` starts, and `other`
+    /// (case 80), is an id the daemon mints a token for, and the shared list
+    /// is exactly the preset table's ids in both lists plus `other`.
+    #[test]
+    fn every_harness_derm_run_starts_can_get_a_token() {
+        let v: serde_json::Value =
+            serde_json::from_str(crate::connect::presets::table_json()).unwrap();
+        let mut table: Vec<String> = Vec::new();
+        for list in ["harnesses", "planned"] {
+            for row in v[list].as_array().unwrap() {
+                table.push(row["id"].as_str().unwrap().to_string());
+            }
+        }
+        table.push(OTHER.id.to_string());
+        let mut shared: Vec<String> = derm_core::harness::IDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        table.sort();
+        shared.sort();
+        assert_eq!(table, shared);
+        for h in HARNESSES.iter().chain(std::iter::once(&OTHER)) {
+            assert!(derm_core::harness::id(h.id).is_some(), "{}", h.id);
+        }
+    }
+
     #[test]
     fn only_pi_needs_a_kit_and_paths_are_relative_and_inside_the_state() {
         for h in HARNESSES {
