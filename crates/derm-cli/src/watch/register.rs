@@ -39,6 +39,9 @@ const MAX_FILE: u64 = 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Registered {
     Yes(String),
+    /// Registered, with something the user should still do (release
+    /// recheck 2, RC9): `derm status` prints its note like a "no"'s.
+    YesNote(String),
     No(String),
     Unknown(String),
     NotBuilt,
@@ -47,7 +50,7 @@ pub enum Registered {
 impl Registered {
     pub fn word(&self) -> &'static str {
         match self {
-            Registered::Yes(_) => "yes",
+            Registered::Yes(_) | Registered::YesNote(_) => "yes",
             Registered::No(_) => "no",
             Registered::Unknown(_) => "unknown",
             Registered::NotBuilt => "n/a",
@@ -56,7 +59,10 @@ impl Registered {
 
     pub fn detail(&self) -> Option<String> {
         match self {
-            Registered::Yes(d) | Registered::No(d) | Registered::Unknown(d) => Some(d.clone()),
+            Registered::Yes(d)
+            | Registered::YesNote(d)
+            | Registered::No(d)
+            | Registered::Unknown(d) => Some(d.clone()),
             Registered::NotBuilt => None,
         }
     }
@@ -393,7 +399,7 @@ fn codex(env: &Env, home: &Path) -> Registered {
         Marketplace::Local => Registered::Unknown(format!(
             "{done}; but its marketplace is a local folder, and derm cannot check that the folder holds derm"
         )),
-        Marketplace::OursOtherRef => Registered::Yes(format!(
+        Marketplace::OursOtherRef => Registered::YesNote(format!(
             "{done}; its marketplace is pinned to another release than v{version}: {readd}"
         )),
         _ => Registered::Yes(done),

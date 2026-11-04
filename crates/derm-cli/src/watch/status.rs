@@ -157,6 +157,7 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
         },
         "registered": registered.word(),
         "registeredDetail": registered.detail(),
+        "registeredNote": matches!(registered, Registered::YesNote(_)),
         "failMode": s(&cov, "failMode"),
         "failSwitch": cov.get("failSwitch").cloned().unwrap_or(Value::Null),
         "ask": s(&cov, "ask"),
@@ -500,11 +501,19 @@ pub fn render(rows: &[Value], daemon: &Value) -> String {
     }
     let notes: Vec<String> = rows
         .iter()
-        .filter(|r| s(r, "registered") == "unknown" || s(r, "registered") == "no")
+        .filter(|r| {
+            s(r, "registered") == "unknown"
+                || s(r, "registered") == "no"
+                || r.get("registeredNote").and_then(Value::as_bool) == Some(true)
+        })
         .filter_map(|r| {
+            // Whole: a note is derm's own text, a path and the version, and
+            // ends in the command to run (release recheck 2, RC9). `clean`
+            // still escapes every control character; the cap only bounds a
+            // path that is absurdly long.
             r.get("registeredDetail")
                 .and_then(Value::as_str)
-                .map(|d| format!("  {}: {}", s(r, "id"), clean(d, 160)))
+                .map(|d| format!("  {}: {}", s(r, "id"), clean(d, 2000)))
         })
         .collect();
     if !notes.is_empty() {
@@ -657,6 +666,27 @@ mod tests {
             vars: Vec::new(),
             cwd: None,
         }
+    }
+
+    /// Release recheck 2, RC9: the plain output carries the command a
+    /// registration note gives, whole, for "no" and for a "yes" that has one;
+    /// a plain "yes" adds no note, and a control character is still escaped.
+    #[test]
+    fn registration_commands_are_not_cut() {
+        let cmd = "codex plugin marketplace remove derm, then codex plugin marketplace add aetiusgular/derm --ref v0.1.2, then codex plugin add derm@derm";
+        let no = format!("[marketplaces.derm] in /home/someone-with-a-long-name/.codex/config.toml is not aetiusgular/derm's repository or a local folder, so its derm@derm is not derm's: {cmd}");
+        let yes = format!("derm@derm installed, on and both hooks trusted in /home/u/.codex/config.toml; its marketplace is pinned to another release than v0.1.2: {cmd}");
+        let rows = vec![
+            serde_json::json!({"id": "codex", "registered": "no", "registeredDetail": no}),
+            serde_json::json!({"id": "codex", "registered": "yes", "registeredDetail": yes, "registeredNote": true}),
+            serde_json::json!({"id": "claude-code", "registered": "yes", "registeredDetail": "derm@derm installed (plain yes)"}),
+            serde_json::json!({"id": "pi", "registered": "no", "registeredDetail": "no derm-pi in packages of /home/someone/.pi/agent/settings.json: pi install <folder>/packages/derm-pi, from the release's source archive or a clone (docs/install/agents.md)\u{1b}[2J"}),
+        ];
+        let out = render(&rows, &serde_json::json!({}));
+        assert_eq!(out.matches(cmd).count(), 2, "{out}");
+        assert!(!out.contains("plain yes"), "{out}");
+        assert!(out.contains("(docs/install/agents.md)\\u{1B}[2J"), "{out}");
+        assert!(!out.contains('\u{1b}'), "{out}");
     }
 
     #[test]
