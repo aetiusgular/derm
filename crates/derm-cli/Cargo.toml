@@ -46,6 +46,11 @@ uuid.workspace = true
 # [lane-J]
 # [lane-Q]
 # [lane-R]
+# `derm run` calls the daemon's `apply_export` for Claude Code's and Codex's
+# own OTel (lane B built it; integration w1's request for lane R). A path
+# crate of this workspace, already a dev-dependency below: no new
+# third-party code.
+derm-daemon = { path = "../derm-daemon" }
 
 [dev-dependencies]
 # [lane-C]

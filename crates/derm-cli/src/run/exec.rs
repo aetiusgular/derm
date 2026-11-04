@@ -91,7 +91,9 @@ pub fn forward_sigint(from_process: i32, foreground: bool) -> bool {
     }
 }
 
-pub fn spawn(plan: &Plan, cwd: &str) -> std::io::Result<Child> {
+/// Starts the plan. `piped`: the child's stdin and stdout are pipes for
+/// `derm acp` to sit between (T2.9); stderr stays the terminal's.
+pub fn spawn(plan: &Plan, cwd: &str, piped: bool) -> std::io::Result<Child> {
     let mut cmd = Command::new(&plan.program);
     cmd.args(&plan.args).current_dir(cwd);
     for name in &plan.env_remove {
@@ -100,10 +102,66 @@ pub fn spawn(plan: &Plan, cwd: &str) -> std::io::Result<Child> {
     for (k, v) in &plan.env_set {
         cmd.env(k, v);
     }
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
+    let io = |p: bool| if p { Stdio::piped() } else { Stdio::inherit() };
+    cmd.stdin(io(piped))
+        .stdout(io(piped))
         .stderr(Stdio::inherit());
     cmd.spawn()
+}
+
+/// Starts a companion beside the harness (lane P's Cline responder): the
+/// same environment as the harness, no stdin, stdout dropped, stderr the
+/// terminal's. It runs outside any sandbox, as derm's own process.
+pub fn spawn_companion(
+    program: &str,
+    args: &[String],
+    plan: &Plan,
+    cwd: &str,
+) -> std::io::Result<Child> {
+    let mut cmd = Command::new(program);
+    cmd.args(args).current_dir(cwd);
+    for name in &plan.env_remove {
+        cmd.env_remove(name);
+    }
+    for (k, v) in &plan.env_set {
+        cmd.env(k, v);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    // Its own process group, so what it starts is stopped with it (security
+    // review L12).
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    cmd.spawn()
+}
+
+/// Stops a companion and its process group: SIGTERM, then SIGKILL after
+/// `grace`.
+pub fn stop_companion(child: &mut Child, grace: Duration) {
+    let group = -(child.id() as libc::pid_t);
+    // SAFETY: kill(2) on the process group the companion leads; it was
+    // started with process_group(0), so the group id is its pid, and the
+    // group exists while the leader is unreaped.
+    let signal = |sig| unsafe {
+        libc::kill(group, sig);
+    };
+    if let Ok(Some(_)) = child.try_wait() {
+        // The leader is gone; what it started may not be.
+        signal(libc::SIGKILL);
+        return;
+    }
+    signal(libc::SIGTERM);
+    let start = std::time::Instant::now();
+    while start.elapsed() < grace {
+        if let Ok(Some(_)) = child.try_wait() {
+            signal(libc::SIGKILL);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    signal(libc::SIGKILL);
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Waits for the child. SIGTERM and SIGHUP sent to `derm run` go on to the
@@ -195,6 +253,9 @@ mod tests {
             folders: vec![],
             state_dirs: vec![],
             notes: vec![],
+            full_access: vec![],
+            companion: None,
+            scratch_dir: None,
         }
     }
 
@@ -212,9 +273,9 @@ mod tests {
 
     #[test]
     fn exit_codes_and_signals_pass_through() {
-        let mut c = spawn(&plan("sh", &["-c", "exit 7"]), "/").unwrap();
+        let mut c = spawn(&plan("sh", &["-c", "exit 7"]), "/", false).unwrap();
         assert_eq!(code(&wait(&mut c).unwrap()), (7, None));
-        let mut c = spawn(&plan("sh", &["-c", "kill -9 $$"]), "/").unwrap();
+        let mut c = spawn(&plan("sh", &["-c", "kill -9 $$"]), "/", false).unwrap();
         assert_eq!(code(&wait(&mut c).unwrap()), (137, Some(9)));
     }
 
@@ -231,6 +292,7 @@ mod tests {
                 ],
             ),
             "/",
+            false,
         )
         .unwrap();
         assert_eq!(code(&wait(&mut c).unwrap()).0, 0);
@@ -250,6 +312,7 @@ mod tests {
                 ],
             ),
             "/",
+            false,
         )
         .unwrap();
         assert_eq!(code(&wait(&mut c).unwrap()).0, 0);
@@ -261,5 +324,61 @@ mod tests {
         assert!(output_with_timeout("sleep", &["10".into()], Duration::from_millis(200)).is_none());
         assert!(t.elapsed() < Duration::from_secs(3));
         assert!(output_with_timeout("/nonexistent/sbx", &[], Duration::from_secs(1)).is_none());
+    }
+
+    /// Security review L12: what the companion starts stops with it.
+    #[test]
+    fn stopping_a_companion_stops_what_it_started() {
+        let dir = std::env::temp_dir().join(format!(
+            "derm-comp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pids = dir.join("pids");
+        let plan = plan("sh", &[]);
+        let mut c = spawn_companion(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!(
+                    "sleep 300 & echo \"$$ $!\" > '{}'; while :; do sleep 0.1; done",
+                    pids.display()
+                ),
+            ],
+            &plan,
+            dir.to_str().unwrap(),
+        )
+        .unwrap();
+        let t0 = std::time::Instant::now();
+        let text = loop {
+            if let Ok(t) = std::fs::read_to_string(&pids) {
+                if t.trim().contains(' ') {
+                    break t;
+                }
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "no pids");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        stop_companion(&mut c, Duration::from_secs(2));
+        let alive = |pid: &str| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|s| {
+                    !s.rsplit(')')
+                        .next()
+                        .unwrap_or("")
+                        .trim_start()
+                        .starts_with('Z')
+                })
+                .unwrap_or(false)
+        };
+        let t0 = std::time::Instant::now();
+        for pid in text.split_whitespace() {
+            while alive(pid) && t0.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!alive(pid), "{pid} still runs");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

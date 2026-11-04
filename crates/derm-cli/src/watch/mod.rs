@@ -17,11 +17,11 @@ mod approve;
 mod conn;
 pub mod cu;
 mod peer;
-mod register;
+pub(crate) mod register;
 mod report;
-mod status;
+pub(crate) mod status;
 mod tail;
-mod text;
+pub(crate) mod text;
 
 #[cfg(test)]
 mod live_tests;

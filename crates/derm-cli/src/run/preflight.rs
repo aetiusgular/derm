@@ -98,6 +98,45 @@ pub fn srt(
     Ok((notes, tools))
 }
 
+/// The companion `derm run` starts beside the harness (lane P's Cline
+/// responder), as an absolute path. It runs as the user, outside any
+/// sandbox, with the chat token, so it is held to the rule srt's own tools
+/// are held to: not from a relative PATH entry, not from a folder the
+/// sandbox can write (security review L8).
+pub fn companion(
+    program: &str,
+    path_var: &str,
+    writable: &[String],
+    cwd: &str,
+) -> Result<String, String> {
+    let found = if program.starts_with('/') {
+        Path::new(program).is_file().then(|| program.to_string())
+    } else if program.contains('/') {
+        return Err(format!(
+            "{program}: a relative path; give an absolute one or a bare name on PATH"
+        ));
+    } else {
+        first_on_path(path_var, program, cwd)
+    };
+    let Some(p) = found else {
+        return Err(format!("{program} not found on PATH; it answers the harness's gated calls, and without it they wait and are denied"));
+    };
+    if !p.starts_with('/') {
+        return Err(format!(
+            "derm would start `{p}`, the first {program} on PATH, from a relative PATH entry and outside the sandbox; take the relative entry out of PATH"
+        ));
+    }
+    let real = std::fs::canonicalize(&p)
+        .map(|r| r.to_string_lossy().into_owned())
+        .map_err(|e| format!("{p}: {e}"))?;
+    if let Some(w) = writable.iter().find(|w| under(&real, w)) {
+        return Err(format!(
+            "derm would start {real} outside the sandbox with the chat token, and it sits in {w}, which the sandbox can write; put the installed {program} first on PATH"
+        ));
+    }
+    Ok(real)
+}
+
 /// The first executable `bin` along PATH, as `which` searches it: every
 /// entry in order, an empty one meaning the current folder, which for srt is
 /// the chat's folder (`derm run` starts it there). A relative entry's match is
@@ -231,5 +270,60 @@ mod tests {
         let d = dir_with("noexec", &["bwrap", "socat"]);
         std::fs::write(Path::new(&d).join("rg"), "x").unwrap();
         assert!(srt(&d, true, None, &[], "/").is_err());
+    }
+
+    /// Security review L8: the companion runs outside the sandbox with the
+    /// chat token, so it is held to the same rule as srt's own tools.
+    #[test]
+    fn the_companion_is_never_taken_from_a_folder_the_sandbox_can_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "derm-pre-comp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let sys = root.join("sys");
+        let planted = root.join("work/node_modules/.bin");
+        for d in [&sys, &planted] {
+            std::fs::create_dir_all(d).unwrap();
+            let f = d.join("derm-cline-responder");
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let work = s(&root.join("work"));
+        let writable = vec![work.clone()];
+        // The planted copy first on PATH: refused.
+        let path = format!("{}:{}", s(&planted), s(&sys));
+        let e = companion("derm-cli-responder-missing", &path, &writable, &work).unwrap_err();
+        assert!(e.contains("not found"), "{e}");
+        let e = companion("derm-cline-responder", &path, &writable, &work).unwrap_err();
+        assert!(e.contains("can write"), "{e}");
+        // The system copy first: its absolute path.
+        let path = format!("{}:{}", s(&sys), s(&planted));
+        let got = companion("derm-cline-responder", &path, &writable, &work).unwrap();
+        assert_eq!(
+            got,
+            s(&std::fs::canonicalize(sys.join("derm-cline-responder")).unwrap())
+        );
+        // A relative PATH entry is refused, as for srt's tools.
+        let e = companion(
+            "derm-cline-responder",
+            ".:/usr/bin",
+            &writable,
+            &s(&planted),
+        )
+        .unwrap_err();
+        assert!(e.contains("relative"), "{e}");
+        // An absolute program is checked the same way.
+        let e = companion(
+            &s(&planted.join("derm-cline-responder")),
+            "",
+            &writable,
+            &work,
+        )
+        .unwrap_err();
+        assert!(e.contains("can write"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
