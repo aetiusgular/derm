@@ -9,6 +9,10 @@
 //! derm connect <harness> --remove <name>
 //! derm connect <harness> --allowlist (--from <entry.json> | --gateway ...)
 //! derm connect <harness> --path
+//! derm connect <harness> --check-names
+//! derm connect <agent> --gate --hook <package folder> [--node <path>] [--write]
+//! derm connect <agent> --ungate [--write]
+//! derm connect <agent> --rules [--clear] [--write]
 //! ... [--write [--expect-sha256 <hash>]]
 //! ```
 //!
@@ -29,11 +33,18 @@ pub mod gateway;
 
 mod allowlist;
 mod diff;
+mod gate;
+#[cfg(test)]
+mod gate_tests;
 mod json;
 mod log;
+mod names;
 pub(crate) mod presets;
 mod redact;
 mod render;
+mod rules;
+#[cfg(test)]
+mod rules_tests;
 mod spec;
 mod tomlfile;
 mod write;
@@ -52,6 +63,9 @@ use write::Confirm;
 /// scratch home, a fake environment and a scripted terminal.
 pub struct Ctx<'a> {
     pub home: PathBuf,
+    /// The folder derm was started in: `--check-names` reads the project
+    /// file there (read only; derm never writes a project file).
+    pub cwd: PathBuf,
     pub macos: bool,
     pub env: &'a dyn Env,
     /// The parent of the per-user runtime folders (`/run/user`), where the
@@ -93,8 +107,11 @@ pub fn main(args: &[String]) -> u8 {
         return 1;
     };
     let mut tty = write::Tty;
+    let home = PathBuf::from(home);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
     let mut ctx = Ctx {
-        home: PathBuf::from(home),
+        home,
+        cwd,
         macos: cfg!(target_os = "macos"),
         env: &RealEnv,
         run_user: PathBuf::from(derm_core::runtime::RUN_USER),
@@ -116,6 +133,10 @@ const USAGE: &str = "usage: derm connect --list
        derm connect <harness> --remove <name> [--write ...]
        derm connect <harness> --allowlist (--from <entry.json> | --gateway ...)
        derm connect <harness> --path
+       derm connect <harness> --check-names
+       derm connect <agent> --gate --hook <package folder> [--node <path>] [--write]
+       derm connect <agent> --ungate [--write]
+       derm connect <agent> --rules [--clear] [--write]
 Dry run unless --write. Writes user-level files only, after a terminal confirmation.
 ";
 
@@ -138,6 +159,13 @@ struct Opts {
     list: bool,
     path: bool,
     check_profile: bool,
+    check_names: bool,
+    gate: bool,
+    ungate: bool,
+    hook: Option<String>,
+    node: Option<String>,
+    rules: bool,
+    clear: bool,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -160,6 +188,13 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--allowlist" => o.allowlist = true,
             "--path" => o.path = true,
             "--check-profile" => o.check_profile = true,
+            "--check-names" => o.check_names = true,
+            "--gate" => o.gate = true,
+            "--rules" => o.rules = true,
+            "--clear" => o.clear = true,
+            "--ungate" => o.ungate = true,
+            "--hook" => o.hook = Some(value(&mut i, a)?),
+            "--node" => o.node = Some(value(&mut i, a)?),
             "--from" => o.from = Some(value(&mut i, a)?),
             "--gateway" => o.gateway = Some(value(&mut i, a)?),
             "--profile" => o.profile = Some(value(&mut i, a)?),
@@ -184,6 +219,47 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             }
         }
         i += 1;
+    }
+    if o.rules {
+        let other = o.from.is_some()
+            || o.gateway.is_some()
+            || o.remove.is_some()
+            || o.allowlist
+            || o.check_names
+            || o.path
+            || o.expect.is_some()
+            || o.name.is_some()
+            || o.gate
+            || o.ungate
+            || o.hook.is_some()
+            || o.node.is_some();
+        if other {
+            return Err("--rules takes the agent, --clear and --write only".into());
+        }
+    } else if o.clear {
+        return Err("--clear goes with --rules".into());
+    }
+    if o.gate || o.ungate {
+        let other = o.from.is_some()
+            || o.gateway.is_some()
+            || o.remove.is_some()
+            || o.allowlist
+            || o.check_names
+            || o.path
+            || o.expect.is_some()
+            || o.name.is_some();
+        if other || (o.gate && o.ungate) {
+            return Err(
+                "--gate and --ungate take the agent, --hook, --node and --write only".into(),
+            );
+        }
+        if o.ungate && (o.hook.is_some() || o.node.is_some()) {
+            return Err(
+                "--ungate finds derm's entries by themselves; it takes no --hook or --node".into(),
+            );
+        }
+    } else if o.hook.is_some() || o.node.is_some() {
+        return Err("--hook and --node go with --gate".into());
     }
     if let Some(h) = &o.expect {
         if h.len() != 64
@@ -461,6 +537,37 @@ pub fn run(args: &[String], ctx: &mut Ctx) -> u8 {
         ctx.err.push_str(USAGE);
         return 2;
     };
+    if o.rules {
+        let r = rules::Opts {
+            agent: id,
+            clear: o.clear,
+            write: o.write,
+        };
+        return match rules::run(&r, ctx) {
+            Ok(code) => code,
+            Err(e) => {
+                ctx.err.push_str(&format!("derm connect: {e}\n"));
+                1
+            }
+        };
+    }
+    // The gate table covers agents the preset table lists as planned too.
+    if o.gate || o.ungate {
+        let g = gate::Opts {
+            agent: id,
+            ungate: o.ungate,
+            hook: o.hook.as_deref(),
+            node: o.node.as_deref(),
+            write: o.write,
+        };
+        return match gate::run(&g, ctx) {
+            Ok(code) => code,
+            Err(e) => {
+                ctx.err.push_str(&format!("derm connect: {e}\n"));
+                1
+            }
+        };
+    }
     let Some(preset) = presets::find(id) else {
         let ids: Vec<String> = presets::table()
             .harnesses
@@ -495,7 +602,22 @@ fn connect(args: &[String], o: &Opts, preset: &Preset, ctx: &mut Ctx) -> Result<
         ctx.out.push_str(&format!("{}\n", path.display()));
         return Ok(0);
     }
+    if o.check_names {
+        if o.from.is_some() || o.gateway.is_some() || o.remove.is_some() || o.write {
+            return Err("--check-names takes the harness alone".into());
+        }
+        return Ok(check_names(preset, &path, ctx));
+    }
     if o.allowlist {
+        // With no server named, the gate plugin's own managed fragment
+        // (integration w1, lane F's request; the fragments' comments name
+        // this command).
+        if o.from.is_none() && o.gateway.is_none() {
+            if let Some(text) = allowlist::plugin_fragment(&preset.id) {
+                ctx.out.push_str(text);
+                return Ok(0);
+            }
+        }
         let spec = spec_from(o)?;
         ctx.out
             .push_str(&allowlist::fragment(preset, &spec, ctx.macos)?);
@@ -520,6 +642,10 @@ fn connect(args: &[String], o: &Opts, preset: &Preset, ctx: &mut Ctx) -> Result<
         }
     }
     let spec = spec.map(|s| pi_optional_headers(preset, s, ctx));
+    if let Some(sp) = &spec {
+        codebuff_env_is_set(preset, sp, ctx.env)?;
+        omp_literal_names_no_variable(preset, sp, ctx.env)?;
+    }
     if o.check_profile {
         let profile = o
             .profile
@@ -617,6 +743,30 @@ fn connect(args: &[String], o: &Opts, preset: &Preset, ctx: &mut Ctx) -> Result<
                 "{} changed since the dry run (sha256 {} now, {expect} then); nothing written. Run the dry run again.",
                 path.display(),
                 current.sha256
+            ));
+        }
+    }
+    // A name one `_` away from a configured or listed server (W2-R1).
+    if let (Some(spec), Some(form)) = (&spec, names::form(&preset.id)) {
+        let mut known: Vec<names::Named> = names::configured(preset, &text)
+            .into_iter()
+            .map(|n| names::Named {
+                name: n,
+                place: "your config".into(),
+            })
+            .collect();
+        known.extend(
+            names::policy_servers(&ctx.home, ctx.env)
+                .into_iter()
+                .map(|n| names::Named {
+                    name: n,
+                    place: "the policy's servers".into(),
+                }),
+        );
+        if let Some(other) = names::clash(&spec.name, &known, form) {
+            return Err(format!(
+                "`{}` is one `_` from `{}` ({}): {} sends both servers' tools under one prefix, so a rule for one would answer for the other; pick another name with --name",
+                spec.name, other.name, other.place, preset.name
             ));
         }
     }
@@ -732,15 +882,7 @@ fn connect(args: &[String], o: &Opts, preset: &Preset, ctx: &mut Ctx) -> Result<
             .as_ref()
             .map_or_else(|| "remove".to_string(), origin_line),
     };
-    // `$XDG_RUNTIME_DIR`, else a private `/run/user/<uid>` (release check
-    // RC6), the rule the daemon binds by.
-    let xdg = ctx.env.var("XDG_RUNTIME_DIR");
-    let runtime = derm_core::runtime::runtime_dir_with(
-        xdg.as_deref().map(std::ffi::OsStr::new),
-        derm_core::runtime::current_uid(),
-        &ctx.run_user,
-    );
-    let socket = log::socket_path(&ctx.home, runtime.as_deref(), ctx.macos);
+    let socket = log_socket(ctx);
     let logged = log::record(&socket, &ctx.home.join(".derm/connect.log"), &rec)
         .unwrap_or_else(|e| format!("nowhere ({e})"));
     ctx.out.push_str(&format!(
@@ -752,6 +894,87 @@ fn connect(args: &[String], o: &Opts, preset: &Preset, ctx: &mut Ctx) -> Result<
             .map_or(String::new(), |b| format!(" Backup: {}.", b.display()))
     ));
     Ok(0)
+}
+
+/// The daemon's socket, where a write is logged: `$XDG_RUNTIME_DIR`, else a
+/// private `/run/user/<uid>` (release check RC6), the rule the daemon binds
+/// by.
+fn log_socket(ctx: &Ctx) -> PathBuf {
+    let xdg = ctx.env.var("XDG_RUNTIME_DIR");
+    let runtime = derm_core::runtime::runtime_dir_with(
+        xdg.as_deref().map(std::ffi::OsStr::new),
+        derm_core::runtime::current_uid(),
+        &ctx.run_user,
+    );
+    log::socket_path(&ctx.home, runtime.as_deref(), ctx.macos)
+}
+
+/// `--check-names`: every pair of server names one `_` apart in the user
+/// file, the current folder's project file and the policy's `servers`, for
+/// an agent whose tool names put a single `_` between server and tool. Exit
+/// 1 when there is one. Reads only.
+fn check_names(preset: &Preset, user: &Path, ctx: &mut Ctx) -> u8 {
+    let Some(form) = names::form(&preset.id) else {
+        ctx.out.push_str(&format!(
+            "{} keeps server and tool apart with a separator derm can split; nothing to check\n",
+            preset.name
+        ));
+        return 0;
+    };
+    let read = |p: &Path| -> Option<String> {
+        let m = std::fs::symlink_metadata(p).ok()?;
+        if !m.is_file() || m.len() > spec::MAX_ENTRY_BYTES as u64 {
+            return None;
+        }
+        std::fs::read_to_string(p).ok()
+    };
+    let mut all = Vec::new();
+    let mut add = |names: Vec<String>, place: String| {
+        all.extend(names.into_iter().map(|n| names::Named {
+            name: n,
+            place: place.clone(),
+        }));
+    };
+    if let Some(text) = read(user) {
+        add(
+            names::configured(preset, &text),
+            format!("user file {}", user.display()),
+        );
+    }
+    if let Some(project) = &preset.config_files.project {
+        let p = PathBuf::from(project.replace("<project>", &ctx.cwd.display().to_string()));
+        if let Some(text) = read(&p) {
+            add(
+                names::configured(preset, &text),
+                format!("project file {}", p.display()),
+            );
+        }
+    }
+    let policy = names::policy_path(&ctx.home, ctx.env);
+    add(
+        names::policy_servers(&ctx.home, ctx.env),
+        format!("policy {}", policy.display()),
+    );
+    let pairs = names::pairs(&all, form);
+    if pairs.is_empty() {
+        ctx.out.push_str(&format!(
+            "{}: no two server names are one `_` apart ({} names read)\n",
+            preset.name,
+            all.len()
+        ));
+        return 0;
+    }
+    for (a, b) in &pairs {
+        ctx.out.push_str(&format!(
+            "pair: `{}` ({}) and `{}` ({})\n",
+            a.name, a.place, b.name, b.place
+        ));
+    }
+    ctx.out.push_str(&format!(
+        "{} sends each pair's tools under one prefix, so a rule for one server answers for the other. Rename one (derm connect --name), or list both in the policy's servers so the longer one is split first.\n",
+        preset.name
+    ));
+    1
 }
 
 /// Pi 1.4.0 refuses a server whose header names an unset or empty variable
@@ -783,6 +1006,59 @@ fn pi_optional_headers(preset: &Preset, mut spec: ServerSpec, ctx: &mut Ctx) -> 
         }
     }
     spec
+}
+
+/// Codebuff 1.0.688 drops every server in an `mcp.json` when one stdio
+/// `env` value names a variable that is unset (`load-mcp-config.ts:58-62,
+/// 165-173` at v1.0.679 and main), so derm writes no reference to an
+/// unset variable there.
+fn codebuff_env_is_set(preset: &Preset, spec: &ServerSpec, env: &dyn Env) -> Result<(), String> {
+    if preset.entry_style != "codebuff" {
+        return Ok(());
+    }
+    let unset: Vec<&str> = spec
+        .env
+        .iter()
+        .filter(|e| env.var(&e.var).is_none())
+        .map(|e| e.var.as_str())
+        .collect();
+    if unset.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} drops every server in its mcp.json when a variable an entry names is unset; export {} first",
+        preset.name,
+        unset.join(", ")
+    ))
+}
+
+/// oh-my-pi 18.16.0 resolves every MCP header value once more after its
+/// `${VAR}` expansion: a value that is exactly the name of a set variable
+/// becomes that variable's value (`mcp/manager.ts:2136-2143`,
+/// `config/resolve-config-value.ts:104-108`), so a literal such as `HOME`
+/// would send your home folder. derm refuses such a literal; `!` is refused
+/// for every agent by `spec::check_text`.
+fn omp_literal_names_no_variable(
+    preset: &Preset,
+    spec: &ServerSpec,
+    env: &dyn Env,
+) -> Result<(), String> {
+    if preset.id != "oh-my-pi" {
+        return Ok(());
+    }
+    if let spec::Transport::Http { headers, .. } = &spec.transport {
+        for h in headers {
+            if let spec::HeaderValue::Literal(v) = &h.value {
+                if env.var(v).is_some() {
+                    return Err(format!(
+                        "header `{}`: oh-my-pi reads a value that names a set variable as that variable, and `{v}` is set; refused",
+                        h.name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether the server is in the file already (for the log's `replace`).

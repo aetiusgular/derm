@@ -237,6 +237,7 @@ fn go(home: &Path, env: &MapEnv, answer: bool, args: &[&str]) -> Run {
     let mut a = Answer(answer, None);
     let mut ctx = Ctx {
         home: home.to_path_buf(),
+        cwd: home.join("proj"),
         macos: false,
         env,
         run_user: home.join("no-run-user"),
@@ -971,14 +972,15 @@ fn pi_leaves_out_an_optional_header_whose_variable_is_unset() {
         r.out
     );
     assert!(r.out.contains("CONTEXT7_API_KEY is optional"), "{}", r.out);
+    // The header's variable is namespaced to the server (S12).
     let set = MapEnv(HashMap::from([(
-        "CONTEXT7_API_KEY".to_string(),
+        "DERM_CONTEXT7__CONTEXT7_API_KEY".to_string(),
         "k".to_string(),
     )]));
     let r = go(&home, &set, true, &["pi", "--from", ef]);
     assert!(
         r.out
-            .contains("\"CONTEXT7_API_KEY\": \"${CONTEXT7_API_KEY}\""),
+            .contains("\"CONTEXT7_API_KEY\": \"${DERM_CONTEXT7__CONTEXT7_API_KEY}\""),
         "{}",
         r.out
     );
@@ -1009,4 +1011,414 @@ fn a_toml_parse_error_does_not_quote_the_file() {
     assert_eq!(r.code, 1);
     assert!(!r.err.contains("FAKE-not-a-key"), "{}", r.err);
     assert!(r.err.contains("line 1"), "{}", r.err);
+}
+
+// Re-review W2-R1's residue (integration w2): in the single-underscore
+// forms (OpenCode's and Kilo's `s_t`, Gemini's and Crush's `mcp_s_t`,
+// oh-my-pi's `mcp__s_t`) a server `exa-evil` reaches the gate as
+// `exa_evil_<tool>`, which a listed `exa` takes (`contracts/policy.md`
+// section 4, step 3a, the open note). derm connect refuses to write such a
+// pair; the person picks another name with --name.
+#[test]
+fn a_name_one_underscore_away_from_a_configured_server_is_refused() {
+    let home = scratch("w2r1");
+    let cfg = home.join(".config/opencode/opencode.json");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    let before = "{\n  \"mcp\": {\n    \"exa\": {\n      \"type\": \"remote\",\n      \"url\": \"https://mcp.exa.ai/mcp\"\n    }\n  }\n}\n";
+    fs::write(&cfg, before).unwrap();
+    let e = entry_file(&home);
+    let ef = e.to_str().unwrap();
+    for name in ["exa-evil", "exa-", "EXA"] {
+        if !super::spec::valid_server_name(name) {
+            continue;
+        }
+        let r = go(
+            &home,
+            &no_env(),
+            true,
+            &["opencode", "--from", ef, "--name", name, "--write"],
+        );
+        assert_eq!(r.code, 1, "{name}: {}", r.out);
+        assert!(r.err.contains("one `_`"), "{name}: {}", r.err);
+        assert_eq!(fs::read_to_string(&cfg).unwrap(), before, "{name}");
+    }
+    // The reverse: `exa` next to a configured `exa-evil`.
+    let other = home.join("other");
+    let cfg2 = other.join(".config/opencode/opencode.json");
+    fs::create_dir_all(cfg2.parent().unwrap()).unwrap();
+    fs::write(&cfg2, before.replace("\"exa\"", "\"exa-evil\"")).unwrap();
+    let r = go(
+        &other,
+        &no_env(),
+        true,
+        &["opencode", "--from", ef, "--name", "exa"],
+    );
+    assert_eq!(r.code, 1, "{}", r.out);
+    // A name in the policy's `servers` counts, with nothing in the file.
+    let third = home.join("third");
+    fs::create_dir_all(third.join(".config/opencode")).unwrap();
+    fs::create_dir_all(third.join(".derm")).unwrap();
+    fs::write(
+        third.join(".derm/policy.json"),
+        "{\"version\": 1, \"servers\": [\"exa\"], \"rules\": []}",
+    )
+    .unwrap();
+    let r = go(
+        &third,
+        &no_env(),
+        true,
+        &["opencode", "--from", ef, "--name", "exa-evil"],
+    );
+    assert_eq!(r.code, 1, "{}", r.out);
+    // A double-underscore agent splits `mcp__exa-evil__t` plainly: allowed.
+    fs::create_dir_all(third.join(".claude")).unwrap();
+    let r = go(
+        &third,
+        &no_env(),
+        true,
+        &["claude-code", "--from", ef, "--name", "exa-evil"],
+    );
+    assert_eq!(r.code, 0, "{}", r.err);
+    // An unrelated name is fine on OpenCode too.
+    let r = go(
+        &home,
+        &no_env(),
+        true,
+        &["opencode", "--from", ef, "--name", "search"],
+    );
+    assert_eq!(r.code, 0, "{}", r.err);
+}
+
+// `--check-names` lists W2-R1's pairs that derm connect did not write: a
+// project's own `opencode.json` can bring `exa_evil` beside the user's `exa`.
+// It reads the project file and never writes it.
+#[test]
+fn check_names_lists_the_pairs_in_the_user_project_and_policy_files() {
+    let home = scratch("checknames");
+    let user = home.join(".config/opencode/opencode.json");
+    fs::create_dir_all(user.parent().unwrap()).unwrap();
+    fs::write(
+        &user,
+        "{\"mcp\": {\"exa\": {\"type\": \"remote\", \"url\": \"https://mcp.exa.ai/mcp\"}}}\n",
+    )
+    .unwrap();
+    let r = go(&home, &no_env(), true, &["opencode", "--check-names"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("no two server names"), "{}", r.out);
+    let proj = home.join("proj");
+    fs::create_dir_all(&proj).unwrap();
+    let project_text = "{\n  // a project's own servers\n  \"mcp\": {\"exa_evil\": {\"type\": \"local\", \"command\": [\"x\"]}}\n}\n";
+    fs::write(proj.join("opencode.json"), project_text).unwrap();
+    let r = go(&home, &no_env(), true, &["opencode", "--check-names"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    assert!(r.out.contains("pair: `exa` (user file"), "{}", r.out);
+    assert!(r.out.contains("`exa_evil` (project file"), "{}", r.out);
+    assert_eq!(
+        fs::read_to_string(proj.join("opencode.json")).unwrap(),
+        project_text
+    );
+    // The policy's servers are read too, through DERM_POLICY when absolute.
+    let pol = home.join("p.json");
+    fs::write(
+        &pol,
+        "{\"version\": 1, \"servers\": [\"search\"], \"rules\": []}",
+    )
+    .unwrap();
+    fs::write(
+        &user,
+        "{\"mcp\": {\"search-x\": {\"type\": \"remote\", \"url\": \"https://h.example/mcp\"}}}\n",
+    )
+    .unwrap();
+    fs::remove_file(proj.join("opencode.json")).unwrap();
+    let env = MapEnv(HashMap::from([(
+        "DERM_POLICY".to_string(),
+        pol.display().to_string(),
+    )]));
+    let r = go(&home, &env, true, &["opencode", "--check-names"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    assert!(r.out.contains("`search` (policy"), "{}", r.out);
+    // A double-underscore agent has nothing to check.
+    let r = go(&home, &no_env(), true, &["claude-code", "--check-names"]);
+    assert_eq!(r.code, 0);
+    assert!(r.out.contains("nothing to check"), "{}", r.out);
+    // It takes the harness alone.
+    let r = go(
+        &home,
+        &no_env(),
+        true,
+        &["opencode", "--check-names", "--write"],
+    );
+    assert_eq!(r.code, 1);
+}
+
+// Integration w1, lane F's request: `--allowlist` with no server prints the
+// gate plugin's own managed fragment, as the fragments' comments say.
+#[test]
+fn allowlist_alone_prints_the_plugins_managed_fragment() {
+    let home = scratch("allowfrag");
+    let r = go(&home, &no_env(), true, &["claude-code", "--allowlist"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.contains(include_str!(
+            "../../../../packages/derm-claude-plugin/managed-settings.fragment.json"
+        )),
+        "{}",
+        r.out
+    );
+    let r = go(&home, &no_env(), true, &["codex", "--allowlist"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.contains(include_str!(
+            "../../../../packages/derm-codex-plugin/requirements.fragment.toml"
+        )),
+        "{}",
+        r.out
+    );
+    // Other agents have no plugin fragment; a server is still needed.
+    let r = go(&home, &no_env(), true, &["pi", "--allowlist"]);
+    assert_eq!(r.code, 1);
+}
+
+/// Rows wave 4 lane Q verified, staged in `connect/promoted/` because the
+/// flip from `planned` to `harnesses` also needs lane R's `run/harness.rs`
+/// and the planned-row schema (`contracts/`): integration moves each file's
+/// fields into its `presets/` row, beside the row's `coverage`.
+const PROMOTED: &[(&str, &str)] = &[
+    ("kilo", include_str!("promoted/kilo.json")),
+    ("codebuff", include_str!("promoted/codebuff.json")),
+    ("oh-my-pi", include_str!("promoted/oh-my-pi.json")),
+    ("continue", include_str!("promoted/continue.json")),
+];
+
+fn promoted(id: &str) -> presets::Preset {
+    let (_, text) = PROMOTED.iter().find(|(i, _)| *i == id).unwrap();
+    serde_json::from_str(text).unwrap_or_else(|e| panic!("promoted/{id}.json: {e}"))
+}
+
+#[test]
+fn promoted_rows_are_verified_and_name_a_planned_agent() {
+    let table: serde_json::Value = serde_json::from_str(presets::table_json()).unwrap();
+    let planned = table["planned"].as_array().unwrap();
+    for (id, text) in PROMOTED {
+        assert!(!text.contains("TODO"), "{id}");
+        assert!(
+            !text.contains("\"coverage\""),
+            "{id}: coverage stays in its presets row"
+        );
+        let p = promoted(id);
+        assert_eq!(p.id, *id);
+        assert!(p.verified.starts_with("2026-"), "{id}");
+        assert!(!p.sources.is_empty(), "{id}");
+        assert!(p.write == "write" || p.write_note.is_some(), "{id}");
+        let row = planned
+            .iter()
+            .find(|r| r["id"] == *id)
+            .unwrap_or_else(|| panic!("{id} is not in `planned`"));
+        assert_eq!(row["name"].as_str(), Some(p.name.as_str()), "{id}");
+        // A planned row may not know its command yet (`TODO`).
+        if row["cli"] != "TODO" {
+            assert_eq!(row["cli"].as_str(), p.cli.as_deref(), "{id}");
+        }
+        assert!(p.cli.is_some(), "{id}");
+        assert_eq!(
+            row["toolNameForm"].as_str(),
+            p.tool_name_form.as_deref(),
+            "{id}"
+        );
+    }
+}
+
+/// Kilo 7.8.18 keeps OpenCode 1.19.4's entry schema: the same render, in
+/// ~/.config/kilo/kilo.json, whatever KILO_CONFIG_DIR says (it does not
+/// move the global folder, `core/src/global.ts:24`).
+#[test]
+fn kilo_gets_opencodes_entry_in_its_global_folder() {
+    let p = promoted("kilo");
+    let oc = presets::find("opencode").unwrap();
+    let render = |p: &presets::Preset| match compute(p, "", Some(&fs_server()), None, false) {
+        Ok(Change::Text(t)) => t,
+        _ => panic!("{}", p.id),
+    };
+    let t = render(&p);
+    assert_eq!(t, render(&oc));
+    assert!(t.contains("\"TOKEN\": \"{env:TOKEN}\""), "{t}");
+    let home = Path::new("/home/u");
+    let env = MapEnv(HashMap::from([(
+        "KILO_CONFIG_DIR".to_string(),
+        "/home/u/kc".to_string(),
+    )]));
+    assert_eq!(
+        p.user_path(home, false, &env).unwrap(),
+        home.join(".config/kilo/kilo.json")
+    );
+    let xdg = MapEnv(HashMap::from([(
+        "XDG_CONFIG_HOME".to_string(),
+        "/home/u/x".to_string(),
+    )]));
+    assert_eq!(
+        p.user_path(home, false, &xdg).unwrap(),
+        Path::new("/home/u/x/kilo/kilo.json")
+    );
+}
+
+/// Codebuff 1.0.688 (read at v1.0.679 and main, which agree): strict
+/// entries, a whole-value `$VAR` in a stdio `env`, no expansion in headers,
+/// and an unset variable drops every server in the file.
+#[test]
+fn codebuff_writes_only_what_its_strict_schema_and_loader_read() {
+    let p = promoted("codebuff");
+    match compute(&p, "", Some(&fs_server()), None, false) {
+        Ok(Change::Text(t)) => {
+            let v = super::json::parse(&t, false)
+                .unwrap()
+                .root
+                .unwrap()
+                .to_value();
+            let e = v.get_path(&["mcpServers"]).unwrap();
+            let (_, entry) = match e {
+                super::json::Value::Object(m) => m[0].clone(),
+                _ => panic!("{t}"),
+            };
+            let keys: Vec<String> = match &entry {
+                super::json::Value::Object(m) => m.iter().map(|(k, _)| k.clone()).collect(),
+                _ => panic!(),
+            };
+            assert_eq!(keys, ["type", "command", "args", "env"], "{t}");
+            assert!(t.contains("\"TOKEN\": \"$TOKEN\""), "{t}");
+            assert!(t.ends_with('\n'));
+        }
+        _ => panic!(),
+    }
+    let e = compute(
+        &p,
+        "",
+        Some(&http(
+            "exa",
+            "https://mcp.exa.ai/mcp",
+            vec![bearer("EXA_KEY")],
+        )),
+        None,
+        false,
+    )
+    .err()
+    .unwrap();
+    assert!(e.contains("never expands a header"), "{e}");
+    match compute(
+        &p,
+        "",
+        Some(&http("open", "https://h.example/mcp", vec![])),
+        None,
+        false,
+    ) {
+        Ok(Change::Text(t)) => {
+            assert!(t.contains("\"type\": \"http\""), "{t}");
+            assert!(t.contains("\"url\": \"https://h.example/mcp\""), "{t}");
+        }
+        _ => panic!(),
+    }
+    let none = no_env();
+    let e = super::codebuff_env_is_set(&p, &fs_server(), &none).unwrap_err();
+    assert!(
+        e.contains("drops every server") && e.contains("TOKEN"),
+        "{e}"
+    );
+    let set = MapEnv(HashMap::from([("TOKEN".to_string(), "x".to_string())]));
+    assert!(super::codebuff_env_is_set(&p, &fs_server(), &set).is_ok());
+    let oc = presets::find("opencode").unwrap();
+    assert!(super::codebuff_env_is_set(&oc, &fs_server(), &none).is_ok());
+}
+
+/// oh-my-pi 18.16.0: Claude Code's entry shape with `${VAR}`, the agent
+/// folder moved by PI_CODING_AGENT_DIR, and a literal header that names a
+/// set variable refused (oh-my-pi would send the variable's value).
+#[test]
+fn oh_my_pi_reads_a_literal_that_names_a_variable_as_the_variable() {
+    let p = promoted("oh-my-pi");
+    match compute(&p, "", Some(&fs_server()), None, false) {
+        Ok(Change::Text(t)) => {
+            assert!(t.contains("\"TOKEN\": \"${TOKEN}\""), "{t}");
+            assert!(t.contains("\"type\": \"stdio\""), "{t}");
+            assert!(!t.ends_with('\n'));
+        }
+        _ => panic!(),
+    }
+    let home = Path::new("/home/u");
+    let env = MapEnv(HashMap::from([(
+        "PI_CODING_AGENT_DIR".to_string(),
+        "/srv/omp".to_string(),
+    )]));
+    assert_eq!(
+        p.user_path(home, false, &env).unwrap(),
+        Path::new("/srv/omp/mcp.json")
+    );
+    assert_eq!(
+        p.user_path(home, false, &no_env()).unwrap(),
+        home.join(".omp/agent/mcp.json")
+    );
+    let lit = |v: &str| Header {
+        name: "X-Where".into(),
+        value: HeaderValue::Literal(v.into()),
+        optional: false,
+    };
+    let set = MapEnv(HashMap::from([("HOME".to_string(), "/home/u".to_string())]));
+    let e = super::omp_literal_names_no_variable(
+        &p,
+        &http("h", "https://h.example/mcp", vec![lit("HOME")]),
+        &set,
+    )
+    .unwrap_err();
+    assert!(e.contains("names a set variable"), "{e}");
+    assert!(super::omp_literal_names_no_variable(
+        &p,
+        &http("h", "https://h.example/mcp", vec![lit("v1")]),
+        &set
+    )
+    .is_ok());
+    let claude = presets::find("claude-code").unwrap();
+    assert!(super::omp_literal_names_no_variable(
+        &claude,
+        &http("h", "https://h.example/mcp", vec![lit("HOME")]),
+        &set
+    )
+    .is_ok());
+}
+
+/// Continue CLI 1.5.47: printed as a YAML list item, with
+/// `${{ secrets.VAR }}` references, `streamable-http` for HTTP and headers
+/// under `requestOptions`.
+#[test]
+fn continue_prints_a_list_item_with_secret_templates() {
+    let p = promoted("continue");
+    assert!(!p.writes());
+    let r = super::render::render(&p, &fs_server()).unwrap();
+    let y = match r {
+        super::render::Rendered::Yaml(y) => y,
+        _ => panic!(),
+    };
+    assert!(
+        y.starts_with("mcpServers:\n  - name: \"fs\"\n    type: stdio\n"),
+        "{y}"
+    );
+    assert!(y.contains("TOKEN: \"${{ secrets.TOKEN }}\""), "{y}");
+    let h = super::render::render(
+        &p,
+        &http("exa", "https://mcp.exa.ai/mcp", vec![bearer("EXA_KEY")]),
+    )
+    .unwrap();
+    let y = match h {
+        super::render::Rendered::Yaml(y) => y,
+        _ => panic!(),
+    };
+    assert!(y.contains("type: streamable-http"), "{y}");
+    assert!(y.contains("requestOptions:\n      headers:\n"), "{y}");
+    assert!(y.contains("\"Bearer ${{ secrets.EXA_KEY }}\""), "{y}");
+    let home = Path::new("/home/u");
+    let env = MapEnv(HashMap::from([(
+        "CONTINUE_GLOBAL_DIR".to_string(),
+        "/srv/cn".to_string(),
+    )]));
+    assert_eq!(
+        p.user_path(home, false, &env).unwrap(),
+        Path::new("/srv/cn/config.yaml")
+    );
 }
