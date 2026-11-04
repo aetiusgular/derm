@@ -7,6 +7,8 @@ import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from
 import { homedir } from "node:os";
 import path from "node:path";
 import { decodeEscapes, fold } from "./fold.ts";
+// Wave 5 lane X's seam (the wave 5 base): package installs, section 6.
+import { installDecision } from "./installs/index.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -776,6 +778,10 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
     // side that fails safe (integration w1; derm-core and derm-pi do the same).
     const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
     if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
+    // Package installs (contracts/policy.md section 6; lane X's seam). The
+    // wave 5 base's stub reads no call as an install.
+    const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
+    if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
   }
   return { action: top.action, normalizedTool, reason };
 }

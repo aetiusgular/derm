@@ -13,6 +13,8 @@
 
 import { createHash } from "node:crypto";
 import { decodeEscapes, foldText } from "./fold.ts";
+// Wave 5 lane X's seam (the wave 5 base): package installs, contracts/policy.md section 6.
+import { installDecision } from "./installs/index.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -688,6 +690,10 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
     const glob = token === "*" || token === "?" || token === "[";
     return { action: "ask", normalizedTool, reason: `shell text the matcher cannot read: \`${token}\`${glob ? " (a glob)" : ""}` };
   }
+  // Package installs (lane X's seam). The wave 5 base's stub reads no call
+  // as an install.
+  const install = SHELL_TOOLS.has(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
+  if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
   return { action: "allow", normalizedTool, reason: describeRule(winner) };
 }
 
