@@ -227,3 +227,67 @@ describe("bin/derm-hook.mjs", () => {
     expect(p.status).toBe(0);
   });
 });
+
+// Mac test w4, MW4-5: Cursor's CLI runs an enabled Claude Code plugin's hook
+// as a third-party hook (https://cursor.com/docs/reference/third-party-hooks;
+// seen by run on Cursor CLI 2026.10.22), with `hook_event_name: "preToolUse"`
+// and `cursor_version`. This hook refused that event, so every Cursor call was
+// blocked wherever the plugin was enabled, allowed ones too. Cursor's gate is
+// derm's Cursor dialect in ~/.cursor/hooks.json: when it is registered this
+// hook gives no decision and posts nothing (the gate runs once, case 75);
+// when it is not, it still blocks, and says how to fix it.
+describe("Claude Code's hook run by Cursor", () => {
+  const cursorHome = mkdtempSync(path.join(tmpdir(), "derm-claude-cursor-"));
+  const hooksFile = path.join(cursorHome, ".cursor", "hooks.json");
+  const entry = (failClosed: boolean) => ({ type: "command", command: 'node --no-warnings "/p/derm-hooks-native/bin/derm-hook.mjs" cursor', timeout: 120, failClosed });
+  const register = (pre: unknown, mcp: unknown) => {
+    mkdirSync(path.dirname(hooksFile), { recursive: true });
+    writeFileSync(hooksFile, JSON.stringify({ version: 1, hooks: { preToolUse: [{ command: "/o/.orca/agent-hooks/cursor-hook.sh" }, pre], beforeMCPExecution: [mcp] } }));
+  };
+  const cursorPre = (tool: string, toolInput: unknown) =>
+    JSON.stringify({ hook_event_name: "preToolUse", conversation_id: "c-1", tool_name: tool, tool_input: toolInput, tool_use_id: "t-1", cursor_version: "2026.10.22-27dcf5f" });
+  const cursorEnv = () => env({ HOME: cursorHome });
+  afterAll(() => rmSync(cursorHome, { recursive: true, force: true }));
+
+  it("without derm's Cursor gate it blocks, naming the fix, and posts nothing", async () => {
+    rmSync(hooksFile, { force: true });
+    const before = daemon.events().length;
+    const r = await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv());
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("Cursor");
+    expect(r.stderr).toContain("derm connect cursor --gate");
+    expect(daemon.events().slice(before)).toHaveLength(0);
+  });
+
+  it("with derm's Cursor gate registered and failing closed it gives no decision and posts nothing", async () => {
+    register(entry(true), entry(true));
+    const before = daemon.events().length;
+    for (const tool of ["Shell", "MCP:search"]) {
+      const r = await runHook("pre", cursorPre(tool, { command: "ls" }), cursorEnv());
+      expect(r).toEqual({ stdout: "{}\n", stderr: "", exitCode: 0 });
+    }
+    const post = await runHook("post", JSON.stringify({ hook_event_name: "postToolUse", tool_name: "Shell", tool_use_id: "t-1", tool_input: { command: "ls" }, tool_output: "ok", cursor_version: "2026.10.22" }), cursorEnv());
+    expect(post).toEqual({ stdout: "", stderr: "", exitCode: 0 });
+    expect(daemon.events().slice(before)).toHaveLength(0);
+  });
+
+  it("an entry that fails open, or only one of the two, is not derm's Cursor gate", async () => {
+    for (const [p, m] of [
+      [entry(true), entry(false)],
+      [entry(true), { command: "/o/other.sh" }],
+      [entry(false), entry(true)],
+    ]) {
+      register(p, m);
+      const r = await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv());
+      expect(r.exitCode).toBe(2);
+    }
+    writeFileSync(hooksFile, "{ not json");
+    expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(2);
+  });
+
+  it("Claude Code's own PreToolUse is unchanged", async () => {
+    register(entry(true), entry(true));
+    const r = await runHook("pre", pre("WebFetch", { url: "https://x" }), cursorEnv());
+    expect(decision(r.stdout)).toMatchObject({ permissionDecision: "deny" });
+  });
+});

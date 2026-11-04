@@ -47,6 +47,8 @@ GitHub makes the source archive from the tag on request: it is not in `SHA256SUM
 | Cline CLI | copy `packages/derm-cline/package.json` and `src` without tests to `~/.cline/plugins/derm/` | Yes: a hook that throws or takes over 3 s is ignored, and five in a row turn the plugin off |
 | Any other CLI agent | `derm run --boundary <sbx\|srt\|none> -- <command>`: no gate inside it, the boundary and the audit outside | n/a |
 
+Cursor's CLI also runs Claude Code's hooks, derm's plugin hook included, wherever the plugin is enabled (Cursor's "third-party hooks", on by default: [Third-party hooks](https://cursor.com/docs/reference/third-party-hooks)). derm's Claude Code hook knows Cursor's input: when derm's own Cursor gate is registered in `~/.cursor/hooks.json`, failing closed, it gives no decision and the Cursor gate decides, once; when it is not, it blocks every Cursor call and says to run `derm connect cursor --gate`, or to turn off Third-Party Imports in Cursor's settings. `derm run cursor` starts `cursor-agent` with a chat token, so an ask reaches `derm watch --approve`.
+
 Codex pins the marketplace to the release's tag with `--ref v<version>` (OpenAI, [Build plugins](https://developers.openai.com/codex/plugins/build.md); `derm status` prints it with your version). Claude Code's marketplace added by name follows the repository's default branch, which can be ahead of the release you installed; to pin it, add a folder checked out at the tag instead. The folder installs (`--link`, `file://`, `pi install <folder>`) read the folder in place, so keep it where it is.
 
 ## Claude Code under managed settings

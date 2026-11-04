@@ -11,6 +11,8 @@
 //   sees, in the tool's own output shape.
 
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import path from "node:path";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
 import { decideCall, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
@@ -141,6 +143,56 @@ function decideCallName(tool: string, loaded: LoadedPolicy): string {
   return decideCall(loaded, { harness: HARNESS, tool, toolInput: {} }).normalizedTool;
 }
 
+// Cursor's CLI runs Claude Code's hooks as "third-party hooks"
+// (https://cursor.com/docs/reference/third-party-hooks, read 4 Nov 2026: from
+// the three Claude settings files, on by default, `PreToolUse` mapped to
+// `preToolUse`; exit 2 blocks), and runs an enabled plugin's hook too (seen
+// by run on Cursor CLI 2026.10.22, Mac test w4, MW4-5), with
+// `hook_event_name: "preToolUse"` and `cursor_version`. Cursor's own gate is
+// derm's Cursor dialect (`packages/derm-hooks-native`) in ~/.cursor/hooks.json.
+// When that is registered, failing closed, this hook gives no decision (`{}`,
+// the answer Orca's Cursor hook gives) and posts nothing, so derm's gate runs
+// once per call (case 75). When it is not, this hook blocks, as before, and
+// names the fix: it never lets a Cursor call through ungated.
+
+/** Input Cursor sends when it runs this hook, not Claude Code. */
+export function runByCursor(input: Record<string, unknown>): boolean {
+  return input.hook_event_name === "preToolUse" || input.hook_event_name === "postToolUse" || typeof input.cursor_version === "string";
+}
+
+const MAX_CURSOR_HOOKS_BYTES = 1024 * 1024;
+
+/** derm's two Cursor entries (`connect/gates.json`) in ~/.cursor/hooks.json, each failClosed. */
+export function cursorGateRegistered(env: NodeJS.ProcessEnv): boolean {
+  const home = env.HOME;
+  if (!home || !path.isAbsolute(home)) return false;
+  const file = path.join(home, ".cursor", "hooks.json");
+  try {
+    const st = statSync(file);
+    if (!st.isFile() || st.size > MAX_CURSOR_HOOKS_BYTES) return false;
+    const v = JSON.parse(readFileSync(file, "utf8")) as { hooks?: Record<string, unknown> };
+    return ["preToolUse", "beforeMCPExecution"].every((event) => {
+      const list = v?.hooks?.[event];
+      if (!Array.isArray(list)) return false;
+      const ours = list.filter((e) => {
+        const c = (e as { command?: unknown } | null)?.command;
+        return typeof c === "string" && c.includes("derm-hook.mjs") && c.trimEnd().endsWith(" cursor");
+      });
+      return ours.length > 0 && ours.every((e) => (e as { failClosed?: unknown }).failClosed === true);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function cursorRun(pre: boolean, env: NodeJS.ProcessEnv): HookResult {
+  if (!pre) return { stdout: "", stderr: "", exitCode: 0 };
+  if (cursorGateRegistered(env)) return { stdout: "{}\n", stderr: "", exitCode: 0 };
+  return blockPre(
+    "Cursor ran derm's Claude Code hook (Cursor's third-party hooks), and derm's own Cursor gate is not registered in ~/.cursor/hooks.json; run derm connect cursor --gate --hook <derm-hooks-native folder> --write, or turn off Third-Party Imports in Cursor's settings",
+  );
+}
+
 /** Runs one hook invocation. `event` is "pre" or "post", from hooks.json. Never throws. */
 export async function runHook(event: string, stdinText: string, env: NodeJS.ProcessEnv = process.env, deps?: Partial<Deps>): Promise<HookResult> {
   const d: Deps = { ...defaultDeps(env), ...deps };
@@ -155,6 +207,7 @@ export async function runHook(event: string, stdinText: string, env: NodeJS.Proc
     }
     if (typeof input !== "object" || input === null || Array.isArray(input)) return pre ? blockPre("hook input is not an object") : { stdout: "", stderr: "", exitCode: 0 };
     const obj = input as Record<string, unknown>;
+    if (runByCursor(obj)) return cursorRun(pre, d.env);
     if (pre) {
       if (obj.hook_event_name !== undefined && obj.hook_event_name !== "PreToolUse") return blockPre(`unexpected hook event ${String(obj.hook_event_name)}`);
       return await handlePre(obj, d);
