@@ -596,11 +596,13 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
         env.push(("DERM_GATEWAY_URL".into(), g.clone()));
     }
     if !full.is_empty() {
-        // A hint for the gate (case 83). No hook reads it yet (security
-        // review L6): only `derm acp` turns an ask into a deny.
+        // A hint for the gate (case 83): the hook core (`decideCall`) and
+        // `derm acp` turn an ask into a deny on it (integration w4, lane R's
+        // request 1). derm-pi's card still asks: Pi has no approvals of its
+        // own that a bypass flag could turn off.
         env.push(("DERM_FULL_ACCESS".into(), "1".into()));
         notes.push(format!(
-            "derm run: {} turns the harness's own approvals off (full access): recorded in run.start and shown by derm status; under derm acp an ask is a deny, but a hook gate still asks (DERM_FULL_ACCESS=1 is set, and no hook acts on it yet)",
+            "derm run: {} turns the harness's own approvals off (full access): recorded in run.start and shown by derm status; DERM_FULL_ACCESS=1 is set, so derm's hook gates and derm acp deny what they would ask",
             full.join(" ")
         ));
     }
@@ -1402,8 +1404,8 @@ mod tests {
         }
     }
 
-    /// Security review L6: no hook reads DERM_FULL_ACCESS yet, so the note
-    /// must not say the gate turns an ask into a deny.
+    /// Security review L6: the note says who acts on DERM_FULL_ACCESS. Since
+    /// integration w4 the hook core does too (lane R's request 1).
     #[test]
     fn the_full_access_note_says_who_acts_on_it() {
         let args = a(&[
@@ -1416,8 +1418,9 @@ mod tests {
         let p = build(&inputs(&args)).unwrap();
         let note = p.notes.iter().find(|n| n.contains("full access")).unwrap();
         assert!(note.contains("derm acp"), "{note}");
-        assert!(!note.contains("so an ask becomes a deny"), "{note}");
-        assert!(note.contains("still asks"), "{note}");
+        assert!(note.contains("hook gates"), "{note}");
+        assert!(note.contains("deny what they would ask"), "{note}");
+        assert!(!note.contains("still asks"), "{note}");
     }
 
     /// Security review L14: the files that change a harness's own approvals

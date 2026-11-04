@@ -740,9 +740,10 @@ fn render_daemon(d: &Value) -> String {
                 let full_text = if full_words.is_empty() {
                     String::new()
                 } else {
-                    // Security review L6: only `derm acp` acts on it yet.
+                    // Security review L6; since integration w4 the hook
+                    // core acts on DERM_FULL_ACCESS too (lane R's request 1).
                     format!(
-                        ", FULL ACCESS ({}): derm acp denies an ask, a hook gate still asks",
+                        ", FULL ACCESS ({}): derm's gates deny what they would ask",
                         full_words.join(" ")
                     )
                 };
@@ -846,12 +847,11 @@ mod tests {
         );
         assert!(
             out.contains(
-                "FULL ACCESS (--dangerously-skip-permissions): derm acp denies an ask, a hook gate still asks"
+                "FULL ACCESS (--dangerously-skip-permissions): derm's gates deny what they would ask"
             ),
             "{out}"
         );
-        // Security review L6: no hook acts on DERM_FULL_ACCESS yet.
-        assert!(!out.contains("an ask is a deny"), "{out}");
+        assert!(!out.contains("still asks"), "{out}");
         // Without --probe nothing is run and nothing is judged.
         let rows = agents(&e, false);
         let cc = rows.iter().find(|r| r["id"] == "claude-code").unwrap();

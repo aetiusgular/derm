@@ -313,10 +313,10 @@ describe("the preset row (crates/derm-cli/src/connect/presets/amp.json)", () => 
     expect(row.coverage.shellAliases).toEqual([...AMP_SHELL_TOOLS]);
   });
   it("names this package, asks in Amp's own dialog, and does not claim a fail mode no one has read", () => {
-    // `status` stays "planned" until integration w4 merges this lane and
-    // updates contracts/contracts.test.ts, which pins the built set and which
-    // no lane edits (plans/parallel/tk_lane_P.md, Requests for integration).
-    expect(row.coverage.gate).toMatchObject({ status: "planned", lane: "P", package: "packages/derm-amp-plugin" });
+    // Built since integration w4 merged this lane and updated
+    // contracts/contracts.test.ts, which pins the built set
+    // (plans/parallel/tk_lane_P.md, Requests for integration).
+    expect(row.coverage.gate).toMatchObject({ status: "built", lane: "P", package: "packages/derm-amp-plugin" });
     expect(row.coverage.ask).toBe("own-prompt");
     expect(row.coverage.failMode).toBe("unknown");
   });

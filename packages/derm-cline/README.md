@@ -20,7 +20,7 @@ The plugin reads nothing when it loads or is set up, never waits on the derm dae
 
 ## The approval-file responder (`bin/derm-cline-approvals.mjs`)
 
-With `CLINE_TOOL_APPROVAL_MODE=desktop` and `CLINE_TOOL_APPROVAL_DIR=<folder>`, Cline writes `<session>.request.<call>.json` and waits up to 5 minutes for `<session>.decision.<call>.json`, then denies. The responder answers each request once: an allow rule approves, a deny rule or the reject list refuses with derm's reason, and an ask waits on the derm daemon's approver (`derm watch --approve`); anything but its yes is a refusal. It writes each answer under a temporary name and renames it, so Cline never reads half a file. `derm run cline` (wave 4 lane R) is to start it:
+With `CLINE_TOOL_APPROVAL_MODE=desktop` and `CLINE_TOOL_APPROVAL_DIR=<folder>`, Cline writes `<session>.request.<call>.json` and waits up to 5 minutes for `<session>.decision.<call>.json`, then denies. The responder answers each request once: an allow rule approves, a deny rule or the reject list refuses with derm's reason, and an ask waits on the derm daemon's approver (`derm watch --approve`); anything but its yes is a refusal. It writes each answer under a temporary name and renames it, so Cline never reads half a file. `derm run cline` (wave 4 lane R) starts it as `derm-cline-responder --dir <folder>` when that command is on PATH (the package's bin, since integration w4; `npm link` in this folder, or a link of your own to the script), else it says so and Cline denies each gated call after its 5 minutes. By hand:
 
 ```
 node --no-warnings /abs/path/derm/packages/derm-cline/bin/derm-cline-approvals.mjs --dir <folder> [--cwd <session folder>] [--until-pid <cline's pid>]

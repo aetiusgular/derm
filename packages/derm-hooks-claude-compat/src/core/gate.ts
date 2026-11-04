@@ -20,6 +20,8 @@ export type GateCall = {
   toolInput: unknown;
   chat?: string;
   toolUseId?: string;
+  /** The chat runs in full access; when absent, `DERM_FULL_ACCESS=1` in the environment says so (derm run sets it). */
+  fullAccess?: boolean;
 };
 
 export type GateAnswer = {
@@ -92,7 +94,26 @@ export function inputTextFor(normalizedTool: string, toolInput: unknown): string
   return leaves.length ? `${serialized}\n${leaves.join("\n")}` : serialized;
 }
 
+/**
+ * In full access the agent's own approvals are off, so an `ask` handed back to
+ * it can pass as an allow (case 83). `derm run` sets `DERM_FULL_ACCESS=1` when
+ * the argv carries a bypass flag; the gate then denies what it would ask, and
+ * says why (lane R's request 1, integration w4). Narrowing only.
+ */
+export const FULL_ACCESS_NOTE = "the chat runs in full access (DERM_FULL_ACCESS=1), so derm denies what it would ask";
+
 export function decideCall(loaded: LoadedPolicy, call: GateCall): GateAnswer {
+  const answer = decideCallInner(loaded, call);
+  const full = call.fullAccess ?? process.env.DERM_FULL_ACCESS === "1";
+  if (full && answer.action === "ask") {
+    answer.action = "deny";
+    answer.reason = `${answer.reason}; ${FULL_ACCESS_NOTE}`;
+    delete answer.updatedInput;
+  }
+  return answer;
+}
+
+function decideCallInner(loaded: LoadedPolicy, call: GateCall): GateAnswer {
   const normalizedTool = normalizeToolName(call.tool, loaded.policy.servers, call.harness);
   const decision = evaluate(loaded, {
     tool: call.tool,

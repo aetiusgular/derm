@@ -29,3 +29,28 @@ describe("inputTextFor a shell tool", () => {
     expect(inputTextFor("bash", { command: "ls -la" })).toBe("ls -la");
   });
 });
+
+// Lane R's request 1 (case 83): under full access an ask is a deny, and the
+// reason says so; an allow and a deny are unchanged (integration w4).
+describe("full access", () => {
+  const ask = { policy: parsePolicy({ version: 1, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }) as PolicyFile };
+  it("turns an ask into a deny when the call or DERM_FULL_ACCESS=1 says so", () => {
+    const call = { harness: "copilot-cli", tool: "bash", toolInput: { command: "ls" } };
+    expect(decideCall(ask, call).action).toBe("ask");
+    const a = decideCall(ask, { ...call, fullAccess: true });
+    expect(a.action).toBe("deny");
+    expect(a.reason).toMatch(/^rule bash; the chat runs in full access/);
+    const before = process.env.DERM_FULL_ACCESS;
+    process.env.DERM_FULL_ACCESS = "1";
+    try {
+      expect(decideCall(ask, call).action).toBe("deny");
+      expect(decideCall(ask, { ...call, fullAccess: false }).action).toBe("ask");
+      expect(decideCall(ask, { harness: "copilot-cli", tool: "read", toolInput: { path: "a" } }).action).toBe("allow");
+      // A secret-like value in a command asks, so it is denied too.
+      expect(decideCall(loaded, { ...call, toolInput: { command: "TOKEN=abc ls" } }).action).toBe("deny");
+    } finally {
+      if (before === undefined) delete process.env.DERM_FULL_ACCESS;
+      else process.env.DERM_FULL_ACCESS = before;
+    }
+  });
+});

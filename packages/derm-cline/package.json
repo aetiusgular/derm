@@ -6,6 +6,9 @@
   "license": "MIT",
   "description": "Cline CLI: an SDK plugin beforeTool as the gate, and the approval-file responder, on derm's shared gate core (wave 4, lane P, T2.7)",
   "main": "./src/plugin.ts",
+  "bin": {
+    "derm-cline-responder": "bin/derm-cline-approvals.mjs"
+  },
   "cline": {
     "plugins": [{ "paths": ["./src/plugin.ts"], "capabilities": ["hooks"] }]
   },

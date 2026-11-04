@@ -20,7 +20,11 @@ describe("preset rows and dialects", () => {
       expect(r.coverage.shellAliases).toEqual([...(SHELL[id] ?? [])]);
       expect(r.coverage.gate.lane).toBe("N");
       expect(r.coverage.gate.package).toBe("packages/derm-hooks-native");
-      const own = id === "cursor" || id === "antigravity";
+      // Cursor shows its own prompt only for MCP calls (beforeMCPExecution);
+      // its preToolUse does not enforce ask, so every other tool, the shell
+      // included, goes to the approver or is denied: its row says that route
+      // (integration w4, for the agents page's no-policy sentence).
+      const own = id === "antigravity";
       expect(r.coverage.ask).toBe(own ? "own-prompt" : "approver-or-deny");
     });
   }
