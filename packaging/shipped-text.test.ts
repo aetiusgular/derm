@@ -63,3 +63,49 @@ describe("the macOS zip has one top folder (RC5)", () => {
     expect(script).toMatch(/ditto -c -k --norsrc --noextattr --keepParent "derm-\$version-macos"/);
   });
 });
+
+// Release recheck RC8: with no policy file every call asks, and where an ask
+// goes is each preset row's `coverage.ask`. The install page says so before
+// the table, for every built adapter, in the same split as the rows.
+describe("the agents page says what happens with no policy (RC8)", () => {
+  const page = text("docs/install/agents.md");
+  const presets = new URL("crates/derm-cli/src/connect/presets/", root);
+  const index = JSON.parse(readFileSync(new URL("index.json", presets), "utf8"));
+  const ids: string[] = [...index.harnesses, ...index.planned];
+  // The agents' names as this page writes them.
+  const NAMES: Record<string, string> = {
+    "claude-code": "Claude Code",
+    codex: "Codex",
+    pi: "Pi",
+    "oh-my-pi": "oh-my-pi",
+    opencode: "OpenCode",
+    kilo: "Kilo Code",
+    gemini: "Gemini CLI",
+    hermes: "Hermes Agent",
+    openclaw: "OpenClaw",
+  };
+  const sentence = page.match(
+    /With no `~\/\.derm\/policy\.json` every call not on the reject list asks: (.*?) then prompt before every tool call, and (.*?) deny every tool call unless/,
+  );
+  const listed = (clause: string) => clause.split(/, | and /).map((s) => s.trim()).sort();
+  const rows = ids.map((id) => JSON.parse(readFileSync(new URL(`${id}.json`, presets), "utf8")));
+  const built = rows.filter((r) => r.coverage?.gate?.status === "built");
+
+  it("says it before the install table", () => {
+    expect(sentence, "the no-policy sentence").not.toBeNull();
+    expect(page.indexOf(sentence![0])).toBeLessThan(page.indexOf("| Agent | Install |"));
+  });
+
+  it("knows every built adapter's ask route", () => {
+    for (const r of built) {
+      expect(NAMES[r.id], `${r.id} is built: give it a name on this page`).toBeDefined();
+      expect(["own-prompt", "approver-or-deny"], r.id).toContain(r.coverage.ask);
+    }
+  });
+
+  it("lists exactly the built adapters, each in its route's clause", () => {
+    const by = (ask: string) => built.filter((r) => r.coverage.ask === ask).map((r) => NAMES[r.id]).sort();
+    expect(listed(sentence![1])).toEqual(by("own-prompt"));
+    expect(listed(sentence![2])).toEqual(by("approver-or-deny"));
+  });
+});

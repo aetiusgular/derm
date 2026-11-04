@@ -11,7 +11,7 @@
 # enabled: the package has no maintainer scripts, so nothing starts on install.
 [package]
 name = "derm"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "A gate, a boundary and an audit around any coding agent"
 license = "MIT"

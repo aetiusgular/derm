@@ -2,6 +2,8 @@
 
 Each adapter is the gate inside one agent: it reads `~/.derm/policy.json` before every tool call and answers allow, ask or deny in that agent's own terms. An `ask` goes to the agent's own prompt where the agent has one, else to the daemon's approver (`derm watch --approve`), else it becomes a deny. The adapters live in `packages/` of this repository; none is on npm yet (`@aetiusgular/derm-*` when they are).
 
+Write the policy before you register an adapter. With no `~/.derm/policy.json` every call not on the reject list asks: Claude Code, Pi, oh-my-pi, Gemini CLI, Hermes Agent and OpenClaw then prompt before every tool call, and Codex, OpenCode and Kilo Code deny every tool call unless `derm watch --approve` is running and you answer yes. The format is in [the policy contract](../../contracts/policy.md).
+
 Claude Code and Codex take the published repository as a plugin marketplace by name. The other agents install from a folder: the source of a release, or a clone.
 
 ```sh
