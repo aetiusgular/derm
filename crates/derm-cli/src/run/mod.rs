@@ -2038,7 +2038,10 @@ mod end_to_end {
     fn both_process_readers_find_a_marked_process_and_lose_it_when_it_ends() {
         let marker = format!("derm-mark-{}", uuid::Uuid::new_v4().simple());
         let mut child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30", &marker])
+            // `; :` keeps the shell itself running: macOS's sh execs a
+            // lone last command in place, which drops the marker (CI's
+            // rust-macos job on abe7e46).
+            .args(["-c", "sleep 30; :", &marker])
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
