@@ -1,3 +1,11 @@
+# derm v0.1.3
+
+One fix from the release check of v0.1.2 (3 Nov 2026). No change to the policy, the gates' decisions or the protocol.
+
+## Changes since v0.1.2
+
+- **`derm status`** printed each registration note cut at 160 characters, so the commands at the end of a long note (Codex's remove-then-add for a marketplace that is not derm's, or one pinned to another release, and Pi's install hint) did not show whole. Notes now print whole, still with every control character escaped. A registered agent that still needs something done (a Codex marketplace pinned to another release) now shows its note too; `derm status --json` marks it with `registeredNote`.
+
 # derm v0.1.2
 
 Fixes from the recheck of v0.1.1 (3 Nov 2026). No change to the policy, the gates' decisions or the protocol. v0.1.1's draft is replaced by this release; its changes are below.

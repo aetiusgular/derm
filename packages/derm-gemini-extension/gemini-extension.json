@@ -1,5 +1,5 @@
 {
   "name": "derm",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "derm policy gate: a BeforeTool hook on derm's shared gate core, an AfterTool record and redactor, and deny rules for derm's and Gemini's control files in the extension's policy tier."
 }
