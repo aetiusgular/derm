@@ -8,8 +8,9 @@
 //!   `~/.claude`; a plugin with no entry is enabled by default, so the
 //!   install record `<plugins>/installed_plugins.json` (`plugins.derm@derm`,
 //!   `<plugins>` = `CLAUDE_CODE_PLUGIN_CACHE_DIR` or `<config>/plugins`)
-//!   decides then. A project, local or managed settings file can still turn
-//!   it off; this reads only the user file.
+//!   decides then. The entry is read from the project's local file, its
+//!   shared file, then the user file, the first that sets it (Mac test w4,
+//!   MW4-4); a managed file can still turn it off (`derm doctor` reads it).
 //! - Codex 0.163.0: `[plugins."derm@derm"]` in `$CODEX_HOME/config.toml`
 //!   (`enabled` missing means true; `[plugins._default] enabled = false`
 //!   turns unlisted plugins off), the installed copy
@@ -77,6 +78,7 @@ pub fn check(id: &str, env: &Env) -> Registered {
         "codex" => codex(env, home),
         "pi" => pi(env, home),
         "opencode" => opencode(env, home),
+        "cursor" => cursor(home),
         other => Registered::Unknown(format!("no registration check for {other} yet")),
     }
 }
@@ -123,15 +125,34 @@ fn claude(env: &Env, home: &Path) -> Registered {
         .var("CLAUDE_CONFIG_DIR")
         .map(|d| tilde(d, home))
         .unwrap_or_else(|| home.join(".claude"));
-    let settings = config.join("settings.json");
-    let enabled = match read_json(&settings, false) {
-        Ok(v) => v.and_then(|v| {
-            v.get("enabledPlugins")
-                .and_then(|e| e.get("derm@derm"))
-                .cloned()
-        }),
-        Err(e) => return Registered::Unknown(e),
-    };
+    // `enabledPlugins["derm@derm"]` from the highest file that sets it:
+    // the project's local file, then its shared file, then the user's
+    // (https://code.claude.com/docs/en/settings.md, read 4 Nov 2026; a local
+    // install writes the local file; Mac test w4, MW4-4). Managed settings
+    // are `derm doctor`'s. Since 2.1.211 the local file can sit at the
+    // repository root when Claude Code starts below it; only the starting
+    // folder's is read here.
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Some(cwd) = env.cwd.as_deref() {
+        files.push(cwd.join(".claude/settings.local.json"));
+        files.push(cwd.join(".claude/settings.json"));
+    }
+    files.push(config.join("settings.json"));
+    let mut settings = config.join("settings.json");
+    let mut enabled = None;
+    for file in files {
+        match read_json(&file, false) {
+            Ok(Some(v)) => {
+                if let Some(e) = v.get("enabledPlugins").and_then(|e| e.get("derm@derm")) {
+                    enabled = Some(e.clone());
+                    settings = file;
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return Registered::Unknown(e),
+        }
+    }
     if enabled == Some(Value::Bool(false)) {
         return Registered::No(format!(
             "derm@derm is turned off in {} (enabledPlugins)",
@@ -229,6 +250,190 @@ fn claude(env: &Env, home: &Path) -> Registered {
                 Value::Object(_) => "an object",
             }
         )),
+    }
+}
+
+/// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
+/// two entries in `~/.cursor/hooks.json` (`connect/gates.json`, its
+/// `json-array-entry` steps: `preToolUse` and `beforeMCPExecution`, each
+/// `failClosed: true`), found by the row's marker `derm-hook.mjs` and the
+/// dialect word `cursor` at the end of the command. Other entries (Orca's)
+/// are left alone. A project's `.cursor/hooks.json` is not derm's (case 78)
+/// and is not read here.
+fn cursor(home: &Path) -> Registered {
+    let file = home.join(".cursor/hooks.json");
+    let v = match read_json(&file, false) {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Registered::No(format!(
+                "{} does not exist: derm connect cursor --gate --hook <derm-hooks-native folder> --write",
+                file.display()
+            ))
+        }
+        Err(e) => return Registered::Unknown(e),
+    };
+    for event in ["preToolUse", "beforeMCPExecution"] {
+        let ours: Vec<&Value> = v
+            .pointer(&format!("/hooks/{event}"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|e| is_derm_cursor_entry(e))
+            .collect();
+        if ours.is_empty() {
+            return Registered::No(format!(
+                "{} has no derm entry under hooks.{event}: derm connect cursor --gate --hook <derm-hooks-native folder> --write",
+                file.display()
+            ));
+        }
+        if !ours
+            .iter()
+            .all(|e| e.get("failClosed") == Some(&Value::Bool(true)))
+        {
+            return Registered::No(format!(
+                "derm's hooks.{event} entry in {} is not failClosed: true, so Cursor lets a call through when the gate crashes or times out; run --gate again",
+                file.display()
+            ));
+        }
+    }
+    Registered::Yes(format!(
+        "derm's preToolUse and beforeMCPExecution entries in {}, failing closed",
+        file.display()
+    ))
+}
+
+/// A `hooks.json` entry `derm connect cursor --gate` wrote:
+/// `<node> --no-warnings "<abs>/bin/derm-hook.mjs" cursor`
+/// (`connect/gates.json`), where the file is a regular file (not a link)
+/// owned by you or root that no one else can write, in a folder whose
+/// `package.json` names derm-hooks-native. A command that only named the
+/// file counted until fix pass 1's review (FP4-S3), so `derm status` said
+/// "yes" for `true derm-hook.mjs cursor`. Held equal to
+/// `isDermCursorCommand` in `packages/derm-claude-plugin/src/hook.ts`.
+pub fn is_derm_cursor_entry(e: &Value) -> bool {
+    e.get("command")
+        .and_then(Value::as_str)
+        .is_some_and(is_derm_cursor_command)
+}
+
+fn is_derm_cursor_command(c: &str) -> bool {
+    derm_cursor_command_parts(c).is_some()
+}
+
+/// The node and the hook file of a command `derm connect cursor --gate`
+/// wrote, when it is one (`is_derm_cursor_entry`): the first word is `node`
+/// or an absolute path whose last part starts with `node` and whose real
+/// file is a regular file of yours or root's that no one else can write
+/// (re-review FP5-R3: any first word passed, so `true --no-warnings
+/// "<hook>" cursor` counted); both paths are plain (letters, digits and
+/// `._/@+~ -`, as `--hook` and `--node` take them, so no `$`, backtick or
+/// `\`); the hook file is a regular file of yours or root's, writable by no
+/// one else, in a folder whose `package.json` names derm-hooks-native.
+pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
+    use std::os::unix::fs::MetadataExt;
+    let c = c.trim_end();
+    let rest = c.strip_suffix("\" cursor")?;
+    let (node, file) = rest.split_once(" --no-warnings \"")?;
+    let plain = |p: &str| {
+        !p.is_empty()
+            && p.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "._/@+~-".contains(ch))
+            && !p.split('/').any(|part| part == ".." || part == ".")
+    };
+    if !plain(node) || !plain(file) {
+        return None;
+    }
+    if !file.starts_with('/') || !file.ends_with("/bin/derm-hook.mjs") {
+        return None;
+    }
+    // SAFETY: getuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let closed = |m: &std::fs::Metadata| (m.uid() == uid || m.uid() == 0) && m.mode() & 0o022 == 0;
+    if node != "node" {
+        let name = node.rsplit('/').next().unwrap_or("");
+        if !node.starts_with('/') || !name.starts_with("node") {
+            return None;
+        }
+        let real = std::fs::canonicalize(node).ok()?;
+        let m = std::fs::metadata(&real).ok()?;
+        if !m.is_file() || !closed(&m) {
+            return None;
+        }
+    }
+    let file = Path::new(file);
+    let m = std::fs::symlink_metadata(file).ok()?;
+    if !m.is_file() || !closed(&m) {
+        return None;
+    }
+    let pkg = file.parent()?.parent()?.join("package.json");
+    let pm = std::fs::symlink_metadata(&pkg).ok()?;
+    if !pm.is_file() || !closed(&pm) || pm.len() > 1024 * 1024 {
+        return None;
+    }
+    let named = std::fs::read_to_string(&pkg)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|v| v["name"] == "@aetiusgular/derm-hooks-native");
+    named.then(|| (node.to_string(), file.to_path_buf()))
+}
+
+/// What derm's registered Cursor gate runs, for srt to keep read-only
+/// (re-review FP5-R2): each derm entry's hook package folder and, when it is
+/// named by path, its node. Empty when `~/.cursor/hooks.json` is missing,
+/// too large or unreadable, or holds no derm entry.
+pub fn derm_cursor_gate_paths(home: &Path) -> Vec<String> {
+    let file = home.join(".cursor/hooks.json");
+    let Ok(Some(v)) = read_json(&file, false) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for event in ["preToolUse", "beforeMCPExecution"] {
+        for e in v
+            .pointer(&format!("/hooks/{event}"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some((node, hook)) = e
+                .get("command")
+                .and_then(Value::as_str)
+                .and_then(derm_cursor_command_parts)
+            else {
+                continue;
+            };
+            if let Some(pkg) = hook.parent().and_then(Path::parent) {
+                out.push(pkg.to_string_lossy().into_owned());
+            }
+            if node.starts_with('/') {
+                out.push(node);
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Where a `derm@derm` install record in `installed_plugins.json` stands for
+/// a Claude Code started in `cwd`: `None` when it does not apply there, else
+/// its rank, lower first. `user` and `managed` records (and one with no
+/// scope, from an older Claude Code) apply anywhere; `project` and `local`
+/// ones only in their `projectPath` (2.1.311's binary, function `WO`, quoted
+/// in `claude` below). Which one Claude Code loads when several apply was not
+/// read (NF); derm takes local, then project, then the rest, the order of
+/// Claude Code's settings files (https://code.claude.com/docs/en/settings.md,
+/// read 4 Nov 2026). `derm doctor` uses it (Mac test w4, MW4-4).
+pub fn claude_record_rank(record: &Value, cwd: Option<&Path>) -> Option<u8> {
+    let here = || {
+        record
+            .get("projectPath")
+            .and_then(Value::as_str)
+            .is_some_and(|p| same_folder(Path::new(p), cwd))
+    };
+    match record.get("scope").and_then(Value::as_str) {
+        Some("local") => here().then_some(0),
+        Some("project") => here().then_some(1),
+        _ => Some(2),
     }
 }
 
@@ -982,5 +1187,177 @@ mod tests {
         let v: Value = serde_json::from_str(&t).unwrap();
         assert_eq!(v["a"], "x//y /*z*/");
         assert_eq!(v["b"], serde_json::json!([1, 2]));
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    fn env_in(dir: &Path) -> Env {
+        Env {
+            home: Some(dir.to_path_buf()),
+            path: String::new(),
+            vars: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    fn entry_for(command: &str, fail_closed: bool) -> String {
+        serde_json::json!({"type": "command", "command": command, "timeout": 120, "failClosed": fail_closed})
+            .to_string()
+    }
+
+    /// A real derm-hooks-native folder under `dir`, with its hook file
+    /// (fix pass 1's review, FP4-S3).
+    fn native(dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let pkg = dir.join(name);
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        let pkg_name = if name == "native" {
+            "@aetiusgular/derm-hooks-native"
+        } else {
+            "something-else"
+        };
+        std::fs::write(
+            pkg.join("package.json"),
+            format!(r#"{{"name":"{pkg_name}"}}"#),
+        )
+        .unwrap();
+        let hook = pkg.join("bin/derm-hook.mjs");
+        std::fs::write(&hook, "// hook\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+        hook
+    }
+
+    /// Mac test w4, 4.3 (lane Q's Q7, lane N's N4): Cursor showed `unknown`
+    /// after `derm connect cursor --gate --write`. derm's gate is its two
+    /// entries in `~/.cursor/hooks.json`, beside anything else there (Orca's),
+    /// each failing closed.
+    #[test]
+    fn cursor_reads_derms_two_entries_in_its_hooks_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "derm-reg-cursor-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let hook = native(&dir, "native");
+        let ours = format!("node --no-warnings \"{}\" cursor", hook.display());
+        let entry = |fail_closed: bool| entry_for(&ours, fail_closed);
+        let env = env_in(&dir);
+        let file = dir.join(".cursor/hooks.json");
+        assert_eq!(check("cursor", &env).word(), "no");
+        let orca = r#"{"command":"/Users/x/.orca/agent-hooks/cursor-hook.sh","timeout":10}"#;
+        let write = |pre: &str, mcp: &str| {
+            std::fs::write(
+                &file,
+                format!(
+                    r#"{{"version":1,"hooks":{{"preToolUse":[{orca},{pre}],"beforeMCPExecution":[{mcp}],"stop":[{orca}]}}}}"#
+                ),
+            )
+            .unwrap();
+        };
+        write(&entry(true), &entry(true));
+        let r = check("cursor", &env);
+        assert_eq!(r.word(), "yes", "{:?}", r.detail());
+        // Only one of the two: MCP calls would be decided by no derm hook.
+        write(&entry(true), orca);
+        let r = check("cursor", &env);
+        assert_eq!(r.word(), "no", "{:?}", r.detail());
+        assert!(r.detail().unwrap().contains("beforeMCPExecution"));
+        // An entry that fails open is not derm's gate as registered.
+        write(&entry(true), &entry(false));
+        let r = check("cursor", &env);
+        assert_eq!(r.word(), "no", "{:?}", r.detail());
+        assert!(r.detail().unwrap().contains("failClosed"));
+        std::fs::write(&file, "{ not json").unwrap();
+        assert_eq!(check("cursor", &env).word(), "unknown");
+        // Fix pass 1's review, FP4-S3: a command that only names the hook
+        // file, a file that is not there, one in another package, a command
+        // that runs more after it, or a file others can write is not derm's.
+        let other = native(&dir, "other");
+        for command in [
+            // Re-review FP5-R3: the first word must be node.
+            format!("true --no-warnings \"{}\" cursor", hook.display()),
+            format!("true|| --no-warnings \"{}\" cursor", hook.display()),
+            format!("/bin/true --no-warnings \"{}\" cursor", hook.display()),
+            "true derm-hook.mjs cursor".to_string(),
+            r#"node --no-warnings "/h/pkg/bin/derm-hook.mjs" cursor"#.to_string(),
+            format!("node --no-warnings \"{}\" cursor", other.display()),
+            format!("{ours}; true"),
+        ] {
+            write(&entry_for(&command, true), &entry_for(&command, true));
+            assert_eq!(check("cursor", &env).word(), "no", "{command}");
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            write(&entry(true), &entry(true));
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o666)).unwrap();
+            assert_eq!(check("cursor", &env).word(), "no");
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(check("cursor", &env).word(), "yes");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod claude_scope_tests {
+    use super::*;
+
+    /// Mac test w4, MW4-4: a local install writes `enabledPlugins` into the
+    /// project's `.claude/settings.local.json`; derm read only the user file
+    /// and said "no enabledPlugins entry". Claude Code reads local, then
+    /// project, then user, the higher one winning
+    /// (https://code.claude.com/docs/en/settings.md, read 4 Nov 2026).
+    #[test]
+    fn enabled_plugins_is_read_from_local_project_and_user_in_that_order() {
+        let root = std::env::temp_dir().join(format!(
+            "derm-reg-scope-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let home = root.join("home");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+        std::fs::create_dir_all(proj.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude/plugins/installed_plugins.json"),
+            serde_json::json!({"plugins": {"derm@derm": [
+                {"scope": "local", "projectPath": proj, "installPath": "/x"}
+            ]}})
+            .to_string(),
+        )
+        .unwrap();
+        let env = Env {
+            home: Some(home.clone()),
+            path: String::new(),
+            vars: Vec::new(),
+            cwd: Some(proj.clone()),
+        };
+        let local = proj.join(".claude/settings.local.json");
+        let shared = proj.join(".claude/settings.json");
+        let user = home.join(".claude/settings.json");
+        std::fs::write(&local, r#"{"enabledPlugins":{"derm@derm":true}}"#).unwrap();
+        let r = check("claude-code", &env);
+        let d = r.detail().unwrap();
+        assert_eq!(r.word(), "yes", "{d}");
+        assert!(d.contains("settings.local.json"), "{d}");
+        assert!(!d.contains("no enabledPlugins entry"), "{d}");
+        // A local false wins over a user true.
+        std::fs::write(&user, r#"{"enabledPlugins":{"derm@derm":true}}"#).unwrap();
+        std::fs::write(&local, r#"{"enabledPlugins":{"derm@derm":false}}"#).unwrap();
+        let r = check("claude-code", &env);
+        assert_eq!(r.word(), "no", "{:?}", r.detail());
+        assert!(r.detail().unwrap().contains("settings.local.json"));
+        // No local entry: the shared project file, then the user file.
+        std::fs::write(&local, "{}").unwrap();
+        std::fs::write(&shared, r#"{"enabledPlugins":{"derm@derm":false}}"#).unwrap();
+        assert_eq!(check("claude-code", &env).word(), "no");
+        std::fs::write(&shared, "{}").unwrap();
+        let r = check("claude-code", &env);
+        assert_eq!(r.word(), "yes", "{:?}", r.detail());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

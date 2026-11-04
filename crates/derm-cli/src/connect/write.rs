@@ -164,6 +164,20 @@ pub fn apply(
     if !confirm.confirm(&format!("Write this change to {}?", path.display()))? {
         return Err("not confirmed; nothing written".into());
     }
+    commit(path, harness, expected_sha256, new_text, backups)
+}
+
+/// Writes `new_text` to `path` if the file still hashes to
+/// `expected_sha256`, backing the old file up first. The caller has asked
+/// already (`apply` for one file, `derm connect --gate` once for several,
+/// after checking every file before the first write).
+pub fn commit(
+    path: &Path,
+    harness: &str,
+    expected_sha256: &str,
+    new_text: &str,
+    backups: &Path,
+) -> Result<Written, String> {
     // Re-read after the question: the user may have taken minutes, and an
     // agent or the harness itself may have written in between (case 55).
     let now = read_current(path)?;

@@ -27,17 +27,18 @@
     "--",
     "<cmd>"
   ],
-  "toolNameForm": "not documented for local servers (NF); remote definitions become code_exec modules (V)",
+  "toolNameForm": "mcp__<server>__<tool> (V: @ampcode/plugin 0.0.0-20261104001221-gc8c68be index.d.ts:437); MCP tools reach the model through tool_search and code_exec unless both are excluded (V, :442-445)",
   "nameMangling": "not documented (NF)",
   "managedFiles": {
     "macos": "/Library/Application Support/ampcode/managed-settings.json",
     "linux": "/etc/ampcode/managed-settings.json"
   },
-  "inHarnessGate": null,
+  "inHarnessGate": "derm's Amp plugin, a folder ~/.config/amp/plugins/derm/ (or $XDG_CONFIG_HOME/amp/plugins/derm/) holding packages/derm-amp-plugin/src without its tests; tool.call and tool.result",
   "listChanged": "not documented (NF)",
   "notes": "`amp.mcpServers` is one flat key, not a nested path. Schema (ampcode.com/cli-settings.schema.json): stdio {command (required), args, env}; HTTP {url (required), headers, transport: http|sse|http-first, oauth}; additionalProperties false, so no type, enabled or disabled (V). The user file may also be settings.jsonc; derm writes settings.json only (I). Workspace servers need `amp mcp approve`. XDG behaviour NF.",
   "sources": [
-    "ampcode.com/docs/customize/mcp, ampcode.com/docs/cli/settings and ampcode.com/cli-settings.schema.json, read through Exa 27 Oct 2026 (no version stamp)"
+    "ampcode.com/docs/customize/mcp, ampcode.com/docs/cli/settings and ampcode.com/cli-settings.schema.json, read through Exa 27 Oct 2026 (no version stamp)",
+    "@ampcode/plugin 0.0.0-20261104001221-gc8c68be index.d.ts and README.md (npm, 3 Nov 2026); ampcode.com/docs/customize/plugins read 3 Nov 2026; @ampcode/cli-linux-x64 0.0.1793750459-gc8c68b binary strings (lane P)"
   ],
   "verified": "2026-10-27",
   "coverage": {
@@ -45,16 +46,20 @@
     "orcaId": "amp",
     "gate": {
       "family": "plugin",
-      "where": "Bun plugin ~/.config/amp/plugins/<derm>.ts, tool.call",
-      "status": "planned",
+      "where": "Bun plugin folder ~/.config/amp/plugins/derm/index.ts (copied, not linked: Amp refuses a plugin that resolves outside its folder); tool.call and tool.result",
+      "status": "built",
       "wave": 4,
-      "lane": "P"
+      "lane": "P",
+      "package": "packages/derm-amp-plugin"
     },
     "failMode": "unknown",
     "failSwitch": null,
     "ask": "own-prompt",
-    "shellAliases": [],
-    "verifiedAt": "0.0.1793104576, types",
-    "note": "needs an account: fixtures only unless call 8 buys a seat"
+    "shellAliases": [
+      "Bash",
+      "shell_command"
+    ],
+    "verifiedAt": "@ampcode/plugin 0.0.0-20261104001221-gc8c68be, types (not run)",
+    "note": "needs an account: fixtures only unless call 8 buys a seat. Every failure inside derm's handler is reject-and-continue; what Amp does when a handler throws, hangs or its Bun process dies is not documented (NF). An ask goes to the derm approver, else Amp's own dialog (ctx.ui.confirm), which throws under amp -x: a deny. How Amp merges two plugins' tool.call answers (Orca's own plugin answers allow) is not documented (NF)."
   }
 }

@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Amp plugin (Bun, tool.call) on lane F's gate core (wave 4, lane P, T2.7)",
+  "description": "Amp plugin: tool.call and tool.result on derm's shared gate core (wave 4, lane P, T2.7)",
+  "main": "./src/index.ts",
+  "files": ["src/index.ts", "src/amp.ts", "src/control.ts", "src/core/", "README.md", "NOTICE"],
   "engines": {
     "node": ">=22.19.0"
   }

@@ -286,7 +286,17 @@ fn split_in_doubt(
 pub fn narrowing_names(raw: &str, servers: &[String], harness: &str) -> (Vec<String>, bool) {
     let primary = normalize_tool_name_for(raw, servers, harness);
     let Some((primary_server, primary_tool)) = primary.split_once('/') else {
-        return (Vec::new(), false);
+        // A shell under another name is also `bash` (integration w4; the
+        // hook core's rule): a `bash` deny or ask narrows it.
+        let other = primary != "bash" && SHELL_TOOLS.contains(&primary.as_str());
+        return (
+            if other {
+                vec!["bash".to_string()]
+            } else {
+                Vec::new()
+            },
+            false,
+        );
     };
     let lowered = lower_name(raw);
     let mut splits: Vec<(String, String)> =
@@ -515,6 +525,11 @@ pub const SHELL_TOOLS: &[&str] = &[
     "user_bash",
     "terminal",
     "powershell",
+    // Added by integration w4, as in the hook core (lanes L and P): each
+    // one's other name is `bash` (`narrowing_names`).
+    "monitor",
+    "shell_command",
+    "run_commands",
 ];
 
 /// Files that control derm or a harness's hooks (contract, section 4, step
@@ -584,7 +599,158 @@ pub const CONTROL_PATHS: &[&str] = &[
     "pi_coding_agent_dir",
     "pi_config_dir",
     "derm_pi_freeze_input",
+    // Wave 4's agents (lanes L, N and P, folded in by integration w4): config,
+    // hook and plugin folders and the variables that move them or switch the
+    // gate off; sources in each package's src/control.ts. Kimi Code's folder
+    // is `.kimi-code/` (lane L, 2.4.1, run) and `.kimi/` (lane Q, 1.52.0).
+    ".openclaude/",
+    ".openclaude.json",
+    "openclaude_config_dir",
+    ".qwen/",
+    "qwen_home",
+    "qwen_code_system_settings",
+    ".factory/",
+    "factory_home_override",
+    ".commandcode/",
+    ".kimi-code/",
+    "kimi_code_home",
+    ".kimi/",
+    "kimi_share_dir",
+    ".augment/",
+    ".copilot/",
+    "copilot_home",
+    ".grok/",
+    "grok_claude_hooks_enabled",
+    "grok_cursor_hooks_enabled",
+    "grok_home",
+    ".cursor/",
+    "cursor/hooks.json",
+    ".agents/hooks.json",
+    ".agents/plugins/",
+    ".config/goose/",
+    "goose_path_root",
+    "goose_mode",
+    "goose_disable_keyring",
+    ".vibe/",
+    "vibe_home",
+    ".config/crush/",
+    ".local/share/crush/",
+    "crushrc",
+    "crush.json",
+    "crush_global_config",
+    "crush_global_data",
+    ".kiro/",
+    "kiro_home",
+    ".config/amp/",
+    ".amp/",
+    "amp/plugins",
+    "xdg_config_home",
+    "ampcode/",
+    "dangerouslyallowall",
+    ".cline/",
+    "documents/cline/",
+    ".clinerules",
+    "cline_dir",
+    "cline_data_dir",
+    "cline_tool_approval",
+    "cline_plugin_",
+    "cline-approvals/",
+    "derm-approval/",
 ];
+
+/// The path the shell opens is the same with `//` or `/./` in it, so a
+/// control path is also looked for in the text with those collapsed to `/`
+/// (review W4-S5). Only ever adds an ask; the hook core's
+/// `withCollapsedSlashes`.
+pub fn with_collapsed_slashes(texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = texts.to_vec();
+    for t in texts {
+        let mut c = String::with_capacity(t.len());
+        let b = t.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'/' {
+                c.push('/');
+                i += 1;
+                // Skip any run of `/` and `./` after it.
+                loop {
+                    if i < b.len() && b[i] == b'/' {
+                        i += 1;
+                    } else if i + 1 < b.len() && b[i] == b'.' && b[i + 1] == b'/' {
+                        i += 2;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                let start = i;
+                while i < b.len() && b[i] != b'/' {
+                    i += 1;
+                }
+                c.push_str(&t[start..i]);
+            }
+        }
+        let d = without_dot_dot(&c);
+        let dropped = d != c;
+        if c != *t {
+            out.push(c);
+        }
+        if dropped {
+            out.push(d);
+        }
+    }
+    out
+}
+
+/// `a/b/../c` read as `a/c`, lexically: each `..` part drops the part before
+/// it unless that is empty, `.` or `..` (re-review W4-R4); the hook core's
+/// `withoutDotDot`.
+pub fn without_dot_dot(text: &str) -> String {
+    if !text.contains("..") {
+        return text.to_string();
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for part in text.split('/') {
+        match out.last() {
+            Some(last) if part == ".." && !matches!(*last, "" | "." | "..") => {
+                out.pop();
+            }
+            _ => out.push(part),
+        }
+    }
+    out.join("/")
+}
+
+/// Whether folded `text` names the control path `entry` (contract, section 4,
+/// step 7a). A folder entry also matches its bare name where the name stands
+/// alone, for `mv ~/.derm old` and `cd ~/.derm && cp x policy.json` (rename
+/// review F1; lane L's C-1, lane P's P-S4): only a folder that starts with
+/// `.` or holds a `/`, with no name character running into it on the left
+/// (`math.pi`) or the right (`.qwenrc`). The hook core's and derm-pi's
+/// `namesControlPath`; the policy fixtures hold the three equal.
+pub fn names_control_path(text: &str, entry: &str) -> bool {
+    if text.contains(entry) {
+        return true;
+    }
+    let Some(base) = entry.strip_suffix('/') else {
+        return false;
+    };
+    if !(base.starts_with('.') || base.contains('/')) {
+        return false;
+    }
+    let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
+    let mut from = 0;
+    while let Some(off) = text[from..].find(base) {
+        let i = from + off;
+        let prev = text[..i].chars().next_back();
+        let next = text[i + base.len()..].chars().next();
+        if prev.is_none_or(|c| !(name(c) || c == '.')) && next.is_none_or(|c| !name(c)) {
+            return true;
+        }
+        from = i + text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
 
 /// The text with every quote removed. The shell joins `ANTHROPIC_"BASE_URL"`
 /// and `g''it` into one word, so the reject list and the control files are
@@ -874,9 +1040,10 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     }
     // Control files before shell text (contract, section 4, step 7).
     let unquoted = unquote(&folded);
+    let texts = with_collapsed_slashes(&[folded.clone(), unquoted]);
     if let Some(control) = CONTROL_PATHS
         .iter()
-        .find(|p| folded.contains(*p) || unquoted.contains(*p))
+        .find(|p| texts.iter().any(|t| names_control_path(t, p)))
     {
         return decide(
             Action::Ask,

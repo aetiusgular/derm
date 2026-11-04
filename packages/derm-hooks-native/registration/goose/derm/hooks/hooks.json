@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" goose",
+            "timeout": 120,
+            "on_failure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}

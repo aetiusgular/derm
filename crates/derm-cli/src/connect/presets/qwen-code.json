@@ -50,15 +50,16 @@
     "gate": {
       "family": "command-hook",
       "where": "~/.qwen/settings.json, PreToolUse",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "open",
     "failSwitch": null,
     "ask": "own-prompt",
-    "shellAliases": [],
-    "verifiedAt": "0.26.1, source",
-    "note": "ask becomes deny in -p, background subagents and ACP"
+    "shellAliases": ["run_shell_command", "monitor"],
+    "verifiedAt": "0.26.6, run (cloud, fake chat server)",
+    "note": "ask becomes deny in -p, background subagents and ACP; headless in the default mode declines a shell call before any hook runs"
   }
 }

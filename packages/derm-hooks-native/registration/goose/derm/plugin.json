@@ -1,0 +1,5 @@
+{
+  "name": "derm",
+  "version": "0.1.3",
+  "description": "derm policy gate: a PreToolUse hook that blocks when the gate fails (on_failure: block)"
+}

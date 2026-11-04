@@ -121,6 +121,40 @@ pub fn render(preset: &Preset, spec: &ServerSpec) -> Result<Rendered, String> {
             push_opt(&mut m, "headers", headers_object(preset, headers)?);
             Ok(Rendered::Json(obj(m)))
         }
+        // Codebuff 1.0.688 (`~/.agents/mcp.json`): strict objects, so only
+        // the keys its schema names (`common/src/types/mcp.ts` at v1.0.679
+        // and main); a stdio `env` value that starts with `$` is read whole
+        // from the environment; headers are never expanded
+        // (`sdk/src/agents/load-mcp-config.ts:44-87`), so a header that names
+        // a variable cannot be written.
+        (Transport::Stdio { command, args }, "codebuff") => {
+            let mut m = vec![
+                s("type", "stdio"),
+                s("command", command),
+                ("args".into(), Value::strings(args)),
+            ];
+            push_opt(&mut m, "env", env_object(preset, spec)?);
+            Ok(Rendered::Json(obj(m)))
+        }
+        (Transport::Http { kind, url, headers }, "codebuff") => {
+            if let Some(h) = headers
+                .iter()
+                .find(|h| matches!(h.value, HeaderValue::Ref { .. }))
+            {
+                return Err(format!(
+                    "{} never expands a header, so `{}` would be sent as the literal text of a variable name; connect this server through a gateway, or add the header by hand",
+                    preset.name, h.name
+                ));
+            }
+            let t = if *kind == HttpKind::Sse {
+                "sse"
+            } else {
+                "http"
+            };
+            let mut m = vec![s("type", t), s("url", url)];
+            push_opt(&mut m, "headers", headers_object(preset, headers)?);
+            Ok(Rendered::Json(obj(m)))
+        }
         // Pi: `pi mcp add` order is command, args, env, exposure and url,
         // headers, exposure (recorded, Pi 1.4.0).
         (Transport::Stdio { command, args }, "pi") => {
@@ -377,6 +411,7 @@ pub fn render(preset: &Preset, spec: &ServerSpec) -> Result<Rendered, String> {
         }
         (_, "hermes") => Ok(Rendered::Yaml(hermes_yaml(preset, spec)?)),
         (_, "goose") => Ok(Rendered::Yaml(goose_yaml(spec)?)),
+        (_, "continue") => Ok(Rendered::Yaml(continue_yaml(preset, spec)?)),
         _ => Err(format!(
             "{}: no renderer for entry style `{style}`",
             preset.name
@@ -498,5 +533,53 @@ fn goose_yaml(spec: &ServerSpec) -> Result<String, String> {
         out.push_str(&format!("    env_keys: {}\n", yaml_list(&vars)));
     }
     out.push_str("    timeout: 300\n");
+    Ok(out)
+}
+
+/// Continue CLI 1.5.47 (`cn`): `mcpServers` is a list of
+/// `{name, command, type: stdio, args, env, cwd}` or
+/// `{name, url, type: sse | streamable-http, apiKey, requestOptions}`
+/// (`packages/config-yaml/src/schemas/mcp/index.ts:4-35` at d3f60ba), and
+/// `${{ secrets.X }}` anywhere in the file is filled from the environment
+/// variable X first (`extensions/cli/src/CLIPlatformClient.ts:42-81`).
+fn continue_yaml(preset: &Preset, spec: &ServerSpec) -> Result<String, String> {
+    let mut out = format!("mcpServers:\n  - name: {}\n", yq(&spec.name));
+    match &spec.transport {
+        Transport::Stdio { command, args } => {
+            out.push_str(&format!(
+                "    type: stdio\n    command: {}\n    args: {}\n",
+                yq(command),
+                yaml_list(args)
+            ));
+            if !spec.env.is_empty() {
+                out.push_str("    env:\n");
+                for e in &spec.env {
+                    out.push_str(&format!(
+                        "      {}: {}\n",
+                        e.key,
+                        yq(&env_ref(preset, &e.var)?)
+                    ));
+                }
+            }
+        }
+        Transport::Http { kind, url, headers } => {
+            let t = if *kind == HttpKind::Sse {
+                "sse"
+            } else {
+                "streamable-http"
+            };
+            out.push_str(&format!("    type: {t}\n    url: {}\n", yq(url)));
+            if !headers.is_empty() {
+                out.push_str("    requestOptions:\n      headers:\n");
+                for h in headers {
+                    out.push_str(&format!(
+                        "        {}: {}\n",
+                        h.name,
+                        yq(&header_text(preset, &h.value)?)
+                    ));
+                }
+            }
+        }
+    }
     Ok(out)
 }

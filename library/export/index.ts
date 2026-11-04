@@ -67,19 +67,41 @@ export function envNameFor(name: string): string {
 }
 
 /**
+ * A header's variable, namespaced to the server as derm connect names it
+ * (crates/derm-cli/src/connect/spec.rs `namespaced_var`, security finding
+ * S12): `exa` and `API_KEY` give `DERM_EXA__API_KEY`, so an entry can name
+ * only variables under its own server's prefix. A part that starts with `_`
+ * or holds `__` is refused there, and left out here (lane Q's request 1,
+ * integration w4).
+ */
+export function namespacedVar(server: string, part: string): string | undefined {
+  // derm connect's `valid_env_name`: at most 64 bytes (review W4-S9).
+  if (part.length > 64 || part.startsWith("_") || part.includes("__") || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) return undefined;
+  return `DERM_${server.toUpperCase().replace(/-/g, "_")}__${part}`;
+}
+
+/**
  * A header in a harness's reference form (`${VAR}`), from upstream's
  * placeholder form (integration w1): a value `prefix{var}` becomes
- * `prefix${VAR}`, a secret header with no value becomes `${NAME}`, a plain
- * literal stays. Anything else (more than one placeholder, a placeholder
- * mid-value) is left out, as derm connect refuses it.
+ * `prefix${DERM_<SERVER>__VAR}`, a secret header with no value becomes
+ * `${DERM_<SERVER>__NAME}`, a plain literal stays. Anything else (more than
+ * one placeholder, a placeholder mid-value, a part derm connect refuses) is
+ * left out, as derm connect refuses it.
  */
-function headerValue(h: Record<string, unknown>): string | undefined {
+function headerValue(h: Record<string, unknown>, server: string): string | undefined {
   const name = h["name"] as string;
   const value = h["value"];
-  if (value === undefined) return h["isSecret"] === true ? `\${${envNameFor(name)}}` : undefined;
+  if (value === undefined) {
+    if (h["isSecret"] !== true) return undefined;
+    const v = namespacedVar(server, envNameFor(name));
+    return v === undefined ? undefined : `\${${v}}`;
+  }
   if (typeof value !== "string") return undefined;
   const m = /^([^{}$]*)\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(value);
-  if (m) return `${m[1]}\${${envNameFor(m[2]!)}}`;
+  if (m) {
+    const v = namespacedVar(server, envNameFor(m[2]!));
+    return v === undefined ? undefined : `${m[1]}\${${v}}`;
+  }
   return value.includes("{") || value.includes("$") ? undefined : value;
 }
 
@@ -92,7 +114,7 @@ function remoteOf(e: LoadedEntry): { url: string; headers: { name: string; value
         .filter(isRecord)
         .filter((h) => typeof h["name"] === "string")
         .flatMap((h) => {
-          const value = headerValue(h);
+          const value = headerValue(h, e.id);
           return value === undefined ? [] : [{ name: h["name"] as string, value }];
         })
     : [];

@@ -83,6 +83,23 @@ describe("the agents page says what happens with no policy (RC8)", () => {
     gemini: "Gemini CLI",
     hermes: "Hermes Agent",
     openclaw: "OpenClaw",
+    // Wave 4 (integration w4): lanes L, N and P.
+    openclaude: "OpenClaude",
+    "qwen-code": "Qwen Code",
+    droid: "Droid",
+    "command-code": "Command Code",
+    kimi: "Kimi Code",
+    auggie: "Auggie",
+    "copilot-cli": "GitHub Copilot CLI",
+    grok: "Grok Build",
+    cursor: "Cursor",
+    antigravity: "Antigravity CLI",
+    goose: "goose",
+    "mistral-vibe": "Mistral Vibe",
+    crush: "Crush",
+    kiro: "Kiro CLI",
+    amp: "Amp",
+    cline: "Cline CLI",
   };
   const sentence = page.match(
     /With no `~\/\.derm\/policy\.json` every call not on the reject list asks: (.*?) then prompt before every tool call, and (.*?) deny every tool call unless/,

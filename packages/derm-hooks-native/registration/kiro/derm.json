@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "derm-gate",
+      "description": "derm policy gate: exit 2 blocks the call, exit 0 prints nothing",
+      "trigger": "PreToolUse",
+      "action": {
+        "type": "command",
+        "command": "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" kiro"
+      },
+      "timeout": 120,
+      "enabled": true
+    }
+  ]
+}

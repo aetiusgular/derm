@@ -587,6 +587,32 @@ pub fn compact(v: &Value) -> String {
     }
 }
 
+/// Whether `text` (a slice of a JSONC file) holds a `//` or `/*` comment
+/// outside its string literals. `file://` inside a string is not one.
+pub fn has_comment(text: &str) -> bool {
+    let b = text.as_bytes();
+    let mut i = 0;
+    let mut in_str = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == b'"' {
+                in_str = false;
+            }
+        } else if c == b'"' {
+            in_str = true;
+        } else if c == b'/' && matches!(b.get(i + 1), Some(b'/') | Some(b'*')) {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Why an edit did not happen.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditError {
@@ -649,6 +675,15 @@ impl Doc<'_> {
         } else {
             Err(EditError::NotObject(path.join(".")))
         }
+    }
+
+    /// The byte span of the value at `path`, if there is one.
+    pub fn span_at(&self, path: &[&str]) -> Option<(usize, usize)> {
+        let mut cur = self.root.as_ref()?;
+        for seg in path {
+            cur = &cur.member(seg)?.value;
+        }
+        Some((cur.start, cur.end))
     }
 
     /// The value at `path` + `key`, if there is one.

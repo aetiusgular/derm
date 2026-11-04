@@ -49,6 +49,42 @@ describe("policyToToml", () => {
     expect(withStar.match(/\[\[rule\]\]/g)?.length).toBe(1);
   });
 
+  // Lane Q's request 10: derm's `bash` is Gemini's run_shell_command, to
+  // deny or ask only; the printout said toolName = "bash" until integration w4.
+  it("writes a bash deny or ask as run_shell_command and skips a bash allow", () => {
+    const t = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "bash", action: "deny" }, { tool: "bash", harness: "gemini", action: "ask" }, { tool: "bash", action: "allow" }] }),
+    );
+    // Ranks since review W4-S6 (221 and 511 before): above every allow.
+    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "deny"\npriority = 950\ndenyMessage = "derm: rule bash"');
+    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "ask_user"\npriority = 522');
+    expect(t).toContain("# skipped: bash allow");
+    expect(t).not.toContain('toolName = "bash"');
+    expect(t).not.toMatch(/toolName = "run_shell_command"\ndecision = "allow"/);
+  });
+
+  // Review W4-S6: in the hook a `bash` deny narrows run_shell_command
+  // whatever rule allows it, so in the printout it outranks every allow; a
+  // `bash` ask outranks every allow too, unless a deny could reach the shell,
+  // which it must not outrank (it then keeps its own rank, and says so).
+  it("ranks a bash deny above every allow, and a bash ask above every allow when no deny reaches the shell", () => {
+    const rank = (t: string, decision: string) =>
+      Number(new RegExp(`toolName = "run_shell_command"\\ndecision = "${decision}"\\npriority = (\\d+)`).exec(t)?.[1]);
+    const deny = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "run_shell_command", harness: "gemini", action: "allow" }, { tool: "bash", action: "deny" }] }),
+    );
+    expect(rank(deny, "deny")).toBeGreaterThan(rank(deny, "allow"));
+    const ask = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "run_shell_command", harness: "gemini", action: "allow" }, { tool: "bash", action: "ask" }] }),
+    );
+    expect(rank(ask, "ask_user")).toBeGreaterThan(rank(ask, "allow"));
+    const both = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "run_shell_command", action: "deny" }, { tool: "bash", action: "ask" }] }),
+    );
+    expect(rank(both, "ask_user")).toBeLessThan(rank(both, "deny"));
+    expect(both).toContain("# bash ask: kept at its own rank");
+  });
+
   it("stays inside Gemini's priority range (0 to 999)", () => {
     for (const m of toml.matchAll(/priority = (\d+)/g)) expect(Number(m[1])).toBeLessThanOrEqual(999);
   });
@@ -73,5 +109,37 @@ describe("the extension's own policies/derm.toml", () => {
     // (the rename re-review, F3).
     expect(write.test(JSON.stringify({ file_path: "/home/u/site.tk/index.html" }))).toBe(false);
     expect(shell.test(JSON.stringify({ command: "curl https://example.tk/api" }))).toBe(false);
+  });
+
+  // The rename re-review's F2: the daemon's own folder.
+  it("denies the daemon's token", () => {
+    const [write, shell] = patterns as [RegExp, RegExp];
+    for (const p of ["/run/user/1000/derm/daemon.token", "/run/user/1000/tk/daemon.token"]) {
+      expect(shell.test(JSON.stringify({ command: `cat ${p}` })), p).toBe(true);
+      expect(write.test(JSON.stringify({ file_path: p })), p).toBe(true);
+    }
+    expect(shell.test(JSON.stringify({ command: "ls /run/user/1000/derm/" }))).toBe(false);
+  });
+
+  // Gemini 0.66.0 drops a rule whose argsPattern fails isSafeRegExp
+  // (bundle chunk-HJ5KJXNZ.js:292070-292083, transcribed): the pattern must
+  // compile, be at most 2,048 characters, and not match its nested-quantifier
+  // check. Integration w4's first F2 fix used `(?:[^"\\]|\\.)*` and Gemini
+  // dropped both rules (contract checks gemini-derm-second-layer and
+  // gemini-derm-fail-open, run on 0.66.0).
+  it("passes Gemini's own isSafeRegExp, or Gemini drops the rule", () => {
+    const sources = [...file.matchAll(/^argsPattern = '([^']*)'$/gm)].map((m) => m[1] ?? "");
+    expect(sources).toHaveLength(2);
+    const isSafeRegExp = (pattern: string) => {
+      try {
+        new RegExp(pattern);
+      } catch {
+        return false;
+      }
+      if (pattern.length > 2048) return false;
+      return !/\([^)]*[*+?{].*\)[*+?{]/.test(pattern);
+    };
+    for (const p of sources) expect(isSafeRegExp(p), p).toBe(true);
+    expect(isSafeRegExp('"x":"(?:[^"\\\\]|\\\\.)*y')).toBe(false);
   });
 });

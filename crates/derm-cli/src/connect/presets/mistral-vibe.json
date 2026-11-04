@@ -10,19 +10,21 @@
     "orcaId": "mistral-vibe",
     "gate": {
       "family": "command-hook",
-      "where": "~/.vibe/hooks.toml, pre_tool",
-      "status": "planned",
+      "where": "[[hooks]] type pre_tool in ~/.vibe/hooks.toml, strict = true (packages/derm-hooks-native/registration/mistral-vibe/hooks.toml)",
+      "status": "built",
       "wave": 4,
-      "lane": "N"
+      "lane": "N",
+      "package": "packages/derm-hooks-native"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "strict = true",
     "ask": "approver-or-deny",
     "shellAliases": [
       "file_system.bash",
-      "process.start"
+      "process.start",
+      "process.write"
     ],
-    "verifiedAt": "3.0.3, source",
-    "note": "exit 2 counts as a failure, not a deny"
+    "verifiedAt": "3.0.4, run",
+    "note": "exit 2 counts as a failure, not a deny: derm denies with JSON on exit 0; a hook cannot pre-approve, so derm's allow lets Vibe's own permission check decide; a call whose arguments fail Vibe's schema never reaches the hook; a trusted project's .vibe/hooks.toml outranks the user's on a duplicate name"
   }
 }

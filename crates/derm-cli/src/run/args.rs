@@ -1,4 +1,8 @@
-//! `derm run <harness> --boundary sbx|srt|none [options] [-- harness args]`.
+//! `derm run <harness> --boundary sbx|srt|none [options] [-- harness args]`,
+//! or `derm run --boundary sbx|srt|none [options] -- <program> [args]` for a
+//! command line derm has no preset for (rules case 80; toolkit plan T2.9).
+//! A program whose name is a preset's command (`claude`, `codex`) is that
+//! harness; any other is `other`, with the outside shape only.
 //!
 //! Every value is taken literally; nothing is split or expanded. The
 //! harness's own arguments go after `--` and reach it as separate argv
@@ -36,12 +40,28 @@ pub struct Args {
     pub no_daemon: bool,
     pub dry_run: bool,
     pub rest: Vec<String>,
+    /// The program from `-- <program> ...` (case 80), when no harness id was
+    /// given. `None` means the harness's own command.
+    pub program: Option<String>,
 }
 
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--dry-run] [-- harness args...]";
+[--dry-run] [-- harness args...]
+       derm run --boundary sbx|srt|none [options] -- <program> [args...]";
+
+/// A program named after `--` (case 80): an absolute path, or a bare name
+/// looked up on PATH. Never a relative path (it would name a file in
+/// whatever folder the chat starts in), an option, or anything with a
+/// control character.
+pub fn valid_program(p: &str) -> bool {
+    !p.is_empty()
+        && !p.starts_with('-')
+        && !p.chars().any(char::is_control)
+        && (p.starts_with('/') || !p.contains('/'))
+        && p != "/"
+}
 
 /// A chat id: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `-` or `.`.
 pub fn valid_chat(id: &str) -> bool {
@@ -83,14 +103,22 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     let Some(id) = args.first() else {
         return Err(USAGE.to_string());
     };
+    // No harness id: options first, the program after `--` (case 80).
+    let by_argv = id.starts_with("--");
     let harness = match harness::find(id) {
+        _ if by_argv => &harness::OTHER,
         Some(h) => h,
         None if harness::NOT_RUN.contains(&id.as_str()) => {
             return Err(format!(
                 "derm run does not start {id}: its preset names no agent command line to wrap"
             ))
         }
-        None => return Err(format!("unknown harness {id:?}\n{USAGE}")),
+        None => {
+            return Err(format!(
+                "unknown harness {id:?}; for a command line derm has no preset for, \
+                 give it after --: derm run --boundary <b> -- {id} ...\n{USAGE}"
+            ))
+        }
     };
     let mut out = Args {
         harness,
@@ -104,9 +132,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         no_daemon: false,
         dry_run: false,
         rest: Vec::new(),
+        program: None,
     };
     let mut boundary = None;
-    let mut i = 1;
+    let mut i = if by_argv { 0 } else { 1 };
     while i < args.len() {
         let a = args[i].as_str();
         let mut take = |name: &str| -> Result<String, String> {
@@ -159,6 +188,22 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     // The boundary is never assumed: running a harness with no sandbox is a
     // choice the command line states.
     out.boundary = boundary.ok_or("--boundary is required: sbx, srt or none")?;
+    if by_argv {
+        let Some(program) = out.rest.first().cloned() else {
+            return Err(format!("no program after --\n{USAGE}"));
+        };
+        if !valid_program(&program) {
+            return Err(format!(
+                "{program:?}: give the program as an absolute path or a bare name on PATH"
+            ));
+        }
+        out.rest.remove(0);
+        // A preset's own command is that harness, with what derm knows of it.
+        if let Some(h) = harness::by_command(&program) {
+            out.harness = h;
+        }
+        out.program = Some(program);
+    }
     if out.boundary != Boundary::Srt && (!out.allow_hosts.is_empty() || out.model_url.is_some()) {
         return Err(
             "--allow-host and --model-url shape srt's allow list; they need --boundary srt".into(),
@@ -203,15 +248,77 @@ mod tests {
     }
 
     #[test]
+    fn a_command_line_with_no_preset_runs_as_other() {
+        let a = parse(&s(&[
+            "--boundary",
+            "none",
+            "--",
+            "/opt/agent/bin/aider",
+            "--model",
+            "x",
+        ]))
+        .unwrap();
+        assert_eq!(a.harness.id, "other");
+        assert_eq!(a.program.as_deref(), Some("/opt/agent/bin/aider"));
+        assert_eq!(a.rest, s(&["--model", "x"]));
+        assert_eq!(a.boundary, Boundary::None);
+        // A preset's command is that harness from a bare name only; a path
+        // is an unknown program (security review L15; this test asserted
+        // the opposite before).
+        let c = parse(&s(&[
+            "--boundary",
+            "srt",
+            "--",
+            "/usr/bin/claude",
+            "-p",
+            "hi",
+        ]))
+        .unwrap();
+        assert_eq!(c.harness.id, "other");
+        let c2 = parse(&s(&["--boundary", "srt", "--", "claude"])).unwrap();
+        assert_eq!(c2.harness.id, "claude-code");
+        assert_eq!(c.program.as_deref(), Some("/usr/bin/claude"));
+        assert_eq!(c.rest, s(&["-p", "hi"]));
+        // The boundary is still required, and a program must follow `--`.
+        assert!(parse(&s(&["--", "aider"]))
+            .unwrap_err()
+            .contains("required"));
+        assert!(parse(&s(&["--boundary", "none", "--"]))
+            .unwrap_err()
+            .contains("no program"));
+        assert!(parse(&s(&["--boundary", "none"]))
+            .unwrap_err()
+            .contains("no program"));
+        // Relative paths, options and control characters are refused.
+        for bad in ["./agent", "bin/agent", "-x", "", "/", "a\nb"] {
+            assert!(
+                parse(&s(&["--boundary", "none", "--", bad])).is_err(),
+                "{bad:?}"
+            );
+        }
+        // An unknown id names the form to use.
+        assert!(parse(&s(&["aider", "--boundary", "none"]))
+            .unwrap_err()
+            .contains("-- aider"));
+    }
+
+    #[test]
     fn unknown_harnesses_and_options_are_refused() {
         assert!(parse(&s(&["vim", "--boundary", "none"]))
             .unwrap_err()
             .contains("unknown harness"));
-        for app in ["cursor", "zed"] {
-            assert!(parse(&s(&[app, "--boundary", "none"]))
-                .unwrap_err()
-                .contains("derm run does not start"));
-        }
+        assert!(parse(&s(&["zed", "--boundary", "none"]))
+            .unwrap_err()
+            .contains("derm run does not start"));
+        // Cursor's CLI is started since fix pass 1 for the Mac test w4
+        // (MW4-8); it was refused here with Zed until then.
+        assert_eq!(
+            parse(&s(&["cursor", "--boundary", "none"]))
+                .unwrap()
+                .harness
+                .command,
+            "cursor-agent"
+        );
         assert!(parse(&s(&["pi", "--boundary", "none", "--model", "x"]))
             .unwrap_err()
             .contains("after --"));

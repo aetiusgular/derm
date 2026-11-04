@@ -10,18 +10,17 @@
     "orcaId": "command-code",
     "gate": {
       "family": "command-hook",
-      "where": "~/.commandcode/settings.json, PreToolUse",
-      "status": "planned",
+      "where": "~/.commandcode/settings.json, PreToolUse, failClosed",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "failClosed: true",
     "ask": "approver-or-deny",
-    "shellAliases": [
-      "shell_command"
-    ],
-    "verifiedAt": "1.88.0, bundle",
-    "note": "strips secret-named variables from the hook's environment: the chat token comes from DERM_CHAT_TOKEN_FILE"
+    "shellAliases": ["shell_command", "powershell", "monitor_command"],
+    "verifiedAt": "1.88.2, bundle",
+    "note": "needs an account (cmd login; its model API is Command Code's own): fixtures only, unverified at 1.88.2 unless call 8 buys a seat. Strips token-named variables from the hook's environment (/TOKEN/i and 14 more, read at 1.88.2): the hook finds the chat token file from DERM_CHAT_ID and DERM_DAEMON_SOCKET; hooks skipped in plan mode"
   }
 }

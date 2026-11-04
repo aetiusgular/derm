@@ -92,10 +92,13 @@ describe("entry contract", () => {
 describe("harness presets", () => {
   const presets = loadPresetTable() as unknown as { harnesses: { id: string; verified: string; sources: string[] }[] };
 
-  it("lists the fourteen harnesses of note AP section 4 with unique ids", () => {
+  // Fourteen from note AP section 4, and four lane Q verified in wave 4 (kilo,
+  // codebuff, oh-my-pi, continue; folded in by integration w4).
+  it("lists the fourteen harnesses of note AP section 4 and wave 4's four, with unique ids", () => {
     const ids = presets.harnesses.map((h) => h.id);
-    expect(ids).toHaveLength(14);
-    expect(new Set(ids).size).toBe(14);
+    expect(ids).toHaveLength(18);
+    expect(new Set(ids).size).toBe(18);
+    for (const id of ["kilo", "codebuff", "oh-my-pi", "continue"]) expect(ids).toContain(id);
     const planned = (presets as unknown as { planned: { id: string }[] }).planned.map((p) => p.id);
     expect(new Set([...ids, ...planned]).size).toBe(29);
     for (const id of ["claude-code", "codex", "pi", "opencode", "gemini"]) expect(ids).toContain(id);
@@ -164,9 +167,13 @@ describe("harness coverage", () => {
     for (const r of orca) tiers[r.coverage.tier ?? "none"] = (tiers[r.coverage.tier ?? "none"] ?? 0) + 1;
     expect(tiers).toEqual({ G: 24, A: 2, O: 1 });
   });
-  it("marks built the four wave 1 adapters and wave 2's five (integration w2)", () => {
+  it("marks built the four wave 1 adapters, wave 2's five and wave 4's sixteen (integration w4)", () => {
     const built = [...data.harnesses, ...data.planned].filter((r) => r.coverage.gate.status === "built").map((r) => r.id).sort();
-    expect(built).toEqual(["claude-code", "codex", "gemini", "hermes", "kilo", "oh-my-pi", "openclaw", "opencode", "pi"]);
+    expect(built).toEqual([
+      "amp", "antigravity", "auggie", "claude-code", "cline", "codex", "command-code", "copilot-cli", "crush", "cursor",
+      "droid", "gemini", "goose", "grok", "hermes", "kilo", "kimi", "kiro", "mistral-vibe", "oh-my-pi", "openclaude",
+      "openclaw", "opencode", "pi", "qwen-code",
+    ]);
   });
 });
 

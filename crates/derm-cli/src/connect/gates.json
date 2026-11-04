@@ -1,0 +1,545 @@
+{
+  "$comment": "Where `derm connect <agent> --gate` registers derm's gate, one object per agent (wave 4 lane Q, T2.8). Transcribed from the packages that own each gate: lane L's packages/derm-hooks-claude-compat/src/registration.ts (branch wip/L-hooks-claude at 12d2c86), lane N's packages/derm-hooks-native/registration/<agent>/ and its README table (lane/N-hooks-native at 85592cf), and docs/install/agents.md (main at 824ae83) for the agents whose gate installs through their own command. Lane Q keeps this table in its own folder so lanes L, N and P never share a file with it; integration w4 may move each object into its agent's preset row. Placeholders: {command} is the agent's `command` with {node} and {hook_file} filled; {hook_dir} is the package folder given with --hook; {hook_url} is file:// plus that folder; {version} is derm's own version. A string is a placeholder only when it is the whole value, except in `command` and `commands`. `marker` finds derm's own entry, so a second --gate replaces it and never adds a second gate. Step kinds: json-array-entry, json-member, toml-array-entry, toml-set, owned-file, plugin-folder, json-permission (OpenCode's and Kilo's `permission` keys, set only where that narrows), commands (print only). `mergeChain` lists the global files an agent deep-merges, in its order: derm writes the last one that exists (else `path`) and reads the others first.",
+  "version": 1,
+  "agents": [
+    {
+      "agent": "claude-code",
+      "name": "Claude Code",
+      "package": "@aetiusgular/derm-claude-plugin",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": [
+            "claude plugin marketplace add aetiusgular/derm",
+            "claude plugin install derm@derm"
+          ],
+          "note": "Claude Code installs plugins through its own command; derm does not write its plugin records. From a clone: claude plugin marketplace add <clone>. Fails closed (onFailure: block).",
+          "fromFolder": {
+            "marketplaceFile": ".claude-plugin/marketplace.json",
+            "commands": [
+              "claude plugin marketplace add \"{marketplace_dir}\"",
+              "claude plugin install derm@derm"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "agent": "codex",
+      "name": "Codex",
+      "package": "@aetiusgular/derm-codex-plugin",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": [
+            "codex plugin marketplace add aetiusgular/derm --ref v{version}",
+            "codex plugin add derm@derm"
+          ],
+          "note": "Then trust both hooks in /hooks: Codex skips an untrusted plugin hook without a word (case 70). Codex lets a call through when its hook process dies.",
+          "fromFolder": {
+            "marketplaceFile": ".agents/plugins/marketplace.json",
+            "commands": [
+              "codex plugin marketplace add \"{marketplace_dir}\"",
+              "codex plugin add derm@derm"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "agent": "pi",
+      "name": "Pi",
+      "package": "@aetiusgular/derm-pi",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": ["pi install \"{hook_dir}\""],
+          "note": "Pi cannot install a subfolder of a git source; --hook names packages/derm-pi in a clone. Pi blocks on a handler error."
+        }
+      ]
+    },
+    {
+      "agent": "oh-my-pi",
+      "name": "oh-my-pi",
+      "package": "@aetiusgular/derm-pi",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": ["omp install \"{hook_dir}\""],
+          "note": "omp's default approval mode is yolo, so the gate is its only check."
+        }
+      ]
+    },
+    {
+      "agent": "gemini",
+      "name": "Gemini CLI",
+      "package": "@aetiusgular/derm-gemini-extension",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": [
+            "gemini extensions install \"{hook_dir}\" --consent",
+            "node \"{hook_dir}/bin/derm-gemini-policy.mjs\""
+          ],
+          "note": "Gemini lets a call through on every hook failure; save the user policy the second command prints, as the second layer."
+        }
+      ]
+    },
+    {
+      "agent": "hermes",
+      "name": "Hermes Agent",
+      "package": "@aetiusgular/derm-hermes-plugin",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": [
+            "cp -r \"{hook_dir}\" ~/.hermes/plugins/derm",
+            "hermes plugins enable derm"
+          ],
+          "note": "Node must be on Hermes's PATH."
+        }
+      ]
+    },
+    {
+      "agent": "openclaw",
+      "name": "OpenClaw",
+      "package": "@aetiusgular/derm-openclaw-plugin",
+      "source": "docs/install/agents.md at 824ae83",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": [
+            "openclaw plugins install --link \"{hook_dir}\" --force",
+            "openclaw plugins enable derm"
+          ],
+          "note": "--link reads the folder in place; keep it where it is."
+        }
+      ]
+    },
+    {
+      "agent": "opencode",
+      "name": "OpenCode",
+      "package": "@aetiusgular/derm-opencode-plugin",
+      "source": "packages/derm-opencode-plugin/opencode.fragment.json and crates/derm-cli/src/watch/register.rs at 824ae83 (OpenCode 1.19.4 plugin/shared.ts:171-189); the files OpenCode 1.19.4 merges and how, config/config.ts:42-44, 140-148, 272-274, 567-578, permission/index.ts:28-32, util/wildcard.ts:3-19 (lane Q, third chat)",
+      "marker": "derm-opencode-plugin",
+      "installedIf": ["~/.config/opencode"],
+      "cli": "opencode",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.config/opencode/opencode.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/opencode/config.json",
+            "~/.config/opencode/opencode.json",
+            "~/.config/opencode/opencode.jsonc"
+          ],
+          "array": ["plugin"],
+          "entry": "{hook_url}"
+        },
+        {
+          "kind": "json-permission",
+          "path": "~/.config/opencode/opencode.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/opencode/config.json",
+            "~/.config/opencode/opencode.json",
+            "~/.config/opencode/opencode.jsonc"
+          ],
+          "keys": {
+            "bash": "ask",
+            "edit": "ask",
+            "webfetch": "ask",
+            "external_directory": "ask"
+          },
+          "fragment": "packages/derm-opencode-plugin/opencode.fragment.json"
+        }
+      ],
+      "notes": [
+        "derm writes the last of config.json, opencode.json and opencode.jsonc that exists: OpenCode merges them in that order and a later `plugin` list replaces an earlier one.",
+        "The `permission` keys keep OpenCode's own prompts as a second layer. They only narrow: an allow becomes ask, a key is added only beside allows and asks, and a deny, a pattern list or a `tools` switch set to false is left as it is.",
+        "A project's own opencode.json, OPENCODE_PERMISSION, OPENCODE_CONFIG_DIR's files and an agent's own `permission` are read after these files and can override them; derm does not see them."
+      ]
+    },
+    {
+      "agent": "kilo",
+      "name": "Kilo Code",
+      "package": "@aetiusgular/derm-kilo-plugin",
+      "source": "packages/derm-kilo-plugin/kilo.fragment.json at 824ae83; Kilo 7.8.18 (b817615) config/config.ts:72-75, 460-482, 1024-1034, core/src/global.ts:24, permission/index.ts:106, util/wildcard.ts:3-19 (lane Q, third chat)",
+      "marker": "derm-kilo-plugin",
+      "installedIf": ["~/.config/kilo"],
+      "cli": "kilo",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.config/kilo/kilo.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/kilo/config.json",
+            "~/.config/kilo/kilo.json",
+            "~/.config/kilo/kilo.jsonc",
+            "~/.config/kilo/opencode.json",
+            "~/.config/kilo/opencode.jsonc"
+          ],
+          "array": ["plugin"],
+          "entry": "{hook_url}"
+        },
+        {
+          "kind": "json-permission",
+          "path": "~/.config/kilo/kilo.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/kilo/config.json",
+            "~/.config/kilo/kilo.json",
+            "~/.config/kilo/kilo.jsonc",
+            "~/.config/kilo/opencode.json",
+            "~/.config/kilo/opencode.jsonc"
+          ],
+          "keys": {
+            "bash": "ask",
+            "edit": "ask",
+            "webfetch": "ask",
+            "external_directory": "ask"
+          },
+          "fragment": "packages/derm-kilo-plugin/kilo.fragment.json"
+        }
+      ],
+      "notes": [
+        "derm writes the last of config.json, kilo.json, kilo.jsonc, opencode.json and opencode.jsonc that exists in ~/.config/kilo: Kilo merges them in that order and a later `plugin` list replaces an earlier one. KILO_CONFIG_DIR does not move these files; its own files are read later, like a project's.",
+        "The `permission` keys only narrow, as OpenCode's: an allow becomes ask, a key is added only beside allows and asks, and a deny, a pattern list or a `tools` switch set to false is left as it is.",
+        "A project's own kilo.json or opencode.json, KILO_PERMISSION, KILO_CONFIG_DIR's files and an agent's own `permission` are read after these files and can override them; derm does not see them."
+      ]
+    },
+    {
+      "agent": "openclaude",
+      "name": "OpenClaude",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" openclaude pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.openclaude"],
+      "cli": "openclaude",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.openclaude/settings.json",
+          "homeEnv": "OPENCLAUDE_CONFIG_DIR",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120}]}
+        }
+      ],
+      "notes": ["No fail-closed switch: a crashed or timed-out gate lets the call run (case 70)."]
+    },
+    {
+      "agent": "qwen-code",
+      "name": "Qwen Code",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" qwen-code pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.qwen"],
+      "cli": "qwen",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.qwen/settings.json",
+          "homeEnv": "QWEN_HOME",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "", "hooks": [{"type": "command", "command": "{command}", "name": "derm", "timeout": 120}]}
+        }
+      ],
+      "notes": ["No fail-closed switch.", "disableAllHooks, --safe-mode and --bare run no hook at all."]
+    },
+    {
+      "agent": "droid",
+      "name": "Droid",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" droid pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.factory"],
+      "cli": "droid",
+      "refuseIfExists": ["~/.factory/hooks.json", "~/.factory/hooks/hooks.json"],
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.factory/settings.json",
+          "homeEnv": "FACTORY_HOME_OVERRIDE",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120}]}
+        }
+      ],
+      "notes": [
+        "Droid 1.3.0 merges ~/.factory/hooks.json (else ~/.factory/hooks/hooks.json) over settings.json per event, so derm refuses while either exists and never creates one.",
+        "Activating a Factory hook-set through sync clears the hooks key of settings.json: check derm status after a sync.",
+        "No fail-closed switch."
+      ]
+    },
+    {
+      "agent": "command-code",
+      "name": "Command Code",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" command-code pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.commandcode"],
+      "cli": "cmd",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.commandcode/settings.json",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": ".*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120, "failClosed": true}]}
+        }
+      ],
+      "notes": ["failClosed: true blocks the call on a crash, a timeout or output it cannot read.", "Hooks do not run in plan mode."]
+    },
+    {
+      "agent": "kimi",
+      "name": "Kimi Code",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" kimi pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "steps": [
+        {
+          "kind": "commands",
+          "commands": [
+            "[[hooks]]",
+            "event = \"PreToolUse\"",
+            "command = '{command}'",
+            "timeout = 120"
+          ],
+          "note": "Print only: lane L's registration names ~/.kimi-code/config.toml (KIMI_CODE_HOME), while lane Q's read of kimi-cli 1.52.0 found ~/.kimi/config.toml (KIMI_SHARE_DIR). Until one is confirmed, add this table yourself to the file your Kimi reads, with exactly these three keys: one key more makes Kimi drop the whole file."
+        }
+      ]
+    },
+    {
+      "agent": "auggie",
+      "name": "Auggie",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" auggie pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.augment"],
+      "cli": "auggie",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.augment/settings.json",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": ".*", "metadata": {"includeMCPMetadata": true}, "hooks": [{"type": "command", "command": "{command}", "timeout": 120000}]}
+        }
+      ],
+      "notes": ["The timeout is in milliseconds.", "No fail-closed switch for hooks."]
+    },
+    {
+      "agent": "copilot-cli",
+      "name": "Copilot CLI",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" copilot-cli pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.copilot"],
+      "cli": "copilot",
+      "steps": [
+        {
+          "kind": "owned-file",
+          "path": "~/.copilot/hooks/derm.json",
+          "homeEnv": "COPILOT_HOME",
+          "content": {"version": 1, "hooks": {"preToolUse": [{"type": "command", "bash": "{command}", "timeoutSec": 120}]}}
+        }
+      ],
+      "notes": ["A crash or non-zero exit denies; a timeout always lets the call run."]
+    },
+    {
+      "agent": "grok",
+      "name": "Grok Build",
+      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" grok pre",
+      "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.grok"],
+      "cli": "grok",
+      "steps": [
+        {
+          "kind": "owned-file",
+          "path": "~/.grok/hooks/derm.json",
+          "content": {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120, "failClosed": true}]}]}}
+        },
+        {
+          "kind": "toml-set",
+          "path": "~/.grok/config.toml",
+          "table": ["compat", "claude"],
+          "values": {"hooks": false}
+        },
+        {
+          "kind": "toml-set",
+          "path": "~/.grok/config.toml",
+          "table": ["compat", "cursor"],
+          "values": {"hooks": false}
+        }
+      ],
+      "notes": [
+        "failClosed exists from Grok 1.0.71; 1.0.70 ignores it and fails open.",
+        "Grok also runs hooks from Claude Code's and Cursor's files; the compat switches stop a second derm gate (case 75). --ungate leaves them off.",
+        "User hooks run only in a trusted folder."
+      ]
+    },
+    {
+      "agent": "cursor",
+      "name": "Cursor CLI",
+      "package": "@aetiusgular/derm-hooks-native",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" cursor",
+      "source": "packages/derm-hooks-native/registration/cursor/hooks.json and README.md at lane/N-hooks-native 85592cf",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.cursor"],
+      "cli": "cursor-agent",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.cursor/hooks.json",
+          "format": "json",
+          "array": ["hooks", "preToolUse"],
+          "createWith": {"version": 1},
+          "entry": {"type": "command", "command": "{command}", "timeout": 120, "failClosed": true}
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.cursor/hooks.json",
+          "format": "json",
+          "array": ["hooks", "beforeMCPExecution"],
+          "createWith": {"version": 1},
+          "entry": {"type": "command", "command": "{command}", "timeout": 120, "failClosed": true}
+        }
+      ],
+      "notes": ["Not run against the real CLI (it needs an account, call 8)."]
+    },
+    {
+      "agent": "antigravity",
+      "name": "Antigravity CLI",
+      "package": "@aetiusgular/derm-hooks-native",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" antigravity",
+      "source": "packages/derm-hooks-native/registration/antigravity/hooks.json and README.md at lane/N-hooks-native 85592cf",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.gemini/config"],
+      "steps": [
+        {
+          "kind": "json-member",
+          "path": "~/.gemini/config/hooks.json",
+          "format": "json",
+          "object": [],
+          "name": "derm",
+          "entry": {"enabled": true, "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120}]}]}
+        }
+      ],
+      "notes": ["The named hook `derm`; the file's other hooks are left alone.", "Not run against the real CLI (call 8)."]
+    },
+    {
+      "agent": "goose",
+      "name": "goose",
+      "package": "@aetiusgular/derm-hooks-native",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" goose",
+      "source": "packages/derm-hooks-native/registration/goose/derm/ at lane/N-hooks-native 85592cf",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.config/goose"],
+      "cli": "goose",
+      "steps": [
+        {
+          "kind": "plugin-folder",
+          "path": "~/.agents/plugins/derm",
+          "files": {
+            "plugin.json": {"name": "derm", "version": "{version}", "description": "derm policy gate: a PreToolUse hook that blocks when the gate fails (on_failure: block)"},
+            "hooks/hooks.json": {"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120, "on_failure": "block"}]}]}}
+          }
+        }
+      ],
+      "notes": ["goose loads project plugins in <project>/.agents/plugins with no trust prompt (case 78); derm writes only the user folder."]
+    },
+    {
+      "agent": "mistral-vibe",
+      "name": "Mistral Vibe",
+      "package": "@aetiusgular/derm-hooks-native",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" mistral-vibe",
+      "source": "packages/derm-hooks-native/registration/mistral-vibe/hooks.toml at lane/N-hooks-native 85592cf",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.vibe"],
+      "cli": "vibe",
+      "steps": [
+        {
+          "kind": "toml-array-entry",
+          "path": "~/.vibe/hooks.toml",
+          "array": "hooks",
+          "entry": {"name": "derm-gate", "type": "pre_tool", "command": "{command}", "timeout": 120.0, "strict": true, "description": "derm policy gate; strict, so a failed gate denies"}
+        }
+      ]
+    },
+    {
+      "agent": "crush",
+      "name": "Crush",
+      "package": "@aetiusgular/derm-hooks-native",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" crush",
+      "source": "packages/derm-hooks-native/registration/crush/crush.json at lane/N-hooks-native 85592cf",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.config/crush"],
+      "cli": "crush",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.config/crush/crush.json",
+          "xdgConfig": true,
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"name": "derm-gate", "command": "{command}", "timeout": 120}
+        }
+      ],
+      "notes": ["Crush lets a call through when a hook fails or times out (fails open, run by lane N)."]
+    },
+    {
+      "agent": "kiro",
+      "name": "Kiro CLI",
+      "package": "@aetiusgular/derm-hooks-native",
+      "hookFile": "bin/derm-hook.mjs",
+      "command": "{node} --no-warnings \"{hook_file}\" kiro",
+      "source": "packages/derm-hooks-native/registration/kiro/derm.json at lane/N-hooks-native 85592cf",
+      "marker": "derm-hook.mjs",
+      "installedIf": ["~/.kiro"],
+      "cli": "kiro-cli",
+      "steps": [
+        {
+          "kind": "owned-file",
+          "path": "~/.kiro/hooks/derm.json",
+          "content": {"version": "v1", "hooks": [{"name": "derm-gate", "description": "derm policy gate: exit 2 blocks the call, exit 0 prints nothing", "trigger": "PreToolUse", "action": {"type": "command", "command": "{command}"}, "timeout": 120, "enabled": true}]}
+        }
+      ],
+      "notes": ["Not run against the real CLI (call 8)."]
+    }
+  ]
+}

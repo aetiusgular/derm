@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "name": "derm-gate",
+        "command": "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" crush",
+        "timeout": 120
+      }
+    ]
+  }
+}

@@ -10,17 +10,20 @@
     "orcaId": "antigravity",
     "gate": {
       "family": "command-hook",
-      "where": "a named bundle in ~/.gemini/config/hooks.json (shared with the app and IDE), PreToolUse",
-      "status": "planned",
+      "where": "a named hook \"derm\" in ~/.gemini/config/hooks.json (shared with the app), PreToolUse (packages/derm-hooks-native/registration/antigravity/hooks.json)",
+      "status": "built",
       "wave": 4,
-      "lane": "N"
+      "lane": "N",
+      "package": "packages/derm-hooks-native"
     },
     "failMode": "unknown",
     "failSwitch": null,
     "ask": "own-prompt",
     "shellAliases": [
-      "run_command"
+      "run_command",
+      "manage_task"
     ],
-    "verifiedAt": "changelog 1.4.8, docs"
+    "verifiedAt": "docs and CHANGELOG 1.4.12, 3 Nov 2026; unverified, not run",
+    "note": "ask is sent as force_ask so a remembered Always Allow cannot answer it; a failed hook is reported to block by third parties only; manage_task counts as shell only for Action send_input; MCP naming not in the vendor's docs, a call_mcp_tool with no readable server asks"
   }
 }

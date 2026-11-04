@@ -15,29 +15,14 @@
 /// decoded by some SDKs) cannot mangle it.
 pub const TOKEN_HEADER: &str = "x-derm-token";
 
-/// Harness ids a chat token may be minted for: the ids of
-/// the preset table's `harnesses` list (`crates/derm-cli/src/connect/presets/`;
-/// 14 rows at session 0's base).
-pub const HARNESS_IDS: &[&str] = &[
-    "claude-code",
-    "codex",
-    "pi",
-    "opencode",
-    "gemini",
-    "cursor",
-    "hermes",
-    "openclaw",
-    "goose",
-    "qwen-code",
-    "copilot-cli",
-    "amp",
-    "crush",
-    "zed",
-];
+/// Harness ids a chat token may be minted for: `derm_core::harness::IDS`,
+/// the preset table's ids in both lists and `other` (Mac test w4, MW4-6:
+/// this was a copy of session 0's 14 ids).
+pub const HARNESS_IDS: &[&str] = derm_core::harness::IDS;
 
 /// The known harness id `name` names, as a `'static` string, or `None`.
 pub fn harness_id(name: &str) -> Option<&'static str> {
-    HARNESS_IDS.iter().copied().find(|id| *id == name)
+    derm_core::harness::id(name)
 }
 
 /// How often Claude Code flushes its log batch, in milliseconds. Short, so a

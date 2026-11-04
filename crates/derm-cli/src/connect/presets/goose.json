@@ -39,16 +39,19 @@
     "orcaId": "goose",
     "gate": {
       "family": "plugin",
-      "where": "plugin ~/.agents/plugins/<derm>/hooks/hooks.json, PreToolUse",
-      "status": "planned",
+      "where": "plugin ~/.agents/plugins/derm/ (plugin.json, hooks/hooks.json), PreToolUse, on_failure: block (packages/derm-hooks-native/registration/goose/derm/)",
+      "status": "built",
       "wave": 4,
-      "lane": "N"
+      "lane": "N",
+      "package": "packages/derm-hooks-native"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "on_failure: \"block\"",
     "ask": "approver-or-deny",
-    "shellAliases": [],
-    "verifiedAt": "1.56.0, source",
-    "note": "Auto mode, the default, asks nothing; derm run sets GOOSE_MODE=approve when the policy has asks"
+    "shellAliases": [
+      "shell"
+    ],
+    "verifiedAt": "1.57.0, run",
+    "note": "hooks run in every mode, Auto (the default) and GOOSE_MODE=auto included (run); a killed gate blocks (run); calls a code_execution script makes through tools.call skip PreToolUse (read, not run), so only the outer execute_javascript call is gated; project plugins in <project>/.agents/plugins load with no trust prompt"
   }
 }

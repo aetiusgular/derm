@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_running_daemon_gets_hello_then_one_event() {
-        let d = scratch("daemon");
+        let (d, _gone) = sock_scratch();
         let sock = d.join("daemon.sock");
         private_token(&d);
         let listener = UnixListener::bind(&sock).unwrap();
@@ -224,6 +224,32 @@ mod tests {
         assert!(!d.join("connect.log").exists());
     }
 
+    /// A folder for a socket test. A Unix socket's path has room for 104
+    /// bytes on macOS and 108 on Linux, and macOS's `$TMPDIR` under
+    /// `/var/folders/` takes about half, so `scratch`'s long names did not
+    /// fit there (Mac test w4, MW4-3). `/tmp` with a short name does, on both.
+    struct Gone(std::path::PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sock_scratch() -> (std::path::PathBuf, Gone) {
+        let base = if Path::new("/tmp").is_dir() {
+            std::path::PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let d = base.join(format!(
+            "dl-{}-{}",
+            std::process::id(),
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        (d.clone(), Gone(d))
+    }
+
     fn private_token(d: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let t = d.join("daemon.token");
@@ -237,7 +263,7 @@ mod tests {
     #[test]
     fn a_token_others_could_write_is_not_used() {
         use std::os::unix::fs::PermissionsExt;
-        let d = scratch("loosetoken");
+        let (d, _gone) = sock_scratch();
         let sock = d.join("daemon.sock");
         let t = d.join("daemon.token");
         std::fs::write(&t, "1".repeat(64)).unwrap();
@@ -257,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_daemon_that_refuses_falls_back_to_the_file() {
-        let d = scratch("refuse");
+        let (d, _gone) = sock_scratch();
         let sock = d.join("daemon.sock");
         private_token(&d);
         let listener = UnixListener::bind(&sock).unwrap();

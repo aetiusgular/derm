@@ -144,6 +144,23 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
         (Some(p), true) => Some(probe_version(p)),
         _ => None,
     };
+    // Case 81: the installed version against the row's (`derm doctor` does
+    // the same, with the gate run too).
+    let verified = s(&cov, "verifiedAt");
+    let version_state = match (
+        installed_version
+            .as_deref()
+            .and_then(crate::doctor::version_token),
+        crate::doctor::version_token(&verified),
+    ) {
+        (Some(have), Some(want)) if have == want => Value::from("matches"),
+        (Some(have), Some(_)) => Value::from(format!("unverified at {have}")),
+        _ => Value::Null,
+    };
+    let doctor = env
+        .home
+        .as_deref()
+        .and_then(|h| last_doctor(&crate::doctor::report_path(h, &id)));
     json!({
         "id": id,
         "name": s(row, "name"),
@@ -165,8 +182,48 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
         "cli": cli,
         "onPath": found.as_ref().map(|p| p.display().to_string()),
         "installedVersion": installed_version,
+        "versionState": version_state,
+        "doctor": doctor,
         "note": cov.get("note").cloned().unwrap_or(Value::Null),
     })
+}
+
+/// The last `derm doctor` report for an agent, as `derm status` shows it:
+/// when, which versions, and how many things it found to look at. Read only
+/// from a regular file of yours under 64 KiB; anything else is not shown.
+fn last_doctor(path: &Path) -> Option<Value> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // One open that follows no link at the file's place, and the checks on
+    // what was opened, so nothing can be swapped in between (security
+    // review L19).
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let m = f.metadata().ok()?;
+    // SAFETY: getuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    if !m.file_type().is_file() || m.len() > 64 * 1024 || m.uid() != uid {
+        return None;
+    }
+    let mut text = String::new();
+    f.take(64 * 1024).read_to_string(&mut text).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let problems: Vec<Value> = v
+        .get("problems")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().take(8).cloned().collect())
+        .unwrap_or_default();
+    Some(json!({
+        "at": v.get("at").and_then(Value::as_i64),
+        "derm": v.get("derm").and_then(Value::as_str).map(|s| clean(s, 32)),
+        "installed": v.pointer("/version/installed").and_then(Value::as_str).map(|s| clean(s, 40)),
+        "gateRun": v.pointer("/gateRun/state").and_then(Value::as_str).map(|s| clean(s, 16)),
+        "problems": problems.len(),
+        "firstProblem": problems.first().and_then(Value::as_str).map(|s| clean(s, 200)),
+    }))
 }
 
 /// A program name with no folder part: what a row's `cli` must be.
@@ -479,7 +536,12 @@ pub fn render(rows: &[Value], daemon: &Value) -> String {
             r.get("onPath").and_then(Value::as_str),
             r.get("installedVersion").and_then(Value::as_str),
         ) {
-            (Some(_), Some(v)) => clean(v, 40),
+            (Some(_), Some(v)) => match r.get("versionState").and_then(Value::as_str) {
+                Some(state) if state.starts_with("unverified") => {
+                    format!("{} ({})", clean(v, 40), clean(state, 40))
+                }
+                _ => clean(v, 40),
+            },
             (Some(_), None) => "on PATH (not probed)".into(),
             (None, _) if r.get("cli").map(Value::is_null).unwrap_or(true) => "-".into(),
             (None, _) => "not found".into(),
@@ -520,6 +582,36 @@ pub fn render(rows: &[Value], daemon: &Value) -> String {
         out.push_str("\nregistration:\n");
         for n in notes {
             out.push_str(&n);
+            out.push('\n');
+        }
+    }
+    let doctors: Vec<String> = rows
+        .iter()
+        .filter_map(|r| {
+            let d = r.get("doctor").filter(|d| !d.is_null())?;
+            let when = d
+                .get("at")
+                .and_then(Value::as_i64)
+                .map(clock)
+                .unwrap_or_else(|| "?".into());
+            let n = d.get("problems").and_then(Value::as_u64).unwrap_or(0);
+            let what = match (n, d.get("firstProblem").and_then(Value::as_str)) {
+                (0, _) => "nothing to do".to_string(),
+                (n, Some(first)) => format!("{n} to look at, first: {first}"),
+                (n, None) => format!("{n} to look at"),
+            };
+            Some(format!(
+                "  {}: {when}, derm {}, gate run {}: {what}",
+                clean(&s(r, "id"), 14),
+                d.get("derm").and_then(Value::as_str).unwrap_or("?"),
+                d.get("gateRun").and_then(Value::as_str).unwrap_or("?"),
+            ))
+        })
+        .collect();
+    if !doctors.is_empty() {
+        out.push_str("\nlast derm doctor reports:\n");
+        for d in doctors {
+            out.push_str(&d);
             out.push('\n');
         }
     }
@@ -632,12 +724,30 @@ fn render_daemon(d: &Value) -> String {
                     Some(false) => "gone, no run.stop",
                     None => "pid unknown",
                 };
-                let full = c
+                // Case 83: the words, so you see which agent's approvals
+                // are off; derm's gate turns an ask into a deny there.
+                let full_words: Vec<String> = c
                     .get("fullAccessFlags")
                     .and_then(Value::as_array)
-                    .filter(|a| !a.is_empty())
-                    .map(|_| ", full-access flags")
-                    .unwrap_or("");
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .take(4)
+                            .map(|w| clean(w, 48))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let full_text = if full_words.is_empty() {
+                    String::new()
+                } else {
+                    // Security review L6; since integration w4 the hook
+                    // core acts on DERM_FULL_ACCESS too (lane R's request 1).
+                    format!(
+                        ", FULL ACCESS ({}): derm's hook gates deny what they would ask (derm-pi shows its own card)",
+                        full_words.join(" ")
+                    )
+                };
+                let full = full_text.as_str();
                 out.push_str(&format!(
                     "    {}  {:<12} boundary {:<5} since {}  {}{}\n",
                     clean(s("chat"), 24),
@@ -689,6 +799,66 @@ mod tests {
         assert!(!out.contains('\u{1b}'), "{out}");
     }
 
+    /// Lane R (T2.9): a probed version other than the row's says
+    /// "unverified at" (case 81); the last `derm doctor` report is shown; a
+    /// running chat in full access names its flags (case 83).
+    #[test]
+    fn status_shows_unverified_versions_doctor_reports_and_full_access() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("derm-status-r-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let claude = bin.join("claude");
+        std::fs::write(&claude, "#!/bin/sh\necho '2.1.318 (Claude Code)'\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        crate::doctor::save(
+            &home,
+            &serde_json::json!({"agent": "codex", "at": 1_700_000_000_000i64, "derm": "0.1.3",
+                "gateRun": {"state": "pass"}, "version": {"installed": "0.166.0"},
+                "problems": ["codex 0.166.0 is not the version derm's row was verified at (0.163.0): unverified at 0.166.0"]}),
+        )
+        .unwrap();
+        let mut e = env(&home);
+        e.path = bin.to_string_lossy().into_owned();
+        let rows = agents(&e, true);
+        let cc = rows.iter().find(|r| r["id"] == "claude-code").unwrap();
+        assert_eq!(cc["versionState"], "unverified at 2.1.318");
+        let cx = rows.iter().find(|r| r["id"] == "codex").unwrap();
+        assert_eq!(cx["doctor"]["problems"], 1);
+        assert_eq!(cx["doctor"]["gateRun"], "pass");
+        let daemon = serde_json::json!({
+            "running": true,
+            "daemon": {"version": "0.1.3", "protocol": 1},
+            "chats": [{"chat": "derm-aaaaaaaaaaaa", "harness": "claude-code", "boundary": "none", "alive": true,
+                       "fullAccessFlags": ["--dangerously-skip-permissions"]}]
+        });
+        let out = render(&rows, &daemon);
+        assert!(
+            out.contains("2.1.318 (Claude Code) (unverified at 2.1.318)"),
+            "{out}"
+        );
+        assert!(out.contains("last derm doctor reports:"), "{out}");
+        assert!(
+            out.contains("codex: ") && out.contains("1 to look at, first: codex 0.166.0"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "FULL ACCESS (--dangerously-skip-permissions): derm's hook gates deny what they would ask (derm-pi shows its own card)"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("still asks"), "{out}");
+        // Without --probe nothing is run and nothing is judged.
+        let rows = agents(&e, false);
+        let cc = rows.iter().find(|r| r["id"] == "claude-code").unwrap();
+        assert!(cc["versionState"].is_null());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn every_preset_row_has_a_status_row() {
         let table: Value = serde_json::from_str(crate::connect::presets::table_json()).unwrap();
@@ -721,10 +891,18 @@ mod tests {
             "{}",
             line("gemini")
         );
+        // Droid's gate is built since wave 4 (lane L) and fails open; Rovo
+        // Dev has no gate after wave 4 (lane Q found no hook) and stays the
+        // planned example (integration w4, lane L's request 3).
         assert!(
-            line("droid").contains("planned, wave 4 lane L"),
+            line("droid").contains("built (command-hook)") && line("droid").contains("FAILS OPEN"),
             "{}",
             line("droid")
+        );
+        assert!(
+            line("rovo-dev").contains("planned, wave 4 lane Q"),
+            "{}",
+            line("rovo-dev")
         );
         assert!(line("copilot-cli").contains("on timeout"));
         assert!(line("zed").contains("no in-harness gate"));

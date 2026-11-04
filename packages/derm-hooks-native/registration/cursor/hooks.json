@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "command": "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" cursor",
+        "timeout": 120,
+        "failClosed": true
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "type": "command",
+        "command": "node --no-warnings \"<derm-hooks-native>/bin/derm-hook.mjs\" cursor",
+        "timeout": 120,
+        "failClosed": true
+      }
+    ]
+  }
+}

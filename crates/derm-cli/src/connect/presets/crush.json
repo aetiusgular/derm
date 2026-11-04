@@ -40,15 +40,17 @@
     "orcaId": "crush",
     "gate": {
       "family": "command-hook",
-      "where": "hooks in ~/.config/crush/crush.json, PreToolUse",
-      "status": "planned",
+      "where": "hooks.PreToolUse in ~/.config/crush/crush.json (packages/derm-hooks-native/registration/crush/crush.json)",
+      "status": "built",
       "wave": 4,
-      "lane": "N"
+      "lane": "N",
+      "package": "packages/derm-hooks-native"
     },
     "failMode": "open",
     "failSwitch": null,
     "ask": "approver-or-deny",
     "shellAliases": [],
-    "verifiedAt": "0.98.2, source"
+    "verifiedAt": "0.99.0, run",
+    "note": "a crashed, killed or timed-out hook is no opinion and the call runs (run); sub-agents' calls fire no hook, only the outer call; crush run approves its whole session and --yolo the TUI's, and the hook still runs (run); MCP names mcp_<server>_<tool> are split with the configured server names and ask when that cannot be settled"
   }
 }

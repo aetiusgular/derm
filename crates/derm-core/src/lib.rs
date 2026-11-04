@@ -9,6 +9,7 @@
 //! `contracts/fixtures/policy/cases.json`.
 
 pub mod event;
+pub mod harness;
 #[cfg(unix)]
 pub mod peer;
 #[rustfmt::skip]

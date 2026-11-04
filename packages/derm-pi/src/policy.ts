@@ -269,7 +269,8 @@ export function splitInDoubt(raw: string, lowered: string, prefix: number, serve
 export function narrowingNames(raw: string, servers: readonly string[], harness?: string): { names: string[]; ambiguous: boolean } {
   const primary = normalizeToolName(raw, servers, harness);
   const slash = primary.indexOf("/");
-  if (slash < 0) return { names: [], ambiguous: false };
+  // A shell under another name is also `bash` (integration w4; the hook core's rule).
+  if (slash < 0) return { names: primary !== "bash" && SHELL_TOOLS.has(primary) ? ["bash"] : [], ambiguous: false };
   const names = new Set<string>();
   let ambiguous = false;
   const lowered = lowerName(raw);
@@ -360,6 +361,11 @@ export const SHELL_TOOLS = new Set([
   "user_bash",
   "terminal",
   "powershell",
+  // Added by integration w4, as in the hook core (lanes L and P): each
+  // one's other name is `bash` (narrowingNames).
+  "monitor",
+  "shell_command",
+  "run_commands",
 ]);
 
 /**
@@ -446,7 +452,122 @@ export const CONTROL_PATH_MARKERS = [
   "pi_coding_agent_dir",
   "pi_config_dir",
   "derm_pi_freeze_input",
+  // Wave 4's agents (lanes L, N and P's requests, folded in by integration
+  // w4): each one's config, hook and plugin folders and the variables that
+  // move them or switch the gate off. Sources per agent in each package's
+  // src/control.ts and in plans/parallel/tk_lane_L.md, tk_lane_N.md and
+  // tk_lane_P.md. Kimi Code's folder is `.kimi-code/` in lane L's run of
+  // 2.4.1 and `.kimi/` in lane Q's reading of 1.52.0; both are listed.
+  ".openclaude/",
+  ".openclaude.json",
+  "openclaude_config_dir",
+  ".qwen/",
+  "qwen_home",
+  "qwen_code_system_settings",
+  ".factory/",
+  "factory_home_override",
+  ".commandcode/",
+  ".kimi-code/",
+  "kimi_code_home",
+  ".kimi/",
+  "kimi_share_dir",
+  ".augment/",
+  ".copilot/",
+  "copilot_home",
+  ".grok/",
+  "grok_claude_hooks_enabled",
+  "grok_cursor_hooks_enabled",
+  "grok_home",
+  ".cursor/",
+  "cursor/hooks.json",
+  ".agents/hooks.json",
+  ".agents/plugins/",
+  ".config/goose/",
+  "goose_path_root",
+  "goose_mode",
+  "goose_disable_keyring",
+  ".vibe/",
+  "vibe_home",
+  ".config/crush/",
+  ".local/share/crush/",
+  "crushrc",
+  "crush.json",
+  "crush_global_config",
+  "crush_global_data",
+  ".kiro/",
+  "kiro_home",
+  ".config/amp/",
+  ".amp/",
+  "amp/plugins",
+  "xdg_config_home",
+  "ampcode/",
+  "dangerouslyallowall",
+  ".cline/",
+  "documents/cline/",
+  ".clinerules",
+  "cline_dir",
+  "cline_data_dir",
+  "cline_tool_approval",
+  "cline_plugin_",
+  "cline-approvals/",
+  "derm-approval/",
 ] as const;
+
+// A folder entry's bare name, for `mv ~/.derm old` and `cd ~/.derm && cp x
+// policy.json` (rename review F1; lane L's C-1 and L-S4, lane P's P-S4):
+// only for a folder that starts with `.` or holds a `/`, so `gemini-cli` in
+// `npm install @google/gemini-cli` is not one, and only where the name stands
+// alone: no name character runs into it on the left (`math.pi`) or on the
+// right (`.qwenrc`, `.factory-notes`). Anything else after it counts (end,
+// space, quote, `;`, `.bak`), which only ever narrows. derm-pi and derm-core
+// match the same way; the policy fixtures hold the three equal.
+const NAME_CHAR = /[a-z0-9_-]/;
+const LEFT_NAME_CHAR = /[a-z0-9_.-]/;
+
+/** Whether folded `text` names the control path `entry` (contract section 4, step 7a). */
+// The path the shell opens is the same with `//` or `/./` in it, so a
+// control path is also looked for in the text with those collapsed to `/`
+// (review W4-S5). Only ever adds an ask.
+export function withCollapsedSlashes(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) {
+    const c = t.replace(/\/(?:\.?\/)+/g, "/");
+    if (c !== t) out.push(c);
+    const d = withoutDotDot(c);
+    if (d !== c) out.push(d);
+  }
+  return out;
+}
+
+/**
+ * `a/b/../c` read as `a/c`, lexically: each `..` part drops the part before
+ * it unless that is empty, `.` or `..` (re-review W4-R4). One pass over the
+ * parts, so linear; the text is the whole input, so a part may hold spaces,
+ * and a wrong drop only adds a text to look in.
+ */
+export function withoutDotDot(text: string): string {
+  if (!text.includes("..")) return text;
+  const out: string[] = [];
+  for (const part of text.split("/")) {
+    const last = out[out.length - 1];
+    if (part === ".." && last !== undefined && last !== "" && last !== "." && last !== "..") out.pop();
+    else out.push(part);
+  }
+  return out.join("/");
+}
+
+export function namesControlPath(text: string, entry: string): boolean {
+  if (text.includes(entry)) return true;
+  if (!entry.endsWith("/")) return false;
+  const base = entry.slice(0, -1);
+  if (!(base.startsWith(".") || base.includes("/"))) return false;
+  for (let i = text.indexOf(base); i >= 0; i = text.indexOf(base, i + 1)) {
+    const prev = i === 0 ? undefined : text[i - 1];
+    const next = text[i + base.length];
+    if ((prev === undefined || !LEFT_NAME_CHAR.test(prev)) && (next === undefined || !NAME_CHAR.test(next))) return true;
+  }
+  return false;
+}
 
 const GIT_WORD = /(^|[^a-z0-9_])git(?![a-z0-9_])/g;
 
@@ -555,7 +676,8 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
   }
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
-  const control = CONTROL_PATH_MARKERS.find((m) => folded.includes(m) || unquoted.includes(m));
+  const texts = withCollapsedSlashes([folded, unquoted]);
+  const control = CONTROL_PATH_MARKERS.find((m) => texts.some((t) => namesControlPath(t, m)));
   if (control !== undefined) {
     return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   }

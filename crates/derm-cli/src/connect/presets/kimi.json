@@ -10,15 +10,17 @@
     "orcaId": "kimi",
     "gate": {
       "family": "command-hook",
-      "where": "[[hooks]] in ~/.kimi-code/config.toml, exactly four keys",
-      "status": "planned",
+      "where": "[[hooks]] in ~/.kimi-code/config.toml, keys event, command, timeout",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "open",
     "failSwitch": null,
     "ask": "approver-or-deny",
-    "shellAliases": [],
-    "verifiedAt": "2.3.3, npm"
+    "shellAliases": ["powershell"],
+    "verifiedAt": "2.4.1, run (cloud, fake chat server)",
+    "note": "an unknown key in one hooks entry drops the whole hooks section (run); reads only a deny"
   }
 }

@@ -28,6 +28,21 @@ fn managed_path_line(preset: &Preset, macos: bool) -> String {
     }
 }
 
+/// The managed fragment the gate's own plugin ships for this harness: it
+/// force-enables the plugin and lets only managed hooks run (Claude Code), or
+/// pins the servers' identities (Codex). Printed as the package holds it.
+pub fn plugin_fragment(harness: &str) -> Option<&'static str> {
+    match harness {
+        "claude-code" => Some(include_str!(
+            "../../../../packages/derm-claude-plugin/managed-settings.fragment.json"
+        )),
+        "codex" => Some(include_str!(
+            "../../../../packages/derm-codex-plugin/requirements.fragment.toml"
+        )),
+        _ => None,
+    }
+}
+
 /// The fragment, with a comment naming the file it belongs in.
 pub fn fragment(preset: &Preset, spec: &ServerSpec, macos: bool) -> Result<String, String> {
     let mut out = managed_path_line(preset, macos);

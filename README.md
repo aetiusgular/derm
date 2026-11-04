@@ -26,15 +26,19 @@ Read these before relying on derm. Each is tracked in the status docs under `pla
 | Item | Risk | What | Until fixed |
 |---|---|---|---|
 | S2 | High | An approver started outside an agent's process tree (a double fork, `setsid`, a terminal multiplexer) can answer that agent's `ask`s | Run `derm watch --approve` only from your own terminal. Computer use is not shipped because of it |
-| W2-R1 | Medium | OpenCode's, Kilo's and oh-my-pi's single-underscore tool names cannot tell `exa_evil` from `exa` (owner: wave 4 lane Q) | Give servers names without `_` or `-` in those agents |
-| Fails open | Medium | Codex lets a call through when its hook process dies; Gemini CLI on every hook failure | `derm status` marks them; Gemini's user policy file is the second layer |
-| S6 | Medium | Under `derm run --boundary srt`, the agent's whole state folder is writable, and it holds the gate's own switches, so an agent inside srt can switch derm off for its next session (owner: wave 4 lane R) | Use `sbx` where that matters |
+| W2-R1 | Medium | OpenCode's, Kilo's and oh-my-pi's single-underscore tool names cannot tell `exa_evil` from `exa`. `derm connect` refuses to add such a name and `--check-names` lists the pairs it finds; the gate itself does not compare against your configured servers, so a project file can still add one (owner: the next `derm connect` work, request Q3 in `plans/parallel/tk_integration_w4.md`) | Give servers names without `_` or `-` in those agents; run `derm connect <agent> --check-names` |
+| Fails open | Medium | Codex, Gemini CLI, OpenClaude, Qwen Code, Droid, Kimi Code, Auggie, Crush and Cline let a call through when the gate dies or times out, with no switch; Copilot CLI on a timeout | `derm status` marks them; `derm connect <agent> --rules` writes your denies into Codex's, Gemini's, OpenClaude's and Qwen's own rules as a second layer |
+| L10 | Medium | Under `derm run --boundary srt`, Cline can write a decision file in the approval folder its responder reads (owner: the Cline adapter, lane P's card) | Run Cline with `--boundary none` and derm's plugin as its gate, or keep asks out of its policy |
+| N1 | Medium | If Cursor's CLI does not fire `beforeMCPExecution`, its MCP calls are not gated; only a deny by bare tool name holds (owner: the Mac test w4) | Deny Cursor's MCP tools by name, or do not rely on derm for Cursor's MCP calls until the Mac test says it fires |
 | Chat token | Medium, by design | A chat's token sits in the agent's environment, so the agent's shell can read it and post records into its own chat. It cannot approve, mint tokens, read other chats or switch the OS feed off | Treat a chat's own records as what that chat's processes said; OS-feed, run and approval records cannot be posted with it |
 | Redactors | Medium | Secret redaction in run records, the OS feed and `derm connect`'s output is best-effort: multi-line TOML and YAML values and a key and value on two lines can still print | Keep `DERM_LOG_CONTENT` off; read a dry run before `--write` |
 | Later hooks | Low to medium | In oh-my-pi, Kilo, Gemini CLI and Hermes a hook or extension that runs after derm's can still change a call's input after derm decided | Do not install other tool-call hooks beside derm's there |
 | io_uring | Low to medium | File opens and connects done through io_uring are not seen by the auditd feed | None in this release |
 | S16 | Low | The managed Claude Code fragment force-enables `derm@derm` without pinning where the `derm` marketplace comes from (owner: the Claude Code adapter) | Pin the source in managed settings ([the agents page](docs/install/agents.md#claude-code-under-managed-settings)) |
-| S12 | Low | A catalog entry's `{anything}` placeholder becomes `${ANYTHING}`, so a stranger's entry could send any variable in your environment to its host (owner: wave 4 lane Q) | `derm connect` shows it in the diff and writes only on `--write` and a yes in your terminal: read the header lines |
+| Gemini's backstop | Low | Gemini's own rules in the extension cannot read past an escaped quote in a command (`\"`), because Gemini drops a rule written with the pattern that would (its own regex check); the hook still asks there, but not when the hook has died | None in this release |
+| Gemini's printout | Low | When a deny in your policy reaches Gemini's shell, `derm-gemini-policy` keeps a `bash` ask at its own rank, which can still outrank that deny if the ask is scoped to Gemini and the deny is not; Gemini then asks where derm's hook denies (W4-R5; the hook still runs first) | Scope the deny the same way as the ask, or read the printout before saving it |
+| S12's residue | Low | A catalog entry's header now names only a variable under its own server's prefix (`DERM_<SERVER>__<VAR>`, wave 4), so it cannot read `GITHUB_TOKEN`; an entry that takes the name of a server you already use (with `--replace`) reads that server's variables | `derm connect` shows it in the diff and writes only on `--write` and a yes in your terminal: read the header lines |
+| W4-S5's residue | Low | The gate's control-file check does not see a command that changes into the folder above a control folder and names its last part (`cd ~/.config && rm -rf goose`), or the daemon's runtime folder itself (`rm -r /run/user/<uid>/derm`); `//`, `/./` and `<folder>/..` are read since integration w4 | `bash: allow` is full user power; keep the shell on ask where that matters |
 | S15 | Low | Codex's hooks put `${PLUGIN_ROOT}` into a shell string, and Codex lets the call through if that shell cannot find `node` (exit 127) (owner: `derm doctor`, wave 4 lane R) | Check that `node` resolves from the shell Codex runs hooks in |
 | BW2's residue | Low | A record the agent posts under an id of its own still counts in the chat's totals (a second decision for the same call is flagged) | Read `derm watch report`'s `GATE CONFLICT` lines |
 | W2-S10 | Low | `trust.yml` installs its scanners without `--require-hashes` (owner: the release session; manual runs only) | Run `trust.yml` only by hand. W2-S8, W2-S9's residue and W2-S11's info items are in `plans/parallel/tk_integration_w2.md` |
@@ -48,12 +52,12 @@ Read these before relying on derm. Each is tracked in the status docs under `pla
 |---|---|
 | `crates/derm-core` | Shared types: policy, event, token; the Rust matcher |
 | `crates/derm-daemon` | The OTLP receiver, the activity log, the socket server, the approval channel; computer use served on macOS (`derm-daemon cu-mcp`); the Mac collector's registration (`derm-daemon collector-plan`) |
-| `crates/derm-cli` | `derm connect`, `derm run`, `derm watch`, `derm status`, `derm cu`; `derm acp` and `derm doctor` are stubs for wave 4. The preset table is one file per agent in `src/connect/presets/` |
+| `crates/derm-cli` | `derm connect`, `derm run`, `derm watch`, `derm status`, `derm cu`, `derm acp` and `derm doctor` (the last two wave 4's). The preset table is one file per agent in `src/connect/presets/` |
 | `crates/derm-audit-linux` | The Linux OS feed from auditd (`derm-audit-feed`) |
 | `packages/derm-pi` | The Pi package (also oh-my-pi's): gate, emitter, memory extension |
 | `packages/derm-claude-plugin`, `derm-codex-plugin`, `derm-opencode-plugin` | Claude Code, Codex and OpenCode adapters; the canonical hook core is `derm-claude-plugin/src/core/` |
 | `packages/derm-gemini-extension`, `derm-hermes-plugin`, `derm-openclaw-plugin`, `derm-kilo-plugin` | Gemini CLI, Hermes Agent, OpenClaw and Kilo Code adapters (wave 2) |
-| `packages/derm-hooks-claude-compat`, `derm-hooks-native`, `derm-amp-plugin`, `derm-cline` | Scaffolds for wave 4 (the hook core is synced in; nothing runs yet) |
+| `packages/derm-hooks-claude-compat`, `derm-hooks-native`, `derm-amp-plugin`, `derm-cline` | Wave 4's adapters: Claude-format command hooks for eight agents, own-dialect hooks for six, Amp's plugin, Cline's plugin and its approval-file responder. Each holds a synced copy of the hook core in `src/core/` |
 | `library/` | Schema, validator, exports, catalog, takedowns (`library/takedown/`, logged in `library/TAKEDOWNS.md`); the registry mirror (`library/mirror/`), publish (`library/publish/`), trust records (`library/trust/`), the static browser (`library/site/`) |
 | `contracts/` | What the parts agree on, with fixtures; `hook-dialects.md` for wave 4's agents |
 | `tests/cli-contract/` | Checks against the real harness CLIs with fake model servers |
@@ -78,29 +82,29 @@ How derm attaches to each agent in Orca's list. Tier G: derm registers a gate th
 | Hermes Agent | G | Python plugin `pre_tool_call` | Built, wave 2 (`packages/derm-hermes-plugin`). Unit tests only; Hermes itself not run (box test w2 4.3) |
 | oh-my-pi | G | `derm-pi`, installed with `omp install` | Built, wave 2. Contract checks pass against omp 18.13.3 in the cloud (lane I) |
 | Kilo Code | G | the OpenCode plugin with Kilo's paths | Built, wave 2 (`packages/derm-kilo-plugin`). Contract checks pass against Kilo 7.8.18 in the cloud |
-| OpenClaude | G, fails open | PreToolUse in `~/.openclaude/settings.json` | Planned, wave 4 |
-| Qwen Code | G, fails open | PreToolUse in `~/.qwen/settings.json` | Planned, wave 4 |
-| Droid | G, fails open | PreToolUse in `~/.factory/settings.json`, beside Orca's entry | Planned, wave 4; fixtures only without a seat. Contract and fixtures: `contracts/hook-dialects.md` |
-| Command Code | G | PreToolUse with `failClosed` | Planned, wave 4 |
-| Kimi Code | G, fails open | `[[hooks]]` in `~/.kimi-code/config.toml` | Planned, wave 4 |
-| Auggie | G, fails open | PreToolUse or a script policy | Planned, wave 4; fixtures only without a seat |
-| GitHub Copilot CLI | G, open on timeout | preToolUse in `~/.copilot/hooks/` | Planned, wave 4 |
-| Grok Build | G | PreToolUse in `~/.grok/hooks/` with `failClosed` | Planned, wave 4 |
-| Cursor CLI | G | `~/.cursor/hooks.json` with `failClosed` | Planned, wave 4; fixtures only without a seat |
-| Antigravity CLI | G, fail mode unknown | a bundle in `~/.gemini/config/hooks.json` | Planned, wave 4 |
-| goose | G | a plugin's PreToolUse with `on_failure: "block"` | Planned, wave 4 |
-| Mistral Vibe | G | `pre_tool` in `~/.vibe/hooks.toml` with `strict` | Planned, wave 4 |
-| Charm Crush | G, fails open | PreToolUse in `crush.json` | Planned, wave 4 |
-| Kiro CLI | G | a hook file in `~/.kiro/hooks/` | Planned, wave 4; fixtures only without a seat |
-| Amp | G, fail mode unknown | a Bun plugin (`tool.call`) | Planned, wave 4; fixtures only without a seat |
-| Cline CLI | G | the approval-file callback | Planned, wave 4 |
-| Continue | A | `~/.continue/permissions.yaml` | Planned, wave 4 |
-| Rovo Dev | A | `toolPermissions` in `~/.rovodev/config.yml` | Planned, wave 4; fixtures only without a seat |
-| Codebuff | O | `derm run`, the MCP file | Planned, wave 4 |
-| Any other CLI agent | O | `derm run -- <command>` | Planned, wave 4 |
+| OpenClaude | G, fails open | PreToolUse in `~/.openclaude/settings.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against OpenClaude 0.34.0 in the cloud (5 pass, 1 info: a killed gate lets the call run); full access not run as root |
+| Qwen Code | G, fails open | PreToolUse in `~/.qwen/settings.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Qwen Code 0.26.6 (7 pass, 1 info) |
+| Droid | G, fails open | PreToolUse in `~/.factory/settings.json`, beside Orca's entry (`packages/derm-hooks-claude-compat`); a `~/.factory/hooks.json` turns it off | Built, wave 4 (lane L). Contract checks pass against Droid 1.3.0 in airgap mode with a local model (5 pass, 2 info) |
+| Command Code | G | PreToolUse with `failClosed` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Fixtures only (needs an account): unverified at 1.88.2 |
+| Kimi Code | G, fails open | `[[hooks]]` in `~/.kimi-code/config.toml` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Kimi Code 2.4.1 (5 pass, 2 info: an unknown key drops every hook); `derm connect kimi --gate` prints, does not write |
+| Auggie | G, fails open | PreToolUse in `~/.augment/settings.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Fixtures only (needs an account): unverified at 0.36.0 |
+| GitHub Copilot CLI | G, open on timeout | `~/.copilot/hooks/derm.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Copilot CLI 1.0.105 offline (6 pass) |
+| Grok Build | G | `~/.grok/hooks/derm.json` with `failClosed`, compat imports off (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Grok 1.0.71 (7 pass); on 1.0.70 a killed gate lets the call run |
+| Cursor CLI | G | `~/.cursor/hooks.json`: preToolUse and beforeMCPExecution, `failClosed` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Fixtures from Cursor's docs; unverified until the Mac test w4 (the CLI is on Tony's Mac). An ask on a built-in tool goes to the approver or is denied |
+| Antigravity CLI | G, fail mode unknown | a named hook in `~/.gemini/config/hooks.json` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Fixtures from its docs only; not installed, not run (Tony's call) |
+| goose | G | a plugin folder's PreToolUse with `on_failure: "block"` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Contract checks pass against goose 1.57.0 (8 pass) |
+| Mistral Vibe | G | `pre_tool` in `~/.vibe/hooks.toml` with `strict` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Contract checks pass against Mistral Vibe 3.0.4 (6 pass) |
+| Charm Crush | G, fails open | PreToolUse in `~/.config/crush/crush.json` (`packages/derm-hooks-native`); sub-agents fire no hook | Built, wave 4 (lane N). Contract checks pass against Crush 0.99.0 (7 pass, 1 info: a killed gate lets the call run) |
+| Kiro CLI | G | `~/.kiro/hooks/derm.json` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Fixtures from its docs only; not installed, not run (Tony's call) |
+| Amp | G, fail mode unknown | a Bun plugin folder `~/.config/amp/plugins/derm/` (`packages/derm-amp-plugin`, `tool.call`) | Built, wave 4 (lane P). Unit tests against its type definitions; needs an account, not run: unverified |
+| Cline CLI | G, fails open | an SDK plugin `~/.cline/plugins/derm/` (`packages/derm-cline`, `beforeTool`) | Built, wave 4 (lane P). Contract checks pass against Cline 3.0.74 (13 pass, 1 info: the approval files never reach a responder in a prompt run) |
+| Continue | A | `derm connect continue` prints the MCP entry for `~/.continue/config.yaml` | Connect row verified at 1.5.47 (lane Q); no rule writer: its `permissions.yaml` is ignored under `--auto` and `--readonly` |
+| Rovo Dev | A | `toolPermissions` in `~/.rovodev/config.yml` | Planned. Its bash deny is not documented; no rule writer yet (lane Q); needs an account |
+| Codebuff | O | `derm connect codebuff` writes `~/.agents/mcp.json`; `derm run` as an unknown program | MCP file verified against its source at v1.0.679 and `main` (lane Q); 1.0.688 itself inferred |
+| Any other CLI agent | O | `derm run --boundary <b> -- <command>`, and `derm acp` for one that speaks ACP | Built, wave 4 (lane R): run end to end in the cloud; `derm acp` against Gemini CLI 0.66.0 in `--acp` mode |
 
 Outside Orca's grid: OpenClaw, tier G, `packages/derm-openclaw-plugin` (`before_tool_call`, derm runs last): built, wave 2, contract checks pass against OpenClaw 2026.10.8 in the cloud (lane I). Wave 4's agents' hook contracts and fixtures are in `contracts/hook-dialects.md`.
 
-Orca's ids differ for three agents: Orca says `claude`, `copilot` and `aug`; derm says `claude-code`, `copilot-cli` and (wave 4) Auggie's own id. The machine-readable form of this table is the preset table, one file per agent in `crates/derm-cli/src/connect/presets/` (the `coverage` field on each row; `index.json` lists the `harnesses` and the `planned` rows).
+Orca's ids differ for three agents: Orca says `claude`, `copilot` and `aug`; derm says `claude-code`, `copilot-cli` and `auggie`. Wave 4's install lines are in `docs/install/agents.md`; `derm connect <agent> --gate` writes most of them. The machine-readable form of this table is the preset table, one file per agent in `crates/derm-cli/src/connect/presets/` (the `coverage` field on each row; `index.json` lists the `harnesses` and the `planned` rows).
 
 MIT. See `NOTICE` for what was copied from where.

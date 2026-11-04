@@ -18,10 +18,10 @@
 //! Contract: `contracts/daemon-protocol.md` sections 2 and 3. Sources: the
 //! lane D status doc, Research.
 
-mod args;
+pub(crate) mod args;
 mod exec;
-mod harness;
-mod plan;
+pub(crate) mod harness;
+pub(crate) mod plan;
 mod policy_log;
 mod preflight;
 
@@ -39,6 +39,10 @@ use serde_json::json;
 use args::Boundary;
 
 const POLL: Duration = Duration::from_secs(2);
+/// Lane P's Cline approval responder, found on PATH (`packages/derm-cline`;
+/// the name and its `--dir <folder>` argument are lane R's request to lane
+/// P, recorded in `plans/parallel/tk_lane_R.md`).
+pub const CLINE_RESPONDER: &str = "derm-cline-responder";
 const POLICY_LOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What `derm run` reads from its own environment, gathered in one place so
@@ -59,6 +63,11 @@ struct RunEnv {
     /// `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` (BX3), when
     /// it exists.
     userns: Option<String>,
+    /// `GOOSE_MODE` as inherited, when set and not empty (T2.9).
+    goose_mode: Option<String>,
+    /// Lane P's Cline approval responder, by absolute path, when one is on
+    /// PATH (T2.9).
+    cline_responder: Option<String>,
 }
 
 impl RunEnv {
@@ -75,6 +84,12 @@ impl RunEnv {
                 "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
             )
             .ok(),
+            goose_mode: std::env::var("GOOSE_MODE").ok().filter(|v| !v.is_empty()),
+            cline_responder: crate::watch::status::find_on_path(
+                CLINE_RESPONDER,
+                &std::env::var("PATH").unwrap_or_default(),
+            )
+            .map(|p| p.to_string_lossy().into_owned()),
         }
     }
 
@@ -86,6 +101,28 @@ impl RunEnv {
             .unwrap_or(name)
     }
 }
+
+/// What `derm acp` is handed once the harness has started with piped stdin
+/// and stdout: the pipes, and what it needs to answer and record.
+pub(crate) struct Pipes {
+    pub stdin: std::process::ChildStdin,
+    pub stdout: std::process::ChildStdout,
+    pub chat: String,
+    pub harness: String,
+    /// The chat token `derm run` minted, for the adapter records.
+    pub token: Option<String>,
+    pub socket: Option<PathBuf>,
+    /// The policy file the gate reads.
+    pub policy: String,
+    /// Case 83: the run is in full access, so an `ask` becomes a deny.
+    pub full_access: bool,
+    /// The boundary is srt or sbx (security review L2).
+    pub confined: bool,
+}
+
+/// `derm acp`'s part: given the pipes, it starts its threads and returns
+/// them; `derm run` joins them after the harness exits.
+pub(crate) type StdioFilter<'a> = &'a dyn Fn(Pipes) -> Vec<std::thread::JoinHandle<()>>;
 
 pub fn main(argv: &[String]) -> u8 {
     match run(argv, &RunEnv::real()) {
@@ -215,7 +252,17 @@ fn regular_private_file(path: &Path) -> bool {
 /// plan appends last, keep their flag names and lose every other word to its
 /// length, unless `content` (Mac test w1, finding M8: a `-p "<prompt>"` sat
 /// in the activity log). Both go through the secret redactor (S13).
-fn recorded_argv(program: &str, args: &[String], rest: &[String], content: bool) -> Vec<String> {
+///
+/// `export` is where the OTel export's words sit in `args`: derm's, but its
+/// `--settings` value copies the user's own `--settings`, so the record keeps
+/// only its length, whatever `content` says (security review L5).
+fn recorded_argv(
+    program: &str,
+    args: &[String],
+    rest: &[String],
+    content: bool,
+    export: Option<std::ops::Range<usize>>,
+) -> Vec<String> {
     let mask = |w: &String| -> String {
         if content {
             return w.clone();
@@ -254,12 +301,224 @@ fn recorded_argv(program: &str, args: &[String], rest: &[String], content: bool)
         0
     };
     let mut out = vec![program.to_string()];
-    out.extend(args[..split].iter().cloned());
+    for (i, w) in args[..split].iter().enumerate() {
+        let settings = i > 0 && args[i - 1] == "--settings";
+        match &export {
+            Some(r) if r.contains(&i) && settings => {
+                out.push(format!("[derm otel settings, {} chars]", w.chars().count()))
+            }
+            _ => out.push(w.clone()),
+        }
+    }
     out.extend(args[split..].iter().map(mask));
     derm_audit_linux::redact::argv(&out)
 }
 
+/// `derm acp`'s entry: `derm run` with the harness's stdin and stdout
+/// handed to `filter` (T2.9).
+pub(crate) fn main_with(argv: &[String], filter: StdioFilter) -> u8 {
+    match run_io(argv, &RunEnv::real(), Some(filter)) {
+        Ok(code) => code,
+        Err((code, msg)) => {
+            eprintln!("derm acp: {msg}");
+            code
+        }
+    }
+}
+
 fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
+    run_io(argv, env, None)
+}
+
+/// A folder of the chat's alone: made 0700 with no link at its place, its
+/// parents made 0700 when new. Removed after the run.
+/// Every folder between `home` (left out) and `path` (left out) that exists
+/// is a real folder of this user's: no link, so nothing derm does to `path`
+/// lands in another folder (security review L11). A path outside `home` has
+/// its parent checked alone.
+fn no_link_above(path: &Path, home: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: getuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let (mut at, rest) = match parent.strip_prefix(home) {
+        Ok(rel) => (home.to_path_buf(), rel.to_path_buf()),
+        Err(_) => (PathBuf::new(), parent.to_path_buf()),
+    };
+    let parts: Vec<_> = rest.components().collect();
+    let skip = if at.as_os_str().is_empty() {
+        parts.len().saturating_sub(1)
+    } else {
+        0
+    };
+    for (n, c) in parts.iter().enumerate() {
+        at.push(c);
+        if n < skip {
+            continue;
+        }
+        match std::fs::symlink_metadata(&at) {
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() || m.uid() != uid => {
+                return Err(std::io::Error::other(format!(
+                    "{} is a link, not a folder, or not yours; derm will not make the chat's folder under it",
+                    at.display()
+                )))
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Removes the chat's folder made by `make_private_dir`, unless a link has
+/// appeared above it or at its place since. `true` when it was removed.
+fn remove_private_dir(path: &Path, home: &Path) -> bool {
+    if no_link_above(path, home).is_err() {
+        return false;
+    }
+    match std::fs::symlink_metadata(path) {
+        // `remove_dir_all` removes a link put inside, never its target.
+        Ok(m) if m.is_dir() && !m.file_type().is_symlink() => std::fs::remove_dir_all(path).is_ok(),
+        _ => false,
+    }
+}
+
+/// A folder of the chat's alone: made 0700 with no link at its place or
+/// above it, its parents made 0700 when new. Removed after the run.
+fn make_private_dir(path: &Path, home: &Path) -> std::io::Result<()> {
+    no_link_above(path, home)?;
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)?;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    no_link_above(path, home)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+            return Err(std::io::Error::other(format!(
+                "{} is in the way (not a folder)",
+                path.display()
+            )))
+        }
+        Ok(_) => {}
+        Err(_) => std::fs::create_dir(path)?,
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// What a run leaves to undo, on every way out of `run_io` (security review
+/// L12): the companion and its group stopped, the files and folders made
+/// for the chat removed.
+#[derive(Default)]
+struct Cleanup {
+    companion: Option<std::process::Child>,
+    files: Vec<PathBuf>,
+    /// Folders `make_private_dir` made, with the HOME they are checked from.
+    private_dirs: Vec<(PathBuf, PathBuf)>,
+    dirs: Vec<PathBuf>,
+    /// The OTel export wrote a helper script (it prints the chat token):
+    /// `remove_helpers` removes it and the receiver's memory of it.
+    otel_helpers: bool,
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        if let Some(c) = self.companion.as_mut() {
+            exec::stop_companion(c, Duration::from_secs(2));
+        }
+        for f in &self.files {
+            let _ = std::fs::remove_file(f);
+        }
+        for (d, home) in &self.private_dirs {
+            remove_private_dir(d, home);
+        }
+        for d in &self.dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        if self.otel_helpers {
+            derm_daemon::otel_receiver::remove_helpers();
+        }
+    }
+}
+
+/// Points Claude Code or Codex at the daemon's OTLP receiver for this chat
+/// (`derm_daemon::otel_receiver::apply_export`, which lane B built and lane D
+/// deferred; integration w1's request for lane R). The export's arguments go
+/// right after the harness's command, before the user's own; its variables
+/// join the plan's. Nothing changes when the user already exports OTel, the
+/// endpoint is not loopback (sbx), or the harness has no export. Returns
+/// what was done, for the run record.
+fn wire_export(
+    p: &mut plan::Plan,
+    rest: &[String],
+    harness: &str,
+    otlp: Option<&str>,
+    token: Option<&str>,
+    helper_dir: Option<&Path>,
+    log_prompts: bool,
+) -> (serde_json::Value, Option<std::ops::Range<usize>>) {
+    use derm_daemon::otel_receiver::{apply_export, Applied, Export};
+    let (Some(endpoint), Some(token)) = (otlp, token) else {
+        return (json!("no endpoint or no token"), None);
+    };
+    // The endpoint as the plan gives it to the harness (sbx rewrites it).
+    let endpoint = p
+        .env_set
+        .iter()
+        .find(|(k, _)| k == "DERM_OTLP_ENDPOINT")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| endpoint.to_string());
+    let mut cmd = std::process::Command::new("harness");
+    for name in &p.env_remove {
+        cmd.env_remove(name);
+    }
+    for (k, v) in &p.env_set {
+        cmd.env(k, v);
+    }
+    let applied = apply_export(
+        &Export {
+            harness,
+            endpoint: &endpoint,
+            token,
+            log_prompts,
+            helper_dir,
+        },
+        rest,
+        &mut cmd,
+    );
+    if let Applied::StoodDown(why) = applied {
+        return (json!(format!("stood down: {why}")), None);
+    }
+    let added: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let at = p.args.len().saturating_sub(rest.len());
+    let range = at..at + added.len();
+    p.args.splice(at..at, added);
+    for (k, v) in cmd.get_envs() {
+        let k = k.to_string_lossy().into_owned();
+        let already = p.env_set.iter().any(|(n, _)| *n == k);
+        match v {
+            Some(v) if !already => p.env_set.push((k, v.to_string_lossy().into_owned())),
+            None if !p.env_remove.contains(&k) => p.env_remove.push(k),
+            _ => {}
+        }
+    }
+    let what = json!(match applied {
+        Applied::Claude { helper: Some(_) } => "claude-code, token through otelHeadersHelper",
+        Applied::Claude { helper: None } => "claude-code, token in OTEL_EXPORTER_OTLP_HEADERS",
+        Applied::Codex => "codex",
+        Applied::StoodDown(_) => "stood down",
+    });
+    (what, Some(range))
+}
+
+fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<u8, (u8, String)> {
     let a = args::parse(argv).map_err(|e| (2, e))?;
     let cwd_raw = match &a.cwd {
         Some(c) => PathBuf::from(c),
@@ -333,6 +592,20 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
         .unwrap_or_else(|| PathBuf::from(&home).join(".derm/run/derm"));
     let settings_path = state_root.join("srt").join(format!("{chat}.json"));
     let token_path = state_root.join("chats").join(format!("{chat}.token"));
+    // The policy the gate will read, loaded only to know whether it can ask
+    // (goose's mode, T2.9). A missing or bad file asks for everything.
+    let policy_path = env
+        .policy
+        .clone()
+        .filter(|p| p.starts_with('/'))
+        .unwrap_or_else(|| format!("{}/.derm/policy.json", home.trim_end_matches('/')));
+    let policy_asks = {
+        let (policy, problem) = derm_core::policy::load(Path::new(&policy_path));
+        plan::policy_asks(problem.is_none().then_some(&policy))
+    };
+    // Cline's approval folder sits in its own state, which it can write
+    // under srt as under none (T2.9).
+    let cline_dir = format!("{}/.cline/derm-approval/{chat}", home.trim_end_matches('/'));
     let inputs = plan::Inputs {
         args: &a,
         chat: chat.clone(),
@@ -348,18 +621,52 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
             .map(str::to_string),
         settings_path: settings_path.to_string_lossy().into_owned(),
         token_file: token_path.to_string_lossy().into_owned(),
-        policy: env
-            .policy
-            .clone()
-            .filter(|p| p.starts_with('/'))
-            .unwrap_or_else(|| format!("{}/.derm/policy.json", home.trim_end_matches('/'))),
+        policy: policy_path.clone(),
         policy_regular: false,
+        policy_asks,
+        goose_mode: env.goose_mode.clone(),
+        cline_dir,
+        cline_responder: env.cline_responder.clone(),
+        // Re-review FP5-R2: what derm's registered Cursor gate runs stays
+        // read-only under srt.
+        gate_paths: if a.harness.id == "cursor" && a.boundary == Boundary::Srt {
+            crate::watch::register::derm_cursor_gate_paths(Path::new(&home))
+        } else {
+            Vec::new()
+        },
     };
     let inputs = plan::Inputs {
         policy_regular: regular_private_file(Path::new(&inputs.policy)),
         ..inputs
     };
     let mut p = plan::build(&inputs).map_err(|e| (2, e))?;
+    // Claude Code's and Codex's own OTel into the daemon (T2.9). The helper
+    // script sits in the daemon's folder under `none`; srt hides that folder,
+    // so there the token goes in the header variable, as the chat token
+    // already sits in the harness's environment (case 66).
+    let helper_dir = state_root.join("otel-helper").join(&chat);
+    let mut cleanup = Cleanup::default();
+    if !a.dry_run {
+        // The helper script prints the chat token: it goes on every way out.
+        cleanup.dirs.push(helper_dir.clone());
+    }
+    let (export, export_at) = if a.dry_run {
+        (json!("dry run"), None)
+    } else {
+        wire_export(
+            &mut p,
+            &a.rest,
+            a.harness.id,
+            inputs.otlp.as_deref(),
+            token.as_deref(),
+            (a.boundary == Boundary::None).then_some(helper_dir.as_path()),
+            env.log_content,
+        )
+    };
+    // Only a run that wrote a helper clears the receiver's helpers: one
+    // `derm run` is one chat, so they are this run's.
+    cleanup.otel_helpers = export == json!("claude-code, token through otelHeadersHelper");
+    plan::no_token_in_args(&p, token.as_deref()).map_err(|e| (1, e))?;
     // srt's dependencies and the userns sysctl, before srt fails on them with
     // its own errors (box test w1, BX3 and BX4); the copies srt would run
     // outside the sandbox, never from a folder the sandbox can write, and
@@ -404,12 +711,46 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
     if let Some(text) = &p.srt_settings {
         write_private(&settings_path, text)
             .map_err(|e| (1, format!("{}: {e}", settings_path.display())))?;
+        cleanup.files.push(settings_path.clone());
     }
     let token_file_named = p.env_set.iter().any(|(k, _)| k == "DERM_CHAT_TOKEN_FILE");
     if let (true, Some(t)) = (token_file_named, &token) {
         write_private(&token_path, &format!("{t}\n"))
             .map_err(|e| (1, format!("{}: {e}", token_path.display())))?;
+        cleanup.files.push(token_path.clone());
     }
+    if let Some(dir) = &p.scratch_dir {
+        make_private_dir(Path::new(dir), Path::new(&home))
+            .map_err(|e| (1, format!("{dir}: {e}")))?;
+        cleanup
+            .private_dirs
+            .push((PathBuf::from(dir), PathBuf::from(&home)));
+    }
+    // The companion runs as the user, outside any sandbox, with the chat
+    // token: never one the sandbox could have put on PATH (security review
+    // L8), and named before it starts.
+    let companion_path = match &p.companion {
+        Some((prog, _)) => {
+            let mut writable: Vec<String> = Vec::new();
+            if a.boundary != Boundary::None {
+                writable.extend(p.folders.iter().cloned());
+            }
+            if a.boundary == Boundary::Srt {
+                writable.extend(p.state_dirs.iter().cloned());
+                writable.push("/tmp".into());
+            }
+            let argv = preflight::companion(env.program(prog), &env.path, &writable, &cwd)
+                .map_err(|e| (1, e))?;
+            let path = preflight::companion_path(&env.path, &writable);
+            eprintln!(
+                "derm run: starting {} beside {} (outside any sandbox, with the chat token)",
+                argv.join(" "),
+                a.harness.id
+            );
+            Some((argv, path))
+        }
+        None => None,
+    };
 
     // sbx: what the log holds before the start is not this run's.
     let mut differ = policy_log::Differ::default();
@@ -431,17 +772,31 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
     let started = Instant::now();
     let mut launch = p.clone_for_start();
     launch.program = env.program(&p.program).to_string();
-    let mut child = exec::spawn(&launch, &cwd).map_err(|e| (127, format!("{}: {e}", p.program)))?;
+    // The companion first, so it is there when the harness writes its first
+    // request (lane P's responder).
+    if let (Some((prog, cargs)), Some((argv, path))) = (&p.companion, &companion_path) {
+        let args: Vec<String> = argv[1..].iter().chain(cargs.iter()).cloned().collect();
+        match exec::spawn_companion(&argv[0], &args, &launch, &cwd, path) {
+            Ok(c) => cleanup.companion = Some(c),
+            Err(e) => {
+                eprintln!("derm run: {prog} did not start ({e}); the harness's gated calls will wait and be denied");
+            }
+        }
+    }
+    let mut child = exec::spawn(&launch, &cwd, filter.is_some())
+        .map_err(|e| (127, format!("{}: {e}", p.program)))?;
     let pid = child.id();
+    // The filter starts after `run.start` is posted (below), so no record
+    // of the chat reaches the daemon before the run's own start; what the
+    // agent writes meanwhile waits in its pipe.
+    let pipes = (child.stdin.take(), child.stdout.take());
     // The record keeps the shape of the command, not a key passed on it
     // (integration w1, security finding S13; the audit feed's own redactor),
     // and not the harness's own words unless DERM_LOG_CONTENT=1 (finding M8).
-    let full_argv = recorded_argv(&p.program, &p.args, &a.rest, env.log_content);
-    let dangerous: Vec<&String> = a
-        .rest
-        .iter()
-        .filter(|x| x.to_ascii_lowercase().starts_with("--dangerously") || x.as_str() == "--yolo")
-        .collect();
+    let full_argv = recorded_argv(&p.program, &p.args, &a.rest, env.log_content, export_at);
+    // `dangerousFlags` is the name the daemon's `report.running` reads
+    // (`run_info_of`): the words that put the agent in full access (case 83).
+    let dangerous = &p.full_access;
     let base = json!({
         "boundary": a.boundary.name(),
         "argv": full_argv,
@@ -453,6 +808,10 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
         "sandboxName": p.sandbox_name,
         "runsAs": if a.boundary == Boundary::None { Some("you") } else { None },
         "dangerousFlags": dangerous,
+        "fullAccess": !dangerous.is_empty(),
+        "outsideShapeOnly": a.harness.id == "other",
+        "otelExport": export,
+        "acp": filter.is_some(),
         "trust": "client",
     });
     if let Some(d) = &daemon {
@@ -468,6 +827,21 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
             eprintln!("derm run: run.start was not recorded: {e}");
         }
     }
+
+    let filter_threads = match (filter, pipes.0, pipes.1) {
+        (Some(f), Some(stdin), Some(stdout)) => f(Pipes {
+            stdin,
+            stdout,
+            chat: chat.clone(),
+            harness: a.harness.id.to_string(),
+            token: token.clone(),
+            socket: daemon.as_ref().map(|d| d.socket.clone()),
+            policy: policy_path.clone(),
+            full_access: !p.full_access.is_empty(),
+            confined: a.boundary != Boundary::None,
+        }),
+        _ => Vec::new(),
+    };
 
     // sbx: poll the policy log while the harness runs.
     let stop = Arc::new(AtomicBool::new(false));
@@ -514,6 +888,21 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
     let status =
         exec::wait(&mut child).map_err(|e| (1, format!("waiting for {}: {e}", p.program)))?;
     let (code, signal) = exec::code(&status);
+    if let Some(c) = cleanup.companion.as_mut() {
+        exec::stop_companion(c, Duration::from_secs(2));
+    }
+    // The filter's threads end when the harness's stdout closes; the one
+    // reading derm's own stdin may wait for the client, so it is not joined
+    // past a short grace.
+    let grace = Instant::now() + Duration::from_millis(500);
+    for t in filter_threads {
+        while !t.is_finished() && Instant::now() < grace {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if t.is_finished() {
+            let _ = t.join();
+        }
+    }
     stop.store(true, Ordering::SeqCst);
     if let Some(t) = poller {
         let _ = t.join();
@@ -545,12 +934,7 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
             eprintln!("derm run: run.stop was not recorded: {e}");
         }
     }
-    if p.srt_settings.is_some() {
-        let _ = std::fs::remove_file(&settings_path);
-    }
-    if token_file_named {
-        let _ = std::fs::remove_file(&token_path);
-    }
+    drop(cleanup);
     Ok(code)
 }
 
@@ -685,6 +1069,8 @@ mod end_to_end {
             policy: None,
             path: deps.join("bin").to_string_lossy().into_owned(),
             userns: None,
+            goose_mode: None,
+            cline_responder: None,
         };
         Setup { fake, work, env }
     }
@@ -741,7 +1127,7 @@ mod end_to_end {
         let args = s(&["--settings", "/x/s.json", "--", "pi", "-p", "hello there"]);
         let rest = s(&["-p", "hello there"]);
         assert_eq!(
-            recorded_argv("srt", &args, &rest, false),
+            recorded_argv("srt", &args, &rest, false, None),
             s(&[
                 "srt",
                 "--settings",
@@ -753,7 +1139,7 @@ mod end_to_end {
             ])
         );
         assert_eq!(
-            recorded_argv("srt", &args, &rest, true),
+            recorded_argv("srt", &args, &rest, true, None),
             s(&[
                 "srt",
                 "--settings",
@@ -768,7 +1154,7 @@ mod end_to_end {
         // not a flag (review R6).
         let rest = s(&["-pSUMMARISE", "-- my plan", "--", "-v", "--model=x"]);
         assert_eq!(
-            recorded_argv("pi", &rest, &rest, false),
+            recorded_argv("pi", &rest, &rest, false, None),
             s(&[
                 "pi",
                 "[11 chars]",
@@ -781,7 +1167,7 @@ mod end_to_end {
         // With content on, a key is still redacted.
         let rest = s(&["--api-key", "sk-ant-aaaaaaaaaaaaaaaaaaaaaaaa"]);
         assert_eq!(
-            recorded_argv("pi", &rest, &rest, true),
+            recorded_argv("pi", &rest, &rest, true, None),
             s(&["pi", "--api-key", "[redacted]"])
         );
     }
@@ -1117,6 +1503,8 @@ mod end_to_end {
             policy: None,
             path: String::new(),
             userns: None,
+            goose_mode: None,
+            cline_responder: None,
         };
         env.programs.push(("sbx".into(), sbx));
         let cwd = st.work.to_string_lossy().into_owned();
@@ -1146,6 +1534,356 @@ mod end_to_end {
         assert_eq!(ev[0]["detail"]["sandboxName"], "derm-chat-x");
     }
 
+    /// Lane R: Claude Code's own OTel goes to the daemon under `derm run`
+    /// (integration w1's request; `apply_export`), its arguments before the
+    /// user's, its token never in an argument, the helper removed after.
+    #[test]
+    fn claude_codes_own_otel_is_pointed_at_the_daemon() {
+        let _one = OTEL_HELPERS.lock().unwrap_or_else(|p| p.into_inner());
+        let st = setup("export-claude");
+        let out = st.fake.dir.join("claude-seen");
+        let claude = script(
+            &st.fake.dir,
+            "claude",
+            &format!(
+                "{{ for a in \"$@\"; do echo \"arg=$a\"; done; env | grep -E '^(OTEL_|CLAUDE_CODE_ENABLE_TELEMETRY)' | sort; \
+                 h=$(printf '%s' \"$2\" | sed -n 's/.*\"otelHeadersHelper\":\"\\([^\"]*\\)\".*/\\1/p'); \
+                 echo \"helper=$h\"; [ -n \"$h\" ] && [ -x \"$h\" ] && echo helper-runs; }} > '{}'; exit 0",
+                out.display()
+            ),
+        );
+        let mut env = RunEnv {
+            programs: st.env.programs.clone(),
+            ..clone_env(&st.env)
+        };
+        env.programs.push(("claude".into(), claude));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&[
+                "claude-code",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-o",
+                "--cwd",
+                &cwd,
+                "--",
+                "-p",
+                "hello",
+            ]),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let seen = std::fs::read_to_string(&out).unwrap();
+        // `--settings <json>` first, the user's words last.
+        let args: Vec<&str> = seen
+            .lines()
+            .filter_map(|l| l.strip_prefix("arg="))
+            .collect();
+        assert_eq!(args[0], "--settings", "{seen}");
+        assert_eq!(&args[args.len() - 2..], ["-p", "hello"], "{seen}");
+        assert!(seen.contains("CLAUDE_CODE_ENABLE_TELEMETRY=1"), "{seen}");
+        assert!(
+            seen.contains("OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318"),
+            "{seen}"
+        );
+        assert!(seen.contains("helper-runs"), "{seen}");
+        // The token never rides in an argument, and the record says what
+        // was wired.
+        assert!(!args.iter().any(|a| a.contains(fake::CHAT_TOKEN)), "{seen}");
+        let ev = events(&st);
+        assert_eq!(
+            ev[0]["detail"]["otelExport"],
+            "claude-code, token through otelHeadersHelper"
+        );
+        // The helper went with the run.
+        let helper = seen
+            .lines()
+            .find_map(|l| l.strip_prefix("helper="))
+            .unwrap()
+            .to_string();
+        assert!(!Path::new(&helper).exists(), "{helper} was left behind");
+        // Pi exports through its own emitter: nothing is added for it.
+        let r = run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-p",
+                "--cwd",
+                &cwd,
+            ]),
+            &st.env,
+        )
+        .unwrap();
+        assert_eq!(r, 3);
+        let ev = events(&st);
+        let pi_start = ev
+            .iter()
+            .find(|e| e["kind"] == "run.start" && e["chatId"] == "chat-p")
+            .unwrap();
+        assert_eq!(
+            pi_start["detail"]["otelExport"],
+            "stood down: no OTel export for this harness"
+        );
+    }
+
+    /// Lane R: Cline gets its approval folder (0700, removed after) and lane
+    /// P's responder runs beside it with `--dir` and the chat's variables.
+    #[test]
+    fn cline_runs_with_its_responder_and_a_private_approval_folder() {
+        let st = setup("cline");
+        let out = st.fake.dir.join("cline-seen");
+        let resp_out = st.fake.dir.join("responder-seen");
+        let cline = script(
+            &st.fake.dir,
+            "cline",
+            &format!(
+                "{{ echo \"mode=$CLINE_TOOL_APPROVAL_MODE\"; echo \"dir=$CLINE_TOOL_APPROVAL_DIR\"; \
+                 m=$(stat -c %a \"$CLINE_TOOL_APPROVAL_DIR\" 2>/dev/null || stat -f %Lp \"$CLINE_TOOL_APPROVAL_DIR\"); echo \"perm=$m\"; \
+                 for a in \"$@\"; do echo \"arg=$a\"; done; }} > '{}'; sleep 1; exit 0",
+                out.display()
+            ),
+        );
+        let responder = script(
+            &st.fake.dir,
+            "derm-cline-responder",
+            &format!(
+                "{{ echo \"args=$*\"; echo \"chat=$DERM_CHAT_ID\"; [ -n \"$DERM_CHAT_TOKEN\" ] && echo has-token; }} > '{}'; \
+                 trap 'echo stopped >> \"{}\"; exit 0' TERM; while :; do sleep 0.1; done",
+                resp_out.display(),
+                resp_out.display()
+            ),
+        );
+        let mut env = clone_env(&st.env);
+        env.programs.push(("cline".into(), cline));
+        env.cline_responder = Some(responder);
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&[
+                "cline",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-c",
+                "--cwd",
+                &cwd,
+                "--",
+                "fix it",
+            ]),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let seen = std::fs::read_to_string(&out).unwrap();
+        let dir = format!("{}/.cline/derm-approval/chat-c", st.fake.dir.display());
+        assert!(seen.contains("mode=desktop"), "{seen}");
+        assert!(seen.contains(&format!("dir={dir}")), "{seen}");
+        assert!(seen.contains("perm=700"), "{seen}");
+        assert!(
+            seen.contains("arg=--auto-approve\narg=false\narg=fix it"),
+            "{seen}"
+        );
+        let r = std::fs::read_to_string(&resp_out).unwrap();
+        assert!(r.contains(&format!("args=--dir {dir}")), "{r}");
+        assert!(r.contains("chat=chat-c") && r.contains("has-token"), "{r}");
+        assert!(r.contains("stopped"), "the responder was stopped: {r}");
+        assert!(!Path::new(&dir).exists(), "the approval folder was removed");
+    }
+
+    /// Case 80: a program derm has no preset for runs with the outside
+    /// shape, recorded as such.
+    #[test]
+    fn a_program_with_no_preset_runs_and_is_recorded_as_outside_shape_only() {
+        let st = setup("other");
+        let out = st.fake.dir.join("other-seen");
+        let agent = script(
+            &st.fake.dir,
+            "my-agent",
+            &format!(
+                "{{ echo \"harness=$DERM_HARNESS\"; echo \"chat=$DERM_CHAT_ID\"; for a in \"$@\"; do echo \"arg=$a\"; done; }} > '{}'; exit 4",
+                out.display()
+            ),
+        );
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&[
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-u",
+                "--cwd",
+                &cwd,
+                "--",
+                &agent,
+                "--go",
+            ]),
+            &st.env,
+        )
+        .unwrap();
+        assert_eq!(code, 4);
+        let seen = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            seen.contains("harness=other") && seen.contains("arg=--go"),
+            "{seen}"
+        );
+        let ev = events(&st);
+        assert_eq!(ev[0]["harness"], "other");
+        assert_eq!(ev[0]["detail"]["outsideShapeOnly"], true);
+        assert_eq!(ev.last().unwrap()["kind"], "run.stop");
+    }
+
+    /// Case 83: a full-access flag reaches the gate as a hint and the run
+    /// record keeps it for `derm status`.
+    #[test]
+    fn full_access_reaches_the_gate_and_the_record() {
+        let st = setup("full");
+        let cwd = st.work.to_string_lossy().into_owned();
+        run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-f",
+                "--cwd",
+                &cwd,
+                "--",
+                "--yolo",
+            ]),
+            &st.env,
+        )
+        .unwrap();
+        let ev = events(&st);
+        assert_eq!(
+            ev[0]["detail"]["dangerousFlags"],
+            serde_json::json!(["--yolo"])
+        );
+        assert_eq!(ev[0]["detail"]["fullAccess"], true);
+    }
+
+    /// `derm acp` end to end: a scripted ACP agent asks about a call the
+    /// policy denies; derm answers it, the client never sees the request,
+    /// and the decision is posted on the chat token beside the run's records.
+    #[test]
+    fn acp_answers_a_permission_request_between_the_client_and_a_real_agent() {
+        let st = setup("acp");
+        let seen = st.fake.dir.join("acp-seen");
+        let tool_call = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"x","kind":"execute","name":"bash","rawInput":{"command":"rm -rf build"}}}}"#;
+        let ask = r#"{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"ok","name":"OK","kind":"allow_once"},{"optionId":"no","name":"No","kind":"reject_once"}]}}"#;
+        let agent = script(
+            &st.fake.dir,
+            "acp-agent",
+            &format!(
+                "printf '%s\\n' '{tool_call}'; printf '%s\\n' '{ask}'; read line; echo \"$line\" > '{}'; \
+                 printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'; exit 0",
+                seen.display()
+            ),
+        );
+        let policy = st.fake.dir.join("policy.json");
+        std::fs::write(
+            &policy,
+            r#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,
+        )
+        .unwrap();
+        let mut env = clone_env(&st.env);
+        env.policy = Some(policy.to_string_lossy().into_owned());
+        // The client's ends: nothing to say, everything the proxy passes on
+        // is kept.
+        let (client_r, client_w) = std::io::pipe().unwrap();
+        let (out_r, out_w) = std::io::pipe().unwrap();
+        let ends = std::sync::Mutex::new(Some((client_r, out_w)));
+        let filter = |p: Pipes| {
+            let (cr, ow) = ends.lock().unwrap().take().unwrap();
+            let (policy, _) = derm_core::policy::load(Path::new(&p.policy));
+            let (tx, log) = crate::acp::proxy::log_channel(p.socket.clone(), p.token.clone());
+            let st = Arc::new(crate::acp::proxy::State::new(
+                crate::acp::decide::Ctx {
+                    policy,
+                    harness: p.harness.clone(),
+                    chat: p.chat.clone(),
+                    full_access: p.full_access,
+                    confined: p.confined,
+                },
+                tx,
+            ));
+            crate::acp::proxy::start(st, Box::new(p.stdin), p.stdout, cr, ow, log)
+        };
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run_io(
+            &s(&[
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-a",
+                "--cwd",
+                &cwd,
+                "--",
+                &agent,
+            ]),
+            &env,
+            Some(&filter),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        drop(client_w);
+        // The agent got derm's reject.
+        let got: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(&seen).unwrap().trim()).unwrap();
+        assert_eq!(got["id"], 9);
+        assert_eq!(got["result"]["outcome"]["optionId"], "no");
+        // The client got the update and the agent's last line, not the request.
+        let mut passed = String::new();
+        std::io::Read::read_to_string(&mut { out_r }, &mut passed).unwrap();
+        assert!(passed.contains("\"tool_call\""), "{passed}");
+        assert!(!passed.contains("request_permission"), "{passed}");
+        // The records: the run, the call and the decision.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let decision = loop {
+            let ev = events(&st);
+            if let Some(d) = ev.iter().find(|e| e["kind"] == "approval").cloned() {
+                break d;
+            }
+            assert!(Instant::now() < deadline, "no decision record: {ev:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(decision["source"], "adapter");
+        assert_eq!(decision["detail"]["decision"], "deny");
+        assert_eq!(decision["detail"]["via"], "acp");
+        let ev = events(&st);
+        assert_eq!(ev[0]["kind"], "run.start");
+        assert_eq!(ev[0]["detail"]["acp"], true);
+        // The adapter records went on the chat token, not the daemon's.
+        let lines = st.fake.lines();
+        assert!(lines
+            .iter()
+            .any(|l| l["op"] == "hello" && l["token"] == fake::CHAT_TOKEN));
+    }
+
+    /// The OTel receiver keeps one helper folder per process
+    /// (`otel_receiver::helper_in`), and the tests share one fake chat token:
+    /// two Claude Code runs at once in this test process would clear each
+    /// other's helper. One `derm run` is one process, so this is the tests'
+    /// alone.
+    static OTEL_HELPERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clone_env(e: &RunEnv) -> RunEnv {
+        RunEnv {
+            socket: e.socket.clone(),
+            home: e.home.clone(),
+            gateway: e.gateway.clone(),
+            programs: e.programs.clone(),
+            log_content: e.log_content,
+            policy: e.policy.clone(),
+            path: e.path.clone(),
+            userns: e.userns.clone(),
+            goose_mode: e.goose_mode.clone(),
+            cline_responder: e.cline_responder.clone(),
+        }
+    }
+
     #[test]
     fn no_daemon_is_an_error_and_starts_nothing() {
         let st = setup("down");
@@ -1158,6 +1896,8 @@ mod end_to_end {
             policy: None,
             path: String::new(),
             userns: None,
+            goose_mode: None,
+            cline_responder: None,
         };
         let cwd = st.work.to_string_lossy().into_owned();
         let err = run(&s(&["pi", "--boundary", "none", "--cwd", &cwd]), &env).unwrap_err();
@@ -1194,5 +1934,249 @@ mod end_to_end {
         );
         assert!(st.fake.lines().is_empty());
         assert!(seen(&st).is_empty());
+    }
+
+    /// Security review L5: the copy of the user's `--settings` the export
+    /// adds is derm's argument, but its content is the user's: the record
+    /// does not keep it.
+    #[test]
+    fn the_exports_copy_of_the_users_settings_is_not_recorded() {
+        let _one = OTEL_HELPERS.lock().unwrap_or_else(|p| p.into_inner());
+        let st = setup("export-mask");
+        let claude = script(&st.fake.dir, "claude", "exit 0");
+        let mut env = clone_env(&st.env);
+        env.programs.push(("claude".into(), claude));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&[
+                "claude-code",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-m",
+                "--cwd",
+                &cwd,
+                "--",
+                "--settings",
+                r#"{"env":{"MY_NOTE":"private plan text"}}"#,
+            ]),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let ev = events(&st);
+        let argv = ev[0]["detail"]["argv"].to_string();
+        assert_eq!(
+            ev[0]["detail"]["otelExport"],
+            "claude-code, token through otelHeadersHelper"
+        );
+        assert!(!argv.contains("private plan text"), "{argv}");
+        assert!(argv.contains("[derm otel settings"), "{argv}");
+    }
+
+    /// Security review L12: when the harness does not start, the companion
+    /// (and what it started) is stopped, and nothing derm made for the run is
+    /// left behind.
+    /// The live processes whose argument line holds `marker`, as
+    /// `"<pid>: <args>"`. Linux reads `/proc`; elsewhere `ps` (Mac test w4,
+    /// MW4-2: this test read `/proc` alone and failed on macOS).
+    fn running_with(marker: &str) -> Vec<String> {
+        if std::path::Path::new("/proc/self/stat").exists() {
+            proc_running_with(marker)
+        } else {
+            ps_running_with(marker)
+        }
+    }
+
+    fn proc_running_with(marker: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir("/proc").unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let zombie = std::fs::read_to_string(e.path().join("stat"))
+                .map(|s| {
+                    s.rsplit(')')
+                        .next()
+                        .unwrap_or("")
+                        .trim_start()
+                        .starts_with('Z')
+                })
+                .unwrap_or(true);
+            let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+            if !zombie && String::from_utf8_lossy(&cmd).contains(marker) {
+                out.push(format!(
+                    "{name}: {}",
+                    String::from_utf8_lossy(&cmd).replace('\0', " ")
+                ));
+            }
+        }
+        out
+    }
+
+    /// `ps -axww -o pid=,stat=,args=`: every process, its state, its whole
+    /// argument line (procps-ng and BSD ps). `ps` itself is left out.
+    fn ps_running_with(marker: &str) -> Vec<String> {
+        let out = std::process::Command::new("ps")
+            .args(["-axww", "-o", "pid=,stat=,args="])
+            .output()
+            .expect("ps runs");
+        let me = std::process::id().to_string();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let pid = it.next()?;
+                let stat = it.next()?;
+                let args = it.collect::<Vec<_>>().join(" ");
+                (!stat.starts_with('Z')
+                    && args.contains(marker)
+                    && !args.starts_with("ps ")
+                    && pid != me)
+                    .then(|| format!("{pid}: {args}"))
+            })
+            .collect()
+    }
+
+    /// Both readers see a live process by its marker and stop seeing it once
+    /// it is gone, so the check below means the same on Linux and macOS.
+    #[test]
+    fn both_process_readers_find_a_marked_process_and_lose_it_when_it_ends() {
+        let marker = format!("derm-mark-{}", uuid::Uuid::new_v4().simple());
+        let mut child = std::process::Command::new("sh")
+            // `; :` keeps the shell itself running: macOS's sh execs a
+            // lone last command in place, which drops the marker (CI's
+            // rust-macos job on abe7e46).
+            .args(["-c", "sleep 30; :", &marker])
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ps_running_with(&marker).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            ps_running_with(&marker).len(),
+            1,
+            "{:?}",
+            ps_running_with(&marker)
+        );
+        if std::path::Path::new("/proc/self/stat").exists() {
+            assert_eq!(proc_running_with(&marker).len(), 1);
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(running_with(&marker).is_empty());
+        assert!(ps_running_with(&marker).is_empty());
+    }
+
+    #[test]
+    fn a_harness_that_does_not_start_leaves_nothing_running_or_behind() {
+        let _one = OTEL_HELPERS.lock().unwrap_or_else(|p| p.into_inner());
+        let st = setup("nostart");
+        // Every process the responder starts names the test's folder, so
+        // /proc shows whether any is left, whenever the stop came.
+        let marker = st.fake.dir.to_string_lossy().into_owned();
+        let responder = script(
+            &st.fake.dir,
+            "derm-cline-responder",
+            &format!(
+                "sh -c 'while :; do sleep 0.1; done' '{marker}' & while :; do sleep 0.1; done"
+            ),
+        );
+        let mut env = clone_env(&st.env);
+        env.programs.push((
+            "cline".into(),
+            st.fake
+                .dir
+                .join("no-such-cline")
+                .to_string_lossy()
+                .into_owned(),
+        ));
+        env.cline_responder = Some(responder);
+        let cwd = st.work.to_string_lossy().into_owned();
+        let err = run(
+            &s(&[
+                "cline",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-n",
+                "--cwd",
+                &cwd,
+            ]),
+            &env,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 127, "{err:?}");
+        let left = || running_with(&marker);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !left().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(left().is_empty(), "still running: {:?}", left());
+        let dir = format!("{}/.cline/derm-approval/chat-n", st.fake.dir.display());
+        assert!(!Path::new(&dir).exists(), "{dir} was left behind");
+        // Claude Code's helper script, which prints the chat token, too.
+        let mut env = clone_env(&st.env);
+        env.programs.push((
+            "claude".into(),
+            st.fake
+                .dir
+                .join("no-such-claude")
+                .to_string_lossy()
+                .into_owned(),
+        ));
+        let err = run(
+            &s(&[
+                "claude-code",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-h",
+                "--cwd",
+                &cwd,
+            ]),
+            &env,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 127, "{err:?}");
+        let helper = st
+            .env
+            .socket
+            .as_ref()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("otel-helper/chat-h");
+        assert!(!helper.exists(), "{} was left behind", helper.display());
+    }
+
+    /// Security review L11: a link anywhere between HOME and the chat's
+    /// folder is refused, so derm never chmods or removes another folder.
+    #[test]
+    fn a_private_folder_under_a_link_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "derm-priv-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let home = root.join("home");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(elsewhere.join("derm-approval/chat-l")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, home.join(".cline")).unwrap();
+        let path = home.join(".cline/derm-approval/chat-l");
+        assert!(make_private_dir(&path, &home).is_err());
+        assert!(!remove_private_dir(&path, &home));
+        assert!(elsewhere.join("derm-approval/chat-l").exists());
+        // A real folder is made and removed.
+        let real = root.join("home2");
+        std::fs::create_dir_all(&real).unwrap();
+        let path = real.join(".cline/derm-approval/chat-l");
+        make_private_dir(&path, &real).unwrap();
+        assert!(remove_private_dir(&path, &real));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

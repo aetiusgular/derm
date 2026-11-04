@@ -1,10 +1,44 @@
 {
   "id": "codebuff",
   "name": "Codebuff",
-  "cli": "TODO",
-  "mcpFile": "~/.agents/mcp.json",
+  "cli": "codebuff",
+  "configFiles": {
+    "user": {
+      "macos": "~/.agents/mcp.json",
+      "linux": "~/.agents/mcp.json"
+    },
+    "project": "<project>/.agents/mcp.json"
+  },
+  "format": "json",
+  "entryShape": "json:mcpServers",
+  "entryPath": [
+    "mcpServers"
+  ],
+  "entryStyle": "codebuff",
+  "trailingNewline": true,
+  "write": "write",
+  "envRef": "$VAR",
+  "envRefWholeValue": true,
+  "entryExample": {
+    "mcpServers": {
+      "<name>": {
+        "type": "stdio",
+        "command": "<cmd>",
+        "args": [],
+        "env": {
+          "<KEY>": "$<VAR>"
+        }
+      }
+    }
+  },
   "toolNameForm": "s__t",
-  "verified": "TODO",
+  "nameMangling": "not read in this chat: `s__t` is the planned row's, from note AQ; the tool-name code was not found at v1.0.679 or main (NF)",
+  "sources": [
+    "npm codebuff@1.0.688 (published 2026-09-08): package.json bin codebuff and cb; the package is a launcher that downloads the binary from codebuff.com (launcher.js:755-770), which this workspace cannot reach, and its gitHead 7efb0a7 is not on GitHub (NF)",
+    "github.com/CodebuffAI/codebuff at tag v1.0.679 (2177c0a, 2026-05-24) and main (de6a711, 2026-11-04): common/src/types/mcp.ts:3-23 (identical at both), sdk/src/agents/load-mcp-config.ts:15-17, 44-100, 127-197 (one change between them, 01e5a44d on 2026-09-18, which adds an optional configDirs list and nothing else). 1.0.688 sits between the two, so it reads mcp.json the same way (I) (lane Q, third chat, 3 Nov 2026)"
+  ],
+  "verified": "2026-11-03",
+  "notes": "Codebuff reads mcp.json from <cwd>/.agents, <cwd>/../.agents and ~/.agents in that order, and a server named again in a later file replaces the earlier one, so ~/.agents/mcp.json wins (V, load-mcp-config.ts:95-100, 175-180; its comment says the reverse). The file is JSON.parse'd (no comments) and each entry is a strict object: stdio {type?: stdio, command, args?, env?} or remote {type?: http|sse, url, params?, headers?}; an unknown key fails the file's schema and every server in it is skipped (V, mcp.ts:3-23, load-mcp-config.ts:150-161). A stdio env value that starts with $ is read whole from the environment, and one that names an unset variable drops the whole file (V, :44-72, 165-173), so derm refuses to write such a reference while the variable is unset. Headers are never expanded, so a header that names a variable is refused. No add command, no managed file found (NF). Codebuff is tier O in note AQ: it has no gate derm can register.",
   "coverage": {
     "tier": "O",
     "orcaId": "codebuff",

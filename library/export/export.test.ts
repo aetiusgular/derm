@@ -4,7 +4,7 @@
 import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { exportDockerProfile, exportMarketplace, exportPi, exportRegistry, exportSet, exportToolhive, PLACEHOLDER_SHA, type ExportFile } from "./index.ts";
+import { exportDockerProfile, exportMarketplace, exportPi, exportRegistry, exportSet, exportToolhive, PLACEHOLDER_SHA, type ExportFile, namespacedVar } from "./index.ts";
 import { loadBrands, loadCatalog, validateEntry, type LoadedEntry } from "../validate/index.ts";
 import { checkMarketplaceShape, checkTkSchema, checkUpstreamServerSchema, CONTRACTS_DIR, readJson, SCHEMA_DIR } from "../validate/schemas.ts";
 import { join } from "node:path";
@@ -62,11 +62,24 @@ describe("marketplace export (Claude Code and Codex)", () => {
   // Integration w1: the catalog holds upstream placeholders; each export
   // writes the target's reference, named as derm connect names it (C's
   // env_name_for: upper case, anything else `_`), so a key set once serves both.
+  // Namespaced to the server since integration w4, as derm connect writes
+  // them (security finding S12, lane Q's request 1): an entry names only
+  // variables under its own server's prefix.
   it("upstream placeholders become ${VAR} references with derm connect's names", () => {
     const h = (id: string) => (parse(files, `plugins/${id}/.claude-plugin/plugin.json`) as { mcpServers: Record<string, { headers?: Record<string, string> }> }).mcpServers[id]!.headers;
-    expect(h("exa")).toEqual({ "x-api-key": "${EXA_API_KEY}" });
-    expect(h("hugging-face")).toEqual({ Authorization: "Bearer ${HF_TOKEN}" });
-    expect(h("context7")).toEqual({ CONTEXT7_API_KEY: "${CONTEXT7_API_KEY}" });
+    expect(h("exa")).toEqual({ "x-api-key": "${DERM_EXA__EXA_API_KEY}" });
+    expect(h("hugging-face")).toEqual({ Authorization: "Bearer ${DERM_HUGGING_FACE__HF_TOKEN}" });
+    expect(h("context7")).toEqual({ CONTEXT7_API_KEY: "${DERM_CONTEXT7__CONTEXT7_API_KEY}" });
+  });
+  it("leaves out a header whose variable part derm connect refuses", () => {
+    expect(namespacedVar("exa", "API_KEY")).toBe("DERM_EXA__API_KEY");
+    expect(namespacedVar("hugging-face", "HF_TOKEN")).toBe("DERM_HUGGING_FACE__HF_TOKEN");
+    expect(namespacedVar("exa", "_X")).toBeUndefined();
+    expect(namespacedVar("exa", "A__B")).toBeUndefined();
+    expect(namespacedVar("exa", "1A")).toBeUndefined();
+    // derm connect's variable names stop at 64 bytes (review W4-S9).
+    expect(namespacedVar("exa", "A".repeat(64))).toBe(`DERM_EXA__${"A".repeat(64)}`);
+    expect(namespacedVar("exa", "A".repeat(65))).toBeUndefined();
   });
   it("the Shopify plugin keeps the telemetry opt-out", () => {
     const shopify = parse(files, "plugins/shopify-dev/.claude-plugin/plugin.json") as { mcpServers: Record<string, { env: Record<string, string> }> };

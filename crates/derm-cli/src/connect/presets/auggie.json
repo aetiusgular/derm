@@ -10,18 +10,17 @@
     "orcaId": "aug",
     "gate": {
       "family": "command-hook",
-      "where": "PreToolUse in ~/.augment/settings.json, or a script-policy rule",
-      "status": "planned",
+      "where": "PreToolUse in ~/.augment/settings.json, matcher .*, includeMCPMetadata",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "open",
     "failSwitch": null,
     "ask": "approver-or-deny",
-    "shellAliases": [
-      "launch-process"
-    ],
-    "verifiedAt": "0.36.0, npm",
-    "note": "needs an account: fixtures only unless call 8 buys a seat"
+    "shellAliases": ["launch-process", "write-process"],
+    "verifiedAt": "0.36.0, bundle",
+    "note": "needs an account: fixtures only unless call 8 buys a seat (unverified at 0.36.0)"
   }
 }

@@ -11,6 +11,8 @@
 //   sees, in the tool's own output shape.
 
 import { createHash, randomUUID } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import path from "node:path";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
 import { decideCall, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
@@ -141,6 +143,102 @@ function decideCallName(tool: string, loaded: LoadedPolicy): string {
   return decideCall(loaded, { harness: HARNESS, tool, toolInput: {} }).normalizedTool;
 }
 
+// Cursor's CLI runs Claude Code's hooks as "third-party hooks"
+// (https://cursor.com/docs/reference/third-party-hooks, read 4 Nov 2026: from
+// the three Claude settings files, on by default, `PreToolUse` mapped to
+// `preToolUse`; exit 2 blocks), and runs an enabled plugin's hook too (seen
+// by run on Cursor CLI 2026.10.22, Mac test w4, MW4-5), with
+// `hook_event_name: "preToolUse"` and `cursor_version`. Cursor's own gate is
+// derm's Cursor dialect (`packages/derm-hooks-native`) in ~/.cursor/hooks.json.
+// When that is registered, failing closed, this hook gives no decision (`{}`,
+// the answer Orca's Cursor hook gives) and posts nothing, so derm's gate runs
+// once per call (case 75). When it is not, this hook blocks, as before, and
+// names the fix: it never lets a Cursor call through ungated.
+
+/**
+ * Input Cursor sends when it runs this hook, not Claude Code: Cursor's
+ * camelCase event and its `cursor_version`, both (fix pass 1's review,
+ * FP4-S2: another harness can send a camelCase event; alone it is an
+ * unexpected event and blocks).
+ */
+export function runByCursor(input: Record<string, unknown>): boolean {
+  return (input.hook_event_name === "preToolUse" || input.hook_event_name === "postToolUse") && typeof input.cursor_version === "string";
+}
+
+const HOOKS_NATIVE_PACKAGE = "@aetiusgular/derm-hooks-native";
+
+/**
+ * A `hooks.json` command `derm connect cursor --gate` wrote:
+ * `<node> --no-warnings "<abs>/bin/derm-hook.mjs" cursor`, where the file is
+ * a regular file (not a link) owned by you or root that no one else can
+ * write, in a folder whose package.json names derm-hooks-native (fix pass
+ * 1's review, FP4-S3: a command that only named the file counted). Held
+ * equal to `is_derm_cursor_entry` in `crates/derm-cli/src/watch/register.rs`.
+ */
+export function isDermCursorCommand(command: string): boolean {
+  const m = /^(\S+) --no-warnings "([^"]*)" cursor\s*$/.exec(command);
+  const node = m?.[1];
+  const file = m?.[2];
+  if (!node || !file) return false;
+  // Plain paths only, as --hook and --node take them (re-review FP5-R3: no
+  // `$`, backtick or `\\` a shell would expand), and no `.` or `..` part.
+  const plain = (p: string) => /^[A-Za-z0-9._/@+~-]+$/.test(p) && !p.split("/").some((part) => part === ".." || part === ".");
+  if (!plain(node) || !plain(file) || !file.startsWith("/") || !file.endsWith("/bin/derm-hook.mjs")) return false;
+  try {
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    const closed = (st: { uid: number; mode: number }) => (st.uid === uid || st.uid === 0) && (st.mode & 0o022) === 0;
+    // The first word is node: bare, or a path whose last part starts with
+    // `node` to a real file of yours or root's (re-review FP5-R3: any word
+    // passed, `true --no-warnings "<hook>" cursor` too).
+    if (node !== "node") {
+      if (!node.startsWith("/") || !path.basename(node).startsWith("node")) return false;
+      const nst = statSync(realpathSync(node));
+      if (!nst.isFile() || !closed(nst)) return false;
+    }
+    const st = lstatSync(file);
+    if (!st.isFile() || !closed(st)) return false;
+    const pkgFile = path.join(path.dirname(path.dirname(file)), "package.json");
+    const pst = lstatSync(pkgFile);
+    if (!pst.isFile() || !closed(pst) || pst.size > 1024 * 1024) return false;
+    return (JSON.parse(readFileSync(pkgFile, "utf8")) as { name?: unknown })?.name === HOOKS_NATIVE_PACKAGE;
+  } catch {
+    return false;
+  }
+}
+
+const MAX_CURSOR_HOOKS_BYTES = 1024 * 1024;
+
+/** derm's two Cursor entries (`connect/gates.json`) in ~/.cursor/hooks.json, each failClosed. */
+export function cursorGateRegistered(env: NodeJS.ProcessEnv): boolean {
+  const home = env.HOME;
+  if (!home || !path.isAbsolute(home)) return false;
+  const file = path.join(home, ".cursor", "hooks.json");
+  try {
+    const st = statSync(file);
+    if (!st.isFile() || st.size > MAX_CURSOR_HOOKS_BYTES) return false;
+    const v = JSON.parse(readFileSync(file, "utf8")) as { hooks?: Record<string, unknown> };
+    return ["preToolUse", "beforeMCPExecution"].every((event) => {
+      const list = v?.hooks?.[event];
+      if (!Array.isArray(list)) return false;
+      const ours = list.filter((e) => {
+        const c = (e as { command?: unknown } | null)?.command;
+        return typeof c === "string" && isDermCursorCommand(c);
+      });
+      return ours.length > 0 && ours.every((e) => (e as { failClosed?: unknown }).failClosed === true);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function cursorRun(pre: boolean, env: NodeJS.ProcessEnv): HookResult {
+  if (!pre) return { stdout: "", stderr: "", exitCode: 0 };
+  if (cursorGateRegistered(env)) return { stdout: "{}\n", stderr: "", exitCode: 0 };
+  return blockPre(
+    "Cursor ran derm's Claude Code hook (Cursor's third-party hooks), and derm's own Cursor gate is not registered in ~/.cursor/hooks.json; run derm connect cursor --gate --hook <derm-hooks-native folder> --write, or turn off Third-Party Imports in Cursor's settings",
+  );
+}
+
 /** Runs one hook invocation. `event` is "pre" or "post", from hooks.json. Never throws. */
 export async function runHook(event: string, stdinText: string, env: NodeJS.ProcessEnv = process.env, deps?: Partial<Deps>): Promise<HookResult> {
   const d: Deps = { ...defaultDeps(env), ...deps };
@@ -155,6 +253,7 @@ export async function runHook(event: string, stdinText: string, env: NodeJS.Proc
     }
     if (typeof input !== "object" || input === null || Array.isArray(input)) return pre ? blockPre("hook input is not an object") : { stdout: "", stderr: "", exitCode: 0 };
     const obj = input as Record<string, unknown>;
+    if (runByCursor(obj)) return cursorRun(pre, d.env);
     if (pre) {
       if (obj.hook_event_name !== undefined && obj.hook_event_name !== "PreToolUse") return blockPre(`unexpected hook event ${String(obj.hook_event_name)}`);
       return await handlePre(obj, d);
