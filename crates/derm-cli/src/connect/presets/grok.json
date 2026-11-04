@@ -10,18 +10,17 @@
     "orcaId": "grok",
     "gate": {
       "family": "command-hook",
-      "where": "own file ~/.grok/hooks/<derm>.json, PreToolUse",
-      "status": "planned",
+      "where": "own file ~/.grok/hooks/derm.json, PreToolUse, failClosed; compat hook imports off in ~/.grok/config.toml",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "blocks-with-switch",
-    "failSwitch": "failClosed: true",
+    "failSwitch": "failClosed: true (1.0.71 and later)",
     "ask": "own-prompt",
-    "shellAliases": [
-      "run_terminal_command"
-    ],
-    "verifiedAt": "1.0.71, embedded docs",
-    "note": "also reads Claude Code's and Cursor's hook files: turn its compat imports off"
+    "shellAliases": ["run_terminal_command", "shell"],
+    "verifiedAt": "1.0.70, 1.0.71, 1.0.74, run (custom model, fake chat server)",
+    "note": "failClosed from 1.0.71: npm latest 1.0.70 ignores it and fails open (run); --yolo approves an ask, so derm sends an ask there to its approver"
   }
 }

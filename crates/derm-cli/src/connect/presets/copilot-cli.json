@@ -46,15 +46,17 @@
     "orcaId": "copilot",
     "gate": {
       "family": "command-hook",
-      "where": "own file ~/.copilot/hooks/<derm>.json, preToolUse with permissionRequest",
-      "status": "planned",
+      "where": "own file ~/.copilot/hooks/derm.json, preToolUse",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "open-on-timeout",
     "failSwitch": null,
     "ask": "own-prompt",
-    "shellAliases": [],
-    "verifiedAt": "1.0.104, docs"
+    "shellAliases": ["powershell", "write_bash", "write_powershell"],
+    "verifiedAt": "1.0.105, run (COPILOT_OFFLINE, fake chat server)",
+    "note": "a crash denies, a timeout runs the call; -p and autopilot deny an ask"
   }
 }

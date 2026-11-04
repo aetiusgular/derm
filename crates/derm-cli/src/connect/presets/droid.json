@@ -10,18 +10,17 @@
     "orcaId": "droid",
     "gate": {
       "family": "command-hook",
-      "where": "hooks in ~/.factory/settings.json beside Orca's entry; never create ~/.factory/hooks.json",
-      "status": "planned",
+      "where": "hooks in ~/.factory/settings.json beside Orca's entry; never create ~/.factory/hooks.json or ~/.factory/hooks/hooks.json",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "open",
     "failSwitch": null,
     "ask": "approver-or-deny",
-    "shellAliases": [
-      "execute"
-    ],
-    "verifiedAt": "0.250.0, binary strings",
-    "note": "needs an account: fixtures only unless call 8 buys a seat"
+    "shellAliases": ["execute"],
+    "verifiedAt": "1.3.0, run (airgap mode, BYOK model, fake chat server)",
+    "note": "hooks.json shadows the PreToolUse array of settings.json (run); a Factory hook-set sync clears settings.json's hooks"
   }
 }

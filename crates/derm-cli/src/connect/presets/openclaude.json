@@ -1,7 +1,7 @@
 {
   "id": "openclaude",
   "name": "OpenClaude",
-  "cli": "TODO",
+  "cli": "openclaude",
   "mcpFile": "~/.openclaude.json",
   "toolNameForm": "mcp__s__t",
   "verified": "TODO",
@@ -11,14 +11,16 @@
     "gate": {
       "family": "command-hook",
       "where": "~/.openclaude/settings.json, PreToolUse",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
-      "lane": "L"
+      "lane": "L",
+      "package": "packages/derm-hooks-claude-compat"
     },
     "failMode": "open",
     "failSwitch": null,
     "ask": "own-prompt",
-    "shellAliases": [],
-    "verifiedAt": "0.33.0, bundle"
+    "shellAliases": ["powershell", "monitor"],
+    "verifiedAt": "0.34.0, run (cloud, fake Anthropic server)",
+    "note": "needs Node 24.22.1 or later; refuses bypass flags as root"
   }
 }
