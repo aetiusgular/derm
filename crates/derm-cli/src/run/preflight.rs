@@ -157,14 +157,22 @@ pub fn companion(
 /// `#!/usr/bin/env bash`) is looked up on this PATH, so a program planted in
 /// a writable folder on the user's PATH is never found there (re-review
 /// W4-R1).
+///
+/// With a sandbox (`writable` not empty), an entry that does not exist at
+/// start is dropped too: it holds nothing now, and compared as written it
+/// can miss a writable folder reached through a link (`/tmp` is
+/// `/private/tmp` on macOS), which the sandbox could then fill (Mac test w4,
+/// MW4-1).
 pub fn companion_path(path_var: &str, writable: &[String]) -> String {
     path_var
         .split(':')
         .filter(|d| d.starts_with('/'))
         .filter(|d| {
-            let real = std::fs::canonicalize(d)
-                .map(|r| r.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| d.to_string());
+            let real = match std::fs::canonicalize(d) {
+                Ok(r) => r.to_string_lossy().into_owned(),
+                Err(_) if !writable.is_empty() => return false,
+                Err(_) => d.to_string(),
+            };
             !writable.iter().any(|w| under(&real, w) || under(d, w))
         })
         .collect::<Vec<_>>()
@@ -423,6 +431,40 @@ mod tests {
             companion_path(&path, &[]),
             format!("{w}/node_modules/.bin:/usr/local/bin:/usr/bin:/tmp/x")
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Mac test w4, MW4-1: on macOS `/tmp` is a link to `/private/tmp`, so a
+    /// PATH entry `/tmp/x` that did not exist at start was compared as
+    /// written against the folder's real path and kept, and the sandbox could
+    /// make it later and put a `node` there for the companion. Reproduced
+    /// here with a link of our own: with a sandbox, an entry that does not
+    /// exist is dropped, and one that exists is compared by its real path.
+    #[test]
+    fn a_missing_path_entry_under_a_linked_writable_folder_is_dropped() {
+        let root = std::env::temp_dir().join(format!(
+            "derm-pre-link-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let real = root.join("real");
+        let kept = root.join("kept");
+        std::fs::create_dir_all(real.join("bin")).unwrap();
+        std::fs::create_dir_all(&kept).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let path = format!(
+            "{}:{}:{}:{}",
+            s(&link.join("x")),
+            s(&link.join("bin")),
+            s(&kept),
+            s(&root.join("gone"))
+        );
+        assert_eq!(companion_path(&path, &[s(&link)]), s(&kept));
+        assert_eq!(companion_path(&path, &[s(&real)]), s(&kept));
+        // With no sandbox nothing can be planted by it; entries stay.
+        assert_eq!(companion_path(&path, &[]), path);
         let _ = std::fs::remove_dir_all(&root);
     }
 
