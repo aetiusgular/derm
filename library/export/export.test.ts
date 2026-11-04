@@ -77,6 +77,9 @@ describe("marketplace export (Claude Code and Codex)", () => {
     expect(namespacedVar("exa", "_X")).toBeUndefined();
     expect(namespacedVar("exa", "A__B")).toBeUndefined();
     expect(namespacedVar("exa", "1A")).toBeUndefined();
+    // derm connect's variable names stop at 64 bytes (review W4-S9).
+    expect(namespacedVar("exa", "A".repeat(64))).toBe(`DERM_EXA__${"A".repeat(64)}`);
+    expect(namespacedVar("exa", "A".repeat(65))).toBeUndefined();
   });
   it("the Shopify plugin keeps the telemetry opt-out", () => {
     const shopify = parse(files, "plugins/shopify-dev/.claude-plugin/plugin.json") as { mcpServers: Record<string, { env: Record<string, string> }> };

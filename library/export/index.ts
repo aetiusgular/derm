@@ -75,7 +75,8 @@ export function envNameFor(name: string): string {
  * integration w4).
  */
 export function namespacedVar(server: string, part: string): string | undefined {
-  if (part.startsWith("_") || part.includes("__") || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) return undefined;
+  // derm connect's `valid_env_name`: at most 64 bytes (review W4-S9).
+  if (part.length > 64 || part.startsWith("_") || part.includes("__") || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(part)) return undefined;
   return `DERM_${server.toUpperCase().replace(/-/g, "_")}__${part}`;
 }
 
