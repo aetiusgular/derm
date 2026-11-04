@@ -1970,6 +1970,91 @@ mod end_to_end {
     /// Security review L12: when the harness does not start, the companion
     /// (and what it started) is stopped, and nothing derm made for the run is
     /// left behind.
+    /// The live processes whose argument line holds `marker`, as
+    /// `"<pid>: <args>"`. Linux reads `/proc`; elsewhere `ps` (Mac test w4,
+    /// MW4-2: this test read `/proc` alone and failed on macOS).
+    fn running_with(marker: &str) -> Vec<String> {
+        if std::path::Path::new("/proc/self/stat").exists() {
+            proc_running_with(marker)
+        } else {
+            ps_running_with(marker)
+        }
+    }
+
+    fn proc_running_with(marker: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir("/proc").unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let zombie = std::fs::read_to_string(e.path().join("stat"))
+                .map(|s| {
+                    s.rsplit(')')
+                        .next()
+                        .unwrap_or("")
+                        .trim_start()
+                        .starts_with('Z')
+                })
+                .unwrap_or(true);
+            let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
+            if !zombie && String::from_utf8_lossy(&cmd).contains(marker) {
+                out.push(format!(
+                    "{name}: {}",
+                    String::from_utf8_lossy(&cmd).replace('\0', " ")
+                ));
+            }
+        }
+        out
+    }
+
+    /// `ps -axww -o pid=,stat=,args=`: every process, its state, its whole
+    /// argument line (procps-ng and BSD ps). `ps` itself is left out.
+    fn ps_running_with(marker: &str) -> Vec<String> {
+        let out = std::process::Command::new("ps")
+            .args(["-axww", "-o", "pid=,stat=,args="])
+            .output()
+            .expect("ps runs");
+        let me = std::process::id().to_string();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let pid = it.next()?;
+                let stat = it.next()?;
+                let args = it.collect::<Vec<_>>().join(" ");
+                (!stat.starts_with('Z')
+                    && args.contains(marker)
+                    && !args.starts_with("ps ")
+                    && pid != me)
+                    .then(|| format!("{pid}: {args}"))
+            })
+            .collect()
+    }
+
+    /// Both readers see a live process by its marker and stop seeing it once
+    /// it is gone, so the check below means the same on Linux and macOS.
+    #[test]
+    fn both_process_readers_find_a_marked_process_and_lose_it_when_it_ends() {
+        let marker = format!("derm-mark-{}", uuid::Uuid::new_v4().simple());
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30", &marker])
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ps_running_with(&marker).is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(ps_running_with(&marker).len(), 1, "{:?}", ps_running_with(&marker));
+        if std::path::Path::new("/proc/self/stat").exists() {
+            assert_eq!(proc_running_with(&marker).len(), 1);
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(running_with(&marker).is_empty());
+        assert!(ps_running_with(&marker).is_empty());
+    }
+
     #[test]
     fn a_harness_that_does_not_start_leaves_nothing_running_or_behind() {
         let _one = OTEL_HELPERS.lock().unwrap_or_else(|p| p.into_inner());
@@ -2009,32 +2094,7 @@ mod end_to_end {
         )
         .unwrap_err();
         assert_eq!(err.0, 127, "{err:?}");
-        let left = || -> Vec<String> {
-            let mut out = Vec::new();
-            for e in std::fs::read_dir("/proc").unwrap().flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if !name.bytes().all(|b| b.is_ascii_digit()) {
-                    continue;
-                }
-                let zombie = std::fs::read_to_string(e.path().join("stat"))
-                    .map(|s| {
-                        s.rsplit(')')
-                            .next()
-                            .unwrap_or("")
-                            .trim_start()
-                            .starts_with('Z')
-                    })
-                    .unwrap_or(true);
-                let cmd = std::fs::read(e.path().join("cmdline")).unwrap_or_default();
-                if !zombie && String::from_utf8_lossy(&cmd).contains(&marker) {
-                    out.push(format!(
-                        "{name}: {}",
-                        String::from_utf8_lossy(&cmd).replace('\0', " ")
-                    ));
-                }
-            }
-            out
-        };
+        let left = || running_with(&marker);
         let deadline = Instant::now() + Duration::from_secs(5);
         while !left().is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
