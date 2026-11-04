@@ -63,3 +63,45 @@ describe("the macOS zip has one top folder (RC5)", () => {
     expect(script).toMatch(/ditto -c -k --norsrc --noextattr --keepParent "derm-\$version-macos"/);
   });
 });
+
+// Release recheck RC8: with no policy file every call asks, and where an ask
+// goes is each preset row's `coverage.ask`. The install page says so before
+// the table, for every built adapter, in the same split as the rows.
+describe("the agents page says what happens with no policy (RC8)", () => {
+  const page = text("docs/install/agents.md");
+  const presets = new URL("crates/derm-cli/src/connect/presets/", root);
+  const index = JSON.parse(readFileSync(new URL("index.json", presets), "utf8"));
+  const ids: string[] = [...index.harnesses, ...index.planned];
+  // The agents' names as this page writes them.
+  const NAMES: Record<string, string> = {
+    "claude-code": "Claude Code",
+    codex: "Codex",
+    pi: "Pi",
+    "oh-my-pi": "oh-my-pi",
+    opencode: "OpenCode",
+    kilo: "Kilo Code",
+    gemini: "Gemini CLI",
+    hermes: "Hermes Agent",
+    openclaw: "OpenClaw",
+  };
+  const sentence = page.match(/With no `~\/\.derm\/policy\.json` every call asks: ([^\n]*)/);
+
+  it("says it before the install table", () => {
+    expect(sentence, "the no-policy sentence").not.toBeNull();
+    expect(page.indexOf(sentence![0])).toBeLessThan(page.indexOf("| Agent | Install |"));
+  });
+
+  it.each(ids)("%s sits in the clause its ask route gives", (id) => {
+    const row = JSON.parse(readFileSync(new URL(`${id}.json`, presets), "utf8"));
+    if (row.coverage?.gate?.status !== "built") return;
+    const name = NAMES[id];
+    expect(name, `${id} is built: give it a name on this page`).toBeDefined();
+    const [prompts, denies] = sentence![1].split(/ then prompt before every tool call, and /);
+    const listed = (clause: string) => clause.split(/, | and /).map((s) => s.trim());
+    if (row.coverage.ask === "approver-or-deny") {
+      expect(listed(denies.split(" deny every tool call")[0]), id).toContain(name);
+    } else {
+      expect(listed(prompts), id).toContain(name);
+    }
+  });
+});
