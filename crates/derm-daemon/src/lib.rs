@@ -23,6 +23,15 @@ pub mod protocol;
 pub mod service;
 pub mod socket;
 
+// Wave 5's folders (the wave 5 base, `plans/parallel_build_tk.md` section
+// 7c), empty until their lanes: `join/` and `content/` lane S, `installs/`
+// lane X, `platform/windows/` lane Z. `approver/` (lane V) is a child of
+// `daemon`, declared there.
+pub mod content;
+pub mod installs;
+pub mod join;
+pub mod platform;
+
 /// Where the daemon's socket lives, per OS (contract, section 1). The
 /// function only computes the path; it creates nothing. On Linux the folder
 /// is `$XDG_RUNTIME_DIR`, else a private `/run/user/<uid>`, else

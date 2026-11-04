@@ -1,0 +1,19 @@
+# Wave 5 lane S's crate (scaffolded by the wave 5 base,
+# plans/parallel_build_tk.md section 7c): the model tap, a loopback HTTP and
+# WebSocket proxy the daemon starts. Lane S owns this whole folder, its
+# manifest included, and pins every dependency to an exact version with a
+# reason in its status doc.
+
+[package]
+name = "derm-tap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "derm's model tap: a loopback proxy that records every tool call a model asks for"
+
+[dependencies]
+derm-core = { path = "../derm-core" }
+serde.workspace = true
+serde_json.workspace = true

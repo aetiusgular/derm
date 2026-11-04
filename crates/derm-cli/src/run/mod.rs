@@ -24,6 +24,12 @@ pub(crate) mod harness;
 pub(crate) mod plan;
 mod policy_log;
 mod preflight;
+// Wave 5's seams (the wave 5 base, `plans/parallel_build_tk.md` section 7c):
+// each folder is one lane's, and each stub changes nothing. The rest of
+// `run/` is integration's in wave 5.
+mod boundary; // lane T
+mod tap; // lane S
+mod user; // lane V
 
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -519,7 +525,9 @@ fn wire_export(
 }
 
 fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<u8, (u8, String)> {
-    let a = args::parse(argv).map_err(|e| (2, e))?;
+    // The boundary choice reads the raw argv first (lane T's seam).
+    let choice = boundary::choose(argv)?;
+    let a = args::parse(&choice.argv).map_err(|e| (2, e))?;
     let cwd_raw = match &a.cwd {
         Some(c) => PathBuf::from(c),
         None => std::env::current_dir().map_err(|e| (1, format!("current folder: {e}")))?,
@@ -640,6 +648,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ..inputs
     };
     let mut p = plan::build(&inputs).map_err(|e| (2, e))?;
+    // The model tap's launch environment (lane S's seam).
+    let tap_record = tap::environment(a.harness.id, &mut p)?;
     // Claude Code's and Codex's own OTel into the daemon (T2.9). The helper
     // script sits in the daemon's folder under `none`; srt hides that folder,
     // so there the token goes in the header variable, as the chat token
@@ -783,6 +793,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             }
         }
     }
+    // The agents' user (lane V's seam), after the companion, which runs as
+    // you whatever the harness runs as.
+    let agent_user = user::wrap(&mut launch)?;
     let mut child = exec::spawn(&launch, &cwd, filter.is_some())
         .map_err(|e| (127, format!("{}: {e}", p.program)))?;
     let pid = child.id();
@@ -797,7 +810,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // `dangerousFlags` is the name the daemon's `report.running` reads
     // (`run_info_of`): the words that put the agent in full access (case 83).
     let dangerous = &p.full_access;
-    let base = json!({
+    let mut base = json!({
         "boundary": a.boundary.name(),
         "argv": full_argv,
         "kit": p.kit,
@@ -814,6 +827,17 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "acp": filter.is_some(),
         "trust": "client",
     });
+    // Wave 5's records, only where a seam made one (`contracts/events.md`
+    // section 5); the base's stubs make none.
+    for (key, record) in [
+        ("boundaryChoice", &choice.record),
+        ("tap", &tap_record),
+        ("agentUser", &agent_user),
+    ] {
+        if let Some(v) = record {
+            base[key] = v.clone();
+        }
+    }
     if let Some(d) = &daemon {
         let summary = format!("{} under {}", a.harness.id, a.boundary.name());
         if let Err(e) = d.post(&event(

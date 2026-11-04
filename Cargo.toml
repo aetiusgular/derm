@@ -5,6 +5,9 @@ members = [
     "crates/derm-daemon",
     "crates/derm-cli",
     "crates/derm-audit-linux",
+    # Wave 5 (the wave 5 base): lane S's tap and lane Z's Windows feed.
+    "crates/derm-tap",
+    "crates/derm-audit-windows",
 ]
 # The two macos/ crates are their own workspaces (each has [workspace] in its
 # Cargo.toml), as in the fork. `cargo check` at the root never builds them.
