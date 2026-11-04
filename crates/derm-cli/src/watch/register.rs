@@ -230,6 +230,56 @@ pub const CODEX_HOOK_KEYS: [&str; 2] = [
     "derm@derm:hooks/hooks.json:post_tool_use:0:0",
 ];
 
+/// What `[marketplaces.derm]` in Codex's config.toml is. Codex 0.166.0 writes
+/// `source_type = "git"`, `source = "https://github.com/aetiusgular/derm.git"`
+/// and `ref` for `codex plugin marketplace add aetiusgular/derm --ref <tag>`,
+/// and `source_type = "local"` with the folder for the folder form (both run
+/// on the box, release recheck).
+#[derive(Debug, PartialEq)]
+enum Marketplace {
+    Absent,
+    /// derm's repository at this release's tag, or with no ref.
+    Ours,
+    /// derm's repository at another ref.
+    OursOtherRef,
+    /// A folder on this machine: the documented clone route. Its contents
+    /// are not checked here.
+    Local,
+    /// Anything else, a value that is not a table included.
+    Foreign,
+}
+
+fn codex_marketplace(doc: &toml_edit::DocumentMut) -> Marketplace {
+    let Some(item) = doc
+        .get("marketplaces")
+        .and_then(|m| m.as_table_like())
+        .and_then(|m| m.get("derm"))
+    else {
+        return Marketplace::Absent;
+    };
+    let Some(t) = item.as_table_like() else {
+        return Marketplace::Foreign;
+    };
+    let str_of = |k: &str| t.get(k).and_then(|v| v.as_str());
+    match (str_of("source_type"), str_of("source")) {
+        (Some("local"), Some(_)) => Marketplace::Local,
+        (Some("git"), Some(src)) => {
+            let src = src.to_ascii_lowercase();
+            let ours = src == "https://github.com/aetiusgular/derm.git"
+                || src == "https://github.com/aetiusgular/derm";
+            if !ours {
+                return Marketplace::Foreign;
+            }
+            match str_of("ref") {
+                None => Marketplace::Ours,
+                Some(r) if r == format!("v{}", env!("CARGO_PKG_VERSION")) => Marketplace::Ours,
+                Some(_) => Marketplace::OursOtherRef,
+            }
+        }
+        _ => Marketplace::Foreign,
+    }
+}
+
 fn codex(env: &Env, home: &Path) -> Registered {
     let codex_home = env
         .var("CODEX_HOME")
@@ -253,6 +303,20 @@ fn codex(env: &Env, home: &Path) -> Registered {
             return Registered::Unknown(format!("{} does not parse as TOML", config.display()))
         }
     };
+    let version = env!("CARGO_PKG_VERSION");
+    let readd = format!(
+        "codex plugin marketplace remove derm, then codex plugin marketplace add aetiusgular/derm --ref v{version}, then codex plugin add derm@derm"
+    );
+    // A marketplace named `derm` that is not derm's would hand `derm@derm`
+    // to whatever it points at, and config.toml is a file an agent can write
+    // (release recheck review, medium). Nothing read from it is printed.
+    let marketplace = codex_marketplace(&doc);
+    if marketplace == Marketplace::Foreign {
+        return Registered::No(format!(
+            "[marketplaces.derm] in {} is not aetiusgular/derm's repository or a local folder, so its derm@derm is not derm's: {readd}",
+            config.display()
+        ));
+    }
     let plugins = doc.get("plugins").and_then(|p| p.as_table_like());
     let entry = plugins
         .and_then(|p| p.get("derm@derm"))
@@ -265,21 +329,20 @@ fn codex(env: &Env, home: &Path) -> Registered {
         None => {
             // `codex plugin add derm@derm` fails until the marketplace is
             // configured (release recheck RC7, Codex 0.166.0), so name it first.
-            let has_marketplace = doc
-                .get("marketplaces")
-                .and_then(|m| m.as_table_like())
-                .is_some_and(|m| m.get("derm").is_some());
-            if has_marketplace {
-                return Registered::No(format!(
+            return Registered::No(match marketplace {
+                Marketplace::Absent => format!(
+                    "{} has no [marketplaces.derm]: codex plugin marketplace add aetiusgular/derm --ref v{version}, then codex plugin add derm@derm",
+                    config.display()
+                ),
+                Marketplace::OursOtherRef => format!(
+                    "[marketplaces.derm] in {} is pinned to another release than v{version}: {readd}",
+                    config.display()
+                ),
+                _ => format!(
                     "{} has no [plugins.\"derm@derm\"]: codex plugin add derm@derm",
                     config.display()
-                ));
-            }
-            return Registered::No(format!(
-                "{} has no [marketplaces.derm]: codex plugin marketplace add aetiusgular/derm --ref v{}, then codex plugin add derm@derm",
-                config.display(),
-                env!("CARGO_PKG_VERSION")
-            ));
+                ),
+            });
         }
     };
     if !on {
@@ -587,26 +650,70 @@ mod tests {
     fn the_codex_hint_names_the_marketplace_until_codex_has_it() {
         let (h, env) = home("rc7");
         let cfg = h.0.join(".codex/config.toml");
-        let pinned = format!(
-            "codex plugin marketplace add aetiusgular/derm --ref v{}",
-            env!("CARGO_PKG_VERSION")
+        let v = env!("CARGO_PKG_VERSION");
+        let pinned = format!("codex plugin marketplace add aetiusgular/derm --ref v{v}");
+        let hint = |text: &str| {
+            put(&cfg, text);
+            check("codex", &env)
+        };
+        let plugin_only = |r: Registered| {
+            let d = r.detail().unwrap().to_string();
+            assert_eq!(r.word(), "no", "{d}");
+            assert!(!d.contains("marketplace add"), "{d}");
+            assert!(d.contains("codex plugin add derm@derm"), "{d}");
+        };
+        // Another plugin's marketplace only: name derm's first.
+        let r = hint("[marketplaces.openai-bundled]\nsource = \"x\"\n\n[plugins.\"pdf@openai-bundled\"]\nenabled = true\n");
+        let d = r.detail().unwrap();
+        assert!(
+            d.contains(&pinned) && d.contains("then codex plugin add derm@derm"),
+            "{d}"
         );
-        put(
-            &cfg,
-            "[marketplaces.openai-bundled]\nsource = \"x\"\n\n[plugins.\"pdf@openai-bundled\"]\nenabled = true\n",
+        // derm's at this release, in each TOML spelling, with or without a ref,
+        // in any letter case: the plugin line alone.
+        let git = "source_type = \"git\", source = \"https://github.com/aetiusgular/derm.git\"";
+        plugin_only(hint(&format!("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\nref = \"v{v}\"\n")));
+        plugin_only(hint(&format!(
+            "[marketplaces]\nderm = {{ {git}, ref = \"v{v}\" }}\n"
+        )));
+        plugin_only(hint(&format!("marketplaces.derm.source_type = \"git\"\nmarketplaces.derm.source = \"https://github.com/aetiusgular/derm\"\nmarketplaces.derm.ref = \"v{v}\"\n")));
+        plugin_only(hint("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://GitHub.com/AetiusGular/derm.git\"\n"));
+        // The folder form, as Codex 0.166.0 wrote it on the box.
+        plugin_only(hint(
+            "[marketplaces.derm]\nsource_type = \"local\"\nsource = \"/home/u/derm-0.1.1\"\n",
+        ));
+        // derm's at another tag (what Codex wrote on the box for --ref v0.1.1,
+        // read by a later version): remove and add at this release.
+        let r = hint("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\nref = \"v0.0.9\"\n");
+        let d = r.detail().unwrap();
+        assert!(
+            d.contains("pinned to another release")
+                && d.contains("codex plugin marketplace remove derm")
+                && d.contains(&pinned),
+            "{d}"
         );
-        let codex = check("codex", &env).detail().unwrap();
-        assert!(codex.contains(&pinned), "{codex}");
-        assert!(codex.contains("then codex plugin add derm@derm"), "{codex}");
-        // What `codex plugin marketplace add aetiusgular/derm --ref v0.1.1`
-        // wrote on the box (Codex 0.166.0).
-        put(
-            &cfg,
-            "[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\nref = \"v0.1.1\"\n",
-        );
-        let codex = check("codex", &env).detail().unwrap();
-        assert!(!codex.contains("marketplace add"), "{codex}");
-        assert!(codex.contains("codex plugin add derm@derm"), "{codex}");
+        // Not derm's: a stranger's repository, another source type, a value
+        // that is not a table. Nothing from the file is printed, and an
+        // installed, trusted derm@derm from it is not derm's gate.
+        let installed = "\n[plugins.\"derm@derm\"]\nenabled = true\n\n[hooks.state.\"derm@derm:hooks/hooks.json:pre_tool_use:0:0\"]\ntrusted_hash = \"sha256:aa\"\n\n[hooks.state.\"derm@derm:hooks/hooks.json:post_tool_use:0:0\"]\ntrusted_hash = \"sha256:bb\"\n";
+        std::fs::create_dir_all(h.0.join(".codex/plugins/cache/derm/derm/0.0.0")).unwrap();
+        for foreign in [
+            "[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/evil-x/derm.git\"\n",
+            "[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git.evil-x.example\"\n",
+            "[marketplaces.derm]\nsource_type = \"url\"\nsource = \"https://evil-x.example/derm\"\n",
+            "[marketplaces]\nderm = \"evil-x\"\n",
+        ] {
+            for text in [foreign.to_string(), format!("{foreign}{installed}")] {
+                let r = hint(&text);
+                let d = r.detail().unwrap().to_string();
+                assert_eq!(r.word(), "no", "{text}: {d}");
+                assert!(d.contains("not aetiusgular/derm's") && d.contains("codex plugin marketplace remove derm") && d.contains(&pinned), "{d}");
+                assert!(!d.contains("evil-x"), "{d}");
+            }
+        }
+        // The same installed and trusted plugin from derm's own marketplace is.
+        let r = hint(&format!("[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\nref = \"v{v}\"\n{installed}"));
+        assert_eq!(r.word(), "yes", "{:?}", r.detail());
     }
 
     #[test]

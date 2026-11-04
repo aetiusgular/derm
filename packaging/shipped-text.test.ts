@@ -84,24 +84,28 @@ describe("the agents page says what happens with no policy (RC8)", () => {
     hermes: "Hermes Agent",
     openclaw: "OpenClaw",
   };
-  const sentence = page.match(/With no `~\/\.derm\/policy\.json` every call asks: ([^\n]*)/);
+  const sentence = page.match(
+    /With no `~\/\.derm\/policy\.json` every call not on the reject list asks: (.*?) then prompt before every tool call, and (.*?) deny every tool call unless/,
+  );
+  const listed = (clause: string) => clause.split(/, | and /).map((s) => s.trim()).sort();
+  const rows = ids.map((id) => JSON.parse(readFileSync(new URL(`${id}.json`, presets), "utf8")));
+  const built = rows.filter((r) => r.coverage?.gate?.status === "built");
 
   it("says it before the install table", () => {
     expect(sentence, "the no-policy sentence").not.toBeNull();
     expect(page.indexOf(sentence![0])).toBeLessThan(page.indexOf("| Agent | Install |"));
   });
 
-  it.each(ids)("%s sits in the clause its ask route gives", (id) => {
-    const row = JSON.parse(readFileSync(new URL(`${id}.json`, presets), "utf8"));
-    if (row.coverage?.gate?.status !== "built") return;
-    const name = NAMES[id];
-    expect(name, `${id} is built: give it a name on this page`).toBeDefined();
-    const [prompts, denies] = sentence![1].split(/ then prompt before every tool call, and /);
-    const listed = (clause: string) => clause.split(/, | and /).map((s) => s.trim());
-    if (row.coverage.ask === "approver-or-deny") {
-      expect(listed(denies.split(" deny every tool call")[0]), id).toContain(name);
-    } else {
-      expect(listed(prompts), id).toContain(name);
+  it("knows every built adapter's ask route", () => {
+    for (const r of built) {
+      expect(NAMES[r.id], `${r.id} is built: give it a name on this page`).toBeDefined();
+      expect(["own-prompt", "approver-or-deny"], r.id).toContain(r.coverage.ask);
     }
+  });
+
+  it("lists exactly the built adapters, each in its route's clause", () => {
+    const by = (ask: string) => built.filter((r) => r.coverage.ask === ask).map((r) => NAMES[r.id]).sort();
+    expect(listed(sentence![1])).toEqual(by("own-prompt"));
+    expect(listed(sentence![2])).toEqual(by("approver-or-deny"));
   });
 });
