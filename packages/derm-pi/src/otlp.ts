@@ -25,7 +25,7 @@ export interface OtlpRecord {
   attributes: { key: string; value: Record<string, unknown> }[];
 }
 
-export const SCOPE = { name: "io.github.aetiusgular.derm.pi", version: "0.1.1" };
+export const SCOPE = { name: "io.github.aetiusgular.derm.pi", version: "0.1.2" };
 
 function anyValue(v: AttrValue): Record<string, unknown> {
   if (typeof v === "string") return { stringValue: v };

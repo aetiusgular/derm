@@ -51,7 +51,7 @@ The unit in the tarball starts `~/.local/bin/derm-daemon`; the one in the .deb s
 
 ### Over SSH
 
-The systemd user unit runs with `XDG_RUNTIME_DIR=/run/user/<uid>`. A shell that did not come through PAM's `pam_systemd`, such as one from Tailscale SSH, has no `XDG_RUNTIME_DIR`. Since 0.1.1 derm then looks in `/run/user/<uid>` when that folder exists, belongs to you and is 0700, so `derm status`, `derm watch` and `derm run` find the unit's daemon from such a shell. 0.1.0 looked in `~/.derm/run` and said "not reachable"; there, `export XDG_RUNTIME_DIR=/run/user/$(id -u)` first. A daemon started by hand picks its folder by the same rule.
+The systemd user unit runs with `XDG_RUNTIME_DIR=/run/user/<uid>`. A shell that did not come through PAM's `pam_systemd`, such as one from Tailscale SSH, has no `XDG_RUNTIME_DIR`. Since 0.1.2 derm then looks in `/run/user/<uid>` when that folder exists, belongs to you and is 0700, so `derm status`, `derm watch` and `derm run` find the unit's daemon from such a shell. 0.1.0 looked in `~/.derm/run` and said "not reachable"; there, `export XDG_RUNTIME_DIR=/run/user/$(id -u)` first. A daemon started by hand picks its folder by the same rule.
 
 ## The audit feed (optional, root)
 

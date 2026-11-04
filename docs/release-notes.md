@@ -1,3 +1,12 @@
+# derm v0.1.2
+
+Fixes from the recheck of v0.1.1 (3 Nov 2026). No change to the policy, the gates' decisions or the protocol. v0.1.1's draft is replaced by this release; its changes are below.
+
+## Changes since v0.1.1
+
+- **`derm status` for Codex** told anyone with a `~/.codex/config.toml`, which is every Codex user, to run `codex plugin add derm@derm`, which fails until derm's marketplace is configured. It now names `codex plugin marketplace add aetiusgular/derm --ref v0.1.2` first, until `[marketplaces.derm]` is in the file.
+- **The agents page** says to write `~/.derm/policy.json` before registering an adapter: with no policy every call asks, so Codex, OpenCode and Kilo Code deny every tool call unless `derm watch --approve` answers, and the other agents prompt before every call.
+
 # derm v0.1.1
 
 Fixes from the release check of v0.1.0 (3 Nov 2026). No change to the policy, the gates' decisions or the protocol.
@@ -7,7 +16,7 @@ Fixes from the release check of v0.1.0 (3 Nov 2026). No change to the policy, th
 - **Linux, a shell with no `XDG_RUNTIME_DIR`** (Tailscale SSH, and any route that skips PAM's `pam_systemd`): `derm status`, `derm watch` and `derm run` looked for the daemon in `~/.derm/run` while the systemd user unit listens in `/run/user/<uid>`, and said "not reachable". derm now takes `/run/user/<uid>` when the variable is unset and that folder is yours and 0700, in the daemon, the CLI, `derm connect`'s log and `derm-audit-feed`. An empty or relative `XDG_RUNTIME_DIR` counts as unset (0.1.0 put the socket in a relative `derm/` folder). `derm run --boundary none` also names the socket it used to the agent's hooks (`DERM_DAEMON_SOCKET`), so a hook reaches the daemon that gave it its chat token whatever the agent's environment holds.
 - **`derm watch report` on a Mac** said "truncated" over an empty log: an absent collector (none ships yet) counted as a cut-short reply. It no longer does; a timeout or a reply that stopped mid-way still does, and the collector line says why.
 - **`derm status`** gives install lines that work without a clone: `claude plugin marketplace add aetiusgular/derm` and `codex plugin marketplace add aetiusgular/derm`; for Pi, a folder of the release's source (`docs/install/agents.md`).
-- **The macOS zip** unpacks to one folder, `derm-0.1.1-macos/`, as the Linux tarball does. Safari named 0.1.0's folder `derm-0` and merged a second download into it.
+- **The macOS zip** unpacks to one folder, `derm-<version>-macos/`, as the Linux tarball does. Safari named 0.1.0's folder `derm-0` and merged a second download into it.
 - `derm connect` reads the daemon's token with the same checks as `derm run` (a regular file you own, 0600), and `derm-audit-feed rules --uid <n>` no longer takes the caller's `XDG_RUNTIME_DIR` for another user's rules.
 - `derm status` pins the Codex marketplace to the release's tag (`--ref v0.1.1`).
 - The README, the install pages and the comments in the launchd plist and the tarball's systemd unit describe the published release, not the build.
