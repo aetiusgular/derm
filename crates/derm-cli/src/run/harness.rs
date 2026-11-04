@@ -238,7 +238,14 @@ pub const HARNESSES: &[Harness] = &[
         sbx: None,
         state: &[".openclaude", ".openclaude.json"],
         credential: None,
-        control: &[".openclaude/settings.json"],
+        // As Claude Code's row: `settings.local.json` and `plugins` load
+        // hooks and servers in Claude Code; for OpenClaude that is inferred
+        // from the fork, not read (review W4-S7). A deny here only narrows.
+        control: &[
+            ".openclaude/settings.json",
+            ".openclaude/settings.local.json",
+            ".openclaude/plugins",
+        ],
         launch: Launch::None,
     },
     Harness {
@@ -295,7 +302,9 @@ pub const HARNESSES: &[Harness] = &[
         sbx: None,
         state: &[".cline"],
         credential: None,
-        control: &[".cline/data/settings", ".cline/hooks"],
+        // `.cline/plugins`: derm's own gate is installed there (the agents
+        // page), and a second plugin there loads beside it (review W4-S1).
+        control: &[".cline/data/settings", ".cline/hooks", ".cline/plugins"],
         launch: Launch::Cline,
     },
     Harness {
@@ -446,6 +455,58 @@ mod tests {
                     h.id
                 );
             }
+        }
+    }
+
+    /// Every file or folder the agents page tells you to put derm's gate in
+    /// (`~/...` in `docs/install/agents.md`) that lies inside an agent's
+    /// state is also one of its control paths, so srt keeps it read-only
+    /// (integration w4's review, W4-S1: Cline's gate in `~/.cline/plugins/
+    /// derm/` sat in writable state).
+    #[test]
+    fn every_install_path_inside_a_state_folder_is_control() {
+        let page = include_str!("../../../../docs/install/agents.md");
+        let mut paths: Vec<String> = Vec::new();
+        let mut rest = page;
+        while let Some(i) = rest.find("~/") {
+            rest = &rest[i + 2..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || "._/-".contains(c)))
+                .unwrap_or(rest.len());
+            let p = rest[..end].trim_end_matches(['/', '.']);
+            if !p.is_empty() {
+                paths.push(p.to_string());
+            }
+        }
+        assert!(
+            paths.iter().any(|p| p == ".cline/plugins/derm"),
+            "{paths:?}"
+        );
+        let under = |p: &str, d: &str| p == d || p.starts_with(&format!("{d}/"));
+        let mut missing = Vec::new();
+        for h in HARNESSES {
+            for p in &paths {
+                if h.state.iter().any(|s| under(p, s)) && !h.control.iter().any(|c| under(p, c)) {
+                    missing.push(format!("{}: {p}", h.id));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "writable under srt: {missing:?}");
+    }
+
+    /// OpenClaude is a Claude Code fork: what srt keeps read-only in
+    /// `~/.claude` it keeps read-only in `~/.openclaude` (review W4-S7).
+    #[test]
+    fn openclaude_keeps_claude_codes_control_files() {
+        let claude: Vec<String> = find("claude-code")
+            .unwrap()
+            .control
+            .iter()
+            .map(|c| c.replacen(".claude/", ".openclaude/", 1))
+            .collect();
+        let open = find("openclaude").unwrap().control;
+        for c in &claude {
+            assert!(open.contains(&c.as_str()), "{c}");
         }
     }
 
