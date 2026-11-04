@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aetiusgular/derm/contracts/wave5-records.schema.json",
+  "title": "derm wave 5 records",
+  "description": "The events wave 5 adds (events.md section 5; the wave 5 base, 4 Nov 2026), and the fields it adds to run.start's detail. An event is daemon-protocol.md section 3's shape; this schema pins `source` and `detail` per `kind`. Nothing here is built yet.",
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "bytes": { "type": "integer", "minimum": 0 },
+    "eventId": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "paths": { "type": "array", "maxItems": 64, "items": { "type": "string", "maxLength": 4096 } },
+    "api": { "enum": ["anthropic-messages", "openai-responses", "openai-responses-ws", "openai-chat", "gemini"] },
+    "package": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 214 },
+        "version": { "type": ["string", "null"], "maxLength": 128 },
+        "ecosystem": { "enum": ["npm", "PyPI", "crates.io", "Go"] },
+        "inLockfile": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["id", "at", "chatId", "harness", "source", "kind", "summary", "detail"],
+      "properties": {
+        "id": { "$ref": "#/$defs/eventId" },
+        "at": { "type": "integer" },
+        "chatId": { "type": "string", "maxLength": 128 },
+        "harness": { "type": "string", "maxLength": 64 },
+        "source": { "enum": ["tap", "derm", "adapter", "cua"] },
+        "kind": { "enum": ["tap.request", "tap.call", "join.candidates", "install.call", "install.lockdiff", "install.control", "content.purge", "agent.unregistered", "cu.action"] },
+        "summary": { "type": "string", "maxLength": 200 },
+        "detail": { "type": "object" },
+        "pid": { "type": "integer", "minimum": 0 },
+        "approvalId": { "type": "string" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "tap.request" } } }, "then": { "properties": { "source": { "const": "tap" }, "detail": { "$ref": "#/$defs/tapRequest" } } } },
+        { "if": { "properties": { "kind": { "const": "tap.call" } } }, "then": { "properties": { "source": { "const": "tap" }, "detail": { "$ref": "#/$defs/tapCall" } } } },
+        { "if": { "properties": { "kind": { "const": "join.candidates" } } }, "then": { "properties": { "source": { "const": "derm" }, "detail": { "$ref": "#/$defs/joinCandidates" } } } },
+        { "if": { "properties": { "kind": { "const": "install.call" } } }, "then": { "properties": { "source": { "const": "adapter" }, "detail": { "$ref": "#/$defs/installCall" } } } },
+        { "if": { "properties": { "kind": { "const": "install.lockdiff" } } }, "then": { "properties": { "source": { "const": "derm" }, "detail": { "$ref": "#/$defs/installLockdiff" } } } },
+        { "if": { "properties": { "kind": { "const": "install.control" } } }, "then": { "properties": { "source": { "const": "derm" }, "detail": { "$ref": "#/$defs/installControl" } } } },
+        { "if": { "properties": { "kind": { "const": "content.purge" } } }, "then": { "properties": { "source": { "const": "derm" }, "detail": { "$ref": "#/$defs/contentPurge" } } } },
+        { "if": { "properties": { "kind": { "const": "agent.unregistered" } } }, "then": { "properties": { "source": { "const": "derm" }, "detail": { "$ref": "#/$defs/agentUnregistered" } } } },
+        { "if": { "properties": { "kind": { "const": "cu.action" } } }, "then": { "properties": { "source": { "const": "cua" }, "detail": { "$ref": "#/$defs/cuAction" } } } }
+      ]
+    },
+    "tapRequest": {
+      "type": "object",
+      "required": ["trust", "api", "upstream", "model", "durationMs", "toolsOffered", "toolCalls", "incomplete"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "api": { "$ref": "#/$defs/api" },
+        "upstream": { "type": "string", "maxLength": 255 },
+        "model": { "type": "string", "maxLength": 200 },
+        "status": { "type": ["integer", "null"] },
+        "inputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "outputTokens": { "type": ["integer", "null"], "minimum": 0 },
+        "durationMs": { "type": "integer", "minimum": 0 },
+        "toolsOffered": { "type": "integer", "minimum": 0 },
+        "toolCalls": { "type": "integer", "minimum": 0 },
+        "incomplete": { "type": "boolean" },
+        "contentKept": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "tapCall": {
+      "type": "object",
+      "required": ["trust", "api", "model", "callId", "tool", "toolNormalized", "argsSha256", "argsBytes", "paths", "resultSha256", "resultBytes", "incomplete"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "api": { "$ref": "#/$defs/api" },
+        "model": { "type": "string", "maxLength": 200 },
+        "request": { "$ref": "#/$defs/eventId" },
+        "callId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tool": { "type": "string", "maxLength": 200 },
+        "toolNormalized": { "type": "string", "maxLength": 200 },
+        "argsSha256": { "$ref": "#/$defs/sha256" },
+        "argsBytes": { "$ref": "#/$defs/bytes" },
+        "paths": { "$ref": "#/$defs/paths" },
+        "resultSha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "resultBytes": { "oneOf": [{ "$ref": "#/$defs/bytes" }, { "type": "null" }] },
+        "resultIsError": { "type": "boolean" },
+        "incomplete": { "type": "boolean" },
+        "contentKept": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "joinCandidates": {
+      "type": "object",
+      "required": ["trust", "effect", "effectKind", "candidates", "chosen"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "effect": { "$ref": "#/$defs/eventId" },
+        "effectKind": { "type": "string", "maxLength": 64 },
+        "candidates": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["call", "by", "why"],
+            "properties": {
+              "call": { "$ref": "#/$defs/eventId" },
+              "by": { "enum": ["tool-use-id", "tree", "path", "window", "mcp-server"] },
+              "why": { "type": "string", "maxLength": 300 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "chosen": { "oneOf": [{ "$ref": "#/$defs/eventId" }, { "type": "null" }] }
+      },
+      "additionalProperties": false
+    },
+    "installCall": {
+      "type": "object",
+      "required": ["trust", "toolUseId", "manager", "form", "packages", "decision"],
+      "properties": {
+        "trust": { "const": "client" },
+        "toolUseId": { "type": ["string", "null"], "maxLength": 128 },
+        "manager": { "enum": ["npm", "pnpm", "yarn", "bun", "pip", "uv", "poetry", "pdm", "pipx", "cargo", "go"] },
+        "form": { "enum": ["add", "run"] },
+        "packages": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/package" } },
+        "decision": { "enum": ["allow", "ask", "deny"] },
+        "check": {
+          "type": ["object", "null"],
+          "required": ["ran", "results"],
+          "properties": {
+            "ran": { "type": "boolean" },
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "version", "exists"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "version": { "type": ["string", "null"] },
+                  "exists": { "type": ["boolean", "null"] },
+                  "ageHours": { "type": ["number", "null"], "minimum": 0 },
+                  "osv": { "type": "array", "items": { "type": "string", "maxLength": 64 } }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "installLockdiff": {
+      "type": "object",
+      "required": ["trust", "call", "manager", "lockfile", "added", "removed", "changed"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "call": { "$ref": "#/$defs/eventId" },
+        "manager": { "type": "string", "maxLength": 32 },
+        "lockfile": { "type": "string", "maxLength": 4096 },
+        "added": { "type": "array", "items": { "$ref": "#/$defs/package" } },
+        "removed": { "type": "array", "items": { "$ref": "#/$defs/package" } },
+        "changed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "from", "to"],
+            "properties": { "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "installControl": {
+      "type": "object",
+      "required": ["trust", "call", "path", "exe"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "call": { "$ref": "#/$defs/eventId" },
+        "path": { "type": "string", "maxLength": 4096 },
+        "exe": { "type": "string", "maxLength": 4096 },
+        "effect": { "$ref": "#/$defs/eventId" }
+      },
+      "additionalProperties": false
+    },
+    "contentPurge": {
+      "type": "object",
+      "required": ["trust", "files", "bytes", "retentionDays", "reason"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "files": { "type": "integer", "minimum": 0 },
+        "bytes": { "$ref": "#/$defs/bytes" },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 7 },
+        "reason": { "enum": ["retention", "chat-removed"] }
+      },
+      "additionalProperties": false
+    },
+    "agentUnregistered": {
+      "type": "object",
+      "required": ["trust", "executable", "preset", "ppid", "parentExe"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "executable": { "type": "string", "maxLength": 4096 },
+        "preset": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "ppid": { "type": ["integer", "null"], "minimum": 0 },
+        "parentExe": { "type": ["string", "null"], "maxLength": 4096 }
+      },
+      "additionalProperties": false
+    },
+    "cuAction": {
+      "type": "object",
+      "required": ["trust", "action", "app", "delivery", "verdict", "screenshotSha256", "grant"],
+      "properties": {
+        "trust": { "const": "daemon" },
+        "action": { "enum": ["capture", "click", "double_click", "right_click", "middle_click", "drag", "scroll", "type", "key", "set_value", "wait", "list_apps", "list_windows", "focus_app"] },
+        "app": { "type": ["string", "null"], "maxLength": 4096 },
+        "delivery": { "enum": ["background", "foreground", null] },
+        "verdict": { "enum": ["ok", "denied", "blocked", "timeout_outcome_unknown", "error"] },
+        "effect": { "type": ["boolean", "null"] },
+        "verified": { "type": ["boolean", "null"] },
+        "screenshotSha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "grant": { "type": ["string", "null"], "maxLength": 128 },
+        "contentKept": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "runStartWave5": {
+      "description": "The fields wave 5 adds to run.start's detail (events.md section 5). Each is set only by its seam.",
+      "type": "object",
+      "properties": {
+        "boundaryChoice": {
+          "type": "object",
+          "required": ["chosen", "named", "reasons", "answeredBy", "preAnswer"],
+          "properties": {
+            "chosen": { "enum": ["sbx", "srt", "none"] },
+            "named": { "type": "boolean" },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["boundary", "why"],
+                "properties": { "boundary": { "enum": ["sbx", "srt"] }, "why": { "type": "string", "maxLength": 300 }, "install": { "type": "string", "maxLength": 300 } },
+                "additionalProperties": false
+              }
+            },
+            "answeredBy": { "enum": ["flag", "terminal", "pre-answer", "no-one"] },
+            "preAnswer": { "enum": ["run-as-you", "stop", null] }
+          },
+          "additionalProperties": false
+        },
+        "tap": {
+          "type": "object",
+          "required": ["on"],
+          "properties": {
+            "on": { "type": "boolean" },
+            "reason": { "enum": ["no-tap-flag", "setting", "no-base-url"] },
+            "via": { "enum": ["env", "codex-provider", "none"] },
+            "api": { "$ref": "#/$defs/api" },
+            "upstream": { "type": "string", "maxLength": 255 }
+          },
+          "additionalProperties": false
+        },
+        "agentUser": {
+          "type": "object",
+          "required": ["user", "uid", "how"],
+          "properties": { "user": { "type": "string", "maxLength": 64 }, "uid": { "type": "integer", "minimum": 0 }, "how": { "type": "string", "maxLength": 64 } },
+          "additionalProperties": false
+        },
+        "content": {
+          "type": "object",
+          "required": ["on", "retentionDays"],
+          "properties": { "on": { "type": "boolean" }, "retentionDays": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 } },
+          "additionalProperties": false
+        },
+        "ioUring": { "enum": ["not-audited", "own-kernel"] }
+      }
+    }
+  },
+  "type": "array",
+  "items": { "$ref": "#/$defs/event" }
+}

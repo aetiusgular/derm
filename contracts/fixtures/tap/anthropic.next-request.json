@@ -1,0 +1,37 @@
+{
+  "model": "claude-fixture",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Read the README."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "I will read the file."
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_01FIXTURE0000000000000001",
+          "name": "Read",
+          "input": {
+            "file_path": "/home/u/project/README.md"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01FIXTURE0000000000000001",
+          "content": "# Project\n"
+        }
+      ]
+    }
+  ]
+}

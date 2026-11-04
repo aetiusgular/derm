@@ -6,13 +6,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { loadPresetTable } from "./presets.ts";
+import { loadPresetTable, mergeWave5, type PresetTable } from "./presets.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const read = (p: string): unknown => JSON.parse(readFileSync(join(here, p), "utf8"));
 
 function validator() {
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
+  // cu-tool.schema.json carries the tool's name and model-facing description
+  // beside its input schema (the wave 5 base).
+  ajv.addKeyword({ keyword: "x-derm-tool", schemaType: "object" });
   for (const p of [
     "entry.schema.json",
     "policy.schema.json",
@@ -21,6 +24,10 @@ function validator() {
     "shapes/plugin.schema.json",
     "shapes/marketplace.schema.json",
     "harness-presets.schema.json",
+    // Wave 5 (the wave 5 base).
+    "wave5-records.schema.json",
+    "settings.schema.json",
+    "cu-tool.schema.json",
   ]) {
     ajv.addSchema(read(p) as object);
   }
@@ -212,5 +219,99 @@ describe("hook dialect fixtures", () => {
         expect(text, `${a}/${f} holds no key-like string`).not.toMatch(/\b(sk|ghp|hf|xox[bp])[-_][A-Za-z0-9]{16,}/);
       }
     }
+  });
+});
+
+// The wave 5 base: wave 5's contracts and their first fixtures
+// (events.md section 5, policy.md section 6, cu-tool.schema.json).
+describe("wave 5 contracts", () => {
+  it("every wave 5 record example validates", () => {
+    for (const f of ["fixtures/tap/records.json", "fixtures/tap/anthropic.expected.json", "fixtures/tap/openai-responses.expected.json", "fixtures/installs/records.json"]) {
+      expect([f, check("wave5-records.schema.json", read(f))]).toEqual([f, []]);
+    }
+  });
+
+  it("refuses a tap record from the wrong source, a header in a detail, and a candidate set with no candidate", () => {
+    const [call] = read("fixtures/tap/anthropic.expected.json") as Record<string, unknown>[];
+    expect(check("wave5-records.schema.json", [{ ...call, source: "adapter" }])).not.toEqual([]);
+    const detail = (call as { detail: Record<string, unknown> }).detail;
+    expect(check("wave5-records.schema.json", [{ ...call, detail: { ...detail, authorization: "Bearer x" } }])).not.toEqual([]);
+    const join = (read("fixtures/tap/records.json") as { kind: string; detail: Record<string, unknown> }[]).find((r) => r.kind === "join.candidates")!;
+    expect(check("wave5-records.schema.json", [{ ...join, detail: { ...join.detail, candidates: [] } }])).not.toEqual([]);
+  });
+
+  it("the tap fixtures' hashes are the canonical JSON the README names", () => {
+    const canon = (v: unknown): string =>
+      Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v !== null && typeof v === "object" ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canon((v as Record<string, unknown>)[k])}`).join(",")}}` : JSON.stringify(v);
+    const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
+    const a = read("fixtures/tap/anthropic.response.json") as { content: { type: string; input?: unknown }[] };
+    const [ae] = read("fixtures/tap/anthropic.expected.json") as { detail: { argsSha256: string; resultSha256: string } }[];
+    expect(ae!.detail.argsSha256).toBe(sha(canon(a.content.find((b) => b.type === "tool_use")!.input)));
+    const an = read("fixtures/tap/anthropic.next-request.json") as { messages: { content: unknown }[] };
+    const result = (an.messages[2]!.content as { content: string }[])[0]!.content;
+    expect(ae!.detail.resultSha256).toBe(sha(result));
+    const o = read("fixtures/tap/openai-responses.response.json") as { output: { arguments: string }[] };
+    const [oe] = read("fixtures/tap/openai-responses.expected.json") as { detail: { argsSha256: string } }[];
+    expect(oe!.detail.argsSha256).toBe(sha(canon(JSON.parse(o.output[0]!.arguments))));
+  });
+
+  it("run.start's wave 5 fields and the settings example validate", () => {
+    const ajv = validator();
+    const runStart = ajv.getSchema(base + "wave5-records.schema.json#/$defs/runStartWave5")!;
+    expect(runStart(read("fixtures/tap/runstart.example.json"))).toBe(true);
+    expect(runStart({ boundaryChoice: { chosen: "none", named: false, reasons: [], answeredBy: "maybe", preAnswer: null } })).toBe(false);
+    expect(check("settings.schema.json", read("fixtures/tap/settings.example.json"))).toEqual([]);
+    expect(check("settings.schema.json", { version: 1, content: { on: true } })).not.toEqual([]);
+    expect(check("settings.schema.json", { version: 1, content: { on: true, retentionDays: 8 } })).not.toEqual([]);
+    expect(check("settings.schema.json", { version: 1, boundary: { preAnswer: "yes" } })).not.toEqual([]);
+  });
+
+  it("the computer_use input schema takes Hermes's actions and refuses an unknown field", () => {
+    expect(check("cu-tool.schema.json", { action: "capture", mode: "som", app: "TextEdit" })).toEqual([]);
+    expect(check("cu-tool.schema.json", { action: "click", element: 3, delivery_mode: "background" })).toEqual([]);
+    expect(check("cu-tool.schema.json", { action: "shell", text: "rm -rf /" })).not.toEqual([]);
+    expect(check("cu-tool.schema.json", { action: "click", approve: true })).not.toEqual([]);
+    expect(check("cu-tool.schema.json", {})).not.toEqual([]);
+  });
+
+  it("the install cases are well formed", () => {
+    const { cases } = read("fixtures/installs/cases.json") as { cases: { id: number; text: string; expect: { install: boolean; manager?: string; form?: string; packages?: { name: string; version: string | null }[]; why?: string } }[] };
+    expect(new Set(cases.map((c) => c.id)).size).toBe(cases.length);
+    const installs = cases.filter((c) => c.expect.install);
+    expect(installs.length).toBeGreaterThanOrEqual(20);
+    for (const c of installs) {
+      expect(["add", "run"]).toContain(c.expect.form);
+      expect(c.expect.packages!.length).toBeGreaterThan(0);
+    }
+    for (const c of cases.filter((x) => !x.expect.install)) expect(c.expect.why).toBeTruthy();
+    for (const form of ["npx ", "uvx ", "bunx ", "pnpm dlx ", "yarn dlx "]) {
+      expect(installs.some((c) => c.text.startsWith(form) && c.expect.form === "run")).toBe(true);
+    }
+  });
+});
+
+// The wave 5 base: the preset table's sibling tables (presets/wave5/).
+describe("wave 5 preset tables", () => {
+  const blank = (): PresetTable => ({ version: 1, harnesses: [{ id: "a" }], planned: [{ id: "b" }] });
+  it("merge a value into its row, as presets.rs does", () => {
+    const t = blank();
+    mergeWave5(t, [{ field: "tap", text: JSON.stringify({ field: "tap", rows: { a: { via: "env", name: "ANTHROPIC_BASE_URL", api: ["anthropic-messages"], verifiedAt: "2026-11-04" } } }) }, { field: "executables", text: JSON.stringify({ field: "executables", rows: { b: ["agent-b"] } }) }]);
+    expect((t.harnesses[0] as { tap: { name: string } }).tap.name).toBe("ANTHROPIC_BASE_URL");
+    expect(t.planned[0]).toEqual({ id: "b", executables: ["agent-b"] });
+  });
+  it("refuse an unknown id, a row that sets the field, a misnamed table and a bad value", () => {
+    expect(() => mergeWave5(blank(), [{ field: "tap", text: JSON.stringify({ field: "tap", rows: { zzz: null } }) }])).toThrow(/does not/);
+    const owned = blank();
+    owned.harnesses[0]!.tap = null;
+    expect(() => mergeWave5(owned, [{ field: "tap", text: JSON.stringify({ field: "tap", rows: { a: null } }) }])).toThrow(/owns/);
+    expect(() => mergeWave5(blank(), [{ field: "tap", text: JSON.stringify({ field: "kit", rows: {} }) }])).toThrow(/its field/);
+    expect(() => mergeWave5(blank(), [{ field: "executables", text: JSON.stringify({ field: "executables", rows: { a: "x" } }) }])).toThrow(/not a executables/);
+  });
+  it("a filled row validates, and a tap that names a lowercase variable does not", () => {
+    const t = loadPresetTable();
+    const row = { ...t.harnesses[0]!, tap: { via: "env", name: "ANTHROPIC_BASE_URL", api: ["anthropic-messages"], verifiedAt: "2026-11-04" }, kit: { name: "claude", from: "sbx", verifiedAt: "2026-11-04" }, executables: ["claude"] };
+    expect(check("harness-presets.schema.json", { ...t, harnesses: [row, ...t.harnesses.slice(1)] })).toEqual([]);
+    const bad = { ...row, tap: { ...row.tap, name: "anthropic_base_url" } };
+    expect(check("harness-presets.schema.json", { ...t, harnesses: [bad, ...t.harnesses.slice(1)] })).not.toEqual([]);
   });
 });

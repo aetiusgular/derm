@@ -1,0 +1,5 @@
+{
+  "$comment": "Wave 5 lane S's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the model tap: how `derm run` points each agent at the tap in its launch environment only (`via`: `env` with `name` the variable, `codex-provider` for a `-c model_providers...` override, or `none` when the agent takes no base URL), and which API the tap speaks for it (rules cases 113, 116; note AR section 2.2). Never a settings file (case 56). One value per preset id under `rows`. presets.rs and contracts/presets.ts merge it into each row as the `tap` field, and refuse an id the index does not name, a row file that already sets `tap`, and a table whose `field` is not its file name. Shape: contracts/harness-presets.schema.json, $defs.tap. Each value records the version it was read at (`verifiedAt`, or the table's own once lane S fills it). Empty until lane S.",
+  "field": "tap",
+  "rows": {}
+}

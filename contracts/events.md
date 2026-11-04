@@ -46,3 +46,38 @@ Rules:
 ## 4. The adapter record
 
 Clients that are not OTel exporters (lane F's hook scripts, `derm run`) post `event` lines on the socket (`daemon-protocol.md`, section 2) with `source: "adapter"` (or `run`), their own `id`, and `detail.trust: "client"`. The id for a tool call is `<harness>-<tool_use_id>` when the harness gives a tool-use id, so the OTel record and the adapter record for one call can be joined (case 35: the last copy per id wins, within one chat; one call, two records, joined by `tool_use_id` in `detail`). Lane F's hooks post the decision as `kind: "approval"`, id `<harness>-<tool_use_id>-decision-<32 hex>` (`<harness>-unknown-decision-<32 hex>` when the harness gives no call id): the last part is 128 random bits from the core's `decisionId`, so the agent, which holds the same chat token, cannot post under that id first (integration w2's fix pass, box test w2 BW2; before it the id was `<harness>-<tool_use_id>-decision`, and call ids count up). Join a decision to its call by `detail.toolUseId`, never by the id; a second adapter decision for one call in one chat is kept as a conflict copy and flagged (`daemon-protocol.md`, section 2; FP1-S4). Written once per chat and id (S9: a later copy never replaces it), and the result as `kind: "tool.call"`, id `<harness>-<tool_use_id>`, with `resultSha256`, the size and the redaction count, never content. A hook posts only with a chat token (`contracts/policy.md` section 5).
+
+## 5. Wave 5's records (the wave 5 base, 4 Nov 2026)
+
+Written by the wave 5 base from `plans/toolkit_universal_plan.md` (revision 7) sections 2 to 6 and notes AR, AS and AT; nothing here is built yet. Each record is an ordinary event (`daemon-protocol.md`, section 3). The detail shapes are `wave5-records.schema.json`, with one example of each in `fixtures/tap/records.json` and `fixtures/installs/records.json`; `contracts.test.ts` validates them. A lane that needs a field not here asks integration (rules section 10); it does not add one.
+
+Two sources are new, and only the daemon writes them: no socket client, chat or daemon scope, may post one (`daemon.rs`'s `op_event`; `tests/socket.rs`, `no_socket_client_posts_a_tap_or_derm_record`). A lane whose process is not the daemon (a `derm-tap` binary, say) asks integration to open daemon scope for its source, with the reason.
+
+- `tap`: the model tap (lane S).
+- `derm`: what the daemon derives itself (lanes S, W, X).
+
+| `kind` | `source` | Who | What it says |
+|---|---|---|---|
+| `tap.request` | `tap` | lane S | One model round trip: API, upstream host, model, tokens, timing, how many tools were offered and called, `incomplete` when the stream was cut (case 115), the HTTP status |
+| `tap.call` | `tap` | lane S | One tool call the model asked for: its call id (`tool_use.id` for Anthropic, `call_id` for the Responses API), the tool as named and normalized, the arguments' sha256 and size, the file paths the arguments name, and, once the harness sends the result back, the result's sha256 and size. Id `tap-<chat>-<call id>`, so the result replaces the call's first copy (case 35) |
+| `join.candidates` | `derm` | lane S | An effect event and the calls it may belong to, each with how it fits (`tool-use-id`, `tree`, `path`, `window`, `mcp-server`) and why. `chosen` names a call only when the tree or a path separates it; otherwise null (miss 10, case 123). Id `join-<effect id>` |
+| `install.call` | `adapter` | lane X, through every gate | A shell call the gate read as an install: the manager, `add` or `run` (`npx`, `uvx`, `bunx`, `dlx`; case 131), each package with its version and whether the lockfile already has it, the decision, and the pre-install check's results when it ran |
+| `install.lockdiff` | `derm` | lane X | Per install call: the lockfile, packages added, removed and changed, with versions. Names and versions are metadata, kept with the content switch off (case 85 as changed) |
+| `install.control` | `derm` | lane X | A write to a control path by a process under an install call (case 133): the path, the process, the call it is credited to |
+| `content.purge` | `derm` | lane S | Content files of a chat deleted at the end of their retention (case 126): how many, how many bytes, the retention. The hashed records stay |
+| `agent.unregistered` | `derm` | lane W, through integration | A known agent executable the OS layer saw outside every registered tree (case 122): the executable, the preset id, its pid and its parent |
+| `cu.action` | `cua` | lane U | One `computer_use` action: the action, the target app, the delivery (`background`, `foreground`), the verdict (`ok`, `denied`, `blocked`, `timeout_outcome_unknown`, `error`), the screenshot's sha256 (the image itself follows the content switch), the grant it ran under. A mutation after a timeout is never retried (case 120) |
+
+Every record keeps hashes, sizes, paths, package names and versions, and never content, headers or a token. Content (prompts, arguments, results, the model's text, argv words, screenshots) is kept only when the content switch is on, in files under the daemon's data folder, `content/<chat id>/` (folder 0700, files 0600), for the retention the user chose, 1 to 7 days; a record says `contentKept: true` when its content is in such a file. No header is ever kept, content on or off (case 114). This replaces `DERM_LOG_CONTENT` as the content switch, for `run.start`'s argv words too (case 85 as changed 4 Nov); until lane S lands, `DERM_LOG_CONTENT` stays as it is.
+
+`run.start`'s detail gains five fields, each set only by the seam that makes it (the base's stubs set none, so a chat reads as before wave 5):
+
+| Field | Set by | Shape |
+|---|---|---|
+| `boundaryChoice` | lane T, `crates/derm-cli/src/run/boundary/` | `chosen` (`sbx`, `srt`, `none`), `named` (the user gave `--boundary`), `reasons` (each unavailable boundary, why, and its install line), `answeredBy` (`flag`, `terminal`, `pre-answer`, `no-one`; with `no-one` there is no start, case 129), `preAnswer` (the setting used, or null) |
+| `tap` | lane S, `run/tap/` | `on`, and when off the `reason` (`--no-tap`, the setting, or the agent takes no base URL), `via`, `api`, `upstream`. A chat with `on: false` is "untapped" in `derm status` (case 127) |
+| `agentUser` | lane V, `run/user/` | `user`, `uid`, `how` (the route lane V reads first: a fixed `sudo` rule, a systemd unit, or another) |
+| `content` | lane S | `on`, `retentionDays` |
+| `ioUring` | lane T | `not-audited` for srt and no boundary on Linux (case 128), `own-kernel` under sbx; absent elsewhere |
+
+The user's switches for all of this are one file, `~/.derm/settings.json` (`settings.schema.json`): lane W's `derm setup` writes it, behind a question per switch; lanes S, T, U and X read their own key. `~/.derm/` is a control path (`policy.md`, section 4, step 7a), so a gated agent's write to it asks and srt denies it.

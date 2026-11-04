@@ -1,0 +1,5 @@
+{
+  "$comment": "Wave 5 lane W's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the agent's executable names, for the unregistered-agent flag (rules case 122) and the `PATH` shims `derm setup` writes. One value per preset id under `rows`. presets.rs and contracts/presets.ts merge it into each row as the `executables` field, and refuse an id the index does not name, a row file that already sets `executables`, and a table whose `field` is not its file name. Shape: contracts/harness-presets.schema.json, $defs.executables. Each value records the version it was read at (`verifiedAt`, or the table's own once lane W fills it). Empty until lane W.",
+  "field": "executables",
+  "rows": {}
+}

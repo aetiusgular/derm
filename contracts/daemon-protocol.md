@@ -63,7 +63,7 @@ Variables `derm run` sets in the harness (lane D, integration w1), each removed 
 | `at` | Milliseconds since the epoch, stamped by the daemon on receipt. A harness's own time goes in `detail.harnessAt` (case 35) |
 | `chatId` | `""` when not attributed |
 | `harness` | A harness id from the preset table (`crates/derm-cli/src/connect/presets/`), `other` for a program no row names, or `""` |
-| `source` | `otel`, `adapter`, `eslogger`, `auditd`, `cua`, `approval`, `run` |
+| `source` | `otel`, `adapter`, `eslogger`, `auditd`, `cua`, `approval`, `run`; and since the wave 5 base `tap` and `derm`, which only the daemon writes (`events.md`, section 5) |
 | `kind` | `tool.call`, `approval`, `model.request`, `model.error`, `prompt`, `session.start`, `message`, `run.start`, `run.stop`, `net.connect`, `config.write`, or `otel.<name>` for an unknown OTel event; and for the kernel feeds (`eslogger`, `auditd`) the macOS collector's kinds, which the daemon's check reads: `exec`, `fork`, `exit`, `write`, `create`, `open`, `truncate`, `rename`, `unlink`, `link`. `fs.write` and `exec` as session 0 named them are not what the check reads (lane B, lane D) |
 | `summary` | One line, at most 200 characters |
 | `detail` | Free JSON, at most 16 KiB, never rendered as markup |

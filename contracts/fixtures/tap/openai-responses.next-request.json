@@ -1,0 +1,11 @@
+{
+  "model": "gpt-fixture",
+  "previous_response_id": "resp_FIXTURE",
+  "input": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_FIXTURE01",
+      "output": "a.rs\nb.rs\n"
+    }
+  ]
+}

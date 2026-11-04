@@ -108,3 +108,30 @@ A policy path given in `DERM_POLICY` that lies inside the session's folder is no
 | Any, through the daemon | `approve` in `daemon-protocol.md` | the first approver's answer, else `deny` at the timeout |
 
 A hook reaches the daemon only with a chat token: `DERM_CHAT_TOKEN`, or the file `DERM_CHAT_TOKEN_FILE` names, which `derm run --boundary none` writes. It never reads `daemon.token`, refuses a token file named `daemon.token`, and closes the connection when the daemon's `hello` reply says the token has daemon scope (integration w1; security finding S3). With no chat token, Claude Code's `ask` falls back to its own prompt, and Codex's and OpenCode's are `deny`.
+
+## 6. Package installs (wave 5, lane X; the wave 5 base, 4 Nov 2026)
+
+Written by the wave 5 base from `plans/toolkit_universal_plan.md` lane X and note AT. Not built: the three matchers call an install check that answers "not an install" for every call (`crates/derm-core/src/installs/`, `packages/derm-claude-plugin/src/core/installs/` and its synced copies, `packages/derm-pi/src/installs/`), and lane X fills it against `fixtures/installs/cases.json`. Each form below is read in the manager's own reference at the version in use before it is built (rule 6; note AT read none of them at a version).
+
+**Where it runs.** Step 7c, after 7b: when the tool is a shell tool (7b's list, every name a preset maps to `bash` included, case 135) and the answer is still `allow`, the matcher asks the install check about the folded input (step 7a's text). An install whose every package is already in the project's lockfile at the same version keeps the `allow`; any other install is `ask`, the reason naming each package and its version or "no version" (lane X sets the wording; the fixture checks the names). The check never turns an `ask` or a `deny` into an `allow`, and an `allow` it does not read as an install is unchanged. Under full access the `ask` becomes `deny`, as every ask does (case 83). With the pre-install check on (off until the user turns it on, `settings.schema.json`'s `installs.check`; universal plan section 8, call 10), the daemon's answer can make it a `deny`: a name not in the registry (`not in the registry`, case 130) or an OSV `MAL-` record (with the record's id); a version younger than `installs.minAgeHours` (48 by default) or with a known vulnerability stays `ask`, with the reason.
+
+**Forms, from note AT section 2** (`add` puts a package in the project; `run` runs one without adding it, and counts as an install, case 131):
+
+| Manager | `add` | `run` |
+|---|---|---|
+| npm | `npm install <pkg>`, `npm i <pkg>`, `npm add <pkg>` | `npx <pkg>`, `npm exec <pkg>` |
+| pnpm | `pnpm add <pkg>`, `pnpm install <pkg>` | `pnpm dlx <pkg>`, `pnpx <pkg>` |
+| yarn | `yarn add <pkg>` | `yarn dlx <pkg>` |
+| bun | `bun add <pkg>`, `bun install <pkg>` | `bunx <pkg>`, `bun x <pkg>` |
+| pip | `pip install <pkg>`, `pip3 install <pkg>`, `python -m pip install <pkg>`, `python3 -m pip install <pkg>` | |
+| uv | `uv add <pkg>`, `uv pip install <pkg>` | `uvx <pkg>`, `uv tool run <pkg>` |
+| poetry, pdm | `poetry add <pkg>`, `pdm add <pkg>` | |
+| pipx | `pipx install <pkg>` | `pipx run <pkg>` |
+| cargo | `cargo add <crate>`, `cargo install <crate>` | |
+| go | `go get <module>`, `go install <module>@<version>` | |
+
+`npm exec`, `bun install <pkg>`, `bun x`, `uv tool run` and `pipx run` are the base's additions to note AT's list, by analogy (inference); lane X confirms or drops each. A package's version is what the command names (`left-pad@1.3.0`, `requests==2.32.3`, `crate@1.0`, `module@v1.2.3`), else none. Flags and their values are not packages (`npm install -D vitest`, `pip install -r requirements.txt`: a requirements file is an install of what it lists, which the gate cannot see: the base's reading is `ask` with that reason, and lane X decides).
+
+**What is not an install at the gate** (case 132): a script, a Makefile target or a manager's `run` (`npm run setup`, `make deps`, `npm test`), a lockfile-only reinstall with no package named (`npm ci`, bare `npm install`, `uv sync`; lane X decides whether these ask), and a manager's read commands (`npm ls`, `pip list`, `pip show`). The OS layer and the lockfile diff still record what they install and write; the card for the outer command says installs inside it are not checked.
+
+**Windows** (lane Z's note): `npm.cmd`, `npx.cmd`, `py -m pip` and PowerShell forms are lane Z's and lane X's to add together.

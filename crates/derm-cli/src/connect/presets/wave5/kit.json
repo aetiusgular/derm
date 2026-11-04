@@ -1,0 +1,5 @@
+{
+  "$comment": "Wave 5 lane T's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the sbx kit per agent (`name`, and `from`: `sbx` for sbx's own kits, `sbx-kits-contrib` for the contributed ones; note AM section B.3), as the sbx smoke test found it accepted. One value per preset id under `rows`. presets.rs and contracts/presets.ts merge it into each row as the `kit` field, and refuse an id the index does not name, a row file that already sets `kit`, and a table whose `field` is not its file name. Shape: contracts/harness-presets.schema.json, $defs.kit. Each value records the version it was read at (`verifiedAt`, or the table's own once lane T fills it). Empty until lane T.",
+  "field": "kit",
+  "rows": {}
+}

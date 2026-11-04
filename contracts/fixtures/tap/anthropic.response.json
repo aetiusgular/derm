@@ -1,0 +1,25 @@
+{
+  "id": "msg_01FIXTURE",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-fixture",
+  "content": [
+    {
+      "type": "text",
+      "text": "I will read the file."
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01FIXTURE0000000000000001",
+      "name": "Read",
+      "input": {
+        "file_path": "/home/u/project/README.md"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "usage": {
+    "input_tokens": 1200,
+    "output_tokens": 40
+  }
+}

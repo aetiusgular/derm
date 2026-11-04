@@ -1,0 +1,35 @@
+[
+  {
+    "id": "tap-req-chat-fixture-0001", "at": 1793000000000, "chatId": "chat-fixture", "harness": "claude-code",
+    "source": "tap", "kind": "tap.request", "summary": "claude-fixture, 1 tool call",
+    "detail": { "trust": "daemon", "api": "anthropic-messages", "upstream": "api.anthropic.com", "model": "claude-fixture", "status": 200, "inputTokens": 1200, "outputTokens": 40, "durationMs": 2100, "toolsOffered": 14, "toolCalls": 1, "incomplete": false }
+  },
+  {
+    "id": "tap-chat-fixture-toolu_01FIXTURECUT", "at": 1793000001000, "chatId": "chat-fixture", "harness": "claude-code",
+    "source": "tap", "kind": "tap.call", "summary": "Bash (cut)",
+    "detail": { "trust": "daemon", "api": "anthropic-messages", "model": "claude-fixture", "callId": "toolu_01FIXTURECUT", "tool": "Bash", "toolNormalized": "bash", "argsSha256": "0000000000000000000000000000000000000000000000000000000000000000", "argsBytes": 17, "paths": [], "resultSha256": null, "resultBytes": null, "incomplete": true }
+  },
+  {
+    "id": "join-auditd-1793000002000-1", "at": 1793000002100, "chatId": "chat-fixture", "harness": "claude-code",
+    "source": "derm", "kind": "join.candidates", "summary": "write fits 2 calls",
+    "detail": { "trust": "daemon", "effect": "auditd-1793000002000-1", "effectKind": "write", "candidates": [
+      { "call": "tap-chat-fixture-toolu_A", "by": "window", "why": "running at the time of the write" },
+      { "call": "tap-chat-fixture-toolu_B", "by": "window", "why": "running at the time of the write" }
+    ], "chosen": null }
+  },
+  {
+    "id": "content-purge-chat-fixture-1", "at": 1793600000000, "chatId": "chat-fixture", "harness": "claude-code",
+    "source": "derm", "kind": "content.purge", "summary": "content past 3 days removed",
+    "detail": { "trust": "daemon", "files": 12, "bytes": 48213, "retentionDays": 3, "reason": "retention" }
+  },
+  {
+    "id": "agent-unregistered-1", "at": 1793000003000, "chatId": "", "harness": "",
+    "source": "derm", "kind": "agent.unregistered", "summary": "claude started outside derm", "pid": 4321,
+    "detail": { "trust": "daemon", "executable": "/home/u/.local/bin/claude", "preset": "claude-code", "ppid": 1200, "parentExe": "/usr/bin/zsh" }
+  },
+  {
+    "id": "cu-chat-fixture-1", "at": 1793000004000, "chatId": "chat-fixture", "harness": "pi",
+    "source": "cua", "kind": "cu.action", "summary": "click in TextEdit: timeout, outcome unknown",
+    "detail": { "trust": "daemon", "action": "click", "app": "com.apple.TextEdit", "delivery": "background", "verdict": "timeout_outcome_unknown", "effect": null, "verified": null, "screenshotSha256": null, "grant": "grant-1" }
+  }
+]
