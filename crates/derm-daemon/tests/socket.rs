@@ -1041,3 +1041,86 @@ fn a_chat_token_is_revoked_when_its_run_stops() {
         "another chat's token stays"
     );
 }
+
+#[test]
+fn a_deferred_record_before_the_decision_is_no_conflict() {
+    // Mac test w4, MW4-10: Cursor's dialect records `deferred` from
+    // preToolUse (an MCP call, which beforeMCPExecution decides) and then the
+    // decision from beforeMCPExecution, both naming the call. A `deferred`
+    // decides nothing, so the decision after it is not a second decision.
+    // A decision after a decision is still a conflict, and so is a
+    // `deferred` that comes after a decision (the honest order never does
+    // that), and one under a decision's own id (S9).
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "c1", "cursor");
+    let (mut hook, _) = Client::hello(&f, &token);
+    let pre = "cursor-call_7-decision-00000000000000000000000000000001";
+    let mcp = "cursor-call_7-decision-00000000000000000000000000000002";
+    let r = hook.ask(event(
+        pre,
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "deferred", "toolUseId": "call_7"}),
+    ));
+    assert_eq!(r["id"], pre, "{r}");
+    let r = hook.ask(event(
+        mcp,
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "allow", "toolUseId": "call_7"}),
+    ));
+    assert_eq!(
+        r["id"], mcp,
+        "the decision after a deferred is kept as itself: {r}"
+    );
+    // A forged allow after the real decision: a conflict, as before.
+    let r = hook.ask(event(
+        "cursor-call_7-decision-00000000000000000000000000000003",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "allow", "toolUseId": "call_7"}),
+    ));
+    assert!(r["id"].as_str().unwrap().contains("-conflict-"), "{r}");
+    // A deferred after a decision for another call: a conflict too.
+    let r = hook.ask(event(
+        "cursor-call_8-decision-00000000000000000000000000000001",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "deny", "toolUseId": "call_8"}),
+    ));
+    assert_eq!(
+        r["id"],
+        "cursor-call_8-decision-00000000000000000000000000000001"
+    );
+    let r = hook.ask(event(
+        "cursor-call_8-decision-00000000000000000000000000000002",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "deferred", "toolUseId": "call_8"}),
+    ));
+    assert!(r["id"].as_str().unwrap().contains("-conflict-"), "{r}");
+    // A second record under a deferred's own id is a conflict (S9).
+    let r = hook.ask(event(
+        pre,
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "allow", "toolUseId": "call_9"}),
+    ));
+    assert!(r["id"].as_str().unwrap().contains("-conflict-"), "{r}");
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "since": 0}));
+    let mut flags = 0;
+    while let Some(line) = t.try_recv(Duration::from_millis(300)) {
+        if line["event"]["kind"] == "gate.conflict" {
+            flags += 1;
+        }
+    }
+    assert_eq!(flags, 3, "three conflicts, none for the honest pair");
+}

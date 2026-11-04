@@ -827,6 +827,12 @@ impl Daemon {
     /// `detail.toolUseId` counts as the same decision too (fix pass 1's
     /// review, FP1-S4). OTel records keep their attributes elsewhere, so only
     /// adapter records are joined this way.
+    ///
+    /// An earlier record whose `detail.decision` is `deferred` decides
+    /// nothing: Cursor's dialect writes one from preToolUse for an MCP call
+    /// and the decision from beforeMCPExecution, under the same call (Mac
+    /// test w4, MW4-10). So the join by call skips it. The join by id does
+    /// not, and a `deferred` posted after a decision is still a conflict.
     fn held_gate_decision(&self, event: &Event) -> Option<String> {
         let new = store::bound_event(event.clone());
         let call = adapter_call(&new);
@@ -836,7 +842,8 @@ impl Daemon {
             .find(|old| {
                 old.chat_id == event.chat_id
                     && store::is_gate_decision(old)
-                    && (old.id == new.id || (call.is_some() && adapter_call(old) == call))
+                    && (old.id == new.id
+                        || (call.is_some() && adapter_call(old) == call && !deferred(old)))
             })
             .map(|old| old.id.clone())
     }
@@ -1529,6 +1536,12 @@ fn collector_events(
 
 /// The call an adapter's gate decision names (`detail.toolUseId`), for an
 /// adapter record of kind `approval` only.
+/// An adapter record that defers its call to a later hook (`detail.decision`
+/// `deferred`, Cursor's preToolUse for an MCP call): no decision.
+fn deferred(event: &crate::activity::types::ActivityEvent) -> bool {
+    event.detail.get("decision").and_then(Value::as_str) == Some("deferred")
+}
+
 fn adapter_call(event: &crate::activity::types::ActivityEvent) -> Option<String> {
     use crate::activity::types::ActivitySource::Adapter;
     if event.kind != "approval" || !matches!(event.source, Adapter) {
