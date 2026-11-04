@@ -259,14 +259,17 @@ fn the_installed_codex_gate_denies_a_denied_call() {
 #[test]
 fn a_planned_gate_is_said_and_live_is_not_built() {
     let h = home("planned");
-    let row = find_row("cline").unwrap();
+    // Cline's gate is built since wave 4 (lane P, integration w4); Rovo Dev
+    // has none after wave 4 and stays the planned example.
+    assert_eq!(find_row("cline").unwrap()["coverage"]["gate"]["status"], "built");
+    let row = find_row("rovo-dev").unwrap();
     let r = doctor(&row, &env(&h), &probes(), true, false);
     assert_eq!(r["gate"]["status"], "planned");
     assert_eq!(r["registered"], "n/a");
     assert_eq!(r["gateRun"]["state"], "not run");
     assert!(r["live"].as_str().unwrap().starts_with("not built"));
     let text = render(&r);
-    assert!(text.contains("planned, wave 4 lane P"), "{text}");
+    assert!(text.contains("planned, wave 4 lane Q"), "{text}");
     assert!(text.contains("nothing to do"), "{text}");
 }
 

@@ -2,7 +2,7 @@
 
 Each adapter is the gate inside one agent: it reads `~/.derm/policy.json` before every tool call and answers allow, ask or deny in that agent's own terms. An `ask` goes to the agent's own prompt where the agent has one, else to the daemon's approver (`derm watch --approve`), else it becomes a deny. The adapters live in `packages/` of this repository; none is on npm yet (`@aetiusgular/derm-*` when they are).
 
-Write the policy before you register an adapter. With no `~/.derm/policy.json` every call not on the reject list asks: Claude Code, Pi, oh-my-pi, Gemini CLI, Hermes Agent and OpenClaw then prompt before every tool call, and Codex, OpenCode and Kilo Code deny every tool call unless `derm watch --approve` is running and you answer yes. The format is in [the policy contract](../../contracts/policy.md).
+Write the policy before you register an adapter. With no `~/.derm/policy.json` every call not on the reject list asks: Claude Code, Pi, oh-my-pi, Gemini CLI, Hermes Agent, OpenClaw, OpenClaude, Qwen Code, GitHub Copilot CLI, Grok Build, Antigravity CLI, Amp and Cline CLI then prompt before every tool call, and Codex, OpenCode, Kilo Code, Droid, Command Code, Kimi Code, Auggie, Cursor, goose, Mistral Vibe, Crush and Kiro CLI deny every tool call unless `derm watch --approve` is running and you answer yes. (Cursor prompts for an MCP call, which it decides in `beforeMCPExecution`; its other tools go to the approver.) The format is in [the policy contract](../../contracts/policy.md).
 
 Claude Code and Codex take the published repository as a plugin marketplace by name. The other agents install from a folder: the source of a release, or a clone.
 
@@ -29,6 +29,22 @@ GitHub makes the source archive from the tag on request: it is not in `SHA256SUM
 | Gemini CLI | `gemini extensions install "$PWD/packages/derm-gemini-extension" --consent`, then save the user policy it prints (`node bin/derm-gemini-policy.mjs`) | Yes: Gemini lets a call through on every hook failure; the policy file is the second layer |
 | Hermes Agent | `cp -r packages/derm-hermes-plugin ~/.hermes/plugins/derm && hermes plugins enable derm` (Node on Hermes's PATH) | No |
 | OpenClaw | `openclaw plugins install --link "$PWD/packages/derm-openclaw-plugin" --force`, then `openclaw plugins enable derm` | No |
+| OpenClaude | `derm connect openclaude --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (`~/.openclaude/settings.json`) | Yes: a killed or timed-out hook lets the call run; no switch |
+| Qwen Code | `derm connect qwen-code --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (`~/.qwen/settings.json`, or under `QWEN_HOME`) | Yes, no switch |
+| Droid | `derm connect droid --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (`~/.factory/settings.json`; a `~/.factory/hooks.json` turns it off) | Yes, no switch |
+| Command Code | `derm connect command-code --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (needs an account; unverified) | No: `failClosed: true` |
+| Kimi Code | `derm connect kimi --gate --hook "$PWD/packages/derm-hooks-claude-compat"` prints the `[[hooks]]` entry for `~/.kimi-code/config.toml`; add it by hand | Yes, no switch; one unknown key drops every hook |
+| Auggie | `derm connect auggie --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (needs an account; unverified) | Yes, no switch |
+| GitHub Copilot CLI | `derm connect copilot-cli --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (`~/.copilot/hooks/derm.json`) | On a timeout only: a crashed hook denies |
+| Grok Build | `derm connect grok --gate --hook "$PWD/packages/derm-hooks-claude-compat" --write` (`~/.grok/hooks/derm.json`, compat imports off) | No from 1.0.71 (`failClosed`); yes on 1.0.70 |
+| Cursor | `derm connect cursor --gate --hook "$PWD/packages/derm-hooks-native" --write` (`~/.cursor/hooks.json`, beside Orca's entries; unverified) | No: `failClosed: true` |
+| Antigravity CLI | `derm connect antigravity --gate --hook "$PWD/packages/derm-hooks-native" --write` (a named hook in `~/.gemini/config/hooks.json`; unverified) | Not known |
+| goose | `derm connect goose --gate --hook "$PWD/packages/derm-hooks-native" --write` (a plugin folder under `~/.agents/plugins/`) | No: `on_failure: "block"` |
+| Mistral Vibe | `derm connect mistral-vibe --gate --hook "$PWD/packages/derm-hooks-native" --write` (`~/.vibe/hooks.toml`) | No: `strict = true` |
+| Crush | `derm connect crush --gate --hook "$PWD/packages/derm-hooks-native" --write` (`~/.config/crush/crush.json`) | Yes, no switch; sub-agents fire no hook |
+| Kiro CLI | `derm connect kiro --gate --hook "$PWD/packages/derm-hooks-native" --write` (`~/.kiro/hooks/derm.json`; unverified) | No: any exit but 0 blocks |
+| Amp | copy `packages/derm-amp-plugin/src` without its tests to `~/.config/amp/plugins/derm/` (Amp refuses a plugin that resolves outside its folder; needs an account; unverified) | Not known |
+| Cline CLI | copy `packages/derm-cline/package.json` and `src` without tests to `~/.cline/plugins/derm/` | Yes: a hook that throws or takes over 3 s is ignored, and five in a row turn the plugin off |
 | Any other CLI agent | `derm run --boundary <sbx\|srt\|none> -- <command>`: no gate inside it, the boundary and the audit outside | n/a |
 
 Codex pins the marketplace to the release's tag with `--ref v<version>` (OpenAI, [Build plugins](https://developers.openai.com/codex/plugins/build.md); `derm status` prints it with your version). Claude Code's marketplace added by name follows the repository's default branch, which can be ahead of the release you installed; to pin it, add a folder checked out at the tag instead. The folder installs (`--link`, `file://`, `pi install <folder>`) read the folder in place, so keep it where it is.

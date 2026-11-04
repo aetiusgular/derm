@@ -891,10 +891,18 @@ mod tests {
             "{}",
             line("gemini")
         );
+        // Droid's gate is built since wave 4 (lane L) and fails open; Rovo
+        // Dev has no gate after wave 4 (lane Q found no hook) and stays the
+        // planned example (integration w4, lane L's request 3).
         assert!(
-            line("droid").contains("planned, wave 4 lane L"),
+            line("droid").contains("built (command-hook)") && line("droid").contains("FAILS OPEN"),
             "{}",
             line("droid")
+        );
+        assert!(
+            line("rovo-dev").contains("planned, wave 4 lane Q"),
+            "{}",
+            line("rovo-dev")
         );
         assert!(line("copilot-cli").contains("on timeout"));
         assert!(line("zed").contains("no in-harness gate"));

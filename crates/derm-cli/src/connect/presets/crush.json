@@ -41,7 +41,7 @@
     "gate": {
       "family": "command-hook",
       "where": "hooks.PreToolUse in ~/.config/crush/crush.json (packages/derm-hooks-native/registration/crush/crush.json)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "N",
       "package": "packages/derm-hooks-native"

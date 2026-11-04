@@ -11,7 +11,7 @@
     "gate": {
       "family": "command-hook",
       "where": "a named hook \"derm\" in ~/.gemini/config/hooks.json (shared with the app), PreToolUse (packages/derm-hooks-native/registration/antigravity/hooks.json)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "N",
       "package": "packages/derm-hooks-native"

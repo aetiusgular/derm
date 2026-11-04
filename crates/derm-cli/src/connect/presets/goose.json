@@ -40,7 +40,7 @@
     "gate": {
       "family": "plugin",
       "where": "plugin ~/.agents/plugins/derm/ (plugin.json, hooks/hooks.json), PreToolUse, on_failure: block (packages/derm-hooks-native/registration/goose/derm/)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "N",
       "package": "packages/derm-hooks-native"

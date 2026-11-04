@@ -226,6 +226,21 @@ pub const HARNESSES: &[Harness] = &[
         control: &[".qwen/settings.json"],
         launch: Launch::None,
     },
+    // OpenClaude 0.34.0, a Claude Code fork: `~/.openclaude/settings.json`
+    // holds `hooks` and `disableAllHooks`, `~/.openclaude.json` its MCP
+    // servers and session state (lane L, `packages/derm-hooks-claude-compat/
+    // src/control.ts` and its Research). Added by integration w4 when lane L
+    // gave its row a `cli`. As for Claude Code, `.openclaude.json` stays
+    // writable (its state) and the matchers ask on input that names it.
+    Harness {
+        id: "openclaude",
+        command: "openclaude",
+        sbx: None,
+        state: &[".openclaude", ".openclaude.json"],
+        credential: None,
+        control: &[".openclaude/settings.json"],
+        launch: Launch::None,
+    },
     Harness {
         id: "amp",
         command: "amp",
@@ -347,7 +362,13 @@ pub const HARNESSES: &[Harness] = &[
 /// agent; lane C's row names it for `derm connect`). Integration w1 renamed
 /// lane D's `NO_CLI` when the verified table gave Zed a `cli`. A row whose
 /// `cli` is still `TODO` is not started either, until its lane fills it.
-pub const NOT_RUN: &[&str] = &["cursor", "zed"];
+/// Codebuff (`codebuff`) and Continue (`cn`) got a `cli` when integration w4
+/// folded lane Q's verified rows in (lane Q's request 9). Neither has a gate
+/// (the rows are an MCP file and a print-only rule file), and their state
+/// folders were not read, so `derm run` gives them no state, control or
+/// credential entries: `derm run --boundary <b> -- codebuff` runs it as an
+/// unknown program, with the outside shape only (case 80).
+pub const NOT_RUN: &[&str] = &["cursor", "zed", "codebuff", "continue"];
 
 pub fn find(id: &str) -> Option<&'static Harness> {
     HARNESSES.iter().find(|h| h.id == id)

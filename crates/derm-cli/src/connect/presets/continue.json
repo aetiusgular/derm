@@ -1,10 +1,43 @@
 {
   "id": "continue",
   "name": "Continue",
-  "cli": "TODO",
-  "mcpFile": "~/.continue/config.yaml mcpServers",
+  "cli": "cn",
+  "configFiles": {
+    "user": {
+      "macos": "~/.continue/config.yaml",
+      "linux": "~/.continue/config.yaml"
+    }
+  },
+  "homeEnv": "CONTINUE_GLOBAL_DIR",
+  "format": "yaml",
+  "entryShape": "yaml:mcpServers list",
+  "entryPath": [
+    "mcpServers"
+  ],
+  "entryStyle": "continue",
+  "write": "print",
+  "writeNote": "derm has no YAML writer, and Continue's mcpServers is a list; paste the fragment under mcpServers: in ~/.continue/config.yaml (CONTINUE_GLOBAL_DIR moves it), which also needs top-level name: and version:. With no config.yaml, cn loads a remote default config and reads no local server.",
+  "envRef": "${{ secrets.VAR }}",
+  "entryExample": {
+    "mcpServers": [
+      {
+        "name": "<name>",
+        "type": "stdio",
+        "command": "<cmd>",
+        "args": [],
+        "env": {
+          "<KEY>": "${{ secrets.<VAR> }}"
+        }
+      }
+    ]
+  },
   "toolNameForm": "the bare tool name",
-  "verified": "TODO",
+  "nameMangling": "not read in this chat: the bare tool name is the planned row's, from note AQ (NF)",
+  "sources": [
+    "npm @continuedev/cli@1.5.47, bin cn; its gitHead d3f60ba in github.com/continuedev/continue (sparse clone): packages/config-yaml/src/schemas/mcp/index.ts:4-35, packages/config-yaml/src/schemas/index.ts:100-139, packages/config-yaml/src/load/unroll.ts:83, extensions/cli/src/env.ts:10-11, extensions/cli/src/configLoader.ts:88-100, 305-313, extensions/cli/src/CLIPlatformClient.ts:22-81 (lane Q, third chat, 3 Nov 2026)"
+  ],
+  "verified": "2026-11-03",
+  "notes": "cn reads --config, else <CONTINUE_GLOBAL_DIR or ~/.continue>/config.yaml, else a remote default config (V, configLoader.ts:88-100, env.ts:10-11). The file needs name and version (V, schemas/index.ts:100-107); mcpServers is a list of stdio {name, command, type?: stdio, args?, env?, cwd?} or remote {name, url, type?: sse | streamable-http, apiKey?, requestOptions?} entries, or a hub block with uses (V, schemas/mcp/index.ts:4-35, schemas/index.ts:128-139). ${{ secrets.X }} anywhere in the file is a template (V, unroll.ts:83); cn fills it from the environment variable X, then from ~/.continue/.env, then from the workspace's .continue/.env and .env (V, CLIPlatformClient.ts:42-81), so a repository's .env can supply a value for a variable that is not exported. No add command and no comment-keeping writer, so derm prints.",
   "coverage": {
     "tier": "A",
     "orcaId": "continue",

@@ -11,7 +11,7 @@
     "gate": {
       "family": "plugin",
       "where": "an SDK plugin folder ~/.cline/plugins/derm/ (or $CLINE_DIR/plugins/derm/), beforeTool; and the approval-file responder derm run cline starts beside it (CLINE_TOOL_APPROVAL_MODE=desktop, CLINE_TOOL_APPROVAL_DIR)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "P",
       "package": "packages/derm-cline"

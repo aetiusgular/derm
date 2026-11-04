@@ -11,7 +11,7 @@
     "gate": {
       "family": "command-hook",
       "where": "[[hooks]] type pre_tool in ~/.vibe/hooks.toml, strict = true (packages/derm-hooks-native/registration/mistral-vibe/hooks.toml)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "N",
       "package": "packages/derm-hooks-native"

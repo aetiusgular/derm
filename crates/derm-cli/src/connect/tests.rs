@@ -696,7 +696,9 @@ fn list_and_path() {
     let home = scratch("list");
     let r = go(&home, &no_env(), true, &["--list"]);
     assert_eq!(r.code, 0);
-    assert_eq!(r.out.lines().count(), 15, "{}", r.out);
+    // A header line and one per row of `harnesses` (fourteen, and the four
+    // lane Q verified in wave 4).
+    assert_eq!(r.out.lines().count(), 19, "{}", r.out);
     let r = go(&home, &no_env(), true, &["claude-code", "--path"]);
     assert_eq!(
         r.out.trim(),
@@ -1179,52 +1181,35 @@ fn allowlist_alone_prints_the_plugins_managed_fragment() {
     assert_eq!(r.code, 1);
 }
 
-/// Rows wave 4 lane Q verified, staged in `connect/promoted/` because the
-/// flip from `planned` to `harnesses` also needs lane R's `run/harness.rs`
-/// and the planned-row schema (`contracts/`): integration moves each file's
-/// fields into its `presets/` row, beside the row's `coverage`.
-const PROMOTED: &[(&str, &str)] = &[
-    ("kilo", include_str!("promoted/kilo.json")),
-    ("codebuff", include_str!("promoted/codebuff.json")),
-    ("oh-my-pi", include_str!("promoted/oh-my-pi.json")),
-    ("continue", include_str!("promoted/continue.json")),
-];
+/// Rows wave 4 lane Q verified and staged in `connect/promoted/`, which
+/// integration w4 folded into their `presets/` rows beside `coverage` and
+/// moved from `planned` to `harnesses` (lane Q's request 9).
+const PROMOTED: &[&str] = &["kilo", "codebuff", "oh-my-pi", "continue"];
 
 fn promoted(id: &str) -> presets::Preset {
-    let (_, text) = PROMOTED.iter().find(|(i, _)| *i == id).unwrap();
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("promoted/{id}.json: {e}"))
+    presets::find(id).unwrap_or_else(|| panic!("presets/{id}.json"))
 }
 
 #[test]
-fn promoted_rows_are_verified_and_name_a_planned_agent() {
+fn promoted_rows_are_verified_and_in_harnesses() {
     let table: serde_json::Value = serde_json::from_str(presets::table_json()).unwrap();
+    let harnesses = table["harnesses"].as_array().unwrap();
     let planned = table["planned"].as_array().unwrap();
-    for (id, text) in PROMOTED {
-        assert!(!text.contains("TODO"), "{id}");
-        assert!(
-            !text.contains("\"coverage\""),
-            "{id}: coverage stays in its presets row"
-        );
+    for id in PROMOTED {
+        let row = harnesses
+            .iter()
+            .find(|r| r["id"] == *id)
+            .unwrap_or_else(|| panic!("{id} is not in `harnesses`"));
+        assert!(!planned.iter().any(|r| r["id"] == *id), "{id}");
+        assert!(row.get("mcpFile").is_none(), "{id}: mcpFile was the planned row's");
+        assert!(row.get("coverage").is_some(), "{id}: keeps its coverage");
+        assert!(!row.to_string().contains("\"TODO\""), "{id}");
         let p = promoted(id);
         assert_eq!(p.id, *id);
         assert!(p.verified.starts_with("2026-"), "{id}");
         assert!(!p.sources.is_empty(), "{id}");
         assert!(p.write == "write" || p.write_note.is_some(), "{id}");
-        let row = planned
-            .iter()
-            .find(|r| r["id"] == *id)
-            .unwrap_or_else(|| panic!("{id} is not in `planned`"));
-        assert_eq!(row["name"].as_str(), Some(p.name.as_str()), "{id}");
-        // A planned row may not know its command yet (`TODO`).
-        if row["cli"] != "TODO" {
-            assert_eq!(row["cli"].as_str(), p.cli.as_deref(), "{id}");
-        }
         assert!(p.cli.is_some(), "{id}");
-        assert_eq!(
-            row["toolNameForm"].as_str(),
-            p.tool_name_form.as_deref(),
-            "{id}"
-        );
     }
 }
 

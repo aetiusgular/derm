@@ -36,14 +36,14 @@
     "gate": {
       "family": "command-hook",
       "where": "~/.cursor/hooks.json version 1: preToolUse and beforeMCPExecution, failClosed: true (packages/derm-hooks-native/registration/cursor/hooks.json)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "N",
       "package": "packages/derm-hooks-native"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "failClosed: true",
-    "ask": "own-prompt",
+    "ask": "approver-or-deny",
     "shellAliases": [
       "Shell"
     ],

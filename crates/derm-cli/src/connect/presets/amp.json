@@ -47,7 +47,7 @@
     "gate": {
       "family": "plugin",
       "where": "Bun plugin folder ~/.config/amp/plugins/derm/index.ts (copied, not linked: Amp refuses a plugin that resolves outside its folder); tool.call and tool.result",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "P",
       "package": "packages/derm-amp-plugin"

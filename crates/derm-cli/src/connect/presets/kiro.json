@@ -11,7 +11,7 @@
     "gate": {
       "family": "command-hook",
       "where": "~/.kiro/hooks/derm.json (CLI V3 global hooks), PreToolUse, exit codes only (packages/derm-hooks-native/registration/kiro/derm.json)",
-      "status": "planned",
+      "status": "built",
       "wave": 4,
       "lane": "N",
       "package": "packages/derm-hooks-native"
