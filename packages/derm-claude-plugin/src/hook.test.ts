@@ -239,7 +239,16 @@ describe("bin/derm-hook.mjs", () => {
 describe("Claude Code's hook run by Cursor", () => {
   const cursorHome = mkdtempSync(path.join(tmpdir(), "derm-claude-cursor-"));
   const hooksFile = path.join(cursorHome, ".cursor", "hooks.json");
-  const entry = (failClosed: boolean) => ({ type: "command", command: 'node --no-warnings "/p/derm-hooks-native/bin/derm-hook.mjs" cursor', timeout: 120, failClosed });
+  // A real derm-hooks-native folder: the entry must name derm's hook file,
+  // not only its name (fix pass 1's review, FP4-S3).
+  const native = path.join(cursorHome, "derm-hooks-native");
+  const hookFile = path.join(native, "bin", "derm-hook.mjs");
+  mkdirSync(path.dirname(hookFile), { recursive: true });
+  writeFileSync(path.join(native, "package.json"), JSON.stringify({ name: "@aetiusgular/derm-hooks-native" }));
+  writeFileSync(hookFile, "// derm's Cursor hook\n", { mode: 0o644 });
+  chmodSync(hookFile, 0o644);
+  const entryFor = (command: string, failClosed: boolean) => ({ type: "command", command, timeout: 120, failClosed });
+  const entry = (failClosed: boolean) => entryFor(`node --no-warnings "${hookFile}" cursor`, failClosed);
   const register = (pre: unknown, mcp: unknown) => {
     mkdirSync(path.dirname(hooksFile), { recursive: true });
     writeFileSync(hooksFile, JSON.stringify({ version: 1, hooks: { preToolUse: [{ command: "/o/.orca/agent-hooks/cursor-hook.sh" }, pre], beforeMCPExecution: [mcp] } }));
@@ -283,6 +292,41 @@ describe("Claude Code's hook run by Cursor", () => {
     }
     writeFileSync(hooksFile, "{ not json");
     expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(2);
+  });
+
+  // Fix pass 1's review, FP4-S3: a command that only names derm's hook file
+  // (`true derm-hook.mjs cursor`), a file that is not there, one others can
+  // write, or one outside derm-hooks-native is not derm's Cursor gate.
+  it("an entry counts only when it runs derm's own Cursor hook file", async () => {
+    const other = path.join(cursorHome, "other");
+    const otherHook = path.join(other, "bin", "derm-hook.mjs");
+    mkdirSync(path.dirname(otherHook), { recursive: true });
+    writeFileSync(path.join(other, "package.json"), JSON.stringify({ name: "something-else" }));
+    writeFileSync(otherHook, "// not derm\n");
+    for (const command of [
+      "true derm-hook.mjs cursor",
+      'node --no-warnings "/p/derm-hooks-native/bin/derm-hook.mjs" cursor',
+      `node --no-warnings "${otherHook}" cursor`,
+      `node --no-warnings "${hookFile}" cursor; true`,
+    ]) {
+      register(entryFor(command, true), entryFor(command, true));
+      expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode, command).toBe(2);
+    }
+    chmodSync(hookFile, 0o666);
+    register(entry(true), entry(true));
+    expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(2);
+    chmodSync(hookFile, 0o644);
+    expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(0);
+  });
+
+  // Fix pass 1's review, FP4-S2: a camelCase event alone does not make the
+  // caller Cursor (another harness can send one), so it needs Cursor's
+  // `cursor_version` too; else this hook treats it as an unexpected event.
+  it("a camelCase event without cursor_version is not Cursor and blocks", async () => {
+    register(entry(true), entry(true));
+    const r = await runHook("pre", JSON.stringify({ hook_event_name: "preToolUse", tool_name: "Shell", tool_input: { command: "ls" } }), cursorEnv());
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("unexpected hook event preToolUse");
   });
 
   it("Claude Code's own PreToolUse is unchanged", async () => {

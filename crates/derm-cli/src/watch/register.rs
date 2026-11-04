@@ -302,12 +302,65 @@ fn cursor(home: &Path) -> Registered {
     ))
 }
 
-/// A `hooks.json` entry `derm connect cursor --gate` wrote: a command entry
-/// naming derm's hook file with the dialect word `cursor` last.
+/// A `hooks.json` entry `derm connect cursor --gate` wrote:
+/// `<node> --no-warnings "<abs>/bin/derm-hook.mjs" cursor`
+/// (`connect/gates.json`), where the file is a regular file (not a link)
+/// owned by you or root that no one else can write, in a folder whose
+/// `package.json` names derm-hooks-native. A command that only named the
+/// file counted until fix pass 1's review (FP4-S3), so `derm status` said
+/// "yes" for `true derm-hook.mjs cursor`. Held equal to
+/// `isDermCursorCommand` in `packages/derm-claude-plugin/src/hook.ts`.
 pub fn is_derm_cursor_entry(e: &Value) -> bool {
     e.get("command")
         .and_then(Value::as_str)
-        .is_some_and(|c| c.contains("derm-hook.mjs") && c.trim_end().ends_with(" cursor"))
+        .is_some_and(is_derm_cursor_command)
+}
+
+fn is_derm_cursor_command(c: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let c = c.trim_end();
+    let Some(rest) = c.strip_suffix("\" cursor") else {
+        return false;
+    };
+    let Some((head, file)) = rest.split_once(" --no-warnings \"") else {
+        return false;
+    };
+    if head.is_empty() || head.contains(char::is_whitespace) || file.contains('"') {
+        return false;
+    }
+    if !file.starts_with('/')
+        || !file.ends_with("/bin/derm-hook.mjs")
+        || file.split('/').any(|p| p == ".." || p == ".")
+    {
+        return false;
+    }
+    // SAFETY: getuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let closed = |m: &std::fs::Metadata| (m.uid() == uid || m.uid() == 0) && m.mode() & 0o022 == 0;
+    let file = Path::new(file);
+    let Ok(m) = std::fs::symlink_metadata(file) else {
+        return false;
+    };
+    if !m.is_file() || !closed(&m) {
+        return false;
+    }
+    let Some(pkg) = file
+        .parent()
+        .and_then(Path::parent)
+        .map(|d| d.join("package.json"))
+    else {
+        return false;
+    };
+    let Ok(pm) = std::fs::symlink_metadata(&pkg) else {
+        return false;
+    };
+    if !pm.is_file() || !closed(&pm) || pm.len() > 1024 * 1024 {
+        return false;
+    }
+    std::fs::read_to_string(&pkg)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|v| v["name"] == "@aetiusgular/derm-hooks-native")
 }
 
 /// Where a `derm@derm` install record in `installed_plugins.json` stands for
@@ -1099,10 +1152,31 @@ mod cursor_tests {
         }
     }
 
-    fn entry(fail_closed: bool) -> String {
-        format!(
-            r#"{{"type":"command","command":"node --no-warnings \"/h/pkg/bin/derm-hook.mjs\" cursor","timeout":120,"failClosed":{fail_closed}}}"#
+    fn entry_for(command: &str, fail_closed: bool) -> String {
+        serde_json::json!({"type": "command", "command": command, "timeout": 120, "failClosed": fail_closed})
+            .to_string()
+    }
+
+    /// A real derm-hooks-native folder under `dir`, with its hook file
+    /// (fix pass 1's review, FP4-S3).
+    fn native(dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let pkg = dir.join(name);
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        let pkg_name = if name == "native" {
+            "@aetiusgular/derm-hooks-native"
+        } else {
+            "something-else"
+        };
+        std::fs::write(
+            pkg.join("package.json"),
+            format!(r#"{{"name":"{pkg_name}"}}"#),
         )
+        .unwrap();
+        let hook = pkg.join("bin/derm-hook.mjs");
+        std::fs::write(&hook, "// hook\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+        hook
     }
 
     /// Mac test w4, 4.3 (lane Q's Q7, lane N's N4): Cursor showed `unknown`
@@ -1117,6 +1191,9 @@ mod cursor_tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let hook = native(&dir, "native");
+        let ours = format!("node --no-warnings \"{}\" cursor", hook.display());
+        let entry = |fail_closed: bool| entry_for(&ours, fail_closed);
         let env = env_in(&dir);
         let file = dir.join(".cursor/hooks.json");
         assert_eq!(check("cursor", &env).word(), "no");
@@ -1145,6 +1222,27 @@ mod cursor_tests {
         assert!(r.detail().unwrap().contains("failClosed"));
         std::fs::write(&file, "{ not json").unwrap();
         assert_eq!(check("cursor", &env).word(), "unknown");
+        // Fix pass 1's review, FP4-S3: a command that only names the hook
+        // file, a file that is not there, one in another package, a command
+        // that runs more after it, or a file others can write is not derm's.
+        let other = native(&dir, "other");
+        for command in [
+            "true derm-hook.mjs cursor".to_string(),
+            r#"node --no-warnings "/h/pkg/bin/derm-hook.mjs" cursor"#.to_string(),
+            format!("node --no-warnings \"{}\" cursor", other.display()),
+            format!("{ours}; true"),
+        ] {
+            write(&entry_for(&command, true), &entry_for(&command, true));
+            assert_eq!(check("cursor", &env).word(), "no", "{command}");
+        }
+        {
+            use std::os::unix::fs::PermissionsExt;
+            write(&entry(true), &entry(true));
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o666)).unwrap();
+            assert_eq!(check("cursor", &env).word(), "no");
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(check("cursor", &env).word(), "yes");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

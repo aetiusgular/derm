@@ -11,7 +11,7 @@
 //   sees, in the tool's own output shape.
 
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
 import { decideCall, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
@@ -155,9 +155,43 @@ function decideCallName(tool: string, loaded: LoadedPolicy): string {
 // once per call (case 75). When it is not, this hook blocks, as before, and
 // names the fix: it never lets a Cursor call through ungated.
 
-/** Input Cursor sends when it runs this hook, not Claude Code. */
+/**
+ * Input Cursor sends when it runs this hook, not Claude Code: Cursor's
+ * camelCase event and its `cursor_version`, both (fix pass 1's review,
+ * FP4-S2: another harness can send a camelCase event; alone it is an
+ * unexpected event and blocks).
+ */
 export function runByCursor(input: Record<string, unknown>): boolean {
-  return input.hook_event_name === "preToolUse" || input.hook_event_name === "postToolUse" || typeof input.cursor_version === "string";
+  return (input.hook_event_name === "preToolUse" || input.hook_event_name === "postToolUse") && typeof input.cursor_version === "string";
+}
+
+const HOOKS_NATIVE_PACKAGE = "@aetiusgular/derm-hooks-native";
+
+/**
+ * A `hooks.json` command `derm connect cursor --gate` wrote:
+ * `<node> --no-warnings "<abs>/bin/derm-hook.mjs" cursor`, where the file is
+ * a regular file (not a link) owned by you or root that no one else can
+ * write, in a folder whose package.json names derm-hooks-native (fix pass
+ * 1's review, FP4-S3: a command that only named the file counted). Held
+ * equal to `is_derm_cursor_entry` in `crates/derm-cli/src/watch/register.rs`.
+ */
+export function isDermCursorCommand(command: string): boolean {
+  const m = /^\S+ --no-warnings "(\/[^"]*\/bin\/derm-hook\.mjs)" cursor\s*$/.exec(command);
+  const file = m?.[1];
+  if (!file) return false;
+  if (file.split("/").some((part) => part === ".." || part === ".")) return false;
+  try {
+    const uid = typeof process.getuid === "function" ? process.getuid() : -1;
+    const closed = (st: { uid: number; mode: number }) => (st.uid === uid || st.uid === 0) && (st.mode & 0o022) === 0;
+    const st = lstatSync(file);
+    if (!st.isFile() || !closed(st)) return false;
+    const pkgFile = path.join(path.dirname(path.dirname(file)), "package.json");
+    const pst = lstatSync(pkgFile);
+    if (!pst.isFile() || !closed(pst) || pst.size > 1024 * 1024) return false;
+    return (JSON.parse(readFileSync(pkgFile, "utf8")) as { name?: unknown })?.name === HOOKS_NATIVE_PACKAGE;
+  } catch {
+    return false;
+  }
 }
 
 const MAX_CURSOR_HOOKS_BYTES = 1024 * 1024;
@@ -176,7 +210,7 @@ export function cursorGateRegistered(env: NodeJS.ProcessEnv): boolean {
       if (!Array.isArray(list)) return false;
       const ours = list.filter((e) => {
         const c = (e as { command?: unknown } | null)?.command;
-        return typeof c === "string" && c.includes("derm-hook.mjs") && c.trimEnd().endsWith(" cursor");
+        return typeof c === "string" && isDermCursorCommand(c);
       });
       return ours.length > 0 && ours.every((e) => (e as { failClosed?: unknown }).failClosed === true);
     });
