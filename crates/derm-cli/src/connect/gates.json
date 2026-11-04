@@ -14,7 +14,14 @@
             "claude plugin marketplace add aetiusgular/derm",
             "claude plugin install derm@derm"
           ],
-          "note": "Claude Code installs plugins through its own command; derm does not write its plugin records. From a clone: claude plugin marketplace add <clone>. Fails closed (onFailure: block)."
+          "note": "Claude Code installs plugins through its own command; derm does not write its plugin records. From a clone: claude plugin marketplace add <clone>. Fails closed (onFailure: block).",
+          "fromFolder": {
+            "marketplaceFile": ".claude-plugin/marketplace.json",
+            "commands": [
+              "claude plugin marketplace add \"{marketplace_dir}\"",
+              "claude plugin install derm@derm"
+            ]
+          }
         }
       ]
     },
@@ -30,7 +37,14 @@
             "codex plugin marketplace add aetiusgular/derm --ref v{version}",
             "codex plugin add derm@derm"
           ],
-          "note": "Then trust both hooks in /hooks: Codex skips an untrusted plugin hook without a word (case 70). Codex lets a call through when its hook process dies."
+          "note": "Then trust both hooks in /hooks: Codex skips an untrusted plugin hook without a word (case 70). Codex lets a call through when its hook process dies.",
+          "fromFolder": {
+            "marketplaceFile": ".agents/plugins/marketplace.json",
+            "commands": [
+              "codex plugin marketplace add \"{marketplace_dir}\"",
+              "codex plugin add derm@derm"
+            ]
+          }
         }
       ]
     },

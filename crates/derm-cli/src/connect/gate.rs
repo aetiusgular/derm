@@ -104,6 +104,10 @@ pub enum Step {
     Commands {
         commands: Vec<String>,
         note: String,
+        /// With `--hook <folder>`: the marketplace file to find above the
+        /// folder, and the lines to print with `{marketplace_dir}` filled
+        /// (Mac test w4, MW4-7).
+        from_folder: Option<(String, Vec<String>)>,
     },
 }
 
@@ -207,6 +211,10 @@ fn step(v: &Value) -> Result<Step, String> {
         "commands" => Step::Commands {
             commands: strs(v, "commands")?,
             note: s(v, "note")?.to_string(),
+            from_folder: match v.get("fromFolder") {
+                None => None,
+                Some(f) => Some((s(f, "marketplaceFile")?.to_string(), strs(f, "commands")?)),
+            },
         },
         other => return Err(format!("gates.json: unknown step kind `{other}`")),
     })
@@ -378,6 +386,36 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, 
         ));
     }
     Ok(Some(file))
+}
+
+/// The nearest folder at or up to three levels above `dir` holding
+/// `file` (a plugin marketplace) whose text names `dir` by its path from that
+/// folder (`./packages/<name>`), so a marketplace that lists another plugin is
+/// never taken for this one. `dir` passed `check_hook`'s plain-path check.
+fn marketplace_above(dir: &str, file: &str) -> Option<String> {
+    let dir = Path::new(dir);
+    let mut at = Some(dir);
+    for _ in 0..4 {
+        let root = at?;
+        let mf = root.join(file);
+        if let (Ok(m), Ok(rel)) = (std::fs::symlink_metadata(&mf), dir.strip_prefix(root)) {
+            if m.is_file() && m.len() <= 1024 * 1024 {
+                let rel = rel.to_string_lossy();
+                let names = std::fs::read_to_string(&mf).is_ok_and(|t| {
+                    if rel.is_empty() {
+                        t.contains("\"./\"") || t.contains("\".\"")
+                    } else {
+                        t.contains(&format!("\"./{rel}\"")) || t.contains(&format!("\"{rel}\""))
+                    }
+                });
+                if names {
+                    return Some(root.to_string_lossy().into_owned());
+                }
+            }
+        }
+        at = root.parent();
+    }
+    None
 }
 
 /// The file a place names on this machine.
@@ -1025,7 +1063,30 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         .collect();
     if !printed.is_empty() {
         for st in printed {
-            if let Step::Commands { commands, note } = st {
+            if let Step::Commands {
+                commands,
+                note,
+                from_folder,
+            } = st
+            {
+                let local = match (from_folder, hook_dir.as_deref()) {
+                    (Some((file, lines)), Some(dir)) => match marketplace_above(dir, file) {
+                        Some(root) => Some(
+                            lines
+                                .iter()
+                                .map(|l| l.replace("{marketplace_dir}", &root))
+                                .collect::<Vec<_>>(),
+                        ),
+                        None => {
+                            ctx.out.push_str(&format!(
+                                "no {file} above {dir} lists that folder; the lines below install the release from GitHub, not the folder\n"
+                            ));
+                            None
+                        }
+                    },
+                    _ => None,
+                };
+                let commands = local.as_ref().unwrap_or(commands);
                 if o.ungate {
                     ctx.out.push_str(&format!(
                         "print only: remove derm's gate with {}'s own command (its plugin or extension list)\n",

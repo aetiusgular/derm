@@ -864,3 +864,85 @@ fn opencode_wildcard_matches_as_opencode_does() {
     assert!(!wildcard("axb", "a.b"));
     assert!(wildcard("a\\b", "a/b"));
 }
+
+/// Mac test w4, MW4-7: `--gate --hook <folder>` for Claude Code and Codex
+/// printed the GitHub lines (Codex's pinned to the release's tag), so a tester
+/// following them installed the release, not the folder named. With a folder,
+/// the lines name the marketplace above it that lists that folder.
+#[test]
+fn plugin_agents_print_the_marketplace_of_the_folder_given() {
+    let home = scratch("gate-folder");
+    let clone = home.join("clone");
+    let claude = package(
+        &home,
+        "clone/packages/derm-claude-plugin",
+        "@aetiusgular/derm-claude-plugin",
+    );
+    let codex = package(
+        &home,
+        "clone/packages/derm-codex-plugin",
+        "@aetiusgular/derm-codex-plugin",
+    );
+    // No marketplace file above the folder yet: said, and the release lines.
+    let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.contains("no .claude-plugin/marketplace.json above"),
+        "{}",
+        r.out
+    );
+    fs::create_dir_all(clone.join(".claude-plugin")).unwrap();
+    fs::write(
+        clone.join(".claude-plugin/marketplace.json"),
+        r#"{"name":"derm","plugins":[{"name":"derm","source":"./packages/derm-claude-plugin"}]}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(clone.join(".agents/plugins")).unwrap();
+    fs::write(
+        clone.join(".agents/plugins/marketplace.json"),
+        r#"{"name":"derm","plugins":[{"name":"derm","source":{"source":"local","path":"./packages/derm-codex-plugin"}}]}"#,
+    )
+    .unwrap();
+    let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.contains(&format!(
+            "claude plugin marketplace add \"{}\"",
+            clone.display()
+        )),
+        "{}",
+        r.out
+    );
+    assert!(!r.out.contains("aetiusgular/derm\n"), "{}", r.out);
+    let r = go(&home, &["codex", "--gate", "--hook", &codex]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(
+        r.out.contains(&format!(
+            "codex plugin marketplace add \"{}\"",
+            clone.display()
+        )),
+        "{}",
+        r.out
+    );
+    assert!(!r.out.contains("--ref"), "{}", r.out);
+    // A marketplace above that does not list this folder is not it.
+    fs::write(
+        clone.join(".claude-plugin/marketplace.json"),
+        r#"{"name":"derm","plugins":[{"name":"derm","source":"./elsewhere"}]}"#,
+    )
+    .unwrap();
+    let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);
+    assert!(
+        r.out.contains("no .claude-plugin/marketplace.json above"),
+        "{}",
+        r.out
+    );
+    // Without --hook, the release lines, as before.
+    let r = go(&home, &["claude-code", "--gate"]);
+    assert!(
+        r.out
+            .contains("claude plugin marketplace add aetiusgular/derm"),
+        "{}",
+        r.out
+    );
+}
