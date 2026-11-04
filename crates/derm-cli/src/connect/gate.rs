@@ -389,33 +389,99 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, 
 }
 
 /// The nearest folder at or up to three levels above `dir` holding
-/// `file` (a plugin marketplace) whose text names `dir` by its path from that
-/// folder (`./packages/<name>`), so a marketplace that lists another plugin is
-/// never taken for this one. `dir` passed `check_hook`'s plain-path check.
+/// `file` (a plugin marketplace) that lists `dir` as derm's plugin: the
+/// marketplace is named `derm` and has a plugin `derm` whose `source` is
+/// `dir` by its path from that folder (`"./packages/<name>"` for Claude
+/// Code, `{"source":"local","path":"./packages/<name>"}` for Codex). The
+/// file, its folder and every folder from the marketplace folder down to
+/// `dir` are yours or root's, writable by no one else, and no link (fix pass
+/// 1's review, FP4-S5: the text only had to contain the path, so a file you
+/// do not own, or one that named the folder for another plugin, was printed
+/// as derm's advice). `dir` passed `check_hook`'s plain-path check.
 fn marketplace_above(dir: &str, file: &str) -> Option<String> {
+    // SAFETY: getuid takes no arguments and cannot fail.
+    let uid = unsafe { libc::getuid() };
     let dir = Path::new(dir);
     let mut at = Some(dir);
     for _ in 0..4 {
         let root = at?;
-        let mf = root.join(file);
-        if let (Ok(m), Ok(rel)) = (std::fs::symlink_metadata(&mf), dir.strip_prefix(root)) {
-            if m.is_file() && m.len() <= 1024 * 1024 {
-                let rel = rel.to_string_lossy();
-                let names = std::fs::read_to_string(&mf).is_ok_and(|t| {
-                    if rel.is_empty() {
-                        t.contains("\"./\"") || t.contains("\".\"")
-                    } else {
-                        t.contains(&format!("\"./{rel}\"")) || t.contains(&format!("\"{rel}\""))
-                    }
-                });
-                if names {
-                    return Some(root.to_string_lossy().into_owned());
-                }
+        if let Ok(rel) = dir.strip_prefix(root) {
+            if lists_derm(root, file, &rel.to_string_lossy(), uid)
+                && folders_closed(root, dir, file, uid)
+            {
+                return Some(root.to_string_lossy().into_owned());
             }
         }
         at = root.parent();
     }
     None
+}
+
+fn lists_derm(root: &Path, file: &str, rel: &str, uid: u32) -> bool {
+    let mf = root.join(file);
+    let Ok(m) = std::fs::symlink_metadata(&mf) else {
+        return false;
+    };
+    if !m.is_file() || m.len() > 1024 * 1024 || !closed(&m, uid) {
+        return false;
+    }
+    let Some(v) = std::fs::read_to_string(&mf)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        return false;
+    };
+    let want = |p: &str| {
+        let p = p.strip_prefix("./").unwrap_or(p);
+        let p = p.trim_end_matches('/');
+        if rel.is_empty() {
+            p.is_empty() || p == "."
+        } else {
+            p == rel
+        }
+    };
+    v["name"] == "derm"
+        && v["plugins"].as_array().is_some_and(|ps| {
+            ps.iter().any(|p| {
+                p["name"] == "derm"
+                    && match &p["source"] {
+                        serde_json::Value::String(s) => want(s),
+                        serde_json::Value::Object(o) => {
+                            o.get("source").and_then(serde_json::Value::as_str) == Some("local")
+                                && o.get("path")
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(want)
+                        }
+                        _ => false,
+                    }
+            })
+        })
+}
+
+/// The marketplace file's folders (`.claude-plugin`, `.agents/plugins`) and
+/// every folder from `root` down to `dir`: real folders, yours or root's,
+/// writable by no one else.
+fn folders_closed(root: &Path, dir: &Path, file: &str, uid: u32) -> bool {
+    let mut folders: Vec<PathBuf> = Vec::new();
+    let mut f = root.join(file);
+    while let Some(parent) = f.parent() {
+        if parent == root {
+            break;
+        }
+        folders.push(parent.to_path_buf());
+        f = parent.to_path_buf();
+    }
+    let mut d = Some(dir);
+    while let Some(x) = d {
+        folders.push(x.to_path_buf());
+        if x == root {
+            break;
+        }
+        d = x.parent();
+    }
+    folders
+        .iter()
+        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && closed(&m, uid)))
 }
 
 /// The file a place names on this machine.

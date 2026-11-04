@@ -937,6 +937,51 @@ fn plugin_agents_print_the_marketplace_of_the_folder_given() {
         "{}",
         r.out
     );
+    // Fix pass 1's review, FP4-S5: the folder named only in a description,
+    // a marketplace not named derm, or a file others can write is not it.
+    for text in [
+        r#"{"name":"derm","description":"see ./packages/derm-claude-plugin","plugins":[{"name":"derm","source":"./elsewhere"}]}"#,
+        r#"{"name":"other","plugins":[{"name":"derm","source":"./packages/derm-claude-plugin"}]}"#,
+        r#"{"name":"derm","plugins":[{"name":"evil","source":"./packages/derm-claude-plugin"}]}"#,
+    ] {
+        fs::write(clone.join(".claude-plugin/marketplace.json"), text).unwrap();
+        let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);
+        assert!(
+            r.out.contains("no .claude-plugin/marketplace.json above"),
+            "{text}: {}",
+            r.out
+        );
+    }
+    fs::write(
+        clone.join(".claude-plugin/marketplace.json"),
+        r#"{"name":"derm","plugins":[{"name":"derm","source":"./packages/derm-claude-plugin"}]}"#,
+    )
+    .unwrap();
+    fs::set_permissions(
+        clone.join(".claude-plugin/marketplace.json"),
+        fs::Permissions::from_mode(0o666),
+    )
+    .unwrap();
+    let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);
+    assert!(
+        r.out.contains("no .claude-plugin/marketplace.json above"),
+        "a marketplace others can write: {}",
+        r.out
+    );
+    fs::set_permissions(
+        clone.join(".claude-plugin/marketplace.json"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    let r = go(&home, &["claude-code", "--gate", "--hook", &claude]);
+    assert!(
+        r.out.contains(&format!(
+            "claude plugin marketplace add \"{}\"",
+            clone.display()
+        )),
+        "{}",
+        r.out
+    );
     // Without --hook, the release lines, as before.
     let r = go(&home, &["claude-code", "--gate"]);
     assert!(
