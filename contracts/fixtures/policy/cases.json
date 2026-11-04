@@ -189,6 +189,18 @@
       "note": "`gemini-cli/` is matched with its slash only: a bare name is taken only for a folder that starts with `.` or holds a `/`" },
     { "id": 69, "call": { "tool": "bash", "harness": "pi", "inputText": "cat .qwenrc" },
       "expect": { "action": "allow", "normalizedTool": "bash", "reasonPrefix": "rule bash" },
-      "note": "`.qwen` runs on into a longer name on its right: not Qwen's folder" }
+      "note": "`.qwen` runs on into a longer name on its right: not Qwen's folder" },
+    { "id": 70, "call": { "tool": "run_shell_command", "harness": "gemini", "inputText": "ls" },
+      "expect": { "action": "deny", "normalizedTool": "run_shell_command", "reasonPrefix": "rule bash" },
+      "note": "Gemini's shell is also `bash`: the harness's `bash` deny narrows it (integration w4; case 82, lane Q's request 10)" },
+    { "id": 71, "call": { "tool": "powershell", "harness": "codex", "inputText": "ls" },
+      "expect": { "action": "ask", "normalizedTool": "powershell", "reasonPrefix": "rule bash" },
+      "note": "a `powershell` allow, narrowed by Codex's `bash` ask (integration w4)" },
+    { "id": 72, "call": { "tool": "Monitor", "harness": "gemini", "inputText": "tail -f x.log" },
+      "expect": { "action": "deny", "normalizedTool": "monitor", "reasonPrefix": "rule bash" },
+      "note": "Monitor runs a command: a shell tool, so a `bash` deny reaches it (lane L's request 5)" },
+    { "id": 73, "call": { "tool": "Monitor", "harness": "claude-code", "inputText": "tail -f x.log" },
+      "expect": { "action": "ask", "normalizedTool": "monitor", "reasonPrefix": "no rule" },
+      "note": "a `bash` allow does not widen another shell tool: Monitor with no rule of its own asks (integration w4)" }
   ]
 }

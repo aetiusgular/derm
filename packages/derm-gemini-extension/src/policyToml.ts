@@ -15,8 +15,8 @@
 // allow becomes ask_user here), chat-scoped rules, and rules for another
 // harness. Each one skipped is named in a comment.
 //
-// Printed, never written: writing a user-level file is `derm connect`'s job
-// (lane C's rules; Gemini's rule writer is wave 4 lane Q).
+// Printed, never written: `derm connect gemini --rules --write` (wave 4 lane
+// Q) writes the same file with the policy's deny rules only.
 
 import { lowerName, type LoadedPolicy, type Rule } from "./core/policy.ts";
 
@@ -60,6 +60,15 @@ export function policyToToml(loaded: LoadedPolicy): string {
       continue;
     }
     const action = rule.action === "allow" && rule.descriptionSha256 !== undefined ? "ask" : rule.action;
+    // derm's `bash` names every shell, Gemini's run_shell_command included
+    // (base-declarations.ts:56 at v0.66.0), but only to narrow it: a `bash`
+    // deny or ask reaches run_shell_command in the hook, an allow does not
+    // (integration w4, lane Q's request 10). The same here, so a saved
+    // printout denies the shell, and never allows it past Gemini's prompt.
+    if (rule.tool === "bash" && action === "allow") {
+      lines.push("# skipped: bash allow (derm's bash names Gemini's run_shell_command only to deny or ask; name run_shell_command to allow it)", "");
+      continue;
+    }
     const out = ["[[rule]]"];
     if (rule.tool === "*") {
       out.push(`toolName = "*"`);
@@ -68,7 +77,7 @@ export function policyToToml(loaded: LoadedPolicy): string {
       const [server, tool] = rule.tool.split("/") as [string, string];
       out.push(`mcpName = ${tomlString(serverName(server, policy.servers))}`, `toolName = ${tomlString(tool)}`);
     } else {
-      out.push(`toolName = ${tomlString(rule.tool)}`);
+      out.push(`toolName = ${tomlString(rule.tool === "bash" ? "run_shell_command" : rule.tool)}`);
     }
     out.push(`decision = "${DECISION[action]}"`, `priority = ${priorityOf(rule, action)}`);
     if (action === "deny") out.push(`denyMessage = ${tomlString(`derm: rule ${rule.tool}${rule.harness ? ` harness=${rule.harness}` : ""}`)}`);

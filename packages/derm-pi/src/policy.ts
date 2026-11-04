@@ -269,7 +269,8 @@ export function splitInDoubt(raw: string, lowered: string, prefix: number, serve
 export function narrowingNames(raw: string, servers: readonly string[], harness?: string): { names: string[]; ambiguous: boolean } {
   const primary = normalizeToolName(raw, servers, harness);
   const slash = primary.indexOf("/");
-  if (slash < 0) return { names: [], ambiguous: false };
+  // A shell under another name is also `bash` (integration w4; the hook core's rule).
+  if (slash < 0) return { names: primary !== "bash" && SHELL_TOOLS.has(primary) ? ["bash"] : [], ambiguous: false };
   const names = new Set<string>();
   let ambiguous = false;
   const lowered = lowerName(raw);
@@ -360,6 +361,11 @@ export const SHELL_TOOLS = new Set([
   "user_bash",
   "terminal",
   "powershell",
+  // Added by integration w4, as in the hook core (lanes L and P): each
+  // one's other name is `bash` (narrowingNames).
+  "monitor",
+  "shell_command",
+  "run_commands",
 ]);
 
 /**

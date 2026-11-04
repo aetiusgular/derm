@@ -350,7 +350,9 @@ export function splitInDoubt(raw: string, lowered: string, prefix: number, serve
 export function narrowingNames(raw: string, servers: readonly string[], harness?: string): { names: string[]; ambiguous: boolean } {
   const primary = normalizeToolName(raw, servers, harness);
   const slash = primary.indexOf("/");
-  if (slash < 0) return { names: [], ambiguous: false };
+  // A shell under another name is also `bash` (integration w4; case 82):
+  // Gemini's run_shell_command, Codex's exec_command, Claude Code's Monitor.
+  if (slash < 0) return { names: primary !== "bash" && isShellTool(primary) ? ["bash"] : [], ambiguous: false };
   const names = new Set<string>();
   let ambiguous = false;
   const lowered = lowerName(raw);
@@ -433,7 +435,12 @@ export const GIT_CONFIG_KEYS = [
 export const GIT_CONTEXT_PATHS = [".git/", ".gitmodules", ".gitattributes", ".gitconfig", "git_config"] as const;
 
 // `powershell` is not in the contract's list; lane A added it (Pi 1.4.0 has the tool). A request for integration.
-export const SHELL_TOOLS = ["bash", "shell", "exec_command", "local_shell", "run_shell_command", "user_bash", "terminal", "powershell"] as const;
+// "monitor" (Claude Code's and OpenClaude's Monitor runs a command; lane L's
+// request 5), "shell_command" (Amp, Command Code) and "run_commands" (Cline)
+// added by integration w4 (lane P's request 6). Each one's other name is
+// `bash` (narrowingNames): a `bash` deny or ask narrows it, a `bash` allow
+// does not widen it.
+export const SHELL_TOOLS = ["bash", "shell", "exec_command", "local_shell", "run_shell_command", "user_bash", "terminal", "powershell", "monitor", "shell_command", "run_commands"] as const;
 
 /**
  * Files that control derm or a harness's hooks. An `allow` whose folded input

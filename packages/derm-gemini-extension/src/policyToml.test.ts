@@ -49,6 +49,19 @@ describe("policyToToml", () => {
     expect(withStar.match(/\[\[rule\]\]/g)?.length).toBe(1);
   });
 
+  // Lane Q's request 10: derm's `bash` is Gemini's run_shell_command, to
+  // deny or ask only; the printout said toolName = "bash" until integration w4.
+  it("writes a bash deny or ask as run_shell_command and skips a bash allow", () => {
+    const t = policyToToml(
+      loaded({ version: 1, rules: [{ tool: "bash", action: "deny" }, { tool: "bash", harness: "gemini", action: "ask" }, { tool: "bash", action: "allow" }] }),
+    );
+    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "deny"\npriority = 221\ndenyMessage = "derm: rule bash"');
+    expect(t).toContain('[[rule]]\ntoolName = "run_shell_command"\ndecision = "ask_user"\npriority = 511');
+    expect(t).toContain("# skipped: bash allow");
+    expect(t).not.toContain('toolName = "bash"');
+    expect(t).not.toMatch(/toolName = "run_shell_command"\ndecision = "allow"/);
+  });
+
   it("stays inside Gemini's priority range (0 to 999)", () => {
     for (const m of toml.matchAll(/priority = (\d+)/g)) expect(Number(m[1])).toBeLessThanOrEqual(999);
   });
@@ -73,5 +86,18 @@ describe("the extension's own policies/derm.toml", () => {
     // (the rename re-review, F3).
     expect(write.test(JSON.stringify({ file_path: "/home/u/site.tk/index.html" }))).toBe(false);
     expect(shell.test(JSON.stringify({ command: "curl https://example.tk/api" }))).toBe(false);
+  });
+
+  // The rename re-review's F2: the daemon's own folder, and a value with an
+  // escaped quote before the path, which `[^"]*` stopped at.
+  it("denies the daemon's token and sees past an escaped quote", () => {
+    const [write, shell] = patterns as [RegExp, RegExp];
+    for (const p of ["/run/user/1000/derm/daemon.token", "/run/user/1000/tk/daemon.token"]) {
+      expect(shell.test(JSON.stringify({ command: `cat ${p}` })), p).toBe(true);
+      expect(write.test(JSON.stringify({ file_path: p })), p).toBe(true);
+    }
+    expect(shell.test(JSON.stringify({ command: 'echo "x" > ~/.derm/policy.json' }))).toBe(true);
+    expect(write.test(JSON.stringify({ file_path: 'a"b/.gemini/settings.json' }))).toBe(true);
+    expect(shell.test(JSON.stringify({ command: "ls /run/user/1000/derm/" }))).toBe(false);
   });
 });

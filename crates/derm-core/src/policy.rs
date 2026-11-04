@@ -286,7 +286,10 @@ fn split_in_doubt(
 pub fn narrowing_names(raw: &str, servers: &[String], harness: &str) -> (Vec<String>, bool) {
     let primary = normalize_tool_name_for(raw, servers, harness);
     let Some((primary_server, primary_tool)) = primary.split_once('/') else {
-        return (Vec::new(), false);
+        // A shell under another name is also `bash` (integration w4; the
+        // hook core's rule): a `bash` deny or ask narrows it.
+        let other = primary != "bash" && SHELL_TOOLS.contains(&primary.as_str());
+        return (if other { vec!["bash".to_string()] } else { Vec::new() }, false);
     };
     let lowered = lower_name(raw);
     let mut splits: Vec<(String, String)> =
@@ -515,6 +518,11 @@ pub const SHELL_TOOLS: &[&str] = &[
     "user_bash",
     "terminal",
     "powershell",
+    // Added by integration w4, as in the hook core (lanes L and P): each
+    // one's other name is `bash` (`narrowing_names`).
+    "monitor",
+    "shell_command",
+    "run_commands",
 ];
 
 /// Files that control derm or a harness's hooks (contract, section 4, step

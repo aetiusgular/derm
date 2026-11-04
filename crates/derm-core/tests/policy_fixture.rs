@@ -39,13 +39,13 @@ fn fixture_has_thirteen_rules_and_fifty_three_cases() {
     let (policy, cases) = load();
     assert_eq!(
         policy.rules.len(),
-        13,
-        "10 from session 0, 2 added by integration w1, 1 by integration w2"
+        14,
+        "10 from session 0, 2 added by integration w1, 1 by integration w2, 1 by integration w4"
     );
     assert_eq!(
         cases.len(),
-        69,
-        "45 to integration w1, 15 from integration w2, 2 from the rename, 7 from integration w4"
+        73,
+        "45 to integration w1, 15 from integration w2, 2 from the rename, 11 from integration w4"
     );
 }
 

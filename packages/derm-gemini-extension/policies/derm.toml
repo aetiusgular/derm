@@ -15,17 +15,20 @@
 
 # `.tk/` is the old name's folder: derm never reads it, and while a tk install
 # is left on the machine its policy and token stay out of reach (rename review R1).
+# `derm/daemon.` is the daemon's token and socket; `(?:[^"\\]|\\.)*` reads past an
+# escaped quote in the value, which `[^"]*` stopped at (rename re-review F2,
+# integration w4).
 
 [[rule]]
 toolName = ["write_file", "replace"]
-argsPattern = '"file_path":"[^"]*(\.derm/|/\.tk/|\.gemini/|gemini-cli/)'
+argsPattern = '"file_path":"(?:[^"\\]|\\.)*(\.derm/|/\.tk/|\.gemini/|gemini-cli/|derm/daemon\.|/tk/daemon\.)'
 decision = "deny"
 priority = 900
 denyMessage = "derm: a write to derm's or Gemini's control files is refused by the derm extension's policy"
 
 [[rule]]
 toolName = "run_shell_command"
-argsPattern = '"(command|dir_path)":"[^"]*(\.derm/|/\.tk/|\.gemini/|gemini-cli/)'
+argsPattern = '"(command|dir_path)":"(?:[^"\\]|\\.)*(\.derm/|/\.tk/|\.gemini/|gemini-cli/|derm/daemon\.|/tk/daemon\.)'
 decision = "deny"
 priority = 900
 denyMessage = "derm: a shell command that names derm's or Gemini's control files is refused by the derm extension's policy"
