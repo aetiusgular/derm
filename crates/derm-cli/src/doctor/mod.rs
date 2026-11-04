@@ -535,11 +535,28 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
             // Claude Code 2.1.311 installs into its versioned cache under
             // `<config>/plugins/cache` (`b(Ne(),"plugins","cache")` in the
             // binary), so the copy it loads is under `plugins`.
-            let mut first_err = None;
-            for p in entries
+            // Only a record Claude Code would load in this folder, best
+            // first (Mac test w4, MW4-4: the first record with a hook was
+            // taken, another folder's local install included).
+            let mut ranked: Vec<(u8, &str)> = entries
                 .iter()
-                .filter_map(|e| e.get("installPath").and_then(Value::as_str))
-            {
+                .filter_map(|e| {
+                    let rank = crate::watch::register::claude_record_rank(e, env.cwd.as_deref())?;
+                    Some((rank, e.get("installPath").and_then(Value::as_str)?))
+                })
+                .collect();
+            ranked.sort_by_key(|(rank, _)| *rank);
+            if ranked.is_empty() {
+                return Err(format!(
+                    "no derm@derm install record applies in this folder ({}): a project or local install loads only in its own folder",
+                    env.cwd
+                        .as_deref()
+                        .map(|c| c.display().to_string())
+                        .unwrap_or_else(|| "unknown".into())
+                ));
+            }
+            let mut first_err = None;
+            for p in ranked.into_iter().map(|(_, p)| p) {
                 let hook = PathBuf::from(p).join("bin/derm-hook.mjs");
                 if !hook.is_file() {
                     continue;

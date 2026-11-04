@@ -397,3 +397,62 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
         render(&r)
     );
 }
+
+/// Mac test w4, MW4-4: with two `derm@derm` records, a local install for
+/// another folder (0.1.0) and a local install for this one (0.1.3),
+/// `derm doctor claude-code` named and ran the first record's hook. Claude
+/// Code loads a project or local record only in its `projectPath` (case
+/// 103), so doctor takes the record that applies here, as `derm status` does.
+#[test]
+fn the_claude_code_hook_doctor_names_is_the_one_this_folder_loads() {
+    let h = home("two-installs");
+    let src = repo().join("packages/derm-claude-plugin");
+    let plugins = h.root.join("home/.claude/plugins");
+    let other = plugins.join("cache/derm/derm/0.1.0");
+    let here = plugins.join("cache/derm/derm/0.1.3");
+    copy_dir(&src, &other);
+    copy_dir(&src, &here);
+    let elsewhere = h.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let proj = h.root.join("proj");
+    put(
+        &plugins.join("installed_plugins.json"),
+        &json!({"version": 2, "plugins": {"derm@derm": [
+            {"scope": "local", "projectPath": elsewhere, "installPath": other, "version": "0.1.0"},
+            {"scope": "local", "projectPath": proj, "installPath": here, "version": "0.1.3"}
+        ]}})
+        .to_string(),
+    );
+    let got = installed_hook("claude-code", &env(&h)).unwrap();
+    assert!(
+        got.starts_with(here.canonicalize().unwrap()),
+        "{}",
+        got.display()
+    );
+    // From a folder no record names, no hook: not another folder's.
+    let mut away = env(&h);
+    away.cwd = Some(h.root.join("bin"));
+    let err = installed_hook("claude-code", &away).unwrap_err();
+    assert!(err.contains("this folder"), "{err}");
+    // A user record applies anywhere; a local one for here comes first.
+    put(
+        &plugins.join("installed_plugins.json"),
+        &json!({"version": 2, "plugins": {"derm@derm": [
+            {"scope": "user", "installPath": other, "version": "0.1.0"},
+            {"scope": "local", "projectPath": proj, "installPath": here, "version": "0.1.3"}
+        ]}})
+        .to_string(),
+    );
+    let got = installed_hook("claude-code", &env(&h)).unwrap();
+    assert!(
+        got.starts_with(here.canonicalize().unwrap()),
+        "{}",
+        got.display()
+    );
+    let got = installed_hook("claude-code", &away).unwrap();
+    assert!(
+        got.starts_with(other.canonicalize().unwrap()),
+        "{}",
+        got.display()
+    );
+}

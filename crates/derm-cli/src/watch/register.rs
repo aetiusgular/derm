@@ -8,8 +8,9 @@
 //!   `~/.claude`; a plugin with no entry is enabled by default, so the
 //!   install record `<plugins>/installed_plugins.json` (`plugins.derm@derm`,
 //!   `<plugins>` = `CLAUDE_CODE_PLUGIN_CACHE_DIR` or `<config>/plugins`)
-//!   decides then. A project, local or managed settings file can still turn
-//!   it off; this reads only the user file.
+//!   decides then. The entry is read from the project's local file, its
+//!   shared file, then the user file, the first that sets it (Mac test w4,
+//!   MW4-4); a managed file can still turn it off (`derm doctor` reads it).
 //! - Codex 0.163.0: `[plugins."derm@derm"]` in `$CODEX_HOME/config.toml`
 //!   (`enabled` missing means true; `[plugins._default] enabled = false`
 //!   turns unlisted plugins off), the installed copy
@@ -124,15 +125,34 @@ fn claude(env: &Env, home: &Path) -> Registered {
         .var("CLAUDE_CONFIG_DIR")
         .map(|d| tilde(d, home))
         .unwrap_or_else(|| home.join(".claude"));
-    let settings = config.join("settings.json");
-    let enabled = match read_json(&settings, false) {
-        Ok(v) => v.and_then(|v| {
-            v.get("enabledPlugins")
-                .and_then(|e| e.get("derm@derm"))
-                .cloned()
-        }),
-        Err(e) => return Registered::Unknown(e),
-    };
+    // `enabledPlugins["derm@derm"]` from the highest file that sets it:
+    // the project's local file, then its shared file, then the user's
+    // (https://code.claude.com/docs/en/settings.md, read 4 Nov 2026; a local
+    // install writes the local file; Mac test w4, MW4-4). Managed settings
+    // are `derm doctor`'s. Since 2.1.211 the local file can sit at the
+    // repository root when Claude Code starts below it; only the starting
+    // folder's is read here.
+    let mut files: Vec<PathBuf> = Vec::new();
+    if let Some(cwd) = env.cwd.as_deref() {
+        files.push(cwd.join(".claude/settings.local.json"));
+        files.push(cwd.join(".claude/settings.json"));
+    }
+    files.push(config.join("settings.json"));
+    let mut settings = config.join("settings.json");
+    let mut enabled = None;
+    for file in files {
+        match read_json(&file, false) {
+            Ok(Some(v)) => {
+                if let Some(e) = v.get("enabledPlugins").and_then(|e| e.get("derm@derm")) {
+                    enabled = Some(e.clone());
+                    settings = file;
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(e) => return Registered::Unknown(e),
+        }
+    }
     if enabled == Some(Value::Bool(false)) {
         return Registered::No(format!(
             "derm@derm is turned off in {} (enabledPlugins)",
@@ -288,6 +308,29 @@ pub fn is_derm_cursor_entry(e: &Value) -> bool {
     e.get("command")
         .and_then(Value::as_str)
         .is_some_and(|c| c.contains("derm-hook.mjs") && c.trim_end().ends_with(" cursor"))
+}
+
+/// Where a `derm@derm` install record in `installed_plugins.json` stands for
+/// a Claude Code started in `cwd`: `None` when it does not apply there, else
+/// its rank, lower first. `user` and `managed` records (and one with no
+/// scope, from an older Claude Code) apply anywhere; `project` and `local`
+/// ones only in their `projectPath` (2.1.311's binary, function `WO`, quoted
+/// in `claude` below). Which one Claude Code loads when several apply was not
+/// read (NF); derm takes local, then project, then the rest, the order of
+/// Claude Code's settings files (https://code.claude.com/docs/en/settings.md,
+/// read 4 Nov 2026). `derm doctor` uses it (Mac test w4, MW4-4).
+pub fn claude_record_rank(record: &Value, cwd: Option<&Path>) -> Option<u8> {
+    let here = || {
+        record
+            .get("projectPath")
+            .and_then(Value::as_str)
+            .is_some_and(|p| same_folder(Path::new(p), cwd))
+    };
+    match record.get("scope").and_then(Value::as_str) {
+        Some("local") => here().then_some(0),
+        Some("project") => here().then_some(1),
+        _ => Some(2),
+    }
 }
 
 /// Whether `recorded` names the folder `cwd`, as written or by real path.
@@ -1103,5 +1146,65 @@ mod cursor_tests {
         std::fs::write(&file, "{ not json").unwrap();
         assert_eq!(check("cursor", &env).word(), "unknown");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod claude_scope_tests {
+    use super::*;
+
+    /// Mac test w4, MW4-4: a local install writes `enabledPlugins` into the
+    /// project's `.claude/settings.local.json`; derm read only the user file
+    /// and said "no enabledPlugins entry". Claude Code reads local, then
+    /// project, then user, the higher one winning
+    /// (https://code.claude.com/docs/en/settings.md, read 4 Nov 2026).
+    #[test]
+    fn enabled_plugins_is_read_from_local_project_and_user_in_that_order() {
+        let root = std::env::temp_dir().join(format!(
+            "derm-reg-scope-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let home = root.join("home");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+        std::fs::create_dir_all(proj.join(".claude")).unwrap();
+        std::fs::write(
+            home.join(".claude/plugins/installed_plugins.json"),
+            serde_json::json!({"plugins": {"derm@derm": [
+                {"scope": "local", "projectPath": proj, "installPath": "/x"}
+            ]}})
+            .to_string(),
+        )
+        .unwrap();
+        let env = Env {
+            home: Some(home.clone()),
+            path: String::new(),
+            vars: Vec::new(),
+            cwd: Some(proj.clone()),
+        };
+        let local = proj.join(".claude/settings.local.json");
+        let shared = proj.join(".claude/settings.json");
+        let user = home.join(".claude/settings.json");
+        std::fs::write(&local, r#"{"enabledPlugins":{"derm@derm":true}}"#).unwrap();
+        let r = check("claude-code", &env);
+        let d = r.detail().unwrap();
+        assert_eq!(r.word(), "yes", "{d}");
+        assert!(d.contains("settings.local.json"), "{d}");
+        assert!(!d.contains("no enabledPlugins entry"), "{d}");
+        // A local false wins over a user true.
+        std::fs::write(&user, r#"{"enabledPlugins":{"derm@derm":true}}"#).unwrap();
+        std::fs::write(&local, r#"{"enabledPlugins":{"derm@derm":false}}"#).unwrap();
+        let r = check("claude-code", &env);
+        assert_eq!(r.word(), "no", "{:?}", r.detail());
+        assert!(r.detail().unwrap().contains("settings.local.json"));
+        // No local entry: the shared project file, then the user file.
+        std::fs::write(&local, "{}").unwrap();
+        std::fs::write(&shared, r#"{"enabledPlugins":{"derm@derm":false}}"#).unwrap();
+        assert_eq!(check("claude-code", &env).word(), "no");
+        std::fs::write(&shared, "{}").unwrap();
+        let r = check("claude-code", &env);
+        assert_eq!(r.word(), "yes", "{:?}", r.detail());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

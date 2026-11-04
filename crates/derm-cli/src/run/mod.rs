@@ -2045,7 +2045,12 @@ mod end_to_end {
         while ps_running_with(&marker).is_empty() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert_eq!(ps_running_with(&marker).len(), 1, "{:?}", ps_running_with(&marker));
+        assert_eq!(
+            ps_running_with(&marker).len(),
+            1,
+            "{:?}",
+            ps_running_with(&marker)
+        );
         if std::path::Path::new("/proc/self/stat").exists() {
             assert_eq!(proc_running_with(&marker).len(), 1);
         }
