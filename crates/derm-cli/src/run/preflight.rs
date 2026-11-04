@@ -99,11 +99,59 @@ pub fn srt(
 }
 
 /// The companion `derm run` starts beside the harness (lane P's Cline
-/// responder), as an absolute path. It runs as the user, outside any
-/// sandbox, with the chat token, so it is held to the rule srt's own tools
-/// are held to: not from a relative PATH entry, not from a folder the
-/// sandbox can write (security review L8).
+/// responder), as the argv to start: absolute paths only. It runs as the
+/// user, outside any sandbox, with the chat token, so it is held to the rule
+/// srt's own tools are held to: not from a relative PATH entry, not from a
+/// folder the sandbox can write (security review L8). A script whose first
+/// line is `#!/usr/bin/env <name>` would have the kernel look `<name>` up on
+/// PATH when it starts, so `<name>` is found and checked the same way here and
+/// started by its absolute path, with the script as its argument (review
+/// W4-S4). An absolute interpreter is checked against the writable folders.
 pub fn companion(
+    program: &str,
+    path_var: &str,
+    writable: &[String],
+    cwd: &str,
+) -> Result<Vec<String>, String> {
+    let script = checked(program, path_var, writable, cwd)?;
+    let head = {
+        use std::io::Read;
+        let mut buf = [0u8; 256];
+        let n = std::fs::File::open(&script)
+            .and_then(|mut f| f.read(&mut buf))
+            .map_err(|e| format!("{script}: {e}"))?;
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    };
+    let Some(line) = head.strip_prefix("#!") else {
+        return Ok(vec![script]);
+    };
+    let line = line.lines().next().unwrap_or("");
+    let words: Vec<&str> = line.split_whitespace().collect();
+    match words.as_slice() {
+        [env, name] if env.rsplit('/').next() == Some("env") && !name.starts_with('-') => {
+            let interp = checked(name, path_var, writable, cwd)
+                .map_err(|e| format!("{script} runs `{name}` from PATH: {e}"))?;
+            Ok(vec![interp, script])
+        }
+        [interp, ..] if interp.starts_with('/') && !interp.rsplit('/').next().is_some_and(|b| b == "env") => {
+            let real = std::fs::canonicalize(interp)
+                .map(|r| r.to_string_lossy().into_owned())
+                .map_err(|e| format!("{script}: its interpreter {interp}: {e}"))?;
+            if let Some(w) = writable.iter().find(|w| under(&real, w)) {
+                return Err(format!(
+                    "{script}'s interpreter {real} sits in {w}, which the sandbox can write"
+                ));
+            }
+            Ok(vec![script])
+        }
+        _ => Err(format!(
+            "{script}: derm cannot tell which program its first line `#!{line}` starts; start it with an absolute interpreter or `#!/usr/bin/env <name>`"
+        )),
+    }
+}
+
+/// One program, found and held to the companion's rule, as an absolute path.
+fn checked(
     program: &str,
     path_var: &str,
     writable: &[String],
@@ -304,7 +352,9 @@ mod tests {
         let got = companion("derm-cline-responder", &path, &writable, &work).unwrap();
         assert_eq!(
             got,
-            s(&std::fs::canonicalize(sys.join("derm-cline-responder")).unwrap())
+            vec![s(
+                &std::fs::canonicalize(sys.join("derm-cline-responder")).unwrap()
+            )]
         );
         // A relative PATH entry is refused, as for srt's tools.
         let e = companion(
@@ -324,6 +374,64 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.contains("can write"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Review W4-S4: lane P's responder is a `#!/usr/bin/env node` script,
+    /// so the kernel looks `node` up on PATH when it starts. That `node` runs
+    /// outside the sandbox with the chat token, so it is held to the same
+    /// rule as the script.
+    #[test]
+    fn the_companions_interpreter_is_held_to_the_same_rule() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "derm-pre-interp-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let sys = root.join("sys");
+        let planted = root.join("work/node_modules/.bin");
+        let pkg = root.join("pkg");
+        for d in [&sys, &planted, &pkg] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let exe = |f: &std::path::Path, body: &str| {
+            std::fs::write(f, body).unwrap();
+            std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        exe(&sys.join("node"), "#!/bin/sh\n");
+        exe(&planted.join("node"), "#!/bin/sh\necho planted\n");
+        exe(
+            &pkg.join("derm-cline-responder"),
+            "#!/usr/bin/env node\n// x\n",
+        );
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let work = s(&root.join("work"));
+        let script = s(&pkg.join("derm-cline-responder"));
+        // A planted node first on PATH, in a folder the sandbox can write.
+        let path = format!("{}:{}", s(&planted), s(&sys));
+        let e = companion(&script, &path, std::slice::from_ref(&work), &work).unwrap_err();
+        assert!(e.contains("node"), "{e}");
+        // A relative PATH entry that reaches a node, under any boundary.
+        let e = companion(
+            &script,
+            &format!("node_modules/.bin:{}", s(&sys)),
+            &[],
+            &work,
+        )
+        .unwrap_err();
+        assert!(e.contains("relative"), "{e}");
+        // The system node first: derm starts that node with the script.
+        let path = format!("{}:{}", s(&sys), s(&planted));
+        let got = companion(&script, &path, std::slice::from_ref(&work), &work).unwrap();
+        let real = |p: &std::path::Path| s(&std::fs::canonicalize(p).unwrap());
+        assert_eq!(
+            got,
+            vec![
+                real(&sys.join("node")),
+                real(&pkg.join("derm-cline-responder"))
+            ]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

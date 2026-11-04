@@ -732,13 +732,14 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
                 writable.extend(p.state_dirs.iter().cloned());
                 writable.push("/tmp".into());
             }
-            let real = preflight::companion(env.program(prog), &env.path, &writable, &cwd)
+            let argv = preflight::companion(env.program(prog), &env.path, &writable, &cwd)
                 .map_err(|e| (1, e))?;
             eprintln!(
-                "derm run: starting {real} beside {} (outside any sandbox, with the chat token)",
+                "derm run: starting {} beside {} (outside any sandbox, with the chat token)",
+                argv.join(" "),
                 a.harness.id
             );
-            Some(real)
+            Some(argv)
         }
         None => None,
     };
@@ -765,8 +766,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     launch.program = env.program(&p.program).to_string();
     // The companion first, so it is there when the harness writes its first
     // request (lane P's responder).
-    if let (Some((prog, cargs)), Some(real)) = (&p.companion, &companion_path) {
-        match exec::spawn_companion(real, cargs, &launch, &cwd) {
+    if let (Some((prog, cargs)), Some(argv)) = (&p.companion, &companion_path) {
+        let args: Vec<String> = argv[1..].iter().chain(cargs.iter()).cloned().collect();
+        match exec::spawn_companion(&argv[0], &args, &launch, &cwd) {
             Ok(c) => cleanup.companion = Some(c),
             Err(e) => {
                 eprintln!("derm run: {prog} did not start ({e}); the harness's gated calls will wait and be denied");
