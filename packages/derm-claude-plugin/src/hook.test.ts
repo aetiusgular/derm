@@ -322,9 +322,17 @@ describe("Claude Code's hook run by Cursor", () => {
     chmodSync(hookFile, 0o644);
     expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(0);
     // A node named by path, as --node writes it, counts when it is a real
-    // file of yours that no one else can write.
-    register(entryFor(`${process.execPath} --no-warnings "${hookFile}" cursor`, true), entry(true));
+    // file of yours that no one else can write (the predicate only reads
+    // its mode, so a stand-in file serves; CI's own node is not ours to
+    // judge), and not when others can write it.
+    const nodeFile = path.join(cursorHome, "nodebin", "node");
+    mkdirSync(path.dirname(nodeFile), { recursive: true });
+    writeFileSync(nodeFile, "#!/bin/sh\n");
+    chmodSync(nodeFile, 0o755);
+    register(entryFor(`${nodeFile} --no-warnings "${hookFile}" cursor`, true), entry(true));
     expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(0);
+    chmodSync(nodeFile, 0o775);
+    expect((await runHook("pre", cursorPre("Shell", { command: "ls" }), cursorEnv())).exitCode).toBe(2);
   });
 
   // Fix pass 1's review, FP4-S2: a camelCase event alone does not make the
