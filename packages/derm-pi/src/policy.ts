@@ -481,7 +481,7 @@ export const CONTROL_PATH_MARKERS = [
   ".cursor/",
   "cursor/hooks.json",
   ".agents/hooks.json",
-  ".agents/plugins",
+  ".agents/plugins/",
   ".config/goose/",
   "goose_path_root",
   "goose_mode",

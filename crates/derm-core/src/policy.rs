@@ -626,7 +626,7 @@ pub const CONTROL_PATHS: &[&str] = &[
     ".cursor/",
     "cursor/hooks.json",
     ".agents/hooks.json",
-    ".agents/plugins",
+    ".agents/plugins/",
     ".config/goose/",
     "goose_path_root",
     "goose_mode",

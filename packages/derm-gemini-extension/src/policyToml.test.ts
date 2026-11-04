@@ -88,16 +88,35 @@ describe("the extension's own policies/derm.toml", () => {
     expect(shell.test(JSON.stringify({ command: "curl https://example.tk/api" }))).toBe(false);
   });
 
-  // The rename re-review's F2: the daemon's own folder, and a value with an
-  // escaped quote before the path, which `[^"]*` stopped at.
-  it("denies the daemon's token and sees past an escaped quote", () => {
+  // The rename re-review's F2: the daemon's own folder.
+  it("denies the daemon's token", () => {
     const [write, shell] = patterns as [RegExp, RegExp];
     for (const p of ["/run/user/1000/derm/daemon.token", "/run/user/1000/tk/daemon.token"]) {
       expect(shell.test(JSON.stringify({ command: `cat ${p}` })), p).toBe(true);
       expect(write.test(JSON.stringify({ file_path: p })), p).toBe(true);
     }
-    expect(shell.test(JSON.stringify({ command: 'echo "x" > ~/.derm/policy.json' }))).toBe(true);
-    expect(write.test(JSON.stringify({ file_path: 'a"b/.gemini/settings.json' }))).toBe(true);
     expect(shell.test(JSON.stringify({ command: "ls /run/user/1000/derm/" }))).toBe(false);
+  });
+
+  // Gemini 0.66.0 drops a rule whose argsPattern fails isSafeRegExp
+  // (bundle chunk-HJ5KJXNZ.js:292070-292083, transcribed): the pattern must
+  // compile, be at most 2,048 characters, and not match its nested-quantifier
+  // check. Integration w4's first F2 fix used `(?:[^"\\]|\\.)*` and Gemini
+  // dropped both rules (contract checks gemini-derm-second-layer and
+  // gemini-derm-fail-open, run on 0.66.0).
+  it("passes Gemini's own isSafeRegExp, or Gemini drops the rule", () => {
+    const sources = [...file.matchAll(/^argsPattern = '([^']*)'$/gm)].map((m) => m[1] ?? "");
+    expect(sources).toHaveLength(2);
+    const isSafeRegExp = (pattern: string) => {
+      try {
+        new RegExp(pattern);
+      } catch {
+        return false;
+      }
+      if (pattern.length > 2048) return false;
+      return !/\([^)]*[*+?{].*\)[*+?{]/.test(pattern);
+    };
+    for (const p of sources) expect(isSafeRegExp(p), p).toBe(true);
+    expect(isSafeRegExp('"x":"(?:[^"\\\\]|\\\\.)*y')).toBe(false);
   });
 });
