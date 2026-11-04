@@ -1062,7 +1062,7 @@ fn a_deferred_record_before_the_decision_is_no_conflict() {
         "c1",
         "adapter",
         "approval",
-        json!({"decision": "deferred", "toolUseId": "call_7"}),
+        json!({"decision": "deferred", "tool": "search", "toolUseId": "call_7"}),
     ));
     assert_eq!(r["id"], pre, "{r}");
     let r = hook.ask(event(
@@ -1070,7 +1070,7 @@ fn a_deferred_record_before_the_decision_is_no_conflict() {
         "c1",
         "adapter",
         "approval",
-        json!({"decision": "allow", "toolUseId": "call_7"}),
+        json!({"decision": "allow", "tool": "exa/search", "toolUseId": "call_7"}),
     ));
     assert_eq!(
         r["id"], mcp,
@@ -1114,6 +1114,78 @@ fn a_deferred_record_before_the_decision_is_no_conflict() {
         json!({"decision": "allow", "toolUseId": "call_9"}),
     ));
     assert!(r["id"].as_str().unwrap().contains("-conflict-"), "{r}");
+    // Fix pass 1's review, FP4-S4: the exemption is Cursor's honest pair
+    // only. A second `deferred` for a call is a conflict; so is a decision
+    // after a `deferred` that names another tool than `<server>/<the
+    // deferred tool>`; and so is the pair in a chat that is not Cursor's.
+    let r = hook.ask(event(
+        "cursor-call_10-decision-00000000000000000000000000000001",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "deferred", "tool": "search", "toolUseId": "call_10"}),
+    ));
+    assert_eq!(
+        r["id"],
+        "cursor-call_10-decision-00000000000000000000000000000001"
+    );
+    let r = hook.ask(event(
+        "cursor-call_10-decision-00000000000000000000000000000002",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "deferred", "tool": "search", "toolUseId": "call_10"}),
+    ));
+    assert!(
+        r["id"].as_str().unwrap().contains("-conflict-"),
+        "a second deferred: {r}"
+    );
+    let r = hook.ask(event(
+        "cursor-call_11-decision-00000000000000000000000000000001",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "deferred", "tool": "search", "toolUseId": "call_11"}),
+    ));
+    assert_eq!(
+        r["id"],
+        "cursor-call_11-decision-00000000000000000000000000000001"
+    );
+    let r = hook.ask(event(
+        "cursor-call_11-decision-00000000000000000000000000000002",
+        "c1",
+        "adapter",
+        "approval",
+        json!({"decision": "allow", "tool": "bash", "toolUseId": "call_11"}),
+    ));
+    assert!(
+        r["id"].as_str().unwrap().contains("-conflict-"),
+        "a decision for another tool: {r}"
+    );
+    let other = mint(&mut d, "c2", "claude-code");
+    let (mut other_hook, _) = Client::hello(&f, &other);
+    let r = other_hook.ask(event(
+        "claude-code-call_12-decision-00000000000000000000000000000001",
+        "c2",
+        "adapter",
+        "approval",
+        json!({"decision": "deferred", "tool": "search", "toolUseId": "call_12"}),
+    ));
+    assert_eq!(
+        r["id"],
+        "claude-code-call_12-decision-00000000000000000000000000000001"
+    );
+    let r = other_hook.ask(event(
+        "claude-code-call_12-decision-00000000000000000000000000000002",
+        "c2",
+        "adapter",
+        "approval",
+        json!({"decision": "allow", "tool": "exa/search", "toolUseId": "call_12"}),
+    ));
+    assert!(
+        r["id"].as_str().unwrap().contains("-conflict-"),
+        "the pair in a chat that is not Cursor's: {r}"
+    );
     let mut t = Client::daemon(&f);
     t.ask(json!({"op": "tail", "since": 0}));
     let mut flags = 0;
@@ -1122,5 +1194,5 @@ fn a_deferred_record_before_the_decision_is_no_conflict() {
             flags += 1;
         }
     }
-    assert_eq!(flags, 3, "three conflicts, none for the honest pair");
+    assert_eq!(flags, 6, "six conflicts, none for the honest pair");
 }

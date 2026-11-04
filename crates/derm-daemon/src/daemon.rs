@@ -843,7 +843,9 @@ impl Daemon {
                 old.chat_id == event.chat_id
                     && store::is_gate_decision(old)
                     && (old.id == new.id
-                        || (call.is_some() && adapter_call(old) == call && !deferred(old)))
+                        || (call.is_some()
+                            && adapter_call(old) == call
+                            && !cursor_deferral_then_decision(old, &new)))
             })
             .map(|old| old.id.clone())
     }
@@ -1540,6 +1542,40 @@ fn collector_events(
 /// `deferred`, Cursor's preToolUse for an MCP call): no decision.
 fn deferred(event: &crate::activity::types::ActivityEvent) -> bool {
     event.detail.get("decision").and_then(Value::as_str) == Some("deferred")
+}
+
+/// Cursor's honest pair for one MCP call (Mac test w4, MW4-10): its
+/// preToolUse sees `MCP:<tool>` with no server and posts `deferred` for
+/// `<tool>`, and beforeMCPExecution posts the decision for
+/// `<server>/<tool>`, both naming the call. Only that pair is no conflict
+/// (fix pass 1's review, FP4-S4): both in a chat whose token is Cursor's
+/// (the daemon stamps every record with its token's harness), the earlier
+/// one `deferred`, the later one a decision for `<server>/<that tool>`. A
+/// second `deferred`, a decision for another tool, or the pair in another
+/// agent's chat is still a conflict.
+fn cursor_deferral_then_decision(
+    old: &crate::activity::types::ActivityEvent,
+    new: &crate::activity::types::ActivityEvent,
+) -> bool {
+    let tool = |e: &crate::activity::types::ActivityEvent| {
+        e.detail
+            .get("tool")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    old.harness == "cursor"
+        && new.harness == "cursor"
+        && deferred(old)
+        && !deferred(new)
+        && match (tool(old), tool(new)) {
+            (Some(o), Some(n)) => {
+                !o.is_empty()
+                    && !o.contains('/')
+                    && n.split_once('/')
+                        .is_some_and(|(server, t)| !server.is_empty() && t == o)
+            }
+            _ => false,
+        }
 }
 
 fn adapter_call(event: &crate::activity::types::ActivityEvent) -> Option<String> {
