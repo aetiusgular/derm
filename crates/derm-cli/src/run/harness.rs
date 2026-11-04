@@ -283,8 +283,20 @@ pub const HARNESSES: &[Harness] = &[
     // where the CLI writes `cli-config.json` (seen on the Mac and the rig, 4
     // Nov) and reads `mcp.json` (its preset row) and `hooks.json` (derm's
     // gate, lane N). Control: those three, since `cli-config.json` holds the
-    // CLI's own approval mode and allowlist (seen, Mac test w4). What else
-    // the CLI keeps there was not read (NF): srt with Cursor is not run.
+    // CLI's own approval mode and allowlist (seen, Mac test w4). Fix pass 1's
+    // review (FP4-S1): all of `~/.cursor` is writable state under srt, and
+    // Cursor runs code from inside it as you, so these are control too:
+    // `hooks/` (hook scripts) and `managed/` (team hooks, written to
+    // `managed/team_<id>/hooks/`), both read in
+    // https://cursor.com/docs/agent/hooks (4 Nov 2026); `cli.json`, a
+    // project's permissions, which can allow tools
+    // (https://cursor.com/docs/cli/reference/configuration, 4 Nov 2026);
+    // `plugins/` (plugin hooks load after user hooks, same page; the folder
+    // name is inferred, the page names none); `extensions/` and `argv.json`
+    // (the IDE's, by VS Code's layout, inferred); `skills/`, `commands/` and
+    // `rules/` (text the agent reads as instructions, inferred). What else
+    // the CLI writes there was not read (NF): srt with Cursor is not run, so
+    // a CLI feature that writes one of these fails closed under srt.
     Harness {
         id: "cursor",
         command: "cursor-agent",
@@ -298,6 +310,15 @@ pub const HARNESSES: &[Harness] = &[
             ".cursor/hooks.json",
             ".cursor/mcp.json",
             ".cursor/cli-config.json",
+            ".cursor/cli.json",
+            ".cursor/hooks",
+            ".cursor/managed",
+            ".cursor/plugins",
+            ".cursor/extensions",
+            ".cursor/argv.json",
+            ".cursor/skills",
+            ".cursor/commands",
+            ".cursor/rules",
         ],
         launch: Launch::None,
     },
@@ -503,6 +524,11 @@ mod tests {
             ".cursor/hooks.json",
             ".cursor/mcp.json",
             ".cursor/cli-config.json",
+            // Fix pass 1's review, FP4-S1.
+            ".cursor/cli.json",
+            ".cursor/hooks",
+            ".cursor/managed",
+            ".cursor/plugins",
         ] {
             assert!(h.control.contains(&c), "{c}");
         }

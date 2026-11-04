@@ -536,6 +536,21 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             if h.id == "cline" {
                 deny_write.push(format!("{cwd}/.clinerules"));
             }
+            // Cursor runs Claude Code's hooks from a project's settings and
+            // enabled plugins as third-party hooks
+            // (https://cursor.com/docs/reference/third-party-hooks; seen on
+            // the Mac, Mac test w4, MW4-5), so those stay read-only in the
+            // chat's folder (fix pass 1's review, FP4-S1). They are not
+            // Cursor's state, so they are not in its control list.
+            if h.id == "cursor" {
+                for c in [
+                    ".claude/settings.json",
+                    ".claude/settings.local.json",
+                    ".claude/plugins",
+                ] {
+                    deny_write.push(format!("{cwd}/{c}"));
+                }
+            }
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
             deny_write.sort();
@@ -1237,6 +1252,17 @@ mod tests {
             ("pi", "/home/u/.pi/agent/settings.json"),
             ("gemini", "/home/u/.gemini/extensions"),
             ("droid", "/home/u/.factory/hooks.json"),
+            // Fix pass 1's review, FP4-S1: Cursor's state is all of
+            // `~/.cursor`, and hooks and code it runs as you live there too.
+            ("cursor", "/home/u/.cursor/hooks.json"),
+            ("cursor", "/home/u/.cursor/hooks"),
+            ("cursor", "/home/u/.cursor/managed"),
+            ("cursor", "/home/u/.cursor/plugins"),
+            ("cursor", "/home/u/.cursor/extensions"),
+            ("cursor", "/home/u/.cursor/argv.json"),
+            ("cursor", "/home/u/.cursor/skills"),
+            ("cursor", "/home/u/.cursor/commands"),
+            ("cursor", "/home/u/.cursor/rules"),
         ] {
             let args = a(&[id, "--boundary", "srt"]);
             let p = build(&inputs(&args)).unwrap();
@@ -1278,6 +1304,25 @@ mod tests {
             (
                 "claude-code",
                 &["/home/u/proj dir/.claude/settings.json"][..],
+            ),
+            // Fix pass 1's review, FP4-S1: Cursor loads a project's own
+            // hooks and scripts and its `cli.json` permissions
+            // (https://cursor.com/docs/agent/hooks,
+            // https://cursor.com/docs/cli/reference/configuration, read 4
+            // Nov 2026), and runs Claude Code's hooks from the project's
+            // settings and enabled plugins as third-party hooks
+            // (https://cursor.com/docs/reference/third-party-hooks; Mac test
+            // w4, MW4-5).
+            (
+                "cursor",
+                &[
+                    "/home/u/proj dir/.cursor/hooks.json",
+                    "/home/u/proj dir/.cursor/hooks",
+                    "/home/u/proj dir/.cursor/cli.json",
+                    "/home/u/proj dir/.claude/settings.json",
+                    "/home/u/proj dir/.claude/settings.local.json",
+                    "/home/u/proj dir/.claude/plugins",
+                ][..],
             ),
         ] {
             let args = a(&[id, "--boundary", "srt"]);
