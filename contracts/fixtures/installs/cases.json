@@ -1,0 +1,411 @@
+{
+  "$comment": "The wave 5 base's first install cases (contracts/policy.md section 6; note AT section 2), for lane X and the three matchers. `text` is the shell call's input as the gate reads it. `expect.install` says whether it is an install; for one, the manager, `add` or `run`, and the packages with the version the command names (null when none). With the pre-install check off and no lockfile, every install here is `ask` and its reason names each package (section 6). Lane X may add cases; a change to one is a request for integration. Not run against anything yet: every matcher's stub reads no call as an install.",
+  "version": 1,
+  "cases": [
+    {
+      "id": 1,
+      "text": "npm install left-pad",
+      "expect": {
+        "install": true,
+        "manager": "npm",
+        "form": "add",
+        "packages": [
+          {
+            "name": "left-pad",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "text": "npm i left-pad@1.3.0",
+      "expect": {
+        "install": true,
+        "manager": "npm",
+        "form": "add",
+        "packages": [
+          {
+            "name": "left-pad",
+            "version": "1.3.0"
+          }
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "text": "npm install -D vitest @types/node",
+      "expect": {
+        "install": true,
+        "manager": "npm",
+        "form": "add",
+        "packages": [
+          {
+            "name": "vitest",
+            "version": null
+          },
+          {
+            "name": "@types/node",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "text": "npx create-some-app my-app",
+      "expect": {
+        "install": true,
+        "manager": "npm",
+        "form": "run",
+        "packages": [
+          {
+            "name": "create-some-app",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "text": "pnpm add zod",
+      "expect": {
+        "install": true,
+        "manager": "pnpm",
+        "form": "add",
+        "packages": [
+          {
+            "name": "zod",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "text": "pnpm dlx some-cli",
+      "expect": {
+        "install": true,
+        "manager": "pnpm",
+        "form": "run",
+        "packages": [
+          {
+            "name": "some-cli",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "text": "yarn add react@18.3.1",
+      "expect": {
+        "install": true,
+        "manager": "yarn",
+        "form": "add",
+        "packages": [
+          {
+            "name": "react",
+            "version": "18.3.1"
+          }
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "text": "yarn dlx some-cli",
+      "expect": {
+        "install": true,
+        "manager": "yarn",
+        "form": "run",
+        "packages": [
+          {
+            "name": "some-cli",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "text": "bun add hono",
+      "expect": {
+        "install": true,
+        "manager": "bun",
+        "form": "add",
+        "packages": [
+          {
+            "name": "hono",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "text": "bunx some-cli",
+      "expect": {
+        "install": true,
+        "manager": "bun",
+        "form": "run",
+        "packages": [
+          {
+            "name": "some-cli",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "text": "pip install requests",
+      "expect": {
+        "install": true,
+        "manager": "pip",
+        "form": "add",
+        "packages": [
+          {
+            "name": "requests",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "text": "pip3 install requests==2.32.3",
+      "expect": {
+        "install": true,
+        "manager": "pip",
+        "form": "add",
+        "packages": [
+          {
+            "name": "requests",
+            "version": "2.32.3"
+          }
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "text": "python -m pip install requests",
+      "expect": {
+        "install": true,
+        "manager": "pip",
+        "form": "add",
+        "packages": [
+          {
+            "name": "requests",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 14,
+      "text": "uv add httpx",
+      "expect": {
+        "install": true,
+        "manager": "uv",
+        "form": "add",
+        "packages": [
+          {
+            "name": "httpx",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 15,
+      "text": "uv pip install httpx",
+      "expect": {
+        "install": true,
+        "manager": "uv",
+        "form": "add",
+        "packages": [
+          {
+            "name": "httpx",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 16,
+      "text": "uvx ruff check .",
+      "expect": {
+        "install": true,
+        "manager": "uv",
+        "form": "run",
+        "packages": [
+          {
+            "name": "ruff",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 17,
+      "text": "poetry add rich",
+      "expect": {
+        "install": true,
+        "manager": "poetry",
+        "form": "add",
+        "packages": [
+          {
+            "name": "rich",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 18,
+      "text": "pdm add rich",
+      "expect": {
+        "install": true,
+        "manager": "pdm",
+        "form": "add",
+        "packages": [
+          {
+            "name": "rich",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 19,
+      "text": "pipx install black",
+      "expect": {
+        "install": true,
+        "manager": "pipx",
+        "form": "add",
+        "packages": [
+          {
+            "name": "black",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 20,
+      "text": "cargo add serde",
+      "expect": {
+        "install": true,
+        "manager": "cargo",
+        "form": "add",
+        "packages": [
+          {
+            "name": "serde",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 21,
+      "text": "cargo install ripgrep",
+      "expect": {
+        "install": true,
+        "manager": "cargo",
+        "form": "add",
+        "packages": [
+          {
+            "name": "ripgrep",
+            "version": null
+          }
+        ]
+      }
+    },
+    {
+      "id": 22,
+      "text": "go get golang.org/x/tools@v0.30.0",
+      "expect": {
+        "install": true,
+        "manager": "go",
+        "form": "add",
+        "packages": [
+          {
+            "name": "golang.org/x/tools",
+            "version": "v0.30.0"
+          }
+        ]
+      }
+    },
+    {
+      "id": 23,
+      "text": "go install golang.org/x/tools/gopls@latest",
+      "expect": {
+        "install": true,
+        "manager": "go",
+        "form": "add",
+        "packages": [
+          {
+            "name": "golang.org/x/tools/gopls",
+            "version": "latest"
+          }
+        ]
+      }
+    },
+    {
+      "id": 24,
+      "text": "npm run setup",
+      "expect": {
+        "install": false,
+        "why": "a script: the gate sees the outer command only (case 132)"
+      }
+    },
+    {
+      "id": 25,
+      "text": "npm test",
+      "expect": {
+        "install": false,
+        "why": "a script"
+      }
+    },
+    {
+      "id": 26,
+      "text": "make deps",
+      "expect": {
+        "install": false,
+        "why": "a Makefile target (case 132)"
+      }
+    },
+    {
+      "id": 27,
+      "text": "npm ls",
+      "expect": {
+        "install": false,
+        "why": "a read command"
+      }
+    },
+    {
+      "id": 28,
+      "text": "pip list",
+      "expect": {
+        "install": false,
+        "why": "a read command"
+      }
+    },
+    {
+      "id": 29,
+      "text": "ls -la node_modules",
+      "expect": {
+        "install": false,
+        "why": "not a manager command"
+      }
+    },
+    {
+      "id": 30,
+      "text": "echo npm install left-pad",
+      "expect": {
+        "install": false,
+        "why": "the words are an argument of echo, not a command (the base's reading)"
+      }
+    }
+  ]
+}

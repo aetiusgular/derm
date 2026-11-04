@@ -1196,3 +1196,21 @@ fn a_deferred_record_before_the_decision_is_no_conflict() {
     }
     assert_eq!(flags, 6, "six conflicts, none for the honest pair");
 }
+
+/// The wave 5 base: `tap` and `derm` records are the daemon's own
+/// (`contracts/events.md` section 5). No socket client posts one, with a
+/// chat token or the daemon's.
+#[test]
+fn no_socket_client_posts_a_tap_or_derm_record() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-w5", "pi");
+    let (mut c, _) = Client::hello(&f, &token);
+    for source in ["tap", "derm"] {
+        let r = c.ask(event("w5-c", "chat-w5", source, "tap.call", json!({})));
+        assert_eq!(r["ok"], false, "chat scope, {source}: {r}");
+        let r = d.ask(event("w5-d", "chat-w5", source, "tap.call", json!({})));
+        assert_eq!(r["ok"], false, "daemon scope, {source}: {r}");
+        assert_eq!(r["error"], "tap and derm events are written by the daemon");
+    }
+}

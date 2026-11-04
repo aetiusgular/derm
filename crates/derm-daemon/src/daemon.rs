@@ -725,6 +725,13 @@ impl Daemon {
                     self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
                     return error("approval events are written by the daemon");
                 }
+                // So are wave 5's tap and derm records (the wave 5 base,
+                // `contracts/events.md` section 5): the tap runs in the
+                // daemon, and the join and the derived records are its own.
+                if matches!(event.source, Source::Tap | Source::Derm) {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return error("tap and derm events are written by the daemon");
+                }
                 if event.source == Source::Run && event.kind == "run.start" {
                     self.set_chat_from_run(&event);
                     if let (Some(pid), Ok(mut runs)) = (event.pid, self.runs.lock()) {

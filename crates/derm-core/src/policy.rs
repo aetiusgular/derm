@@ -1065,6 +1065,11 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
                 ),
             );
         }
+        // Package installs (contract section 6; wave 5 lane X's seam, cut by
+        // the wave 5 base). The base's stub reads no call as an install.
+        if let Some(install) = crate::installs::check(&normalized, &folded) {
+            return decide(install.action, install.reason);
+        }
     }
     decide(Action::Allow, rule_reason(winner))
 }

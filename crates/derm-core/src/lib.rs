@@ -10,8 +10,12 @@
 
 pub mod event;
 pub mod harness;
+// Wave 5 lane X's seam (the wave 5 base): `policy::evaluate` calls it.
+pub mod installs;
 #[cfg(unix)]
 pub mod peer;
+// Wave 5 lane Z's seam (the wave 5 base): `platform/windows/` is cfg(windows).
+pub mod platform;
 #[rustfmt::skip]
 mod fold_tables;
 pub mod policy;
