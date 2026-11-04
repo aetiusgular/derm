@@ -36,6 +36,15 @@ derm-core = { path = "../derm-core" }
 # [lane-D]
 `;
 
+const coreCargo = `[package]
+name = "derm-core"
+
+[dependencies]
+serde = "1"
+# [lane-X]
+# [lane-Z]
+`;
+
 git("init", "-q", "-b", "main");
 git("config", "user.name", "scope test");
 git("config", "user.email", "scope@test.invalid");
@@ -53,6 +62,15 @@ for (const [p, t] of Object.entries({
   "crates/derm-cli/src/connect/presets/continue.json": "{}\n",
   "packages/derm-hooks-claude-compat/src/core/policy.ts": "// core\n",
   "contracts/policy.md": "# p\n",
+  // Wave 5 (the wave 5 base): its seams and its fixture folders.
+  "contracts/events.md": "# e\n",
+  "contracts/fixtures/tap/records.json": "[]\n",
+  "contracts/fixtures/installs/cases.json": "{}\n",
+  "crates/derm-cli/src/run/boundary/mod.rs": "// t\n",
+  "crates/derm-daemon/src/approver/mod.rs": "// v\n",
+  "packages/derm-claude-plugin/src/core/policy.ts": "// core\n",
+  "packages/derm-claude-plugin/src/core/installs/index.ts": "// x\n",
+  "crates/derm-core/Cargo.toml": coreCargo,
   "package.json": "{}\n",
   "README.md": "# r\n",
 })) write(p, t);
@@ -68,7 +86,8 @@ const cases = [
   ["new .test.mjs refused (F)", "F", () => write("packages/derm-claude-plugin/x.test.mjs", "//\n"), 1, "vitest collects only"],
   ["another lane's file (C edits run/)", "C", () => write("crates/derm-cli/src/run/mod.rs", "// x\n"), 1, "owned by lane D"],
   ["excepted file (A edits memory.ts)", "A", () => write("packages/derm-pi/extensions/memory.ts", "// x\n"), 1, "owned by lane K"],
-  ["excepted folder (B edits computer_use)", "B", () => write("crates/derm-daemon/src/computer_use/mod.rs", "// x\n"), 1, "owned by lane K"],
+  // Lane U's since the wave 5 base (it was lane K's in wave 2).
+  ["excepted folder (B edits computer_use)", "B", () => write("crates/derm-daemon/src/computer_use/mod.rs", "// x\n"), 1, "owned by lane U"],
   ["new file outside every lane", "D", () => write("docs/x.md", "x\n"), 1, "owned by no lane"],
   ["no-lane file: contracts", "B", () => write("contracts/policy.md", "# changed\n"), 1, "no lane edits this"],
   ["no-lane file: root package.json", "E", () => write("package.json", "{\"x\":1}\n"), 1, "no lane edits this"],
@@ -89,6 +108,21 @@ const cases = [
   ["shared Cargo.toml, marker removed", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-D]\n\n[dev")), 1, "changed outside"],
   ["shared Cargo.toml, lane without a section (A)", "A", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\nx = \"1\"\n# [lane-D]\n\n[dev")), 1, "has no section"],
   ["shared Cargo.toml, new section marker", "C", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-C]\n# [lane-D]\n\n[dev", "# [lane-C]\n# [lane-E]\n# [lane-D]\n\n[dev")), 1, "changed outside"],
+  // Wave 5 (the wave 5 base): the seams are whole folders, and a lane owns a
+  // noLane path only by name.
+  ["wave 5: lane T's run/boundary/", "T", () => write("crates/derm-cli/src/run/boundary/mod.rs", "// t2\n"), 0, "clean"],
+  ["wave 5: run/ outside the seams is not T's", "T", () => write("crates/derm-cli/src/run/mod.rs", "// x\n"), 1, "owned by lane D, R"],
+  ["wave 5: lane R no longer owns run/boundary/", "R", () => write("crates/derm-cli/src/run/boundary/mod.rs", "// x\n"), 1, "owned by lane T"],
+  ["wave 5: lane V's approver/", "V", () => write("crates/derm-daemon/src/approver/mod.rs", "// v2\n"), 0, "clean"],
+  ["wave 5: lane B no longer owns approver/", "B", () => write("crates/derm-daemon/src/approver/mod.rs", "// x\n"), 1, "owned by lane V"],
+  ["wave 5: lane S's fixture folder in contracts/", "S", () => write("contracts/fixtures/tap/stream.json", "[]\n"), 0, "clean"],
+  ["wave 5: the rest of contracts/ is still no lane's", "S", () => write("contracts/events.md", "# changed\n"), 1, "no lane edits this"],
+  ["wave 5: lane X cannot edit lane S's fixtures", "X", () => write("contracts/fixtures/tap/records.json", "[1]\n"), 1, "no lane edits this"],
+  ["wave 5: lane X's installs/ in the canonical core", "X", () => write("packages/derm-claude-plugin/src/core/installs/index.ts", "// x2\n"), 0, "clean"],
+  ["wave 5: the core outside installs/ is not X's", "X", () => write("packages/derm-claude-plugin/src/core/policy.ts", "// x\n"), 1, "owned by lane F"],
+  ["wave 5: lane F no longer owns core/installs/", "F", () => write("packages/derm-claude-plugin/src/core/installs/index.ts", "// f\n"), 1, "owned by lane X"],
+  ["wave 5: derm-core's manifest, own section (X)", "X", () => write("crates/derm-core/Cargo.toml", coreCargo.replace("# [lane-X]\n", "# [lane-X]\nureq = \"=3.0.0\"\n")), 0, "clean"],
+  ["wave 5: derm-core's manifest, another lane's section (Z writes under X)", "Z", () => write("crates/derm-core/Cargo.toml", coreCargo.replace("# [lane-X]\n", "# [lane-X]\nwindows = \"=0.61.0\"\n")), 1, "lane X's section changed"],
 ];
 
 let failed = 0;
@@ -105,7 +139,9 @@ for (const [name, lane, change, code, text] of cases) {
 }
 
 for (const [name, argv, code] of [
-  ["bad lane letter", ["Z", "--base", base], 2],
+  // "O" is never a lane (section 7a skips it). "Z" was the bad letter until
+  // the wave 5 base made lane Z.
+  ["bad lane letter", ["O", "--base", base], 2],
   ["bad base", ["A", "--base", "no-such-commit"], 2],
   ["stray argument", ["A", "--frob"], 2],
 ]) {

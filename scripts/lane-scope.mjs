@@ -9,7 +9,9 @@
 //   - a shared file (crates/derm-cli/Cargo.toml) changes only inside the
 //     lane's own `# [lane-X]` section, and no marker moves or disappears;
 //   - no new test file under packages/ or library/ that vitest would not
-//     collect (*.test.tsx, *.test.js, *.test.mjs, *.spec.*).
+//     collect (*.test.tsx, *.test.js, *.test.mjs, *.spec.*);
+//   - a `noLane` path is refused unless the lane owns it by name (the wave 5
+//     base: lanes S and X own contracts/fixtures/tap/ and installs/).
 // Exit 0 clean, 1 violations, 2 usage error. Reads git only; writes nothing.
 // Without --base it uses origin/main.
 
@@ -20,7 +22,7 @@ const ownership = JSON.parse(readFileSync(new URL("./lane-ownership.json", impor
 
 function usage(message) {
   console.error(`lane-scope: ${message}`);
-  console.error("usage: node scripts/lane-scope.mjs <A-R> [--base <commit>]");
+  console.error("usage: node scripts/lane-scope.mjs <lane letter> [--base <commit>]");
   process.exit(2);
 }
 
@@ -69,7 +71,7 @@ for (let i = 0; i + 1 < changes.length; i += 2) {
     else checkSections(path);
     continue;
   }
-  if (noLane(path)) {
+  if (noLane(path) && !owned(path)) {
     errors.push(`${path}: no lane edits this during a wave (write it under "Requests for integration")`);
     continue;
   }

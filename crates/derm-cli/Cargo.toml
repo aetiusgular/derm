@@ -1,5 +1,7 @@
-# This manifest is shared by lanes C and D in wave 1, lane J in wave 2, and
-# lanes Q and R in wave 4 (sections added by integration w2).
+# This manifest is shared by lanes C and D in wave 1, lane J in wave 2,
+# lanes Q and R in wave 4 (sections added by integration w2), and lanes S, T,
+# U, V, W and Z in wave 5 (sections and the Windows table added by the wave 5
+# base).
 # Each lane edits only the lines under its own `# [lane-X]` comment, in any
 # table, and pins every dependency to an exact version
 # (plans/parallel_build_tk.md, section 2, point 5). A section ends at the
@@ -26,6 +28,12 @@ default = []
 # [lane-J]
 # [lane-Q]
 # [lane-R]
+# [lane-S]
+# [lane-T]
+# [lane-U]
+# [lane-V]
+# [lane-W]
+# [lane-Z]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -51,6 +59,12 @@ uuid.workspace = true
 # crate of this workspace, already a dev-dependency below: no new
 # third-party code.
 derm-daemon = { path = "../derm-daemon" }
+# [lane-S]
+# [lane-T]
+# [lane-U]
+# [lane-V]
+# [lane-W]
+# [lane-Z]
 
 [dev-dependencies]
 # [lane-C]
@@ -63,3 +77,13 @@ derm-daemon = { path = "../derm-daemon" }
 # so the client is held to lane B's server, not to a fake. A path crate of
 # this workspace: no new third-party code.
 derm-daemon = { path = "../derm-daemon" }
+# [lane-S]
+# [lane-T]
+# [lane-U]
+# [lane-V]
+# [lane-W]
+# [lane-Z]
+
+# Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
+[target.'cfg(windows)'.dependencies]
+# [lane-Z]

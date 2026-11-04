@@ -2,7 +2,8 @@ name: ci
 
 on:
   push:
-    branches: [main, "lane/**", "integration/**"]
+    # base/** since the wave 5 base (plans/parallel_build_tk.md section 7c).
+    branches: [main, "base/**", "lane/**", "integration/**"]
   pull_request:
 
 permissions:
@@ -80,3 +81,34 @@ jobs:
           else
             echo "claude or codex not installed: cli contract not run"
           fi
+  # Windows (wave 5, lane Z; added by the wave 5 base). derm is Unix today (a
+  # Unix socket, Unix peer checks), so this job is EXPECTED RED until lane Z
+  # builds the Windows side; `continue-on-error` keeps a red run of it from
+  # failing the workflow, and its own result stays visible. No test is
+  # deleted, skipped or weakened to make it pass. Each step runs even when an
+  # earlier one failed, so the record shows how far Windows gets. windows-2025
+  # is GitHub's Windows Server 2025 image (actions/runner-images,
+  # win25/20260628.181; it also answers to windows-latest).
+  windows:
+    name: windows (expected red until lane Z)
+    runs-on: windows-2025
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: cargo build
+        run: cargo build --workspace
+      - name: cargo test
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace
+      - name: npm ci
+        if: ${{ !cancelled() }}
+        run: npm ci --ignore-scripts
+      - name: tsc
+        if: ${{ !cancelled() }}
+        run: npx tsc --noEmit
+      - name: vitest
+        if: ${{ !cancelled() }}
+        run: npx vitest run
