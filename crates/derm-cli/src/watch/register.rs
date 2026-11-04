@@ -263,10 +263,23 @@ fn codex(env: &Env, home: &Path) -> Registered {
     let on = match entry {
         Some(e) => enabled_of(Some(e)).unwrap_or(true),
         None => {
+            // `codex plugin add derm@derm` fails until the marketplace is
+            // configured (release recheck RC7, Codex 0.166.0), so name it first.
+            let has_marketplace = doc
+                .get("marketplaces")
+                .and_then(|m| m.as_table_like())
+                .is_some_and(|m| m.get("derm").is_some());
+            if has_marketplace {
+                return Registered::No(format!(
+                    "{} has no [plugins.\"derm@derm\"]: codex plugin add derm@derm",
+                    config.display()
+                ));
+            }
             return Registered::No(format!(
-                "{} has no [plugins.\"derm@derm\"]: codex plugin add derm@derm",
-                config.display()
-            ))
+                "{} has no [marketplaces.derm]: codex plugin marketplace add aetiusgular/derm --ref v{}, then codex plugin add derm@derm",
+                config.display(),
+                env!("CARGO_PKG_VERSION")
+            ));
         }
     };
     if !on {
@@ -563,6 +576,37 @@ mod tests {
         for hint in [&pi, &pi_listed] {
             assert!(hint.contains("docs/install/agents.md"), "{hint}");
         }
+    }
+
+    /// Release recheck RC7: every Codex user has a config.toml. Without derm's
+    /// marketplace in it, `codex plugin add derm@derm` fails ("plugin `derm`
+    /// was not found in marketplace `derm`", Codex 0.166.0 on the box), so the
+    /// hint names the marketplace first; once the marketplace is there, only
+    /// the plugin line.
+    #[test]
+    fn the_codex_hint_names_the_marketplace_until_codex_has_it() {
+        let (h, env) = home("rc7");
+        let cfg = h.0.join(".codex/config.toml");
+        let pinned = format!(
+            "codex plugin marketplace add aetiusgular/derm --ref v{}",
+            env!("CARGO_PKG_VERSION")
+        );
+        put(
+            &cfg,
+            "[marketplaces.openai-bundled]\nsource = \"x\"\n\n[plugins.\"pdf@openai-bundled\"]\nenabled = true\n",
+        );
+        let codex = check("codex", &env).detail().unwrap();
+        assert!(codex.contains(&pinned), "{codex}");
+        assert!(codex.contains("then codex plugin add derm@derm"), "{codex}");
+        // What `codex plugin marketplace add aetiusgular/derm --ref v0.1.1`
+        // wrote on the box (Codex 0.166.0).
+        put(
+            &cfg,
+            "[marketplaces.derm]\nsource_type = \"git\"\nsource = \"https://github.com/aetiusgular/derm.git\"\nref = \"v0.1.1\"\n",
+        );
+        let codex = check("codex", &env).detail().unwrap();
+        assert!(!codex.contains("marketplace add"), "{codex}");
+        assert!(codex.contains("codex plugin add derm@derm"), "{codex}");
     }
 
     #[test]
