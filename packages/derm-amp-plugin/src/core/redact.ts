@@ -22,29 +22,116 @@ export const TOKEN_SHAPES: readonly RegExp[] = [
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, // PEM private keys (RFC 7468)
 ];
 
-const KEY = String.raw`[A-Za-z0-9_.-]*(?:token|secret|password|passwd|apikey|api_key|private_key)[A-Za-z0-9_.-]*`;
+// Two pair forms are redacted, in this order:
+//   "key": "value"   (JSON, also with single quotes; the value's quote closes it, `\` escapes)
+//   key=value, key: value   (the value runs to whitespace, &, ;, a quote, `,` or `}`)
+// where the key is a run of [A-Za-z0-9_.-] holding a secret-like word. Until
+// integration w4 both were one regular expression each, with the key written
+// `[A-Za-z0-9_.-]*(?:token|...)[A-Za-z0-9_.-]*`; on a long run holding many
+// such words every word start retried the whole run, so the cost grew as
+// len² × words ("token." × 700, 4,200 characters, took 3.1 s; lane P, P-S2).
+// The key can only end where the run ends (the next character, a quote, `=`,
+// `:` or a space, is outside the class), so the scan below takes each maximal
+// run once, tests it for a secret-like word, and looks at what follows it:
+// linear in the text. It gives the same output as the two expressions did
+// (`redact.test.ts` holds it against them on random input).
+const KEY_WORD = /token|secret|password|passwd|apikey|api_key|private_key/i;
+const RUN = /[A-Za-z0-9_.-]+/g;
+const QUOTED_SEP = /\s*:\s*/y;
+const BARE_SEP = /\s*[=:]\s*/y;
+const BARE_VALUE = /[^\s&;"',}]+/y;
+const WORD_CHAR = /[A-Za-z0-9_]/;
 
-// "key": "value"  (JSON, also with single quotes)
-const QUOTED_PAIR = new RegExp(String.raw`(["']${KEY}["']\s*:\s*)(["'])((?:\\.|(?!\2)[^\\])*)\2`, "gi");
-// key=value, key: value, --key value-free forms; the value runs to whitespace, &, ;, quote or end.
-const BARE_PAIR = new RegExp(String.raw`(\b${KEY}\s*[=:]\s*)(?!\[redacted)([^\s&;"',}]+)`, "gi");
+function isQuote(c: string | undefined): c is '"' | "'" {
+  return c === '"' || c === "'";
+}
+
+function stickyEnd(re: RegExp, text: string, at: number): number {
+  re.lastIndex = at;
+  return re.test(text) ? re.lastIndex : -1;
+}
+
+/** "key": "value" pairs: the value replaced, the rest kept. */
+function redactQuoted(text: string): { text: string; count: number } {
+  let count = 0;
+  let out = "";
+  let copied = 0;
+  let pos = 0;
+  RUN.lastIndex = 0;
+  for (let m = RUN.exec(text); m !== null; m = RUN.exec(text)) {
+    const s = m.index;
+    const e = s + m[0].length;
+    // The key's opening quote, not taken by an earlier pair.
+    if (s - 1 < pos || !isQuote(text[s - 1]) || !isQuote(text[e]) || !KEY_WORD.test(m[0])) continue;
+    const sepEnd = stickyEnd(QUOTED_SEP, text, e + 1);
+    if (sepEnd < 0) continue;
+    const q = text[sepEnd];
+    if (!isQuote(q)) continue;
+    // The value: escaped pairs and any character but the quote; `\` before a
+    // line end ends it unclosed, as `\\.` without the s flag did.
+    let i = sepEnd + 1;
+    let closed = -1;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === "\\") {
+        const n = text[i + 1];
+        if (n === undefined || n === "\n" || n === "\r" || n === " " || n === " ") break;
+        i += 2;
+        continue;
+      }
+      if (c === q) {
+        closed = i;
+        break;
+      }
+      i++;
+    }
+    if (closed < 0) continue;
+    const value = text.slice(sepEnd + 1, closed);
+    if (value !== "" && value !== REDACTED) {
+      out += text.slice(copied, sepEnd + 1) + REDACTED;
+      copied = closed;
+      count++;
+    }
+    pos = closed + 1;
+    RUN.lastIndex = pos;
+  }
+  return { text: out + text.slice(copied), count };
+}
+
+/** key=value and key: value pairs: the value replaced, the rest kept. */
+function redactBare(text: string): { text: string; count: number } {
+  let count = 0;
+  let out = "";
+  let copied = 0;
+  RUN.lastIndex = 0;
+  for (let m = RUN.exec(text); m !== null; m = RUN.exec(text)) {
+    const e = m.index + m[0].length;
+    // `\b` before the key: the run needs a word character.
+    if (!WORD_CHAR.test(m[0]) || !KEY_WORD.test(m[0])) continue;
+    const sepEnd = stickyEnd(BARE_SEP, text, e);
+    if (sepEnd < 0) continue;
+    if (text.slice(sepEnd, sepEnd + 9).toLowerCase() === "[redacted") continue;
+    const valueEnd = stickyEnd(BARE_VALUE, text, sepEnd);
+    if (valueEnd < 0) continue;
+    // `max_tokens=1000` is a count, not a secret.
+    if (!/^[0-9]+$/.test(text.slice(sepEnd, valueEnd))) {
+      out += text.slice(copied, sepEnd) + REDACTED;
+      copied = valueEnd;
+      count++;
+    }
+    RUN.lastIndex = valueEnd;
+  }
+  return { text: out + text.slice(copied), count };
+}
 
 export type Redaction = { text: string; count: number };
 
-/** Redacts secret-like values in one string. */
+/** Redacts secret-like values in one string, in time linear in its length. */
 export function redactText(text: string): Redaction {
-  let count = 0;
-  let out = text.replace(QUOTED_PAIR, (_m, head: string, q: string, value: string) => {
-    if (value === "" || value === REDACTED) return `${head}${q}${value}${q}`;
-    count++;
-    return `${head}${q}${REDACTED}${q}`;
-  });
-  out = out.replace(BARE_PAIR, (m, head: string, value: string) => {
-    // `max_tokens=1000` is a count, not a secret.
-    if (/^[0-9]+$/.test(value)) return m;
-    count++;
-    return `${head}${REDACTED}`;
-  });
+  const quoted = redactQuoted(text);
+  const bare = redactBare(quoted.text);
+  let count = quoted.count + bare.count;
+  let out = bare.text;
   for (const shape of TOKEN_SHAPES) {
     out = out.replace(shape, () => {
       count++;
