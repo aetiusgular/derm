@@ -584,7 +584,94 @@ pub const CONTROL_PATHS: &[&str] = &[
     "pi_coding_agent_dir",
     "pi_config_dir",
     "derm_pi_freeze_input",
+    // Wave 4's agents (lanes L, N and P, folded in by integration w4): config,
+    // hook and plugin folders and the variables that move them or switch the
+    // gate off; sources in each package's src/control.ts. Kimi Code's folder
+    // is `.kimi-code/` (lane L, 2.4.1, run) and `.kimi/` (lane Q, 1.52.0).
+    ".openclaude/",
+    ".openclaude.json",
+    "openclaude_config_dir",
+    ".qwen/",
+    "qwen_home",
+    "qwen_code_system_settings",
+    ".factory/",
+    "factory_home_override",
+    ".commandcode/",
+    ".kimi-code/",
+    "kimi_code_home",
+    ".kimi/",
+    "kimi_share_dir",
+    ".augment/",
+    ".copilot/",
+    "copilot_home",
+    ".grok/",
+    "grok_claude_hooks_enabled",
+    "grok_cursor_hooks_enabled",
+    "grok_home",
+    ".cursor/",
+    "cursor/hooks.json",
+    ".agents/hooks.json",
+    ".agents/plugins",
+    ".config/goose/",
+    "goose_path_root",
+    "goose_mode",
+    "goose_disable_keyring",
+    ".vibe/",
+    "vibe_home",
+    ".config/crush/",
+    ".local/share/crush/",
+    "crushrc",
+    "crush.json",
+    "crush_global_config",
+    "crush_global_data",
+    ".kiro/",
+    "kiro_home",
+    ".config/amp/",
+    ".amp/",
+    "amp/plugins",
+    "xdg_config_home",
+    "ampcode/",
+    "dangerouslyallowall",
+    ".cline/",
+    "documents/cline/",
+    ".clinerules",
+    "cline_dir",
+    "cline_data_dir",
+    "cline_tool_approval",
+    "cline_plugin_",
+    "cline-approvals/",
 ];
+
+/// Whether folded `text` names the control path `entry` (contract, section 4,
+/// step 7a). A folder entry also matches its bare name where the name stands
+/// alone, for `mv ~/.derm old` and `cd ~/.derm && cp x policy.json` (rename
+/// review F1; lane L's C-1, lane P's P-S4): only a folder that starts with
+/// `.` or holds a `/`, with no name character running into it on the left
+/// (`math.pi`) or the right (`.qwenrc`). The hook core's and derm-pi's
+/// `namesControlPath`; the policy fixtures hold the three equal.
+pub fn names_control_path(text: &str, entry: &str) -> bool {
+    if text.contains(entry) {
+        return true;
+    }
+    let Some(base) = entry.strip_suffix('/') else {
+        return false;
+    };
+    if !(base.starts_with('.') || base.contains('/')) {
+        return false;
+    }
+    let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
+    let mut from = 0;
+    while let Some(off) = text[from..].find(base) {
+        let i = from + off;
+        let prev = text[..i].chars().next_back();
+        let next = text[i + base.len()..].chars().next();
+        if prev.is_none_or(|c| !(name(c) || c == '.')) && next.is_none_or(|c| !name(c)) {
+            return true;
+        }
+        from = i + text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
 
 /// The text with every quote removed. The shell joins `ANTHROPIC_"BASE_URL"`
 /// and `g''it` into one word, so the reject list and the control files are
@@ -876,7 +963,7 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     let unquoted = unquote(&folded);
     if let Some(control) = CONTROL_PATHS
         .iter()
-        .find(|p| folded.contains(*p) || unquoted.contains(*p))
+        .find(|p| names_control_path(&folded, p) || names_control_path(&unquoted, p))
     {
         return decide(
             Action::Ask,

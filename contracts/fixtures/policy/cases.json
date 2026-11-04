@@ -168,6 +168,27 @@
       "note": "the old name's policy stays a control file after the rename: derm never reads it, an agent must not use or change it unasked (rename review R1)" },
     { "id": 62, "call": { "tool": "bash", "harness": "pi", "inputText": "cat /run/user/1000/tk/daemon.token" },
       "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
-      "note": "a tk-daemon left running holds a daemon token with mint and approve scope (rename review R1)" }
+      "note": "a tk-daemon left running holds a daemon token with mint and approve scope (rename review R1)" },
+    { "id": 63, "call": { "tool": "bash", "harness": "pi", "inputText": "mv ~/.derm ~/derm-old" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
+      "note": "a folder named bare, the whole derm folder moved: asks (rename review F1)" },
+    { "id": 64, "call": { "tool": "bash", "harness": "pi", "inputText": "cd ~/.derm && cp /tmp/p.json policy.json" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
+      "note": "cd into derm's folder, then a relative name: asks (rename review F1, lane P's P-S4)" },
+    { "id": 65, "call": { "tool": "bash", "harness": "pi", "inputText": "rm -rf ~/.factory" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
+      "note": "Droid's folder named bare (lane L's L-S4; folded into the core by integration w4)" },
+    { "id": 66, "call": { "tool": "bash", "harness": "pi", "inputText": "cat ~/.cursor/hooks.json" },
+      "expect": { "action": "ask", "normalizedTool": "bash", "reasonPrefix": "input names a control file" },
+      "note": "Cursor's gate registration (lane N; folded in by integration w4)" },
+    { "id": 67, "call": { "tool": "bash", "harness": "pi", "inputText": "python3 -c 'print(math.pi)'" },
+      "expect": { "action": "allow", "normalizedTool": "bash", "reasonPrefix": "rule bash" },
+      "note": "`.pi` runs on from `math` on its left: not Pi's folder" },
+    { "id": 68, "call": { "tool": "bash", "harness": "pi", "inputText": "npm install -g @google/gemini-cli" },
+      "expect": { "action": "allow", "normalizedTool": "bash", "reasonPrefix": "rule bash" },
+      "note": "`gemini-cli/` is matched with its slash only: a bare name is taken only for a folder that starts with `.` or holds a `/`" },
+    { "id": 69, "call": { "tool": "bash", "harness": "pi", "inputText": "cat .qwenrc" },
+      "expect": { "action": "allow", "normalizedTool": "bash", "reasonPrefix": "rule bash" },
+      "note": "`.qwen` runs on into a longer name on its right: not Qwen's folder" }
   ]
 }
