@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "derm-audit-linux"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "derm-core",
  "derm-daemon",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "derm-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "derm-audit-linux",
  "derm-core",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "derm-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "libc",
  "serde",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "derm-daemon"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64",
  "derm-core",
