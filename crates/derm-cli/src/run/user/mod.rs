@@ -29,16 +29,9 @@
 //! person's. The agent gets nothing back: no `sudo` rule names it, and the
 //! person's runtime folder is 0700.
 //!
-//! The seam passes only the launch plan, which no longer says the boundary
-//! (`Plan::clone_for_start`). So the work needs [`Context`], which `run_io`
-//! passes once integration applies lane V's request V-1 (`wrap_with`). Until
-//! then [`wrap`] starts the harness as before when no agents' user is set
-//! up, and refuses when one is: it cannot tell a chat with no boundary from
-//! one under srt, and guessing could start an unbounded chat as the person.
-
-// `wrap_with`, `Context` and `finish` are called from `run_io` once request
-// V-1 lands; its patch (tests/integration/w5/V/requests/) removes this line.
-#![cfg_attr(not(test), allow(dead_code))]
+//! The launch plan no longer says the boundary (`Plan::clone_for_start`), so
+//! `run_io` passes the chat's details in [`Context`] (lane V's request V-1,
+//! applied by integration).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -78,28 +71,7 @@ const RUN_AS_VAR: &str = "DERM_RUN_AS";
 /// The open bridge, kept until `finish` (or the process's exit).
 static BRIDGE: Mutex<Option<bridge::Bridge>> = Mutex::new(None);
 
-/// The seam as the wave 5 base cut it: the launch plan only. With no agents'
-/// user set up, nothing changes. With one, it refuses: see the module text.
-pub(crate) fn wrap(launch: &mut Plan) -> Result<Option<Value>, (u8, String)> {
-    let _ = launch;
-    if !cfg!(target_os = "linux") || run_as_you() {
-        return Ok(None);
-    }
-    match anchor::for_owner(euid()) {
-        Ok(None) => Ok(None),
-        Ok(Some(e)) => Err((
-            1,
-            format!(
-                "root set up {} to run your agents ({}), but this build of derm run does not pass the chat's boundary to it (lane V, request V-1). Not starting the harness as you. To run as you anyway: {RUN_AS_VAR}=you",
-                e.user,
-                anchor::ANCHOR
-            ),
-        )),
-        Err(why) => Err((1, why.to_string())),
-    }
-}
-
-/// The work, with the chat's details (request V-1).
+/// Starts the harness as the agents' user when one is set up (module text).
 pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value>, (u8, String)> {
     if !cfg!(target_os = "linux") || ctx.boundary != "none" {
         // A boundary keeps the agent from the daemon's token already (srt
@@ -244,7 +216,7 @@ fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, Stri
 }
 
 /// Stops the chat's bridge and removes its folder. `run_io` calls it after
-/// the harness exits (request V-1); `atexit` covers a normal exit until then.
+/// the harness exits; `atexit` covers an exit that skips that.
 pub(crate) fn finish() {
     if let Ok(mut slot) = BRIDGE.lock() {
         slot.take();

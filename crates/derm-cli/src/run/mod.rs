@@ -795,7 +795,24 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     }
     // The agents' user (lane V's seam), after the companion, which runs as
     // you whatever the harness runs as.
-    let agent_user = user::wrap(&mut launch)?;
+    let daemon_dir_text = dir.as_ref().map(|d| d.to_string_lossy().into_owned());
+    let daemon_socket_text = daemon
+        .as_ref()
+        .map(|d| d.socket.to_string_lossy().into_owned());
+    let agent_user = user::wrap_with(
+        &mut launch,
+        &user::Context {
+            boundary: a.boundary.name(),
+            chat: &chat,
+            cwd: &cwd,
+            folders: &p.folders,
+            home: &home,
+            daemon_dir: daemon_dir_text.as_deref(),
+            daemon_socket: daemon_socket_text.as_deref(),
+            token: token.as_deref(),
+            policy: &policy_path,
+        },
+    )?;
     let mut child = exec::spawn(&launch, &cwd, filter.is_some())
         .map_err(|e| (127, format!("{}: {e}", p.program)))?;
     let pid = child.id();
@@ -819,7 +836,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "folders": p.folders,
         "stateDirs": p.state_dirs,
         "sandboxName": p.sandbox_name,
-        "runsAs": if a.boundary == Boundary::None { Some("you") } else { None },
+        // The agents' user when lane V's seam started the harness as one.
+        "runsAs": match (&agent_user, a.boundary == Boundary::None) {
+            (Some(u), _) => u.get("user").and_then(|v| v.as_str()).map(str::to_string),
+            (None, true) => Some("you".to_string()),
+            (None, false) => None,
+        },
         "dangerousFlags": dangerous,
         "fullAccess": !dangerous.is_empty(),
         "outsideShapeOnly": a.harness.id == "other",
@@ -912,6 +934,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let status =
         exec::wait(&mut child).map_err(|e| (1, format!("waiting for {}: {e}", p.program)))?;
     let (code, signal) = exec::code(&status);
+    // The agents' user's bridge (lane V) ends with the harness.
+    user::finish();
     if let Some(c) = cleanup.companion.as_mut() {
         exec::stop_companion(c, Duration::from_secs(2));
     }
