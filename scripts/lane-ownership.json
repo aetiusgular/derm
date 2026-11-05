@@ -21,7 +21,7 @@
     "Y": { "wave": 5, "owns": ["macos/activity-collector/", "crates/derm-daemon/src/collector/", "packaging/macos/collector/"], "except": [] },
     "V": { "wave": 5, "owns": ["crates/derm-daemon/src/approver/", "crates/derm-cli/src/run/user/", "packaging/linux/agent-user/", "tests/integration/w5/V/"], "except": [] },
     "S": { "wave": 5, "owns": ["crates/derm-tap/", "crates/derm-daemon/src/join/", "crates/derm-daemon/src/content/", "crates/derm-cli/src/run/tap/", "crates/derm-cli/src/connect/presets/wave5/tap.json", "contracts/fixtures/tap/", "tests/cli-contract/checks/S/"], "except": [] },
-    "T": { "wave": 5, "owns": ["crates/derm-cli/src/run/boundary/", "crates/derm-cli/src/connect/presets/wave5/kit.json", "tests/cli-contract/checks/T/"], "except": [] },
+    "T": { "wave": 5, "owns": ["crates/derm-cli/src/run/boundary/", "crates/derm-cli/src/connect/presets/wave5/kit.json", "packaging/sbx-kit/", "tests/cli-contract/checks/T/"], "except": [] },
     "U": { "wave": 5, "owns": ["crates/derm-daemon/src/computer_use/", "crates/derm-cli/src/cu/", "macos/computer-use-helper/", "tests/cli-contract/checks/U/"], "except": [] },
     "X": { "wave": 5, "owns": ["packages/derm-claude-plugin/src/core/installs/", "crates/derm-core/src/installs/", "crates/derm-core/tests/installs_fixture.rs", "packages/derm-pi/src/installs/", "crates/derm-daemon/src/installs/", "contracts/fixtures/installs/", "tests/cli-contract/checks/X/"], "except": [] },
     "W": { "wave": 5, "owns": ["crates/derm-cli/src/setup/", "crates/derm-cli/src/connect/presets/wave5/executables.json", "docs/install/", "tests/cli-contract/checks/W/"], "except": [] },
