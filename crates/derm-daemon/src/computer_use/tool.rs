@@ -46,7 +46,7 @@
 //!   text or the keys.
 
 use std::collections::HashMap;
-use std::sync::{Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -133,6 +133,8 @@ pub struct Target {
 pub struct State {
     target: Option<Target>,
     tokens: HashMap<i64, String>,
+    /// The screen's input lock (`Screen::global` outside tests).
+    screen: Arc<Screen>,
     /// How long input waits for another chat's input (`SCREEN_WAIT`).
     screen_wait: Duration,
 }
@@ -142,6 +144,7 @@ impl Default for State {
         State {
             target: None,
             tokens: HashMap::new(),
+            screen: Screen::global(),
             screen_wait: SCREEN_WAIT,
         }
     }
@@ -152,11 +155,14 @@ impl State {
         self.target.as_ref()
     }
 
+    /// A state with its own screen lock and wait, for tests.
     #[cfg(test)]
-    pub fn with_screen_wait(wait: Duration) -> Self {
+    pub fn with_screen(screen: Arc<Screen>, wait: Duration) -> Self {
         State {
+            target: None,
+            tokens: HashMap::new(),
+            screen,
             screen_wait: wait,
-            ..State::default()
         }
     }
 }
@@ -797,40 +803,55 @@ fn call(backend: &dyn Backend, chat: &str, name: &str, args: Value) -> Result<Fl
 
 // --- The screen lock (case 121) -----------------------------------------
 
-struct Screen {
+/// The screen's input lock. One per daemon (`Screen::global`); a test makes
+/// its own so parallel tests never share it.
+pub struct Screen {
     busy: Mutex<Option<String>>,
     freed: Condvar,
 }
 
-fn screen() -> &'static Screen {
-    static SCREEN: OnceLock<Screen> = OnceLock::new();
-    SCREEN.get_or_init(|| Screen {
-        busy: Mutex::new(None),
-        freed: Condvar::new(),
-    })
+impl Screen {
+    pub fn new() -> Self {
+        Screen {
+            busy: Mutex::new(None),
+            freed: Condvar::new(),
+        }
+    }
+
+    /// The daemon's one screen, shared by every chat's connection.
+    pub fn global() -> Arc<Screen> {
+        static SCREEN: OnceLock<Arc<Screen>> = OnceLock::new();
+        SCREEN.get_or_init(|| Arc::new(Screen::new())).clone()
+    }
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Screen::new()
+    }
 }
 
 /// Held while one chat's input is on the screen.
-pub struct ScreenTurn;
+pub struct ScreenTurn {
+    screen: Arc<Screen>,
+}
 
 impl Drop for ScreenTurn {
     fn drop(&mut self) {
-        let s = screen();
-        let mut busy = match s.busy.lock() {
+        let mut busy = match self.screen.busy.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
         *busy = None;
-        s.freed.notify_all();
+        self.screen.freed.notify_all();
     }
 }
 
-/// Takes the screen for `chat`, waiting up to `wait` for another chat's
-/// input to end. None: the screen stayed busy.
-pub fn take_screen(chat: &str, wait: Duration) -> Option<ScreenTurn> {
-    let s = screen();
+/// Takes `screen` for `chat`, waiting up to `wait` for another chat's input
+/// to end. None: the screen stayed busy.
+pub fn take_screen(screen: &Arc<Screen>, chat: &str, wait: Duration) -> Option<ScreenTurn> {
     let deadline = Instant::now() + wait;
-    let mut busy = match s.busy.lock() {
+    let mut busy = match screen.busy.lock() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
@@ -839,13 +860,15 @@ pub fn take_screen(chat: &str, wait: Duration) -> Option<ScreenTurn> {
         if left.is_zero() {
             return None;
         }
-        busy = match s.freed.wait_timeout(busy, left) {
+        busy = match screen.freed.wait_timeout(busy, left) {
             Ok((g, _)) => g,
             Err(p) => p.into_inner().0,
         };
     }
     *busy = Some(chat.to_string());
-    Some(ScreenTurn)
+    Some(ScreenTurn {
+        screen: screen.clone(),
+    })
 }
 
 // --- Actions --------------------------------------------------------------
@@ -1291,7 +1314,7 @@ fn focus_app(backend: &dyn Backend, chat: &str, state: &mut State, args: &Value)
     if let Err(answer) = ensure_foreground(backend, chat, &target) {
         return answer.at(Some(&target));
     }
-    let Some(_turn) = take_screen(chat, state.screen_wait) else {
+    let Some(_turn) = take_screen(&state.screen, chat, state.screen_wait) else {
         return screen_busy().at(Some(&target));
     };
     action_answer(
@@ -1383,7 +1406,7 @@ fn input(
         }
     }
     let answer = {
-        let Some(_turn) = take_screen(chat, state.screen_wait) else {
+        let Some(_turn) = take_screen(&state.screen, chat, state.screen_wait) else {
             return screen_busy().at(Some(&target));
         };
         if fg && args.get("bring_to_front") == Some(&Value::Bool(true)) {

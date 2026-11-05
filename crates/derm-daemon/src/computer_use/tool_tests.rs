@@ -5,6 +5,7 @@
 use super::*;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::computer_use::grants::Grant;
 
@@ -168,7 +169,8 @@ fn run(backend: &Fake, state: &mut State, args: Value) -> Value {
 fn captured() -> (Fake, State) {
     let backend = Fake::new();
     backend.grant("com.apple.calculator", "Calculator");
-    let mut state = State::with_screen_wait(Duration::from_millis(50));
+    // Its own screen: tests run in parallel and must not share the lock.
+    let mut state = State::with_screen(Arc::new(Screen::new()), Duration::from_millis(50));
     let reply = run(
         &backend,
         &mut state,
@@ -695,8 +697,16 @@ fn a_lost_transport_replays_a_read_once_and_never_a_mutation() {
 
 #[test]
 fn a_second_chats_input_waits_for_the_screen_or_is_told_it_is_busy() {
-    let (backend, mut state) = captured();
-    let held = take_screen("other-chat", Duration::from_secs(1)).expect("free screen");
+    let (backend, _) = captured();
+    let screen = Arc::new(Screen::new());
+    let mut state = State::with_screen(screen.clone(), Duration::from_millis(50));
+    run(
+        &backend,
+        &mut state,
+        json!({"action": "capture", "app": "Calculator"}),
+    );
+    backend.calls.borrow_mut().clear();
+    let held = take_screen(&screen, "other-chat", Duration::from_secs(1)).expect("free screen");
     let reply = run(
         &backend,
         &mut state,
@@ -725,7 +735,17 @@ fn the_screen_is_free_again_after_each_input() {
         &mut state,
         json!({"action": "click", "element": 1}),
     );
-    assert!(take_screen("next", Duration::from_millis(10)).is_some());
+    assert!(take_screen(&state.screen, "next", Duration::from_millis(10)).is_some());
+}
+
+#[test]
+fn every_connection_in_the_daemon_shares_one_screen() {
+    // Two harness connections' states, as the facade makes them, hold the
+    // same lock: input from two chats is serialized (case 121). Only the
+    // pointers are compared, so no other test's lock is taken.
+    let (a, b) = (State::default(), State::default());
+    assert!(Arc::ptr_eq(&a.screen, &b.screen));
+    assert!(Arc::ptr_eq(&a.screen, &Screen::global()));
 }
 
 // --- Records ------------------------------------------------------------------
