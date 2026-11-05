@@ -1,11 +1,15 @@
-//! MonoCode activity collector: a root launchd daemon around
+//! derm's activity collector: a root launchd daemon around
 //! `/usr/bin/eslogger` (PROTOCOL.md).
 //!
 //! Detection only: nothing here blocks an action. It never installs or runs
-//! itself; the app installs it on the user's click (rules, section 5, item 2).
+//! itself on its own: you install it, by the commands `derm-daemon
+//! collector-plan` prints (rules, section 5, item 2).
 //!
 //! Modes:
 //! - `run [--dev-peer-path <abs path>] [--log-dir <dir>] [--socket-dir <dir>]`
+//! - `register`, `unregister`, `service-status`: the app bundle's launchd
+//!   job through `SMAppService` (lane Y), run as you from inside
+//!   `derm Activity.app`; macOS then asks you to allow it
 //! - `parse-fixture <file> --pid <n> --chat <id> [--grant <chat> <bundle> <app path>]...`
 //! - `verify <log file>` (plain or `.gz`)
 //! - `--version`
@@ -15,10 +19,12 @@ use std::io::{self, BufReader, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use derm_activity_collector::service::ServiceOp;
 use derm_activity_collector::{daemon, log, protocol, replay};
 
 const USAGE: &str = "usage:
   derm-activity-collector run [--dev-peer-path <abs path>] [--log-dir <dir>] [--socket-dir <dir>]
+  derm-activity-collector register | unregister | service-status   (from inside derm Activity.app)
   derm-activity-collector parse-fixture <file> --pid <n> --chat <id> [--grant <chat> <bundle id> <app path>]...
   derm-activity-collector verify <log file>
   derm-activity-collector --version";
@@ -185,6 +191,68 @@ fn cmd_run(_args: RunArgs) -> ExitCode {
     ExitCode::from(2)
 }
 
+#[cfg(target_os = "macos")]
+fn cmd_service(op: ServiceOp) -> ExitCode {
+    use derm_activity_collector::bundle;
+    use derm_activity_collector::service::{next_step, service_line};
+    use derm_activity_collector::sm_app_service::{self, ffi, Status};
+    // SAFETY: geteuid has no failure mode.
+    if unsafe { libc::geteuid() } == 0 {
+        // SMAppService registers a daemon for the app a person runs, and
+        // macOS then asks that person; a root shell is not that person.
+        eprintln!("derm-activity-collector: run this as yourself, not with sudo; macOS asks you to allow it");
+        return ExitCode::from(2);
+    }
+    let exe = match std::env::current_exe().and_then(std::fs::canonicalize) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("derm-activity-collector: cannot find this executable: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let service = match bundle::locate(&exe) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("derm-activity-collector: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let result = match op {
+        ServiceOp::Register => ffi::register(&service.plist_name),
+        ServiceOp::Unregister => ffi::unregister(&service.plist_name),
+        ServiceOp::Status => ffi::status(&service.plist_name).ok_or((
+            sm_app_service::Refusal {
+                domain: String::new(),
+                code: 0,
+                description: "SMAppService is not available (macOS 13 or later)".into(),
+            },
+            Status::NotFound,
+        )),
+    };
+    let (status, refusal) = match &result {
+        Ok(s) => (*s, None),
+        Err((r, s)) => (*s, Some(r)),
+    };
+    println!("{}", service_line(&service.label, status, refusal));
+    eprintln!("{}", next_step(op, status));
+    let done = match op {
+        ServiceOp::Register => matches!(status, Status::Enabled | Status::RequiresApproval),
+        ServiceOp::Unregister => matches!(status, Status::NotRegistered | Status::NotFound),
+        ServiceOp::Status => refusal.is_none(),
+    };
+    if done {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cmd_service(_op: ServiceOp) -> ExitCode {
+    eprintln!("derm-activity-collector: the app bundle's service commands work only on macOS");
+    ExitCode::from(2)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some((mode, rest)) = args.split_first() else {
@@ -202,6 +270,13 @@ fn main() -> ExitCode {
                 usage()
             }
         },
+        "register" | "unregister" | "service-status" if rest.is_empty() => {
+            cmd_service(match mode.as_str() {
+                "register" => ServiceOp::Register,
+                "unregister" => ServiceOp::Unregister,
+                _ => ServiceOp::Status,
+            })
+        }
         "parse-fixture" => cmd_parse_fixture(rest),
         "verify" => cmd_verify(rest),
         _ => usage(),

@@ -23,6 +23,12 @@
 
 use std::sync::Arc;
 
+// The collector app's SMAppService calls, compiled here only for tests so
+// CI's macOS job builds and runs them (the collector's own workspace is not
+// in CI). The collector includes the same file.
+#[cfg(test)]
+pub mod sm_app_service;
+
 use derm_core::event::{Event, Source};
 use serde_json::Value;
 
