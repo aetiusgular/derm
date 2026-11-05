@@ -9,13 +9,16 @@
 //! - [`scripts`]: each manager's install-script policy for `derm status`, and
 //!   the strict preset's launch variables.
 //!
-//! Lane X owns this folder; the daemon outside it is integration's in wave 5,
-//! so the wiring (a socket op for the check, the ingest calls for the diff
-//! and the flags, `derm status`'s rows) is a request for integration
-//! (`plans/parallel/tk_lane_X.md`). Each part is tested here on its own.
+//! - [`ingest`]: what `Daemon::ingest` hands every event to for the diff and
+//!   the flags (lane X's request 4, wired by integration w5's continue).
+//!
+//! Lane X built this folder; the socket op for the check and `derm status`'s
+//! rows are still requests for integration (`plans/parallel/tk_lane_X.md`).
+//! Each part is tested here on its own, and the wiring in `daemon.rs`.
 
 pub mod check;
 pub mod control;
+pub mod ingest;
 pub mod lockdiff;
 pub mod scripts;
 

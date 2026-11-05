@@ -300,6 +300,8 @@ pub struct Daemon {
     tap: Option<derm_tap::Tap>,
     /// The join (lane S): intent to effect, fed by every ingested event.
     join: Mutex<crate::join::Join>,
+    /// Install records (lane X): control-path flags and lockfile diffs.
+    installs: Mutex<crate::installs::ingest::InstallRecords>,
     /// Content capture's purge (lane S), run by the service's timer.
     purger: Mutex<crate::content::Purger>,
     pub counters: Counters,
@@ -479,6 +481,7 @@ impl Daemon {
             next_conn: AtomicU64::new(1),
             tap,
             join: Mutex::new(crate::join::Join::new()),
+            installs: Mutex::new(crate::installs::ingest::InstallRecords::new()),
             purger: Mutex::new(crate::content::Purger::new(data_dir)),
             counters: Counters::default(),
         });
@@ -721,6 +724,27 @@ impl Daemon {
             });
         }
         drop(ring);
+        // Install records (lane X's request 4, integration w5 continue): the
+        // control-path flags and the lockfile diffs read every event, the
+        // join's candidate sets included, before the join sees it, so a write
+        // is held when the join's set for it arrives. The working folder is
+        // the chat's from its daemon-scope run.start, never the record's.
+        if event.source != Source::Derm || event.kind == "join.candidates" {
+            let cwd = |chat: &str| {
+                self.chats
+                    .lock()
+                    .ok()
+                    .and_then(|c| c.get(chat).and_then(|x| x.folders.first().cloned()))
+            };
+            let made = self
+                .installs
+                .lock()
+                .map(|mut r| r.observe(&event, cwd, event.at))
+                .unwrap_or_default();
+            for e in made {
+                self.ingest(e);
+            }
+        }
         // The join (lane S) reads every event but its own; what it makes is
         // ingested after its lock is released, and `observe` ignores the
         // `derm` records it gets back, so this never loops.
@@ -1993,6 +2017,158 @@ mod tests {
         assert_eq!(joins[0].source, Source::Derm);
         assert_eq!(joins[0].detail["chosen"], "tap-chat-j-toolu_A");
         assert_eq!(ring.len(), 5, "four events and one join record");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn package_lock(dir: &std::path::Path, deps: &[(&str, &str)]) {
+        let mut packages = serde_json::Map::new();
+        packages.insert("".into(), json!({"name": "p", "version": "1.0.0"}));
+        for (n, v) in deps {
+            packages.insert(
+                format!("node_modules/{n}"),
+                json!({"version": v, "resolved": format!("https://registry.npmjs.org/{n}/-/{n}-{v}.tgz")}),
+            );
+        }
+        std::fs::write(
+            dir.join("package-lock.json"),
+            json!({"name": "p", "lockfileVersion": 3, "packages": packages}).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Lane X's request 4 (integration w5, continue): through the daemon's
+    /// own ops, an adapter's install.call and its tool.call give an
+    /// install.lockdiff for the chat's folder from its run.start, and an
+    /// install script's write to .git/hooks that the join credits to the
+    /// call gives install.control (cases 132, 133).
+    #[test]
+    fn install_records_reach_the_lockfile_diff_and_the_control_flags() {
+        let (d, root) = daemon();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        package_lock(&work, &[("left-pad", "1.3.0")]);
+        let chat = Who::Chat {
+            chat: "chat-x".into(),
+            harness: "claude-code".into(),
+        };
+        let mut start = ev_of(
+            "chat-x",
+            Source::Run,
+            "run.start",
+            Some(5151),
+            json!({"cwd": work.to_string_lossy()}),
+        );
+        start.harness = "claude-code".into();
+        assert!(d.op_event(&Who::Daemon, start).ok);
+        let install = json!({"trust": "client", "toolUseId": "toolu_I", "manager": "npm", "form": "add", "packages": [{"name": "is-number", "version": null, "ecosystem": "npm", "inLockfile": null}], "decision": "allow", "check": null});
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of("", Source::Adapter, "install.call", None, install)
+            )
+            .ok
+        );
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "approval",
+                    None,
+                    json!({"toolUseId": "toolu_I", "decision": "allow"})
+                )
+            )
+            .ok
+        );
+        // The install script writes a git hook, a child of the harness.
+        assert!(d
+            .op_event(
+                &Who::Daemon,
+                ev_of(
+                    "chat-x",
+                    Source::Auditd,
+                    "write",
+                    Some(5200),
+                    json!({"ppid": 5151, "auditAt": now_ms(), "path": format!("{}/.git/hooks/pre-commit", work.to_string_lossy()), "exe": "/usr/bin/node"}),
+                )
+            )
+            .ok);
+        package_lock(&work, &[("left-pad", "1.3.0"), ("is-number", "7.0.0")]);
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "tool.call",
+                    None,
+                    json!({"toolUseId": "toolu_I"})
+                )
+            )
+            .ok
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let of = |k: &str| ring.iter().filter(|e| e.kind == k).collect::<Vec<_>>();
+        let diffs = of("install.lockdiff");
+        assert_eq!(diffs.len(), 1, "{ring:?}");
+        assert_eq!(diffs[0].source, Source::Derm);
+        assert_eq!(diffs[0].chat_id, "chat-x");
+        assert_eq!(diffs[0].detail["added"][0]["name"], "is-number");
+        let install_id = of("install.call")[0].id.clone();
+        assert_eq!(diffs[0].detail["call"], install_id.as_str());
+        let flags = of("install.control");
+        assert_eq!(flags.len(), 1, "{ring:?}");
+        assert_eq!(flags[0].detail["call"], install_id.as_str());
+        assert!(
+            flags[0].summary.contains(".git/hooks/"),
+            "{}",
+            flags[0].summary
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A chat token cannot point the diff at another folder: the record's
+    /// own cwd is never read, and a chat with no daemon-scope run.start has
+    /// no folder.
+    #[test]
+    fn an_install_call_reads_only_the_chats_own_folder() {
+        let (d, root) = daemon();
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        package_lock(&elsewhere, &[("left-pad", "1.3.0")]);
+        let chat = Who::Chat {
+            chat: "chat-y".into(),
+            harness: "claude-code".into(),
+        };
+        let install =
+            json!({"toolUseId": "t", "manager": "npm", "cwd": elsewhere.to_string_lossy()});
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of("", Source::Adapter, "install.call", None, install)
+            )
+            .ok
+        );
+        package_lock(&elsewhere, &[("left-pad", "1.2.0")]);
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "tool.call",
+                    None,
+                    json!({"toolUseId": "t"})
+                )
+            )
+            .ok
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        assert!(
+            !ring.iter().any(|e| e.kind == "install.lockdiff"),
+            "{ring:?}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }
