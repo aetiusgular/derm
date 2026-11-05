@@ -24,13 +24,17 @@
 use std::path::{Path, PathBuf};
 
 /// The kit's own files, from `packaging/sbx-kit/`.
+#[cfg_attr(not(unix), allow(dead_code))]
 const SPEC: &str = include_str!("../../../../../packaging/sbx-kit/claude/spec.yaml");
+#[cfg_attr(not(unix), allow(dead_code))]
 const INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/claude/install.sh");
+#[cfg_attr(not(unix), allow(dead_code))]
 const REGISTER: &str = include_str!("../../../../../packaging/sbx-kit/register-hooks.mjs");
 
 /// derm's Claude Code hook as it runs: the launcher, the hook and every
 /// module it imports, by their paths in the package. A test checks this
 /// list against the hook's imports, so a new core file cannot be left out.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) const PLUGIN: &[(&str, &str)] = &[
     (
         "package.json",
@@ -97,6 +101,7 @@ pub(crate) const PLUGIN: &[(&str, &str)] = &[
 pub(crate) const SWITCH: &str = "DERM_SBX_KIT";
 
 /// Policy files bigger than this are not copied (`derm_core::policy`'s cap).
+#[cfg_attr(not(unix), allow(dead_code))]
 const MAX_POLICY: u64 = derm_core::policy::MAX_POLICY_BYTES;
 
 /// Whether derm has a kit for this harness id.
@@ -155,21 +160,35 @@ pub(crate) fn prepare(
     if switch.is_some_and(|v| v.eq_ignore_ascii_case("off")) {
         return Ok(Kit::Without(format!("{SWITCH}=off is set")));
     }
-    let Some(policy) = policy else {
-        return Ok(Kit::Without(
-            "no policy path (HOME and DERM_POLICY are unset)".into(),
-        ));
-    };
-    let text = match policy_text(policy) {
-        Ok(t) => t,
-        Err(why) => return Ok(Kit::Without(why)),
-    };
-    let dir = private_dir(parent).map_err(|e| format!("derm's sbx kit: {e}"))?;
-    let prepared = Prepared { dir };
-    write_kit(prepared.path(), &text).map_err(|e| format!("derm's sbx kit: {e}"))?;
-    Ok(Kit::Built(prepared))
+    // The kit's private folder and files are written with Unix modes; on a
+    // Windows host derm runs the chat without the kit and says so
+    // (integration w5's close; the Windows form goes through the seam).
+    #[cfg(not(unix))]
+    {
+        let _ = (policy, parent);
+        Ok(Kit::Without(
+            "derm's sbx kit is built for Linux and macOS hosts only in this build".into(),
+        ))
+    }
+    #[cfg(unix)]
+    {
+        let Some(policy) = policy else {
+            return Ok(Kit::Without(
+                "no policy path (HOME and DERM_POLICY are unset)".into(),
+            ));
+        };
+        let text = match policy_text(policy) {
+            Ok(t) => t,
+            Err(why) => return Ok(Kit::Without(why)),
+        };
+        let dir = private_dir(parent).map_err(|e| format!("derm's sbx kit: {e}"))?;
+        let prepared = Prepared { dir };
+        write_kit(prepared.path(), &text).map_err(|e| format!("derm's sbx kit: {e}"))?;
+        Ok(Kit::Built(prepared))
+    }
 }
 
+#[cfg(unix)]
 /// The policy's text, when it is one the hook in the VM would trust were it
 /// on the host: a regular file, not a link, the person's own, writable by
 /// no one else, under the size cap, and valid.
@@ -208,6 +227,7 @@ fn policy_text(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
+#[cfg(unix)]
 fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let dir = parent.join(format!("derm-sbx-kit-{}", uuid::Uuid::new_v4().simple()));
@@ -215,6 +235,7 @@ fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+#[cfg(unix)]
 /// The kit's layout (SPEC-v2 5.8): `spec.yaml` at the top, and under
 /// `files/home/` what lands in `/home/agent/`.
 fn write_kit(dir: &Path, policy: &str) -> std::io::Result<()> {
@@ -229,6 +250,7 @@ fn write_kit(dir: &Path, policy: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 fn write(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -247,5 +269,5 @@ fn write(path: &Path, text: &str) -> std::io::Result<()> {
     f.write_all(text.as_bytes())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests;

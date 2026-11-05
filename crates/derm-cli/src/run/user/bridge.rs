@@ -431,8 +431,14 @@ mod tests {
         let s = UnixStream::connect(sock).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let mut w = s.try_clone().unwrap();
+        // A bridge that drops the peer (another uid) may close before the
+        // write lands; the write then fails with a broken pipe, and what the
+        // test checks is what came back (lane Z's request 11: macOS CI,
+        // run 42077664795). A test that expects lines still fails on none.
         for l in lines {
-            writeln!(w, "{l}").unwrap();
+            if writeln!(w, "{l}").is_err() {
+                break;
+            }
         }
         let _ = w.shutdown(std::net::Shutdown::Write);
         BufReader::new(s).lines().map_while(Result::ok).collect()

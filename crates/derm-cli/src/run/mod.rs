@@ -87,7 +87,8 @@ impl RunEnv {
     fn real() -> RunEnv {
         RunEnv {
             socket: client::socket_path(),
-            home: std::env::var("HOME").ok(),
+            home: derm_core::runtime::home_dir()
+                .and_then(|h| h.into_os_string().into_string().ok()),
             gateway: std::env::var("DERM_GATEWAY_URL").ok(),
             programs: Vec::new(),
             log_content: std::env::var("DERM_LOG_CONTENT").is_ok_and(|v| v == "1"),
@@ -1125,13 +1126,30 @@ mod end_to_end {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    /// Writes an executable script from a child process, so this test
+    /// process never holds the file open for write. A thread of another test
+    /// that forks keeps a copy of every open descriptor until it execs, and
+    /// exec of a file open for write fails with ETXTBSY ("Text file busy",
+    /// os error 26): the flake lane Z saw in `boundary/probe.rs` on `f90d0ab`, reproduced outside
+    /// derm (3 of 3,000 execs with a direct write, 0 of 3,000 written from a
+    /// child). The same cause as W-F1's lock test.
     #[cfg(unix)]
     fn script(dir: &Path, name: &str, body: &str) -> String {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let p = bin.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut w = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&p)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(
+            &mut w.stdin.take().unwrap(),
+            format!("#!/bin/sh\n{body}\n").as_bytes(),
+        )
+        .unwrap();
+        assert!(w.wait().unwrap().success());
         p.to_string_lossy().into_owned()
     }
 

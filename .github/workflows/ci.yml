@@ -117,10 +117,13 @@ jobs:
           else
             echo "claude or codex not installed: cli contract not run"
           fi
-  # Windows (wave 5, lane Z; added by the wave 5 base). derm is Unix today (a
-  # Unix socket, Unix peer checks), so this job is EXPECTED RED until lane Z
-  # builds the Windows side; `continue-on-error` keeps a red run of it from
-  # failing the workflow, and its own result stays visible. No test is
+  # Windows (wave 5, lane Z; added by the wave 5 base). Since integration
+  # w5's phase 4 merge the workspace builds and lints here (lane Z's Z-1 to
+  # Z-6); the job stays EXPECTED RED until the Unix-shaped tests lane Z's
+  # request 10 names have Windows inputs; `continue-on-error` keeps a red
+  # run of it from failing the workflow, and its own result stays visible.
+  # `--no-fail-fast` so one failing test binary does not hide the others
+  # (lane Z's request 8). No test is
   # deleted, skipped or weakened to make it pass. Each step runs even when an
   # earlier one failed, so the record shows how far Windows gets. windows-2025
   # is GitHub's Windows Server 2025 image (actions/runner-images,
@@ -138,7 +141,7 @@ jobs:
         run: cargo build --workspace
       - name: cargo test
         if: ${{ !cancelled() }}
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       - name: npm ci
         if: ${{ !cancelled() }}
         run: npm ci --ignore-scripts

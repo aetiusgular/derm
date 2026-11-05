@@ -117,10 +117,8 @@ pub fn main(args: &[String]) -> u8 {
         );
         return 2;
     }
-    let Some(home) = std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-    else {
+    // HOME on Unix, USERPROFILE on Windows (lane Z's request 1).
+    let Some(home) = derm_core::runtime::home_dir().filter(|h| !h.as_os_str().is_empty()) else {
         eprintln!("derm setup: HOME is not set");
         return 1;
     };

@@ -40,7 +40,8 @@ impl Inputs {
         Inputs {
             daemon_dir: derm_audit_linux::client::socket_path()
                 .and_then(|s| s.parent().map(Path::to_path_buf)),
-            home: std::env::var("HOME").ok(),
+            home: derm_core::runtime::home_dir()
+                .and_then(|h| h.into_os_string().into_string().ok()),
             cwd: plan.folders.first().cloned().or_else(|| {
                 std::env::current_dir()
                     .ok()

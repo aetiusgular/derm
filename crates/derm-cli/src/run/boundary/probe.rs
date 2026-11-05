@@ -34,7 +34,9 @@ impl Real {
     pub(crate) fn new() -> Real {
         Real {
             path: std::env::var("PATH").unwrap_or_default(),
-            home: std::env::var("HOME").ok().filter(|h| h.starts_with('/')),
+            home: derm_core::runtime::home_dir()
+                .filter(|h| h.is_absolute())
+                .and_then(|h| h.into_os_string().into_string().ok()),
             userns: std::fs::read_to_string(
                 "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
             )
@@ -480,11 +482,28 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    /// Writes an executable script from a child process, so this test
+    /// process never holds the file open for write. A thread of another test
+    /// that forks keeps a copy of every open descriptor until it execs, and
+    /// exec of a file open for write fails with ETXTBSY ("Text file busy",
+    /// os error 26): the flake lane Z saw on `f90d0ab`, reproduced outside
+    /// derm (3 of 3,000 execs with a direct write, 0 of 3,000 written from a
+    /// child). The same cause as W-F1's lock test.
     #[cfg(unix)]
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut w = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(&p)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(
+            &mut w.stdin.take().unwrap(),
+            format!("#!/bin/sh\n{body}\n").as_bytes(),
+        )
+        .unwrap();
+        assert!(w.wait().unwrap().success());
         p
     }
 

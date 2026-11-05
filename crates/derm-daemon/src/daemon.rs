@@ -250,7 +250,7 @@ impl Paths {
 /// `~/.local/share/derm`. The socket folder on Linux is `$XDG_RUNTIME_DIR`,
 /// which is emptied at logout, so the log never lives there.
 pub fn default_data_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = derm_core::runtime::home_dir();
     if cfg!(target_os = "macos") {
         return home.map(|h| h.join("Library/Application Support/derm"));
     }

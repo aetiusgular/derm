@@ -1263,7 +1263,7 @@ pub fn default_path() -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("DERM_POLICY").filter(|p| !p.is_empty()) {
         return Some(std::path::PathBuf::from(p));
     }
-    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".derm/policy.json"))
+    crate::runtime::home_dir().map(|h| h.join(".derm").join("policy.json"))
 }
 
 /// Parses and checks a policy file's text against the schema's limits.

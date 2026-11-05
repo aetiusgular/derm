@@ -85,7 +85,7 @@ impl Env {
             "OPENCODE_CONFIG_DIR",
         ];
         Env {
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            home: derm_core::runtime::home_dir(),
             path: std::env::var("PATH").unwrap_or_default(),
             vars: keep
                 .iter()
