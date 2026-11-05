@@ -836,6 +836,13 @@ impl Daemon {
     }
 
     fn op_event(&self, who: &Who, mut event: Event) -> Reply {
+        // A computer-use action record is the daemon's own (lane U's request
+        // R1; `trust: daemon` in `contracts/wave5-records.schema.json`): no
+        // socket client posts one, under any source, in either scope.
+        if event.kind == "cu.action" {
+            self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+            return error("cu.action events are written by the daemon");
+        }
         match who {
             Who::Chat { chat, harness } => {
                 // A chat token sits in a harness's environment: it may post

@@ -59,5 +59,6 @@ Third-party schema, added by the wave 5 base (4 Nov 2026):
 | Here | What | Source | Licence |
 |---|---|---|---|
 | contracts/cu-tool.schema.json (its `properties`, `required` and `x-derm-tool`) | The `computer_use` tool's model-facing schema, transcribed by hand and checked equal to the source's parsed literal | NousResearch/hermes-agent at tag v2026.9.24 (f97608f178d1ffeca59860195ab7da295f7c8e5f), tools/computer_use/schema.py | MIT, Copyright (c) 2025 Nous Research, LICENSES/MIT-Nous-Research.txt |
+| crates/derm-daemon/src/computer_use/tool.rs (its hard blocks: the blocked key combos and shell patterns; the sticky target and `app=` guard; the window match; the action-to-tool map; the verdict ladder and its texts; at-most-once on a timeout or a lost transport) | Rules ported by hand from Hermes Agent's computer-use tool (wave 5 lane U) | NousResearch/hermes-agent at tag v2026.9.24 (f97608f178d1ffeca59860195ab7da295f7c8e5f), tools/computer_use/ (tool.py, cua_backend_capture.py, cua_backend_input.py, cua_backend_session.py, cua_backend_parse.py) | MIT, Copyright (c) 2025 Nous Research, LICENSES/MIT-Nous-Research.txt |
 
 LICENSES/MIT-Nous-Research.txt is that repository's LICENSE at the same tag.

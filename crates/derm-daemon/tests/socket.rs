@@ -1247,6 +1247,28 @@ fn no_socket_client_posts_a_tap_or_derm_record() {
     }
 }
 
+/// Lane U's request R1: a `cu.action` record is the daemon's own
+/// (`trust: daemon`, `contracts/wave5-records.schema.json`). No socket
+/// client posts one, under any source, with a chat token or the daemon's:
+/// a daemon-scope client may post `source: cua` (the collector's path),
+/// and an adapter record with that kind would pass a chat's source check.
+#[test]
+fn no_socket_client_posts_a_cu_action_record() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-cu", "claude-code");
+    let (mut c, _) = Client::hello(&f, &token);
+    for source in ["cua", "adapter", "otel"] {
+        let r = c.ask(event("cu-c", "chat-cu", source, "cu.action", json!({})));
+        assert_eq!(r["ok"], false, "chat scope, {source}: {r}");
+    }
+    for source in ["cua", "adapter", "eslogger"] {
+        let r = d.ask(event("cu-d", "chat-cu", source, "cu.action", json!({})));
+        assert_eq!(r["ok"], false, "daemon scope, {source}: {r}");
+        assert_eq!(r["error"], "cu.action events are written by the daemon");
+    }
+}
+
 /// S2 part b (wave 5 lane V): a `yes` for a chat that runs as you with no
 /// boundary needs your password in `proof`; without one, or with a wrong
 /// one, it is refused and the request keeps waiting; a `no` needs nothing.
