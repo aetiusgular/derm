@@ -573,6 +573,51 @@ mod tests {
         );
     }
 
+    /// The seam between lanes S and V (integration w5, phase 2): the model
+    /// tap points the harness at itself with launch variables (lane S's
+    /// `derm_tap::launch`), and the agents' user gets only the variables
+    /// `--preserve-env` names. Every variable the tap sets, for every agent
+    /// it taps, must reach the agents' user, or the chat would run untapped
+    /// while its `run.start` says tapped.
+    #[test]
+    fn the_taps_launch_variables_reach_the_agents_user() {
+        let table: Value =
+            serde_json::from_str(crate::connect::presets::table_json()).expect("preset table");
+        let mut tapped = 0;
+        for row in ["harnesses", "planned"]
+            .iter()
+            .filter_map(|l| table.get(*l).and_then(Value::as_array))
+            .flatten()
+        {
+            let Some(tap) = row.get("tap").filter(|t| !t.is_null()) else {
+                continue;
+            };
+            let Ok(l) = derm_tap::launch::launch(tap, "http://127.0.0.1:4000", &"a".repeat(32))
+            else {
+                continue;
+            };
+            tapped += 1;
+            let mut p = plan(&[("DERM_CHAT_TOKEN", &"c".repeat(64))]);
+            p.env_set.extend(l.env.iter().cloned());
+            p.args.extend(l.args.iter().cloned());
+            rewrite(&mut p, "/usr/bin/sudo", "/usr/bin/env", &entry(), "x", &[]);
+            let kept = p.args[3].strip_prefix("--preserve-env=").unwrap();
+            for (name, _) in &l.env {
+                assert!(
+                    kept.split(',').any(|n| n == name),
+                    "{}: {name} not kept: {kept}",
+                    row["id"]
+                );
+            }
+            // Argv the tap adds (Codex's provider flags) follows the program.
+            let i = p.args.iter().position(|a| a == "--").unwrap();
+            for a in &l.args {
+                assert!(p.args[i..].contains(a), "{}: {a}", row["id"]);
+            }
+        }
+        assert!(tapped >= 3, "Claude Code, Codex and Gemini CLI are tapped");
+    }
+
     #[test]
     fn variables_that_describe_the_person_or_change_loading_are_not_kept() {
         for ok in [
