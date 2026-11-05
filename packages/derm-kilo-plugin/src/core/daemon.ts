@@ -214,7 +214,7 @@ export type AdapterEvent = {
   id: string;
   chatId: string;
   harness: string;
-  kind: "tool.call" | "approval";
+  kind: "tool.call" | "approval" | "install.call";
   summary: string;
   detail: Record<string, unknown>;
 };

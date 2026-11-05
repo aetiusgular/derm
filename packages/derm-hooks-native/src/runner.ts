@@ -8,7 +8,7 @@
 // (case 82), and how allow, ask and deny are written (cases 71, 72, 77, 79).
 
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { narrowForControl } from "./control.ts";
 
@@ -175,6 +175,17 @@ export async function handlePre(dialect: Dialect, input: Record<string, unknown>
       ...(read.callId !== undefined ? { toolUseId: read.callId } : {}),
     },
   });
+  // A deferral decides nothing (Cursor's preToolUse for an MCP call), so it
+  // records no install; the hook that decides does.
+  if (read.deferUnlessDeny === undefined || out.decision === "deny") {
+    const call: GateCall = {
+      harness: dialect.id,
+      tool: read.tool,
+      toolInput: read.toolInput,
+      ...(read.callId !== undefined ? { toolUseId: read.callId } : {}),
+    };
+    for (const e of installEvents(call, out.answer, out.decision, read.chat ?? "")) await deps.postEvent(e);
+  }
   if (out.decision === "deny") return dialect.deny(out.reason);
   if (out.decision === "ask") return dialect.ask(out.reason);
   return dialect.allow(out.reason, out.answer.updatedInput);

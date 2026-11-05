@@ -117,3 +117,20 @@ describe("plugin files", () => {
     expect(() => execFileSync(process.execPath, [script, "--check"], { encoding: "utf8" })).not.toThrow();
   });
 });
+
+// Lane X's request 7 (integration w5, continue): the gate posts an
+// `install.call` record for an install, beside its decision.
+describe("install records", () => {
+  it("posts install.call beside the decision", async () => {
+    const n = daemon.events().length;
+    await before({ ...call("bash"), callID: "call_inst1" }, { args: { command: "npm install left-pad@1.3.0" } }, deps()).catch(() => undefined);
+    const ev = daemon.events().slice(n);
+    const recs = ev.filter((e) => e.kind === "install.call") as { detail: Record<string, unknown>; harness: string }[];
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.harness).toBe("opencode");
+    expect(recs[0]?.detail).toMatchObject({ manager: "npm", form: "add", packages: [{ name: "left-pad", version: "1.3.0", ecosystem: "npm" }], trust: "client" });
+    const decision = (ev.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
+    expect(recs[0]?.detail.decision).toBe(decision);
+    expect(recs[0]?.detail.toolUseId).toBe("call_inst1");
+  });
+});

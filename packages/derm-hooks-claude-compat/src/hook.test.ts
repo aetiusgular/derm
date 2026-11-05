@@ -276,3 +276,19 @@ describe("the launcher", () => {
     }
   });
 });
+
+// Lane X's request 7 (integration w5, continue): the gate posts an
+// `install.call` record for an install, beside its decision.
+describe.each(AGENTS)("%s install records", (agent) => {
+  it("posts install.call beside the decision", async () => {
+    const before = daemon.events().length;
+    await runHook(agent, "pre", shellCall(agent, "npm install left-pad@1.3.0"), env(POL.denyBash));
+    const ev = daemon.events().slice(before);
+    const recs = ev.filter((e) => e.kind === "install.call") as { detail: Record<string, unknown>; harness: string }[];
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.harness).toBe(agent);
+    expect(recs[0]?.detail).toMatchObject({ manager: "npm", form: "add", packages: [{ name: "left-pad", version: "1.3.0", ecosystem: "npm" }], trust: "client" });
+    const decision = (ev.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
+    expect(recs[0]?.detail.decision).toBe(decision);
+  });
+});

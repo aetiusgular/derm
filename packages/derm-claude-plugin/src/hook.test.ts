@@ -351,3 +351,23 @@ describe("Claude Code's hook run by Cursor", () => {
     expect(decision(r.stdout)).toMatchObject({ permissionDecision: "deny" });
   });
 });
+
+// Lane X's request 7 (integration w5, continue): the gate posts an
+// `install.call` record for an install, beside its decision.
+describe("install records", () => {
+  it("posts install.call beside the decision, and none for a plain command", async () => {
+    let before = daemon.events().length;
+    await runHook("pre", pre("Bash", { command: "npm install left-pad@1.3.0" }, { tool_use_id: "toolu_inst1" }), env());
+    const ev = daemon.events().slice(before);
+    const recs = ev.filter((e) => e.kind === "install.call") as { detail: Record<string, unknown>; harness: string }[];
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.harness).toBe("claude-code");
+    expect(recs[0]?.detail).toMatchObject({ manager: "npm", form: "add", packages: [{ name: "left-pad", version: "1.3.0", ecosystem: "npm" }], trust: "client" });
+    const decision = (ev.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
+    expect(recs[0]?.detail.decision).toBe(decision);
+    expect(recs[0]?.detail.toolUseId).toBe("toolu_inst1");
+    before = daemon.events().length;
+    await runHook("pre", pre("Bash", { command: "ls -la" }), env());
+    expect(daemon.events().slice(before).filter((e) => e.kind === "install.call")).toHaveLength(0);
+  });
+});

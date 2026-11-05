@@ -3,7 +3,9 @@
 // harness's output. Canonical copy: packages/derm-claude-plugin/src/core/.
 
 import { randomUUID } from "node:crypto";
-import { approve, type ApproveOutcome, type ApproveRequest } from "./daemon.ts";
+import { approve, type AdapterEvent, type ApproveOutcome, type ApproveRequest } from "./daemon.ts";
+import { decodeEscapes, fold } from "./fold.ts";
+import { installCallDetails, parseInstalls } from "./installs/index.ts";
 import { evaluate, isShellTool, normalizeToolName, type Action, type LoadedPolicy } from "./policy.ts";
 import { redactText, redactValue } from "./redact.ts";
 
@@ -148,6 +150,44 @@ function decideCallInner(loaded: LoadedPolicy, call: GateCall): GateAnswer {
   answer.updatedInput = value;
   answer.reason = `${decision.reason}; ${count} secret-like value${count === 1 ? "" : "s"} redacted`;
   return answer;
+}
+
+/** Install records one call posts at most (a shell line rarely holds more than two installs). */
+export const MAX_INSTALL_RECORDS = 8;
+
+/**
+ * The `install.call` adapter records for a shell call the gate read as an
+ * install (contracts/events.md section 5; lane X's request 7, integration w5
+ * continue): one per install, whatever the policy said, so the daemon can
+ * keep the project's lockfile at the call's start and credit an install
+ * script's writes to it (request 4). `decision` is the answer the harness
+ * gets. Empty for every other call, so it costs a call nothing. The daemon
+ * reads them as the agent's (`trust: client`): the hook and the agent share
+ * the chat token (case 66).
+ */
+export function installEvents(call: GateCall, answer: GateAnswer, decision: Action, chat: string): AdapterEvent[] {
+  if (!isShellTool(answer.normalizedTool)) return [];
+  let installs;
+  try {
+    installs = parseInstalls(fold(decodeEscapes(inputTextFor(answer.normalizedTool, call.toolInput))));
+  } catch {
+    return [];
+  }
+  const details = installCallDetails(installs.slice(0, MAX_INSTALL_RECORDS), decision, call.toolUseId ?? null);
+  const callPart = (call.toolUseId ?? "unknown").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 48) || "unknown";
+  return details.map((detail, i) => {
+    const names = (detail.packages as { name: string }[]).map((p) => p.name);
+    return {
+      // Random bits, as a decision's id has: the agent holds the chat token
+      // and could otherwise post its own record under this id first.
+      id: `${call.harness}-${callPart}-install-${i}-${randomUUID().replace(/-/g, "")}`,
+      chatId: chat,
+      harness: call.harness,
+      kind: "install.call" as const,
+      summary: `${String(detail.manager)} ${String(detail.form)} ${names.slice(0, 4).join(" ")}${names.length > 4 ? " ..." : ""} ${decision}`,
+      detail,
+    };
+  });
 }
 
 /** What the approver sees: the tool and a redacted preview of the input, at most 160 characters. */

@@ -313,3 +313,24 @@ describe("the preset row (crates/derm-cli/src/connect/presets/cline.json)", () =
     expect(row.coverage.failMode).toBe("open");
   });
 });
+
+// Lane X's request 7 (integration w5, continue): the gate posts an
+// `install.call` record for an install, beside its decision.
+describe("install records", () => {
+  it("the plugin leaves an ask's installs to the approval file, which records them", async () => {
+    let before = daemon.events().length;
+    beforeTool(ctx("run_commands", { commands: ["npm install left-pad@1.3.0"] }), deps());
+    await settle();
+    expect(daemon.events().slice(before).filter((e) => e.kind === "install.call")).toHaveLength(0);
+    before = daemon.events().length;
+    await answerRequest({ toolCallId: "t-inst", toolName: "run_commands", input: { commands: ["npm install left-pad@1.3.0"] } }, deps());
+    const got = daemon.events().slice(before);
+    const recs = got.filter((e) => e.kind === "install.call") as { detail: Record<string, unknown>; harness: string }[];
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.harness).toBe("cline");
+    expect(recs[0]?.detail).toMatchObject({ manager: "npm", form: "add", packages: [{ name: "left-pad", version: "1.3.0", ecosystem: "npm" }], trust: "client" });
+    const decision = (got.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
+    expect(recs[0]?.detail.decision).toBe(decision);
+    expect(recs[0]?.detail.toolUseId).toBe("t-inst");
+  });
+});

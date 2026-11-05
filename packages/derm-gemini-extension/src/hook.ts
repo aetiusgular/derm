@@ -26,7 +26,7 @@
 
 import { createHash } from "node:crypto";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { redactValue } from "./core/redact.ts";
 import { narrowForControl } from "./control.ts";
@@ -155,6 +155,10 @@ export async function handleBefore(input: Record<string, unknown>, deps: Deps): 
     summary: `${answer.normalizedTool} ${geminiAsks ? "ask" : action}`,
     detail: { tool: answer.normalizedTool, decision: geminiAsks ? "ask" : action, policyAction: answer.action, reason, redacted: answer.redacted, callKey: callKey(input) },
   });
+  // Gemini gives no call id; its records join by the call key, so the
+  // install record carries it as its toolUseId (the daemon finishes the
+  // lockfile diff at the tool.call with the same callKey).
+  for (const e of installEvents({ ...call, toolUseId: callKey(input) }, answer, geminiAsks ? "ask" : action, chat ?? "")) await deps.postEvent(e);
   if (action === "deny") return block(reason);
   if (geminiAsks) return ask(reason);
   if (answer.updatedInput !== undefined) {

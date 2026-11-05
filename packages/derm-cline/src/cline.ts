@@ -36,7 +36,7 @@
 // splits them at the run of underscores.
 
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, denyAskInFullAccess, inputTextFor, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
+import { decideCall, denyAskInFullAccess, inputTextFor, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { overBudget } from "./budget.ts";
 import { narrowForControl } from "./control.ts";
@@ -237,6 +237,10 @@ export function beforeTool(context: BeforeToolContext, deps: Deps): BeforeToolRe
         ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
       },
     });
+    // An ask goes on to Cline's approval, which the approval-file responder
+    // answers and records with its installs; so the plugin records them only
+    // for a call it decided.
+    if (decision !== "ask") for (const e of installEvents(call, answer, decision, call.chat ?? "")) void deps.postEvent(e);
   }
   return result;
 }
@@ -307,6 +311,7 @@ export async function answerRequest(request: ApprovalRequest, deps: Deps): Promi
         ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
       },
     });
+    for (const e of installEvents(call, answer, out.approved ? "allow" : "deny", call.chat ?? "")) await deps.postEvent(e);
   }
   return out;
 }
