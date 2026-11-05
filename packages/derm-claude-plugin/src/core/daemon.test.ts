@@ -269,7 +269,10 @@ describe("the VM route", () => {
     try {
       const env = vmEnv({ DERM_OTLP_ENDPOINT: `http://host.docker.internal:${port}`, DERM_CHAT_TOKEN_FILE: tokenFile });
       const r = await exchange([{ op: "approve", request: { id: "ap" } }], { env, client: "t", replyTimeoutMs: 1000, cwd: project });
-      expect(r).toEqual({ error: "no daemon socket" });
+      // On Windows the hook refuses the chat token file first (no owner to
+      // check), so it stops before any route; elsewhere it falls to the
+      // socket, which is not there. Either way the listener is never asked.
+      expect(r).toEqual({ error: process.platform === "win32" ? "no chat token (start the harness with derm run)" : "no daemon socket" });
       expect(asked).toBe(0);
     } finally {
       server.close();
