@@ -63,7 +63,7 @@ pub fn command_problem(words: &[String]) -> Option<String> {
 
 const WRAPPERS: &[&str] = &[
     "sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic",
-    "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack",
+    "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox",
 ];
 const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
 const MAX_DEPTH: usize = 4;
@@ -89,21 +89,35 @@ pub fn command_base(word: &str) -> &str {
 
 /// `-c <string>` (or a combined short flag holding `c`, as `-lc`).
 fn shell_command_string(words: &[String]) -> Option<String> {
+    // The first word that is not an option, once `-c` has been seen; options
+    // before or after `-c`, `+x` style too; `-o`, `+o`, `--rcfile` and
+    // `--init-file` take a value; `--` ends the options (integration w5's
+    // close, review W5-S3).
+    let mut saw_c = false;
     let mut i = 0;
     while i < words.len() {
         let w = words[i].as_str();
-        if w == "--" || !w.starts_with('-') {
-            return None;
+        if w == "--" {
+            return if saw_c {
+                words.get(i + 1).cloned()
+            } else {
+                None
+            };
+        }
+        if !w.starts_with('-') && !w.starts_with('+') {
+            return if saw_c { Some(w.to_string()) } else { None };
+        }
+        if matches!(w, "-o" | "+o" | "--rcfile" | "--init-file") {
+            i += 2;
+            continue;
         }
         let letters = &w[1..];
-        if !letters.is_empty()
+        if w.starts_with('-')
+            && !letters.is_empty()
             && letters.bytes().all(|b| b.is_ascii_lowercase())
             && letters.contains('c')
         {
-            return words.get(i + 1).cloned();
-        }
-        if w == "-o" || w == "+o" {
-            i += 1;
+            saw_c = true;
         }
         i += 1;
     }
@@ -200,6 +214,15 @@ fn flag_meets(word: &str, flag: &str) -> bool {
     {
         return true;
     }
+    // A long flag also meets a prefix of it of two letters or more (`--forc`,
+    // `--ha`): git and others take an unambiguous prefix (integration w5's
+    // close, review W5-S4). Reading more only narrows more.
+    if let (Some(f), Some(w)) = (flag.strip_prefix("--"), word.strip_prefix("--")) {
+        let name = w.split('=').next().unwrap_or("");
+        if name.len() >= 2 && f.starts_with(name) {
+            return true;
+        }
+    }
     let short = |w: &str, min: usize| {
         w.len() > min
             && w.starts_with('-')
@@ -267,7 +290,14 @@ pub fn command_allows(rule: &[String], folded: &str) -> bool {
         .split(SPACES)
         .filter(|w| !w.is_empty())
         .collect();
-    words.len() >= rule.len() && rule.iter().zip(&words).all(|(r, w)| r == w)
+    words.len() >= rule.len()
+        && rule.iter().zip(&words).all(|(r, w)| r == w)
+        // After the rule's own words only plain operands widen: no flag and
+        // no `=` (integration w5's close, review W5-S1: `git log
+        // --output=<file>` wrote through a committed link into .git/config).
+        && words[rule.len()..]
+            .iter()
+            .all(|w| !w.starts_with('-') && !w.contains('='))
 }
 
 /// The reason a command rule gives: `rule bash <words>`.

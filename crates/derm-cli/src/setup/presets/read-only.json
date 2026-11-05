@@ -496,6 +496,33 @@
         "tool": "bash",
         "command": [
           "git",
+          "remote",
+          "rename"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "remove"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "rm"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
           "submodule",
           "add"
         ],
@@ -622,6 +649,26 @@
           "gh",
           "auth",
           "token"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "status",
+          "-t"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "status",
+          "--show-token"
         ],
         "action": "ask"
       },

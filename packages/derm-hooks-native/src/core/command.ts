@@ -50,7 +50,7 @@ export function commandProblem(value: unknown): string | undefined {
 // Lane X's wrapper list (installs/parse.ts): words that run the rest of the
 // line as a command. Their own flags are not parsed; the command starts at
 // the first later word that names a rule's head, a wrapper or a shell.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack"]);
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"]);
 const ASSIGNMENT = /^[a-z_][a-z0-9_]*=/;
 const MAX_DEPTH = 4;
@@ -63,14 +63,25 @@ export function commandBase(word: string): string {
   return b;
 }
 
-/** `-c <string>` (or a combined short flag holding `c`, as `-lc`). */
+/**
+ * The command string of a shell started with `-c` (or a cluster holding
+ * `c`, as `-lc`): the first word that is not an option, as bash reads it.
+ * Options may come before or after `-c`, `+x` style as well as `-x`;
+ * `-o`, `+o`, `--rcfile` and `--init-file` take a value; `--` ends the
+ * options (integration w5's close, review W5-S3: `bash -c -- '...'`,
+ * `bash +x -c '...'` and `bash --rcfile f -c '...'` were not read).
+ */
 function shellCommandString(words: readonly string[]): string | undefined {
+  let sawC = false;
   for (let i = 0; i < words.length; i++) {
     const w = words[i] as string;
-    if (w === "--") return undefined;
-    if (!w.startsWith("-")) return undefined;
-    if (/^-[a-z]*c[a-z]*$/.test(w)) return words[i + 1];
-    if (w === "-o" || w === "+o") i++;
+    if (w === "--") return sawC ? words[i + 1] : undefined;
+    if (!w.startsWith("-") && !w.startsWith("+")) return sawC ? w : undefined;
+    if (w === "-o" || w === "+o" || w === "--rcfile" || w === "--init-file") {
+      i++;
+      continue;
+    }
+    if (/^-[a-z]*c[a-z]*$/.test(w)) sawC = true;
   }
   return undefined;
 }
@@ -134,9 +145,19 @@ function read(input: string[], heads: ReadonlySet<string>, depth: number, out: s
   }
 }
 
-/** Does a command's flag word meet a rule's flag word? `-f` also meets `-fu`. */
+/**
+ * Does a command's flag word meet a rule's flag word? `-f` also meets
+ * `-fu`; a long flag also meets a prefix of it of two letters or more,
+ * as `--forc` or `--fo=x` (git and other parsers take an unambiguous
+ * prefix; integration w5's close, review W5-S4: `git reset --ha`).
+ * Reading more only narrows more.
+ */
 function flagMeets(word: string, flag: string): boolean {
   if (word === flag || word.startsWith(`${flag}=`)) return true;
+  if (flag.startsWith("--") && word.startsWith("--")) {
+    const name = word.slice(2).split("=")[0] as string;
+    if (name.length >= 2 && flag.slice(2).startsWith(name)) return true;
+  }
   // A single-letter short flag inside a cluster of short flags (`-fu`).
   return /^-[a-z0-9]$/.test(flag) && /^-[a-z0-9]{2,}$/.test(word) && word.includes(flag.slice(1));
 }
@@ -189,7 +210,11 @@ const NOT_PLAIN = /[;&|()<>`\n\r#]/;
 export function commandAllows(rule: readonly string[], folded: string): boolean {
   if (NOT_PLAIN.test(folded)) return false;
   const words = folded.trim().split(/[ \t\v\f]+/);
-  return words.length >= rule.length && rule.every((w, i) => words[i] === w);
+  if (words.length < rule.length || !rule.every((w, i) => words[i] === w)) return false;
+  // After the rule's own words only plain operands widen: no flag and no
+  // `=`, since a flag can write (`git log --output=<file>` wrote through a
+  // committed link into .git/config; integration w5's close, review W5-S1).
+  return words.slice(rule.length).every((w) => !w.startsWith("-") && !w.includes("="));
 }
 
 /** The reason a command rule gives: `rule bash <words>` (policy.md section 7). */

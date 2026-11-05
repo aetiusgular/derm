@@ -336,6 +336,62 @@
     "reasonPrefix": "rule bash"
    },
    "note": "a destructive GitHub command asks, as bash does here (a command ask turns only an allow into an ask)"
+  },
+  {
+   "id": 25,
+   "preset": "read-only",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git log -1 --format=%h --output=docs/cfg"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "review W5-S1: a flag after an allowed command's words asks (git's --output writes a file)"
+  },
+  {
+   "id": 26,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "gh auth status -t"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash gh auth status -t"
+   },
+   "note": "review W5-S2: printing the token is denied where gh auth token is"
+  },
+  {
+   "id": 27,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git reset --ha"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash git reset --hard"
+   },
+   "note": "review W5-S4: a prefix of --hard meets it"
+  },
+  {
+   "id": 28,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git remote -v rename origin x"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash git remote rename"
+   },
+   "note": "review W5-S2: renaming a remote asks"
   }
  ]
 }

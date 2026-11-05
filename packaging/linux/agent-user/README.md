@@ -89,3 +89,9 @@ you, and must be in no group that leads to root or to your files (`sudo`,
   another user's processes (`sudo -u derm-agent pkill -u derm-agent` can).
 - `DERM_RUN_AS=you derm run ...` runs one chat as you anyway. A `yes` for it
   then needs your login password (S2 part b).
+- Two chats as the agents' user at once share one uid. One chat's agent can
+  read the other's `/proc/<pid>/environ` (proc(5): same uid), which holds its
+  chat token and socket path, and then post records and raise asks in the
+  other chat's name (integration w5's security review, W5-S5, medium; case 66
+  does not hold between such chats). Run one agents'-user chat at a time until
+  derm gives each chat its own uid.
