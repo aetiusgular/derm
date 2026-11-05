@@ -11,6 +11,8 @@
 //!    shows the commands for you to run in Terminal yourself. Nothing here
 //!    builds or runs a shell string.
 
+// The socket client below is Unix's; on Windows (lane Z) these stay unused.
+#[cfg_attr(not(unix), allow(unused_imports))]
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -18,6 +20,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+#[cfg_attr(not(unix), allow(unused_imports))]
 use super::registry::READ_SOCKET;
 use super::types::{ActivityEvent, ActivitySource};
 
@@ -26,9 +29,11 @@ use super::types::{ActivityEvent, ActivitySource};
 /// (`io.github.aetiusgular.derm.dev`, decision 1) installs its own label.
 pub const RELEASE_IDENTIFIER: &str = "io.github.aetiusgular.derm";
 pub const BINARY_NAME: &str = "derm-activity-collector";
+#[cfg_attr(not(unix), allow(dead_code))]
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// An `events` reply waits while the collector verifies every day file in
 /// the range before it answers (`log.rs` `read_events`).
+#[cfg_attr(not(unix), allow(dead_code))]
 const EVENTS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The daemon's launchd label and paths, from the app's identifier.
@@ -74,6 +79,7 @@ impl Names {
         Names::for_identifier(super::identifier()).unwrap_or_else(Names::release)
     }
 }
+#[cfg_attr(not(unix), allow(dead_code))]
 const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 10_000;
 /// `EventsReply::problem` when the collector's socket did not connect.
@@ -272,6 +278,7 @@ pub fn status() -> CollectorStatus {
     let supported = cfg!(target_os = "macos");
     let names = Names::current();
     let installed = is_installed(&names, &crate::collector::app::installed_app());
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut status = CollectorStatus {
         supported,
         installed,

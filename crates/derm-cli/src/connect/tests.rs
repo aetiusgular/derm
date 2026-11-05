@@ -706,6 +706,7 @@ fn list_and_path() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_symlinked_config_is_refused() {
     let home = scratch("symlink");

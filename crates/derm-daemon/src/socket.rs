@@ -191,6 +191,7 @@ fn read_loop(stream: &UnixStream, daemon: &Arc<Daemon>, out: &Outbox) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn temp_root() -> std::path::PathBuf {
@@ -201,6 +202,7 @@ mod tests {
         ))
     }
 
+    #[cfg(unix)]
     #[test]
     fn bind_sets_0600_and_a_0700_parent_and_replaces_a_stale_socket() {
         let root = temp_root();
@@ -219,6 +221,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_linked_socket_folder_is_refused() {
         let root = temp_root();

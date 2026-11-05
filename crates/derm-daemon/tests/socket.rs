@@ -1,5 +1,8 @@
 //! The daemon over its socket, as clients use it (`contracts/daemon-protocol.md`).
 //! Each test runs its own daemon on a temporary socket and log folder.
+// The daemon over a Unix socket; its Windows twin is lane Z's
+// `tests/windows/` (the named pipe).
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;

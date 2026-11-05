@@ -457,7 +457,9 @@ fn write_endpoint(dir: &Path, address: &str) -> Result<(), String> {
         .map_err(|e| format!("endpoint file: {e}"))
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::core::tests::FakeLauncher;
     use super::*;
@@ -955,6 +957,7 @@ mod daemon_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn start_here_writes_a_private_endpoint_the_relay_reads() {
         use std::os::unix::fs::PermissionsExt;

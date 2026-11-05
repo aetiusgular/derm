@@ -65,16 +65,44 @@ fn mode_text(meta: &std::fs::Metadata) -> String {
     format!(" (mode {:o})", meta.mode() & 0o777)
 }
 
-#[cfg(not(unix))]
-fn mode_text(_meta: &std::fs::Metadata) -> String {
-    String::new()
-}
-
 /// Reads `daemon.token` beside the socket. Refused unless it is a regular
 /// file owned by this user with no group or other bits, holding a
 /// well-formed token: a token another user could have written is not ours.
 pub fn read_daemon_token(dir: &Path) -> Result<String, ClientError> {
     let path = dir.join("daemon.token");
+    #[cfg(windows)]
+    {
+        read_daemon_token_windows(&path)
+    }
+    #[cfg(unix)]
+    {
+        read_daemon_token_unix(&path)
+    }
+}
+
+/// Windows (lane Z): owner and DACL read on the open handle, never through
+/// a reparse point (`open_private_file`); a token another user could read
+/// or write is refused, as a group or other bit is on Unix.
+#[cfg(windows)]
+fn read_daemon_token_windows(path: &Path) -> Result<String, ClientError> {
+    let mut text = String::new();
+    derm_core::platform::windows::open_private_file(path)
+        .map_err(|e| ClientError::Token(e.to_string()))?
+        .take(256)
+        .read_to_string(&mut text)?;
+    let token = text.trim().to_string();
+    if !derm_core::token::well_formed(&token) {
+        return Err(ClientError::Token(format!(
+            "{} does not hold a token",
+            path.display()
+        )));
+    }
+    Ok(token)
+}
+
+#[cfg(unix)]
+fn read_daemon_token_unix(path: &Path) -> Result<String, ClientError> {
+    let path = path.to_path_buf();
     let meta = std::fs::symlink_metadata(&path)
         .map_err(|e| ClientError::Token(format!("{}: {e}", path.display())))?;
     if !meta.file_type().is_file() {
@@ -342,7 +370,6 @@ mod tests {
 #[doc(hidden)]
 pub mod fake {
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -377,17 +404,18 @@ pub mod fake {
     /// Starts a fake in a fresh 0700 folder under the OS temp folder, with
     /// `daemon.token` (0600) and `otlp.endpoint` beside the socket.
     pub fn start(name: &str, mode: Mode) -> Fake {
-        use std::os::unix::fs::PermissionsExt;
+        // Through the platform seam (lane Z): on Unix the same 0700 folder,
+        // 0600 token and Unix socket as before; on Windows a private folder
+        // and a named pipe behind the socket path's pointer file.
         let dir = std::env::temp_dir().join(format!("derm-fake-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        derm_core::platform::private_dir(&dir).unwrap();
         let tok = dir.join("daemon.token");
         std::fs::write(&tok, format!("{DAEMON_TOKEN}\n")).unwrap();
-        std::fs::set_permissions(&tok, std::fs::Permissions::from_mode(0o600)).unwrap();
+        derm_core::platform::set_private_file(&tok).unwrap();
         std::fs::write(dir.join("otlp.endpoint"), "http://127.0.0.1:4318\n").unwrap();
         let socket = dir.join("daemon.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let listener = derm_core::platform::bind(&socket).unwrap();
         let got = Arc::new(Mutex::new(Vec::new()));
         let g = got.clone();
         let restarted_flag = dir.join("restarted");
@@ -403,7 +431,7 @@ pub mod fake {
     }
 
     fn serve(
-        stream: std::os::unix::net::UnixStream,
+        stream: derm_core::platform::Stream,
         mode: Mode,
         got: Arc<Mutex<Vec<Value>>>,
         restarted: &Path,

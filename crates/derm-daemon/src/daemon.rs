@@ -119,7 +119,7 @@ pub struct ConnPeer {
     /// `SO_PEERCRED` / `LOCAL_PEERCRED`; `None` when the OS call failed.
     pub cred: Option<derm_core::platform::peer::Peer>,
     /// The connecting process itself, on Linux 6.5 and later.
-    pub pidfd: Option<std::os::fd::OwnedFd>,
+    pub pidfd: Option<derm_core::platform::Pidfd>,
     pub program: Option<String>,
     pub start_time: Option<u64>,
 }
@@ -143,7 +143,7 @@ impl ConnPeer {
     pub fn record(&self) -> Value {
         json!({
             "pid": self.cred.as_ref().and_then(|c| c.pid),
-            "uid": self.cred.as_ref().map(|c| c.uid),
+            "uid": self.cred.as_ref().map(|c| &c.uid),
             "program": self.program.as_deref().map(|p| clip(p, 300)),
             "startTime": self.start_time,
             "pidfd": self.pidfd.is_some(),
@@ -1363,6 +1363,7 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
 /// The state file when it is safe to read: a regular file (no link) owned
 /// by this user, no group or other bits, at most 1 MiB, JSON with
 /// `version: 1`. Anything else is ignored, and the daemon starts empty.
+#[cfg(unix)]
 fn read_state(path: &Path) -> Option<Value> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -1380,6 +1381,25 @@ fn read_state(path: &Path) -> Option<Value> {
         || meta.mode() & 0o077 != 0
         || meta.len() > STATE_FILE_MAX
     {
+        return None;
+    }
+    let mut text = String::new();
+    file.by_ref()
+        .take(STATE_FILE_MAX + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    (value.get("version").and_then(Value::as_u64) == Some(1)).then_some(value)
+}
+
+/// Windows (lane Z): the file itself, never a reparse point's target,
+/// checked on the open handle as on Unix (`open_private_file`).
+#[cfg(windows)]
+fn read_state(path: &Path) -> Option<Value> {
+    use std::io::Read;
+    let mut file = derm_core::platform::windows::open_private_file(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file() || meta.len() > STATE_FILE_MAX {
         return None;
     }
     let mut text = String::new();
@@ -1622,6 +1642,7 @@ mod tests {
 
     /// BX8's state file is taken only when it is this user's own private
     /// regular file: one others can read or write, or a link, is ignored.
+    #[cfg(unix)]
     #[test]
     fn a_state_file_that_is_not_private_is_ignored() {
         use std::os::unix::fs::PermissionsExt;

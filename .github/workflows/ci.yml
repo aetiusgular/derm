@@ -138,7 +138,7 @@ jobs:
         run: cargo build --workspace
       - name: cargo test
         if: ${{ !cancelled() }}
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       - name: npm ci
         if: ${{ !cancelled() }}
         run: npm ci --ignore-scripts

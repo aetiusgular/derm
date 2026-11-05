@@ -33,18 +33,26 @@
 //! `run_io` passes the chat's details in [`Context`] (lane V's request V-1,
 //! applied by integration).
 
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::{Command, Stdio};
+#[cfg(unix)]
 use std::sync::Mutex;
 
-use serde_json::{json, Value};
+#[cfg(unix)]
+use serde_json::json;
+use serde_json::Value;
 
 use super::plan::Plan;
 
+#[cfg(unix)]
 pub(crate) mod anchor;
+#[cfg(unix)]
 pub(crate) mod bridge;
 
 /// What `wrap_with` needs from `run_io` (lane V's request V-1).
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct Context<'a> {
     /// `none`, `srt` or `sbx`.
     pub boundary: &'a str,
@@ -61,17 +69,23 @@ pub(crate) struct Context<'a> {
 }
 
 /// Where `sudo` and `env` must be: root's, never found on `PATH` (case 37).
+#[cfg(unix)]
 const SUDO: &str = "/usr/bin/sudo";
+#[cfg(unix)]
 const ENV: &str = "/usr/bin/env";
+#[cfg(unix)]
 const SH: &str = "/bin/sh";
 /// The person may say a chat runs as them anyway (`DERM_RUN_AS=you`); the
 /// chat is then unbounded as them, and the daemon's person check applies.
+#[cfg(unix)]
 const RUN_AS_VAR: &str = "DERM_RUN_AS";
 
 /// The open bridge, kept until `finish` (or the process's exit).
+#[cfg(unix)]
 static BRIDGE: Mutex<Option<bridge::Bridge>> = Mutex::new(None);
 
 /// Starts the harness as the agents' user when one is set up (module text).
+#[cfg(unix)]
 pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value>, (u8, String)> {
     if !cfg!(target_os = "linux") || ctx.boundary != "none" {
         // A boundary keeps the agent from the daemon's token already (srt
@@ -201,6 +215,7 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
 }
 
 /// The variables that point the gate inside at the bridge.
+#[cfg(unix)]
 fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, String)> {
     let path = |p: &Path| p.to_string_lossy().into_owned();
     let mut set = vec![
@@ -217,20 +232,24 @@ fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, Stri
 
 /// Stops the chat's bridge and removes its folder. `run_io` calls it after
 /// the harness exits; `atexit` covers an exit that skips that.
+#[cfg(unix)]
 pub(crate) fn finish() {
     if let Ok(mut slot) = BRIDGE.lock() {
         slot.take();
     }
 }
 
+#[cfg(unix)]
 extern "C" fn finish_at_exit() {
     finish();
 }
 
+#[cfg(unix)]
 fn run_as_you() -> bool {
     std::env::var(RUN_AS_VAR).is_ok_and(|v| v == "you")
 }
 
+#[cfg(unix)]
 fn euid() -> u32 {
     derm_core::platform::effective_user()
 }
@@ -238,6 +257,7 @@ fn euid() -> u32 {
 /// `path` resolved, a regular file of root's that no one else can write, in
 /// folders of root's no one else can write; `setid`: it must be set-user-id
 /// (sudo). Returns the resolved path.
+#[cfg(unix)]
 fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
     let real = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
@@ -262,6 +282,7 @@ fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
 /// terminal program needs. Never `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`,
 /// `XDG_*`, `SUDO_*` or the loader's: those describe the person, are set for
 /// the agents' user, or change what a program loads.
+#[cfg(unix)]
 fn keep(name: &str) -> bool {
     const NEVER: &[&str] = &[
         "HOME",
@@ -284,6 +305,7 @@ fn keep(name: &str) -> bool {
 }
 
 /// The terminal's variables, kept when derm run has them.
+#[cfg(unix)]
 const TERMINAL: &[&str] = &[
     "TERM",
     "COLORTERM",
@@ -293,6 +315,7 @@ const TERMINAL: &[&str] = &[
     "NO_COLOR",
 ];
 
+#[cfg(unix)]
 fn rewrite(
     launch: &mut Plan,
     sudo: &str,
@@ -334,6 +357,7 @@ fn rewrite(
 
 /// One check run as the agents' user, through the route the harness will
 /// take. The script is fixed; every path goes in as an argument.
+#[cfg(unix)]
 struct Probe<'a> {
     sudo: &'a str,
     sh: &'a str,
@@ -347,6 +371,7 @@ struct Probe<'a> {
 /// Prints `<kind>\t<path>\0` per finding, then `done\t-\0`. `reach`: a path
 /// the agent can read (a file) or enter or list (a folder); `nowrite`: a chat
 /// folder it cannot write; `prog-missing`: the harness is not on its `PATH`.
+#[cfg(unix)]
 const PROBE_SCRIPT: &str = r#"set -u
 p=$1; prog=$2; shift 2
 out() { printf '%s\t%s\0' "$1" "$2"; }
@@ -366,12 +391,14 @@ out done -
 "#;
 
 #[derive(Debug, Default, PartialEq)]
+#[cfg(unix)]
 struct Found {
     reach: Vec<String>,
     nowrite: Vec<String>,
     prog_missing: bool,
 }
 
+#[cfg(unix)]
 impl Probe<'_> {
     fn argv(&self) -> Vec<String> {
         let mut a = vec![
@@ -418,6 +445,7 @@ impl Probe<'_> {
 }
 
 /// The probe's output, or `None` when it did not finish.
+#[cfg(unix)]
 fn parse(out: &[u8]) -> Option<Found> {
     let mut f = Found::default();
     let mut done = false;
@@ -435,6 +463,7 @@ fn parse(out: &[u8]) -> Option<Found> {
     done.then_some(f)
 }
 
+#[cfg(unix)]
 impl Found {
     fn refusal(&self, user: &str, program: &str) -> Option<String> {
         if !self.reach.is_empty() {
@@ -458,7 +487,18 @@ impl Found {
     }
 }
 
-#[cfg(test)]
+/// Windows (lane Z): no agents' user exists there (lane V's is the box's);
+/// the harness runs as you, as `wrap_with` answers on every system but
+/// Linux.
+#[cfg(not(unix))]
+pub(crate) fn wrap_with(_launch: &mut Plan, _ctx: &Context) -> Result<Option<Value>, (u8, String)> {
+    Ok(None)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn finish() {}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

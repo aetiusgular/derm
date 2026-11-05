@@ -14,7 +14,11 @@ use serde_json::{json, Value};
 
 /// The largest line from the helper: a tool result with a screenshot.
 #[cfg_attr(
-    all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
+    all(
+        not(target_os = "macos"),
+        not(target_os = "linux"),
+        any(not(test), not(unix))
+    ),
     expect(dead_code, reason = "the helper runs on macOS and Linux only")
 )]
 pub const MAX_LINE: usize = 64 * 1024 * 1024;
@@ -32,7 +36,11 @@ impl HelperClient {
     /// Takes a connected stream's two halves. `on_event` gets each event line
     /// (`record`, `exited`) and, once, `{"event":"closed"}`.
     #[cfg_attr(
-        all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
+        all(
+            not(target_os = "macos"),
+            not(target_os = "linux"),
+            any(not(test), not(unix))
+        ),
         expect(dead_code, reason = "the helper runs on macOS and Linux only")
     )]
     pub fn new(
@@ -171,7 +179,11 @@ impl HelperError {
 }
 
 #[cfg_attr(
-    all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
+    all(
+        not(target_os = "macos"),
+        not(target_os = "linux"),
+        any(not(test), not(unix))
+    ),
     expect(dead_code, reason = "the helper runs on macOS and Linux only")
 )]
 fn read_line(reader: &mut BufReader<impl Read>) -> Option<Vec<u8>> {
@@ -197,7 +209,9 @@ fn read_line(reader: &mut BufReader<impl Read>) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;

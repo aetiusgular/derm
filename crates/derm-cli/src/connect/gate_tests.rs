@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -62,6 +63,7 @@ fn go(home: &Path, args: &[&str]) -> Run {
     go_with(home, &env(&[]), Answer(true, None), args)
 }
 
+#[cfg(unix)]
 /// A package folder holding `package.json` with `name` and
 /// `bin/derm-hook.mjs`, closed to others.
 fn package(home: &Path, folder: &str, name: &str) -> String {
@@ -136,6 +138,7 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
     }
 }
 
+#[cfg(unix)]
 /// Lane N's `registration/mistral-vibe/hooks.toml` (85592cf), with the
 /// folder filled: derm writes exactly that table beside the user's own.
 #[test]
@@ -191,6 +194,7 @@ fn vibe_gets_lane_ns_table_beside_its_own_and_once() {
     assert_eq!(read(&cfg).trim_end(), mine.trim_end());
 }
 
+#[cfg(unix)]
 /// Case 75: the gate goes beside Orca's own entry in a Claude-format list,
 /// a second run adds nothing, and --ungate takes out derm's alone.
 #[test]
@@ -247,6 +251,7 @@ fn claude_format_list_beside_orcas_entry_and_out_again() {
     assert_eq!(parse(&read(&cfg)), parse(before));
 }
 
+#[cfg(unix)]
 /// A hook folder moved since the last --gate: derm's entry is replaced,
 /// never doubled.
 #[test]
@@ -277,6 +282,7 @@ fn a_moved_package_replaces_derms_entry() {
     assert!(json::compact(&list[0]).contains(&two));
 }
 
+#[cfg(unix)]
 /// Cursor: two lists in one new file that starts with `version: 1`, as lane
 /// N's `registration/cursor/hooks.json`.
 #[test]
@@ -304,6 +310,7 @@ fn cursor_gets_both_events_in_a_new_file() {
     }
 }
 
+#[cfg(unix)]
 /// Antigravity: a named bundle beside others; a `derm` member that is not
 /// derm's is refused.
 #[test]
@@ -332,6 +339,7 @@ fn antigravity_named_bundle_and_a_stranger_under_the_name() {
     assert!(r.err.contains("not derm's entry"), "{}", r.err);
 }
 
+#[cfg(unix)]
 /// goose: a plugin folder; --ungate never deletes it, it says to.
 #[test]
 fn goose_plugin_folder_written_and_left_for_you_to_remove() {
@@ -371,6 +379,7 @@ fn goose_plugin_folder_written_and_left_for_you_to_remove() {
     assert!(r.err.contains("is not derm's"), "{}", r.err);
 }
 
+#[cfg(unix)]
 /// Case 55 across files: Grok's gate is two files; one changes while the
 /// question is open, and neither is written.
 #[test]
@@ -411,6 +420,7 @@ fn a_file_that_changes_before_the_write_stops_every_file() {
     assert!(read(&home.join(".grok/hooks/derm.json")).contains("\"failClosed\": true"));
 }
 
+#[cfg(unix)]
 /// Case 54: nothing for an agent that is not installed.
 #[test]
 fn an_agent_that_is_not_installed_gets_nothing_written() {
@@ -429,6 +439,7 @@ fn an_agent_that_is_not_installed_gets_nothing_written() {
     assert!(!home.join(".commandcode").exists());
 }
 
+#[cfg(unix)]
 /// The hook folder: absolute, no `..`, not a link, the right package, closed
 /// to others, with its hook file.
 #[test]
@@ -471,6 +482,7 @@ fn hook_folder_checks() {
     assert_eq!(r.code, 2);
 }
 
+#[cfg(unix)]
 /// Droid's hooks.json shadows settings.json: refused while it exists. And a
 /// harness folder moved outside the home folder is refused (case 65's
 /// neighbour: derm writes under your home only).
@@ -497,6 +509,7 @@ fn shadowing_files_and_folders_outside_home_are_refused() {
     assert!(r.err.contains("outside your home"), "{}", r.err);
 }
 
+#[cfg(unix)]
 /// OpenCode's `plugin` list in a JSONC file: comments elsewhere are kept; a
 /// comment inside the list is refused rather than dropped.
 #[test]
@@ -531,6 +544,7 @@ fn opencode_plugin_list_keeps_comments_and_refuses_one_inside_the_list() {
     assert!(r.err.contains("finds its own entry"), "{}", r.err);
 }
 
+#[cfg(unix)]
 /// Agents whose gate installs through their own command, and Kimi until its
 /// folder is settled: printed, never written.
 #[test]
@@ -565,6 +579,7 @@ fn print_only_agents_print_and_write_nothing() {
     assert!(r.err.contains("no gate registration"), "{}", r.err);
 }
 
+#[cfg(unix)]
 /// `--node` pins Node by absolute path.
 #[test]
 fn node_can_be_pinned() {
@@ -602,6 +617,7 @@ fn node_can_be_pinned() {
     assert!(r.err.contains("not derm's"), "{}", r.err);
 }
 
+#[cfg(unix)]
 fn opencode_pkg(home: &Path) -> String {
     package(
         home,
@@ -614,6 +630,7 @@ fn oc(home: &Path, file: &str) -> std::path::PathBuf {
     home.join(".config/opencode").join(file)
 }
 
+#[cfg(unix)]
 /// OpenCode 1.19.4 merges `config.json`, `opencode.json` and `opencode.jsonc`
 /// in that order with remeda's `mergeDeep`, which replaces arrays
 /// (`config.ts:272-274`): a `plugin` list in `opencode.jsonc` replaces the one
@@ -637,6 +654,7 @@ fn opencode_gate_goes_in_the_file_opencode_reads_last() {
     assert!(!read(&oc(&home, "opencode.json")).contains("derm"));
 }
 
+#[cfg(unix)]
 /// A list in a file OpenCode reads first would be replaced by a new list in
 /// the file derm writes: refused, nothing written. With that file alone, the
 /// entry goes beside the list there.
@@ -667,6 +685,7 @@ fn a_plugin_list_in_a_file_read_earlier_is_never_replaced() {
     );
 }
 
+#[cfg(unix)]
 /// Kilo 7.8.18's global folder is `$XDG_CONFIG_HOME/kilo` whatever
 /// `KILO_CONFIG_DIR` says (`core/src/global.ts:24`; that variable adds a
 /// folder to the project scan, `config.ts:818-836`), and Kilo reads
@@ -726,6 +745,7 @@ fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
+#[cfg(unix)]
 /// The fragment's `permission` keys (OpenCode's own prompts as a second
 /// layer). OpenCode 1.19.4 takes the last matching rule (`findLast`,
 /// `permission/index.ts:28-32`) and keeps the file's key order
@@ -803,6 +823,7 @@ fn opencode_permission_block_only_ever_narrows() {
     );
 }
 
+#[cfg(unix)]
 /// A legacy `tools` switch set to false becomes a deny that any `permission`
 /// key of the same name overrides (`config.ts:567-578`): derm adds none for
 /// it. A `permission` block in another global file is merged key by key
@@ -865,6 +886,7 @@ fn opencode_wildcard_matches_as_opencode_does() {
     assert!(wildcard("a\\b", "a/b"));
 }
 
+#[cfg(unix)]
 /// Mac test w4, MW4-7: `--gate --hook <folder>` for Claude Code and Codex
 /// printed the GitHub lines (Codex's pinned to the release's tag), so a tester
 /// following them installed the release, not the folder named. With a folder,

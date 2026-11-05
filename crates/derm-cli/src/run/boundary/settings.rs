@@ -23,20 +23,30 @@ pub(crate) fn path_for(home: &str) -> PathBuf {
     Path::new(home).join(".derm").join("settings.json")
 }
 
+/// A regular file of this user's, one link, that no one else may write.
+#[cfg(unix)]
+fn owner_only_writes(_path: &Path, meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.file_type().is_file()
+        && meta.uid() == derm_core::platform::effective_user()
+        && meta.mode() & 0o022 == 0
+        && meta.nlink() == 1
+}
+
+/// Windows (lane Z): the same, from the owner and DACL.
+#[cfg(windows)]
+fn owner_only_writes(path: &Path, meta: &std::fs::Metadata) -> bool {
+    meta.file_type().is_file() && derm_core::platform::windows::only_owner_writes(path)
+}
+
 /// The pre-answer, and why the file was not used when it was there.
 pub(crate) fn load(path: &Path) -> (Option<PreAnswer>, Option<String>) {
-    use std::os::unix::fs::MetadataExt;
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(_) => return (None, None),
     };
-    let uid = derm_core::platform::effective_user();
     let bad = |why: &str| (None, Some(format!("{} {why}", path.display())));
-    if !meta.file_type().is_file()
-        || meta.uid() != uid
-        || meta.mode() & 0o022 != 0
-        || meta.nlink() != 1
-    {
+    if !owner_only_writes(path, &meta) {
         return bad("is not a regular file of yours that only you can write");
     }
     if meta.len() > MAX_FILE {
@@ -100,6 +110,7 @@ pub(crate) fn parse(text: &str) -> Result<Option<PreAnswer>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -135,6 +146,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_file_others_can_write_or_a_link_is_not_read() {
         let d = std::env::temp_dir().join(format!(

@@ -3,6 +3,7 @@
 //! starts it. Nothing here touches your own daemon or files.
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -31,6 +32,7 @@ impl Drop for Live {
     }
 }
 
+#[cfg(unix)]
 fn live(name: &str) -> Live {
     let root = std::env::temp_dir().join(format!(
         "tkj-{name}-{}-{}",
@@ -113,6 +115,7 @@ impl Shared {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn tail_shows_the_backlog_then_live_events_and_cleans_them() {
     let l = live("tail");
@@ -142,6 +145,7 @@ fn tail_shows_the_backlog_then_live_events_and_cleans_them() {
     assert!(text.contains("derm-chat-a"), "{text}");
 }
 
+#[cfg(unix)]
 #[test]
 fn tail_filters_by_chat_and_json_mode_prints_events() {
     let l = live("tailchat");
@@ -165,6 +169,7 @@ fn tail_filters_by_chat_and_json_mode_prints_events() {
     assert_eq!(v["chatId"], "derm-chat-b");
 }
 
+#[cfg(unix)]
 #[test]
 fn report_counts_what_was_posted() {
     let l = live("report");
@@ -183,6 +188,7 @@ fn report_counts_what_was_posted() {
     assert!(text.contains("chain ok"), "{text}");
 }
 
+#[cfg(unix)]
 #[test]
 fn watch_never_takes_a_chat_token() {
     let l = live("scope");
@@ -199,6 +205,7 @@ fn watch_never_takes_a_chat_token() {
     assert!(e.contains("daemon scope"), "{e}");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_token_file_others_can_read_is_refused() {
     let l = live("mode");
@@ -208,6 +215,7 @@ fn a_token_file_others_can_read_is_refused() {
     assert!(e.contains("readable by others"), "{e}");
 }
 
+#[cfg(unix)]
 #[test]
 fn no_daemon_is_a_clear_error() {
     let dir = std::env::temp_dir().join(format!("tkj-none-{}", std::process::id()));
@@ -244,6 +252,7 @@ fn ask(l: &Live, id: &str, secs: u32) -> std::thread::JoinHandle<Value> {
     })
 }
 
+#[cfg(unix)]
 #[test]
 fn the_approver_answers_a_hooks_request_end_to_end() {
     let l = live("approve");
@@ -291,6 +300,7 @@ fn the_approver_answers_a_hooks_request_end_to_end() {
     let _ = harness.wait();
 }
 
+#[cfg(unix)]
 #[test]
 fn with_no_approver_the_daemon_says_no_at_once() {
     let l = live("noapprover");
@@ -303,6 +313,7 @@ fn with_no_approver_the_daemon_says_no_at_once() {
     assert!(t.elapsed() < Duration::from_secs(5));
 }
 
+#[cfg(unix)]
 #[test]
 fn an_unanswered_request_times_out_to_no_and_is_not_answered_late() {
     let l = live("timeout");
@@ -326,6 +337,7 @@ fn an_unanswered_request_times_out_to_no_and_is_not_answered_late() {
     out.wait_for("no request is waiting");
 }
 
+#[cfg(unix)]
 #[test]
 fn status_sees_the_daemon_its_server_and_an_open_chat() {
     let l = live("status");
@@ -372,6 +384,7 @@ fn status_sees_the_daemon_its_server_and_an_open_chat() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn status_finds_an_open_chat_between_two_floods_of_events() {
     // Box test w2, BW3: `derm status` read running chats from the tail's
@@ -416,6 +429,7 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
     );
 }
 
+#[cfg(unix)]
 /// S2 part b (wave 5 lane V), end to end: the chat runs as you, so the
 /// daemon refuses a `yes` until the person's password comes with it. The
 /// approver asks for it with echo off, sends it once, shows the card again

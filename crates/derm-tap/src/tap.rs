@@ -236,6 +236,7 @@ impl Drop for Tap {
 /// Case 114: a crash leaves no core file, which would hold tokens and
 /// bodies. The limit is the process's, so it holds for the daemon the tap
 /// runs in (recorded as a request for integration to set at start too).
+#[cfg(unix)]
 fn no_core_dumps() {
     let zero = libc::rlimit {
         rlim_cur: 0,
@@ -245,6 +246,13 @@ fn no_core_dumps() {
     unsafe {
         libc::setrlimit(libc::RLIMIT_CORE, &zero);
     }
+}
+
+/// Windows: Windows Error Reporting, which writes crash dumps, is not
+/// invoked for this process or its children (lane Z).
+#[cfg(windows)]
+fn no_core_dumps() {
+    derm_core::platform::windows::no_crash_dumps();
 }
 
 fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {

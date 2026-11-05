@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -148,6 +149,7 @@ fn codex_gets_its_provider_flags_before_its_own_and_the_route_only_in_its_enviro
     let _ = std::fs::remove_dir_all(d.root);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_chat_runs_untapped_and_says_why_when_it_cannot_be_tapped() {
     // No endpoint published by the daemon.
@@ -347,6 +349,7 @@ fn the_tap_table_merges_into_the_presets_and_every_row_follows_the_schema() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn the_content_record_follows_the_settings_and_defaults_off() {
     let d = dirs("content", None);

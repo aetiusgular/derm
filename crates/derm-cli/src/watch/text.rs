@@ -77,6 +77,7 @@ pub fn date_time(ms: i64) -> String {
     }
 }
 
+#[cfg(unix)]
 fn local(ms: i64) -> Option<libc::tm> {
     let secs = ms.div_euclid(1000) as libc::time_t;
     // SAFETY: an all-zero `tm` is a valid value for localtime_r to fill;
@@ -84,6 +85,16 @@ fn local(ms: i64) -> Option<libc::tm> {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let r = unsafe { libc::localtime_r(&secs, &mut tm) };
     (!r.is_null()).then_some(tm)
+}
+
+/// Windows (lane Z): the C runtime's `localtime_s`.
+#[cfg(windows)]
+fn local(ms: i64) -> Option<libc::tm> {
+    let secs = ms.div_euclid(1000) as libc::time_t;
+    // SAFETY: as above; localtime_s fills `tm` and returns 0 on success.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::localtime_s(&mut tm, &secs) };
+    (r == 0).then_some(tm)
 }
 
 pub fn now_ms() -> i64 {

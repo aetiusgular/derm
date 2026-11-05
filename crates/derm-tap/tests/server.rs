@@ -646,8 +646,17 @@ fn content_on_keeps_the_bodies_in_private_files_and_never_a_header() {
     assert_eq!(req, body);
     assert_eq!(resp, pieces.concat());
     for f in &files {
-        use std::os::unix::fs::MetadataExt;
-        assert_eq!(std::fs::metadata(f).unwrap().mode() & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(std::fs::metadata(f).unwrap().mode() & 0o777, 0o600);
+        }
+        #[cfg(windows)]
+        assert!(
+            derm_core::platform::windows::is_private_path(f),
+            "{}",
+            f.display()
+        );
         let name = f.file_name().unwrap().to_str().unwrap();
         assert_eq!(content::parse_name(name).map(|(_, d)| d), Some(2));
         assert!(!String::from_utf8_lossy(&std::fs::read(f).unwrap()).contains("SECRET-TOKEN"));

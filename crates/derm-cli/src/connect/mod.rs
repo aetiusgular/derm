@@ -34,7 +34,9 @@ pub mod gateway;
 mod allowlist;
 mod diff;
 mod gate;
-#[cfg(test)]
+// Shell-script fakes and a live daemon on a Unix socket (lane Z: no
+// Windows twin yet).
+#[cfg(all(test, unix))]
 mod gate_tests;
 mod json;
 mod log;

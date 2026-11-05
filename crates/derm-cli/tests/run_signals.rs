@@ -3,6 +3,8 @@
 //! script that stops `derm` leaves the agent running. A terminal's Ctrl-C
 //! reaches both already (same process group) and is not sent twice; that
 //! half needs a terminal and is a box and Mac step.
+// Unix processes and signals (lane Z: no Windows form yet).
+#![cfg(unix)]
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;

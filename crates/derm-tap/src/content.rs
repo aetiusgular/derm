@@ -10,9 +10,12 @@
 //! off or shortening it later deletes nothing early (case 126). A file holds
 //! a body as it crossed the tap: never a header, a URL or a query (case 114).
 
-use std::fs::{DirBuilder, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::DirBuilder;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 /// The folder under the daemon's data folder.
@@ -77,6 +80,7 @@ impl ContentFile {
 
 /// Makes `dir` (0700) when missing, then checks it is a real folder (not a
 /// link) of this user's with no group or other bits.
+#[cfg(unix)]
 fn private_dir(dir: &Path) -> io::Result<()> {
     match DirBuilder::new().mode(0o700).create(dir) {
         Ok(()) => {}
@@ -92,6 +96,14 @@ fn private_dir(dir: &Path) -> io::Result<()> {
         )));
     }
     Ok(())
+}
+
+/// Windows: the seam makes the folder, refuses a reparse point on its path
+/// or another user's folder, and sets a protected user-only DACL (lane Z,
+/// note AU section 5).
+#[cfg(windows)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    derm_core::platform::private_dir(dir)
 }
 
 /// Opens a new content file for one part of one request.
@@ -122,12 +134,11 @@ pub fn open(
         return Err(io::Error::other("bad content file name"));
     }
     let path = dir.join(name);
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)?;
+    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
+    // on Unix (lane Z's request Z-2).
+    let file =
+        derm_core::platform::private_no_follow(OpenOptions::new().write(true).create_new(true))
+            .open(&path)?;
     Ok(ContentFile {
         file,
         path,
@@ -159,21 +170,60 @@ mod tests {
         f.append(b"{\"model\":\"m\"}");
         let name = f.path.file_name().unwrap().to_str().unwrap().to_string();
         assert_eq!(parse_name(&name), Some((1_793_000_000_000, 3)));
-        assert_eq!(std::fs::metadata(&f.path).unwrap().mode() & 0o777, 0o600);
-        assert_eq!(
-            std::fs::metadata(root.join("content/chat-1"))
-                .unwrap()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        assert_eq!(
-            std::fs::metadata(root.join("content")).unwrap().mode() & 0o777,
-            0o700
-        );
+        assert_private(&f.path, 0o600);
+        assert_private(&root.join("content/chat-1"), 0o700);
+        assert_private(&root.join("content"), 0o700);
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// 0600 or 0700 on Unix; a private DACL on Windows (lane Z).
+    #[cfg(unix)]
+    fn assert_private(p: &Path, mode: u32) {
+        assert_eq!(
+            std::fs::metadata(p).unwrap().mode() & 0o777,
+            mode,
+            "{}",
+            p.display()
+        );
+    }
+
+    #[cfg(windows)]
+    fn assert_private(p: &Path, _mode: u32) {
+        assert!(
+            derm_core::platform::windows::is_private_path(p),
+            "{}",
+            p.display()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_or_a_shared_folder_is_refused() {
+        let root = tmp("junction");
+        std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+        let t = Target {
+            root: root.clone(),
+            retention_days: 1,
+        };
+        // A folder of ours: allowed, made private.
+        open(&t, "chat-1", 1, "r", "request").unwrap();
+        // A junction in the chat's place.
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join("content").join("chat-2"))
+            .arg(root.join("elsewhere"))
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(open(&t, "chat-2", 1, "r", "request").is_err());
+        assert!(std::fs::read_dir(root.join("elsewhere"))
+            .unwrap()
+            .next()
+            .is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_link_or_a_shared_folder_is_refused() {
         let root = tmp("link");

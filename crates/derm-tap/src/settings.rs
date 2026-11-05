@@ -47,14 +47,29 @@ pub fn path_for(home: &str) -> PathBuf {
     Path::new(home).join(".derm").join("settings.json")
 }
 
+/// A regular file of this user's, one link, that no one else may write.
+#[cfg(unix)]
+fn owner_only_writes(_path: &Path, meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.file_type().is_file()
+        && meta.uid() == derm_core::platform::real_user()
+        && meta.mode() & 0o022 == 0
+        && meta.nlink() == 1
+}
+
+/// Windows: the same test read from the file's owner and DACL, no reparse
+/// point on its path (lane Z, `derm_core::platform::windows::only_owner_writes`).
+#[cfg(windows)]
+fn owner_only_writes(path: &Path, meta: &std::fs::Metadata) -> bool {
+    meta.file_type().is_file() && derm_core::platform::windows::only_owner_writes(path)
+}
+
 /// The settings, and a warning when the file was there but not used.
 pub fn load(path: &Path) -> (Settings, Option<String>) {
-    use std::os::unix::fs::MetadataExt;
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(_) => return (Settings::default(), None),
     };
-    let uid = derm_core::platform::real_user();
     let warn = |why: &str| {
         (
             Settings::default(),
@@ -64,11 +79,7 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
             )),
         )
     };
-    if !meta.file_type().is_file()
-        || meta.uid() != uid
-        || meta.mode() & 0o022 != 0
-        || meta.nlink() != 1
-    {
+    if !owner_only_writes(path, &meta) {
         return warn("is not a regular file of yours that only you can write");
     }
     if meta.len() > MAX_FILE {
@@ -283,6 +294,57 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_file_another_user_could_write_or_a_second_link_is_not_read() {
+        // Lane Z: the Windows twin of the Unix test below.
+        let dir = std::env::temp_dir().join(format!("derm-tap-settings-{}", std::process::id()));
+        let dir = std::fs::canonicalize({
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            &dir
+        })
+        .unwrap();
+        let dir = PathBuf::from(
+            dir.to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_string(),
+        );
+        let f = dir.join("settings.json");
+        std::fs::write(&f, r#"{"version":1,"tap":{"on":false}}"#).unwrap();
+        derm_core::platform::set_private_file(&f).unwrap();
+        let (s, warn) = load(&f);
+        assert!(!s.tap_on && warn.is_none(), "{warn:?}");
+        // Everyone may write it: refused.
+        derm_core::platform::windows::set_dacl_sddl(
+            &f,
+            &format!(
+                "D:P(A;;FA;;;{})(A;;FW;;;WD)",
+                derm_core::platform::effective_user()
+            ),
+        )
+        .unwrap();
+        let (s, warn) = load(&f);
+        assert!(s.tap_on && warn.is_some());
+        // Others may read it (srt's profile grant): read.
+        derm_core::platform::windows::set_dacl_sddl(
+            &f,
+            &format!(
+                "D:P(A;;FA;;;{})(A;;FR;;;WD)",
+                derm_core::platform::effective_user()
+            ),
+        )
+        .unwrap();
+        assert!(load(&f).1.is_none());
+        // A second hard link: refused, as nlink != 1 is on Unix.
+        std::fs::hard_link(&f, dir.join("other.json")).unwrap();
+        let (s, warn) = load(&f);
+        assert!(s.tap_on && warn.is_some());
+        assert_eq!(load(&dir.join("missing.json")), (Settings::default(), None));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_file_another_user_could_write_or_a_link_is_not_read() {
         use std::os::unix::fs::PermissionsExt;

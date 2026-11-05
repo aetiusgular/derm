@@ -2,6 +2,7 @@
 //! request types (`crates/derm-daemon/src/protocol.rs`), and a scripted fake
 //! daemon for the replies, timeouts and refusals.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
@@ -86,6 +87,40 @@ fn a_refused_mint_is_an_error() {
     assert!(matches!(c.mint("c", "pi"), Err(ClientError::Refused(_))));
 }
 
+#[cfg(windows)]
+#[test]
+fn the_token_file_must_be_ours_and_private_on_windows() {
+    // Lane Z: the Windows twin of the Unix test below. The fake made the
+    // token private (a protected, user-only DACL).
+    let f = fake::start("perm-w", fake::Mode::Normal);
+    let tok = f.dir.join("daemon.token");
+    assert_eq!(
+        client::read_daemon_token(&f.dir).unwrap(),
+        fake::DAEMON_TOKEN
+    );
+    // Everyone may read it: refused (srt's profile read grant, case AU-8).
+    derm_core::platform::windows::set_dacl_sddl(
+        &tok,
+        &format!(
+            "D:P(A;;FA;;;{})(A;;FR;;;WD)",
+            derm_core::platform::effective_user()
+        ),
+    )
+    .unwrap();
+    assert!(matches!(
+        client::read_daemon_token(&f.dir),
+        Err(ClientError::Token(_))
+    ));
+    // Inheriting its folder's entries (not protected): refused.
+    derm_core::platform::set_private_file(&tok).unwrap();
+    std::fs::write(&tok, "not a token").unwrap();
+    assert!(matches!(
+        client::read_daemon_token(&f.dir),
+        Err(ClientError::Token(_))
+    ));
+}
+
+#[cfg(unix)]
 #[test]
 fn the_token_file_must_be_ours_and_private() {
     let f = fake::start("perm", fake::Mode::Normal);

@@ -9,25 +9,39 @@
 //! reads as off: a file an agent planted, or one this code cannot read,
 //! never turns computer use on.
 
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use serde_json::Value;
 
 const MAX_FILE: u64 = 64 * 1024;
 
+/// A regular file of `uid`'s, one link, that no one else may write.
+#[cfg(unix)]
+fn owner_only_writes(_path: &Path, meta: &std::fs::Metadata, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.file_type().is_file() && meta.uid() == uid && meta.mode() & 0o022 == 0 && meta.nlink() == 1
+}
+
+/// Windows (lane Z): the same, read from the owner and DACL; only the
+/// daemon's own user is ever asked about.
+#[cfg(windows)]
+fn owner_only_writes(
+    path: &Path,
+    meta: &std::fs::Metadata,
+    uid: derm_core::platform::UserId,
+) -> bool {
+    meta.file_type().is_file()
+        && uid == derm_core::platform::effective_user()
+        && derm_core::platform::windows::only_owner_writes(path)
+}
+
 /// Whether the settings file at `path` turns computer use on. `false` for
 /// no file, a file that is not the user's own, or one the schema refuses.
-pub fn computer_use_on(path: &Path, uid: u32) -> bool {
+pub fn computer_use_on(path: &Path, uid: derm_core::platform::UserId) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
-    if !meta.file_type().is_file()
-        || meta.uid() != uid
-        || meta.mode() & 0o022 != 0
-        || meta.nlink() != 1
-        || meta.len() > MAX_FILE
-    {
+    if !owner_only_writes(path, &meta, uid) || meta.len() > MAX_FILE {
         return false;
     }
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -60,6 +74,7 @@ pub fn parse(text: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -86,6 +101,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_file_someone_else_could_write_reads_as_off() {
         let dir = std::env::temp_dir().join(format!("derm-cu-settings-{}", std::process::id()));

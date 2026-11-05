@@ -519,6 +519,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_bundle_that_is_not_the_collectors_is_refused_with_its_reason() {
         let names = Names::release();
