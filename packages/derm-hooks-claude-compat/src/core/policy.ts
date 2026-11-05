@@ -653,6 +653,31 @@ export function unreadableReason(token: string): string {
   return `shell text the matcher cannot read: \`${token}\`${glob ? " (a glob)" : ""}`;
 }
 
+/** Tools that run PowerShell (lane Z's request 3; note AU section 10). */
+export const POWERSHELL_TOOLS = ["powershell"] as const;
+
+const PLAIN_POWERSHELL_CHAR = /^[a-z0-9 ._/:=+-]$/;
+
+/**
+ * The first character of folded `text` that a plain PowerShell word list
+ * does not hold, or undefined. PowerShell quotes, escapes and stops parsing
+ * its own way (the backtick, `--%`, `;`, `|`, `&`, `@`, parentheses, and
+ * its typographic quotes and dashes; about_Parsing, PowerShell 7.6), which
+ * the bash and zsh reader of case 30 does not read, so an allow by command
+ * text holds only for letters, digits, spaces and `._/:=+-`.
+ */
+export function powershellUnplain(folded: string): string | undefined {
+  for (const ch of folded) if (!PLAIN_POWERSHELL_CHAR.test(ch)) return ch;
+  return undefined;
+}
+
+/** The reason for an ask on PowerShell text; derm-pi and derm-core write the same. */
+export function powershellReason(ch: string): string {
+  const cp = ch.codePointAt(0) ?? 0;
+  const shown = cp >= 0x21 && cp <= 0x7e ? ch : `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+  return `PowerShell text the matcher reads only as plain words: \`${shown}\``;
+}
+
 /**
  * The text with every quote removed. The shell joins `ANTHROPIC_"BASE_URL"`
  * and `g''it` into one word, so the reject list and the control files are
@@ -779,6 +804,9 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
     // side that fails safe (integration w1; derm-core and derm-pi do the same).
     const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
     if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
+    // PowerShell (lane Z's request 3): plain words only, or ask.
+    const unplain = (POWERSHELL_TOOLS as readonly string[]).includes(normalizedTool) ? powershellUnplain(folded) : undefined;
+    if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
     // Package installs (contracts/policy.md section 6; lane X's seam). The
     // wave 5 base's stub reads no call as an install.
     const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;

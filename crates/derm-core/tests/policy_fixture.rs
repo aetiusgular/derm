@@ -44,8 +44,8 @@ fn fixture_has_thirteen_rules_and_fifty_three_cases() {
     );
     assert_eq!(
         cases.len(),
-        78,
-        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4"
+        84,
+        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3)"
     );
 }
 

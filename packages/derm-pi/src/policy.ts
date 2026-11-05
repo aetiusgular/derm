@@ -376,6 +376,24 @@ export const SHELL_TOOLS = new Set([
  */
 export const UNREADABLE_SHELL_TOKENS = ["$", "`", "!", "{", "}", "~", "(e:", "(+", "(-", "\\", "*", "?", "["] as const;
 
+/** Tools that run PowerShell (lane Z's request 3; the hook core's list). */
+export const POWERSHELL_TOOLS: ReadonlySet<string> = new Set(["powershell"]);
+
+const PLAIN_POWERSHELL_CHAR = /^[a-z0-9 ._/:=+-]$/;
+
+/** The first character of folded text a plain PowerShell word list does not hold (the hook core's rule). */
+export function powershellUnplain(folded: string): string | undefined {
+  for (const ch of folded) if (!PLAIN_POWERSHELL_CHAR.test(ch)) return ch;
+  return undefined;
+}
+
+/** The hook core's reason text, written the same here. */
+export function powershellReason(ch: string): string {
+  const cp = ch.codePointAt(0) ?? 0;
+  const shown = cp >= 0x21 && cp <= 0x7e ? ch : `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
+  return `PowerShell text the matcher reads only as plain words: \`${shown}\``;
+}
+
 /**
  * The text with every quote removed: the shell joins `ANTHROPIC_"BASE_URL"`
  * and `g''it` into one word, so the reject list and the control files are
@@ -690,6 +708,9 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
     const glob = token === "*" || token === "?" || token === "[";
     return { action: "ask", normalizedTool, reason: `shell text the matcher cannot read: \`${token}\`${glob ? " (a glob)" : ""}` };
   }
+  // PowerShell (lane Z's request 3): plain words only, or ask.
+  const unplain = POWERSHELL_TOOLS.has(normalizedTool) ? powershellUnplain(folded) : undefined;
+  if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
   // Package installs (lane X's seam). The wave 5 base's stub reads no call
   // as an install.
   const install = SHELL_TOOLS.has(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;

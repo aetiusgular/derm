@@ -31,8 +31,15 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
  * agents' user (owner.ts), "this user" is the person it works for: the
  * socket is `derm run`'s bridge, and one the agent made is refused.
  */
-export function socketLooksOwned(sock: string): string | undefined {
-  if (typeof process.getuid !== "function") return undefined;
+export function socketLooksOwned(sock: string, system: NodeJS.Platform = platform()): string | undefined {
+  // Windows (lane Z's request 2): the daemon's endpoint is a named pipe, and
+  // Node's `net` gives no way to read the server's process or its token
+  // (note AU sections 2.1 to 2.3), so a pipe another process squatted first
+  // cannot be told from derm's. Until lane Z builds the server check, the
+  // hook never sends a token there: it fails closed (proposed case AU-1).
+  if (system === "win32") return "the daemon's endpoint cannot be checked on Windows yet (no server check is built)";
+  // No uid to check against: refused, never trusted (it was trusted before).
+  if (typeof process.getuid !== "function") return "this system gives no owner to check the daemon socket against";
   try {
     const s = lstatSync(sock);
     if (!s.isSocket()) return "not a socket";

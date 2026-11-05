@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { chatToken, decisionId, exchange, insideFolder } from "./daemon.ts";
+import { chatToken, decisionId, exchange, insideFolder, socketLooksOwned } from "./daemon.ts";
 import { loadPolicyFrom } from "./policy.ts";
 import { startFakeDaemon } from "../testing/fakeDaemon.ts";
 
@@ -156,5 +156,17 @@ describe("a gate decision's id (box test w2, BW2)", () => {
     expect(long.length).toBeLessThanOrEqual(128);
     expect(long).toMatch(/-decision-[0-9a-f]{32}$/);
     expect(decisionId("hermes", "a\nb c/d")).toMatch(/^hermes-a_b_c_d-decision-[0-9a-f]{32}$/);
+  });
+});
+
+describe("the daemon's endpoint on Windows (lane Z's request 2)", () => {
+  it("is never trusted until a server check exists, whatever the name", () => {
+    for (const name of ["\\\\.\\pipe\\derm\\daemon", "C:\\Users\\me\\.derm\\run\\daemon.sock"]) {
+      expect(socketLooksOwned(name, "win32")).toMatch(/cannot be checked on Windows/);
+    }
+  });
+
+  it("is still checked the Unix way elsewhere", () => {
+    expect(socketLooksOwned(path.join(tmpdir(), "no-such-derm-socket"), "linux")).toBe("no daemon socket");
   });
 });

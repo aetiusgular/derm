@@ -816,6 +816,35 @@ pub const UNREADABLE_SHELL_TOKENS: &[&str] = &[
     "$", "`", "!", "{", "}", "~", "(e:", "(+", "(-", "\\", "*", "?", "[",
 ];
 
+/// Tools that run PowerShell (lane Z's request 3; note AU section 10).
+pub const POWERSHELL_TOOLS: &[&str] = &["powershell"];
+
+/// The first character of folded text that a plain PowerShell word list
+/// does not hold, or `None`. PowerShell quotes, escapes and stops parsing its
+/// own way (the backtick, `--%`, `;`, `|`, `&`, `@`, parentheses, and its
+/// typographic quotes and dashes; about_Parsing, PowerShell 7.6), which the
+/// case 30 reader does not read, so an allow by command text holds only for
+/// letters, digits, spaces and `._/:=+-` (the hook core's and derm-pi's rule).
+pub fn powershell_unplain(folded: &str) -> Option<char> {
+    folded.chars().find(|c| {
+        !(c.is_ascii_lowercase()
+            || c.is_ascii_digit()
+            || matches!(c, ' ' | '.' | '_' | '/' | ':' | '=' | '+' | '-'))
+    })
+}
+
+/// The reason for an ask on PowerShell text; the hook core and derm-pi write
+/// the same.
+pub fn powershell_reason(c: char) -> String {
+    let cp = c as u32;
+    let shown = if (0x21..=0x7e).contains(&cp) {
+        c.to_string()
+    } else {
+        format!("U+{cp:04X}")
+    };
+    format!("PowerShell text the matcher reads only as plain words: `{shown}`")
+}
+
 /// True when folded text is a git context (contract, section 3.2): it names
 /// a git config path, or the word `git` (not inside a longer word) is
 /// followed later on the same line by `-c`, `config` or `--config-env`. A
@@ -1064,6 +1093,12 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
                     if glob { " (a glob)" } else { "" }
                 ),
             );
+        }
+        // PowerShell (lane Z's request 3): plain words only, or ask.
+        if POWERSHELL_TOOLS.contains(&normalized.as_str()) {
+            if let Some(c) = powershell_unplain(&folded) {
+                return decide(Action::Ask, powershell_reason(c));
+            }
         }
         // Package installs (contract section 6; wave 5 lane X's seam, cut by
         // the wave 5 base). The base's stub reads no call as an install.
