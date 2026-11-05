@@ -9,6 +9,9 @@
 
 use serde_json::Value;
 
+pub(crate) mod anchor;
+pub(crate) mod bridge;
+
 use super::plan::Plan;
 
 /// The wave 5 base's stub: the launch unchanged, no record.

@@ -13,6 +13,9 @@
 
 use super::*;
 
+// S2 part b: the person check before a `yes` an agent could forge (lane V).
+pub(super) mod person;
+
 impl Daemon {
     /// Sends the request to every approver; the first answer wins. None
     /// connected: `no` at once (case 63). None in time: `no` at the timeout.
