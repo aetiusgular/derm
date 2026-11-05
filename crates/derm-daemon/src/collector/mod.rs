@@ -23,6 +23,14 @@
 
 use std::sync::Arc;
 
+// The collector app's SMAppService calls, compiled here only for tests so
+// CI's macOS job builds and runs them (the collector's own workspace is not
+// in CI). The collector includes the same file.
+#[cfg(test)]
+pub mod sm_app_service;
+
+pub mod app;
+
 use derm_core::event::{Event, Source};
 use serde_json::Value;
 
@@ -95,8 +103,11 @@ pub fn follow(daemon: &Arc<Daemon>, mut each: impl FnMut(Event)) {
     daemon.forget(out.conn);
 }
 
-/// The collector's install plan for a development build (the fork's
-/// terminal route, `activity/collector.rs` `terminal_plan`, lane B's copy):
+/// The collector's install plan. For `derm Activity.app` (or the collector
+/// inside it), the app route (`app.rs`, lane Y): copy it into a root-owned
+/// place, check it, register it through SMAppService as you. For a bare
+/// binary, a development build (the fork's terminal route,
+/// `activity/collector.rs` `terminal_plan`, lane B's copy):
 /// the exact commands, the plist and the hashes, for you to read and run
 /// yourself in Terminal (rules, section 5, item 2). Nothing here runs them.
 ///
@@ -118,6 +129,12 @@ pub fn install_plan(
     peer: &std::path::Path,
 ) -> Result<crate::activity::collector::InstallPlan, String> {
     use crate::activity::collector;
+    // The signed app bundle (lane Y): `--binary` names the `.app`, or the
+    // collector inside it. It is checked by signature, not by a peer path.
+    if let Some(app) = app::app_of(binary) {
+        let names = collector::Names::current();
+        return app::plan(&app, &names, app::Present::now(&names));
+    }
     for (what, path) in [("collector binary", binary), ("daemon binary", peer)] {
         if !path.is_absolute() {
             return Err(format!("the {what} needs an absolute path"));
