@@ -351,7 +351,10 @@ describe("the content switch", () => {
     expect(contentSwitchOn("/home/u", () => undefined)).toBe(false);
   });
 
-  it("the file reader refuses a link, a shared file and another user's", () => {
+  // POSIX modes and links: on Windows a file's mode shows group and other
+  // write, so the reader refuses every file and content stays off there (the
+  // safe side) until lane Z gives it an owner and DACL check.
+  it.skipIf(process.platform === "win32")("the file reader refuses a link, a shared file and another user's", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "derm-pi-settings-"));
     try {
       const file = path.join(dir, "settings.json");
