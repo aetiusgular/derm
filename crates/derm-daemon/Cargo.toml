@@ -49,6 +49,9 @@ derm-tap = { path = "../derm-tap" }
 # [lane-U]
 # [lane-V]
 # [lane-X]
+# The pre-install check's client (installs/check.rs): the same pin and
+# features as derm-tap's, so the lock file gains nothing (lane X).
+ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "platform-verifier"] }
 # [lane-Y]
 # [lane-Z]
 [target.'cfg(target_os = "macos")'.dependencies]

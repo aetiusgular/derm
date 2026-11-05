@@ -1,0 +1,330 @@
+{
+ "$comment": "Lockfiles the managers wrote on 4 Nov 2026 in a scratch project, before and after one install (npm 12.2.2, pnpm 12.16.1, yarn 4.18.1 and 1.22.22, bun 1.4.4, uv 0.13.7, poetry 2.5.1, pdm 2.29.5, pip 26.3's `pip lock`, cargo 1.97.0), and the entries each reader must give, in file order. The expected entries were made with Python's json and tomllib, and by hand for pnpm, yarn and go.sum, not with the readers under test. go.before.sum and go.after.sum are written by hand in the three-field form Go 1.24.7's readGoSum reads (proxy.golang.org was not reachable from the workspace); their hashes are made up. A local package (the project itself, a path dependency) is not an entry; `registry` is false for a source other than the registry.",
+ "files": {
+  "package-lock.before.json": {
+   "kind": "package-lock",
+   "entries": [
+    {
+     "name": "left-pad",
+     "version": "1.3.0",
+     "registry": true
+    }
+   ]
+  },
+  "package-lock.after.json": {
+   "kind": "package-lock",
+   "entries": [
+    {
+     "name": "@types/node",
+     "version": "20.11.0",
+     "registry": true
+    },
+    {
+     "name": "is-number",
+     "version": "7.0.0",
+     "registry": true
+    },
+    {
+     "name": "left-pad",
+     "version": "1.2.0",
+     "registry": true
+    },
+    {
+     "name": "undici-types",
+     "version": "5.26.5",
+     "registry": true
+    }
+   ]
+  },
+  "bun.before.lock": {
+   "kind": "bun-lock",
+   "entries": [
+    {
+     "name": "left-pad",
+     "version": "1.3.0",
+     "registry": true
+    }
+   ]
+  },
+  "bun.after.lock": {
+   "kind": "bun-lock",
+   "entries": [
+    {
+     "name": "@types/node",
+     "version": "20.11.0",
+     "registry": true
+    },
+    {
+     "name": "is-number",
+     "version": "7.0.0",
+     "registry": true
+    },
+    {
+     "name": "left-pad",
+     "version": "1.2.0",
+     "registry": true
+    },
+    {
+     "name": "undici-types",
+     "version": "5.26.5",
+     "registry": true
+    }
+   ]
+  },
+  "uv.before.lock": {
+   "kind": "uv-lock",
+   "entries": [
+    {
+     "name": "six",
+     "version": "1.16.0",
+     "registry": true
+    }
+   ]
+  },
+  "uv.after.lock": {
+   "kind": "uv-lock",
+   "entries": [
+    {
+     "name": "idna",
+     "version": "3.10",
+     "registry": true
+    },
+    {
+     "name": "six",
+     "version": "1.17.0",
+     "registry": true
+    }
+   ]
+  },
+  "poetry.before.lock": {
+   "kind": "poetry-lock",
+   "entries": [
+    {
+     "name": "six",
+     "version": "1.16.0",
+     "registry": true
+    }
+   ]
+  },
+  "poetry.after.lock": {
+   "kind": "poetry-lock",
+   "entries": [
+    {
+     "name": "idna",
+     "version": "3.10",
+     "registry": true
+    },
+    {
+     "name": "six",
+     "version": "1.17.0",
+     "registry": true
+    }
+   ]
+  },
+  "pdm.before.lock": {
+   "kind": "pdm-lock",
+   "entries": [
+    {
+     "name": "six",
+     "version": "1.16.0",
+     "registry": true
+    }
+   ]
+  },
+  "pdm.after.lock": {
+   "kind": "pdm-lock",
+   "entries": [
+    {
+     "name": "idna",
+     "version": "3.10",
+     "registry": true
+    },
+    {
+     "name": "six",
+     "version": "1.17.0",
+     "registry": true
+    }
+   ]
+  },
+  "Cargo.before.lock": {
+   "kind": "cargo-lock",
+   "entries": [
+    {
+     "name": "itoa",
+     "version": "1.0.11",
+     "registry": true
+    }
+   ]
+  },
+  "Cargo.after.lock": {
+   "kind": "cargo-lock",
+   "entries": [
+    {
+     "name": "itoa",
+     "version": "1.0.14",
+     "registry": true
+    },
+    {
+     "name": "ryu",
+     "version": "1.0.18",
+     "registry": true
+    }
+   ]
+  },
+  "pylock.after.toml": {
+   "kind": "pylock",
+   "entries": [
+    {
+     "name": "idna",
+     "version": "3.10",
+     "registry": true
+    },
+    {
+     "name": "six",
+     "version": "1.17.0",
+     "registry": true
+    }
+   ]
+  },
+  "pnpm-lock.before.yaml": {
+   "kind": "pnpm-lock",
+   "entries": [
+    {
+     "name": "left-pad",
+     "version": "1.3.0",
+     "registry": true
+    }
+   ]
+  },
+  "pnpm-lock.after.yaml": {
+   "kind": "pnpm-lock",
+   "entries": [
+    {
+     "name": "@types/node",
+     "version": "20.11.0",
+     "registry": true
+    },
+    {
+     "name": "is-number",
+     "version": "7.0.0",
+     "registry": true
+    },
+    {
+     "name": "left-pad",
+     "version": "1.2.0",
+     "registry": true
+    },
+    {
+     "name": "undici-types",
+     "version": "5.26.5",
+     "registry": true
+    }
+   ]
+  },
+  "yarn4.before.lock": {
+   "kind": "yarn-lock",
+   "entries": [
+    {
+     "name": "left-pad",
+     "version": "1.3.0",
+     "registry": true
+    }
+   ]
+  },
+  "yarn4.after.lock": {
+   "kind": "yarn-lock",
+   "entries": [
+    {
+     "name": "@types/node",
+     "version": "20.11.0",
+     "registry": true
+    },
+    {
+     "name": "is-number",
+     "version": "7.0.0",
+     "registry": true
+    },
+    {
+     "name": "left-pad",
+     "version": "1.2.0",
+     "registry": true
+    },
+    {
+     "name": "undici-types",
+     "version": "5.26.5",
+     "registry": true
+    }
+   ]
+  },
+  "yarn1.before.lock": {
+   "kind": "yarn-lock",
+   "entries": [
+    {
+     "name": "left-pad",
+     "version": "1.3.0",
+     "registry": true
+    }
+   ]
+  },
+  "yarn1.after.lock": {
+   "kind": "yarn-lock",
+   "entries": [
+    {
+     "name": "@types/node",
+     "version": "20.11.0",
+     "registry": true
+    },
+    {
+     "name": "is-number",
+     "version": "7.0.0",
+     "registry": true
+    },
+    {
+     "name": "left-pad",
+     "version": "1.2.0",
+     "registry": true
+    },
+    {
+     "name": "undici-types",
+     "version": "5.26.5",
+     "registry": true
+    }
+   ]
+  },
+  "go.before.sum": {
+   "kind": "go-sum",
+   "entries": [
+    {
+     "name": "golang.org/x/text",
+     "version": "v0.19.0",
+     "registry": true
+    },
+    {
+     "name": "golang.org/x/tools",
+     "version": "v0.30.0",
+     "registry": true
+    }
+   ]
+  },
+  "go.after.sum": {
+   "kind": "go-sum",
+   "entries": [
+    {
+     "name": "golang.org/x/text",
+     "version": "v0.20.0",
+     "registry": true
+    },
+    {
+     "name": "golang.org/x/tools",
+     "version": "v0.30.0",
+     "registry": true
+    },
+    {
+     "name": "github.com/BurntSushi/toml",
+     "version": "v1.4.0",
+     "registry": true
+    }
+   ]
+  }
+ }
+}
