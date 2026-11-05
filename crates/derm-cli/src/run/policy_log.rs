@@ -9,8 +9,11 @@
 //! (https://docs.docker.com/ai/sandboxes/network-policies). So the parser
 //! reads keys without regard to case or separators, takes an array or an
 //! object of arrays, and reads "blocked" from a boolean, a decision string,
-//! or the section's name. The box test records one real output and pins it
-//! as a fixture.
+//! or the section's name. The sbx smoke test recorded sbx 0.51.0's real
+//! output on the box (`plans/parallel/tk_sbx_smoke.md`, 4 Nov 2026): an
+//! object with `allowed` and `blocked` arrays whose entries carry
+//! `sandbox_id`, `host`, `proxy_type`, `count`, `first_seen`, `last_seen`, and
+//! for a blocked one `rule` and `reason`. It is pinned in the tests below.
 
 use std::collections::HashMap;
 
@@ -87,7 +90,8 @@ fn entry(v: &Value, section_blocked: Option<bool>) -> Option<Entry> {
             .take(300)
             .collect(),
         count,
-        sandbox: text(field(o, &["sandbox", "sandboxname", "name"]))
+        // `sandbox_id` is sbx 0.51.0's key (the smoke test's real log, SB4).
+        sandbox: text(field(o, &["sandboxid", "sandbox", "sandboxname", "name"]))
             .chars()
             .take(100)
             .collect(),
@@ -194,6 +198,39 @@ pub fn to_event(e: &Entry, chat: &str, harness: &str, now_ms: i64) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// sbx 0.51.0's real `policy log --json` on the box, verbatim, from the
+    /// sbx smoke test (`plans/parallel/tk_sbx_smoke.md`, 4 Nov 2026, SB4):
+    /// the sandbox's key is `sandbox_id`, which the parser did not read.
+    const SBX_0_51_0_BOX: &str = r#"{"allowed":[{"sandbox_id":"derm-derm-922f0a7cbe4d","host":"registry.npmjs.org:443","proxy_type":"forward-bypass","count":1,"first_seen":"2026-11-04T16:50:12.53239873-08:00","last_seen":"2026-11-04T16:50:12.53239873-08:00"},{"sandbox_id":"derm-derm-922f0a7cbe4d","host":"api.github.com:443","proxy_type":"forward-bypass","count":3,"first_seen":"2026-11-04T16:50:02.05396698-08:00","last_seen":"2026-11-04T16:50:02.475378582-08:00"}],"blocked":[{"sandbox_id":"derm-derm-922f0a7cbe4d","host":"derm-smoke-blocked.example.net:443","proxy_type":"forward","rule":"no applicable policies for op(action=net:connect:tcp, resource=net:domain:derm-smoke-blocked.example.net:443)","reason":"No matching allow rule (default deny)","count":1,"first_seen":"2026-11-04T16:50:12.416954375-08:00","last_seen":"2026-11-04T16:50:12.416954375-08:00"},{"sandbox_id":"derm-derm-922f0a7cbe4d","host":"example.com:443","proxy_type":"forward","rule":"no applicable policies for op(action=net:connect:tcp, resource=net:domain:example.com:443)","reason":"No matching allow rule (default deny)","count":1,"first_seen":"2026-11-04T16:50:12.351840576-08:00","last_seen":"2026-11-04T16:50:12.351840576-08:00"},{"sandbox_id":"derm-derm-922f0a7cbe4d","host":"localhost:44751","proxy_type":"forward","rule":"no applicable policies for op(action=net:connect:tcp, resource=net:domain:localhost:44751)","reason":"No matching allow rule (default deny)","count":1,"first_seen":"2026-11-04T16:50:12.344076796-08:00","last_seen":"2026-11-04T16:50:12.344076796-08:00"},{"sandbox_id":"derm-derm-922f0a7cbe4d","host":"pi.dev:443","proxy_type":"forward","rule":"no applicable policies for op(action=net:connect:tcp, resource=net:domain:pi.dev:443)","reason":"No matching allow rule (default deny)","count":3,"first_seen":"2026-11-04T16:48:53.434142707-08:00","last_seen":"2026-11-04T16:48:53.457188518-08:00"}]}"#;
+
+    #[test]
+    fn sbx_0_51_0s_real_log_parses_with_its_sandbox() {
+        let e = parse(SBX_0_51_0_BOX);
+        assert_eq!(e.len(), 6);
+        assert!(
+            e.iter().all(|x| x.sandbox == "derm-derm-922f0a7cbe4d"),
+            "{e:?}"
+        );
+        let blocked: Vec<_> = e
+            .iter()
+            .filter(|x| x.blocked)
+            .map(|x| x.host.as_str())
+            .collect();
+        assert_eq!(
+            blocked,
+            [
+                "derm-smoke-blocked.example.net:443",
+                "example.com:443",
+                "localhost:44751",
+                "pi.dev:443"
+            ]
+        );
+        let github = e.iter().find(|x| x.host == "api.github.com:443").unwrap();
+        assert!(!github.blocked && github.count == 3);
+        let pi = e.iter().find(|x| x.host == "pi.dev:443").unwrap();
+        assert!(pi.rule.starts_with("no applicable policies") && pi.count == 3);
+    }
 
     #[test]
     fn an_object_of_sections_like_the_desktop_page() {
