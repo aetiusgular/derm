@@ -1,0 +1,1411 @@
+{
+  "$comment": "Lane X's install cases beside the wave 5 base's cases.json (contracts/policy.md section 6; added by lane X, 4 Nov 2026). `text` is the folded shell text the matcher passes; `installs` is every install read from it, in order: manager, form, the packages with the version the command names (null when none), and `unseen`, what the install fetches that the check cannot name by registry (`path`, `url`, `git`, `requirements`, `update`, `stdin`, `spec`, `registry`). Read in each manager's own help at the version in use (tk_lane_X.md, Research). Held equal across the three matchers.",
+  "version": 1,
+  "cases": [
+    {
+      "id": 100,
+      "text": "sudo -u bob npm install -g left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "a wrapper's flags are skipped to the first manager word"
+    },
+    {
+      "id": 101,
+      "text": "env NODE_ENV=production npm i left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 102,
+      "text": "NODE_ENV=production npm i left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 103,
+      "text": "env -s 'npm install left-pad'",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "env -S runs its string"
+    },
+    {
+      "id": 104,
+      "text": "sh -c 'npm install left-pad'",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 105,
+      "text": "bash -lc \"pip install requests\"",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "a combined short flag holding c"
+    },
+    {
+      "id": 106,
+      "text": "eval npm install left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "text": "timeout 60 npx cowsay hi",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 108,
+      "text": "echo left-pad | xargs npm install",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "stdin"
+          ]
+        }
+      ],
+      "why": "the names come from another command's output"
+    },
+    {
+      "id": 109,
+      "text": "cd app; npm install left-pad && pip install requests",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        },
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 110,
+      "text": "npm --prefix ./app install left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "a word that is no npm command may be a flag's value"
+    },
+    {
+      "id": 111,
+      "text": "npm install -p left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "-P (save-prod) arrives folded as -p and takes no value"
+    },
+    {
+      "id": 112,
+      "text": "npm i -d vitest@4.0.0",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "vitest",
+              "version": "4.0.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 113,
+      "text": "npm install alias@npm:left-pad@1.3.0",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": "1.3.0"
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "an alias installs the real name"
+    },
+    {
+      "id": 114,
+      "text": "npm install user/repo",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "git"
+          ]
+        }
+      ],
+      "why": "GitHub shorthand"
+    },
+    {
+      "id": 115,
+      "text": "npm install github:user/repo",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "git"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 116,
+      "text": "npm install ./vendor/pkg.tgz",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "path"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 117,
+      "text": "npm install https://example.com/pkg.tgz",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "url"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 118,
+      "text": "npm install --registry https://registry.example.com left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": [
+            "registry"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 119,
+      "text": "npm ci",
+      "installs": [],
+      "why": "a lockfile reinstall names no package"
+    },
+    {
+      "id": 120,
+      "text": "npm install",
+      "installs": [],
+      "why": "a bare install reinstalls what package.json and the lockfile name"
+    },
+    {
+      "id": 121,
+      "text": "npm update",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "update"
+          ]
+        }
+      ],
+      "why": "updates move versions the command does not name"
+    },
+    {
+      "id": 122,
+      "text": "npm update left-pad",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": [
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 123,
+      "text": "npx -p left-pad -p is-number some-bin",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            },
+            {
+              "name": "is-number",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "--package names the packages; the word after is a bin"
+    },
+    {
+      "id": 124,
+      "text": "npx --yes cowsay@1.6.0 hi",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": "1.6.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 125,
+      "text": "npm exec -- cowsay hi",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 126,
+      "text": "npx -c 'npm install left-pad'",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "npx's call string is a shell command"
+    },
+    {
+      "id": 127,
+      "text": "pn add zod",
+      "installs": [
+        {
+          "manager": "pnpm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "zod",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "pnpm 12's short name"
+    },
+    {
+      "id": 128,
+      "text": "pnx cowsay",
+      "installs": [
+        {
+          "manager": "pnpm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "pnpm 12's pnx"
+    },
+    {
+      "id": 129,
+      "text": "pnpx cowsay",
+      "installs": [
+        {
+          "manager": "pnpm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 130,
+      "text": "pnpm -c packages/web add zod",
+      "installs": [
+        {
+          "manager": "pnpm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "zod",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "-C arrives folded as -c and takes a value"
+    },
+    {
+      "id": 131,
+      "text": "pnpm dlx --package typescript --package ts-node ts-node -e 1",
+      "installs": [
+        {
+          "manager": "pnpm",
+          "form": "run",
+          "packages": [
+            {
+              "name": "typescript",
+              "version": null
+            },
+            {
+              "name": "ts-node",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 132,
+      "text": "pnpm install",
+      "installs": [],
+      "why": "a bare pnpm install"
+    },
+    {
+      "id": 133,
+      "text": "yarn add -p react@18.3.1",
+      "installs": [
+        {
+          "manager": "yarn",
+          "form": "add",
+          "packages": [
+            {
+              "name": "react",
+              "version": "18.3.1"
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "-P (peer) arrives as -p, a switch for add"
+    },
+    {
+      "id": 134,
+      "text": "yarn dlx -p create-vite create-vite my-app",
+      "installs": [
+        {
+          "manager": "yarn",
+          "form": "run",
+          "packages": [
+            {
+              "name": "create-vite",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 135,
+      "text": "yarn workspace web add zod",
+      "installs": [
+        {
+          "manager": "yarn",
+          "form": "add",
+          "packages": [
+            {
+              "name": "zod",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 136,
+      "text": "yarn global add serve",
+      "installs": [
+        {
+          "manager": "yarn",
+          "form": "add",
+          "packages": [
+            {
+              "name": "serve",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 137,
+      "text": "yarn",
+      "installs": [],
+      "why": "a bare yarn reinstalls"
+    },
+    {
+      "id": 138,
+      "text": "bun add -d @types/bun",
+      "installs": [
+        {
+          "manager": "bun",
+          "form": "add",
+          "packages": [
+            {
+              "name": "@types/bun",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 139,
+      "text": "bun x cowsay",
+      "installs": [
+        {
+          "manager": "bun",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 140,
+      "text": "bunx -p @angular/cli ng new app",
+      "installs": [
+        {
+          "manager": "bun",
+          "form": "run",
+          "packages": [
+            {
+              "name": "@angular/cli",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 141,
+      "text": "bun install",
+      "installs": [],
+      "why": "a bare bun install"
+    },
+    {
+      "id": 142,
+      "text": "pip install -r requirements.txt",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "requirements"
+          ]
+        }
+      ],
+      "why": "a requirements file names packages the gate cannot see"
+    },
+    {
+      "id": 143,
+      "text": "pip install -e .",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "path"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 144,
+      "text": "pip install .",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "path"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 145,
+      "text": "pip install 'requests[socks]>=2.31'",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": ">=2.31"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 146,
+      "text": "pip install 'Django==5.1.2'",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "django",
+              "version": "5.1.2"
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "the text is folded, so names arrive lowercase"
+    },
+    {
+      "id": 147,
+      "text": "pip install git+https://github.com/psf/requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "git"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 148,
+      "text": "pip install --index-url https://pypi.example.com/simple requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": [
+            "registry"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 149,
+      "text": "pip install --extra-index-url https://pypi.example.com/simple requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": [
+            "registry"
+          ]
+        }
+      ],
+      "why": "dependency confusion's door"
+    },
+    {
+      "id": 150,
+      "text": "pip install -u pip",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "pip",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "-U arrives folded as -u, a switch"
+    },
+    {
+      "id": 151,
+      "text": "python3 -m pip install requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 152,
+      "text": "python3.12 -m pip install requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 153,
+      "text": "py -m pip install requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 154,
+      "text": "pip3.12 install requests",
+      "installs": [
+        {
+          "manager": "pip",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 155,
+      "text": "pip download requests",
+      "installs": [],
+      "why": "a download installs nothing"
+    },
+    {
+      "id": 156,
+      "text": "uv add 'httpx>=0.27'",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "add",
+          "packages": [
+            {
+              "name": "httpx",
+              "version": ">=0.27"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 157,
+      "text": "uv pip install -r requirements.txt",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "requirements"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 158,
+      "text": "uvx ruff@0.5.0 check",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "run",
+          "packages": [
+            {
+              "name": "ruff",
+              "version": "0.5.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 159,
+      "text": "uvx --from 'ruff==0.5.0' ruff check",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "run",
+          "packages": [
+            {
+              "name": "ruff",
+              "version": "0.5.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 160,
+      "text": "uv tool run --with rich black .",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "run",
+          "packages": [
+            {
+              "name": "black",
+              "version": null
+            },
+            {
+              "name": "rich",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 161,
+      "text": "uv tool install black",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "add",
+          "packages": [
+            {
+              "name": "black",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 162,
+      "text": "uv run --with rich script.py",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "run",
+          "packages": [
+            {
+              "name": "rich",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 163,
+      "text": "uv sync",
+      "installs": [],
+      "why": "a lockfile reinstall"
+    },
+    {
+      "id": 164,
+      "text": "uv lock --upgrade",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 165,
+      "text": "uv --directory app add httpx",
+      "installs": [
+        {
+          "manager": "uv",
+          "form": "add",
+          "packages": [
+            {
+              "name": "httpx",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 166,
+      "text": "poetry add rich@^13.0",
+      "installs": [
+        {
+          "manager": "poetry",
+          "form": "add",
+          "packages": [
+            {
+              "name": "rich",
+              "version": "^13.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 167,
+      "text": "poetry add -g dev pytest",
+      "installs": [
+        {
+          "manager": "poetry",
+          "form": "add",
+          "packages": [
+            {
+              "name": "pytest",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "-G arrives folded as -g and takes a value"
+    },
+    {
+      "id": 168,
+      "text": "poetry install",
+      "installs": [],
+      "why": "a lockfile reinstall"
+    },
+    {
+      "id": 169,
+      "text": "poetry update",
+      "installs": [
+        {
+          "manager": "poetry",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 170,
+      "text": "pdm add -d pytest",
+      "installs": [
+        {
+          "manager": "pdm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "pytest",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 171,
+      "text": "pipx run --spec black==24.10.0 black .",
+      "installs": [
+        {
+          "manager": "pipx",
+          "form": "run",
+          "packages": [
+            {
+              "name": "black",
+              "version": "24.10.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 172,
+      "text": "pipx run cowsay",
+      "installs": [
+        {
+          "manager": "pipx",
+          "form": "run",
+          "packages": [
+            {
+              "name": "cowsay",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 173,
+      "text": "pipx inject myvenv requests",
+      "installs": [
+        {
+          "manager": "pipx",
+          "form": "add",
+          "packages": [
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "the first word names the venv"
+    },
+    {
+      "id": 174,
+      "text": "cargo add serde@1.0.200 --features derive",
+      "installs": [
+        {
+          "manager": "cargo",
+          "form": "add",
+          "packages": [
+            {
+              "name": "serde",
+              "version": "1.0.200"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 175,
+      "text": "cargo add --git https://github.com/serde-rs/serde serde",
+      "installs": [
+        {
+          "manager": "cargo",
+          "form": "add",
+          "packages": [
+            {
+              "name": "serde",
+              "version": null
+            }
+          ],
+          "unseen": [
+            "git"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 176,
+      "text": "cargo install --version 14.1.1 ripgrep",
+      "installs": [
+        {
+          "manager": "cargo",
+          "form": "add",
+          "packages": [
+            {
+              "name": "ripgrep",
+              "version": "14.1.1"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 177,
+      "text": "cargo install --path .",
+      "installs": [
+        {
+          "manager": "cargo",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "path"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 178,
+      "text": "cargo update",
+      "installs": [
+        {
+          "manager": "cargo",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 179,
+      "text": "cargo build",
+      "installs": [],
+      "why": "a build reads Cargo.lock"
+    },
+    {
+      "id": 180,
+      "text": "go get -u ./...",
+      "installs": [
+        {
+          "manager": "go",
+          "form": "add",
+          "packages": [],
+          "unseen": [
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "id": 181,
+      "text": "go get golang.org/x/text",
+      "installs": [
+        {
+          "manager": "go",
+          "form": "add",
+          "packages": [
+            {
+              "name": "golang.org/x/text",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 182,
+      "text": "go install ./cmd/tool",
+      "installs": [],
+      "why": "local code built against go.sum"
+    },
+    {
+      "id": 183,
+      "text": "go run golang.org/x/tools/cmd/stringer@v0.30.0 -type=x",
+      "installs": [
+        {
+          "manager": "go",
+          "form": "run",
+          "packages": [
+            {
+              "name": "golang.org/x/tools/cmd/stringer",
+              "version": "v0.30.0"
+            }
+          ],
+          "unseen": []
+        }
+      ]
+    },
+    {
+      "id": 184,
+      "text": "go build ./...",
+      "installs": []
+    },
+    {
+      "id": 185,
+      "text": "# npm install left-pad",
+      "installs": [],
+      "why": "a comment"
+    },
+    {
+      "id": 186,
+      "text": "git commit -m 'npm install left-pad'",
+      "installs": [],
+      "why": "the words are an argument"
+    },
+    {
+      "id": 187,
+      "text": "npm run build && npm test",
+      "installs": [],
+      "why": "scripts (case 132)"
+    },
+    {
+      "id": 188,
+      "text": "sudo -u npm pip install requests",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "pip",
+              "version": null
+            },
+            {
+              "name": "requests",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "a wrapper's value that names a manager reads the install under it: still an install"
+    },
+    {
+      "id": 189,
+      "text": "npm install left-pad > /tmp/log 2>&1",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "a redirect's target is not a package"
+    },
+    {
+      "id": 190,
+      "text": "npm install left-pad\n/home/u/project/",
+      "installs": [
+        {
+          "manager": "npm",
+          "form": "add",
+          "packages": [
+            {
+              "name": "left-pad",
+              "version": null
+            }
+          ],
+          "unseen": []
+        }
+      ],
+      "why": "the shell tool's other fields come as later lines"
+    }
+  ]
+}
