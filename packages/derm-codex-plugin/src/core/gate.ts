@@ -7,7 +7,7 @@ import { approve, type AdapterEvent, type ApproveOutcome, type ApproveRequest } 
 import { decodeEscapes, fold } from "./fold.ts";
 import { installCallDetails, parseInstalls } from "./installs/index.ts";
 import { evaluate, isShellTool, normalizeToolName, type Action, type LoadedPolicy } from "./policy.ts";
-import { redactText, redactValue } from "./redact.ts";
+import { redactText, redactValue, TOKEN_SHAPES } from "./redact.ts";
 
 /** An ask never waits longer than this inside a hook, whatever the policy says, so the harness's own hook timeout (120 s in our hooks.json) is never reached. */
 export const HOOK_ASK_CAP_SECONDS = 90;
@@ -168,18 +168,24 @@ export const MAX_INSTALL_RECORDS = 8;
 export function installEvents(call: GateCall, answer: GateAnswer, decision: Action, chat: string): AdapterEvent[] {
   if (!isShellTool(answer.normalizedTool)) return [];
   let installs;
+  let raw: string;
   try {
-    installs = parseInstalls(fold(decodeEscapes(inputTextFor(answer.normalizedTool, call.toolInput))));
+    raw = inputTextFor(answer.normalizedTool, call.toolInput);
+    installs = parseInstalls(fold(decodeEscapes(raw)));
   } catch {
     return [];
   }
+  // The parser reads names folded and normalized (lowercase; PyPI's `_` as
+  // `-`), where a token's shape no longer shows. A call whose own text holds
+  // one keeps no package name at all (re-review W5R-4).
+  const tokenInText = TOKEN_SHAPES.some((shape) => new RegExp(shape.source, shape.flags.replace("g", "")).test(raw));
   const details = installCallDetails(installs.slice(0, MAX_INSTALL_RECORDS), decision, call.toolUseId ?? null);
   // A package whose name or version the redactor flags (a token's shape) is
   // left out, and the record counts it (security finding W5C-S9): names and
   // versions are kept with content off, so they must not carry a secret.
   for (const detail of details) {
     const all = detail.packages as { name: string; version: string | null }[];
-    const clean = all.filter((p) => redactText(p.name).count === 0 && (p.version === null || redactText(p.version).count === 0));
+    const clean = tokenInText ? [] : all.filter((p) => redactText(p.name).count === 0 && (p.version === null || redactText(p.version).count === 0));
     if (clean.length < all.length) {
       detail.packages = clean;
       detail.redacted = all.length - clean.length;

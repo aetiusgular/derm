@@ -45,11 +45,11 @@ describe("OpenAI keys", () => {
   it("redacts project, service account and admin keys, and leaves look-alikes", () => {
     // Built at run time, and without OpenAI's marker, so no scanner reads a
     // fixture as a live key.
-    const body = "abcdefghijklmnopqrstuvwx-_z";
+    const body = "abcdefghijklmnopqrstuvwx-_zABCDEFGHIJKLMNOP0123";
     for (const k of ["proj", "svcacct", "admin"].map((kind) => `sk-${kind}-${body}`)) {
       expect(redactText(`key ${k} end`), k).toEqual({ text: `key ${REDACTED} end`, count: 1 });
     }
-    for (const t of ["sk-proj-short", "task-proj-abcdefghijklmnopqrstuvwxyz", "sk-project-plan"]) {
+    for (const t of ["sk-proj-short", "task-proj-abcdefghijklmnopqrstuvwxyz", "sk-project-plan", "sk-admin-dashboard-settings-page", "the sk-proj-management-overview-v2 folder"]) {
       expect(redactText(t).count, t).toBe(0);
     }
   });

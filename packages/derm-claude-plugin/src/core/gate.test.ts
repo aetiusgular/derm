@@ -116,7 +116,7 @@ describe("installEvents", () => {
   // the record counts what it left out.
   it("leaves out a package the redactor flags, and counts it", () => {
     // Fake keys built at run time, so no scanner reads them as live.
-    const token = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
+    const token = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH"].join("-");
     const ant = ["sk", "ant", "api03", "abcdefghijklmnopqrstuvwxyz"].join("-");
     for (const cmd of [`pip install ${token}`, `npm i left-pad ${ant}`, `npm i left-pad@${token}`]) {
       const c = call(cmd, "t9");
@@ -125,11 +125,25 @@ describe("installEvents", () => {
       const text = JSON.stringify(events);
       expect(text, cmd).not.toContain(token);
       expect(text, cmd).not.toContain(ant);
-      expect(events[0]?.detail.redacted, cmd).toBe(1);
+      // Since W5R-4 a token in the call's text drops every name in it, so
+      // `left-pad` beside the key goes too (spec change: it was kept).
+      expect(events[0]?.detail.redacted, cmd).toBe(cmd.includes("left-pad ") ? 2 : 1);
     }
     const kept = installEvents(call(`npm i left-pad ${ant}`, "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
-    expect(kept[0]?.detail.packages).toEqual([{ name: "left-pad", version: null, ecosystem: "npm", inLockfile: null }]);
-    expect(kept[0]?.summary).toBe("npm add left-pad ask");
+    expect(kept[0]?.detail.packages).toEqual([]);
+    expect(kept[0]?.summary).toBe("npm add  ask");
+    // Re-review W5R-4: a name is read folded and normalized (PyPI turns `_`
+    // into `-` and folding lowercases), so a token typed as a package is
+    // looked for in the call's own text too, before either.
+    const gh = ["ghp", "Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Z"].join("_");
+    for (const cmd of [`pip install ${gh}`, `uv add ${gh}`, `npm i left-pad ${gh}`]) {
+      const c = call(cmd, "t10");
+      const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+      const text = JSON.stringify(events).toLowerCase();
+      expect(text, cmd).not.toContain("zx9zx9zx9");
+      expect(events.every((e) => (e.detail.packages as unknown[]).length === 0), cmd).toBe(true);
+      expect(events.reduce((n, e) => n + Number(e.detail.redacted ?? 0), 0), cmd).toBeGreaterThan(0);
+    }
     // Nothing flagged: no count.
     const plain = installEvents(call("npm i left-pad", "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
     expect(plain[0]?.detail.redacted).toBeUndefined();

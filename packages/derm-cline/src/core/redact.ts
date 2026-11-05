@@ -22,7 +22,9 @@ export const TOKEN_SHAPES: readonly RegExp[] = [
   // OpenAI project, service account and admin keys: integration w5's
   // continue, for W5C-S9 (OpenRouter's secret formats page lists the three
   // prefixes; OpenAI's community forum: new keys start `sk-proj-`).
-  /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/g,
+  // A body of 40 or more, since kebab-case text such as
+  // `sk-admin-dashboard-settings-page` is not a key (re-review W5R-12).
+  /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}/g,
 ];
 // PEM private keys (RFC 7468) are found by `redactPem`, after these.
 
