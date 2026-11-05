@@ -184,7 +184,7 @@
     { "id": 67, "call": { "tool": "bash", "harness": "pi", "inputText": "python3 -c 'print(math.pi)'" },
       "expect": { "action": "allow", "normalizedTool": "bash", "reasonPrefix": "rule bash" },
       "note": "`.pi` runs on from `math` on its left: not Pi's folder" },
-    { "id": 68, "call": { "tool": "bash", "harness": "pi", "inputText": "npm install -g @google/gemini-cli" },
+    { "id": 68, "call": { "tool": "bash", "harness": "pi", "inputText": "ls -la node_modules/@google/gemini-cli" },
       "expect": { "action": "allow", "normalizedTool": "bash", "reasonPrefix": "rule bash" },
       "note": "`gemini-cli/` is matched with its slash only: a bare name is taken only for a folder that starts with `.` or holds a `/`" },
     { "id": 69, "call": { "tool": "bash", "harness": "pi", "inputText": "cat .qwenrc" },
