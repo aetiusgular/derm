@@ -60,7 +60,7 @@ index 9f3145c..b3ab3ff 100644
  const MAX_LIVE: usize = 4_096;
  const MAX_GRANTS: usize = 64;
 diff --git a/crates/derm-daemon/src/approver/person.rs b/crates/derm-daemon/src/approver/person.rs
-index b746d80..b2316e3 100644
+index b746d80..d6a8072 100644
 --- a/crates/derm-daemon/src/approver/person.rs
 +++ b/crates/derm-daemon/src/approver/person.rs
 @@ -31,9 +31,14 @@
@@ -127,25 +127,29 @@ index b746d80..b2316e3 100644
  impl Checker for UnixChkpwd {
      /// `unix_chkpwd <user> nonull`, the password and a NUL on a pipe (the
      /// helper refuses a terminal on stdin), exit 0 for the person's password.
-@@ -291,12 +303,15 @@ impl Checker for NoChecker {
+@@ -291,20 +303,23 @@ impl Checker for NoChecker {
  
  /// The platform's checker.
  pub fn platform() -> Box<dyn Checker> {
--    if cfg!(target_os = "linux") {
-+    #[cfg(target_os = "linux")]
-+    {
-         match UnixChkpwd::find() {
++    // `cfg!` and not `#[cfg]` for Linux, so macOS still compiles the helper
++    // (as before lane Z's patch); Windows has no helper to compile.
++    #[cfg(unix)]
+     if cfg!(target_os = "linux") {
+-        match UnixChkpwd::find() {
++        return match UnixChkpwd::find() {
              Ok(c) => Box::new(c),
              Err(why) => Box::new(NoChecker(Box::leak(why.into_boxed_str()))),
-         }
+-        }
 -    } else {
-+    }
-+    #[cfg(not(target_os = "linux"))]
-+    {
-         Box::new(NoChecker(
-             "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
-         ))
-@@ -305,6 +320,7 @@ pub fn platform() -> Box<dyn Checker> {
+-        Box::new(NoChecker(
+-            "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
+-        ))
++        };
+     }
++    Box::new(NoChecker(
++        "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
++    ))
+ }
  
  /// The daemon's user name, for the helper (it compares it with the name of
  /// the user that runs it).
@@ -153,7 +157,7 @@ index b746d80..b2316e3 100644
  pub fn own_user() -> Option<String> {
      let uid = derm_core::platform::effective_user();
      let mut buf = vec![0u8; 16 * 1024];
-@@ -325,6 +341,15 @@ pub fn own_user() -> Option<String> {
+@@ -325,6 +340,15 @@ pub fn own_user() -> Option<String> {
      )
  }
  
@@ -169,7 +173,7 @@ index b746d80..b2316e3 100644
  #[cfg(test)]
  mod tests {
      use super::*;
-@@ -500,6 +525,7 @@ mod tests {
+@@ -500,6 +524,7 @@ mod tests {
          );
      }
  
