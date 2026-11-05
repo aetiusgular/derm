@@ -1336,8 +1336,13 @@ mod end_to_end {
     /// `run.start` carries content capture's switch as the chat starts.
     #[test]
     fn no_tap_and_content_are_recorded_in_run_start() {
-        for (flag, reason) in [(true, "no-tap-flag"), (false, "no-base-url")] {
-            let st = setup("none");
+        // Each setup name is this test's own: the fake daemon's folder is
+        // named after it, and a second test using a name wipes the first's.
+        for (flag, reason, name) in [
+            (true, "no-tap-flag", "notap-flag"),
+            (false, "no-base-url", "notap-none"),
+        ] {
+            let st = setup(name);
             let cwd = st.work.to_string_lossy().into_owned();
             let mut argv = vec![
                 "pi",
