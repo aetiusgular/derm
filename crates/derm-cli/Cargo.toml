@@ -91,3 +91,14 @@ derm-daemon = { path = "../derm-daemon" }
 # Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
 [target.'cfg(windows)'.dependencies]
 # [lane-Z]
+# `derm run` on Windows (note AU section 4): Job Objects, the console's
+# control events, thread resume, process snapshots. The same windows-sys as
+# derm-core (=0.61.2, already in Cargo.lock).
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
