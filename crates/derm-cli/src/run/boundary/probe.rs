@@ -699,6 +699,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     fn status_env(home: &Path, cwd: Option<&Path>) -> crate::watch::status::Env {
         crate::watch::status::Env {
             home: Some(home.to_path_buf()),
@@ -708,6 +709,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn put(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
