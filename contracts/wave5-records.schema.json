@@ -255,7 +255,7 @@
           "required": ["on"],
           "properties": {
             "on": { "type": "boolean" },
-            "reason": { "enum": ["no-tap-flag", "setting", "no-base-url"] },
+            "reason": { "enum": ["no-tap-flag", "setting", "no-base-url", "no-endpoint"] },
             "via": { "enum": ["env", "codex-provider", "none"] },
             "api": { "$ref": "#/$defs/api" },
             "upstream": { "type": "string", "maxLength": 255 }

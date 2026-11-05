@@ -155,14 +155,14 @@ fn a_chat_runs_untapped_and_says_why_when_it_cannot_be_tapped() {
     let mut p = plan("claude", &[], true);
     assert_eq!(
         environment_with("claude-code", &mut p, &inputs(&d)).unwrap(),
-        Some(json!({"on": false, "via": "none"}))
+        Some(json!({"on": false, "via": "none", "reason": "no-endpoint"}))
     );
     assert_eq!(env(&p, "ANTHROPIC_BASE_URL"), None);
     // An endpoint that is not loopback http is not used.
     std::fs::write(d.daemon.join("tap.endpoint"), "http://10.0.0.5:4000\n").unwrap();
     assert_eq!(
         environment_with("claude-code", &mut p, &inputs(&d)).unwrap(),
-        Some(json!({"on": false, "via": "none"}))
+        Some(json!({"on": false, "via": "none", "reason": "no-endpoint"}))
     );
     // An agent with no base URL.
     std::fs::write(d.daemon.join("tap.endpoint"), "http://127.0.0.1:4000\n").unwrap();

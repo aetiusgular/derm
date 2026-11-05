@@ -648,8 +648,18 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ..inputs
     };
     let mut p = plan::build(&inputs).map_err(|e| (2, e))?;
-    // The model tap's launch environment (lane S's seam).
-    let tap_record = tap::environment(a.harness.id, &mut p)?;
+    // The model tap's launch environment (lane S's seam), unless `--no-tap`
+    // (lane S's request 2, case 127): then the chat says it runs untapped.
+    let tap_record = if a.no_tap {
+        eprintln!(
+            "derm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it"
+        );
+        Some(json!({"on": false, "via": "none", "reason": "no-tap-flag"}))
+    } else {
+        tap::environment(a.harness.id, &mut p)?
+    };
+    // Content capture's switch as the chat starts (lane S's request 3).
+    let content_record = Some(tap::content_record(Some(&home)));
     // Claude Code's and Codex's own OTel into the daemon (T2.9). The helper
     // script sits in the daemon's folder under `none`; srt hides that folder,
     // so there the token goes in the header variable, as the chat token
@@ -854,6 +864,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     for (key, record) in [
         ("boundaryChoice", &choice.record),
         ("tap", &tap_record),
+        ("content", &content_record),
         ("agentUser", &agent_user),
     ] {
         if let Some(v) = record {
@@ -1318,6 +1329,49 @@ mod end_to_end {
         for l in st.fake.lines() {
             assert!(!l.to_string().contains(fake::CHAT_TOKEN), "{l}");
         }
+    }
+
+    /// Lane S's requests 2 and 3 (integration w5, phase 2): `--no-tap` makes
+    /// the chat say it runs untapped and why (case 127), and every
+    /// `run.start` carries content capture's switch as the chat starts.
+    #[test]
+    fn no_tap_and_content_are_recorded_in_run_start() {
+        for (flag, reason) in [(true, "no-tap-flag"), (false, "no-base-url")] {
+            let st = setup("none");
+            let cwd = st.work.to_string_lossy().into_owned();
+            let mut argv = vec![
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-t",
+                "--cwd",
+                &cwd,
+            ];
+            if flag {
+                argv.push("--no-tap");
+            }
+            argv.extend(["--", "-c", "true"]);
+            run(&s(&argv), &st.env).unwrap();
+            let ev = events(&st);
+            assert_eq!(ev[0]["kind"], "run.start");
+            assert_eq!(
+                ev[0]["detail"]["tap"],
+                serde_json::json!({"on": false, "via": "none", "reason": reason}),
+                "--no-tap {flag}"
+            );
+            assert_eq!(
+                ev[0]["detail"]["content"],
+                serde_json::json!({"on": false, "retentionDays": null})
+            );
+        }
+        let a = args::parse(&s(&["pi", "--boundary", "none", "--no-tap"])).unwrap();
+        assert!(a.no_tap);
+        assert!(
+            !args::parse(&s(&["pi", "--boundary", "none"]))
+                .unwrap()
+                .no_tap
+        );
     }
 
     #[test]

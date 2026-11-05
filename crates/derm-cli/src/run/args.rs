@@ -38,6 +38,9 @@ pub struct Args {
     pub allow_hosts: Vec<String>,
     pub kit: Option<String>,
     pub no_daemon: bool,
+    /// `--no-tap`: this chat runs untapped (case 127); its gate and the OS
+    /// feed still record it.
+    pub no_tap: bool,
     pub dry_run: bool,
     pub rest: Vec<String>,
     /// The program from `-- <program> ...` (case 80), when no harness id was
@@ -48,7 +51,7 @@ pub struct Args {
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--dry-run] [-- harness args...]
+[--no-tap] [--dry-run] [-- harness args...]
        derm run --boundary sbx|srt|none [options] -- <program> [args...]";
 
 /// A program named after `--` (case 80): an absolute path, or a bare name
@@ -130,6 +133,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         allow_hosts: Vec::new(),
         kit: None,
         no_daemon: false,
+        no_tap: false,
         dry_run: false,
         rest: Vec::new(),
         program: None,
@@ -176,6 +180,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--kit" => out.kit = Some(take("--kit")?),
             "--no-daemon" => out.no_daemon = true,
+            "--no-tap" => out.no_tap = true,
             "--dry-run" => out.dry_run = true,
             other => {
                 return Err(format!(

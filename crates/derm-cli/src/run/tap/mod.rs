@@ -64,9 +64,7 @@ pub(crate) fn environment(harness: &str, plan: &mut Plan) -> Result<Option<Value
 
 /// `run.start`'s `content` field (`contracts/events.md` section 5): the
 /// content switch and its retention as the user's settings hold them when
-/// the chat starts. The seam returns only `tap`, so `run_io` adds this once
-/// integration applies lane S's request 3; until then nothing calls it.
-#[allow(dead_code)]
+/// the chat starts. `run_io` adds it beside `tap` (lane S's request 3).
 pub(crate) fn content_record(home: Option<&str>) -> Value {
     let s = home
         .map(|h| settings::load(&settings::path_for(h)).0)
@@ -148,7 +146,7 @@ pub(crate) fn environment_with(
         eprintln!(
             "derm run: the daemon published no model tap (tap.endpoint); this chat runs untapped"
         );
-        return Ok(off(None));
+        return Ok(off(Some("no-endpoint")));
     };
     if let Some(why) = base_url_already_set(harness, plan, i) {
         return Err((
