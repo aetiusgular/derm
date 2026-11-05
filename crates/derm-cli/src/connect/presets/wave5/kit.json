@@ -1,5 +1,115 @@
 {
-  "$comment": "Wave 5 lane T's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the sbx kit per agent (`name`, and `from`: `sbx` for sbx's own kits, `sbx-kits-contrib` for the contributed ones; note AM section B.3), as the sbx smoke test found it accepted. One value per preset id under `rows`. presets.rs and contracts/presets.ts merge it into each row as the `kit` field, and refuse an id the index does not name, a row file that already sets `kit`, and a table whose `field` is not its file name. Shape: contracts/harness-presets.schema.json, $defs.kit. Each value records the version it was read at (`verifiedAt`, or the table's own once lane T fills it). Empty until lane T.",
+  "$comment": "Wave 5 lane T's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the sbx kit per agent. `name` is sbx's built-in agent (`from: sbx`) or a kit reference from docker/sbx-kits-contrib (`from: sbx-kits-contrib`), which sbx create takes as its first positional argument (sbx 0.51.0 deprecates a sandbox kit passed with --kit; plans/parallel/tk_sbx_smoke.md, SB1). null where neither sbx nor sbx-kits-contrib has a kit for the agent (read 4 Nov 2026 at sbx-kits-contrib 1de3c1e). Every kit read starts its agent in its own full-access mode where the agent has one, and none carries derm's gate: under sbx the VM is the boundary and the in-harness gate is absent (lane T, SB6). presets.rs and contracts/presets.ts merge each value into its row as `kit`. Shape: contracts/harness-presets.schema.json, $defs.kit. run/harness.rs still holds the kits derm run uses today (PI_KIT); reading this table there is lane T's request T-2.",
   "field": "kit",
-  "rows": {}
+  "rows": {
+    "claude-code": {
+      "name": "claude",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts claude --dangerously-skip-permissions (sbx-kits-contrib 1de3c1e claude/spec.yaml:34, marked extractedFromBuiltin; I that 0.51.0's built-in is the same). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "codex": {
+      "name": "codex",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts codex --dangerously-bypass-approvals-and-sandbox (sbx-kits-contrib 1de3c1e codex/spec.yaml:34, extractedFromBuiltin; I for 0.51.0). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Under sbx the tap does not reach Codex yet (lane S, D11)."
+    },
+    "pi": {
+      "name": "docker.io/sbx/pi-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx 0.51.0, run on the box and the Mac with --kit (plans/parallel/tk_sbx_smoke.md, 4 Nov 2026); the positional form sbx's warning names: not run",
+      "note": "A sandbox kit, so it is the first positional argument of sbx create, not --kit (SB1; sbx-kits-contrib 1de3c1e README.md:227). Pi 1.5.0 in the VM, past the preset's 1.4.0 (case 81). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are) (SB6)."
+    },
+    "opencode": {
+      "name": "opencode",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts opencode with no flag (sbx-kits-contrib 1de3c1e opencode/spec.yaml, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "gemini": {
+      "name": "gemini",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts gemini --yolo (sbx-kits-contrib 1de3c1e gemini/spec.yaml:16, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "cursor": {
+      "name": "cursor",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts cursor-agent --yolo (sbx-kits-contrib 1de3c1e cursor/spec.yaml:41, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "hermes": {
+      "name": "docker.io/sbx/hermes-agent-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, hermes-agent/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "The kit's own start script (hermes-agent/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for hermes until plan.rs reads this table (request T-2)."
+    },
+    "openclaw": {
+      "name": "docker.io/sbx/openclaw-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, openclaw/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "The kit's own start script (openclaw/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for openclaw until plan.rs reads this table (request T-2)."
+    },
+    "goose": null,
+    "qwen-code": null,
+    "copilot-cli": {
+      "name": "copilot",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts copilot --yolo (sbx-kits-contrib 1de3c1e copilot/spec.yaml:16; I that the built-in is the same). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "amp": {
+      "name": "docker.io/sbx/amp-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, amp/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "The kit starts amp --dangerously-allow-all (amp/spec.yaml:10). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for amp until plan.rs reads this table (request T-2)."
+    },
+    "crush": {
+      "name": "docker.io/sbx/crush-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, crush/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "The kit starts crush --yolo (crush/spec.yaml:19). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for crush until plan.rs reads this table (request T-2)."
+    },
+    "zed": null,
+    "kilo": null,
+    "codebuff": null,
+    "oh-my-pi": null,
+    "continue": null,
+    "grok": {
+      "name": "git+https://github.com/docker/sbx-kits-contrib.git#ref=1de3c1e3313a4cc8f2ac4d93646ab204f2b3b769&dir=grok",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, grok/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "No published OCI artifact (its README names only the git form), so the reference is pinned to the commit read. The kit starts grok --yolo --no-auto-update (grok/spec.yaml:9). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for grok until plan.rs reads this table (request T-2)."
+    },
+    "antigravity": {
+      "name": "docker.io/sbx/antigravity-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, antigravity/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "The kit starts agy --dangerously-skip-permissions (antigravity/spec.yaml:14). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Not in derm run's harness table yet."
+    },
+    "openclaude": null,
+    "auggie": null,
+    "cline": null,
+    "command-code": null,
+    "droid": {
+      "name": "droid",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts droid with no flag (sbx-kits-contrib 1de3c1e droid/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "kimi": null,
+    "kiro": {
+      "name": "kiro",
+      "from": "sbx",
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+      "note": "The kit starts kiro chat --trust-all-tools (sbx-kits-contrib 1de3c1e kiro/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+    },
+    "mistral-vibe": {
+      "name": "docker.io/sbx/vibe-kit:latest",
+      "from": "sbx-kits-contrib",
+      "verifiedAt": "sbx-kits-contrib 1de3c1e, vibe/README.md and spec.yaml, read 4 Nov 2026; not run",
+      "note": "The kit starts vibe --trust --agent auto-approve unless --kit-arg agent=ask (vibe/spec.yaml:16-37). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Not in derm run's harness table yet."
+    },
+    "rovo-dev": null
+  }
 }

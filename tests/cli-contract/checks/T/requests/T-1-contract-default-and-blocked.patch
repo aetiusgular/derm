@@ -1,0 +1,53 @@
+diff --git a/contracts/contracts.test.ts b/contracts/contracts.test.ts
+index 67c6700..5e55f00 100644
+--- a/contracts/contracts.test.ts
++++ b/contracts/contracts.test.ts
+@@ -260,6 +260,9 @@ describe("wave 5 contracts", () => {
+     const runStart = ajv.getSchema(base + "wave5-records.schema.json#/$defs/runStartWave5")!;
+     expect(runStart(read("fixtures/tap/runstart.example.json"))).toBe(true);
+     expect(runStart({ boundaryChoice: { chosen: "none", named: false, reasons: [], answeredBy: "maybe", preAnswer: null } })).toBe(false);
++    // Lane T's request T-1: an automatic pick, and srt's refusal of io_uring.
++    expect(runStart({ boundaryChoice: { chosen: "srt", named: false, reasons: [{ boundary: "sbx", why: "sbx is installed and not signed in to Docker", install: "sbx login" }], answeredBy: "default", preAnswer: null }, ioUring: "blocked" })).toBe(true);
++    expect(runStart({ ioUring: "unknown" })).toBe(false);
+     expect(check("settings.schema.json", read("fixtures/tap/settings.example.json"))).toEqual([]);
+     expect(check("settings.schema.json", { version: 1, content: { on: true } })).not.toEqual([]);
+     expect(check("settings.schema.json", { version: 1, content: { on: true, retentionDays: 8 } })).not.toEqual([]);
+diff --git a/contracts/events.md b/contracts/events.md
+index 4fb7828..fc59056 100644
+--- a/contracts/events.md
++++ b/contracts/events.md
+@@ -74,10 +74,10 @@ Every record keeps hashes, sizes, paths, package names and versions, and never c
+ 
+ | Field | Set by | Shape |
+ |---|---|---|
+-| `boundaryChoice` | lane T, `crates/derm-cli/src/run/boundary/` | `chosen` (`sbx`, `srt`, `none`), `named` (the user gave `--boundary`), `reasons` (each unavailable boundary, why, and its install line), `answeredBy` (`flag`, `terminal`, `pre-answer`, `no-one`; with `no-one` there is no start, case 129), `preAnswer` (the setting used, or null) |
++| `boundaryChoice` | lane T, `crates/derm-cli/src/run/boundary/` | `chosen` (`sbx`, `srt`, `none`), `named` (the user gave `--boundary`), `reasons` (each unavailable boundary, why, and its install line), `answeredBy` (`flag`; `default`, derm picked sbx or srt with no question, lane T's request T-1; `terminal`, `pre-answer`, `no-one`; with `no-one` there is no start, case 129, except in a dry run, which starts nothing anyway), `preAnswer` (the setting used, or null) |
+ | `tap` | lane S, `run/tap/` | `on`, and when off the `reason` (`--no-tap`, the setting, or the agent takes no base URL), `via`, `api`, `upstream`. A chat with `on: false` is "untapped" in `derm status` (case 127) |
+ | `agentUser` | lane V, `run/user/` | `user`, `uid`, `how` (the route lane V reads first: a fixed `sudo` rule, a systemd unit, or another) |
+ | `content` | lane S | `on`, `retentionDays` |
+-| `ioUring` | lane T | `not-audited` for srt and no boundary on Linux (case 128), `own-kernel` under sbx; absent elsewhere |
++| `ioUring` | lane T | `not-audited` for no boundary on Linux, and for srt where its seccomp helper does not run (case 128); `blocked` for srt where it does (x86_64 and aarch64 Linux: srt 0.0.81 refuses `io_uring_setup`, `io_uring_enter` and `io_uring_register`, its README line 1214, lane T by run; request T-1); `own-kernel` under sbx; absent elsewhere |
+ 
+ The user's switches for all of this are one file, `~/.derm/settings.json` (`settings.schema.json`): lane W's `derm setup` writes it, behind a question per switch; lanes S, T, U and X read their own key. `~/.derm/` is a control path (`policy.md`, section 4, step 7a), so a gated agent's write to it asks and srt denies it.
+diff --git a/contracts/wave5-records.schema.json b/contracts/wave5-records.schema.json
+index efe836b..4c546d8 100644
+--- a/contracts/wave5-records.schema.json
++++ b/contracts/wave5-records.schema.json
+@@ -245,7 +245,7 @@
+                 "additionalProperties": false
+               }
+             },
+-            "answeredBy": { "enum": ["flag", "terminal", "pre-answer", "no-one"] },
++            "answeredBy": { "enum": ["flag", "default", "terminal", "pre-answer", "no-one"] },
+             "preAnswer": { "enum": ["run-as-you", "stop", null] }
+           },
+           "additionalProperties": false
+@@ -274,7 +274,7 @@
+           "properties": { "on": { "type": "boolean" }, "retentionDays": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 } },
+           "additionalProperties": false
+         },
+-        "ioUring": { "enum": ["not-audited", "own-kernel"] }
++        "ioUring": { "enum": ["not-audited", "blocked", "own-kernel"] }
+       }
+     }
+   },
