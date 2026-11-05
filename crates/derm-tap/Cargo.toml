@@ -1,8 +1,7 @@
 # Wave 5 lane S's crate (scaffolded by the wave 5 base,
-# plans/parallel_build_tk.md section 7c): the model tap, a loopback HTTP and
-# WebSocket proxy the daemon starts. Lane S owns this whole folder, its
-# manifest included, and pins every dependency to an exact version with a
-# reason in its status doc.
+# plans/parallel_build_tk.md section 7c): the model tap, a loopback HTTP proxy
+# the daemon starts. Lane S owns this whole folder, its manifest included, and
+# pins every dependency to an exact version with a reason in its status doc.
 
 [package]
 name = "derm-tap"
@@ -17,3 +16,19 @@ description = "derm's model tap: a loopback proxy that records every tool call a
 derm-core = { path = "../derm-core" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+libc.workspace = true
+uuid.workspace = true
+# The upstream client (lane S, plans/parallel/tk_lane_S.md, Decisions): the
+# first outbound HTTPS in derm. Blocking, streaming reads, an env proxy, no
+# redirects followed. `platform-verifier` reads the OS trust store, so a
+# corporate or sandbox proxy's CA works as it does for the harness; no gzip,
+# so the tap reads the bytes it passes on.
+ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "platform-verifier"] }
+
+[[example]]
+# A standalone tap for the contract checks (tests/cli-contract/checks/S/):
+# records go to a file instead of the daemon. Built with
+# `cargo build -p derm-tap --example tap_dev`; never shipped.
+name = "tap_dev"
+path = "examples/tap_dev.rs"
