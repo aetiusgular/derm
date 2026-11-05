@@ -241,12 +241,21 @@ impl Daemon {
 
 /// `lstat`, not `stat`: a regular file (no link followed), owned by this
 /// user, one hard link, no group or other write bit (fix pass review R1).
+#[cfg(unix)]
 fn regular_private_file(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     std::fs::symlink_metadata(path).is_ok_and(|m| {
         let uid = derm_core::platform::real_user();
         m.file_type().is_file() && m.uid() == uid && m.nlink() == 1 && m.mode() & 0o022 == 0
     })
+}
+
+/// Windows (lane Z): a regular file of this user's, one link, that no one
+/// else may write.
+#[cfg(windows)]
+fn regular_private_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+        && derm_core::platform::windows::only_owner_writes(path)
 }
 
 /// The argv a run record keeps. derm's own part (the wrapper and its flags,
@@ -332,6 +341,19 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
     run_io(argv, env, None)
 }
 
+/// A folder this user owns (Unix: its uid).
+#[cfg(unix)]
+fn folder_of_mine(_at: &Path, m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    m.uid() == derm_core::platform::real_user()
+}
+
+/// Windows (lane Z): owned by this user, and no reparse point.
+#[cfg(windows)]
+fn folder_of_mine(at: &Path, _m: &std::fs::Metadata) -> bool {
+    derm_core::platform::windows::owned_plain_dir(at)
+}
+
 /// A folder of the chat's alone: made 0700 with no link at its place, its
 /// parents made 0700 when new. Removed after the run.
 /// Every folder between `home` (left out) and `path` (left out) that exists
@@ -339,8 +361,6 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
 /// lands in another folder (security review L11). A path outside `home` has
 /// its parent checked alone.
 fn no_link_above(path: &Path, home: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let uid = derm_core::platform::real_user();
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -360,7 +380,7 @@ fn no_link_above(path: &Path, home: &Path) -> std::io::Result<()> {
             continue;
         }
         match std::fs::symlink_metadata(&at) {
-            Ok(m) if m.file_type().is_symlink() || !m.is_dir() || m.uid() != uid => {
+            Ok(m) if m.file_type().is_symlink() || !m.is_dir() || !folder_of_mine(&at, &m) => {
                 return Err(std::io::Error::other(format!(
                     "{} is a link, not a folder, or not yours; derm will not make the chat's folder under it",
                     at.display()
@@ -1033,6 +1053,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -1042,6 +1063,7 @@ mod tests {
         assert_ne!(a, new_chat_id());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_settings_file_is_private_and_never_follows_a_link() {
         let dir = std::env::temp_dir().join(format!("derm-run-w-{}", std::process::id()));
@@ -1098,9 +1120,12 @@ mod tests {
 #[cfg(test)]
 mod end_to_end {
     use super::*;
+    #[cfg(unix)]
     use derm_audit_linux::client::fake;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     fn script(dir: &Path, name: &str, body: &str) -> String {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -1114,12 +1139,14 @@ mod end_to_end {
         v.iter().map(|x| x.to_string()).collect()
     }
 
+    #[cfg(unix)]
     struct Setup {
         fake: fake::Fake,
         work: PathBuf,
         env: RunEnv,
     }
 
+    #[cfg(unix)]
     fn setup(name: &str) -> Setup {
         let fake = fake::start(&format!("run-{name}"), fake::Mode::Normal);
         let work = fake.dir.join("work dir");
@@ -1172,10 +1199,12 @@ mod end_to_end {
         Setup { fake, work, env }
     }
 
+    #[cfg(unix)]
     fn seen(st: &Setup) -> String {
         std::fs::read_to_string(st.fake.dir.join("seen")).unwrap_or_default()
     }
 
+    #[cfg(unix)]
     fn events(st: &Setup) -> Vec<serde_json::Value> {
         st.fake
             .lines()
@@ -1185,6 +1214,7 @@ mod end_to_end {
             .collect()
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_records_never_hold_a_secret_from_the_harness_argv() {
         // Integration w1, security finding S13: a key passed to the harness
@@ -1269,6 +1299,7 @@ mod end_to_end {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_records_hold_no_prompt_text_from_the_harness_argv() {
         // Mac test w1, finding M8: `claude -p "<prompt>"` put the prompt in
@@ -1307,6 +1338,7 @@ mod end_to_end {
         assert!(seen(&st).contains("arg=summarise my private plan"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn none_mints_a_token_records_start_and_stop_and_returns_the_code() {
         let st = setup("none");
@@ -1383,6 +1415,7 @@ mod end_to_end {
         }
     }
 
+    #[cfg(unix)]
     /// Lane S's requests 2 and 3 (integration w5, phase 2): `--no-tap` makes
     /// the chat say it runs untapped and why (case 127), and every
     /// `run.start` carries content capture's switch as the chat starts.
@@ -1431,6 +1464,7 @@ mod end_to_end {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn srt_writes_private_settings_and_removes_them_after() {
         let st = setup("srt");
@@ -1498,6 +1532,7 @@ mod end_to_end {
         assert_eq!(ev[0]["detail"]["ioUring"], want);
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_stop_is_recorded_after_the_daemon_restarted() {
         // Box test w1, BX8: `systemctl --user restart derm-daemon` during a
@@ -1549,6 +1584,7 @@ mod end_to_end {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn srt_re_opens_the_policy_only_when_it_is_a_plain_file() {
         // Fix pass review R1: a link at ~/.derm/policy.json to ~/.derm/backups
@@ -1614,6 +1650,7 @@ mod end_to_end {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn srt_without_its_dependencies_starts_nothing() {
         // Box test w1, BX4: srt's own "ripgrep (rg) not found" came after
@@ -1639,6 +1676,7 @@ mod end_to_end {
         assert!(events(&st).is_empty(), "nothing recorded");
     }
 
+    #[cfg(unix)]
     #[test]
     fn sbx_names_the_variables_and_posts_the_blocks_its_log_shows() {
         let st = setup("sbx");
@@ -1752,6 +1790,7 @@ mod end_to_end {
         assert_eq!(stop["detail"]["sandboxRemoved"], true);
     }
 
+    #[cfg(unix)]
     /// Lane R: Claude Code's own OTel goes to the daemon under `derm run`
     /// (integration w1's request; `apply_export`), its arguments before the
     /// user's, its token never in an argument, the helper removed after.
@@ -1848,6 +1887,7 @@ mod end_to_end {
         );
     }
 
+    #[cfg(unix)]
     /// Lane R: Cline gets its approval folder (0700, removed after) and lane
     /// P's responder runs beside it with `--dir` and the chat's variables.
     #[test]
@@ -1911,6 +1951,7 @@ mod end_to_end {
         assert!(!Path::new(&dir).exists(), "the approval folder was removed");
     }
 
+    #[cfg(unix)]
     /// Case 80: a program derm has no preset for runs with the outside
     /// shape, recorded as such.
     #[test]
@@ -1953,6 +1994,7 @@ mod end_to_end {
         assert_eq!(ev.last().unwrap()["kind"], "run.stop");
     }
 
+    #[cfg(unix)]
     /// Case 83: a full-access flag reaches the gate as a hint and the run
     /// record keeps it for `derm status`.
     #[test]
@@ -1982,6 +2024,7 @@ mod end_to_end {
         assert_eq!(ev[0]["detail"]["fullAccess"], true);
     }
 
+    #[cfg(unix)]
     /// `derm acp` end to end: a scripted ACP agent asks about a call the
     /// policy denies; derm answers it, the client never sees the request,
     /// and the decision is posted on the chat token beside the run's records.
@@ -2080,6 +2123,7 @@ mod end_to_end {
             .any(|l| l["op"] == "hello" && l["token"] == fake::CHAT_TOKEN));
     }
 
+    #[cfg(unix)]
     /// The OTel receiver keeps one helper folder per process
     /// (`otel_receiver::helper_in`), and the tests share one fake chat token:
     /// two Claude Code runs at once in this test process would clear each
@@ -2087,6 +2131,7 @@ mod end_to_end {
     /// alone.
     static OTEL_HELPERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(unix)]
     fn clone_env(e: &RunEnv) -> RunEnv {
         RunEnv {
             socket: e.socket.clone(),
@@ -2102,6 +2147,7 @@ mod end_to_end {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn no_daemon_is_an_error_and_starts_nothing() {
         let st = setup("down");
@@ -2124,6 +2170,7 @@ mod end_to_end {
         assert!(seen(&st).is_empty(), "the harness never started");
     }
 
+    #[cfg(unix)]
     #[test]
     fn no_daemon_flag_runs_without_token_or_records() {
         let st = setup("nod");
@@ -2138,6 +2185,7 @@ mod end_to_end {
         assert!(st.fake.lines().is_empty(), "the daemon heard nothing");
     }
 
+    #[cfg(unix)]
     #[test]
     fn dry_run_contacts_nobody_and_starts_nothing() {
         let st = setup("dry");
@@ -2154,6 +2202,7 @@ mod end_to_end {
         assert!(seen(&st).is_empty());
     }
 
+    #[cfg(unix)]
     /// Security review L5: the copy of the user's `--settings` the export
     /// adds is derm's argument, but its content is the user's: the record
     /// does not keep it.
@@ -2288,6 +2337,7 @@ mod end_to_end {
         assert!(ps_running_with(&marker).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_harness_that_does_not_start_leaves_nothing_running_or_behind() {
         let _one = OTEL_HELPERS.lock().unwrap_or_else(|p| p.into_inner());
@@ -2370,6 +2420,7 @@ mod end_to_end {
         assert!(!helper.exists(), "{} was left behind", helper.display());
     }
 
+    #[cfg(unix)]
     /// Security review L11: a link anywhere between HOME and the chat's
     /// folder is refused, so derm never chmods or removes another folder.
     #[test]

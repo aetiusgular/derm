@@ -236,6 +236,7 @@ fn writable_with(path: &std::path::Path, can: impl Fn(&std::path::Path) -> bool)
 
 /// One path: owned by this user (who can always chmod it), or writable by
 /// this user's effective ids.
+#[cfg(unix)]
 fn can_change(p: &std::path::Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
@@ -253,6 +254,13 @@ fn can_change(p: &std::path::Path) -> bool {
     // the effective ids, as a rename would. AT_SYMLINK_NOFOLLOW is not passed:
     // a link's own entry is its folder's, which the chain checks.
     unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::W_OK, libc::AT_EACCESS) == 0 }
+}
+
+/// Windows (lane Z): the collector is the Mac's; every path counts as one
+/// this user can change, the answer the Unix code gives when it cannot read.
+#[cfg(not(unix))]
+fn can_change(_p: &std::path::Path) -> bool {
+    true
 }
 
 /// Starts what lane K adds to a running daemon. Returns at once.
@@ -411,6 +419,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_install_plan_pins_the_binary_and_the_peer_and_stages_the_plist() {
         let root = std::env::temp_dir().join(format!(
@@ -456,6 +465,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_peer_is_replaceable_when_any_folder_up_its_path_is_ours() {
         // Fix pass 1's review, FP1-S3: the first check looked at the file

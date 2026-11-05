@@ -320,6 +320,7 @@ pub(crate) fn srt_probe(
     }
 }
 
+#[cfg(unix)]
 fn private_temp_dir() -> std::io::Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt;
     let base = std::env::temp_dir();
@@ -338,15 +339,36 @@ fn private_temp_dir() -> std::io::Result<PathBuf> {
     Err(std::io::Error::other("could not make a private folder"))
 }
 
+/// Windows (lane Z): a new folder, then a user-only DACL.
+#[cfg(windows)]
+fn private_temp_dir() -> std::io::Result<PathBuf> {
+    let base = std::env::temp_dir();
+    for _ in 0..8 {
+        let d = base.join(format!(
+            "derm-srt-probe-{}-{}",
+            std::process::id(),
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        match std::fs::create_dir(&d) {
+            Ok(()) => {
+                derm_core::platform::set_private_dir(&d)?;
+                return Ok(d);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("could not make a private folder"))
+}
+
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
+    // on Unix.
+    let mut f = derm_core::platform::private_no_follow(
+        std::fs::OpenOptions::new().write(true).create_new(true),
+    )
+    .open(path)?;
     f.write_all(text.as_bytes())
 }
 
@@ -453,9 +475,12 @@ fn clean(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let p = dir.join(name);
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -463,6 +488,7 @@ mod tests {
         p
     }
 
+    #[cfg(unix)]
     /// A folder outside /tmp: srt's writable list always holds /tmp, and a
     /// tool there is refused (preflight's rule), which these tests are not
     /// about.
@@ -482,10 +508,12 @@ mod tests {
         d
     }
 
+    #[cfg(unix)]
     fn pi() -> &'static harness::Harness {
         harness::find("pi").unwrap()
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_runner_reads_the_first_line_and_the_status_and_keeps_its_deadline() {
         let d = tmp("runner");
@@ -526,6 +554,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn sbx_is_unavailable_without_a_kit_without_a_binary_or_signed_out() {
         let d = tmp("sbx");
@@ -568,6 +597,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn srt_is_unavailable_when_missing_or_when_its_probe_fails() {
         let d = tmp("srt");
@@ -628,6 +658,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn srt_in_a_folder_the_sandbox_can_write_is_not_a_boundary() {
         // preflight's rule (fix pass review R3): the tool srt runs outside

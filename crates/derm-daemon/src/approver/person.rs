@@ -31,9 +31,14 @@
 //! `derm watch --approve` asking for the password) is integration's: lane
 //! V's request V-2, with its patch in `tests/integration/w5/V/requests/`.
 
+// The helper below is Unix's; on Windows (lane Z) these stay unused.
+#[cfg_attr(not(unix), allow(unused_imports))]
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg_attr(not(unix), allow(unused_imports))]
 use std::path::{Path, PathBuf};
+#[cfg_attr(not(unix), allow(unused_imports))]
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -44,6 +49,7 @@ use serde_json::Value;
 /// `modules/pam_unix/support.h`); a longer one is refused unread.
 pub const MAX_PASSWORD: usize = 512;
 /// How long the helper may take.
+#[cfg_attr(not(unix), allow(dead_code))]
 const HELPER_DEADLINE: Duration = Duration::from_secs(10);
 /// The back-off after the n-th wrong password in a row: 1, 2, 4 ... seconds,
 /// capped here. It is the daemon's, not a connection's: a new connection
@@ -54,6 +60,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// The password is the person's.
+    #[cfg_attr(not(unix), allow(dead_code))]
     Person,
     /// It is not, or none was given.
     Wrong(String),
@@ -184,13 +191,16 @@ pub fn wipe(buf: &mut [u8]) {
 
 /// Linux-PAM's helper, found at an absolute path, root's, not writable by
 /// group or others, set-group-id (to read `/etc/shadow`) or set-user-id.
+#[cfg(unix)]
 pub struct UnixChkpwd {
     path: PathBuf,
 }
 
 /// Where Debian, Ubuntu and Fedora put the helper.
+#[cfg_attr(not(unix), allow(dead_code))]
 const HELPER_PATHS: &[&str] = &["/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd"];
 
+#[cfg(unix)]
 impl UnixChkpwd {
     /// The helper, or why there is none to trust.
     pub fn find() -> Result<Self, String> {
@@ -229,6 +239,7 @@ impl UnixChkpwd {
     }
 }
 
+#[cfg(unix)]
 fn parents_trusted(real: &Path, trusted: u32) -> bool {
     real.ancestors().skip(1).all(|p| {
         std::fs::symlink_metadata(p)
@@ -237,6 +248,7 @@ fn parents_trusted(real: &Path, trusted: u32) -> bool {
     })
 }
 
+#[cfg(unix)]
 impl Checker for UnixChkpwd {
     /// `unix_chkpwd <user> nonull`, the password and a NUL on a pipe (the
     /// helper refuses a terminal on stdin), exit 0 for the person's password.
@@ -291,20 +303,23 @@ impl Checker for NoChecker {
 
 /// The platform's checker.
 pub fn platform() -> Box<dyn Checker> {
+    // `cfg!` and not `#[cfg]` for Linux, so macOS still compiles the helper
+    // (as before lane Z's patch); Windows has no helper to compile.
+    #[cfg(unix)]
     if cfg!(target_os = "linux") {
-        match UnixChkpwd::find() {
+        return match UnixChkpwd::find() {
             Ok(c) => Box::new(c),
             Err(why) => Box::new(NoChecker(Box::leak(why.into_boxed_str()))),
-        }
-    } else {
-        Box::new(NoChecker(
-            "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
-        ))
+        };
     }
+    Box::new(NoChecker(
+        "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
+    ))
 }
 
 /// The daemon's user name, for the helper (it compares it with the name of
 /// the user that runs it).
+#[cfg(unix)]
 pub fn own_user() -> Option<String> {
     let uid = derm_core::platform::effective_user();
     let mut buf = vec![0u8; 16 * 1024];
@@ -323,6 +338,15 @@ pub fn own_user() -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+/// Windows (lane Z): the daemon's SID. No checker is built for Windows yet
+/// (`platform()` answers `NoChecker`), so a `yes` that needs a check is
+/// refused, as on macOS (lane V's V-6; note AU section 3.1).
+#[cfg(windows)]
+pub fn own_user() -> Option<String> {
+    let me = derm_core::platform::effective_user();
+    me.is_known().then(|| me.to_string())
 }
 
 #[cfg(test)]
@@ -500,6 +524,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_helper_that_is_not_roots_and_set_id_is_not_trusted() {
         // A plain file of the test's: not set-id, and (as a non-root test) not

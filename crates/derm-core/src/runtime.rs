@@ -23,8 +23,21 @@ pub const RUN_USER: &str = "/run/user";
 /// `<runtime_dir>/derm/daemon.sock`, else `~/.derm/run/derm/daemon.sock`.
 /// Computes the path only.
 pub fn socket_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = home_dir();
     socket_path_with(home.as_deref(), runtime_dir(), cfg!(target_os = "macos"))
+}
+
+/// The user's home folder: `HOME` on Unix; `USERPROFILE` on Windows, which
+/// sets no `HOME` (lane Z's request; the daemon's
+/// `socket_path_ends_with_derm_daemon_sock` failed on the Windows runner).
+/// On Windows the socket path is `%USERPROFILE%\.derm\run\derm\daemon.sock`,
+/// the pointer file to the daemon's pipe.
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let key = "USERPROFILE";
+    #[cfg(not(windows))]
+    let key = "HOME";
+    std::env::var_os(key).map(PathBuf::from)
 }
 
 /// `socket_path` from its inputs.

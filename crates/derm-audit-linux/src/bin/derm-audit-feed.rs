@@ -10,9 +10,13 @@
 //! - `derm-audit-feed parse FILE --root PID --chat ID [--folder DIR]...`
 //!   prints, one JSON line each, the events one recorded log gives for one
 //!   root. Offline; for the box test and for reading a fixture.
+// The audit log is Linux's (lane Z): elsewhere the binary only says so, and
+// the readers below are not built.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -30,6 +34,20 @@ const DEFAULT_LOG: &str = "/var/log/audit/audit.log";
 /// so chats started before the feed are known.
 const TAIL_BACKLOG_MS: i64 = 24 * 60 * 60 * 1000;
 
+#[cfg(not(unix))]
+fn main() -> ExitCode {
+    // `--version` answers everywhere (its test runs on Windows CI too).
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("derm-audit-feed {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+    eprintln!(
+        "derm-audit-feed reads Linux's audit log; this system has none (on Windows the OS feed is derm-audit-windows)"
+    );
+    ExitCode::from(2)
+}
+
+#[cfg(unix)]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
@@ -83,6 +101,7 @@ fn runtime_dir_for_with(
         .and_then(|p| p.to_str().map(str::to_string))
 }
 
+#[cfg(unix)]
 fn cmd_rules(args: &[String]) -> u8 {
     // SAFETY: getuid has no preconditions and cannot fail.
     let mut uid = unsafe { libc::getuid() };
@@ -202,6 +221,7 @@ fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+#[cfg(unix)]
 fn cmd_run(args: &[String]) -> u8 {
     let mut log = PathBuf::from(DEFAULT_LOG);
     let mut from_start = false;
@@ -332,6 +352,7 @@ fn cmd_run(args: &[String]) -> u8 {
 /// Follows the log like `tail -F`: from the end (or the start), across
 /// rotation (a new inode or a file that shrank). Sends `Idle` after a quiet
 /// half second so open events are flushed.
+#[cfg(unix)]
 fn follow(path: &Path, from_start: bool, tx: &mpsc::Sender<Msg>) -> std::io::Result<()> {
     let mut file = File::open(path)?;
     let mut inode = file.metadata()?.ino();
@@ -382,7 +403,7 @@ fn follow(path: &Path, from_start: bool, tx: &mpsc::Sender<Msg>) -> std::io::Res
 
 use std::io::Read as _;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

@@ -222,12 +222,15 @@ pub(crate) fn interactive() -> bool {
 /// run and says how it went.
 pub(crate) struct Sandbox {
     sbx: String,
+    // Read only by a test with a shell-script sbx (Unix; lane Z).
+    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     name: String,
     remove: Vec<String>,
     done: bool,
 }
 
 impl Sandbox {
+    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -404,6 +407,7 @@ pub(crate) fn start_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn s(v: &[&str]) -> Vec<String> {
@@ -554,6 +558,7 @@ mod tests {
         assert!(stages(&s(&["run", "claude", "/w"]), &[], true, &[]).is_err());
     }
 
+    #[cfg(unix)]
     fn fake_sbx(dir: &Path, fail_on: &str) -> String {
         let log = dir.join("calls");
         let p = dir.join("sbx");
@@ -570,6 +575,7 @@ mod tests {
         p.to_string_lossy().into_owned()
     }
 
+    #[cfg(unix)]
     fn plan_for(args: Vec<String>) -> Plan {
         Plan {
             program: "sbx".into(),
@@ -594,6 +600,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn tmp(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!(
             "derm-sbx-{name}-{}-{}",
@@ -604,6 +611,7 @@ mod tests {
         d
     }
 
+    #[cfg(unix)]
     #[test]
     fn create_then_allow_then_attach_then_remove() {
         let d = tmp("seq");
@@ -650,6 +658,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_refused_rule_stops_the_chat_and_removes_the_sandbox() {
         let d = tmp("refused");
@@ -673,6 +682,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failed_create_starts_nothing_and_removes_nothing() {
         let d = tmp("nocreate");
@@ -685,6 +695,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_sandbox_dropped_on_an_error_path_is_removed() {
         let d = tmp("drop");

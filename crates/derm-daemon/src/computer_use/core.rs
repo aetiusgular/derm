@@ -312,7 +312,7 @@ impl Core {
     }
 
     /// The chat's bridge token, if it has one. Spawns take `mint_token`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn token(&self, chat: &str) -> Option<String> {
         self.lock().tokens.get(chat).cloned()
     }
@@ -1319,7 +1319,9 @@ impl Backend for Core {
     }
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 pub mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};

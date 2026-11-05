@@ -329,6 +329,7 @@ fn is_derm_cursor_command(c: &str) -> bool {
 /// `._/@+~ -`, as `--hook` and `--node` take them, so no `$`, backtick or
 /// `\`); the hook file is a regular file of yours or root's, writable by no
 /// one else, in a folder whose `package.json` names derm-hooks-native.
+#[cfg(unix)]
 pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
     use std::os::unix::fs::MetadataExt;
     let c = c.trim_end();
@@ -374,6 +375,13 @@ pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .is_some_and(|v| v["name"] == "@aetiusgular/derm-hooks-native");
     named.then(|| (node.to_string(), file.to_path_buf()))
+}
+
+/// Windows (lane Z): the command form above is Unix paths only; no Windows
+/// form is read yet, so nothing counts as derm's Cursor hook.
+#[cfg(not(unix))]
+pub fn derm_cursor_command_parts(_c: &str) -> Option<(String, PathBuf)> {
+    None
 }
 
 /// What derm's registered Cursor gate runs, for srt to keep read-only
@@ -1043,6 +1051,7 @@ mod tests {
         assert_eq!(check("claude-code", &env).word(), "yes");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_local_install_counts_only_in_its_own_folder() {
         // Mac test w2, MW3: the only record was `scope: "local"` for one
@@ -1191,8 +1200,10 @@ mod tests {
 
 #[cfg(test)]
 mod cursor_tests {
+    #[cfg(unix)]
     use super::*;
 
+    #[cfg(unix)]
     fn env_in(dir: &Path) -> Env {
         Env {
             home: Some(dir.to_path_buf()),
@@ -1202,14 +1213,17 @@ mod cursor_tests {
         }
     }
 
+    #[cfg(unix)]
     fn entry_for(command: &str, fail_closed: bool) -> String {
         serde_json::json!({"type": "command", "command": command, "timeout": 120, "failClosed": fail_closed})
             .to_string()
     }
 
+    #[cfg(unix)]
     /// A real derm-hooks-native folder under `dir`, with its hook file
     /// (fix pass 1's review, FP4-S3).
     fn native(dir: &Path, name: &str) -> PathBuf {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let pkg = dir.join(name);
         std::fs::create_dir_all(pkg.join("bin")).unwrap();
@@ -1229,6 +1243,7 @@ mod cursor_tests {
         hook
     }
 
+    #[cfg(unix)]
     /// Mac test w4, 4.3 (lane Q's Q7, lane N's N4): Cursor showed `unknown`
     /// after `derm connect cursor --gate --write`. derm's gate is its two
     /// entries in `~/.cursor/hooks.json`, beside anything else there (Orca's),
@@ -1290,6 +1305,7 @@ mod cursor_tests {
             assert_eq!(check("cursor", &env).word(), "no", "{command}");
         }
         {
+            #[cfg(unix)]
             use std::os::unix::fs::PermissionsExt;
             write(&entry(true), &entry(true));
             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o666)).unwrap();

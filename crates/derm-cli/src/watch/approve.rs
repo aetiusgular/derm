@@ -514,6 +514,7 @@ fn wipe(s: &mut String) {
 }
 
 /// Turns the controlling terminal's echo off or on (termios(3), `ECHO`).
+#[cfg(unix)]
 fn set_tty_echo(on: bool) {
     use std::os::fd::AsRawFd;
     let Ok(t) = std::fs::File::open("/dev/tty") else {
@@ -536,9 +537,16 @@ fn set_tty_echo(on: bool) {
     }
 }
 
+/// Windows (lane Z): the console's echo.
+#[cfg(windows)]
+fn set_tty_echo(on: bool) {
+    crate::platform::windows::set_console_echo(on);
+}
+
 /// `tcflush(TCIFLUSH)` on the controlling terminal: drops typed-ahead input
 /// the kernel holds, so an answer meant for an earlier prompt cannot land on
 /// this one.
+#[cfg(unix)]
 fn flush_tty_input() {
     use std::os::fd::AsRawFd;
     if let Ok(t) = std::fs::File::open("/dev/tty") {
@@ -547,6 +555,12 @@ fn flush_tty_input() {
             libc::tcflush(t.as_raw_fd(), libc::TCIFLUSH);
         }
     }
+}
+
+/// Windows (lane Z): the console's typed-ahead input.
+#[cfg(windows)]
+fn flush_tty_input() {
+    crate::platform::windows::flush_console_input();
 }
 
 /// Why this process looks like it runs inside a derm chat, if it does: a

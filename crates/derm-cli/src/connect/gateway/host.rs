@@ -14,7 +14,10 @@
 //!   seconds, as the fork's `run_isolated_output` does (`harness.rs:1895`).
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -62,6 +65,7 @@ fn search_path_from(home: Option<String>, existing: Option<String>) -> String {
         .into_owned()
 }
 
+#[cfg(unix)]
 fn terminate(pid: u32) {
     let pgid = pid as libc::pid_t;
     // SAFETY: kill(2) with a negative pid signals the process group the
@@ -79,6 +83,13 @@ fn terminate(pid: u32) {
     });
 }
 
+/// Windows (lane Z): Ctrl-Break to the child's group, then the process
+/// itself after the same wait.
+#[cfg(windows)]
+fn terminate(pid: u32) {
+    crate::platform::windows::terminate_group(pid, KILL_ESCALATE);
+}
+
 pub fn exec_output_with_stdin(
     command: &str,
     args: &[String],
@@ -94,8 +105,12 @@ pub fn exec_output_with_stdin(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    // Its own process group, so `terminate` reaches the whole group.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(crate::platform::windows::NEW_GROUP);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }

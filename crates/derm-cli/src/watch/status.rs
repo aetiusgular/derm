@@ -191,6 +191,7 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
 /// The last `derm doctor` report for an agent, as `derm status` shows it:
 /// when, which versions, and how many things it found to look at. Read only
 /// from a regular file of yours under 64 KiB; anything else is not shown.
+#[cfg(unix)]
 fn last_doctor(path: &Path) -> Option<Value> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -225,6 +226,19 @@ fn last_doctor(path: &Path) -> Option<Value> {
     }))
 }
 
+/// Windows (lane Z): a private file of yours, checked on the open handle.
+#[cfg(windows)]
+fn last_doctor(path: &Path) -> Option<Value> {
+    use std::io::Read;
+    let f = derm_core::platform::windows::open_private_file(path).ok()?;
+    if f.metadata().ok()?.len() > 64 * 1024 {
+        return None;
+    }
+    let mut text = String::new();
+    f.take(64 * 1024).read_to_string(&mut text).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// A program name with no folder part: what a row's `cli` must be.
 fn plain_name(c: &str) -> bool {
     !c.contains('/') && !c.starts_with('-') && c.bytes().all(|b| b.is_ascii_graphic())
@@ -233,6 +247,7 @@ fn plain_name(c: &str) -> bool {
 /// The first `<dir>/<name>` on PATH that is a regular file with an execute
 /// bit, in an absolute folder. A relative PATH entry (`.`, empty) is
 /// skipped: it names whatever folder `derm status` runs in.
+#[cfg(unix)]
 pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     for dir in path.split(':') {
@@ -247,6 +262,17 @@ pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Windows (lane Z): absolute PATH entries split on `;`, the name tried with
+/// Windows' program extensions.
+#[cfg(windows)]
+pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
+    let absolute: Vec<&str> = path
+        .split(';')
+        .filter(|d| !d.is_empty() && Path::new(d).is_absolute())
+        .collect();
+    crate::platform::windows::shim::find_program(name, Some(&absolute.join(";")), &|p| p.is_file())
 }
 
 /// `<program> --version`, argv only, stdin closed, a clean environment but
@@ -495,11 +521,18 @@ pub fn running_chats(socket: &Path, now: i64) -> Value {
 
 /// Whether `pid` still runs. A pid can be reused after an exit, so this
 /// is a hint, said as one.
+#[cfg(unix)]
 fn alive(pid: u32) -> bool {
     // SAFETY: kill with signal 0 only checks that the process exists and
     // that we may signal it.
     let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Windows (lane Z): the process can be opened and has not ended.
+#[cfg(windows)]
+fn alive(pid: u32) -> bool {
+    derm_core::platform::peer::start_time(pid).is_some()
 }
 
 pub fn render(rows: &[Value], daemon: &Value) -> String {
@@ -798,11 +831,13 @@ mod tests {
         assert!(!out.contains('\u{1b}'), "{out}");
     }
 
+    #[cfg(unix)]
     /// Lane R (T2.9): a probed version other than the row's says
     /// "unverified at" (case 81); the last `derm doctor` report is shown; a
     /// running chat in full access names its flags (case 83).
     #[test]
     fn status_shows_unverified_versions_doctor_reports_and_full_access() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-status-r-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -929,8 +964,10 @@ mod tests {
         assert!(t.contains("no chats started by derm run are open"), "{t}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn path_lookup_skips_relative_entries_and_non_executables() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -947,8 +984,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_that_hangs_is_killed() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-hang-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -962,11 +1001,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_that_exits_non_zero_is_not_an_install() {
         // Box test w2, BW4: /usr/bin/copilot is VS Code's shim, which says
         // "GitHub Copilot CLI was not found" and exits 127; `derm status` showed
         // it "on PATH" and the probe as "printed nothing".
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-shim-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -993,11 +1034,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_returns_when_the_program_exits_even_if_its_child_holds_the_pipes() {
         // Fix pass 1's review, FP1-S5: `sleep 1d & exit 1` on PATH kept
         // `derm status --probe` waiting for a day, reading to the end of a pipe
         // the left-behind sleep still held.
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-hold-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1028,8 +1071,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_printing_escapes_is_cleaned() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-esc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

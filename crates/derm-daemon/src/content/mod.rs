@@ -22,7 +22,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -177,13 +178,55 @@ pub fn kept(data: &Path) -> (u64, u64, Option<i64>) {
     (files, bytes, until)
 }
 
+#[cfg(unix)]
 fn private_dir(dir: &Path) -> bool {
     let uid = derm_core::platform::real_user();
     std::fs::symlink_metadata(dir)
         .is_ok_and(|m| m.file_type().is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
 }
 
+#[cfg(windows)]
+fn private_dir(dir: &Path) -> bool {
+    derm_core::platform::owned_private_dir(dir, &derm_core::platform::real_user())
+}
+
 fn read_ages(path: &Path) -> Option<HashMap<String, i64>> {
+    #[cfg(windows)]
+    {
+        read_ages_windows(path)
+    }
+    #[cfg(unix)]
+    {
+        read_ages_unix(path)
+    }
+}
+
+/// Windows (lane Z): the file itself, checked on the open handle.
+#[cfg(windows)]
+fn read_ages_windows(path: &Path) -> Option<HashMap<String, i64>> {
+    use std::io::Read;
+    let mut f = derm_core::platform::windows::open_private_file(path).ok()?;
+    if f.metadata().ok()?.len() > MAX_AGES_FILE {
+        return None;
+    }
+    let mut text = String::new();
+    f.read_to_string(&mut text).ok()?;
+    ages_from(&text)
+}
+
+#[cfg(windows)]
+fn ages_from(text: &str) -> Option<HashMap<String, i64>> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    Some(
+        v.as_object()?
+            .iter()
+            .filter_map(|(k, v)| v.as_i64().filter(|n| *n >= 0).map(|n| (k.clone(), n)))
+            .collect(),
+    )
+}
+
+#[cfg(unix)]
+fn read_ages_unix(path: &Path) -> Option<HashMap<String, i64>> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     let uid = derm_core::platform::real_user();
     if !meta.file_type().is_file()
@@ -205,12 +248,12 @@ fn read_ages(path: &Path) -> Option<HashMap<String, i64>> {
 fn write_ages(path: &Path, ages: &HashMap<String, i64>) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&tmp)?;
+    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
+    // on Unix (lane Z's request Z-2).
+    let mut f = derm_core::platform::private_no_follow(
+        std::fs::OpenOptions::new().write(true).create_new(true),
+    )
+    .open(&tmp)?;
     let map: BTreeMap<&String, &i64> = ages.iter().collect();
     f.write_all(
         serde_json::to_string(&map)

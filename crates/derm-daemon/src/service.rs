@@ -26,6 +26,8 @@ pub struct Running {
     pub daemon: Arc<Daemon>,
     pub listener: UnixListener,
     pub paths: Paths,
+    // Held for its lock; read only by Unix's `pid_file_fd` (lane Z).
+    #[cfg_attr(not(unix), allow(dead_code))]
     lock: File,
 }
 

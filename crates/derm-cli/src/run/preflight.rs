@@ -218,6 +218,7 @@ fn checked(
 /// entry in order, an empty one meaning the current folder, which for srt is
 /// the chat's folder (`derm run` starts it there). A relative entry's match is
 /// returned relative, for the caller to refuse.
+#[cfg(unix)]
 fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     path_var.split(':').find_map(|d| {
@@ -234,6 +235,14 @@ fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
     })
 }
 
+/// Windows (lane Z): PATH split on `;`, the name tried with Windows'
+/// program extensions (`platform::windows::shim::find_program`).
+#[cfg(windows)]
+fn first_on_path(path_var: &str, bin: &str, _cwd: &str) -> Option<String> {
+    crate::platform::windows::shim::find_program(bin, Some(path_var), &|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// `path` is `dir` or inside it, both compared canonical where they exist.
 fn under(path: &str, dir: &str) -> bool {
     let dir = std::fs::canonicalize(dir)
@@ -247,6 +256,7 @@ fn under(path: &str, dir: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn dir_with(name: &str, bins: &[&str]) -> String {
         let d = std::env::temp_dir().join(format!("derm-pre-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -254,12 +264,14 @@ mod tests {
         for b in bins {
             let p = d.join(b);
             std::fs::write(&p, "#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         d.to_string_lossy().into_owned()
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_missing_dependency_stops_the_run_and_names_it() {
         // BX4: the box had bwrap and socat, and rg only in ~/.pi/agent/bin.
@@ -273,6 +285,7 @@ mod tests {
         assert!(e.contains("rg"), "{e}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_userns_sysctl_warns_before_the_start() {
         // BX3.
@@ -293,6 +306,7 @@ mod tests {
         assert!(srt(&d, false, Some("1"), &[], "/").unwrap().0.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_copy_srt_would_run_must_not_be_relative_or_in_a_writable_folder() {
         // Fix pass review R3.
@@ -342,6 +356,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_file_that_is_not_executable_does_not_count() {
         let d = dir_with("noexec", &["bwrap", "socat"]);
@@ -349,10 +364,12 @@ mod tests {
         assert!(srt(&d, true, None, &[], "/").is_err());
     }
 
+    #[cfg(unix)]
     /// Security review L8: the companion runs outside the sandbox with the
     /// chat token, so it is held to the same rule as srt's own tools.
     #[test]
     fn the_companion_is_never_taken_from_a_folder_the_sandbox_can_write() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!(
             "derm-pre-comp-{}-{}",
@@ -434,6 +451,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
     /// Mac test w4, MW4-1: on macOS `/tmp` is a link to `/private/tmp`, so a
     /// PATH entry `/tmp/x` that did not exist at start was compared as
     /// written against the folder's real path and kept, and the sandbox could
@@ -468,12 +486,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
     /// Review W4-S4: lane P's responder is a `#!/usr/bin/env node` script,
     /// so the kernel looks `node` up on PATH when it starts. That `node` runs
     /// outside the sandbox with the chat token, so it is held to the same
     /// rule as the script.
     #[test]
     fn the_companions_interpreter_is_held_to_the_same_rule() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!(
             "derm-pre-interp-{}-{}",

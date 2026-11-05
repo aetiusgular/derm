@@ -39,7 +39,7 @@ const POLL: Duration = Duration::from_millis(750);
 /// daemon's: a live derm chat token (lane K).
 pub type Resolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn start(core: Arc<Core>) -> std::io::Result<std::net::SocketAddr> {
     start_with(core, None)
 }
@@ -219,7 +219,9 @@ fn serve(core: &Arc<Core>, resolver: Option<&Resolver>, stream: TcpStream) {
     }
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::core::tests::{core_with, FakeLauncher};
     use super::*;

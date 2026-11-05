@@ -1,6 +1,21 @@
 use super::*;
 use derm_tap::content::{open, Target};
 
+/// 0600 on Unix; a private DACL on Windows (lane Z).
+#[cfg(unix)]
+fn assert_private_file(p: &Path) {
+    assert_eq!(std::fs::metadata(p).unwrap().mode() & 0o777, 0o600);
+}
+
+#[cfg(windows)]
+fn assert_private_file(p: &Path) {
+    assert!(
+        derm_core::platform::windows::is_private_path(p),
+        "{}",
+        p.display()
+    );
+}
+
 const T0: i64 = 1_793_000_000_000;
 
 fn root(name: &str) -> PathBuf {
@@ -69,7 +84,7 @@ fn case_126_a_clock_set_back_still_deletes_on_time_across_a_restart() {
     assert!(f.exists());
     // The daemon restarts: what it saw pass is kept in .ages.json.
     let ages = data.join("content/.ages.json");
-    assert_eq!(std::fs::metadata(&ages).unwrap().mode() & 0o777, 0o600);
+    assert_private_file(&ages);
     let mut p = Purger::new(&data);
     assert!(p.pass_with(back + DAY_MS, DAY_MS - 1).is_empty());
     assert_eq!(p.pass_with(back + 2 * DAY_MS, 1).len(), 1);
@@ -87,6 +102,7 @@ fn a_clock_moved_forward_deletes_early_never_late() {
     let _ = std::fs::remove_dir_all(data);
 }
 
+#[cfg(unix)]
 #[test]
 fn links_and_strangers_files_are_never_followed_or_deleted() {
     use std::os::unix::fs::PermissionsExt;
@@ -120,6 +136,7 @@ fn links_and_strangers_files_are_never_followed_or_deleted() {
     let _ = std::fs::remove_dir_all(data);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_content_folder_others_can_read_is_left_alone() {
     use std::os::unix::fs::PermissionsExt;

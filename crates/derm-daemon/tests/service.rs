@@ -1,4 +1,7 @@
 //! The daemon as a process: the binary, its files, its lock, a restart.
+// The daemon over a Unix socket; its Windows twin is lane Z's
+// `tests/windows/` (the named pipe).
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
