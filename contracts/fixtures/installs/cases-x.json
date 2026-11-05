@@ -9,6 +9,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": true,
           "packages": [
             {
               "name": "left-pad",
@@ -27,6 +28,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -44,6 +46,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -61,6 +64,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -79,6 +83,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -96,6 +101,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -114,6 +120,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -131,6 +138,7 @@
         {
           "manager": "npm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -148,6 +156,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "stdin"
@@ -163,6 +172,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -174,6 +184,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -191,6 +202,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -209,6 +221,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -227,6 +240,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "vitest",
@@ -244,6 +258,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -262,6 +277,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "git"
@@ -277,6 +293,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "git"
@@ -291,6 +308,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "path"
@@ -305,6 +323,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "url"
@@ -319,6 +338,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -350,6 +370,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "update"
@@ -365,6 +386,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -384,6 +406,7 @@
         {
           "manager": "npm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -406,6 +429,7 @@
         {
           "manager": "npm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -423,6 +447,7 @@
         {
           "manager": "npm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -440,6 +465,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -458,6 +484,7 @@
         {
           "manager": "pnpm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "zod",
@@ -476,6 +503,7 @@
         {
           "manager": "pnpm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -494,6 +522,7 @@
         {
           "manager": "pnpm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -511,6 +540,7 @@
         {
           "manager": "pnpm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "zod",
@@ -529,6 +559,7 @@
         {
           "manager": "pnpm",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "typescript",
@@ -556,6 +587,7 @@
         {
           "manager": "yarn",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "react",
@@ -574,6 +606,7 @@
         {
           "manager": "yarn",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "create-vite",
@@ -591,6 +624,7 @@
         {
           "manager": "yarn",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "zod",
@@ -608,6 +642,7 @@
         {
           "manager": "yarn",
           "form": "add",
+          "global": true,
           "packages": [
             {
               "name": "serve",
@@ -631,6 +666,7 @@
         {
           "manager": "bun",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "@types/bun",
@@ -648,6 +684,7 @@
         {
           "manager": "bun",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -665,6 +702,7 @@
         {
           "manager": "bun",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "@angular/cli",
@@ -688,6 +726,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "requirements"
@@ -703,6 +742,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "path"
@@ -717,6 +757,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "path"
@@ -731,6 +772,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -748,6 +790,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "django",
@@ -766,6 +809,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "git"
@@ -780,6 +824,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -799,6 +844,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -819,6 +865,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "pip",
@@ -837,6 +884,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -854,6 +902,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -871,6 +920,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -888,6 +938,7 @@
         {
           "manager": "pip",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "requests",
@@ -911,6 +962,7 @@
         {
           "manager": "uv",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "httpx",
@@ -928,6 +980,7 @@
         {
           "manager": "uv",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "requirements"
@@ -942,6 +995,7 @@
         {
           "manager": "uv",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "ruff",
@@ -959,6 +1013,7 @@
         {
           "manager": "uv",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "ruff",
@@ -976,6 +1031,7 @@
         {
           "manager": "uv",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "black",
@@ -997,6 +1053,7 @@
         {
           "manager": "uv",
           "form": "add",
+          "global": true,
           "packages": [
             {
               "name": "black",
@@ -1014,6 +1071,7 @@
         {
           "manager": "uv",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "rich",
@@ -1037,6 +1095,7 @@
         {
           "manager": "uv",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "update"
@@ -1051,6 +1110,7 @@
         {
           "manager": "uv",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "httpx",
@@ -1068,6 +1128,7 @@
         {
           "manager": "poetry",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "rich",
@@ -1085,6 +1146,7 @@
         {
           "manager": "poetry",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "pytest",
@@ -1109,6 +1171,7 @@
         {
           "manager": "poetry",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "update"
@@ -1123,6 +1186,7 @@
         {
           "manager": "pdm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "pytest",
@@ -1140,6 +1204,7 @@
         {
           "manager": "pipx",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "black",
@@ -1157,6 +1222,7 @@
         {
           "manager": "pipx",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "cowsay",
@@ -1174,6 +1240,7 @@
         {
           "manager": "pipx",
           "form": "add",
+          "global": true,
           "packages": [
             {
               "name": "requests",
@@ -1192,6 +1259,7 @@
         {
           "manager": "cargo",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "serde",
@@ -1209,6 +1277,7 @@
         {
           "manager": "cargo",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "serde",
@@ -1228,6 +1297,7 @@
         {
           "manager": "cargo",
           "form": "add",
+          "global": true,
           "packages": [
             {
               "name": "ripgrep",
@@ -1245,6 +1315,7 @@
         {
           "manager": "cargo",
           "form": "add",
+          "global": true,
           "packages": [],
           "unseen": [
             "path"
@@ -1259,6 +1330,7 @@
         {
           "manager": "cargo",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "update"
@@ -1279,6 +1351,7 @@
         {
           "manager": "go",
           "form": "add",
+          "global": false,
           "packages": [],
           "unseen": [
             "update"
@@ -1293,6 +1366,7 @@
         {
           "manager": "go",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "golang.org/x/text",
@@ -1316,6 +1390,7 @@
         {
           "manager": "go",
           "form": "run",
+          "global": false,
           "packages": [
             {
               "name": "golang.org/x/tools/cmd/stringer",
@@ -1356,6 +1431,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "pip",
@@ -1378,6 +1454,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",
@@ -1396,6 +1473,7 @@
         {
           "manager": "npm",
           "form": "add",
+          "global": false,
           "packages": [
             {
               "name": "left-pad",

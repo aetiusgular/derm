@@ -25,6 +25,8 @@ export type Unseen = "path" | "url" | "git" | "requirements" | "update" | "stdin
 export type Install = {
   manager: Manager;
   form: Form;
+  /** Installed for the user, not the project (`-g`, `cargo install`, `pipx`, `uv tool install`, `go install`): no project lockfile vouches for it. */
+  global: boolean;
   packages: Package[];
   unseen: Unseen[];
 };
@@ -413,8 +415,8 @@ function has(a: Args, ...names: string[]): boolean {
   return names.some((n) => a.flags.has(n) || a.values.has(n));
 }
 
-function build(manager: Manager, form: Form, specs: string[], read: (s: string) => Spec | undefined, extra: Unseen[] = []): Install {
-  const inst: Install = { manager, form, packages: [], unseen: [...extra] };
+function build(manager: Manager, form: Form, specs: string[], read: (s: string) => Spec | undefined, extra: Unseen[] = [], global = false): Install {
+  const inst: Install = { manager, form, global, packages: [], unseen: [...extra] };
   for (const s of specs) {
     if (s === STDIN_WORD) {
       if (!inst.unseen.includes("stdin")) inst.unseen.push("stdin");
@@ -467,13 +469,10 @@ function npm(words: string[], out: Install[], depth: number): void {
   if (NPM_INSTALL.has(sub.name)) {
     // A bare install reinstalls what package.json and the lockfile name.
     if (a.positionals.length === 0) return;
-    out.push(build("npm", "add", a.positionals, npmSpec, registryFlags(a, NPM_REGISTRY)));
+    out.push(build("npm", "add", a.positionals, npmSpec, registryFlags(a, NPM_REGISTRY), has(a, "-g", "--global")));
     return;
   }
-  if (NPM_UPDATE.has(sub.name)) {
-    const inst = build("npm", "add", a.positionals, npmSpec, ["update", ...registryFlags(a, NPM_REGISTRY)]);
-    out.push(inst);
-  }
+  if (NPM_UPDATE.has(sub.name)) out.push(build("npm", "add", a.positionals, npmSpec, ["update", ...registryFlags(a, NPM_REGISTRY)], has(a, "-g", "--global")));
 }
 
 /** `npx` and `npm exec`: `--package`/`-p` names the packages, else the first word. */
@@ -504,10 +503,10 @@ function pnpm(words: string[], out: Install[], depth: number): void {
   const a = args(sub.rest, PNPM_VALUED);
   if (PNPM_ADD.has(sub.name)) {
     if (a.positionals.length === 0) return;
-    out.push(build("pnpm", "add", a.positionals, npmSpec, registryFlags(a, ["--registry"])));
+    out.push(build("pnpm", "add", a.positionals, npmSpec, registryFlags(a, ["--registry"]), has(a, "-g", "--global")));
     return;
   }
-  if (PNPM_UPDATE.has(sub.name)) out.push(build("pnpm", "add", a.positionals, npmSpec, ["update", ...registryFlags(a, ["--registry"])]));
+  if (PNPM_UPDATE.has(sub.name)) out.push(build("pnpm", "add", a.positionals, npmSpec, ["update", ...registryFlags(a, ["--registry"])], has(a, "-g", "--global")));
 }
 
 /** `pnpm dlx`, `pnpx`, `pnx`, `yarn dlx`: `--package`/`-p` names the packages, else the command's first word. */
@@ -532,23 +531,23 @@ const YARN_KNOWN = new Set(["add", "dlx", "global", "up", "upgrade", "install", 
 // `-p` is not here: `yarn add -P` (peer) folds to `-p`; `yarn dlx` reads it.
 const YARN_VALUED = ["--cwd", "--mode", "--package", "--use-yarnrc", "--modules-folder", "--cache-folder", "--registry", "--network-timeout", "--network-concurrency", "--mutex", "--global-folder", "--link-folder"];
 
-function yarn(words: string[], out: Install[], depth: number): void {
+function yarn(words: string[], out: Install[], depth: number, global = false): void {
   const sub = subcommand(words, YARN_KNOWN, YARN_VALUED);
   if (sub === undefined) return;
   if (sub.name === "dlx") return dlx(sub.rest, "yarn", out);
   if (sub.name === "workspace") {
     // `yarn workspace <name> add <pkg>`: the workspace's name, then a command.
     const a = args(sub.rest, YARN_VALUED, true);
-    return yarn(a.afterDashDash, out, depth);
+    return yarn(a.afterDashDash, out, depth, global);
   }
-  if (sub.name === "global") return yarn(sub.rest, out, depth);
+  if (sub.name === "global") return yarn(sub.rest, out, depth, true);
   const a = args(sub.rest, YARN_VALUED);
   if (sub.name === "add") {
     if (a.positionals.length === 0) return;
-    out.push(build("yarn", "add", a.positionals, npmSpec, registryFlags(a, ["--registry"])));
+    out.push(build("yarn", "add", a.positionals, npmSpec, registryFlags(a, ["--registry"]), global));
     return;
   }
-  if (sub.name === "up" || sub.name === "upgrade") out.push(build("yarn", "add", a.positionals, npmSpec, ["update"]));
+  if (sub.name === "up" || sub.name === "upgrade") out.push(build("yarn", "add", a.positionals, npmSpec, ["update"], global));
 }
 
 // --- bun ---------------------------------------------------------------------
@@ -564,10 +563,10 @@ function bun(words: string[], out: Install[]): void {
   const a = args(sub.rest, BUN_VALUED);
   if (sub.name === "add" || sub.name === "a" || sub.name === "install" || sub.name === "i") {
     if (a.positionals.length === 0) return;
-    out.push(build("bun", "add", a.positionals, npmSpec, registryFlags(a, ["--registry"])));
+    out.push(build("bun", "add", a.positionals, npmSpec, registryFlags(a, ["--registry"]), has(a, "-g", "--global")));
     return;
   }
-  if (sub.name === "update") out.push(build("bun", "add", a.positionals, npmSpec, ["update"]));
+  if (sub.name === "update") out.push(build("bun", "add", a.positionals, npmSpec, ["update"], has(a, "-g", "--global")));
 }
 
 function bunx(words: string[], out: Install[]): void {
@@ -644,9 +643,9 @@ function uv(words: string[], out: Install[]): void {
       const extra: Unseen[] = [...registryFlags(a, UV_REGISTRY)];
       if (has(a, "--with-requirements")) extra.push("requirements");
       if (has(a, "--with-editable")) extra.push("path");
-      out.push(build("uv", "add", specs, (s) => pypiSpec(s), extra));
+      out.push(build("uv", "add", specs, (s) => pypiSpec(s), extra, true));
     }
-    if (inner.name === "upgrade") out.push(build("uv", "add", [], (s) => pypiSpec(s), ["update"]));
+    if (inner.name === "upgrade") out.push(build("uv", "add", [], (s) => pypiSpec(s), ["update"], true));
     return;
   }
   const a = args(sub.rest, UV_VALUED);
@@ -734,12 +733,12 @@ function pipx(words: string[], out: Install[]): void {
   if (sub.name === "install") {
     const a = args(sub.rest, PIPX_VALUED);
     const specs = [...a.positionals, ...valuesOf(a, "--preinstall")];
-    out.push(build("pipx", "add", specs, (s) => pypiSpec(s), extra(a)));
+    out.push(build("pipx", "add", specs, (s) => pypiSpec(s), extra(a), true));
   }
   if (sub.name === "inject") {
     // `pipx inject <venv> <pkg>...`: the first word names the venv.
     const a = args(sub.rest, PIPX_VALUED);
-    out.push(build("pipx", "add", a.positionals.slice(1), (s) => pypiSpec(s), extra(a)));
+    out.push(build("pipx", "add", a.positionals.slice(1), (s) => pypiSpec(s), extra(a), true));
   }
   if (sub.name === "run") {
     const a = args(sub.rest, PIPX_VALUED, true);
@@ -747,7 +746,7 @@ function pipx(words: string[], out: Install[]): void {
     const specs = spec.length ? spec : a.positionals.slice(0, 1);
     out.push(build("pipx", "run", [...specs, ...valuesOf(a, "--with")], (s) => pypiSpec(s), extra(a)));
   }
-  if (sub.name === "upgrade" || sub.name === "upgrade-all") out.push(build("pipx", "add", [], (s) => pypiSpec(s), ["update"]));
+  if (sub.name === "upgrade" || sub.name === "upgrade-all") out.push(build("pipx", "add", [], (s) => pypiSpec(s), ["update"], true));
 }
 
 // --- cargo, go ---------------------------------------------------------------
@@ -770,7 +769,7 @@ function cargo(words: string[], out: Install[]): void {
     const version = valuesOf(a, "--version", "--vers")[0];
     const specs = a.positionals.map((p) => (version !== undefined && !p.includes("@") ? `${p}@${version}` : p));
     if (specs.length === 0 && extra.length === 0) return;
-    out.push(build("cargo", "add", specs, crateSpec, extra));
+    out.push(build("cargo", "add", specs, crateSpec, extra, true));
   }
   if (sub.name === "update") {
     const named = valuesOf(a, "-p", "--package");
@@ -795,7 +794,7 @@ function go(words: string[], out: Install[]): void {
     // and go.sum decide what builds (go help install).
     const versioned = (sub.name === "run" ? a.positionals.slice(0, 1) : a.positionals).filter((p) => p.includes("@"));
     if (!versioned.length) return;
-    const inst = build("go", sub.name === "run" ? "run" : "add", versioned, (s) => goSpec(s));
+    const inst = build("go", sub.name === "run" ? "run" : "add", versioned, (s) => goSpec(s), [], sub.name === "install");
     if (inst.packages.length || inst.unseen.length) out.push(inst);
   }
 }
