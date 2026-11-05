@@ -45,6 +45,10 @@ pub(crate) const PLUGIN: &[(&str, &str)] = &[
         include_str!("../../../../../packages/derm-claude-plugin/src/hook.ts"),
     ),
     (
+        "src/core/command.ts",
+        include_str!("../../../../../packages/derm-claude-plugin/src/core/command.ts"),
+    ),
+    (
         "src/core/confusables.ts",
         include_str!("../../../../../packages/derm-claude-plugin/src/core/confusables.ts"),
     ),
