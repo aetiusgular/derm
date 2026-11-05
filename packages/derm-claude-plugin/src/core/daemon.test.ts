@@ -187,10 +187,12 @@ describe("the VM route", () => {
   // marker derm's sbx kit writes; here a stand-in that holds. Spec change:
   // this test called vmEndpoint with the variables alone before.
   const marked = () => undefined;
+  // Since W5R-7 the route is never taken as root (this workspace runs tests
+  // as root), so the tests that expect it pass a user's uid.
 
   it("is taken only for sbx, a plain host.docker.internal URL, and no socket", async () => {
     const { vmEndpoint } = await import("./daemon.ts");
-    expect(vmEndpoint(vmEnv(), marked)?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv(), marked, 1000)?.port).toBe("4318");
     for (const extra of [
       { DERM_BOUNDARY: "srt" },
       { DERM_BOUNDARY: "" },
@@ -205,7 +207,7 @@ describe("the VM route", () => {
       // A socket file where the socket would be: the host, never the VM route.
       { DERM_DAEMON_SOCKET: tokenFile },
     ]) {
-      expect(vmEndpoint(vmEnv(extra), marked), JSON.stringify(extra)).toBeUndefined();
+      expect(vmEndpoint(vmEnv(extra), marked, 1000), JSON.stringify(extra)).toBeUndefined();
     }
   });
 
@@ -248,13 +250,30 @@ describe("the VM route", () => {
     expect(vmMarker(path.join(safe, "none", "sbx-vm"), "linux")).toMatch(/no VM marker/);
   });
 
+  // Re-review W5R-7: a project's env can move HOME, so the account's own
+  // home (the password database) is a candidate too; and a hook running as
+  // root is never in derm's VM, where the agent runs as its own user.
+  it("looks for a socket under the account's own home too, and is never taken as root", async () => {
+    const { socketCandidates, vmEndpoint } = await import("./daemon.ts");
+    const { userInfo } = await import("node:os");
+    const saved = process.env.HOME;
+    try {
+      process.env.HOME = path.join(root, "moved-home");
+      expect(socketCandidates({})).toContain(path.join(userInfo().homedir, ".derm", "run", "derm", "daemon.sock"));
+    } finally {
+      process.env.HOME = saved;
+    }
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000)?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 0)).toBeUndefined();
+  });
+
   it("is not taken when a socket is where the default would be, whatever DERM_DAEMON_SOCKET names", async () => {
     const { vmEndpoint } = await import("./daemon.ts");
     const runtime = path.join(root, "runtime");
     mkdirSync(path.join(runtime, "derm"), { recursive: true, mode: 0o700 });
     writeFileSync(path.join(runtime, "derm", "daemon.sock"), "");
-    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: runtime }), marked)).toBeUndefined();
-    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked)?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: runtime }), marked, 1000)).toBeUndefined();
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000)?.port).toBe("4318");
   });
 
   it("a project on the host that sets the variables never reaches its own listener", async () => {

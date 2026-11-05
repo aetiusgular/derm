@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { constants, lstatSync, readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
-import { homedir, platform } from "node:os";
+import { homedir, platform, userInfo } from "node:os";
 import path from "node:path";
 import { ownedByTrusted, trustedOwners } from "./owner.ts";
 import { insideFolder } from "./policy.ts";
@@ -133,9 +133,17 @@ export function vmMarker(
  * says: the variable's own path, the defaults with and without the
  * environment's XDG_RUNTIME_DIR, and the home fallback.
  */
-function socketCandidates(env: NodeJS.ProcessEnv): string[] {
+export function socketCandidates(env: NodeJS.ProcessEnv): string[] {
   const out = new Set<string>([socketPath(env), socketPath({ ...env, DERM_DAEMON_SOCKET: "" })]);
   out.add(socketPath({ ...env, DERM_DAEMON_SOCKET: "", XDG_RUNTIME_DIR: "" }));
+  // HOME can be moved by a project's env; the password database's home
+  // cannot (re-review W5R-7).
+  try {
+    const home = userInfo().homedir;
+    if (home) out.add(path.join(home, ".derm", "run", "derm", "daemon.sock"));
+  } catch {
+    // No entry for this uid: the other candidates stand.
+  }
   if (typeof process.getuid === "function") out.add(path.join("/run/user", String(process.getuid()), "derm", "daemon.sock"));
   return [...out];
 }
@@ -154,13 +162,23 @@ function socketCandidates(env: NodeJS.ProcessEnv): string[] {
  *   `http://host.docker.internal:<port>` with no user, path, query or
  *   fragment, as `derm run` sets them.
  * - no file where a daemon socket would be, whether DERM_DAEMON_SOCKET names
- *   it or not: where there is a socket, it is the route.
+ *   it or not, the account's own home included: where there is a socket, it
+ *   is the route.
+ * - the hook does not run as root.
  * In the VM a project that sets these variables reaches only the daemon port
  * on the host that sbx's own rule opened, and the daemon there applies the
  * token's chat scope (contracts/daemon-protocol.md section 4).
  */
-export function vmEndpoint(env: NodeJS.ProcessEnv = process.env, marker: () => string | undefined = vmMarker): URL | undefined {
+export function vmEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+  marker: () => string | undefined = vmMarker,
+  uid: number | undefined = process.getuid?.(),
+): URL | undefined {
   if (env.DERM_BOUNDARY?.trim() !== "sbx") return undefined;
+  // In derm's VM the agent runs as its own user; a hook running as root is on
+  // a host (a container, CI), where one allowed call could write the marker
+  // (re-review W5R-7).
+  if (uid === 0) return undefined;
   const raw = env.DERM_OTLP_ENDPOINT?.trim();
   if (!raw) return undefined;
   let url: URL;

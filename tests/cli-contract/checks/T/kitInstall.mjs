@@ -236,6 +236,9 @@ export const checks = [
         rmSync("/etc/claude-code", { recursive: true, force: true });
         if (made.etc) renameSync(made.etc, "/etc/claude-code");
         if (made.opt) rmSync("/opt/derm-kit", { recursive: true, force: true });
+        // The VM marker never stays on this machine, whoever made the folder
+        // (re-review W5R-7): with it, a hook here would take the VM route.
+        else rmSync("/opt/derm-kit/sbx-vm", { force: true });
         rmSync("/home/agent/.derm", { recursive: true, force: true });
         rmSync("/home/agent/.derm-kit", { recursive: true, force: true });
         if (made.user) sh("/usr/sbin/userdel", ["-r", AGENT]);
