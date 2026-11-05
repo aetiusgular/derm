@@ -29,11 +29,11 @@ derm sends no telemetry and has no account. What it records stays on your machin
 ## What derm records, and where
 
 - The activity log: tool calls, approvals, the agents' own telemetry and, with the OS feed, processes and file writes. In the daemon's data folder, 0600, one file per day, hash-chained.
-- By default a record keeps tool names, decisions, sizes and hashes, not prompts, tool inputs or outputs (`contracts/events.md`). `DERM_LOG_CONTENT=1` turns content on for the agents' own telemetry (to be replaced by the content switch below). An `ask` shows the call's input to the approver in its terminal.
+- By default a record keeps tool names, decisions, sizes and hashes, not prompts, tool inputs or outputs (`contracts/events.md`). The content switch below is the only way content is kept, and then only in content files, never in a record (`DERM_LOG_CONTENT` is gone). An `ask` shows the call's input to the approver in its terminal.
 - The tap's records (wave 5): per model call, the call id, the tool, hashes and sizes of its arguments and result, the paths the arguments name, the model, the token counts and the timing; no header and no body, with content off. A crash leaves no core file or crash dump (`RLIMIT_CORE` 0 from the first line of `derm-daemon` and `derm`; Windows Error Reporting off on Windows).
-- Content capture (wave 5): off by default. `"content": {"on": true, "retentionDays": N}` in `~/.derm/settings.json`, N from 1 to 7, keeps the tapped requests' and replies' text in the daemon's data folder, unencrypted, 0600, and deletes each file within 10 minutes of its N days, a daemon restart included; turning it off deletes nothing already kept until its time ends.
+- Content capture (wave 5): off by default. `"content": {"on": true, "retentionDays": N}` in `~/.derm/settings.json`, N from 1 to 7, keeps the tapped requests' and replies' text, the agents' own telemetry's prompts, replies and tool inputs, and `derm run`'s argument words in the daemon's data folder, unencrypted, 0600, and deletes each file within 10 minutes of its N days, a daemon restart included; turning it off deletes nothing already kept until its time ends.
 - The OS feed (Linux auditd, optional) keeps the command lines of a chat's processes, with secret-shaped words redacted, and the paths they wrote.
-- `derm run`'s record keeps an agent's flags and the length of every other word unless `DERM_LOG_CONTENT=1`, since an argument can be a prompt.
+- `derm run`'s record keeps an agent's flags and the length of every other word, since an argument can be a prompt; with the content switch on the words go to a content file and the record says `contentKept`.
 - Every line `derm connect` prints from a file of yours goes through the redactor; a key already in your config is not echoed.
 
 ## What derm cannot speak for

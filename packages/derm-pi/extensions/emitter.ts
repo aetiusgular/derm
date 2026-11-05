@@ -10,8 +10,10 @@
 //     pi-ai AssistantMessage :368-393)
 //   session_start / session_shutdown         -> sequence reset / final flush
 //
-// Content is off unless DERM_LOG_CONTENT=1: hashes, sizes and names only. With
-// it on, prompt, response and tool input are sent redacted and cut to 4 KiB.
+// Content is off unless the content switch in ~/.derm/settings.json is on
+// (src/content-switch.ts; it replaced DERM_LOG_CONTENT, integration w5): hashes,
+// sizes and names only. With it on, prompt, response and tool input are sent
+// redacted and cut to 4 KiB, and the daemon keeps them only in content files.
 // Nothing is sent without DERM_CHAT_TOKEN and a loopback DERM_OTLP_ENDPOINT.
 //
 // Corner case 46: the factory registers handlers and one bus listener. The
@@ -19,6 +21,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { arch, platform } from "node:os";
+import { contentSwitchOn, type SettingsReader } from "../src/content-switch.ts";
 import { Sender, TOKEN_PATTERN, logsUrl, record, type AttrValue, type FetchLike, type SenderCounts } from "../src/otlp.ts";
 import {
   DECISION_CHANNEL,
@@ -43,6 +46,8 @@ export interface EmitterOptions {
   now?: () => number;
   newId?: () => string;
   intervalMs?: number;
+  /** Reads `~/.derm/settings.json`; tests give their own. */
+  readSettings?: SettingsReader;
 }
 
 export interface EmitterStatus {
@@ -107,7 +112,7 @@ export function createEmitter(options: EmitterOptions = {}): EmitterFactory {
     if (configured) return;
     configured = true;
     const env = options.env ? options.env() : process.env;
-    content = env.DERM_LOG_CONTENT === "1";
+    content = contentSwitchOn(env.HOME, options.readSettings);
     const token = env.DERM_CHAT_TOKEN;
     if (token === undefined || token === "") {
       refused = "no DERM_CHAT_TOKEN";

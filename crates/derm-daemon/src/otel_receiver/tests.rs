@@ -845,3 +845,167 @@ fn the_derm_routes_wait_for_the_daemon_and_bound_waiting_asks() {
     let big = format!(r#"{{"event":"{}"}}"#, "x".repeat(MAX_DERM_BODY_BYTES));
     assert_eq!(post(port, "/derm/v1/event", &json, big.as_bytes()), 413);
 }
+
+/// Lane S's request 3's rest (integration w5, continue): the content switch
+/// replaces `DERM_LOG_CONTENT`. A record never keeps prompt or reply text;
+/// with the switch on the text goes to a content file (0600, in the chat's
+/// 0700 folder) and the record says `contentKept`; off, it is dropped, and a
+/// harness's redaction mark is never kept as content.
+#[test]
+fn prompt_text_goes_to_a_content_file_only_with_the_switch_on() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-c", "claude-code").unwrap();
+    let root = std::env::temp_dir().join(format!("derm-otel-content-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let switch = on.clone();
+    let data = root.clone();
+    f.receiver.set_content(Arc::new(move |chat| {
+        assert_eq!(chat, "chat-c");
+        switch
+            .load(Ordering::SeqCst)
+            .then(|| derm_tap::content::Target {
+                root: data.clone(),
+                retention_days: 2,
+            })
+    }));
+    let body = |name: &str, key: &str, text: &str| {
+        serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+            "timeUnixNano": "5000000",
+            "attributes": [
+                { "key": "event.name", "value": { "stringValue": name } },
+                { "key": key, "value": { "stringValue": text } },
+                { "key": "prompt_length", "value": { "stringValue": "14" } }
+            ]
+        }]}]}]})
+        .to_string()
+        .into_bytes()
+    };
+    let headers = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let next = || {
+        f.events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .remove(0)
+    };
+    // Off: the text is dropped and nothing is written.
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("user_prompt", "prompt", "my secret plan")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail["attributes"].get("prompt").is_none());
+    assert!(e.detail.get("contentKept").is_none());
+    assert!(!root.join("content").exists());
+    // On: the prompt and the reply go to their files, never the record.
+    on.store(true, Ordering::SeqCst);
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("user_prompt", "prompt", "my secret plan")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail["attributes"].get("prompt").is_none());
+    assert_eq!(e.detail["contentKept"], true);
+    let name = e.detail["contentFiles"][0].as_str().unwrap().to_string();
+    assert!(
+        name.ends_with(".request") && name.contains("-r2-"),
+        "{name}"
+    );
+    let file = root.join("content").join("chat-c").join(&name);
+    assert!(std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("my secret plan"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("content/chat-c"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("assistant_response", "response", "the answer")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail["attributes"].get("response").is_none());
+    assert!(e.detail["contentFiles"][0]
+        .as_str()
+        .unwrap()
+        .ends_with(".response"));
+    // A redaction mark is not content.
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("user_prompt", "prompt", "<REDACTED>")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail.get("contentKept").is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A call's whole input (`tool_input`, Claude Code's with
+/// `OTEL_LOG_TOOL_DETAILS`, Pi's with the switch on) is content: it leaves
+/// the record, and goes to a content file only with the switch on.
+#[test]
+fn a_calls_whole_input_is_content_too() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-i", "claude-code").unwrap();
+    let body = serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+        "timeUnixNano": "5000000",
+        "attributes": [
+            { "key": "event.name", "value": { "stringValue": "tool_result" } },
+            { "key": "tool_name", "value": { "stringValue": "Write" } },
+            { "key": "success", "value": { "stringValue": "true" } },
+            { "key": "tool_input", "value": { "stringValue": "{\"content\":\"my private notes\"}" } },
+            { "key": "tool_input_size_bytes", "value": { "stringValue": "30" } }
+        ]
+    }]}]}]})
+    .to_string();
+    let headers = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    assert_eq!(post(port, "/v1/logs", &headers, body.as_bytes()), 200);
+    let e = f
+        .events
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .remove(0);
+    assert!(e.detail["attributes"].get("tool_input").is_none());
+    assert_eq!(e.detail["attributes"]["tool_input_size_bytes"], "30");
+    assert!(!serde_json::to_string(&e).unwrap().contains("private notes"));
+}

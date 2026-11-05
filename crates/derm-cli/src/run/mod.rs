@@ -66,9 +66,6 @@ struct RunEnv {
     gateway: Option<String>,
     /// Program name to path, for tests only (`main` passes none).
     programs: Vec<(String, String)>,
-    /// `DERM_LOG_CONTENT=1`: run records keep the harness's own arguments
-    /// (still through the secret redactor). Off by default (finding M8).
-    log_content: bool,
     /// `DERM_POLICY`, the policy file the harness's gate will read.
     policy: Option<String>,
     /// `PATH`, searched for srt's own dependencies (BX4).
@@ -91,7 +88,6 @@ impl RunEnv {
                 .and_then(|h| h.into_os_string().into_string().ok()),
             gateway: std::env::var("DERM_GATEWAY_URL").ok(),
             programs: Vec::new(),
-            log_content: std::env::var("DERM_LOG_CONTENT").is_ok_and(|v| v == "1"),
             policy: std::env::var("DERM_POLICY").ok(),
             path: std::env::var("PATH").unwrap_or_default(),
             userns: std::fs::read_to_string(
@@ -268,6 +264,69 @@ fn regular_private_file(path: &Path) -> bool {
 /// `export` is where the OTel export's words sit in `args`: derm's, but its
 /// `--settings` value copies the user's own `--settings`, so the record keeps
 /// only its length, whatever `content` says (security review L5).
+/// The daemon's data folder for `home`, by the daemon's own rule
+/// (`derm_daemon::daemon::default_data_dir`), so a content file `derm run`
+/// writes is where the daemon's purge looks. A daemon started with
+/// `--data-dir` (tests) does not purge it.
+fn content_root(home: &str) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return Path::new(home).join("Library/Application Support/derm");
+    }
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| Path::new(home).join(".local/share"))
+        .join("derm")
+}
+
+/// With the content switch on, `run.start`'s argument words, unmasked but
+/// through the secret redactor (`recorded_argv`), go to a content file
+/// (`<data>/content/<chat>/<ms>-r<days>-run_<id>.argv`, 0600 in a 0700
+/// folder) for the retention chosen; the record keeps the masked form and
+/// the file's name. Returns the name, or why it was not written.
+fn keep_argv(home: &str, chat: &str, days: u8, words: &[String]) -> Option<Result<String, String>> {
+    let target = derm_tap::content::Target {
+        root: content_root(home),
+        retention_days: days,
+    };
+    // The daemon makes its data folder at its first start; a chat may come
+    // first. Made private, as the daemon's own folders are.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        if let Err(e) = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&target.root)
+        {
+            return Some(Err(e.to_string()));
+        }
+    }
+    #[cfg(not(unix))]
+    if let Err(e) = std::fs::create_dir_all(&target.root) {
+        return Some(Err(e.to_string()));
+    }
+    let id = format!("run_{}", uuid::Uuid::new_v4().simple());
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    Some(
+        derm_tap::content::open(&target, chat, at, &id, "argv")
+            .map_err(|e| e.to_string())
+            .and_then(|mut f| {
+                f.append(json!(words).to_string().as_bytes());
+                if f.failed {
+                    return Err("the write failed".into());
+                }
+                f.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .ok_or_else(|| "no file name".into())
+            }),
+    )
+}
+
 fn recorded_argv(
     program: &str,
     args: &[String],
@@ -674,8 +733,16 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     } else {
         tap::environment(a.harness.id, &mut p)?
     };
-    // Content capture's switch as the chat starts (lane S's request 3).
+    // Content capture's switch as the chat starts (lane S's request 3). It
+    // replaced DERM_LOG_CONTENT (request 3's rest, integration w5): with it
+    // on, the harness's own argument words and its OTel prompts go to
+    // content files, never to a record.
     let content_record = Some(tap::content_record(Some(&home)));
+    let content_days = content_record
+        .as_ref()
+        .and_then(|c| c.get("retentionDays"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|d| u8::try_from(d).ok());
     // Claude Code's and Codex's own OTel into the daemon (T2.9). The helper
     // script sits in the daemon's folder under `none`; srt hides that folder,
     // so there the token goes in the header variable, as the chat token
@@ -696,7 +763,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             inputs.otlp.as_deref(),
             token.as_deref(),
             (a.boundary == Boundary::None).then_some(helper_dir.as_path()),
-            env.log_content,
+            content_days.is_some(),
         )
     };
     // Only a run that wrote a helper clears the receiver's helpers: one
@@ -860,8 +927,18 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let pipes = (child.stdin.take(), child.stdout.take());
     // The record keeps the shape of the command, not a key passed on it
     // (integration w1, security finding S13; the audit feed's own redactor),
-    // and not the harness's own words unless DERM_LOG_CONTENT=1 (finding M8).
-    let full_argv = recorded_argv(&p.program, &p.args, &a.rest, env.log_content, export_at);
+    // and never the harness's own words (finding M8): with the content
+    // switch on they go to a content file (case 85 as changed).
+    let full_argv = recorded_argv(&p.program, &p.args, &a.rest, false, export_at.clone());
+    let argv_file = match (content_days, a.dry_run) {
+        (Some(days), false) => keep_argv(
+            &home,
+            &chat,
+            days,
+            &recorded_argv(&p.program, &p.args, &a.rest, true, export_at),
+        ),
+        _ => None,
+    };
     // `dangerousFlags` is the name the daemon's `report.running` reads
     // (`run_info_of`): the words that put the agent in full access (case 83).
     let dangerous = &p.full_access;
@@ -887,6 +964,17 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "acp": filter.is_some(),
         "trust": "client",
     });
+    match argv_file {
+        Some(Ok(name)) => {
+            base["contentKept"] = json!(true);
+            base["contentFiles"] = json!([name]);
+        }
+        Some(Err(e)) => {
+            eprintln!("derm run: the argument words were not kept as content ({e})");
+            base["contentFailed"] = json!(true);
+        }
+        None => {}
+    }
     // Where the audit feed cannot see io_uring operations (lane T's request
     // T-3, case 128): no boundary on Linux; srt blocks them where its
     // seccomp helper runs; sbx runs the agent on the VM's own kernel.
@@ -1211,7 +1299,6 @@ mod end_to_end {
             home: Some(fake.dir.to_string_lossy().into_owned()),
             gateway: None,
             programs: vec![("pi".into(), pi), ("srt".into(), srt)],
-            log_content: false,
             policy: None,
             path: deps.join("bin").to_string_lossy().into_owned(),
             userns: None,
@@ -1325,8 +1412,9 @@ mod end_to_end {
     #[test]
     fn run_records_hold_no_prompt_text_from_the_harness_argv() {
         // Mac test w1, finding M8: `claude -p "<prompt>"` put the prompt in
-        // the activity log. Content is off unless DERM_LOG_CONTENT=1, as in the
-        // emitter and the receiver: flags stay, other words become lengths.
+        // the activity log. A record never keeps the harness's own words
+        // (since integration w5's continue, content on or off): flags stay,
+        // other words become lengths.
         let st = setup("none-prompt");
         let cwd = st.work.to_string_lossy().into_owned();
         run(
@@ -1358,6 +1446,84 @@ mod end_to_end {
         );
         // The harness itself still got them.
         assert!(seen(&st).contains("arg=summarise my private plan"));
+    }
+
+    /// Lane S's request 3's rest (integration w5, continue): the content
+    /// switch replaces `DERM_LOG_CONTENT`. With it on, the record still
+    /// keeps the masked argv and says `contentKept`, and the words go to a
+    /// 0600 content file under the daemon's data folder for the chat, with
+    /// the retention chosen (case 85 as changed).
+    #[cfg(unix)]
+    #[test]
+    fn the_content_switch_keeps_argv_words_in_a_file_never_the_record() {
+        use std::os::unix::fs::PermissionsExt;
+        let st = setup("content-argv");
+        let home = st.env.home.clone().unwrap();
+        let cwd = st.work.to_string_lossy().into_owned();
+        let argv = |chat: &str| {
+            s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                chat,
+                "--cwd",
+                &cwd,
+                "--",
+                "-p",
+                "summarise my private plan",
+            ])
+        };
+        let dir = |chat: &str| content_root(&home).join("content").join(chat);
+        // Off (no settings file). `DERM_LOG_CONTENT` is read nowhere now; it
+        // is not set here, since setting a variable races other test threads.
+        run(&argv("chat-c0"), &st.env).unwrap();
+        assert!(!dir("chat-c0").exists());
+        let all = serde_json::to_string(&events(&st)).unwrap();
+        assert!(!all.contains("private plan"), "{all}");
+        // On, two days.
+        let settings = Path::new(&home).join(".derm/settings.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"version":1,"content":{"on":true,"retentionDays":2}}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+        run(&argv("chat-c1"), &st.env).unwrap();
+        let ev = events(&st);
+        let start = ev
+            .iter()
+            .find(|e| e["kind"] == "run.start" && e["chatId"] == "chat-c1")
+            .unwrap();
+        let all = serde_json::to_string(&ev).unwrap();
+        assert!(!all.contains("private plan"), "{all}");
+        assert_eq!(start["detail"]["contentKept"], true);
+        assert_eq!(start["detail"]["content"]["on"], true);
+        let name = start["detail"]["contentFiles"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            name.contains("-r2-run_") && name.ends_with(".argv"),
+            "{name}"
+        );
+        let file = dir("chat-c1").join(&name);
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("summarise my private plan"));
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(dir("chat-c1"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
     }
 
     #[cfg(unix)]
@@ -1738,7 +1904,6 @@ mod end_to_end {
             home: st.env.home.clone(),
             gateway: None,
             programs: st.env.programs.clone(),
-            log_content: false,
             policy: None,
             path: String::new(),
             userns: None,
@@ -2160,7 +2325,6 @@ mod end_to_end {
             home: e.home.clone(),
             gateway: e.gateway.clone(),
             programs: e.programs.clone(),
-            log_content: e.log_content,
             policy: e.policy.clone(),
             path: e.path.clone(),
             userns: e.userns.clone(),
@@ -2178,7 +2342,6 @@ mod end_to_end {
             home: st.env.home.clone(),
             gateway: None,
             programs: st.env.programs.clone(),
-            log_content: false,
             policy: None,
             path: String::new(),
             userns: None,

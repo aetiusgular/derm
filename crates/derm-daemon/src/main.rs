@@ -2,8 +2,8 @@
 //! socket and serves until killed. A service manager runs it (the systemd
 //! and launchd units in `units/`). `--socket` and `--data-dir` take
 //! absolute paths and exist for tests; clients find the default socket by
-//! the contract's rule. `DERM_LOG_CONTENT=1` keeps prompt and reply text in
-//! telemetry; off by default.
+//! the contract's rule. Prompt and reply text is kept only with the content
+//! switch on (`~/.derm/settings.json`), in content files, never in a record.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -65,8 +65,10 @@ fn main() -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
-    let log_prompts = std::env::var("DERM_LOG_CONTENT").is_ok_and(|v| v == "1");
-    let running = match derm_daemon::service::start(paths, log_prompts) {
+    // Records never keep prompt or reply text: with the content switch on
+    // (`~/.derm/settings.json`) it goes to content files instead.
+    // `DERM_LOG_CONTENT` is gone (lane S's request 3, integration w5).
+    let running = match derm_daemon::service::start(paths, false) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("derm-daemon: {e}");

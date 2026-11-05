@@ -30,13 +30,24 @@ fn is_identity(key: &str) -> bool {
     key.starts_with("user.") || key.starts_with("organization.") || key == "account_id"
 }
 
-/// Attributes that hold prompt or reply text. Kept only when the switch is
-/// on, even when a harness sends them anyway (a user's own environment may
-/// ask it to). Off, both harnesses send a redaction mark in their place
-/// (Claude Code 2.1.302 `<REDACTED>`, Codex 0.161.0 `[REDACTED]`, seen by the
-/// contract check); it is dropped too.
-fn is_prompt_text(key: &str) -> bool {
-    matches!(key, "prompt" | "prompt_text" | "user_prompt" | "response") || key.ends_with(".prompt")
+/// Attributes that hold prompt or reply text. A record never keeps them
+/// since the content switch replaced `DERM_LOG_CONTENT` (integration w5,
+/// continue): with the switch on the receiver writes them to a content file
+/// (`otel_receiver::keep_content`); off, they are dropped, even when a
+/// harness sends them anyway (a user's own environment may ask it to). Off,
+/// both harnesses send a redaction mark in their place (Claude Code 2.1.302
+/// `<REDACTED>`, Codex 0.161.0 `[REDACTED]`, seen by the contract check).
+///
+/// `tool_input` is a call's whole input: Pi's emitter sends it with the
+/// switch on, and Claude Code with `OTEL_LOG_TOOL_DETAILS` (`derm run` sets
+/// it); it is the call's arguments, content by `contracts/events.md` section
+/// 5, so it leaves the record too (integration w5, continue). Claude Code's
+/// `tool_parameters` (the command's name and line) stays as before.
+pub fn is_prompt_text(key: &str) -> bool {
+    matches!(
+        key,
+        "prompt" | "prompt_text" | "user_prompt" | "response" | "tool_input"
+    ) || key.ends_with(".prompt")
 }
 
 /// The event name without the harness prefix: `claude_code.`, `codex.`, or

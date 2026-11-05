@@ -444,6 +444,14 @@ impl Daemon {
             .and_then(|p| u16::try_from(p).ok());
         let tap_sink: derm_tap::Sink = sink.clone();
         let receiver = Receiver::start_on(settings, sink, preferred)?;
+        // Prompt and reply text from a harness's OTel goes to content files
+        // while the content switch is on, never into a record (lane S's
+        // request 3's rest: the switch replaces DERM_LOG_CONTENT).
+        {
+            let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'));
+            let data = data_dir.to_path_buf();
+            receiver.set_content(Arc::new(move |_| content_target(home.as_deref(), &data)));
+        }
         let tap = {
             let routes = receiver.clone();
             let resolve: derm_tap::Resolver = Arc::new(move |route| chat_for_route(&routes, route));

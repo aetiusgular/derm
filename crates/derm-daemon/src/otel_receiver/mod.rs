@@ -101,6 +101,12 @@ pub enum ChatOp {
 /// socket's reply line, as JSON.
 pub type Ops = Arc<dyn Fn(&str, &'static str, ChatOp) -> serde_json::Value + Send + Sync>;
 
+/// Where a chat's prompt and reply text goes while the content switch is on
+/// (`contracts/events.md` section 5, case 85 as changed): the daemon reads
+/// `~/.derm/settings.json` per request, as the tap does. `None`: content is
+/// off, and the text is dropped.
+pub type ContentFor = Arc<dyn Fn(&str) -> Option<derm_tap::content::Target> + Send + Sync>;
+
 /// One receiver: its port, its tokens, its counters.
 pub struct Receiver {
     port: u16,
@@ -115,6 +121,8 @@ pub struct Receiver {
     rate: Mutex<(f64, Instant)>,
     /// The daemon's ops for the derm routes; until set, they answer 503.
     ops: OnceLock<Ops>,
+    /// Content capture for prompt and reply text; unset, it is dropped.
+    content: OnceLock<ContentFor>,
     approving: AtomicUsize,
     pub counters: Counters,
 }
@@ -180,6 +188,7 @@ impl Receiver {
             open: AtomicUsize::new(0),
             rate: Mutex::new((RATE_BURST, Instant::now())),
             ops: OnceLock::new(),
+            content: OnceLock::new(),
             approving: AtomicUsize::new(0),
             counters: Counters::default(),
         });
@@ -313,6 +322,12 @@ impl Receiver {
     /// The daemon's ops for the derm routes (P4-R1). Set once.
     pub fn set_ops(&self, ops: Ops) {
         let _ = self.ops.set(ops);
+    }
+
+    /// Content capture for prompt and reply text (lane S's request 3's
+    /// rest). Set once.
+    pub fn set_content(&self, content: ContentFor) {
+        let _ = self.content.set(content);
     }
 
     /// The chat and harness a token was minted for, by its hash.
@@ -475,11 +490,23 @@ impl Receiver {
             return Ok(Answer::Otlp(kind));
         }
         let received = now_ms();
+        // The content switch decides once per request, as the tap's does.
+        let target = self.content.get().and_then(|c| c(&holder.chat_id));
         let events: Vec<ActivityEvent> = decoded
             .logs
             .iter()
             .filter_map(|log| {
-                normalize::to_activity(log, &holder.chat_id, holder.harness, log_prompts, received)
+                let mut event = normalize::to_activity(
+                    log,
+                    &holder.chat_id,
+                    holder.harness,
+                    log_prompts,
+                    received,
+                )?;
+                if let Some(t) = &target {
+                    keep_content(t, &holder.chat_id, log, &mut event, received);
+                }
+                Some(event)
             })
             .collect();
         if !events.is_empty() {
@@ -528,6 +555,71 @@ impl Receiver {
             ops(&holder.chat_id, holder.harness, ChatOp::Approve(inner))
         };
         serde_json::to_vec(&reply).map_err(|_| 500u16)
+    }
+}
+
+/// A redaction mark a harness sends in place of text (`normalize`'s note).
+fn is_mark(v: &serde_json::Value) -> bool {
+    v.as_str()
+        .is_some_and(|t| matches!(t.trim(), "<REDACTED>" | "[REDACTED]" | ""))
+}
+
+/// Writes a record's prompt and reply text to content files (the part
+/// `request` for a prompt, `response` for a reply), as the tap keeps bodies,
+/// and marks the record `contentKept: true` with the files' names. Text a
+/// record already holds (only in tests, `log_prompts`) stays as it is. A
+/// file that cannot be written keeps nothing and says so in the record.
+pub(crate) fn keep_content(
+    target: &derm_tap::content::Target,
+    chat: &str,
+    log: &decode::OtelLog,
+    event: &mut ActivityEvent,
+    at: i64,
+) {
+    let mut parts: [(&str, serde_json::Map<String, serde_json::Value>); 2] = [
+        ("request", serde_json::Map::new()),
+        ("response", serde_json::Map::new()),
+    ];
+    for (key, value) in &log.attributes {
+        if !normalize::is_prompt_text(key) || is_mark(value) {
+            continue;
+        }
+        let i = usize::from(key == "response");
+        parts[i].1.insert(key.clone(), value.clone());
+    }
+    let id: String = event
+        .id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    let mut kept = Vec::new();
+    let mut failed = false;
+    for (part, fields) in parts {
+        if fields.is_empty() {
+            continue;
+        }
+        match derm_tap::content::open(target, chat, at, &id, part) {
+            Ok(mut f) => {
+                f.append(serde_json::Value::Object(fields).to_string().as_bytes());
+                if f.failed {
+                    failed = true;
+                } else if let Some(name) = f.path.file_name() {
+                    kept.push(serde_json::Value::String(
+                        name.to_string_lossy().into_owned(),
+                    ));
+                }
+            }
+            Err(_) => failed = true,
+        }
+    }
+    if let serde_json::Value::Object(detail) = &mut event.detail {
+        if !kept.is_empty() {
+            detail.insert("contentKept".into(), serde_json::Value::Bool(true));
+            detail.insert("contentFiles".into(), serde_json::Value::Array(kept));
+        }
+        if failed {
+            detail.insert("contentFailed".into(), serde_json::Value::Bool(true));
+        }
     }
 }
 
@@ -1050,8 +1142,9 @@ fn write_helper(dir: &std::path::Path, token: &str) -> std::io::Result<std::path
 }
 
 /// The switch, the prompt text switch, and which sessions are chats. The
-/// daemon turns the receiver on at start; `log_prompts` follows
-/// `DERM_LOG_CONTENT=1` in the daemon's environment.
+/// daemon turns the receiver on at start with `log_prompts` false: records
+/// never keep prompt text; the content switch sends it to files instead
+/// (`keep_content`).
 pub fn harness_telemetry_configure(
     enabled: bool,
     log_prompts: bool,
