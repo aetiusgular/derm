@@ -44,6 +44,8 @@ mod manifest;
 pub mod relay;
 #[path = "service.rs"]
 pub mod service;
+#[path = "tool.rs"]
+pub mod tool;
 
 use std::path::PathBuf;
 use std::sync::Arc;

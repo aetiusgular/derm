@@ -43,6 +43,8 @@ pub const WATCH: Duration = Duration::from_secs(2);
 pub const ASK_SECONDS: u32 = 120;
 /// The tool name approvers see for a computer-use grant.
 pub const GRANT_TOOL: &str = "computer-use/grant-app";
+/// The tool name approvers see for foreground input in a granted app (lane U).
+pub const FOREGROUND_TOOL: &str = "computer-use/foreground";
 /// Chats placed at once. Beyond this a new chat is refused, not queued.
 const MAX_CHATS: usize = 256;
 
@@ -54,6 +56,13 @@ pub trait Host: Send + Sync {
     fn chat_of(&self, token: &str) -> Option<(String, String)>;
     /// Asks the daemon's approvers in the chat's name. True only on yes.
     fn ask(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool;
+    /// Asks for a scope beyond an app grant (lane U: foreground input).
+    /// The default asks the same approver under the same tool name.
+    fn ask_scope(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool {
+        self.ask(chat, harness, id, summary)
+    }
+    /// Stores one `cu.action` record in the chat's log (lane U).
+    fn record(&self, _chat: &str, _harness: &str, _detail: Value) {}
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +110,24 @@ impl Service {
             asked: Mutex::new(HashSet::new()),
         });
         let _ = cell.set(Arc::downgrade(&service));
+        // Lane U: the tool's foreground cards and its action records go
+        // through the same host, in the chat's harness's name.
+        let asker = Arc::downgrade(&service);
+        let recorder = Arc::downgrade(&service);
+        service.core.set_hooks(
+            Box::new(move |chat: &str, id: &str, summary: &str| {
+                asker.upgrade().is_some_and(|service| {
+                    let harness = service.harness_of(chat);
+                    service.host.ask_scope(chat, &harness, id, summary)
+                })
+            }),
+            Box::new(move |chat: &str, detail: Value| {
+                if let Some(service) = recorder.upgrade() {
+                    let harness = service.harness_of(chat);
+                    service.host.record(chat, &harness, detail);
+                }
+            }),
+        );
         service
     }
 
@@ -287,6 +314,54 @@ impl Host for DaemonHost {
                 reply.get("ok").and_then(Value::as_bool) == Some(true)
                     && reply.get("answer").and_then(Value::as_str) == Some("yes")
             })
+    }
+
+    fn ask_scope(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool {
+        use crate::protocol::{ApprovalRequest, Request};
+        let (out, rx, _) = crate::daemon::Outbox::new(self.0.next_conn());
+        let who = crate::daemon::Who::Chat {
+            chat: chat.to_string(),
+            harness: harness.to_string(),
+        };
+        let request = Request::Approve {
+            request: ApprovalRequest {
+                id: format!("cu-fg-{id}"),
+                chat: chat.to_string(),
+                harness: harness.to_string(),
+                tool: FOREGROUND_TOOL.to_string(),
+                summary: summary.to_string(),
+                timeout_seconds: ASK_SECONDS,
+            },
+        };
+        self.0.handle(&who, request, &out);
+        rx.try_iter()
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .any(|reply| {
+                reply.get("ok").and_then(Value::as_bool) == Some(true)
+                    && reply.get("answer").and_then(Value::as_str) == Some("yes")
+            })
+    }
+
+    /// A `cu.action` record from the daemon itself (`trust: daemon`):
+    /// no socket client posts one (`contracts/events.md` section 5).
+    fn record(&self, chat: &str, harness: &str, detail: Value) {
+        let summary = format!(
+            "{} {}",
+            detail.get("action").and_then(Value::as_str).unwrap_or(""),
+            detail.get("verdict").and_then(Value::as_str).unwrap_or("")
+        );
+        self.0.ingest(derm_core::event::Event {
+            id: format!("cu-{}", uuid::Uuid::new_v4().simple()),
+            at: 0,
+            chat_id: chat.to_string(),
+            harness: harness.to_string(),
+            source: derm_core::event::Source::Cua,
+            kind: "cu.action".into(),
+            summary: summary.chars().take(200).collect(),
+            detail,
+            pid: None,
+            approval_id: None,
+        });
     }
 }
 
@@ -503,8 +578,9 @@ mod tests {
             }
         }
         let tools: Value = serde_json::from_str(&line).unwrap();
+        // Lane U: the one tool, computer_use.
         assert_eq!(
-            tools["result"]["tools"][0]["name"], "request_app_access",
+            tools["result"]["tools"][0]["name"], "computer_use",
             "{tools}"
         );
         // The chat's run stops: the next sweep ends the connection.
@@ -773,7 +849,7 @@ mod daemon_tests {
             .as_array()
             .map(|t| t.iter().filter_map(|t| t["name"].as_str()).collect())
             .unwrap_or_default();
-        assert!(names.contains(&"request_app_access"), "{listed}");
+        assert_eq!(names, vec!["computer_use"], "{listed}");
         drop(stdin);
         assert_eq!(relay.join().unwrap(), 0);
         let _ = std::fs::remove_dir_all(root);

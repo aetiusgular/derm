@@ -84,15 +84,29 @@ impl HelperClient {
     }
 
     /// One request. The reply's fields on success, its error text otherwise.
-    pub fn request(&self, op: &str, mut body: Value, timeout: Duration) -> Result<Value, String> {
+    pub fn request(&self, op: &str, body: Value, timeout: Duration) -> Result<Value, String> {
+        self.request_typed(op, body, timeout).map_err(|e| e.text())
+    }
+
+    /// One request, with how it failed (lane U): no answer in time, the
+    /// helper gone, or the helper's own refusal. A call that timed out may
+    /// still be running in the helper; it is never sent again (case 120).
+    pub fn request_typed(
+        &self,
+        op: &str,
+        mut body: Value,
+        timeout: Duration,
+    ) -> Result<Value, HelperError> {
         if !self.is_open() {
-            return Err("The computer-use helper is not running.".into());
+            return Err(HelperError::Closed(
+                "The computer-use helper is not running.".into(),
+            ));
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = mpsc::channel();
         self.waiting
             .lock()
-            .map_err(|_| "helper state poisoned")?
+            .map_err(|_| HelperError::Closed("helper state poisoned".into()))?
             .insert(id, tx);
         if let Some(map) = body.as_object_mut() {
             map.insert("id".into(), json!(id));
@@ -114,16 +128,18 @@ impl HelperClient {
             if let Ok(mut map) = self.waiting.lock() {
                 map.remove(&id);
             }
-            return Err(error);
+            return Err(HelperError::Closed(error));
         }
         let reply = rx.recv_timeout(timeout).map_err(|_| {
             if let Ok(mut map) = self.waiting.lock() {
                 map.remove(&id);
             }
             if self.is_open() {
-                format!("The computer-use helper did not answer {op} in time.")
+                HelperError::Timeout(format!(
+                    "The computer-use helper did not answer {op} in time."
+                ))
             } else {
-                "The computer-use helper stopped.".to_string()
+                HelperError::Closed("The computer-use helper stopped.".to_string())
             }
         })?;
         if reply.get("ok") == Some(&Value::Bool(true)) {
@@ -133,7 +149,23 @@ impl HelperClient {
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("The computer-use helper refused the request.");
-            Err(error.chars().take(500).collect())
+            Err(HelperError::Refused(error.chars().take(500).collect()))
+        }
+    }
+}
+
+/// How a helper request failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HelperError {
+    Timeout(String),
+    Closed(String),
+    Refused(String),
+}
+
+impl HelperError {
+    pub fn text(&self) -> String {
+        match self {
+            HelperError::Timeout(t) | HelperError::Closed(t) | HelperError::Refused(t) => t.clone(),
         }
     }
 }
