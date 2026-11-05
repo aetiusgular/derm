@@ -52,7 +52,7 @@ index e27bfa5..79c60be 100644
          exec::stop_companion(c, Duration::from_secs(2));
      }
 diff --git a/crates/derm-cli/src/run/user/mod.rs b/crates/derm-cli/src/run/user/mod.rs
-index 5f7abe2..ab50461 100644
+index b4013bf..985c22d 100644
 --- a/crates/derm-cli/src/run/user/mod.rs
 +++ b/crates/derm-cli/src/run/user/mod.rs
 @@ -29,16 +29,9 @@
@@ -91,12 +91,12 @@ index 5f7abe2..ab50461 100644
 -        Ok(Some(e)) => Err((
 -            1,
 -            format!(
--                "derm run: root set up {} to run your agents ({}), but this build of derm run does not pass the chat's boundary to it (lane V, request V-1). Not starting the harness as you. To run as you anyway: {RUN_AS_VAR}=you",
+-                "root set up {} to run your agents ({}), but this build of derm run does not pass the chat's boundary to it (lane V, request V-1). Not starting the harness as you. To run as you anyway: {RUN_AS_VAR}=you",
 -                e.user,
 -                anchor::ANCHOR
 -            ),
 -        )),
--        Err(why) => Err((1, format!("derm run: {why}"))),
+-        Err(why) => Err((1, why.to_string())),
 -    }
 -}
 -
@@ -105,7 +105,7 @@ index 5f7abe2..ab50461 100644
  pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value>, (u8, String)> {
      if !cfg!(target_os = "linux") || ctx.boundary != "none" {
          // A boundary keeps the agent from the daemon's token already (srt
-@@ -252,7 +224,7 @@ fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, Stri
+@@ -244,7 +216,7 @@ fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, Stri
  }
  
  /// Stops the chat's bridge and removes its folder. `run_io` calls it after
