@@ -13,12 +13,16 @@ mod cu;
 mod doctor;
 mod platform;
 mod run;
+#[cfg(unix)]
 mod setup;
 mod watch;
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Case 114: `derm run` holds a chat token and the harness it starts
+    // inherits the limit (P2-4).
+    derm_core::platform::no_core_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = dispatch(&args);
     ExitCode::from(code)
@@ -33,7 +37,16 @@ fn dispatch(args: &[String]) -> u8 {
         // lane U's folder since the wave 5 base.
         Some("cu") => cu::main(&args[1..]),
         // Wave 5 lane W (the wave 5 base's stub).
+        #[cfg(unix)]
         Some("setup") => setup::main(&args[1..]),
+        // `derm setup` writes private files with Unix modes; its Windows form
+        // (ACLs through derm_core::platform) is not built (integration w5's
+        // close; docs/install/windows.md says nothing installs on Windows yet).
+        #[cfg(not(unix))]
+        Some("setup") => {
+            eprintln!("derm setup: not built for Windows yet (docs/install/windows.md)");
+            2
+        }
         // Wave 4 lane R (integration w2's scaffold).
         Some("acp") => acp::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),

@@ -118,8 +118,49 @@ pub fn host_name() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
+/// `RLIMIT_CORE` 0, soft and hard (case 114; `platform::no_core_dumps`).
+/// Moved from `derm-tap`'s `tap.rs`, unchanged.
+pub fn no_core_dumps() {
+    let zero = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: setrlimit reads one valid struct; failure leaves the limit as it was.
+    unsafe {
+        libc::setrlimit(libc::RLIMIT_CORE, &zero);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// Case 114 (P2-4): the limit the mains set is zero, soft and hard. In
+    /// a child, so the test process keeps its own limit.
+    #[test]
+    fn no_core_dumps_sets_a_zero_core_limit() {
+        if std::env::var_os("DERM_CORE_CHILD").is_some() {
+            super::no_core_dumps();
+            let mut got = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            // SAFETY: getrlimit writes one valid struct.
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut got) }, 0);
+            assert_eq!((got.rlim_cur, got.rlim_max), (0, 0));
+            return;
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "platform::unix::tests::no_core_dumps_sets_a_zero_core_limit",
+                "--exact",
+                "--test-threads=1",
+            ])
+            .env("DERM_CORE_CHILD", "1")
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success() && said.contains("1 passed"), "{said}");
+    }
     use super::*;
 
     #[test]

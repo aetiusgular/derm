@@ -139,3 +139,17 @@ pub fn try_lock_exclusive(file: &File) -> bool {
 pub fn host_name() -> String {
     imp::host_name()
 }
+
+// ---- 8. No crash dumps -------------------------------------------------
+
+/// Case 114: a crash leaves no core file or crash dump, which would hold the
+/// daemon's token, chat tokens and the tap's bodies. Called first in
+/// `derm-daemon`'s and `derm`'s `main` (finding P2-4: the tap set it only
+/// after the daemon's token was minted, and `derm run`, which holds a chat
+/// token, set none), and again by the tap. The limit is the process's and
+/// its children inherit it: a harness `derm run` starts dumps no core
+/// either. `RLIMIT_CORE` 0 on Unix; on Windows, Windows Error Reporting is
+/// not invoked (lane Z's `no_crash_dumps`).
+pub fn no_core_dumps() {
+    imp::no_core_dumps()
+}

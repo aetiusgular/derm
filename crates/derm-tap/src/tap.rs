@@ -161,7 +161,8 @@ pub struct Tap {
 
 impl Tap {
     pub fn start(config: Config) -> Result<Tap, String> {
-        no_core_dumps();
+        // Case 114 (set again here for a tap started outside derm's mains).
+        derm_core::platform::no_core_dumps();
         let listener = config
             .preferred_port
             .and_then(|p| TcpListener::bind(SocketAddr::new(config.bind, p)).ok())
@@ -231,28 +232,6 @@ impl Drop for Tap {
     fn drop(&mut self) {
         self.halt();
     }
-}
-
-/// Case 114: a crash leaves no core file, which would hold tokens and
-/// bodies. The limit is the process's, so it holds for the daemon the tap
-/// runs in (recorded as a request for integration to set at start too).
-#[cfg(unix)]
-fn no_core_dumps() {
-    let zero = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: setrlimit reads one valid struct; failure leaves the limit as it was.
-    unsafe {
-        libc::setrlimit(libc::RLIMIT_CORE, &zero);
-    }
-}
-
-/// Windows: Windows Error Reporting, which writes crash dumps, is not
-/// invoked for this process or its children (lane Z).
-#[cfg(windows)]
-fn no_core_dumps() {
-    derm_core::platform::windows::no_crash_dumps();
 }
 
 fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {

@@ -66,6 +66,11 @@ pub fn no_crash_dumps() {
     }
 }
 
+/// `platform::no_core_dumps` on Windows (integration, P2-4).
+pub fn no_core_dumps() {
+    no_crash_dumps()
+}
+
 /// Windows' `Metadata` holds no owner: a marker that equals no user.
 pub fn owner(_meta: &Metadata) -> UserId {
     UserId::unknown("owner not in metadata")

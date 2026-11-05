@@ -11,6 +11,8 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: derm-daemon --version\n       derm-daemon --foreground [--socket PATH] [--data-dir PATH]\n       derm-daemon cu-mcp\n       derm-daemon collector-plan --binary ABSOLUTE_PATH";
 
 fn main() -> ExitCode {
+    // Case 114 before anything mints a token or reads a request (P2-4).
+    derm_core::platform::no_core_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("--version") {
         println!("derm-daemon {}", env!("CARGO_PKG_VERSION"));
