@@ -649,6 +649,33 @@ mod daemon_tests {
             let (approver, pushes, _) = Outbox::new(daemon.next_conn());
             daemon.handle(&Who::Daemon, Request::Approver {}, &approver);
             assert_eq!(reply(&pushes)["ok"], true);
+            // The chat ran under srt, so a yes needs no person check (wave 5
+            // lane V, S2 part b; a grant from an unbounded chat needs the
+            // person's password).
+            let mut harness = std::process::Command::new("sleep")
+                .arg("120")
+                .spawn()
+                .unwrap();
+            let (started, started_rx, _) = Outbox::new(daemon.next_conn());
+            daemon.handle(
+                &Who::Daemon,
+                Request::Event {
+                    event: Event {
+                        id: "start-chat-1".into(),
+                        at: 0,
+                        chat_id: "chat-1".into(),
+                        harness: "pi".into(),
+                        source: Source::Run,
+                        kind: "run.start".into(),
+                        summary: String::new(),
+                        detail: serde_json::json!({"boundary": "srt"}),
+                        pid: Some(harness.id()),
+                        approval_id: None,
+                    },
+                },
+                &started,
+            );
+            assert_eq!(reply(&started_rx)["ok"], true);
             let answering = daemon.clone();
             let approver_conn = approver.clone();
             let answered = std::thread::spawn(move || {
@@ -663,6 +690,7 @@ mod daemon_tests {
                         id,
                         answer: said,
                         chat: None,
+                        proof: None,
                     },
                     &approver_conn,
                 );
@@ -673,6 +701,8 @@ mod daemon_tests {
                 expect
             );
             answered.join().unwrap();
+            let _ = harness.kill();
+            let _ = harness.wait();
             let _ = std::fs::remove_dir_all(root);
         }
     }

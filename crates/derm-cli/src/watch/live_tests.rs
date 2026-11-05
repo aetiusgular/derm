@@ -65,6 +65,25 @@ fn ev(id: &str, chat: &str, source: &str, kind: &str, summary: &str) -> Value {
         "kind": kind, "summary": summary, "detail": {}})
 }
 
+/// Marks `chat` as started by `derm run` under `boundary`, with a sleeping
+/// child as its harness (not this process, which is the approver). Wave 5
+/// lane V: a yes for a chat with no `run.start`, or one that runs as you,
+/// needs the person's password (S2 part b).
+fn start_chat(l: &Live, chat: &str, boundary: &str) -> std::process::Child {
+    let child = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let r = post(
+        l,
+        json!({"id": format!("start-{chat}"), "at": 0, "chatId": chat, "harness": "claude-code",
+            "source": "run", "kind": "run.start", "summary": "",
+            "detail": {"boundary": boundary, "cwd": "/tmp"}, "pid": child.id()}),
+    );
+    assert_eq!(r["ok"], true, "{r}");
+    child
+}
+
 /// A `Write` the test can read while `tail::run` still holds it.
 #[derive(Clone, Default)]
 struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -231,6 +250,7 @@ fn the_approver_answers_a_hooks_request_end_to_end() {
     let (tx, rx) = mpsc::channel::<In>();
     let conn = Conn::open(&l.socket, "test approver").unwrap();
     let writer = approve::register(conn, tx.clone()).unwrap();
+    let mut harness = start_chat(&l, "derm-chat-a", "srt");
     let out = Shared::default();
     let mut o = out.clone();
     let h = std::thread::spawn(move || {
@@ -267,6 +287,8 @@ fn the_approver_answers_a_hooks_request_end_to_end() {
     let r = report::fetch(&l.socket, None, now - 60_000, now + 1_000).unwrap();
     assert_eq!(r["approvals"]["yes:approver"], 1, "{r}");
     assert_eq!(r["approvals"]["no:approver"], 1, "{r}");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 #[test]
@@ -392,4 +414,59 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
             && c["alive"] == true),
         "{d}"
     );
+}
+
+/// S2 part b (wave 5 lane V), end to end: the chat runs as you, so the
+/// daemon refuses a `yes` until the person's password comes with it. The
+/// approver asks for it with echo off, sends it once, shows the card again
+/// after a wrong one, and Enter at the password prompt answers no. No
+/// password reaches the screen or a record.
+#[test]
+fn a_yes_for_a_chat_that_runs_as_you_asks_for_the_password() {
+    let l = live("person");
+    let (tx, rx) = mpsc::channel::<In>();
+    let conn = Conn::open(&l.socket, "test approver").unwrap();
+    let writer = approve::register(conn, tx.clone()).unwrap();
+    let mut harness = start_chat(&l, "derm-chat-a", "none");
+    let out = Shared::default();
+    let mut o = out.clone();
+    let echoes = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+    let seen = echoes.clone();
+    let h = std::thread::spawn(move || {
+        let mut flush = || {};
+        let mut echo = |on: bool| seen.lock().unwrap().push(on);
+        approve::serve_with(&rx, writer, &mut o, &mut flush, &mut echo)
+    });
+    let asked = ask(&l, "ap-you", 30);
+    out.wait_for("Allow this one call? [y/N]");
+    std::thread::sleep(approve::SETTLE + Duration::from_millis(50));
+    tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
+    out.wait_for("not shown; Enter answers no");
+    assert_eq!(
+        *echoes.lock().unwrap(),
+        vec![false],
+        "echo off for the password"
+    );
+    tx.send(In::Typed("derm-lane-v-wrong\n".into(), Instant::now()))
+        .unwrap();
+    let text = out.wait_for("not sent for ap-you");
+    assert_eq!(*echoes.lock().unwrap(), vec![false, true], "echo back on");
+    assert!(
+        text.matches("Allow this one call? [y/N]").count() >= 2,
+        "the card again: {text}"
+    );
+    // Enter at the card: no.
+    std::thread::sleep(approve::SETTLE + Duration::from_millis(50));
+    tx.send(In::Typed("\n".into(), Instant::now())).unwrap();
+    let reply = asked.join().unwrap();
+    assert_eq!(reply["answer"], "no", "{reply}");
+    let text = out.text();
+    assert!(
+        !text.contains("derm-lane-v-wrong"),
+        "the password is never printed: {text}"
+    );
+    tx.send(In::TtyGone).unwrap();
+    let _ = h.join();
+    let _ = harness.kill();
+    let _ = harness.wait();
 }

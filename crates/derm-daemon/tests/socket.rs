@@ -114,6 +114,24 @@ fn mint(c: &mut Client, chat: &str, harness: &str) -> String {
     r["token"].as_str().unwrap().to_string()
 }
 
+/// Marks `chat` as started by `derm run` under srt (lane V, S2 part b: a `yes`
+/// for a chat with no `run.start`, or one that runs as you, needs the
+/// person's password). The harness pid is a child that sleeps, so the test
+/// process is not taken for a chat's harness. Kill the child when done.
+fn started_under_srt(d: &mut Client, chat: &str) -> std::process::Child {
+    let child = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": format!("run-start-{chat}"), "at": 0, "chatId": chat, "harness": "claude-code",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"boundary": "srt", "cwd": "/tmp"}, "pid": child.id()
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    child
+}
+
 fn event(id: &str, chat: &str, source: &str, kind: &str, detail: Value) -> Value {
     json!({"op": "event", "event": {
         "id": id, "at": 0, "chatId": chat, "harness": "pi", "source": source,
@@ -582,6 +600,7 @@ fn the_first_approver_answer_wins_and_the_outcome_is_recorded() {
     let mut a2 = Client::daemon(&f);
     assert_eq!(a1.ask(json!({"op": "approver"}))["ok"], true);
     assert_eq!(a2.ask(json!({"op": "approver"}))["ok"], true);
+    let mut harness = started_under_srt(&mut d, "chat-b");
     let (mut c, _) = Client::hello(&f, &token);
     let mut t = Client::daemon(&f);
     t.ask(json!({"op": "tail", "chat": "chat-b"}));
@@ -623,6 +642,8 @@ fn the_first_approver_answer_wins_and_the_outcome_is_recorded() {
     assert_eq!(answered["event"]["detail"]["answer"], "yes");
     assert_eq!(answered["event"]["detail"]["by"], "approver");
     assert_eq!(answered["event"]["approvalId"], "ap-2");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 #[test]
@@ -828,6 +849,7 @@ fn one_chat_cannot_hold_every_approval_slot_or_reuse_a_waiting_id() {
     }}));
     assert_eq!(r["by"], "none");
     // Another chat still gets through.
+    let mut harness = started_under_srt(&mut d, "other");
     let asker = std::thread::spawn(move || {
         d.ask(json!({"op": "approve", "request": {
             "id": "o-1", "chat": "other", "harness": "pi", "tool": "bash",
@@ -843,6 +865,8 @@ fn one_chat_cannot_hold_every_approval_slot_or_reuse_a_waiting_id() {
     for mut c in waiting {
         assert_eq!(c.recv()["answer"], "no");
     }
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 /// Integration w1's security finding S8: pending approvals were keyed by the
@@ -857,6 +881,7 @@ fn two_chats_may_wait_on_the_same_request_id() {
     let tb = mint(&mut d, "chat-b", "claude-code");
     let mut approver = Client::daemon(&f);
     approver.ask(json!({"op": "approver"}));
+    let mut harness = started_under_srt(&mut d, "chat-b");
     let ask = |token: String, f: &Fixture| {
         let (mut c, _) = Client::hello(f, &token);
         c.send(json!({"op": "approve", "request": {
@@ -887,6 +912,8 @@ fn two_chats_may_wait_on_the_same_request_id() {
     let r = approver.ask(json!({"op": "answer", "id": "toolu_1", "answer": "no"}));
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(a.recv()["answer"], "no");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 /// Integration w1's security finding S2, part a (lane J's request 1a): an
@@ -904,7 +931,7 @@ fn an_approver_inside_a_running_chat_is_refused() {
         json!({"op": "event", "event": {
             "id": format!("run-{kind}"), "at": 0, "chatId": "chat-s2", "harness": "pi",
             "source": "run", "kind": kind, "summary": kind,
-            "detail": {"cwd": "/tmp"}, "pid": me
+            "detail": {"boundary": "srt", "cwd": "/tmp"}, "pid": me
         }})
     };
     assert_eq!(d.ask(run("run.start"))["ok"], true);
@@ -929,6 +956,9 @@ fn an_approver_inside_a_running_chat_is_refused() {
     assert_eq!(d.ask(run("run.stop"))["ok"], true);
     let mut a = Client::daemon(&f);
     assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    // Started again under srt, after the approver registered, so a yes for
+    // it needs no person check (lane V, S2 part b).
+    let mut harness = started_under_srt(&mut d, "chat-s2");
     let asker = std::thread::spawn(move || {
         d.ask(json!({"op": "approve", "request": {
             "id": "s2-2", "chat": "chat-s2", "harness": "pi", "tool": "bash",
@@ -962,6 +992,8 @@ fn an_approver_inside_a_running_chat_is_refused() {
     }
     let answered = answered.expect("the answered request's record");
     assert_eq!(answered["detail"]["approver"]["pid"], me, "{answered}");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 /// Lane K's request 3 (integration w2): computer use's controls are a
@@ -1213,4 +1245,64 @@ fn no_socket_client_posts_a_tap_or_derm_record() {
         assert_eq!(r["ok"], false, "daemon scope, {source}: {r}");
         assert_eq!(r["error"], "tap and derm events are written by the daemon");
     }
+}
+
+/// S2 part b (wave 5 lane V): a `yes` for a chat that runs as you with no
+/// boundary needs your password in `proof`; without one, or with a wrong
+/// one, it is refused and the request keeps waiting; a `no` needs nothing.
+/// The password is never in a record.
+#[test]
+fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let mut a = Client::daemon(&f);
+    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    let mut sleeper = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-start-you", "at": 0, "chatId": "chat-you", "harness": "pi",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"boundary": "none", "cwd": "/tmp"}, "pid": sleeper.id()
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    let asker = std::thread::spawn(move || {
+        d.ask(json!({"op": "approve", "request": {
+            "id": "pb-1", "chat": "chat-you", "harness": "pi", "tool": "bash",
+            "summary": "", "timeoutSeconds": 30
+        }}))
+    });
+    assert_eq!(a.recv()["approve"]["id"], "pb-1");
+    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes"}));
+    assert_eq!(r["ok"], false, "{r}");
+    let why = r["error"].as_str().unwrap_or("");
+    assert!(
+        why.contains("password is needed") && why.contains("runs as you"),
+        "{why}"
+    );
+    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes",
+        "proof": {"password": "derm-lane-v-wrong-password"}}));
+    assert_eq!(r["ok"], false, "{r}");
+    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "no"}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(asker.join().unwrap()["answer"], "no");
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "since": 0}));
+    let mut lines = Vec::new();
+    while let Some(line) = t.try_recv(Duration::from_millis(300)) {
+        lines.push(line);
+    }
+    let all = serde_json::to_string(&lines).unwrap();
+    assert!(
+        !all.contains("derm-lane-v-wrong-password"),
+        "no password in any record"
+    );
+    let checks = lines
+        .iter()
+        .filter(|l| l["event"]["kind"] == "person.check")
+        .count();
+    assert_eq!(checks, 2, "both refused yeses are recorded");
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
 }

@@ -268,6 +268,10 @@ pub struct Daemon {
     /// until its `run.stop` (S2: an approver may not be one of them or run
     /// under one).
     runs: Mutex<HashMap<String, RunPid>>,
+    /// A chat that runs as the person with no boundary has started since the
+    /// daemon did: what it left running may hold `daemon.token`, so every
+    /// `yes` needs the person check from then on (S2 part b, lane V).
+    ran_as_you: std::sync::atomic::AtomicBool,
     /// What `derm status` shows for each running chat, from its `run.start`:
     /// harness, boundary, when, full-access flags (box test w2, BW3: the
     /// tail's backlog lost a chat behind a flood of newer events).
@@ -395,6 +399,7 @@ impl Daemon {
             pending: Mutex::new(HashMap::new()),
             chats: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
+            ran_as_you: std::sync::atomic::AtomicBool::new(false),
             run_info: Mutex::new(HashMap::new()),
             minted_at: Mutex::new(HashMap::new()),
             state_file,
@@ -692,8 +697,24 @@ impl Daemon {
                     out.send(&ok());
                 }
             }
-            Request::Answer { id, answer, chat } => {
-                out.send(&self.op_answer(out.conn, &id, chat.as_deref(), answer));
+            Request::Answer {
+                id,
+                answer,
+                chat,
+                proof,
+            } => {
+                // S2 part b (lane V): a yes an agent could forge needs the
+                // person's password; the bytes are wiped once checked.
+                let mut password = proof.map(|p| p.password.into_bytes());
+                let ran_as_you = self.ran_as_you.load(Ordering::SeqCst);
+                out.send(&self.op_answer_proved(
+                    out.conn,
+                    &id,
+                    chat.as_deref(),
+                    answer,
+                    password.as_mut(),
+                    ran_as_you,
+                ));
             }
             Request::TokenMint { chat, harness } => {
                 out.send(&self.op_mint(who, &chat, &harness));
@@ -738,7 +759,11 @@ impl Daemon {
                         if runs.len() < 2_048 || runs.contains_key(&event.chat_id) {
                             runs.insert(event.chat_id.clone(), RunPid::of(pid));
                             if let Ok(mut info) = self.run_info.lock() {
-                                info.insert(event.chat_id.clone(), run_info_of(&event, now_ms()));
+                                let run = run_info_of(&event, now_ms());
+                                if approver::person::runs_as_person(&run) {
+                                    self.ran_as_you.store(true, Ordering::SeqCst);
+                                }
+                                info.insert(event.chat_id.clone(), run);
                             }
                         }
                     }
@@ -1267,6 +1292,8 @@ fn run_info_of(event: &Event, received: i64) -> Value {
         "boundary": cut(event.detail.get("boundary"), 16),
         "since": received,
         "fullAccessFlags": flags,
+        // The agents' user the chat runs as (lane V), its name only.
+        "agentUser": cut(event.detail.get("agentUser").and_then(|u| u.get("user")), 32),
     })
 }
 
@@ -1295,6 +1322,7 @@ fn run_info_restored(v: &Value) -> Value {
         "boundary": cut("boundary", 16),
         "since": v.get("since").and_then(Value::as_i64),
         "fullAccessFlags": flags,
+        "agentUser": cut("agentUser", 32),
     })
 }
 
