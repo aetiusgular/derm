@@ -34,7 +34,10 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
-pub use acl::{is_private_path, owner_of_path};
+pub use acl::{
+    is_private_path, only_owner_writes, open_private_file, owned_plain_dir, owner_of_path,
+    set_dacl_sddl,
+};
 pub use ident::{acceptable_owners, effective_user, is_superuser, real_user, UserId};
 pub use pipe::{
     bind, connect, draw_name, is_drawn_name, is_pipe_name, parse_pointer, read_pointer, Incoming,
@@ -45,6 +48,22 @@ pub use pipe::{
 /// `/dev/urandom`; request Z-1 asks `token.rs` to use it).
 pub fn random_bytes(n: usize) -> io::Result<Vec<u8>> {
     sys::random_bytes(n)
+}
+
+/// Case 114 on Windows: Windows Error Reporting, which writes crash dumps,
+/// is not invoked for this process or its children (`SetErrorMode` page:
+/// `SEM_NOGPFAULTERRORBOX`, "The system does not invoke Windows Error
+/// Reporting"; "A child process inherits the error mode of its parent
+/// process"). The Windows form of `RLIMIT_CORE` 0.
+pub fn no_crash_dumps() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+    };
+    // SAFETY: sets this process's error mode; reads and writes no memory.
+    unsafe {
+        let was = SetErrorMode(0);
+        SetErrorMode(was | SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    }
 }
 
 /// Windows' `Metadata` holds no owner: a marker that equals no user.

@@ -158,6 +158,43 @@ pub fn is_private_security(s: &Security, user: &UserId) -> bool {
     })
 }
 
+/// The rights that change a file or folder or what it holds (Win32-OpenSSH's
+/// `check_secure_file_permission` list, with the generic forms and
+/// `FILE_DELETE_CHILD` added for folders).
+pub const WRITE_RIGHTS: u32 = 0x0000_0002 // FILE_WRITE_DATA
+    | 0x0000_0004 // FILE_APPEND_DATA
+    | 0x0000_0010 // FILE_WRITE_EA
+    | 0x0000_0040 // FILE_DELETE_CHILD
+    | 0x0000_0100 // FILE_WRITE_ATTRIBUTES
+    | 0x0001_0000 // DELETE
+    | 0x0004_0000 // WRITE_DAC
+    | 0x0008_0000 // WRITE_OWNER
+    | 0x1000_0000 // GENERIC_ALL
+    | 0x4000_0000; // GENERIC_WRITE
+
+/// Whether no one but `user` (and the owner, LocalSystem, Administrators)
+/// may change the object: the Windows form of Unix's "no group or other
+/// write bit". Others may read. Inherited entries count as any other.
+pub fn only_owner_writes_security(s: &Security, user: &UserId) -> bool {
+    let Some(dacl) = &s.dacl else {
+        return false;
+    };
+    let trusted = |who: &UserId| {
+        who == user
+            || s.owner.as_ref() == Some(who)
+            || who.as_str() == ident::SYSTEM
+            || who.as_str() == ident::ADMINISTRATORS
+    };
+    dacl.iter().all(|e| match e.kind {
+        ACCESS_DENIED => true,
+        ACCESS_ALLOWED => match &e.who {
+            Some(who) => trusted(who) || e.mask & WRITE_RIGHTS == 0,
+            None => false,
+        },
+        _ => false,
+    })
+}
+
 /// Reads the owner and DACL of an open object.
 pub fn read_security(h: HANDLE, kind: SE_OBJECT_TYPE) -> io::Result<Security> {
     let mut owner: PSID = std::ptr::null_mut();
@@ -332,11 +369,39 @@ pub fn comparable(p: &str) -> String {
 }
 
 /// Whether the handle's final path is the path we asked for: no link,
-/// junction or short name anywhere on it.
+/// junction or other reparse point anywhere on it. The asked path is first
+/// given its long names (`GetLongPathNameW`), since an 8.3 short name is an
+/// alias of the same entry, not a redirect (GitHub's Windows runners keep
+/// `%TEMP%` under one, `RUNNER~1`); a reparse point keeps its own name there
+/// and the system's final path names its target, so it still differs (I;
+/// the function's page is silent on reparse points). A substituted drive
+/// differs too, and is refused (the safe side).
 pub fn path_is_plain(h: HANDLE, asked: &Path) -> io::Result<bool> {
     let asked: PathBuf = std::path::absolute(asked)?;
+    let long = long_name(&asked).unwrap_or_else(|| asked.to_string_lossy().into_owned());
     let resolved = final_path(h)?;
-    Ok(comparable(&resolved) == comparable(&asked.to_string_lossy()))
+    Ok(comparable(&resolved) == comparable(&long))
+}
+
+/// The path with its long names, or `None` when the system cannot say.
+fn long_name(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    let w = sys::wide(path.as_os_str()).ok()?;
+    let mut buf = vec![0u16; 1024];
+    loop {
+        // SAFETY: `w` is NUL-terminated; the buffer is valid for its length.
+        let n = unsafe { GetLongPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        if n == 0 {
+            return None;
+        }
+        if (n as usize) < buf.len() {
+            return Some(String::from_utf16_lossy(&buf[..n as usize]));
+        }
+        if n as usize > 32 * 1024 {
+            return None;
+        }
+        buf.resize(n as usize + 1, 0);
+    }
 }
 
 /// Sets a protected, user-only DACL on an open object, then reads it back
@@ -387,7 +452,7 @@ pub fn owned_private_dir(dir: &Path, user: &UserId) -> bool {
     let owners = if *user == ident::effective_user() {
         ident::acceptable_owners()
     } else {
-        vec![user.clone()]
+        vec![*user]
     };
     s.owner.as_ref().is_some_and(|o| owners.contains(o)) && is_private_security(&s, user)
 }
@@ -411,6 +476,83 @@ pub fn is_private_path(path: &Path) -> bool {
         .as_ref()
         .is_some_and(|o| ident::acceptable_owners().contains(o))
         && is_private_security(&s, &me)
+}
+
+/// Whether `path` is a file (one link) or folder of ours, no reparse point
+/// on its path, that no one else may change: the Windows form of the Unix
+/// checks "owned by me, no group or other write bit" (`nlink == 1` for a
+/// file), as `derm-tap/src/settings.rs` and the computer-use relay make them.
+pub fn only_owner_writes(path: &Path) -> bool {
+    let folder = std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+    let Ok(h) = open_plain(path, READ_CONTROL, folder) else {
+        return false;
+    };
+    if !path_is_plain(sys::raw(&h), path).unwrap_or(false) {
+        return false;
+    }
+    if !folder && links(sys::raw(&h)) != Some(1) {
+        return false;
+    }
+    let Ok(s) = read_security(sys::raw(&h), SE_FILE_OBJECT) else {
+        return false;
+    };
+    s.owner
+        .as_ref()
+        .is_some_and(|o| ident::acceptable_owners().contains(o))
+        && only_owner_writes_security(&s, &ident::effective_user())
+}
+
+/// Whether `path` is a folder (not a reparse point) that this user owns: the
+/// Windows form of "a real folder, `uid` mine" (`derm run`'s
+/// `no_link_above`). Checked on the folder itself, opened without following.
+pub fn owned_plain_dir(path: &Path) -> bool {
+    let Ok(h) = open_plain(path, READ_CONTROL, true) else {
+        return false;
+    };
+    read_security(sys::raw(&h), SE_FILE_OBJECT)
+        .ok()
+        .and_then(|s| s.owner)
+        .is_some_and(|o| ident::acceptable_owners().contains(&o))
+}
+
+/// Opens a regular file of ours that no one else may use, for reading: the
+/// file itself (never what a reparse point names), checked on the open
+/// handle, so nothing can change between the check and the read (the Unix
+/// code's `O_NOFOLLOW` open and `fstat`, review W2-S9).
+pub fn open_private_file(path: &Path) -> io::Result<std::fs::File> {
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    let h = open_plain(path, GENERIC_READ | READ_CONTROL, false)?;
+    let refuse = |why: &str| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} {why}", path.display()),
+        )
+    };
+    if !path_is_plain(sys::raw(&h), path)? {
+        return Err(refuse("has a link, junction or short name on its path"));
+    }
+    let s = read_security(sys::raw(&h), SE_FILE_OBJECT)?;
+    if !s
+        .owner
+        .as_ref()
+        .is_some_and(|o| ident::acceptable_owners().contains(o))
+    {
+        return Err(refuse("is not this user's"));
+    }
+    if !is_private_security(&s, &ident::effective_user()) {
+        return Err(refuse("may be used by another user"));
+    }
+    Ok(std::fs::File::from(h))
+}
+
+fn links(h: HANDLE) -> Option<u32> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    // SAFETY: plain data, filled by the call.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: a file handle we hold.
+    (unsafe { GetFileInformationByHandle(h, &mut info) } != 0).then_some(info.nNumberOfLinks)
 }
 
 /// The owner of the file or folder at `path`, read without following a
@@ -452,6 +594,31 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
 pub fn set_private(path: &Path, folder: bool) -> io::Result<()> {
     let h = open_plain(path, READ_CONTROL | WRITE_DAC, folder)?;
     set_user_only(sys::raw(&h), SE_FILE_OBJECT, folder)
+}
+
+/// Sets the DACL written in `sddl` on a file or folder, as given (tests use
+/// it to make a file another user may write; nothing in derm calls it).
+pub fn set_dacl_sddl(path: &Path, sddl: &str) -> io::Result<()> {
+    let folder = std::fs::symlink_metadata(path)?.is_dir();
+    let h = open_plain(path, READ_CONTROL | WRITE_DAC, folder)?;
+    let sd = Descriptor::from_sddl(sddl)?;
+    let dacl = sd.dacl()?;
+    // SAFETY: the handle was opened with WRITE_DAC; `dacl` lives in `sd`.
+    let err = unsafe {
+        SetSecurityInfo(
+            sys::raw(&h),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null(),
+        )
+    };
+    if err != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(err as i32));
+    }
+    Ok(())
 }
 
 /// Reads a kernel object's owner and DACL (a named pipe's, for the client's
@@ -563,6 +730,51 @@ mod tests {
     }
 
     #[test]
+    fn others_may_read_but_not_write_a_settings_file() {
+        let me = sid(ME);
+        let read = |who: &str| Entry {
+            kind: ACCESS_ALLOWED,
+            mask: 0x120089, // FILE_GENERIC_READ
+            who: Some(sid(who)),
+        };
+        // The profile's usual inherited entries, and srt's read grant.
+        let s = sec(
+            ME,
+            false,
+            Some(vec![
+                allow(ident::SYSTEM),
+                allow(ident::ADMINISTRATORS),
+                allow(ME),
+                read(SANDBOX),
+            ]),
+        );
+        assert!(only_owner_writes_security(&s, &me));
+        for mask in [
+            0x2,
+            0x4,
+            0x10,
+            0x40,
+            0x100,
+            0x1_0000,
+            0x4_0000,
+            0x8_0000,
+            0x1000_0000,
+            0x4000_0000,
+        ] {
+            let w = Entry {
+                kind: ACCESS_ALLOWED,
+                mask: 0x120089 | mask,
+                who: Some(sid(OTHER)),
+            };
+            assert!(
+                !only_owner_writes_security(&sec(ME, true, Some(vec![allow(ME), w])), &me),
+                "{mask:#x}"
+            );
+        }
+        assert!(!only_owner_writes_security(&sec(ME, true, None), &me));
+    }
+
+    #[test]
     fn the_sddl_names_one_user_and_refuses_a_marker() {
         assert_eq!(
             user_only_sddl(&sid(ME), false).unwrap(),
@@ -573,6 +785,50 @@ mod tests {
             format!("D:P(A;OICI;FA;;;{ME})")
         );
         assert!(user_only_sddl(&UserId::unknown("self"), true).is_err());
+    }
+
+    #[test]
+    fn a_short_name_is_the_same_folder_and_a_junction_is_not() {
+        // The 8.3 alias of a folder (when the volume makes them) passes; a
+        // junction to the same folder does not.
+        let d = temp("short").join("a long folder name");
+        std::fs::create_dir_all(&d).unwrap();
+        if let Some(short) = short_name(&d) {
+            let h = open_plain(Path::new(&short), READ_CONTROL, true).unwrap();
+            assert!(
+                path_is_plain(sys::raw(&h), Path::new(&short)).unwrap(),
+                "{short}"
+            );
+        }
+        let j = d.parent().unwrap().join("junction");
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&j)
+            .arg(&d)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let inside = j.join("x");
+        std::fs::create_dir_all(&inside).unwrap();
+        let h = open_plain(&inside, READ_CONTROL, true).unwrap();
+        assert!(!path_is_plain(sys::raw(&h), &inside).unwrap());
+        assert!(
+            open_plain(&j, READ_CONTROL, true).is_err(),
+            "the junction itself"
+        );
+        assert!(!owned_private_dir(&inside, &ident::effective_user()));
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    fn short_name(p: &Path) -> Option<String> {
+        use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+        let w = sys::wide(p.as_os_str()).ok()?;
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: as in `long_name`.
+        let n = unsafe { GetShortPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        let s = (n > 0 && (n as usize) < buf.len())
+            .then(|| String::from_utf16_lossy(&buf[..n as usize]))?;
+        (comparable(&s) != comparable(&p.to_string_lossy())).then_some(s)
     }
 
     #[test]
@@ -638,8 +894,17 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("t");
         std::fs::write(&f, b"x").unwrap();
+        assert!(
+            open_private_file(&f).is_err(),
+            "inherits the temp folder's entries"
+        );
         set_private(&f, false).unwrap();
         assert!(is_private_path(&f));
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut open_private_file(&f).unwrap(), &mut text).unwrap();
+        assert_eq!(text, "x");
+        assert!(only_owner_writes(&f));
+        assert!(only_owner_writes(&d));
         assert_eq!(
             owner_of_path(&f)
                 .ok()

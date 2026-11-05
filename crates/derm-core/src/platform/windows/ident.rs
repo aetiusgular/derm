@@ -28,10 +28,33 @@ use super::sys;
 /// (`S-1-5-21-...`), or a marker for a SID that could not be read. A marker
 /// starts with `unknown:` and never equals a SID, so a failed read never
 /// matches anyone.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct UserId(String);
+///
+/// `Copy`, as Unix's `u32` uid is, so callers pass it by value on both
+/// systems. The longest SID string is "S-1-" and a 48-bit authority (15
+/// digits) then 15 sub-authorities of up to 10 digits each with their
+/// dashes: 184 characters (`SID_MAX_SUB_AUTHORITIES` is 15, winnt.h). A
+/// longer string is not a SID and is not stored.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct UserId {
+    len: u8,
+    bytes: [u8; MAX],
+}
+
+const MAX: usize = 190;
 
 impl UserId {
+    fn from_ascii(s: &str) -> Option<UserId> {
+        if !s.is_ascii() || s.len() > MAX {
+            return None;
+        }
+        let mut bytes = [0u8; MAX];
+        bytes[..s.len()].copy_from_slice(s.as_bytes());
+        Some(UserId {
+            len: s.len() as u8,
+            bytes,
+        })
+    }
+
     /// A SID from its string form. `None` unless it is shaped like one
     /// (`S-` then digits and dashes); used for well-known SIDs and tests.
     pub fn parse(s: &str) -> Option<UserId> {
@@ -40,33 +63,48 @@ impl UserId {
             && rest
                 .split('-')
                 .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
-        ok.then(|| UserId(s.to_string()))
+        if ok {
+            UserId::from_ascii(s)
+        } else {
+            None
+        }
     }
 
     /// The marker for a SID that could not be read: it equals no SID.
     pub fn unknown(what: &str) -> UserId {
-        UserId(format!("unknown:{what}"))
+        let what: String = what.chars().filter(char::is_ascii).take(MAX - 8).collect();
+        UserId::from_ascii(&format!("unknown:{what}")).unwrap_or(UserId {
+            len: 0,
+            bytes: [0u8; MAX],
+        })
     }
 
     /// Whether this is a SID read from the system (not a marker).
     pub fn is_known(&self) -> bool {
-        self.0.starts_with("S-")
+        self.as_str().starts_with("S-")
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        // Only ASCII is ever stored (`from_ascii`).
+        std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
+    }
+}
+
+impl fmt::Debug for UserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "UserId({:?})", self.as_str())
     }
 }
 
 impl fmt::Display for UserId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
 impl serde::Serialize for UserId {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.0)
+        s.serialize_str(self.as_str())
     }
 }
 
@@ -184,11 +222,11 @@ fn me() -> &'static UserId {
 }
 
 pub fn real_user() -> UserId {
-    me().clone()
+    *me()
 }
 
 pub fn effective_user() -> UserId {
-    me().clone()
+    *me()
 }
 
 /// Elevated, or LocalSystem: the Windows forms of running as root.
@@ -235,6 +273,14 @@ mod tests {
         assert!(!a.is_known());
         assert_ne!(a, UserId::parse("S-1-5-18").unwrap());
         assert_ne!(UserId::unknown("self"), UserId::unknown("owner"));
+        // The longest SID: a 48-bit authority and 15 ten-digit parts.
+        let long = format!("S-1-281474976710655{}", "-4294967295".repeat(15));
+        assert_eq!(long.len(), 184);
+        assert_eq!(
+            UserId::parse(&long).map(|u| u.to_string()),
+            Some(long.clone())
+        );
+        assert!(UserId::parse(&format!("{long}-1-2")).is_none());
     }
 
     #[test]
@@ -242,7 +288,7 @@ mod tests {
         let me = effective_user();
         assert!(me.is_known(), "{me}");
         assert_eq!(real_user(), me);
-        assert_eq!(user_of_process(std::process::id()), Some(me.clone()));
+        assert_eq!(user_of_process(std::process::id()), Some(me));
         assert!(acceptable_owners().contains(&me));
         assert_eq!(serde_json::to_string(&me).unwrap(), format!("\"{me}\""));
     }

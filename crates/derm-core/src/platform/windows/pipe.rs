@@ -149,7 +149,12 @@ fn create_instance(name: &[u16], first: bool, sddl: &str) -> io::Result<OwnedHan
 }
 
 /// A listening pipe: one instance waits for the next client at a time.
+/// `try_clone` shares it, as a cloned socket shares its listening socket.
 pub struct Listener {
+    inner: Arc<ListenerInner>,
+}
+
+struct ListenerInner {
     name: Vec<u16>,
     shown: String,
     sddl: String,
@@ -182,11 +187,13 @@ pub fn bind(path: &Path) -> io::Result<Listener> {
         write_pointer(path, &name)?;
     }
     Ok(Listener {
-        name: wide,
-        shown: name,
-        sddl,
-        pending: Mutex::new(Some(first)),
-        nonblocking: AtomicBool::new(false),
+        inner: Arc::new(ListenerInner {
+            name: wide,
+            shown: name,
+            sddl,
+            pending: Mutex::new(Some(first)),
+            nonblocking: AtomicBool::new(false),
+        }),
     })
 }
 
@@ -232,18 +239,26 @@ pub fn read_pointer(path: &Path) -> io::Result<String> {
 impl Listener {
     /// The pipe's name.
     pub fn name(&self) -> &str {
-        &self.shown
+        &self.inner.shown
+    }
+
+    /// Another handle on the same listener.
+    pub fn try_clone(&self) -> io::Result<Listener> {
+        Ok(Listener {
+            inner: self.inner.clone(),
+        })
     }
 
     /// Waits for the next client (or, when non-blocking, returns
     /// `WouldBlock` when none is waiting).
     pub fn accept(&self) -> io::Result<(Stream, PipeAddr)> {
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let me = &*self.inner;
+        let mut pending = me.pending.lock().unwrap_or_else(|e| e.into_inner());
         let h = match pending.take() {
             Some(h) => h,
-            None => create_instance(&self.name, false, &self.sddl)?,
+            None => create_instance(&me.name, false, &me.sddl)?,
         };
-        let wait = if self.nonblocking.load(Ordering::SeqCst) {
+        let wait = if me.nonblocking.load(Ordering::SeqCst) {
             Some(Duration::ZERO)
         } else {
             None
@@ -268,7 +283,7 @@ impl Listener {
         }
         // The next instance now, so a client that comes while this one is
         // served finds one waiting; when it fails, the next accept retries.
-        *pending = create_instance(&self.name, false, &self.sddl).ok();
+        *pending = create_instance(&me.name, false, &me.sddl).ok();
         Ok((Stream::new(h, true), PipeAddr))
     }
 
@@ -278,7 +293,7 @@ impl Listener {
     }
 
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        self.nonblocking.store(on, Ordering::SeqCst);
+        self.inner.nonblocking.store(on, Ordering::SeqCst);
         Ok(())
     }
 }
