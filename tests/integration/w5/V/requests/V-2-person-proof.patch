@@ -733,3 +733,113 @@ index a85d846..3fe63c6 100644
 +    let _ = sleeper.kill();
 +    let _ = sleeper.wait();
 +}
+diff --git a/tests/integration/w1.mjs b/tests/integration/w1.mjs
+index f2c8aa5..493f899 100644
+--- a/tests/integration/w1.mjs
++++ b/tests/integration/w1.mjs
+@@ -221,43 +221,16 @@ try {
+   const POLICY = join(policyDir, "policy.json");
+   writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }), { mode: 0o600 });
+ 
+-  // ---- 1. derm run (lane D) + real Pi + derm-pi (lane A) -> daemon (lane B)
+-  if (!PI) {
+-    info("derm run with Pi", "not run: no --pi given");
+-  } else {
+-    model = await fakeModel({ name: "bash", input: { command: "echo derm-int-ok" } });
+-    const agent = join(HOME, ".pi", "agent");
+-    mkdirSync(agent, { recursive: true });
+-    writeFileSync(
+-      join(agent, "models.json"),
+-      JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${model.port}`, api: "anthropic-messages", apiKey: "fake-key", models: [{ id: "fake-model", name: "fake-model", contextWindow: 200000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }),
+-    );
+-    // Pi's own ask has no UI in JSON mode, so bash is allowed for this run.
+-    writeFileSync(POLICY, JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
+-    const env = { ...baseEnv, PATH: `${dirname(PI)}${delimiter}${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0" };
+-    const piArgs = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", join(ROOT, "packages", "derm-pi"), "--model", "fake/fake-model", "--mode", "json", "run the step"];
+-    const chat = "int-pi-1";
+-    const r = await runCmd(DERM, ["run", "pi", "--boundary", "none", "--chat", chat, "--cwd", WORK, "--", ...piArgs], env);
+-    check("derm run pi --boundary none exits 0", r.code === 0, `code ${r.code}; ${r.err.split("\n").filter(Boolean).slice(-2).join(" | ")}`);
+-    await until(() => events.some((e) => e.chatId === chat && e.kind === "run.stop"), 5000);
+-    const mine = events.filter((e) => e.chatId === chat);
+-    const start = mine.find((e) => e.source === "run" && e.kind === "run.start");
+-    const stop = mine.find((e) => e.source === "run" && e.kind === "run.stop");
+-    check("run.start reaches the daemon with runsAs you", start && start.detail?.runsAs === "you", start ? JSON.stringify(start.detail).slice(0, 160) : "none");
+-    check("run.stop reaches the daemon with the exit code", stop && stop.detail?.exitCode === 0, stop ? JSON.stringify(stop.detail) : "none");
+-    await until(() => mine.length < 0 || events.some((e) => e.chatId === chat && e.source === "otel" && /tool_result/.test(e.kind + JSON.stringify(e.detail))), 4000);
+-    const otel = events.filter((e) => e.chatId === chat && e.source === "otel");
+-    const kinds = [...new Set(otel.map((e) => e.kind))].sort();
+-    check("Pi's OTLP records land in the run's chat, harness pi", otel.length > 0 && otel.every((e) => e.harness === "pi"), `${otel.length} records, kinds ${kinds.join(",")}`);
+-    const call = otel.find((e) => e.kind === "tool.call");
+-    check("the Pi tool call is one record joined by tool_use_id", Boolean(call), call ? `${call.id} ${call.summary ?? ""}`.slice(0, 120) : `kinds ${kinds.join(",")}`);
+-    await model.close();
+-    model = undefined;
+-  }
+-
+   // A chat token for the hook checks, as `derm run` would mint it.
+   const mint = await tail.c.send({ op: "token.mint", chat: "int-cc-1", harness: "claude-code" });
+   check("token.mint for a claude-code chat", mint.ok === true && /^[0-9a-f]{64}$/.test(mint.token ?? ""));
++  // Started under srt, as \`derm run\` would record it: a yes for a chat with
++  // no run.start, or one that runs as you, needs the person's password (wave
++  // 5 lane V, S2 part b). The harness pid is a sleeping child, not this
++  // process, which is the approver.
++  const ccHarness = spawn("sleep", ["300"], { stdio: "ignore" });
++  const started = await tail.c.send({ op: "event", event: { id: "int-cc-1-start", at: 0, chatId: "int-cc-1", harness: "claude-code", source: "run", kind: "run.start", summary: "", detail: { boundary: "srt", cwd: WORK }, pid: ccHarness.pid } });
++  check("run.start for the claude-code chat, under srt", started.ok === true, JSON.stringify(started));
+   writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }), { mode: 0o600 });
+ 
+   // ---- 2. lane F's Claude Code hook -> real daemon
+@@ -302,6 +275,54 @@ try {
+   h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ DERM_CHAT_TOKEN_FILE: join(tokDir, "token"), DERM_CHAT_ID: "int-cc-1" }), pre("toolu_int3"));
+   check("hook reads the chat token from DERM_CHAT_TOKEN_FILE", decision(h.out) === "allow" && asked.length === before3 + 1, `decision ${decision(h.out)}; asked ${asked.length - before3}; ${reason(h.out)}`);
+ 
++  // ---- 1. derm run (lane D) + real Pi + derm-pi (lane A) -> daemon (lane B)
++  if (!PI) {
++    info("derm run with Pi", "not run: no --pi given");
++  } else {
++    model = await fakeModel({ name: "bash", input: { command: "echo derm-int-ok" } });
++    const agent = join(HOME, ".pi", "agent");
++    mkdirSync(agent, { recursive: true });
++    writeFileSync(
++      join(agent, "models.json"),
++      JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${model.port}`, api: "anthropic-messages", apiKey: "fake-key", models: [{ id: "fake-model", name: "fake-model", contextWindow: 200000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }),
++    );
++    // Pi's own ask has no UI in JSON mode, so bash is allowed for this run.
++    writeFileSync(POLICY, JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
++    const env = { ...baseEnv, PATH: `${dirname(PI)}${delimiter}${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0" };
++    const piArgs = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", join(ROOT, "packages", "derm-pi"), "--model", "fake/fake-model", "--mode", "json", "run the step"];
++    const chat = "int-pi-1";
++    const r = await runCmd(DERM, ["run", "pi", "--boundary", "none", "--chat", chat, "--cwd", WORK, "--", ...piArgs], env);
++    check("derm run pi --boundary none exits 0", r.code === 0, `code ${r.code}; ${r.err.split("\n").filter(Boolean).slice(-2).join(" | ")}`);
++    await until(() => events.some((e) => e.chatId === chat && e.kind === "run.stop"), 5000);
++    const mine = events.filter((e) => e.chatId === chat);
++    const start = mine.find((e) => e.source === "run" && e.kind === "run.start");
++    const stop = mine.find((e) => e.source === "run" && e.kind === "run.stop");
++    check("run.start reaches the daemon with runsAs you", start && start.detail?.runsAs === "you", start ? JSON.stringify(start.detail).slice(0, 160) : "none");
++    check("run.stop reaches the daemon with the exit code", stop && stop.detail?.exitCode === 0, stop ? JSON.stringify(stop.detail) : "none");
++    await until(() => mine.length < 0 || events.some((e) => e.chatId === chat && e.source === "otel" && /tool_result/.test(e.kind + JSON.stringify(e.detail))), 4000);
++    const otel = events.filter((e) => e.chatId === chat && e.source === "otel");
++    const kinds = [...new Set(otel.map((e) => e.kind))].sort();
++    check("Pi's OTLP records land in the run's chat, harness pi", otel.length > 0 && otel.every((e) => e.harness === "pi"), `${otel.length} records, kinds ${kinds.join(",")}`);
++    const call = otel.find((e) => e.kind === "tool.call");
++    check("the Pi tool call is one record joined by tool_use_id", Boolean(call), call ? `${call.id} ${call.summary ?? ""}`.slice(0, 120) : `kinds ${kinds.join(",")}`);
++    await model.close();
++    model = undefined;
++  }
++
++
++  // After a chat ran as you (section 1), what it left running could read
++  // daemon.token, so a yes needs the person's password from then on, for
++  // every chat (S2 part b). The approver here answers yes without one: the
++  // daemon refuses it, the ask times out, and the hook denies.
++  if (PI) {
++    writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }] }), { mode: 0o600 });
++    const before4 = asked.length;
++    h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ DERM_CHAT_TOKEN: mint.token, DERM_CHAT_ID: "int-cc-1" }), pre("toolu_int4"));
++    const checked = await until(() => events.find((e) => e.source === "approval" && e.kind === "person.check" && e.chatId === "int-cc-1"), 3000);
++    check("after a chat ran as you, a yes without the password is refused", decision(h.out) === "deny" && asked.length === before4 + 1 && checked?.detail?.passed === false, `decision ${decision(h.out)}; asked ${asked.length - before4}; ${checked ? checked.detail.why : "no person.check record"}`);
++  }
++  ccHarness.kill();
++
+   // ---- 3. lane C's derm connect --write -> daemon log
+   const entry = join(top, "entry.json");
+   writeFileSync(entry, readFileSync(join(ROOT, "contracts", "fixtures", "entry", "server.json"), "utf8"));
