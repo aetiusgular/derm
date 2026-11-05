@@ -41,12 +41,6 @@ uuid.workspace = true
 toml.workspace = true
 base64.workspace = true
 # [lane-K]
-
-# activity/collector.rs's `sm` module (SMAppService) is macOS only. The
-# fork declared these in src-tauri/Cargo.toml:67,69 at 159ef3e (Cargo.lock
-# objc2 0.6.4, objc2-foundation 0.3.2); lane B's copy did not, and nothing
-# compiled the macOS cfg until the Mac test (finding M1). Integration w1's
-# fix pass; the features are the ones the Mac built with.
 # [lane-S]
 # [lane-U]
 # [lane-V]
@@ -54,8 +48,10 @@ base64.workspace = true
 # [lane-Y]
 # [lane-Z]
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "=0.6.4"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString"] }
+# objc2 0.6.4 and objc2-foundation 0.3.2 were here for activity/collector.rs's
+# `sm` module (integration w1's fix pass); integration w5's phase 1 merge
+# removed that module (lane Y's request 2: the collector app registers itself),
+# and them with it.
 # [lane-K]
 # [lane-S]
 # [lane-U]

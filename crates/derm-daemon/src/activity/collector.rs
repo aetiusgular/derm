@@ -12,7 +12,7 @@
 //!    builds or runs a shell string.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -271,7 +271,7 @@ pub fn fetch_status_detail() -> Option<Value> {
 pub fn status() -> CollectorStatus {
     let supported = cfg!(target_os = "macos");
     let names = Names::current();
-    let installed = Path::new(&names.plist_path).exists() || bundled_registered();
+    let installed = is_installed(&names, &crate::collector::app::installed_app());
     let mut status = CollectorStatus {
         supported,
         installed,
@@ -314,7 +314,7 @@ pub fn status() -> CollectorStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallPlan {
-    /// `smAppService` from a signed bundle, `terminal` otherwise.
+    /// The route the plan takes (`terminal`, or the app route's).
     pub route: String,
     /// Plain sentences: what runs as root, what it can see, what it keeps.
     pub explanation: Vec<String>,
@@ -364,7 +364,8 @@ pub fn plist(label: &str, program: &str, dev_peer_path: Option<&str>) -> String 
 
 /// The plist a signed bundle carries in `Contents/Library/LaunchDaemons` for
 /// `SMAppService` (lane B's request 1). The program is named relative to the
-/// bundle, and only MonoCode's own bundle id may register it. The file at
+/// bundle, and only the app that carries it (`derm Activity.app`, lane Y)
+/// registers it, with its own `register` command. The file at
 /// `macos/activity-collector/bundle/` must match this text (tested).
 #[cfg(test)]
 pub fn bundled_plist_text(names: &Names) -> String {
@@ -479,10 +480,10 @@ pub fn explanation(dev_build: bool) -> Vec<String> {
     let mut lines = vec![
         "The collector runs as root, outside any sandbox, and starts /usr/bin/eslogger.".to_string(),
         "It needs Full Disk Access, which you grant it in System Settings, Privacy & Security.".to_string(),
-        "It records only: processes MonoCode started for a chat and their children, and apps you granted for computer use while the grant holds.".to_string(),
+        "It records only: processes derm run started for a chat and their children, and apps you granted for computer use while the grant holds.".to_string(),
         "It records what they ran, the files they created, wrote, moved or deleted, and opens of sensitive files such as ~/.ssh. Command lines are kept.".to_string(),
         "It blocks nothing. It sends nothing anywhere. Its log is root-owned, kept 7 days, at most 1 GB.".to_string(),
-        "Only MonoCode may talk to it, checked by code signature.".to_string(),
+        "Only derm's daemon may talk to it, checked by code signature.".to_string(),
     ];
     if dev_build {
         lines.push(
@@ -495,105 +496,13 @@ pub fn explanation(dev_build: bool) -> Vec<String> {
     lines
 }
 
-/// Where a signed bundle carries the daemon's plist for `SMAppService`.
-pub fn bundled_plist(exe: &Path, names: &Names) -> Option<PathBuf> {
-    let contents = exe.parent()?.parent()?;
-    let plist = contents
-        .join("Library/LaunchDaemons")
-        .join(format!("{}.plist", names.label));
-    plist.exists().then_some(plist)
-}
-
-fn bundled_registered() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        sm::status() == Some(sm::ENABLED)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
-    }
-}
-
-/// Registers the bundled daemon with `SMAppService`. macOS then shows its own
-/// approval in System Settings.
-pub fn register_bundled() -> Result<String, String> {
-    #[cfg(target_os = "macos")]
-    {
-        sm::register()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("The collector runs only on macOS.".into())
-    }
-}
-
-pub fn unregister_bundled() -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        sm::unregister()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        Err("The collector runs only on macOS.".into())
-    }
-}
-
-/// `SMAppService.daemonServiceWithPlistName:`. Not compiled in the cloud:
-/// the macOS target cannot be installed there (w3_session_0.md, point 12).
-#[cfg(target_os = "macos")]
-mod sm {
-    use objc2::msg_send;
-    use objc2::rc::Retained;
-    use objc2::runtime::{AnyClass, AnyObject};
-    use objc2_foundation::NSString;
-
-    #[link(name = "ServiceManagement", kind = "framework")]
-    extern "C" {}
-
-    pub const ENABLED: isize = 1;
-    const REQUIRES_APPROVAL: isize = 2;
-
-    fn service() -> Option<Retained<AnyObject>> {
-        let class = AnyClass::get(c"SMAppService")?;
-        let name = NSString::from_str(&format!("{}.plist", super::Names::current().label));
-        // SAFETY: a class method that returns an autoreleased SMAppService.
-        unsafe { msg_send![class, daemonServiceWithPlistName: &*name] }
-    }
-
-    pub fn status() -> Option<isize> {
-        let service = service()?;
-        // SAFETY: `status` is a plain NSInteger property.
-        Some(unsafe { msg_send![&*service, status] })
-    }
-
-    pub fn register() -> Result<String, String> {
-        let service = service().ok_or("SMAppService is not available")?;
-        let mut error: *mut AnyObject = std::ptr::null_mut();
-        // SAFETY: registerAndReturnError: takes an NSError** out-parameter.
-        let ok: bool = unsafe { msg_send![&*service, registerAndReturnError: &mut error] };
-        let state: isize = unsafe { msg_send![&*service, status] };
-        if ok || state == REQUIRES_APPROVAL {
-            return Ok(if state == ENABLED {
-                "enabled".into()
-            } else {
-                "requiresApproval".into()
-            });
-        }
-        Err("macOS refused to register the collector.".into())
-    }
-
-    pub fn unregister() -> Result<(), String> {
-        let service = service().ok_or("SMAppService is not available")?;
-        let mut error: *mut AnyObject = std::ptr::null_mut();
-        // SAFETY: unregisterAndReturnError: takes an NSError** out-parameter.
-        let ok: bool = unsafe { msg_send![&*service, unregisterAndReturnError: &mut error] };
-        if ok {
-            Ok(())
-        } else {
-            Err("macOS refused to unregister the collector.".into())
-        }
-    }
+/// Whether the collector is installed: the terminal route's plist, or the
+/// app (lane Y) at `app`. `derm-daemon` is a bare binary with no bundle, so
+/// it cannot ask SMAppService about the app's job; the app answers that
+/// itself (`<app>/Contents/MacOS/derm-activity-collector service-status`).
+/// Integration w5 phase 1, lane Y's request 2.
+pub fn is_installed(names: &Names, app: &Path) -> bool {
+    Path::new(&names.plist_path).exists() || std::fs::symlink_metadata(app).is_ok()
 }
 
 /// SHA-256 of a file, in lowercase hex.
@@ -889,6 +798,37 @@ mod tests {
             plan("/a b/c", &hash, "/b", "/c").is_ok(),
             "spaces are quoted"
         );
+    }
+
+    // Integration w5 phase 1, lane Y's request 2: the daemon is a bare
+    // binary, so SMAppService on its own bundle never sees the collector app.
+    #[test]
+    fn installed_sees_the_terminal_plist_or_the_installed_app() {
+        let dir = std::env::temp_dir().join(format!("derm-installed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut names = Names::release();
+        names.plist_path = dir.join("job.plist").to_string_lossy().into_owned();
+        let app = dir.join("derm Activity.app");
+        assert!(!is_installed(&names, &app));
+        std::fs::create_dir_all(&app).unwrap();
+        assert!(is_installed(&names, &app), "an installed app is an install");
+        std::fs::remove_dir_all(&app).unwrap();
+        std::fs::write(&names.plist_path, "x").unwrap();
+        assert!(
+            is_installed(&names, &app),
+            "the terminal route's plist is one"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_explanation_speaks_for_derm() {
+        for dev in [false, true] {
+            let text = explanation(dev).join(" ");
+            assert!(!text.contains("MonoCode"), "{text}");
+            assert!(text.contains("derm"), "{text}");
+        }
     }
 
     #[test]

@@ -327,16 +327,6 @@ pub fn activity_collector_install_plan() -> Result<InstallPlan, String> {
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let names = collector::Names::current();
-    if collector::bundled_plist(&exe, &names).is_some() {
-        return Ok(InstallPlan {
-            route: "smAppService".into(),
-            explanation: collector::explanation(false),
-            plist: String::new(),
-            commands: Vec::new(),
-            staged_plist: None,
-            daemon_path: names.daemon_path.clone(),
-        });
-    }
     let built = built_collector(&exe).ok_or_else(|| {
         "No collector binary found. Build it first: cargo build --release, in macos/activity-collector.".to_string()
     })?;
@@ -357,20 +347,34 @@ pub fn activity_collector_install_plan() -> Result<InstallPlan, String> {
     Ok(plan)
 }
 
-/// Registers the bundled collector. Runs only on your click in the panel,
-/// after the plan was shown.
+/// Registration is the collector app's own (lane Y): SMAppService reads the
+/// calling app's bundle, and `derm-daemon` is not an app, so it says what to
+/// run instead. Integration w5 phase 1, lane Y's request 2.
 pub fn activity_collector_register() -> Result<String, String> {
-    collector::register_bundled()
+    Err(format!(
+        "Register the collector from its app, as you, not with sudo: \"{}/Contents/MacOS/{}\" register. derm-daemon is not an app and cannot register it.",
+        crate::collector::app::installed_app().display(),
+        collector::BINARY_NAME
+    ))
 }
 
 pub fn activity_collector_unregister() -> Result<Vec<String>, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let names = collector::Names::current();
-    if collector::bundled_plist(&exe, &names).is_some() {
-        collector::unregister_bundled()?;
-        return Ok(Vec::new());
+    let app_installed = std::fs::symlink_metadata(crate::collector::app::installed_app()).is_ok();
+    Ok(unregister_commands(&names, app_installed))
+}
+
+/// The removal for the route in use: the installed app's own `unregister`,
+/// run as you, or the terminal route's commands.
+fn unregister_commands(names: &collector::Names, app_installed: bool) -> Vec<String> {
+    if app_installed {
+        return vec![format!(
+            "\"{}/Contents/MacOS/{}\" unregister",
+            crate::collector::app::installed_app().display(),
+            collector::BINARY_NAME
+        )];
     }
-    Ok(collector::removal_commands(&names))
+    collector::removal_commands(names)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -424,6 +428,34 @@ pub fn read_screenshot(root: &Path, path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Integration w5 phase 1, lane Y's request 2: registration is the app's
+    // own `register`, run as you; derm-daemon has no bundle to register from.
+    #[test]
+    fn register_names_the_apps_own_command() {
+        let err = activity_collector_register().unwrap_err();
+        assert!(
+            err.contains("/Library/PrivilegedHelperTools/derm Activity.app/Contents/MacOS/derm-activity-collector\" register"),
+            "{err}"
+        );
+        assert!(err.contains("not with sudo"), "{err}");
+    }
+
+    #[test]
+    fn unregister_names_the_apps_command_when_the_app_is_installed() {
+        let names = collector::Names::release();
+        let app = unregister_commands(&names, true);
+        assert_eq!(app.len(), 1, "{app:?}");
+        assert!(
+            app[0].ends_with("derm-activity-collector\" unregister"),
+            "{app:?}"
+        );
+        assert!(!app[0].contains("sudo"), "{app:?}");
+        assert_eq!(
+            unregister_commands(&names, false),
+            collector::removal_commands(&names)
+        );
+    }
     use crate::activity::store::ChainWriter;
     use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
     use serde_json::json;
