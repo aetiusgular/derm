@@ -1009,3 +1009,108 @@ fn a_calls_whole_input_is_content_too() {
     assert_eq!(e.detail["attributes"]["tool_input_size_bytes"], "30");
     assert!(!serde_json::to_string(&e).unwrap().contains("private notes"));
 }
+
+/// Security finding W5C-S5 (integration w5 continue): Codex's `arguments`
+/// and `output` on its tool events, and Claude Code's `tool_parameters`
+/// (with `OTEL_LOG_TOOL_DETAILS`, which `derm run` sets: the Bash command
+/// line, `full_command` and its description, per Claude Code's monitoring
+/// page), are a call's arguments and result, which the contract keeps out of
+/// every record. Off, they are dropped; on, they go to the content files, the
+/// result to the `.response` one.
+#[test]
+fn a_calls_arguments_and_output_are_content_for_codex_and_claude_code() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-a", "codex").unwrap();
+    let root =
+        std::env::temp_dir().join(format!("derm-otel-args-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let switch = on.clone();
+    let data = root.clone();
+    f.receiver.set_content(Arc::new(move |_| {
+        switch
+            .load(Ordering::SeqCst)
+            .then(|| derm_tap::content::Target {
+                root: data.clone(),
+                retention_days: 1,
+            })
+    }));
+    let body = |name: &str, attrs: &[(&str, &str)]| {
+        let mut a =
+            vec![serde_json::json!({ "key": "event.name", "value": { "stringValue": name } })];
+        for (k, v) in attrs {
+            a.push(serde_json::json!({ "key": k, "value": { "stringValue": v } }));
+        }
+        serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+            "timeUnixNano": "5000000", "attributes": a
+        }]}]}]})
+        .to_string()
+        .into_bytes()
+    };
+    let headers = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let next = || {
+        f.events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .remove(0)
+    };
+    let codex = body(
+        "codex.tool_result",
+        &[
+            ("tool_name", "shell"),
+            ("call_id", "call_1"),
+            ("arguments", "{\"command\":[\"cat\",\"secret-arg.txt\"]}"),
+            ("output", "the private output"),
+            ("success", "true"),
+        ],
+    );
+    let claude = body(
+        "claude_code.tool_result",
+        &[
+            ("tool_name", "Bash"),
+            (
+                "tool_parameters",
+                "{\"bash_command\":\"curl\",\"full_command\":\"curl -H 'x: secret-param'\"}",
+            ),
+            ("success", "true"),
+        ],
+    );
+    for b in [&codex, &claude] {
+        assert_eq!(post(port, "/v1/logs", &headers, b), 200);
+        let e = next();
+        let attrs = &e.detail["attributes"];
+        for key in ["arguments", "output", "tool_parameters"] {
+            assert!(attrs.get(key).is_none(), "{key} stayed in {attrs}");
+        }
+        let text = serde_json::to_string(&e).unwrap();
+        for secret in ["secret-arg", "private output", "secret-param"] {
+            assert!(!text.contains(secret), "{secret} in {text}");
+        }
+        assert!(e.detail.get("contentKept").is_none());
+    }
+    assert!(!root.join("content").exists());
+    on.store(true, Ordering::SeqCst);
+    assert_eq!(post(port, "/v1/logs", &headers, &codex), 200);
+    let e = next();
+    assert_eq!(e.detail["contentKept"], true);
+    let files: Vec<String> = e.detail["contentFiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let dir = root.join("content").join("chat-a");
+    let read = |suffix: &str| {
+        let name = files.iter().find(|n| n.ends_with(suffix)).unwrap();
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    };
+    assert!(read(".request").contains("secret-arg"));
+    assert!(!read(".request").contains("private output"));
+    assert!(read(".response").contains("the private output"));
+    assert!(!serde_json::to_string(&e).unwrap().contains("secret-arg"));
+    let _ = std::fs::remove_dir_all(&root);
+}

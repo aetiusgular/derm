@@ -41,13 +41,31 @@ fn is_identity(key: &str) -> bool {
 /// `tool_input` is a call's whole input: Pi's emitter sends it with the
 /// switch on, and Claude Code with `OTEL_LOG_TOOL_DETAILS` (`derm run` sets
 /// it); it is the call's arguments, content by `contracts/events.md` section
-/// 5, so it leaves the record too (integration w5, continue). Claude Code's
-/// `tool_parameters` (the command's name and line) stays as before.
+/// 5, so it leaves the record too (integration w5, continue). So do the rest
+/// of a call's arguments and result (security finding W5C-S5): Claude Code's
+/// `tool_parameters` (with the same flag, the Bash command line, its
+/// `full_command` and description; Claude Code's monitoring page), and
+/// Codex's `arguments` and `output` on its tool events (its config page names
+/// the "output snippet"; the review's probe saw both in records).
 pub fn is_prompt_text(key: &str) -> bool {
     matches!(
         key,
-        "prompt" | "prompt_text" | "user_prompt" | "response" | "tool_input"
+        "prompt"
+            | "prompt_text"
+            | "user_prompt"
+            | "response"
+            | "tool_input"
+            | "tool_parameters"
+            | "arguments"
+            | "output"
     ) || key.ends_with(".prompt")
+}
+
+/// Of the attributes [`is_prompt_text`] names, those that hold a reply or a
+/// call's result: they go to the `.response` content file, the rest to
+/// `.request`.
+pub fn is_reply_text(key: &str) -> bool {
+    matches!(key, "response" | "output")
 }
 
 /// The event name without the harness prefix: `claude_code.`, `codex.`, or
@@ -270,10 +288,9 @@ mod tests {
         assert_eq!(e.at, 99);
         assert_eq!(e.detail["harnessAt"], 10);
         assert_eq!(e.detail["trust"], "harness");
-        assert_eq!(
-            e.detail["attributes"]["tool_parameters"],
-            "{\"bash_command\":\"ls\"}"
-        );
+        // Spec change (W5C-S5, integration w5 continue): `tool_parameters`
+        // is a call's arguments, content, and leaves the record; it was kept.
+        assert!(e.detail["attributes"].get("tool_parameters").is_none());
     }
 
     #[test]

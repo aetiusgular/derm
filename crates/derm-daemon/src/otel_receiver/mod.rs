@@ -584,7 +584,7 @@ pub(crate) fn keep_content(
         if !normalize::is_prompt_text(key) || is_mark(value) {
             continue;
         }
-        let i = usize::from(key == "response");
+        let i = usize::from(normalize::is_reply_text(key));
         parts[i].1.insert(key.clone(), value.clone());
     }
     let id: String = event
