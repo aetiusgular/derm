@@ -90,12 +90,12 @@ pub(crate) fn wrap(launch: &mut Plan) -> Result<Option<Value>, (u8, String)> {
         Ok(Some(e)) => Err((
             1,
             format!(
-                "derm run: root set up {} to run your agents ({}), but this build of derm run does not pass the chat's boundary to it (lane V, request V-1). Not starting the harness as you. To run as you anyway: {RUN_AS_VAR}=you",
+                "root set up {} to run your agents ({}), but this build of derm run does not pass the chat's boundary to it (lane V, request V-1). Not starting the harness as you. To run as you anyway: {RUN_AS_VAR}=you",
                 e.user,
                 anchor::ANCHOR
             ),
         )),
-        Err(why) => Err((1, format!("derm run: {why}"))),
+        Err(why) => Err((1, why.to_string())),
     }
 }
 
@@ -114,13 +114,10 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
     let entry = match anchor::for_owner(me) {
         Ok(None) => return Ok(None),
         Ok(Some(e)) => e,
-        Err(why) => return Err((1, format!("derm run: {why}"))),
+        Err(why) => return Err((1, why.to_string())),
     };
     let fail = |why: String| -> Result<Option<Value>, (u8, String)> {
-        Err((
-            1,
-            format!("derm run: {why}; not starting the harness (S2 part c)"),
-        ))
+        Err((1, format!("{why}; not starting the harness (S2 part c)")))
     };
     let Some(agent) = anchor::account(&entry.user) else {
         return fail(format!(
@@ -151,19 +148,14 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
     if let Some(why) = anchor::refusal(&agent, &groups, &owner) {
         return fail(why);
     }
-    let sudo = trusted_tool(SUDO, true).map_err(|e| (1, format!("derm run: {e}")))?;
-    let env_tool = trusted_tool(ENV, false).map_err(|e| (1, format!("derm run: {e}")))?;
-    let sh = trusted_tool(SH, false).map_err(|e| (1, format!("derm run: {e}")))?;
+    let sudo = trusted_tool(SUDO, true).map_err(|e| (1, e.to_string()))?;
+    let env_tool = trusted_tool(ENV, false).map_err(|e| (1, e.to_string()))?;
+    let sh = trusted_tool(SH, false).map_err(|e| (1, e.to_string()))?;
     let program = Path::new(&launch.program)
         .file_name()
         .and_then(|n| n.to_str())
         .filter(|n| !n.is_empty() && !n.starts_with('-'))
-        .ok_or_else(|| {
-            (
-                1,
-                format!("derm run: {} is not a program name", launch.program),
-            )
-        })?
+        .ok_or_else(|| (1, format!("{} is not a program name", launch.program)))?
         .to_string();
 
     // As the agents' user: what it must not reach, what it must write.
@@ -195,7 +187,7 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
         hidden: &hidden,
         writable: &writable,
     };
-    let found = probe.run().map_err(|e| (1, format!("derm run: {e}")))?;
+    let found = probe.run().map_err(|e| (1, e.to_string()))?;
     if let Some(why) = found.refusal(&entry.user, &program) {
         return fail(why);
     }
@@ -213,7 +205,7 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
             token,
             policy: Some(Path::new(ctx.policy)),
         })
-        .map_err(|e| (1, format!("derm run: the chat's bridge: {e}")))?;
+        .map_err(|e| (1, format!("the chat's bridge: {e}")))?;
         set = bridge_env(&b, &launch.env_set);
         if let Ok(mut slot) = BRIDGE.lock() {
             *slot = Some(b);
