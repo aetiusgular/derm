@@ -63,7 +63,11 @@ fn read_line(r: &mut impl BufRead, budget: &mut usize) -> Result<Option<String>,
             Err(e) => return Err(ReadError::Io(e)),
         };
         if avail.is_empty() {
-            return if buf.is_empty() { Ok(None) } else { Err(ReadError::Bad("truncated head")) };
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                Err(ReadError::Bad("truncated head"))
+            };
         }
         let (take, done) = match avail.iter().position(|&b| b == b'\n') {
             Some(i) => (i + 1, true),
@@ -80,14 +84,19 @@ fn read_line(r: &mut impl BufRead, budget: &mut usize) -> Result<Option<String>,
             if buf.last() == Some(&b'\r') {
                 buf.pop();
             }
-            return String::from_utf8(buf).map(Some).map_err(|_| ReadError::Bad("head not UTF-8"));
+            return String::from_utf8(buf)
+                .map(Some)
+                .map_err(|_| ReadError::Bad("head not UTF-8"));
         }
     }
 }
 
 /// Reads one request. `on_continue` is called when the client waits for
 /// `100 Continue`.
-pub fn read_request(r: &mut impl BufRead, mut on_continue: impl FnMut() -> io::Result<()>) -> Result<Request, ReadError> {
+pub fn read_request(
+    r: &mut impl BufRead,
+    mut on_continue: impl FnMut() -> io::Result<()>,
+) -> Result<Request, ReadError> {
     let mut budget = MAX_HEAD;
     let line = loop {
         match read_line(r, &mut budget)? {
@@ -98,7 +107,9 @@ pub fn read_request(r: &mut impl BufRead, mut on_continue: impl FnMut() -> io::R
         }
     };
     let mut parts = line.split(' ');
-    let (Some(method), Some(target), Some(version), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+    let (Some(method), Some(target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
         return Err(ReadError::Bad("bad request line"));
     };
     if method.is_empty() || !method.bytes().all(is_token) || target.is_empty() {
@@ -177,7 +188,9 @@ pub fn read_request(r: &mut impl BufRead, mut on_continue: impl FnMut() -> io::R
         if first.is_empty() || !first.bytes().all(|b| b.is_ascii_digit()) || first.len() > 12 {
             return Err(ReadError::Bad("bad Content-Length"));
         }
-        let n: usize = first.parse().map_err(|_| ReadError::Bad("bad Content-Length"))?;
+        let n: usize = first
+            .parse()
+            .map_err(|_| ReadError::Bad("bad Content-Length"))?;
         if n > MAX_BODY {
             return Err(ReadError::Bad("body too large"));
         }
@@ -221,7 +234,8 @@ fn read_chunked(r: &mut impl BufRead) -> Result<Vec<u8>, ReadError> {
         }
         let start = body.len();
         body.resize(start + n, 0);
-        r.read_exact(&mut body[start..]).map_err(|_| ReadError::Bad("truncated chunk"))?;
+        r.read_exact(&mut body[start..])
+            .map_err(|_| ReadError::Bad("truncated chunk"))?;
         match read_line(r, &mut budget)? {
             Some(l) if l.is_empty() => {}
             _ => return Err(ReadError::Bad("chunk not followed by CRLF")),
@@ -251,7 +265,13 @@ pub fn reason(status: u16) -> &'static str {
 
 /// Writes a status line and headers. The body follows as chunks
 /// (`chunked: true`) or not at all.
-pub fn write_head(w: &mut impl Write, status: u16, headers: &[(String, String)], chunked: bool, close: bool) -> io::Result<()> {
+pub fn write_head(
+    w: &mut impl Write,
+    status: u16,
+    headers: &[(String, String)],
+    chunked: bool,
+    close: bool,
+) -> io::Result<()> {
     let mut head = format!("HTTP/1.1 {status} {}\r\n", reason(status));
     for (n, v) in headers {
         head.push_str(n);
@@ -309,10 +329,16 @@ mod tests {
         let two = b"POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabcGET /b HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n1;ext=1\r\n!\r\n0\r\nT: 1\r\n\r\n";
         let mut r = BufReader::with_capacity(5, &two[..]);
         let a = read_request(&mut r, || Ok(())).unwrap();
-        assert_eq!((a.method.as_str(), a.target.as_str(), a.body.as_slice()), ("POST", "/a", &b"abc"[..]));
+        assert_eq!(
+            (a.method.as_str(), a.target.as_str(), a.body.as_slice()),
+            ("POST", "/a", &b"abc"[..])
+        );
         let b = read_request(&mut r, || Ok(())).unwrap();
         assert_eq!((b.target.as_str(), b.body.as_slice()), ("/b", &b"hi!"[..]));
-        assert!(matches!(read_request(&mut r, || Ok(())), Err(ReadError::Closed)));
+        assert!(matches!(
+            read_request(&mut r, || Ok(())),
+            Err(ReadError::Closed)
+        ));
     }
 
     #[test]
@@ -330,7 +356,11 @@ mod tests {
             b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n",
             b"POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc",
         ] {
-            assert!(matches!(read(bad), Err(ReadError::Bad(_))), "{}", String::from_utf8_lossy(bad));
+            assert!(
+                matches!(read(bad), Err(ReadError::Bad(_))),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
         }
     }
 
@@ -340,8 +370,14 @@ mod tests {
         big.extend(std::iter::repeat_n(b'a', MAX_HEAD));
         big.extend_from_slice(b"\r\n\r\n");
         assert!(matches!(read(&big), Err(ReadError::Bad("head too large"))));
-        let huge = format!("POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n", MAX_BODY + 1);
-        assert!(matches!(read(huge.as_bytes()), Err(ReadError::Bad("body too large"))));
+        let huge = format!(
+            "POST / HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
+        assert!(matches!(
+            read(huge.as_bytes()),
+            Err(ReadError::Bad("body too large"))
+        ));
     }
 
     #[test]

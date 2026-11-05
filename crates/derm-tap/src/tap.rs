@@ -255,7 +255,12 @@ fn accept_loop(listener: TcpListener, inner: Arc<Inner>) {
         let Ok(stream) = stream else { continue };
         if inner.open.load(Ordering::SeqCst) >= inner.max_connections {
             let mut s = stream;
-            let _ = http::write_json(&mut s, 503, &error_body("too many connections to the tap"), true);
+            let _ = http::write_json(
+                &mut s,
+                503,
+                &error_body("too many connections to the tap"),
+                true,
+            );
             continue;
         }
         inner.open.fetch_add(1, Ordering::SeqCst);
@@ -279,7 +284,9 @@ fn error_body(message: &str) -> String {
 fn serve(stream: TcpStream, inner: &Inner) {
     let _ = stream.set_read_timeout(Some(IDLE));
     let _ = stream.set_nodelay(true);
-    let Ok(read_half) = stream.try_clone() else { return };
+    let Ok(read_half) = stream.try_clone() else {
+        return;
+    };
     let mut reader = BufReader::new(read_half);
     let mut writer = stream;
     loop {
@@ -331,7 +338,7 @@ fn hop_by_hop(name: &str, listed: &[String]) -> bool {
             | "expect"
             | "accept-encoding"
     ) || n == route::HEADER
-        || listed.iter().any(|l| *l == n)
+        || listed.contains(&n)
 }
 
 fn connection_listed(headers: &[(String, String)]) -> Vec<String> {
@@ -362,14 +369,24 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
     if req.header("upgrade").is_some() {
         // Codex is started with `supports_websockets = false` (Decisions);
         // the tap does not speak WebSocket in this version.
-        refuse(w, 501, "the tap does not speak WebSocket; use the HTTP transport");
+        refuse(
+            w,
+            501,
+            "the tap does not speak WebSocket; use the HTTP transport",
+        );
         return false;
     }
     let (route_text, rest): (String, String) = match route::split_path(&req.target) {
         Some((r, rest)) => (r.to_string(), rest.to_string()),
         None => match req.header(route::HEADER).map(str::trim) {
             Some(r) if route::well_formed(r) => (r.to_string(), req.target.clone()),
-            _ => return refuse(w, 403, "this request carries no derm route; start the harness with derm run"),
+            _ => {
+                return refuse(
+                    w,
+                    403,
+                    "this request carries no derm route; start the harness with derm run",
+                )
+            }
         },
     };
     let Some(chat) = (inner.resolve)(&route_text) else {
@@ -379,7 +396,10 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
         return refuse(w, 404, "the path names no upstream");
     };
     let key = if key == upstream::OPENAI_AUTO {
-        upstream::openai_auto_key(req.header("chatgpt-account-id").is_some(), req.header("authorization"))
+        upstream::openai_auto_key(
+            req.header("chatgpt-account-id").is_some(),
+            req.header("authorization"),
+        )
     } else {
         key
     };
@@ -418,12 +438,20 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
         f.append(&body);
     }
     if let (Some(api), Some(info)) = (api, &req_info) {
-        record_results(inner, &chat, api, info, req_file.as_ref().is_some_and(|f| !f.failed));
+        record_results(
+            inner,
+            &chat,
+            api,
+            info,
+            req_file.as_ref().is_some_and(|f| !f.failed),
+        );
     }
 
     // Forward.
     let listed = connection_listed(&req.headers);
-    let mut builder = ureq::http::Request::builder().method(req.method.as_str()).uri(url.as_str());
+    let mut builder = ureq::http::Request::builder()
+        .method(req.method.as_str())
+        .uri(url.as_str());
     for (n, v) in &req.headers {
         if !hop_by_hop(n, &listed) {
             builder = builder.header(n.as_str(), v.as_str());
@@ -431,23 +459,40 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
     }
     builder = builder.header("accept-encoding", "identity");
     let sent = if body.is_empty() {
-        builder.body(()).map_err(|_| ()).and_then(|r| inner.agent.run(r).map_err(|_| ()))
+        builder
+            .body(())
+            .map_err(|_| ())
+            .and_then(|r| inner.agent.run(r).map_err(|_| ()))
     } else {
-        builder.body(body).map_err(|_| ()).and_then(|r| inner.agent.run(r).map_err(|_| ()))
+        builder
+            .body(body)
+            .map_err(|_| ())
+            .and_then(|r| inner.agent.run(r).map_err(|_| ()))
     };
     let mut rec = RequestRecord {
         id: request_id.clone(),
         api,
         upstream: up.host(),
-        model: req_info.as_ref().map(|i| i.model.clone()).unwrap_or_default(),
+        model: req_info
+            .as_ref()
+            .map(|i| i.model.clone())
+            .unwrap_or_default(),
         tools_offered: req_info.as_ref().map_or(0, |i| i.tools_offered),
         ..Default::default()
     };
     let resp = match sent {
         Ok(r) => r,
         Err(()) => {
-            inner.counters.upstream_errors.fetch_add(1, Ordering::Relaxed);
-            let _ = http::write_json(w, 502, &error_body(&format!("the upstream {} did not answer", up.host())), close);
+            inner
+                .counters
+                .upstream_errors
+                .fetch_add(1, Ordering::Relaxed);
+            let _ = http::write_json(
+                w,
+                502,
+                &error_body(&format!("the upstream {} did not answer", up.host())),
+                close,
+            );
             if api.is_some() {
                 rec.duration_ms = started.elapsed().as_millis() as u64;
                 (inner.sink)(vec![rec.event(&chat.id, &chat.harness, now_ms())]);
@@ -460,11 +505,16 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
     let resp_headers: Vec<(String, String)> = resp
         .headers()
         .iter()
-        .filter_map(|(n, v)| v.to_str().ok().map(|v| (n.as_str().to_string(), v.to_string())))
+        .filter_map(|(n, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (n.as_str().to_string(), v.to_string()))
+        })
         .collect();
-    let event_stream = resp_headers
-        .iter()
-        .any(|(n, v)| n.eq_ignore_ascii_case("content-type") && v.to_ascii_lowercase().starts_with("text/event-stream"));
+    let event_stream = resp_headers.iter().any(|(n, v)| {
+        n.eq_ignore_ascii_case("content-type")
+            && v.to_ascii_lowercase().starts_with("text/event-stream")
+    });
     let resp_listed = connection_listed(&resp_headers);
     let out_headers: Vec<(String, String)> = resp_headers
         .into_iter()
@@ -517,7 +567,8 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
     // Records.
     if let (Some(api), Some(parser)) = (api, parser) {
         let info = parser.finish();
-        let content_kept = req_file.as_ref().is_some_and(|f| !f.failed) && resp_file.as_ref().is_some_and(|f| !f.failed);
+        let content_kept = req_file.as_ref().is_some_and(|f| !f.failed)
+            && resp_file.as_ref().is_some_and(|f| !f.failed);
         rec.duration_ms = started.elapsed().as_millis() as u64;
         if let Some(m) = info.model.clone().filter(|m| !m.is_empty()) {
             rec.model = m;
@@ -538,7 +589,13 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
             }
             let calls = chats.entry(chat.id.clone()).or_default();
             for call in &info.calls {
-                let mut c = CallRecord::new(api, &rec.model, Some(request_id.clone()), &chat.harness, call);
+                let mut c = CallRecord::new(
+                    api,
+                    &rec.model,
+                    Some(request_id.clone()),
+                    &chat.harness,
+                    call,
+                );
                 c.content_kept = content_kept;
                 events.push(c.event(&chat.id, &chat.harness, at));
                 calls.keep(c);
@@ -551,13 +608,24 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
 
 /// Results the harness sent back: each fills its call's record once, and
 /// the record is posted again under the call's id (case 35).
-fn record_results(inner: &Inner, chat: &Chat, api: Api, info: &apis::RequestInfo, content_kept: bool) {
+fn record_results(
+    inner: &Inner,
+    chat: &Chat,
+    api: Api,
+    info: &apis::RequestInfo,
+    content_kept: bool,
+) {
     let mut events = Vec::new();
     let at = now_ms();
-    let Ok(mut chats) = inner.chats.lock() else { return };
+    let Ok(mut chats) = inner.chats.lock() else {
+        return;
+    };
     let Some(calls) = chats.get_mut(&chat.id) else {
         if !info.results.is_empty() {
-            inner.counters.results_unmatched.fetch_add(info.results.len() as u64, Ordering::Relaxed);
+            inner
+                .counters
+                .results_unmatched
+                .fetch_add(info.results.len() as u64, Ordering::Relaxed);
         }
         return;
     };
@@ -574,7 +642,12 @@ fn record_results(inner: &Inner, chat: &Chat, api: Api, info: &apis::RequestInfo
                 let found = calls
                     .order
                     .iter()
-                    .filter(|id| calls.calls.get(*id).is_some_and(|c| c.api == api && &c.tool == name))
+                    .filter(|id| {
+                        calls
+                            .calls
+                            .get(*id)
+                            .is_some_and(|c| c.api == api && &c.tool == name)
+                    })
                     .nth(*k)
                     .cloned();
                 *k += 1;
@@ -591,7 +664,10 @@ fn record_results(inner: &Inner, chat: &Chat, api: Api, info: &apis::RequestInfo
             _ => by_name(&mut nth),
         };
         let Some(rec) = id.and_then(|id| calls.calls.get_mut(&id)) else {
-            inner.counters.results_unmatched.fetch_add(1, Ordering::Relaxed);
+            inner
+                .counters
+                .results_unmatched
+                .fetch_add(1, Ordering::Relaxed);
             continue;
         };
         if rec.result.is_some() {

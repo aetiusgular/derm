@@ -47,16 +47,29 @@ fn main() {
                     Some(b) => (b, true),
                     None => (rest, false),
                 };
-                upstreams.insert(key.to_string(), Upstream { base: base.trim_end_matches('/').to_string(), local });
+                upstreams.insert(
+                    key.to_string(),
+                    Upstream {
+                        base: base.trim_end_matches('/').to_string(),
+                        local,
+                    },
+                );
             }
             other => panic!("unknown argument {other}"),
         }
         i += 2;
     }
-    assert!(derm_core::token::well_formed(&token), "--token takes 64 hex characters");
+    assert!(
+        derm_core::token::well_formed(&token),
+        "--token takes 64 hex characters"
+    );
     let want = route::of_token(&token);
     let out = Arc::new(Mutex::new(
-        std::fs::OpenOptions::new().create(true).append(true).open(&records).expect("--records"),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&records)
+            .expect("--records"),
     ));
     let sink_out = out.clone();
     let the_chat = Chat { id: chat, harness };
@@ -76,7 +89,12 @@ fn main() {
         config.upstreams = upstreams;
     }
     if let Some(dir) = content_dir {
-        config.content = Arc::new(move |_| Some(content::Target { root: dir.clone().into(), retention_days: days }));
+        config.content = Arc::new(move |_| {
+            Some(content::Target {
+                root: dir.clone().into(),
+                retention_days: days,
+            })
+        });
     }
     let tap = Tap::start(config).expect("start");
     println!("listening {}", tap.endpoint());

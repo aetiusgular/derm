@@ -11,7 +11,17 @@ fn root(name: &str) -> PathBuf {
 }
 
 fn write(data: &Path, chat: &str, at: i64, days: u8, id: &str) -> PathBuf {
-    let mut f = open(&Target { root: data.to_path_buf(), retention_days: days }, chat, at, id, "request").unwrap();
+    let mut f = open(
+        &Target {
+            root: data.to_path_buf(),
+            retention_days: days,
+        },
+        chat,
+        at,
+        id,
+        "request",
+    )
+    .unwrap();
     f.append(b"PROMPT");
     f.path.clone()
 }
@@ -24,17 +34,26 @@ fn case_126_files_go_at_their_own_retention_and_the_records_stay_hashed() {
     let mut p = Purger::new(&data);
     assert!(p.pass_with(T0 + DAY_MS - 1, 0).is_empty());
     let ev = p.pass_with(T0 + DAY_MS, 0);
-    assert!(!short.exists() && long.exists(), "shortening or turning off deletes nothing early");
+    assert!(
+        !short.exists() && long.exists(),
+        "shortening or turning off deletes nothing early"
+    );
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].kind, "content.purge");
     assert_eq!(ev[0].source, Source::Derm);
     assert_eq!(ev[0].chat_id, "chat-a");
-    assert_eq!(ev[0].detail, json!({"trust": "daemon", "files": 1, "bytes": 6, "retentionDays": 1, "reason": "retention"}));
+    assert_eq!(
+        ev[0].detail,
+        json!({"trust": "daemon", "files": 1, "bytes": 6, "retentionDays": 1, "reason": "retention"})
+    );
     assert!(!serde_json::to_string(&ev).unwrap().contains("PROMPT"));
     assert_eq!(kept(&data), (1, 6, Some(T0 + 7 * DAY_MS)));
     p.pass_with(T0 + 7 * DAY_MS, 0);
     assert!(!long.exists());
-    assert!(!data.join("content/chat-a").exists(), "an empty chat folder goes too");
+    assert!(
+        !data.join("content/chat-a").exists(),
+        "an empty chat folder goes too"
+    );
     assert_eq!(kept(&data), (0, 0, None));
     let _ = std::fs::remove_dir_all(data);
 }
@@ -81,7 +100,11 @@ fn links_and_strangers_files_are_never_followed_or_deleted() {
     std::fs::write(&victim, "keep").unwrap();
     std::os::unix::fs::symlink(&elsewhere, data.join("content/chat-e")).unwrap();
     // A link inside a real chat folder, named like content.
-    std::os::unix::fs::symlink(&victim, data.join(format!("content/chat-d/{T0}-r1-link.request"))).unwrap();
+    std::os::unix::fs::symlink(
+        &victim,
+        data.join(format!("content/chat-d/{T0}-r1-link.request")),
+    )
+    .unwrap();
     // A file whose name the layout does not know.
     std::fs::write(data.join("content/chat-d/notes.txt"), "mine").unwrap();
     let mut p = Purger::new(&data);
@@ -90,7 +113,10 @@ fn links_and_strangers_files_are_never_followed_or_deleted() {
     assert_eq!(ev[0].detail["files"], 1);
     assert!(victim.exists());
     assert!(data.join("content/chat-d/notes.txt").exists());
-    assert!(data.join("content/chat-d").exists(), "a folder with other files stays");
+    assert!(
+        data.join("content/chat-d").exists(),
+        "a folder with other files stays"
+    );
     let _ = std::fs::remove_dir_all(data);
 }
 

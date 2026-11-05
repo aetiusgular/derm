@@ -65,7 +65,12 @@ mod tests {
         });
         assert!(fold_system_messages(&mut body));
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
-        let texts: Vec<&str> = body["system"].as_array().unwrap().iter().map(|b| b["text"].as_str().unwrap()).collect();
+        let texts: Vec<&str> = body["system"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["text"].as_str().unwrap())
+            .collect();
         assert_eq!(texts, vec!["base", "note one", "note two"]);
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
     }
@@ -76,8 +81,12 @@ mod tests {
         let before = body.clone();
         assert!(!fold_system_messages(&mut body));
         assert_eq!(body, before);
-        let mut string_system = json!({"system": "s", "messages": [{"role": "system", "content": "x"}]});
+        let mut string_system =
+            json!({"system": "s", "messages": [{"role": "system", "content": "x"}]});
         assert!(fold_system_messages(&mut string_system));
-        assert_eq!(string_system["system"], json!([{"type":"text","text":"s"},{"type":"text","text":"x"}]));
+        assert_eq!(
+            string_system["system"],
+            json!([{"type":"text","text":"s"},{"type":"text","text":"x"}])
+        );
     }
 }

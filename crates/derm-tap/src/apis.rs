@@ -68,20 +68,40 @@ pub struct RequestInfo {
 /// Reads a request body. A body that is not JSON gives an empty info.
 pub fn inspect_request(api: Api, path: &str, body: &Value) -> RequestInfo {
     let mut info = RequestInfo {
-        model: body.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
+        model: body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         ..Default::default()
     };
     let count = |v: Option<&Value>| v.and_then(Value::as_array).map_or(0, |a| a.len() as u64);
     match api {
         Api::AnthropicMessages => {
             info.tools_offered = count(body.get("tools"));
-            for m in body.get("messages").and_then(Value::as_array).into_iter().flatten() {
-                for b in m.get("content").and_then(Value::as_array).into_iter().flatten() {
+            for m in body
+                .get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                for b in m
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if b.get("type").and_then(Value::as_str) == Some("tool_result") {
                         info.results.push(ResultSeen {
-                            call_id: b.get("tool_use_id").and_then(Value::as_str).map(str::to_string),
+                            call_id: b
+                                .get("tool_use_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
                             name: None,
-                            value: b.get("content").cloned().unwrap_or(Value::String(String::new())),
+                            value: b
+                                .get("content")
+                                .cloned()
+                                .unwrap_or(Value::String(String::new())),
                             is_error: b.get("is_error").and_then(Value::as_bool),
                         });
                     }
@@ -90,7 +110,12 @@ pub fn inspect_request(api: Api, path: &str, body: &Value) -> RequestInfo {
         }
         Api::OpenAiResponses => {
             info.tools_offered = count(body.get("tools"));
-            for item in body.get("input").and_then(Value::as_array).into_iter().flatten() {
+            for item in body
+                .get("input")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
                 if matches!(
                     kind,
@@ -103,7 +128,10 @@ pub fn inspect_request(api: Api, path: &str, body: &Value) -> RequestInfo {
                             .and_then(Value::as_str)
                             .map(str::to_string),
                         name: None,
-                        value: item.get("output").cloned().unwrap_or(Value::String(String::new())),
+                        value: item
+                            .get("output")
+                            .cloned()
+                            .unwrap_or(Value::String(String::new())),
                         is_error: None,
                     });
                 }
@@ -111,12 +139,23 @@ pub fn inspect_request(api: Api, path: &str, body: &Value) -> RequestInfo {
         }
         Api::OpenAiChat => {
             info.tools_offered = count(body.get("tools"));
-            for m in body.get("messages").and_then(Value::as_array).into_iter().flatten() {
+            for m in body
+                .get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 if m.get("role").and_then(Value::as_str) == Some("tool") {
                     info.results.push(ResultSeen {
-                        call_id: m.get("tool_call_id").and_then(Value::as_str).map(str::to_string),
+                        call_id: m
+                            .get("tool_call_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                         name: None,
-                        value: m.get("content").cloned().unwrap_or(Value::String(String::new())),
+                        value: m
+                            .get("content")
+                            .cloned()
+                            .unwrap_or(Value::String(String::new())),
                         is_error: None,
                     });
                 }
@@ -131,11 +170,29 @@ pub fn inspect_request(api: Api, path: &str, body: &Value) -> RequestInfo {
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
-                .map(|t| count(t.get("functionDeclarations").or_else(|| t.get("function_declarations"))))
+                .map(|t| {
+                    count(
+                        t.get("functionDeclarations")
+                            .or_else(|| t.get("function_declarations")),
+                    )
+                })
                 .sum();
-            for c in body.get("contents").and_then(Value::as_array).into_iter().flatten() {
-                for p in c.get("parts").and_then(Value::as_array).into_iter().flatten() {
-                    if let Some(fr) = p.get("functionResponse").or_else(|| p.get("function_response")) {
+            for c in body
+                .get("contents")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                for p in c
+                    .get("parts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(fr) = p
+                        .get("functionResponse")
+                        .or_else(|| p.get("function_response"))
+                    {
                         info.results.push(ResultSeen {
                             call_id: fr.get("id").and_then(Value::as_str).map(str::to_string),
                             name: fr.get("name").and_then(Value::as_str).map(str::to_string),
@@ -302,7 +359,12 @@ impl ResponseParser {
             Api::AnthropicMessages => {
                 self.model_from(v.get("model"));
                 self.usage_anthropic(v.get("usage"));
-                for b in v.get("content").and_then(Value::as_array).into_iter().flatten() {
+                for b in v
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     if b.get("type").and_then(Value::as_str) == Some("tool_use") {
                         let k = self.next_key();
                         let p = self.slot(k);
@@ -316,7 +378,12 @@ impl ResponseParser {
             Api::OpenAiResponses => {
                 self.model_from(v.get("model"));
                 self.usage_openai(v.get("usage"));
-                for item in v.get("output").and_then(Value::as_array).into_iter().flatten() {
+                for item in v
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     let k = self.next_key();
                     self.responses_item(k, item, true);
                 }
@@ -324,7 +391,12 @@ impl ResponseParser {
             Api::OpenAiChat => {
                 self.model_from(v.get("model"));
                 self.usage_openai(v.get("usage"));
-                for choice in v.get("choices").and_then(Value::as_array).into_iter().flatten() {
+                for choice in v
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     let msg = choice.get("message");
                     for tc in msg
                         .and_then(|m| m.get("tool_calls"))
@@ -390,7 +462,10 @@ impl ResponseParser {
                     p.id = str_of(b.and_then(|b| b.get("id")));
                     p.name = str_of(b.and_then(|b| b.get("name")));
                     // An input given whole at the start (rare); deltas replace it.
-                    if let Some(i) = b.and_then(|b| b.get("input")).filter(|i| i.as_object().is_some_and(|o| !o.is_empty())) {
+                    if let Some(i) = b
+                        .and_then(|b| b.get("input"))
+                        .filter(|i| i.as_object().is_some_and(|o| !o.is_empty()))
+                    {
                         p.json_args = Some(i.clone());
                     }
                 }
@@ -474,7 +549,10 @@ impl ResponseParser {
                 }
             }
             "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
-                let whole = v.get("arguments").or_else(|| v.get("input")).and_then(Value::as_str);
+                let whole = v
+                    .get("arguments")
+                    .or_else(|| v.get("input"))
+                    .and_then(Value::as_str);
                 if let (Some(k), Some(a)) = (key, whole) {
                     if let Some(p) = self.calls.get_mut(&k) {
                         p.args = a.to_string();
@@ -494,7 +572,12 @@ impl ResponseParser {
     fn chat_chunk(&mut self, v: &Value) {
         self.model_from(v.get("model"));
         self.usage_openai(v.get("usage"));
-        for choice in v.get("choices").and_then(Value::as_array).into_iter().flatten() {
+        for choice in v
+            .get("choices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             for tc in choice
                 .pointer("/delta/tool_calls")
                 .and_then(Value::as_array)
@@ -503,10 +586,18 @@ impl ResponseParser {
             {
                 let idx = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let p = self.slot(idx);
-                if let Some(id) = tc.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                if let Some(id) = tc
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
                     p.id = id.to_string();
                 }
-                if let Some(n) = tc.pointer("/function/name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                if let Some(n) = tc
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                {
                     p.name = n.to_string();
                 }
                 if let Some(a) = tc.pointer("/function/arguments").and_then(Value::as_str) {
@@ -532,7 +623,12 @@ impl ResponseParser {
                 self.info.output_tokens = Some(o);
             }
         }
-        for cand in v.get("candidates").and_then(Value::as_array).into_iter().flatten() {
+        for cand in v
+            .get("candidates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             for part in cand
                 .pointer("/content/parts")
                 .and_then(Value::as_array)
@@ -551,7 +647,11 @@ impl ResponseParser {
                     let p = self.slot(k);
                     p.id = id;
                     p.name = str_of(fc.get("name"));
-                    p.json_args = Some(fc.get("args").cloned().unwrap_or(Value::Object(Default::default())));
+                    p.json_args = Some(
+                        fc.get("args")
+                            .cloned()
+                            .unwrap_or(Value::Object(Default::default())),
+                    );
                     p.done = true;
                 }
             }

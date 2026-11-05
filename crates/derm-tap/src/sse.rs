@@ -132,9 +132,18 @@ mod tests {
             assert_eq!(
                 got,
                 vec![
-                    SseEvent { event: "a".into(), data: "{\"x\":1}".into() },
-                    SseEvent { event: "b".into(), data: "one\ntwo".into() },
-                    SseEvent { event: "".into(), data: "3".into() },
+                    SseEvent {
+                        event: "a".into(),
+                        data: "{\"x\":1}".into()
+                    },
+                    SseEvent {
+                        event: "b".into(),
+                        data: "one\ntwo".into()
+                    },
+                    SseEvent {
+                        event: "".into(),
+                        data: "3".into()
+                    },
                 ],
                 "cut at {cut}"
             );

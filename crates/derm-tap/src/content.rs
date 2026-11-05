@@ -45,7 +45,9 @@ pub fn parse_name(name: &str) -> Option<(i64, u8)> {
     let rest = parts.next()?;
     let ok = (1..=7).contains(&days)
         && (rest.ends_with(".request") || rest.ends_with(".response"))
-        && rest.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
     ok.then_some((ms, days))
 }
 
@@ -93,7 +95,13 @@ fn private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Opens a new content file for one part of one request.
-pub fn open(target: &Target, chat: &str, at_ms: i64, id: &str, part: &str) -> io::Result<ContentFile> {
+pub fn open(
+    target: &Target,
+    chat: &str,
+    at_ms: i64,
+    id: &str,
+    part: &str,
+) -> io::Result<ContentFile> {
     if !chat_dir_ok(chat) {
         return Err(io::Error::other("chat id cannot name a folder"));
     }
@@ -133,7 +141,8 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("derm-tap-content-{name}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("derm-tap-content-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -142,14 +151,26 @@ mod tests {
     #[test]
     fn files_are_private_and_carry_their_retention() {
         let root = tmp("private");
-        let t = Target { root: root.clone(), retention_days: 3 };
+        let t = Target {
+            root: root.clone(),
+            retention_days: 3,
+        };
         let mut f = open(&t, "chat-1", 1_793_000_000_000, "req_abc", "request").unwrap();
         f.append(b"{\"model\":\"m\"}");
         let name = f.path.file_name().unwrap().to_str().unwrap().to_string();
         assert_eq!(parse_name(&name), Some((1_793_000_000_000, 3)));
         assert_eq!(std::fs::metadata(&f.path).unwrap().mode() & 0o777, 0o600);
-        assert_eq!(std::fs::metadata(root.join("content/chat-1")).unwrap().mode() & 0o777, 0o700);
-        assert_eq!(std::fs::metadata(root.join("content")).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::metadata(root.join("content/chat-1"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("content")).unwrap().mode() & 0o777,
+            0o700
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -158,19 +179,42 @@ mod tests {
         let root = tmp("link");
         std::fs::create_dir_all(root.join("elsewhere")).unwrap();
         std::fs::create_dir_all(root.join("content")).unwrap();
-        std::fs::set_permissions(root.join("content"), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(
+            root.join("content"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
         std::os::unix::fs::symlink(root.join("elsewhere"), root.join("content/chat-2")).unwrap();
-        let t = Target { root: root.clone(), retention_days: 1 };
+        let t = Target {
+            root: root.clone(),
+            retention_days: 1,
+        };
         assert!(open(&t, "chat-2", 1, "r", "request").is_err());
-        std::fs::set_permissions(root.join("content"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(
+            root.join("content"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
         assert!(open(&t, "chat-3", 1, "r", "request").is_err());
-        assert!(std::fs::read_dir(root.join("elsewhere")).unwrap().next().is_none());
+        assert!(std::fs::read_dir(root.join("elsewhere"))
+            .unwrap()
+            .next()
+            .is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
     fn names_and_chat_ids_that_could_escape_are_refused() {
-        for bad in ["", ".", "..", "../x", "a/b", ".hidden", "a b", &"x".repeat(129)] {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            ".hidden",
+            "a b",
+            &"x".repeat(129),
+        ] {
             assert!(!chat_dir_ok(bad), "{bad}");
         }
         assert!(chat_dir_ok("chat-01HXYZ_a.b"));

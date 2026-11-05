@@ -54,7 +54,11 @@ impl Purger {
     pub fn new(data: &Path) -> Self {
         let root = data.join(DIR);
         let ages = read_ages(&root.join(AGES)).unwrap_or_default();
-        Purger { root, last: None, ages }
+        Purger {
+            root,
+            last: None,
+            ages,
+        }
     }
 
     /// One pass at wall time `now_ms`; returns the `content.purge` records.
@@ -72,13 +76,17 @@ impl Purger {
         if !private_dir(&self.root) {
             return Vec::new();
         }
-        let Ok(chats) = std::fs::read_dir(&self.root) else { return Vec::new() };
+        let Ok(chats) = std::fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
         for chat in chats.flatten() {
             let name = chat.file_name().to_string_lossy().into_owned();
             if !chat_dir_ok(&name) || !private_dir(&chat.path()) {
                 continue;
             }
-            let Ok(files) = std::fs::read_dir(chat.path()) else { continue };
+            let Ok(files) = std::fs::read_dir(chat.path()) else {
+                continue;
+            };
             let mut left = 0;
             for f in files.flatten() {
                 let fname = f.file_name().to_string_lossy().into_owned();
@@ -86,7 +94,9 @@ impl Purger {
                     left += 1;
                     continue;
                 };
-                let Ok(meta) = std::fs::symlink_metadata(f.path()) else { continue };
+                let Ok(meta) = std::fs::symlink_metadata(f.path()) else {
+                    continue;
+                };
                 if !meta.file_type().is_file() {
                     left += 1;
                     continue;
@@ -123,7 +133,10 @@ impl Purger {
                 harness: String::new(),
                 source: Source::Derm,
                 kind: "content.purge".into(),
-                summary: format!("content past {days} day{} removed", if days == 1 { "" } else { "s" }),
+                summary: format!(
+                    "content past {days} day{} removed",
+                    if days == 1 { "" } else { "s" }
+                ),
                 detail: json!({
                     "trust": "daemon",
                     "files": r.files,
@@ -145,9 +158,13 @@ impl Purger {
 pub fn kept(data: &Path) -> (u64, u64, Option<i64>) {
     let root = data.join(DIR);
     let (mut files, mut bytes, mut until) = (0u64, 0u64, None::<i64>);
-    let Ok(chats) = std::fs::read_dir(&root) else { return (0, 0, None) };
+    let Ok(chats) = std::fs::read_dir(&root) else {
+        return (0, 0, None);
+    };
     for chat in chats.flatten() {
-        let Ok(list) = std::fs::read_dir(chat.path()) else { continue };
+        let Ok(list) = std::fs::read_dir(chat.path()) else {
+            continue;
+        };
         for f in list.flatten() {
             if let Some((at, days)) = parse_name(&f.file_name().to_string_lossy()) {
                 files += 1;
@@ -171,7 +188,11 @@ fn read_ages(path: &Path) -> Option<HashMap<String, i64>> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     // SAFETY: getuid takes no arguments and cannot fail.
     let uid = unsafe { libc::getuid() };
-    if !meta.file_type().is_file() || meta.uid() != uid || meta.mode() & 0o077 != 0 || meta.len() > MAX_AGES_FILE {
+    if !meta.file_type().is_file()
+        || meta.uid() != uid
+        || meta.mode() & 0o077 != 0
+        || meta.len() > MAX_AGES_FILE
+    {
         return None;
     }
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
@@ -193,7 +214,11 @@ fn write_ages(path: &Path, ages: &HashMap<String, i64>) -> std::io::Result<()> {
         .custom_flags(libc::O_NOFOLLOW)
         .open(&tmp)?;
     let map: BTreeMap<&String, &i64> = ages.iter().collect();
-    f.write_all(serde_json::to_string(&map).unwrap_or_else(|_| "{}".into()).as_bytes())?;
+    f.write_all(
+        serde_json::to_string(&map)
+            .unwrap_or_else(|_| "{}".into())
+            .as_bytes(),
+    )?;
     f.sync_all()?;
     std::fs::rename(&tmp, path)
 }

@@ -140,7 +140,11 @@ pub fn paths_named(args: &ArgsText) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |p: &str| {
         let p = p.trim();
-        if !p.is_empty() && p.len() <= MAX_PATH_LEN && out.len() < MAX_PATHS && !out.iter().any(|x| x == p) {
+        if !p.is_empty()
+            && p.len() <= MAX_PATH_LEN
+            && out.len() < MAX_PATHS
+            && !out.iter().any(|x| x == p)
+        {
             out.push(p.to_string());
         }
     };
@@ -173,7 +177,12 @@ fn patch_paths(text: &str, push: &mut impl FnMut(&str)) {
         return;
     }
     for line in text.lines() {
-        for head in ["*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:"] {
+        for head in [
+            "*** Add File:",
+            "*** Update File:",
+            "*** Delete File:",
+            "*** Move to:",
+        ] {
             if let Some(p) = line.strip_prefix(head) {
                 push(p);
             }
@@ -323,7 +332,14 @@ impl RequestRecord {
             1 => "1 tool call".to_string(),
             n => format!("{n} tool calls"),
         };
-        let mut summary = format!("{}, {calls}", if self.model.is_empty() { "model" } else { &self.model });
+        let mut summary = format!(
+            "{}, {calls}",
+            if self.model.is_empty() {
+                "model"
+            } else {
+                &self.model
+            }
+        );
         if self.incomplete {
             summary.push_str(", cut");
         }
@@ -360,7 +376,8 @@ mod tests {
 
     #[test]
     fn canonical_json_sorts_keys_and_drops_spaces() {
-        let v: Value = serde_json::from_str(r#"{ "b": [1, {"y": 2, "x": "é"}], "a": null }"#).unwrap();
+        let v: Value =
+            serde_json::from_str(r#"{ "b": [1, {"y": 2, "x": "é"}], "a": null }"#).unwrap();
         assert_eq!(canonical(&v), r#"{"a":null,"b":[1,{"x":"é","y":2}]}"#);
     }
 
@@ -370,12 +387,17 @@ mod tests {
         let streamed = ArgsText::Text("{\"command\":  \"ls -la src\"}".into());
         assert_eq!(digest_args(&whole), digest_args(&streamed));
         let cut = ArgsText::Text("{\"command\": \"ls -".into());
-        assert_eq!(digest_args(&cut).sha256, sha256_hex(b"{\"command\": \"ls -"));
+        assert_eq!(
+            digest_args(&cut).sha256,
+            sha256_hex(b"{\"command\": \"ls -")
+        );
     }
 
     #[test]
     fn paths_come_from_named_keys_and_patch_headers_only() {
-        let a = ArgsText::Json(json!({"file_path": "/p/a.rs", "content": "path: /etc/passwd", "paths": ["/p/b", 3, "/p/a.rs"]}));
+        let a = ArgsText::Json(
+            json!({"file_path": "/p/a.rs", "content": "path: /etc/passwd", "paths": ["/p/b", 3, "/p/a.rs"]}),
+        );
         assert_eq!(paths_named(&a), vec!["/p/a.rs", "/p/b"]);
         let cmd = ArgsText::Json(json!({"command": "cat /etc/shadow"}));
         assert!(paths_named(&cmd).is_empty());
@@ -402,11 +424,18 @@ mod tests {
             args: ArgsText::Json(block["input"].clone()),
             incomplete: false,
         };
-        let mut rec = CallRecord::new(Api::AnthropicMessages, "claude-fixture", None, "claude-code", &call);
+        let mut rec = CallRecord::new(
+            Api::AnthropicMessages,
+            "claude-fixture",
+            None,
+            "claude-code",
+            &call,
+        );
         let next = read("anthropic.next-request.json");
         let result = &next["messages"][2]["content"][0]["content"];
         rec.result = Some((digest_result(result), None));
-        let got = serde_json::to_value(rec.event("chat-fixture", "claude-code", 1_793_000_000_000)).unwrap();
+        let got = serde_json::to_value(rec.event("chat-fixture", "claude-code", 1_793_000_000_000))
+            .unwrap();
         assert_eq!(got, read("anthropic.expected.json")[0]);
 
         let resp = read("openai-responses.response.json");
@@ -420,7 +449,8 @@ mod tests {
         let mut rec = CallRecord::new(Api::OpenAiResponses, "gpt-fixture", None, "codex", &call);
         let next = read("openai-responses.next-request.json");
         rec.result = Some((digest_result(&next["input"][0]["output"]), None));
-        let got = serde_json::to_value(rec.event("chat-fixture", "codex", 1_793_000_000_000)).unwrap();
+        let got =
+            serde_json::to_value(rec.event("chat-fixture", "codex", 1_793_000_000_000)).unwrap();
         assert_eq!(got, read("openai-responses.expected.json")[0]);
     }
 

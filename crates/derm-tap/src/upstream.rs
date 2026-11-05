@@ -31,7 +31,11 @@ impl Upstream {
     /// The host (and port, when not the scheme's) for records: never the
     /// path, never a query.
     pub fn host(&self) -> String {
-        let rest = self.base.split_once("://").map(|(_, r)| r).unwrap_or(&self.base);
+        let rest = self
+            .base
+            .split_once("://")
+            .map(|(_, r)| r)
+            .unwrap_or(&self.base);
         rest.split('/').next().unwrap_or("").to_string()
     }
 }
@@ -48,7 +52,10 @@ pub const GEMINI: &str = "gemini";
 /// The built-in table.
 pub fn builtin() -> BTreeMap<String, Upstream> {
     let mut t = BTreeMap::new();
-    t.insert(ANTHROPIC.into(), Upstream::remote("https://api.anthropic.com"));
+    t.insert(
+        ANTHROPIC.into(),
+        Upstream::remote("https://api.anthropic.com"),
+    );
     t.insert(OPENAI.into(), Upstream::remote("https://api.openai.com/v1"));
     t.insert(
         CHATGPT.into(),
@@ -123,8 +130,7 @@ pub fn openai_auto_key(has_account_header: bool, authorization: Option<&str>) ->
     let jwt = parts.len() == 3
         && parts.iter().all(|p| {
             !p.is_empty()
-                && p
-                    .bytes()
+                && p.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         });
     if jwt {
@@ -140,18 +146,39 @@ mod tests {
 
     #[test]
     fn keys_and_tails_cannot_reach_another_host() {
-        assert_eq!(split_key("/anthropic/v1/messages?beta=true"), Some(("anthropic", "/v1/messages?beta=true")));
-        assert_eq!(split_key("/openai-auto/responses"), Some(("openai-auto", "/responses")));
+        assert_eq!(
+            split_key("/anthropic/v1/messages?beta=true"),
+            Some(("anthropic", "/v1/messages?beta=true"))
+        );
+        assert_eq!(
+            split_key("/openai-auto/responses"),
+            Some(("openai-auto", "/responses"))
+        );
         assert_eq!(split_key("/anthropic"), Some(("anthropic", "")));
         assert_eq!(split_key("/Anthropic/v1"), None);
         assert_eq!(split_key("/evil.com/v1"), None);
         assert_eq!(split_key("//evil.com/v1"), None);
-        for good in ["", "/v1/messages", "/v1/messages?beta=true", "/v1beta/models/g:streamGenerateContent?alt=sse"] {
+        for good in [
+            "",
+            "/v1/messages",
+            "/v1/messages?beta=true",
+            "/v1beta/models/g:streamGenerateContent?alt=sse",
+        ] {
             assert!(tail_is_safe(good), "{good}");
         }
         for bad in [
-            "/v1/../../etc", "/v1//x", "@evil.com/v1", "/v1@evil.com", "/v1/%2e%2e/x", "/a%2Fb",
-            "/v1\\x", "/v1#frag", "/v1/ x", "v1/messages", "/v1/./x", "/caf\u{e9}",
+            "/v1/../../etc",
+            "/v1//x",
+            "@evil.com/v1",
+            "/v1@evil.com",
+            "/v1/%2e%2e/x",
+            "/a%2Fb",
+            "/v1\\x",
+            "/v1#frag",
+            "/v1/ x",
+            "v1/messages",
+            "/v1/./x",
+            "/caf\u{e9}",
         ] {
             assert!(!tail_is_safe(bad), "{bad}");
         }
@@ -163,18 +190,34 @@ mod tests {
         let hosts: Vec<String> = t.values().map(Upstream::host).collect();
         assert_eq!(
             hosts,
-            vec!["api.anthropic.com", "chatgpt.com", "generativelanguage.googleapis.com", "api.openai.com"]
+            vec![
+                "api.anthropic.com",
+                "chatgpt.com",
+                "generativelanguage.googleapis.com",
+                "api.openai.com"
+            ]
         );
-        assert!(t.values().all(|u| u.base.starts_with("https://") && !u.local));
-        assert!(!t.contains_key(OPENAI_AUTO), "openai-auto is a choice between two, not a host");
+        assert!(t
+            .values()
+            .all(|u| u.base.starts_with("https://") && !u.local));
+        assert!(
+            !t.contains_key(OPENAI_AUTO),
+            "openai-auto is a choice between two, not a host"
+        );
     }
 
     #[test]
     fn openai_auto_reads_the_credential_shape_only() {
         assert_eq!(openai_auto_key(true, None), CHATGPT);
-        assert_eq!(openai_auto_key(false, Some("Bearer eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl")), CHATGPT);
+        assert_eq!(
+            openai_auto_key(false, Some("Bearer eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl")),
+            CHATGPT
+        );
         assert_eq!(openai_auto_key(false, Some("bearer aaa.bbb.ccc")), CHATGPT);
-        assert_eq!(openai_auto_key(false, Some("Bearer sk-proj-abc123")), OPENAI);
+        assert_eq!(
+            openai_auto_key(false, Some("Bearer sk-proj-abc123")),
+            OPENAI
+        );
         assert_eq!(openai_auto_key(false, Some("Bearer a.b")), OPENAI);
         assert_eq!(openai_auto_key(false, Some("Bearer a..c")), OPENAI);
         assert_eq!(openai_auto_key(false, None), OPENAI);

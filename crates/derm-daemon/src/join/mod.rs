@@ -57,7 +57,14 @@ pub const SLACK_AFTER_MS: i64 = 2_000;
 
 /// Effect kinds that get a join record.
 const EFFECTS: &[&str] = &[
-    "exec", "create", "write", "truncate", "rename", "unlink", "link", "net.connect",
+    "exec",
+    "create",
+    "write",
+    "truncate",
+    "rename",
+    "unlink",
+    "link",
+    "net.connect",
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -210,13 +217,22 @@ impl Join {
                 Vec::new()
             }
             (Source::Tap, "tap.call") => {
-                let Some(id) = str_at(&e.detail, "callId") else { return Vec::new() };
-                let tool = str_at(&e.detail, "toolNormalized").unwrap_or("").to_string();
+                let Some(id) = str_at(&e.detail, "callId") else {
+                    return Vec::new();
+                };
+                let tool = str_at(&e.detail, "toolNormalized")
+                    .unwrap_or("")
+                    .to_string();
                 let paths: Vec<String> = e
                     .detail
                     .get("paths")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let has_result = e.detail.get("resultSha256").is_some_and(|r| !r.is_null());
                 let st = self.chat(&e.chat_id);
@@ -232,7 +248,9 @@ impl Join {
                 Vec::new()
             }
             (Source::Adapter, "approval") | (Source::Adapter, "tool.call") => {
-                let Some(id) = str_at(&e.detail, "toolUseId") else { return Vec::new() };
+                let Some(id) = str_at(&e.detail, "toolUseId") else {
+                    return Vec::new();
+                };
                 let ran = e.kind == "tool.call";
                 let decision = str_at(&e.detail, "decision").unwrap_or("");
                 let st = self.chat(&e.chat_id);
@@ -260,12 +278,20 @@ impl Join {
     fn effect(&mut self, e: &Event, kind: &str) -> Vec<Event> {
         let t = effect_time(e);
         let pid = e.pid;
-        let ppid = e.detail.get("ppid").and_then(Value::as_u64).map(|p| p as u32);
+        let ppid = e
+            .detail
+            .get("ppid")
+            .and_then(Value::as_u64)
+            .map(|p| p as u32);
         // A new process inherits its parent's owner; a child of the harness
         // itself is placed by what runs now.
         if kind == "fork" || kind == "exec" {
             let child = match kind {
-                "fork" => e.detail.get("child").and_then(Value::as_u64).map(|c| c as u32),
+                "fork" => e
+                    .detail
+                    .get("child")
+                    .and_then(Value::as_u64)
+                    .map(|c| c as u32),
                 _ => pid,
             };
             let st = self.chat(&e.chat_id);
@@ -308,7 +334,11 @@ impl Join {
         // 1. Tree.
         if let Some(Owner::Call(id)) = &owner {
             if let Some(c) = st.calls.get(id) {
-                candidates.push((c.event.clone(), "tree", "a process this call started".into()));
+                candidates.push((
+                    c.event.clone(),
+                    "tree",
+                    "a process this call started".into(),
+                ));
                 chosen = Some(c.event.clone());
             }
         }
@@ -325,7 +355,11 @@ impl Join {
                 .filter(|c| c.paths.iter().any(|p| paths.contains(p)))
                 .collect();
             for c in &named {
-                candidates.push((c.event.clone(), "path", "names this path in its arguments".into()));
+                candidates.push((
+                    c.event.clone(),
+                    "path",
+                    "names this path in its arguments".into(),
+                ));
             }
             if named.len() == 1 {
                 chosen = Some(named[0].event.clone());
@@ -336,9 +370,17 @@ impl Join {
             let session = matches!(owner, Some(Owner::Session));
             for (_, c) in &running {
                 if session && c.mcp() {
-                    candidates.push((c.event.clone(), "mcp-server", "an MCP call running while a session process acted".into()));
+                    candidates.push((
+                        c.event.clone(),
+                        "mcp-server",
+                        "an MCP call running while a session process acted".into(),
+                    ));
                 } else if !session {
-                    candidates.push((c.event.clone(), "window", "running at the time of the effect".into()));
+                    candidates.push((
+                        c.event.clone(),
+                        "window",
+                        "running at the time of the effect".into(),
+                    ));
                 }
             }
         }

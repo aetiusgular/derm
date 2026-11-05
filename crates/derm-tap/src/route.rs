@@ -41,7 +41,10 @@ pub fn of_token(token: &str) -> String {
 
 /// A route as written: exactly `LEN` lowercase hex characters.
 pub fn well_formed(route: &str) -> bool {
-    route.len() == LEN && route.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    route.len() == LEN
+        && route
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// `/r/<route>/<rest>` split into the route and `/<rest>`; `None` when the
@@ -78,7 +81,10 @@ mod tests {
     fn the_path_form_needs_a_whole_route() {
         let r = of_token(&"c".repeat(64));
         let p = format!("/r/{r}/anthropic/v1/messages?beta=true");
-        assert_eq!(split_path(&p), Some((r.as_str(), "/anthropic/v1/messages?beta=true")));
+        assert_eq!(
+            split_path(&p),
+            Some((r.as_str(), "/anthropic/v1/messages?beta=true"))
+        );
         assert_eq!(split_path(&format!("/r/{r}")), Some((r.as_str(), "")));
         assert_eq!(split_path("/r/abc/anthropic"), None);
         assert_eq!(split_path(&format!("/r/{}/x", r.to_uppercase())), None);

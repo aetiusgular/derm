@@ -48,10 +48,17 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
     let warn = |why: &str| {
         (
             Settings::default(),
-            Some(format!("{} {why}; the defaults apply (tap on, content off)", path.display())),
+            Some(format!(
+                "{} {why}; the defaults apply (tap on, content off)",
+                path.display()
+            )),
         )
     };
-    if !meta.file_type().is_file() || meta.uid() != uid || meta.mode() & 0o022 != 0 || meta.nlink() != 1 {
+    if !meta.file_type().is_file()
+        || meta.uid() != uid
+        || meta.mode() & 0o022 != 0
+        || meta.nlink() != 1
+    {
         return warn("is not a regular file of yours that only you can write");
     }
     if meta.len() > MAX_FILE {
@@ -75,7 +82,10 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         return Err("has no \"version\": 1".into());
     }
     for k in obj.keys() {
-        if !matches!(k.as_str(), "version" | "boundary" | "tap" | "content" | "installs" | "computerUse") {
+        if !matches!(
+            k.as_str(),
+            "version" | "boundary" | "tap" | "content" | "installs" | "computerUse"
+        ) {
             return Err(format!("has a key the schema does not name ({k})"));
         }
     }
@@ -90,14 +100,23 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         }
     }
     if let Some(content) = obj.get("content") {
-        let c = content.as_object().ok_or("has a content that is not an object")?;
+        let c = content
+            .as_object()
+            .ok_or("has a content that is not an object")?;
         let mut on = false;
         let mut days: Option<u8> = None;
         for (k, v) in c {
             match k.as_str() {
-                "on" => on = v.as_bool().ok_or("has content.on that is not true or false")?,
+                "on" => {
+                    on = v
+                        .as_bool()
+                        .ok_or("has content.on that is not true or false")?
+                }
                 "retentionDays" => {
-                    let d = v.as_u64().filter(|d| (1..=7).contains(d)).ok_or("has content.retentionDays outside 1 to 7")?;
+                    let d = v
+                        .as_u64()
+                        .filter(|d| (1..=7).contains(d))
+                        .ok_or("has content.retentionDays outside 1 to 7")?;
                     days = Some(d as u8);
                 }
                 _ => return Err(format!("has content.{k} the schema does not allow")),
@@ -117,10 +136,21 @@ mod tests {
     #[test]
     fn the_schema_examples_and_defaults() {
         let ex = include_str!("../../../contracts/fixtures/tap/settings.example.json");
-        assert_eq!(parse(ex), Ok(Settings { tap_on: true, content_days: Some(3) }));
+        assert_eq!(
+            parse(ex),
+            Ok(Settings {
+                tap_on: true,
+                content_days: Some(3)
+            })
+        );
         assert_eq!(parse(r#"{"version":1}"#), Ok(Settings::default()));
-        assert_eq!(parse(r#"{"version":1,"tap":{"on":false}}"#).unwrap().tap_on, false);
-        assert_eq!(parse(r#"{"version":1,"content":{"on":false,"retentionDays":5}}"#).unwrap().content_days, None);
+        assert!(!parse(r#"{"version":1,"tap":{"on":false}}"#).unwrap().tap_on);
+        assert_eq!(
+            parse(r#"{"version":1,"content":{"on":false,"retentionDays":5}}"#)
+                .unwrap()
+                .content_days,
+            None
+        );
     }
 
     #[test]
@@ -149,7 +179,16 @@ mod tests {
         let f = dir.join("settings.json");
         std::fs::write(&f, r#"{"version":1,"tap":{"on":false}}"#).unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(load(&f), (Settings { tap_on: false, content_days: None }, None));
+        assert_eq!(
+            load(&f),
+            (
+                Settings {
+                    tap_on: false,
+                    content_days: None
+                },
+                None
+            )
+        );
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o666)).unwrap();
         let (s, warn) = load(&f);
         assert!(s.tap_on && warn.is_some());

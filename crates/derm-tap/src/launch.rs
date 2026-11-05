@@ -79,7 +79,10 @@ pub fn launch(row: &Value, endpoint: &str, route_text: &str) -> Result<Launch, O
     let builtin = upstream::builtin();
     match via {
         "env" => {
-            let name = row.get("name").and_then(Value::as_str).ok_or(Off::NoBaseUrl)?;
+            let name = row
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or(Off::NoBaseUrl)?;
             let key = key_of(api);
             Ok(Launch {
                 env: vec![(name.to_string(), format!("{endpoint}/r/{route_text}/{key}"))],
@@ -92,13 +95,22 @@ pub fn launch(row: &Value, endpoint: &str, route_text: &str) -> Result<Launch, O
         "codex-provider" => {
             let p = format!("model_providers.{CODEX_PROVIDER}");
             let pairs = [
-                ("model_provider".to_string(), format!("\"{CODEX_PROVIDER}\"")),
+                (
+                    "model_provider".to_string(),
+                    format!("\"{CODEX_PROVIDER}\""),
+                ),
                 (format!("{p}.name"), "\"derm tap\"".to_string()),
-                (format!("{p}.base_url"), format!("\"{endpoint}/{}\"", upstream::OPENAI_AUTO)),
+                (
+                    format!("{p}.base_url"),
+                    format!("\"{endpoint}/{}\"", upstream::OPENAI_AUTO),
+                ),
                 (format!("{p}.wire_api"), "\"responses\"".to_string()),
                 (format!("{p}.requires_openai_auth"), "true".to_string()),
                 (format!("{p}.supports_websockets"), "false".to_string()),
-                (format!("{p}.env_http_headers.{}", route::HEADER), format!("\"{CODEX_ROUTE_VAR}\"")),
+                (
+                    format!("{p}.env_http_headers.{}", route::HEADER),
+                    format!("\"{CODEX_ROUTE_VAR}\""),
+                ),
             ];
             let mut args = Vec::new();
             for (k, v) in pairs {
@@ -128,10 +140,21 @@ mod tests {
     fn env_rows_put_the_route_in_the_variable_only() {
         let row = json!({"via":"env","name":"ANTHROPIC_BASE_URL","api":["anthropic-messages"],"verifiedAt":"2.1.311"});
         let l = launch(&row, "http://127.0.0.1:4000/", R).unwrap();
-        assert_eq!(l.env, vec![("ANTHROPIC_BASE_URL".to_string(), format!("http://127.0.0.1:4000/r/{R}/anthropic"))]);
+        assert_eq!(
+            l.env,
+            vec![(
+                "ANTHROPIC_BASE_URL".to_string(),
+                format!("http://127.0.0.1:4000/r/{R}/anthropic")
+            )]
+        );
         assert!(l.args.is_empty());
         assert_eq!(l.upstream, "api.anthropic.com");
-        let g = launch(&json!({"via":"env","name":"GOOGLE_GEMINI_BASE_URL","api":["gemini"]}), "http://h:1", R).unwrap();
+        let g = launch(
+            &json!({"via":"env","name":"GOOGLE_GEMINI_BASE_URL","api":["gemini"]}),
+            "http://h:1",
+            R,
+        )
+        .unwrap();
         assert_eq!(g.env[0].1, format!("http://h:1/r/{R}/gemini"));
     }
 
@@ -141,17 +164,43 @@ mod tests {
         let l = launch(&row, "http://127.0.0.1:4000", R).unwrap();
         assert!(!l.args.iter().any(|a| a.contains(R)));
         assert_eq!(l.env, vec![(CODEX_ROUTE_VAR.to_string(), R.to_string())]);
-        assert!(l.args.contains(&"model_providers.derm-tap.supports_websockets=false".to_string()));
-        assert!(l.args.contains(&"model_providers.derm-tap.requires_openai_auth=true".to_string()));
-        assert!(l.args.contains(&"model_providers.derm-tap.base_url=\"http://127.0.0.1:4000/openai-auto\"".to_string()));
-        assert!(l.args.contains(&"model_providers.derm-tap.env_http_headers.x-derm-tap-route=\"DERM_TAP_ROUTE\"".to_string()));
+        assert!(l
+            .args
+            .contains(&"model_providers.derm-tap.supports_websockets=false".to_string()));
+        assert!(l
+            .args
+            .contains(&"model_providers.derm-tap.requires_openai_auth=true".to_string()));
+        assert!(l.args.contains(
+            &"model_providers.derm-tap.base_url=\"http://127.0.0.1:4000/openai-auto\"".to_string()
+        ));
+        assert!(l.args.contains(
+            &"model_providers.derm-tap.env_http_headers.x-derm-tap-route=\"DERM_TAP_ROUTE\""
+                .to_string()
+        ));
         assert_eq!(l.args.iter().filter(|a| *a == "-c").count(), 7);
     }
 
     #[test]
     fn none_or_an_unknown_api_runs_untapped() {
-        assert_eq!(launch(&json!({"via":"none","api":[],"intent":"hooks"}), "http://h:1", R), Err(Off::NoBaseUrl));
-        assert_eq!(launch(&json!({"via":"env","name":"X","api":["openai-responses-ws"]}), "http://h:1", R), Err(Off::NoBaseUrl));
-        assert_eq!(launch(&json!({"via":"env","api":["gemini"]}), "http://h:1", R), Err(Off::NoBaseUrl));
+        assert_eq!(
+            launch(
+                &json!({"via":"none","api":[],"intent":"hooks"}),
+                "http://h:1",
+                R
+            ),
+            Err(Off::NoBaseUrl)
+        );
+        assert_eq!(
+            launch(
+                &json!({"via":"env","name":"X","api":["openai-responses-ws"]}),
+                "http://h:1",
+                R
+            ),
+            Err(Off::NoBaseUrl)
+        );
+        assert_eq!(
+            launch(&json!({"via":"env","api":["gemini"]}), "http://h:1", R),
+            Err(Off::NoBaseUrl)
+        );
     }
 }
