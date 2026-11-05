@@ -54,12 +54,44 @@ Linux and macOS; where Windows has the same property a twin runs there.
    first failing test binary does not hide the others' results.
 9. Lane T: `%USERPROFILE%\.derm` denied to srt's sandbox account, as in
    the phase 1 request 5.
-10. Unix-shaped test inputs that fail on the Windows runner (5 Nov, probe
-    run 42059209319), outside lane Z's folders, not gated: `derm-cli`
-    `connect::tests` and `rules_tests` (CRLF in fixtures vs LF written;
-    `/tmp` and `sh` in inputs), `run::preflight` (`/usr/local/bin` PATH),
-    `doctor` gate tests (`node` scripts), `connect::gateway` (`sh`),
-    `watch::conn` (a relative-path test that is absolute on Windows);
-    `derm-daemon` `activity` and `collector` (launchd and plist tests),
-    `daemon::tests` and `computer_use` (minting, fixed by Z-6). Each needs a
-    Windows twin or a Windows form of its input, decided by the owner.
+10. Unix-shaped tests that fail on the Windows runner, outside lane Z's
+    folders, not gated. With Z-1 to Z-6 applied (probe `9e785d8`, run on
+    5 Nov 17:3x UTC) these 29 are the only Windows failures: 747 passed,
+    29 failed, in two targets (`derm-cli --bin derm` 21, `derm-daemon
+    --lib` 8); every other target passes, `derm-core` 59 of 59.
+    - `derm-cli` `connect::tests` (8: `a_cli_on_path_counts_as_installed`,
+      `check_names_lists_the_pairs_in_the_user_project_and_policy_files`,
+      `claude_code_matches_claude_mcp_add_json`,
+      `codex_matches_codex_mcp_add_and_keeps_comments`,
+      `copilot_matches_copilot_mcp_add`, `gemini_matches_gemini_mcp_add`,
+      `pi_matches_pi_mcp_add`, `qwen_matches_qwen_mcp_add`) and
+      `connect::rules_tests` (3: `codex_rules_end_to_end_with_codex_home`,
+      `gemini_gets_its_deny_rules_in_a_file_of_its_own`,
+      `qwen_home_moves_the_file_and_a_bad_policy_writes_nothing`): CRLF
+      fixtures against LF written, `/tmp` and `sh` in inputs, `HOME`.
+    - `connect::gateway::docker_mcp::tests::allows_the_listed_shapes`
+      (`file:///Users/...` is not a plain path on Windows; request 6) and
+      `connect::gateway::host::tests::search_path_keeps_the_inherited_path_first`
+      (`:` as the PATH separator and Unix folders).
+    - `doctor::tests` (3: the gate tests run `node` scripts by Unix path).
+    - `run::preflight::tests::the_companions_path_drops_relative_and_writable_entries`
+      (`/usr/local/bin` PATH).
+    - `run::tap::tests::case_113_a_base_url_set_elsewhere_refuses_the_start_and_names_where`
+      (the test joins `.claude/settings.json` with `/`, the message prints
+      `\`; the refusal itself works).
+    - `run::end_to_end::both_process_readers_find_a_marked_process_and_lose_it_when_it_ends`
+      (`sh -c` and `ps`).
+    - `tests::each_subcommand_reaches_its_module` (`derm connect: HOME is
+      not set`; request 1).
+    - `watch::conn::tests::a_relative_socket_flag_is_refused`
+      (`/tmp/x/daemon.sock` is relative on Windows).
+    - `derm-daemon` `activity::collector` (2), `activity::commands` (1),
+      `collector::app` (3), `collector::tests` (1): launchd, plist, app
+      bundle and root shell, all macOS things.
+    - `activity::retention::tests::scan_and_apply_touch_only_our_names_and_never_follow_links`:
+      the links are made only under `cfg(unix)`, so on Windows the day
+      folder empties and is deleted too (2, not 1). Needs a Windows link
+      (a junction) or the count under `cfg`.
+    Each needs a Windows twin or a Windows form of its input, decided by the
+    owner. Run 2 (`2235a9f`) also failed `daemon::tests` and
+    `computer_use` (minting): fixed by Z-6.
