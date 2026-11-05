@@ -124,7 +124,12 @@ fn the_driver_is_taken_only_from_a_file_no_one_else_can_change() {
         plain.join("cua-driver"),
         base.join("missing"),
     ] {
-        assert_eq!(find_driver(&[bad.clone()], uid), None, "{}", bad.display());
+        assert_eq!(
+            find_driver(std::slice::from_ref(&bad), uid),
+            None,
+            "{}",
+            bad.display()
+        );
     }
     // A link is followed and its target checked.
     symlink(good.join("cua-driver"), base.join("link")).unwrap();
@@ -237,21 +242,19 @@ fn a_running_program_is_found_by_name_and_named_by_its_executable() {
 #[test]
 fn derms_own_programs_cua_driver_lockers_and_password_stores_are_never_resolved() {
     let base = root("never");
-    let mut proc_pid = 400;
     let mut proc_root = PathBuf::new();
-    for name in [
+    for (proc_pid, name) in (400..).zip([
         "derm-daemon",
         "cua-driver",
         "keepassxc",
         "swaylock",
         "pinentry-curses",
         "derm-anything",
-    ] {
+    ]) {
         let path = base.join("bin2").join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         executable(&path, "#!/bin/sh\n");
         proc_root = proc_with(&base, proc_pid, &path, name);
-        proc_pid += 1;
     }
     let core = Core::new(
         Box::new(launcher(&base, proc_root, vec![])),

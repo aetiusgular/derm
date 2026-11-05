@@ -77,14 +77,10 @@ const DISPLAY_VARS: &[&str] = &[
     "DBUS_SESSION_BUS_ADDRESS",
 ];
 
-/// Where cua-driver is looked for, in order. A debug build also takes
-/// `DERM_CUA_DRIVER`, for tests and a driver built beside the repository.
+/// Where cua-driver is looked for, in order. (A debug build also takes
+/// `DERM_CUA_DRIVER`: `debug_driver`.)
 pub fn driver_candidates(home: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("DERM_CUA_DRIVER") {
-        out.push(PathBuf::from(path));
-    }
     out.push(PathBuf::from("/usr/local/bin/cua-driver"));
     out.push(PathBuf::from("/usr/bin/cua-driver"));
     if let Some(home) = home {
@@ -100,6 +96,19 @@ pub fn find_driver(candidates: &[PathBuf], uid: u32) -> Option<PathBuf> {
         .iter()
         .filter_map(|c| fs::canonicalize(c).ok())
         .find(|path| trusted_file(path, uid))
+}
+
+/// A debug build's driver from `DERM_CUA_DRIVER`, for tests and a driver
+/// built beside the repository, as `DERM_CU_HELPER` is on macOS: the file's
+/// own checks, not its folders' (a test's folder sits under `/tmp`). A
+/// release build never reads the variable.
+pub fn debug_driver(uid: u32) -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let path = fs::canonicalize(std::env::var_os("DERM_CUA_DRIVER")?).ok()?;
+    let meta = fs::metadata(&path).ok()?;
+    (meta.is_file() && meta.mode() & 0o111 != 0 && trusted_owner(&meta, uid)).then_some(path)
 }
 
 fn trusted_owner(meta: &fs::Metadata, uid: u32) -> bool {

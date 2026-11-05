@@ -984,16 +984,14 @@ fn match_app(windows: &[Window], app: &str) -> Vec<Window> {
     if want.is_empty() {
         return Vec::new();
     }
-    let tiers: [Box<dyn Fn(&Window) -> bool>; 3] = [
-        Box::new(|w: &Window| w.app.trim().to_lowercase() == want),
-        Box::new(|w: &Window| {
-            w.bundle
-                .as_deref()
-                .is_some_and(|b| b.to_lowercase() == want)
-        }),
-        Box::new(|w: &Window| !w.app.is_empty() && w.app.to_lowercase().contains(&want)),
-    ];
-    for tier in tiers {
+    let exact = |w: &Window| w.app.trim().to_lowercase() == want;
+    let bundle = |w: &Window| {
+        w.bundle
+            .as_deref()
+            .is_some_and(|b| b.to_lowercase() == want)
+    };
+    let part = |w: &Window| !w.app.is_empty() && w.app.to_lowercase().contains(&want);
+    for tier in [&exact as &dyn Fn(&Window) -> bool, &bundle, &part] {
         let hit: Vec<Window> = windows.iter().filter(|w| tier(w)).cloned().collect();
         if !hit.is_empty() {
             return hit;

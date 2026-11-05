@@ -541,6 +541,11 @@ impl Core {
 
     /// What the model named, as an app the card can show.
     fn resolve_request(&self, app: &str) -> (Option<AppInfo>, Option<String>) {
+        // Lane U: a helper (or, on Linux, a driver) that cannot start says
+        // so, rather than "no app named".
+        if let Err(why) = self.helper_or_launch() {
+            return (None, Some(why));
+        }
         let looked_up = self.resolve(app);
         match parse_bundle_id(app) {
             Ok(id) => (
