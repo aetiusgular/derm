@@ -305,7 +305,7 @@ fn report_running_carries_the_wave_5_marks_across_a_restart() {
             "detail": {"cwd": "/tmp", "boundary": "none",
                 "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal",
                     "reasons": [{"boundary": "sbx", "why": long}], "preAnswer": null},
-                "ioUring": "not-audited",
+                "ioUring": "not-audited", "sbxKit": {"added": false, "why": long},
                 "tap": {"on": false, "reason": "no-tap-flag"},
                 "content": {"on": true, "retentionDays": 3}},
             "pid": harness.id()
@@ -326,12 +326,13 @@ fn report_running_carries_the_wave_5_marks_across_a_restart() {
     let want = json!({
         "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal"},
         "ioUring": "not-audited",
+        "sbxKit": {"added": false},
         "tap": {"on": false, "reason": "no-tap-flag"},
         "content": {"on": true, "retentionDays": 3},
     });
     let rows = running(&mut w, &mut r);
     assert_eq!(rows.len(), 1, "{rows:?}");
-    for k in ["boundaryChoice", "ioUring", "tap", "content"] {
+    for k in ["boundaryChoice", "ioUring", "sbxKit", "tap", "content"] {
         assert_eq!(rows[0][k], want[k], "{k} in {}", rows[0]);
     }
     // The reasons' text stays in the record, not in the running list.
@@ -342,7 +343,7 @@ fn report_running_carries_the_wave_5_marks_across_a_restart() {
     let (mut w, mut r) = session(&d);
     let rows = running(&mut w, &mut r);
     assert_eq!(rows.len(), 1, "{rows:?}");
-    for k in ["boundaryChoice", "ioUring", "tap", "content"] {
+    for k in ["boundaryChoice", "ioUring", "sbxKit", "tap", "content"] {
         assert_eq!(rows[0][k], want[k], "after a restart: {k} in {}", rows[0]);
     }
     let _ = harness.kill();

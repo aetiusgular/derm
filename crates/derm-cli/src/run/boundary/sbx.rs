@@ -227,9 +227,24 @@ pub(crate) struct Sandbox {
     name: String,
     remove: Vec<String>,
     done: bool,
+    /// Whether derm's kit went on the create, and why not (lane T's P4-R3).
+    kit: Option<String>,
 }
 
 impl Sandbox {
+    /// `run.start`'s `sbxKit`: `{"added": true}`, or `{"added": false,
+    /// "why": ...}` (P4-R3; `derm status` reads it to say whether derm's
+    /// gate is in the VM).
+    pub(crate) fn kit_record(&self) -> serde_json::Value {
+        match &self.kit {
+            None => serde_json::json!({"added": true}),
+            Some(why) => serde_json::json!({
+                "added": false,
+                "why": why.chars().take(200).collect::<String>(),
+            }),
+        }
+    }
+
     #[cfg_attr(all(test, not(unix)), allow(dead_code))]
     pub(crate) fn name(&self) -> &str {
         &self.name
@@ -348,6 +363,10 @@ pub(crate) fn start_with(
     }
     let status = cmd.status().map_err(|e| (127, format!("{sbx}: {e}")))?;
     // sbx has read the kit (SPEC-v2 5.8: files are copied at the create).
+    let kit_note = match &kit {
+        super::kit::Kit::Built(_) => None,
+        super::kit::Kit::Without(why) => Some(why.clone()),
+    };
     drop(kit);
     if !status.success() {
         return Err((
@@ -366,6 +385,7 @@ pub(crate) fn start_with(
         name: st.name.clone(),
         remove: st.remove.clone(),
         done: false,
+        kit: kit_note,
     };
     for (rule, port) in st.allow.iter().zip(&st.ports) {
         let r = super::probe::run(Path::new(sbx), rule, POLICY_LIMIT);
@@ -803,6 +823,8 @@ mod tests {
             0,
             "the kit folder is removed after the create"
         );
+        // P4-R3: run.start says the kit went on.
+        assert_eq!(sandbox.kit_record(), serde_json::json!({"added": true}));
         sandbox.remove().unwrap();
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -848,6 +870,10 @@ mod tests {
             let sandbox = start_with(&sbx, &mut p, false, &inputs).unwrap();
             let calls = std::fs::read_to_string(d.join("calls")).unwrap();
             assert!(!calls.lines().next().unwrap().contains("--kit"), "{calls}");
+            // P4-R3: run.start says the kit did not go on, and why.
+            let rec = sandbox.kit_record();
+            assert_eq!(rec["added"], false, "{rec}");
+            assert!(rec["why"].as_str().is_some_and(|w| !w.is_empty()), "{rec}");
             sandbox.remove().unwrap();
         }
         assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);

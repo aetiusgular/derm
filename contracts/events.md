@@ -70,7 +70,7 @@ Two sources are new, and only the daemon writes them: no socket client, chat or 
 
 Every record keeps hashes, sizes, paths, package names and versions, and never content, headers or a token. Content (prompts, arguments, results, the model's text, argv words, screenshots) is kept only when the content switch is on, in files under the daemon's data folder, `content/<chat id>/` (folder 0700, files 0600), for the retention the user chose, 1 to 7 days; a record says `contentKept: true` when its content is in such a file. No header is ever kept, content on or off (case 114). This replaces `DERM_LOG_CONTENT` as the content switch, for `run.start`'s argv words too (case 85 as changed 4 Nov); until lane S lands, `DERM_LOG_CONTENT` stays as it is.
 
-`run.start`'s detail gains five fields, each set only by the seam that makes it (the base's stubs set none, so a chat reads as before wave 5):
+`run.start`'s detail gains six fields, each set only by the seam that makes it (the base's stubs set none, so a chat reads as before wave 5):
 
 | Field | Set by | Shape |
 |---|---|---|
@@ -79,5 +79,6 @@ Every record keeps hashes, sizes, paths, package names and versions, and never c
 | `agentUser` | lane V, `run/user/` | `user`, `uid`, `how` (the route lane V reads first: a fixed `sudo` rule, a systemd unit, or another) |
 | `content` | lane S | `on`, `retentionDays` |
 | `ioUring` | lane T | `not-audited` for no boundary on Linux, and for srt where its seccomp helper does not run (case 128); `blocked` for srt where it does (x86_64 and aarch64 Linux: srt 0.0.81 refuses `io_uring_setup`, `io_uring_enter` and `io_uring_register`, its README line 1214, lane T by run; request T-1); `own-kernel` under sbx; absent elsewhere |
+| `sbxKit` | lane T's request P4-R3, integration w5's close, `run/boundary/sbx.rs` | Under sbx only: `added` (derm's kit, its gate in the VM, went on the create) and, when not, `why` (no kit for this agent, `DERM_SBX_KIT=off`, no usable policy, a Windows host). `derm status` reads it to say whether derm's gate is in the VM |
 
 The user's switches for all of this are one file, `~/.derm/settings.json` (`settings.schema.json`): lane W's `derm setup` writes it, behind a question per switch; lanes S, T, U and X read their own key. `~/.derm/` is a control path (`policy.md`, section 4, step 7a), so a gated agent's write to it asks and srt denies it.

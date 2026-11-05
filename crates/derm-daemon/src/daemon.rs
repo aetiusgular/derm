@@ -1465,6 +1465,9 @@ fn wave5_marks(d: &Value) -> serde_json::Map<String, Value> {
             }),
         );
     }
+    if let Some(k) = d.get("sbxKit").filter(|v| v.is_object()) {
+        m.insert("sbxKit".into(), json!({"added": b(k.get("added"))}));
+    }
     if d.get("ioUring").is_some() {
         m.insert("ioUring".into(), s(d.get("ioUring"), 16));
     }

@@ -274,7 +274,14 @@
           "properties": { "on": { "type": "boolean" }, "retentionDays": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 } },
           "additionalProperties": false
         },
-        "ioUring": { "enum": ["not-audited", "blocked", "own-kernel"] }
+        "ioUring": { "enum": ["not-audited", "blocked", "own-kernel"] },
+        "sbxKit": {
+          "description": "Under sbx: whether derm's kit (its gate in the VM) went on the create, and why not. Lane T's request P4-R3, integration w5's close.",
+          "type": "object",
+          "required": ["added"],
+          "properties": { "added": { "type": "boolean" }, "why": { "type": "string", "maxLength": 200 } },
+          "additionalProperties": false
+        }
       }
     }
   },

@@ -900,6 +900,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         eprintln!("derm run: io_uring operations in this chat are not audited (the audit feed reads syscalls only, case 128)");
     }
     let io_uring = io_uring.map(|m| json!(m));
+    // Lane T's P4-R3: whether derm's kit went on the sbx create, and why
+    // not, so the record and `derm status` say whether the gate is in the VM.
+    let sbx_kit = sandbox.as_ref().map(|s| s.kit_record());
     // Wave 5's records, only where a seam made one (`contracts/events.md`
     // section 5); the base's stubs make none.
     for (key, record) in [
@@ -908,6 +911,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ("tap", &tap_record),
         ("content", &content_record),
         ("agentUser", &agent_user),
+        ("sbxKit", &sbx_kit),
     ] {
         if let Some(v) = record {
             base[key] = v.clone();

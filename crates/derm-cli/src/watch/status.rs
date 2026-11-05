@@ -464,6 +464,7 @@ fn running_row(r: &Value) -> Value {
         "agentUser": r.get("agentUser"),
         "boundaryChoice": r.get("boundaryChoice"),
         "ioUring": r.get("ioUring"),
+        "sbxKit": r.get("sbxKit"),
         "tap": r.get("tap"),
         "content": r.get("content"),
     })
@@ -488,10 +489,19 @@ fn chat_marks(c: &Value) -> Vec<String> {
     if boundary == "sbx" {
         // Only Claude Code has derm's kit (P4-R3: run.start does not yet say
         // whether the kit went on; the start line does).
-        out.push(if s(c.get("harness")) == "claude-code" {
-            "derm's gate in the VM through its kit, unless the start line said otherwise".into()
-        } else {
-            "no derm gate in the VM".into()
+        let added = c
+            .get("sbxKit")
+            .and_then(|k| k.get("added"))
+            .and_then(Value::as_bool);
+        out.push(match added {
+            Some(true) => "derm's gate in the VM through its kit".into(),
+            Some(false) => "no derm gate in the VM".into(),
+            // A daemon or a derm run from before P4-R3: only Claude Code
+            // gets the kit, and the start line said whether it did.
+            None if s(c.get("harness")) == "claude-code" => {
+                "derm's gate in the VM through its kit, unless the start line said otherwise".into()
+            }
+            None => "no derm gate in the VM".into(),
         });
     }
     if s(c.get("ioUring")) == "not-audited" {
@@ -934,9 +944,15 @@ mod tests {
         assert!(t.contains("no derm gate in the VM"), "{t}");
         assert!(!t.contains("untapped") && !t.contains("io_uring"), "{t}");
         let t = render(row(
-            serde_json::json!({"boundary": "sbx", "harness": "claude-code"}),
+            serde_json::json!({"boundary": "sbx", "harness": "claude-code",
+            "sbxKit": {"added": true}}),
         ));
         assert!(t.contains("derm's gate in the VM through its kit"), "{t}");
+        let t = render(row(
+            serde_json::json!({"boundary": "sbx", "harness": "claude-code",
+            "sbxKit": {"added": false}}),
+        ));
+        assert!(t.contains("no derm gate in the VM"), "{t}");
         let t = render(row(serde_json::json!({"boundary": "srt",
             "boundaryChoice": {"chosen": "srt", "named": false, "answeredBy": "pre-answer"}})));
         assert!(t.contains("started by your pre-answer"), "{t}");
