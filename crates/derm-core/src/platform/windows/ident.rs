@@ -30,10 +30,12 @@ use super::sys;
 /// matches anyone.
 ///
 /// `Copy`, as Unix's `u32` uid is, so callers pass it by value on both
-/// systems. The longest SID string is "S-1-" and a 48-bit authority (15
-/// digits) then 15 sub-authorities of up to 10 digits each with their
-/// dashes: 184 characters (`SID_MAX_SUB_AUTHORITIES` is 15, winnt.h). A
-/// longer string is not a SID and is not stored.
+/// systems. The longest SID string is "S-1-", an authority of at most 14
+/// characters (decimal under 2^32, else `0x` and 12 hex digits), then at most
+/// 15 sub-authorities of up to 10 digits each with their dashes: 183
+/// characters ([MS-DTYP] 2.4.2.1 for the string form, 2.4.2.2 for "the
+/// maximum number of elements allowed is 15"). A longer string is not a SID
+/// and is not stored.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UserId {
     len: u8,
@@ -55,15 +57,40 @@ impl UserId {
         })
     }
 
-    /// A SID from its string form. `None` unless it is shaped like one
-    /// (`S-` then digits and dashes); used for well-known SIDs and tests.
+    /// A SID from its string form, as [MS-DTYP] 2.4.2.1 writes it:
+    /// `S-1-`, the authority in decimal below 2^32 or as `0x` and 12 hex
+    /// digits, then 1 to 15 sub-authorities in decimal, each a 32-bit value,
+    /// no leading zeros. `None` for anything else; used for well-known SIDs
+    /// and tests (a SID read from the system comes from
+    /// `ConvertSidToStringSidW` as is).
     pub fn parse(s: &str) -> Option<UserId> {
-        let rest = s.strip_prefix("S-")?;
-        let ok = !rest.is_empty()
-            && rest
-                .split('-')
-                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
-        if ok {
+        fn decimal(p: &str) -> Option<u64> {
+            let ok = (1..=10).contains(&p.len())
+                && p.bytes().all(|c| c.is_ascii_digit())
+                && (p == "0" || !p.starts_with('0'));
+            if ok {
+                p.parse().ok()
+            } else {
+                None
+            }
+        }
+        let rest = s.strip_prefix("S-1-")?;
+        let mut parts = rest.split('-');
+        let authority = parts.next()?;
+        let authority_ok = match authority.strip_prefix("0x") {
+            Some(hex) => {
+                hex.len() == 12
+                    && hex.bytes().all(|c| c.is_ascii_hexdigit())
+                    && u64::from_str_radix(hex, 16).is_ok_and(|v| v >= 1 << 32)
+            }
+            None => decimal(authority).is_some_and(|v| v < 1 << 32),
+        };
+        let subs: Vec<&str> = parts.collect();
+        let subs_ok = (1..=15).contains(&subs.len())
+            && subs
+                .iter()
+                .all(|p| decimal(p).is_some_and(|v| v <= u64::from(u32::MAX)));
+        if authority_ok && subs_ok {
             UserId::from_ascii(s)
         } else {
             None
@@ -273,13 +300,32 @@ mod tests {
         assert!(!a.is_known());
         assert_ne!(a, UserId::parse("S-1-5-18").unwrap());
         assert_ne!(UserId::unknown("self"), UserId::unknown("owner"));
-        // The longest SID: a 48-bit authority and 15 ten-digit parts.
-        let long = format!("S-1-281474976710655{}", "-4294967295".repeat(15));
-        assert_eq!(long.len(), 184);
+        // [MS-DTYP] 2.4.2.1: decimal authority below 2^32, else 0x and 12
+        // hex digits; no leading zeros; at least one sub-authority.
+        for bad in [
+            "S-1-5",
+            "S-2-5-18",
+            "S-1-05-18",
+            "S-1-5-018",
+            "S-1-4294967296-1",
+            "S-1-0x00000000FFFF-1",
+            "S-1-0xFFFF-1",
+            "S-1-5-4294967296",
+            "S-1-5-18-",
+        ] {
+            assert!(UserId::parse(bad).is_none(), "{bad:?}");
+        }
+        assert!(UserId::parse("S-1-0-0").is_some());
+        assert!(UserId::parse("S-1-0x000100000000-1").is_some());
+        // The longest SID: a hex authority and 15 ten-digit parts.
+        let long = format!("S-1-0xFFFFFFFFFFFF{}", "-4294967295".repeat(15));
+        assert_eq!(long.len(), 183);
         assert_eq!(
             UserId::parse(&long).map(|u| u.to_string()),
             Some(long.clone())
         );
+        // 2.4.2.2: "The maximum number of elements allowed is 15."
+        assert!(UserId::parse(&format!("{long}-1")).is_none());
         assert!(UserId::parse(&format!("{long}-1-2")).is_none());
     }
 
