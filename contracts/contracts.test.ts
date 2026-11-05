@@ -65,6 +65,17 @@ describe("policy contract", () => {
     expect(check("policy.schema.json", { version: 1, rules: [{ tool: "exa/x", action: "allow", widen: true }] })).not.toEqual([]);
     expect(check("policy.schema.json", { version: 1, rules: [{ tool: "mcp__Exa__X", action: "allow" }] })).not.toEqual([]);
   });
+
+  it("refuses every command shape in fixtures/policy/invalid.json (section 7, wave 5 lane W)", () => {
+    const { policies } = read("fixtures/policy/invalid.json") as { policies: { id: string; matchersOnly?: boolean; policy: unknown }[] };
+    expect(policies.length).toBe(10);
+    for (const p of policies.filter((x) => !x.matchersOnly)) expect([p.id, check("policy.schema.json", p.policy)]).not.toEqual([p.id, []]);
+  });
+
+  it("takes a command rule on bash, with a harness or a chat, and flags after the first word", () => {
+    expect(check("policy.schema.json", { version: 1, rules: [{ tool: "bash", command: ["git", "push", "--force"], action: "deny" }] })).toEqual([]);
+    expect(check("policy.schema.json", { version: 1, rules: [{ tool: "bash", harness: "codex", chat: "c1", command: ["gh", "pr", "view"], action: "allow" }] })).toEqual([]);
+  });
 });
 
 describe("entry contract", () => {

@@ -9,7 +9,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { decodeEscapes, fold } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, section 6.
-import { installDecision } from "./installs/index.ts";
+import { installDecision, parseInstalls } from "./installs/index.ts";
+// Wave 5 lane W: command rules, section 7.
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands } from "./command.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -19,6 +21,8 @@ export type Rule = {
   chat?: string;
   action: Action;
   descriptionSha256?: string;
+  /** Section 7: a CLI command's first words; `tool` is then `bash`. */
+  command?: string[];
 };
 
 export type PolicyFile = {
@@ -141,7 +145,7 @@ export function parsePolicy(value: unknown): PolicyFile | string {
     for (const [i, r] of value.rules.entries()) {
       if (!isPlainObject(r)) return `rule ${i} is not an object`;
       for (const key of Object.keys(r)) {
-        if (!["tool", "harness", "chat", "action", "descriptionSha256"].includes(key)) return `rule ${i}: unknown field ${key}`;
+        if (!["tool", "harness", "chat", "action", "descriptionSha256", "command"].includes(key)) return `rule ${i}: unknown field ${key}`;
       }
       if (typeof r.tool !== "string" || !TOOL_PATTERN.test(r.tool)) return `rule ${i}: bad tool`;
       if (r.action !== "allow" && r.action !== "ask" && r.action !== "deny") return `rule ${i}: bad action`;
@@ -157,6 +161,15 @@ export function parsePolicy(value: unknown): PolicyFile | string {
       if (r.descriptionSha256 !== undefined) {
         if (typeof r.descriptionSha256 !== "string" || !SHA_PATTERN.test(r.descriptionSha256)) return `rule ${i}: bad descriptionSha256`;
         rule.descriptionSha256 = r.descriptionSha256;
+      }
+      if (r.command !== undefined) {
+        // Section 7: a command rule names a shell command, so its tool is
+        // `bash`, and a description pin means nothing on it.
+        const problem = commandProblem(r.command);
+        if (problem !== undefined) return `rule ${i}: ${problem}`;
+        if (r.tool !== "bash") return `rule ${i}: a command rule's tool must be bash`;
+        if (r.descriptionSha256 !== undefined) return `rule ${i}: a command rule has no descriptionSha256`;
+        rule.command = [...(r.command as string[])];
       }
       rules.push(rule);
     }
@@ -749,7 +762,7 @@ export function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
-/** contracts/policy.md section 4, steps 1 to 7. Step 8 (the wait) is the caller's. */
+/** contracts/policy.md section 4, steps 1 to 7, and section 7. Step 8 (the wait) is the caller's. */
 export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
   const { policy } = loaded;
   const normalizedTool = normalizeToolName(call.tool, policy.servers, call.harness);
@@ -757,17 +770,51 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
   if (key !== undefined) return { action: "deny", normalizedTool, reason: `reject list: ${key}` };
 
   const applies = (r: Rule) => (r.harness === undefined || r.harness === call.harness) && (r.chat === undefined || r.chat === call.chat);
-  const matches = policy.rules.filter((r) => toolMatches(r.tool, normalizedTool) && applies(r));
+  // A command rule (section 7) is never a rule for the whole tool: it takes
+  // no part in steps 3 to 5 and 3a, only in the section 7 steps below.
+  const toolRules = policy.rules.filter((r) => r.command === undefined);
+  const matches = toolRules.filter((r) => toolMatches(r.tool, normalizedTool) && applies(r));
   // Section 4 step 3a (S5): rules on the call's other names narrow it. A
   // deny there is a deny; an ask turns an allow into an ask; an allow there
   // counts for nothing. `*` rules already matched the call itself.
   const other = narrowingNames(call.tool, policy.servers, call.harness);
-  const narrowing = policy.rules.filter((r) => r.tool !== "*" && applies(r) && other.names.some((n) => toolMatches(r.tool, n)));
+  const narrowing = toolRules.filter((r) => r.tool !== "*" && applies(r) && other.names.some((n) => toolMatches(r.tool, n)));
   const narrowDeny = narrowing.find((r) => r.action === "deny");
   if (narrowDeny !== undefined) return { action: "deny", normalizedTool, reason: `rule ${narrowDeny.tool} (also names ${normalizedTool})` };
   const narrowAsk = narrowing.find((r) => r.action === "ask");
+  // Section 7: command rules meet shell tools only. A deny is a deny at
+  // once; an ask turns an allow into an ask; an allow may widen an ask below.
+  const commandRules = isShellTool(normalizedTool) ? policy.rules.filter((r) => r.command !== undefined && applies(r)) : [];
+  const folded = commandRules.length > 0 ? fold(decodeEscapes(call.inputText)) : "";
+  const met = (() => {
+    if (commandRules.length === 0) return { deny: undefined, ask: undefined, allow: [] as Rule[] };
+    const narrowers = commandRules.filter((r) => r.action !== "allow");
+    const cmds = narrowers.length > 0 ? headCommands(folded, new Set(narrowers.map((r) => (r.command as string[])[0] as string))) : [];
+    const hit = (r: Rule) => cmds.some((c) => commandNarrows(r.command as string[], c));
+    const allow = commandRules
+      .filter((r) => r.action === "allow" && commandAllows(r.command as string[], folded))
+      .sort((a, b) => (b.command as string[]).length - (a.command as string[]).length);
+    return { deny: narrowers.find((r) => r.action === "deny" && hit(r)), ask: narrowers.find((r) => r.action === "ask" && hit(r)), allow };
+  })();
+  if (met.deny !== undefined) return { action: "deny", normalizedTool, reason: commandReason(met.deny.command as string[]) };
+
+  // Section 7: an allow command rule widens an ask that step 5 left with no
+  // rule, or a `bash` ask of no higher rank, when nothing narrows it and the
+  // text passes every step an allow passes (else the ask stands).
+  const widen = (asked: Decision, top: Rule | undefined): Decision => {
+    if (met.ask !== undefined) return asked;
+    const rule = met.allow.find((r) => top === undefined || compareRank(rankOf(r), rankOf(top)) >= 0);
+    if (rule === undefined) return asked;
+    if (parseInstalls(folded).length > 0) return asked; // never an install of section 6
+    // A `bash` ask that narrows a shell under another name is the ask this
+    // rule widens, when it is of no higher rank; any other narrowing ask stands.
+    const ask = narrowAsk !== undefined && !(narrowAsk.tool === "bash" && compareRank(rankOf(rule), rankOf(narrowAsk)) >= 0) ? narrowAsk : undefined;
+    const d = allowSteps(normalizedTool, call, commandReason(rule.command as string[]), ask, false);
+    return d.action === "allow" ? d : asked;
+  };
+
   if (matches.length === 0) {
-    return { action: "ask", normalizedTool, reason: loaded.problem ? `no rule (${loaded.problem})` : "no rule" };
+    return widen({ action: "ask", normalizedTool, reason: loaded.problem ? `no rule (${loaded.problem})` : "no rule" }, undefined);
   }
   let top = matches[0] as Rule;
   for (const r of matches.slice(1)) {
@@ -775,15 +822,16 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
     if (c > 0 || (c === 0 && SEVERITY[r.action] > SEVERITY[top.action])) top = r;
   }
   const reason = `rule ${top.tool}${top.harness ? ` harness=${top.harness}` : ""}${top.chat ? " chat" : ""}`;
-  if (top.action === "allow" && narrowAsk !== undefined) {
-    return { action: "ask", normalizedTool, reason: `rule ${narrowAsk.tool} (also names ${normalizedTool})` };
-  }
-  if (top.action === "allow" && other.ambiguous) {
+  if (top.action === "ask" && top.tool === "bash") return widen({ action: "ask", normalizedTool, reason }, top);
+  if (top.action !== "allow") return { action: top.action, normalizedTool, reason };
+  if (met.ask !== undefined) return { action: "ask", normalizedTool, reason: commandReason(met.ask.command as string[]) };
+  if (other.ambiguous) {
+    if (narrowAsk !== undefined) return { action: "ask", normalizedTool, reason: `rule ${narrowAsk.tool} (also names ${normalizedTool})` };
     return { action: "ask", normalizedTool, reason: "ambiguous server name: list the server in the policy's servers" };
   }
-  if (top.action === "allow") {
-    // Every tied allow must hold its pin: one changed description is enough
-    // to ask (case 57; derm-core's rule, integration w1 finding S10).
+  // Every tied allow must hold its pin: one changed description is enough
+  // to ask (case 57; derm-core's rule, integration w1 finding S10).
+  if (narrowAsk === undefined) {
     const pins = matches
       .filter((r) => compareRank(rankOf(r), rankOf(top)) === 0 && r.descriptionSha256 !== undefined)
       .map((r) => (r.descriptionSha256 as string).toLowerCase());
@@ -794,24 +842,33 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
       }
     }
   }
-  if (top.action === "allow") {
-    const folded = fold(decodeEscapes(call.inputText));
-    const unquoted = unquote(folded);
-    const texts = withCollapsedSlashes([folded, unquoted]);
-    const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
-    if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
-    // On the folded text, so `＄HOME` asks: stricter than the raw input, the
-    // side that fails safe (integration w1; derm-core and derm-pi do the same).
-    const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
-    if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
-    // Package installs (contracts/policy.md section 6; lane X's seam). An
-    // install's ask or deny names its packages, so it comes first.
-    const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
-    if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
-    // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
-    // after an install the lockfile vouches for (installDecision keeps the allow by answering nothing).
-    const unplain = (POWERSHELL_TOOLS as readonly string[]).includes(normalizedTool) ? powershellUnplain(folded) : undefined;
-    if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
-  }
-  return { action: top.action, normalizedTool, reason };
+  return allowSteps(normalizedTool, call, reason, narrowAsk, false);
+}
+
+/**
+ * The steps an allow passes before it stands: a narrowing ask (step 3a), an
+ * ambiguous split, then step 7 (control files, shell text the matcher cannot
+ * read, an install of section 6, PowerShell's plain words).
+ */
+function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAsk: Rule | undefined, ambiguous: boolean): Decision {
+  if (narrowAsk !== undefined) return { action: "ask", normalizedTool, reason: `rule ${narrowAsk.tool} (also names ${normalizedTool})` };
+  if (ambiguous) return { action: "ask", normalizedTool, reason: "ambiguous server name: list the server in the policy's servers" };
+  const folded = fold(decodeEscapes(call.inputText));
+  const unquoted = unquote(folded);
+  const texts = withCollapsedSlashes([folded, unquoted]);
+  const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
+  if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
+  // On the folded text, so `＄HOME` asks: stricter than the raw input, the
+  // side that fails safe (integration w1; derm-core and derm-pi do the same).
+  const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
+  if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
+  // Package installs (contracts/policy.md section 6; lane X's seam). An
+  // install's ask or deny names its packages, so it comes first.
+  const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
+  if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
+  // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
+  // after an install the lockfile vouches for (installDecision keeps the allow by answering nothing).
+  const unplain = (POWERSHELL_TOOLS as readonly string[]).includes(normalizedTool) ? powershellUnplain(folded) : undefined;
+  if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
+  return { action: "allow", normalizedTool, reason };
 }

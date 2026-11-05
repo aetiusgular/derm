@@ -29,8 +29,17 @@
           "harness": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
           "chat": { "type": "string", "minLength": 1, "maxLength": 200 },
           "action": { "enum": ["allow", "ask", "deny"] },
-          "descriptionSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
-        }
+          "descriptionSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "command": {
+            "description": "policy.md section 7 (wave 5 lane W): a CLI command's first words, lowercase. The first is a command name; a later word may also be a flag (`-f`, `--force`), which meets that flag anywhere after the words before it. A flag as the first word is refused by the three matchers; this schema cannot say 'the first item only' under the strict tuple rule its tests run with.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": { "type": "string", "pattern": "^([a-z0-9][a-z0-9._:=+-]{0,63}|--?[a-z0-9][a-z0-9._:=+-]{0,61})$" }
+          }
+        },
+        "if": { "properties": { "command": true }, "required": ["command"] },
+        "then": { "properties": { "tool": { "const": "bash" } }, "not": { "properties": { "descriptionSha256": true }, "required": ["descriptionSha256"] } }
       }
     }
   }

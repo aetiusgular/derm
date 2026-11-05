@@ -39,13 +39,13 @@ fn fixture_has_thirteen_rules_and_fifty_three_cases() {
     let (policy, cases) = load();
     assert_eq!(
         policy.rules.len(),
-        14,
-        "10 from session 0, 2 added by integration w1, 1 by integration w2, 1 by integration w4"
+        20,
+        "10 from session 0, 2 added by integration w1, 1 by integration w2, 1 by integration w4, 6 by wave 5 lane W (command rules)"
     );
     assert_eq!(
         cases.len(),
-        84,
-        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3)"
+        106,
+        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3), 22 from wave 5 lane W (command rules)"
     );
 }
 
@@ -78,6 +78,24 @@ fn every_case_gets_the_expected_decision() {
             case.id,
             d.reason,
             case.expect.reason_prefix
+        );
+    }
+}
+
+/// Wave 5 lane W: every command shape the schema refuses is refused here too
+/// (`contracts/fixtures/policy/invalid.json`), so a bad file asks, never allows.
+#[test]
+fn every_invalid_policy_is_refused() {
+    const INVALID: &str = include_str!("../../../contracts/fixtures/policy/invalid.json");
+    let v: serde_json::Value = serde_json::from_str(INVALID).expect("invalid.json parses");
+    let list = v["policies"].as_array().expect("policies");
+    assert_eq!(list.len(), 10);
+    for p in list {
+        let text = p["policy"].to_string();
+        assert!(
+            derm_core::policy::parse(&text).is_err(),
+            "{} was accepted",
+            p["id"]
         );
     }
 }

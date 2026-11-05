@@ -363,3 +363,31 @@ fn codex_rules_end_to_end_with_codex_home() {
         CODEX_TOML
     );
 }
+
+/// Wave 5 lane W (policy.md section 7): a command deny denies one command.
+/// Written as an agent's own deny it would take the whole shell away, so
+/// every writer leaves it to the gate and says so.
+#[test]
+fn a_command_rule_never_becomes_a_whole_shell_deny() {
+    let p = derm_core::policy::parse(
+        r#"{"version": 1, "rules": [
+            {"tool": "bash", "action": "allow"},
+            {"tool": "bash", "command": ["gh", "repo", "delete"], "action": "deny"}
+        ]}"#,
+    )
+    .unwrap();
+    let (q, skipped) = translate(&p, "qwen-code");
+    assert!(q.is_empty(), "{q:?}");
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s == "bash gh repo delete (a command rule stays with the gate)"),
+        "{skipped:?}"
+    );
+    let (toml, skipped) = super::rules::gemini_toml(&p);
+    assert!(!toml.contains("run_shell_command"), "{toml}");
+    assert!(
+        skipped.iter().any(|s| s.starts_with("bash gh repo delete")),
+        "{skipped:?}"
+    );
+}

@@ -1,0 +1,15 @@
+{
+  "note": "Policies every matcher must refuse (a refused file is the default policy: every call asks). Added by wave 5 lane W for contracts/policy.md section 7: each shape of a command rule the schema refuses. `matchersOnly`: refused by the three matchers, not by the schema (a flag as the first word; the schema has no per-position rule under strict tuples).",
+  "policies": [
+    { "id": "command-on-read", "policy": { "version": 1, "rules": [{ "tool": "read", "command": ["cat"], "action": "allow" }] } },
+    { "id": "command-on-server", "policy": { "version": 1, "rules": [{ "tool": "exa/*", "command": ["exa"], "action": "deny" }] } },
+    { "id": "command-capital", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": ["Git", "push"], "action": "ask" }] } },
+    { "id": "command-dollar", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": ["git", "$x"], "action": "ask" }] } },
+    { "id": "command-empty", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": [], "action": "ask" }] } },
+    { "id": "command-nine-words", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": ["a", "b", "c", "d", "e", "f", "g", "h", "i"], "action": "ask" }] } },
+    { "id": "command-flag-first", "matchersOnly": true, "policy": { "version": 1, "rules": [{ "tool": "bash", "command": ["--force"], "action": "deny" }] } },
+    { "id": "command-not-array", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": "git push", "action": "ask" }] } },
+    { "id": "command-with-pin", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": ["git"], "action": "allow", "descriptionSha256": "475c1f1fe876e645415d98a2650d6114d89a659a00af81e2741fd6158953a0a0" }] } },
+    { "id": "command-space-in-word", "policy": { "version": 1, "rules": [{ "tool": "bash", "command": ["git push"], "action": "ask" }] } }
+  ]
+}

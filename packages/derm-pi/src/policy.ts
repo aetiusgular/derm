@@ -14,7 +14,9 @@
 import { createHash } from "node:crypto";
 import { decodeEscapes, foldText } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, contracts/policy.md section 6.
-import { installDecision } from "./installs/index.ts";
+import { installDecision, parseInstalls } from "./installs/index.ts";
+// Wave 5 lane W: command rules, contracts/policy.md section 7 (the hook core's file, held equal by a test).
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands } from "./command.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -24,6 +26,8 @@ export interface Rule {
   chat?: string;
   action: Action;
   descriptionSha256?: string;
+  /** Section 7: a CLI command's first words; `tool` is then `bash`. */
+  command?: string[];
 }
 
 export interface PolicyFile {
@@ -68,7 +72,7 @@ const TOOL_PATTERN = /^(\*|[a-z0-9_]+\/(\*|[a-z0-9_]+)|[a-z0-9_]+)$/;
 const HARNESS_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SERVER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const RULE_KEYS = new Set(["tool", "harness", "chat", "action", "descriptionSha256"]);
+const RULE_KEYS = new Set(["tool", "harness", "chat", "action", "descriptionSha256", "command"]);
 const FILE_KEYS = new Set(["version", "askTimeoutSeconds", "servers", "rules"]);
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -94,7 +98,7 @@ export function parsePolicy(text: string): LoadedPolicy {
       version: 1,
       askTimeoutSeconds: (obj.askTimeoutSeconds as number | undefined) ?? DEFAULT_ASK_TIMEOUT_SECONDS,
       servers: (obj.servers as string[] | undefined) ?? [],
-      rules: ((obj.rules as Rule[] | undefined) ?? []).map((r) => ({ ...r })),
+      rules: ((obj.rules as Rule[] | undefined) ?? []).map((r) => (r.command === undefined ? { ...r } : { ...r, command: [...r.command] })),
     },
   };
 }
@@ -133,6 +137,14 @@ function schemaProblem(raw: unknown): string | undefined {
         (typeof r.descriptionSha256 !== "string" || !SHA256_PATTERN.test(r.descriptionSha256))
       )
         return `rule ${i} has a bad descriptionSha256`;
+      if (r.command !== undefined) {
+        // Section 7: a command rule names a shell command, so its tool is
+        // `bash`, and a description pin means nothing on it.
+        const problem = commandProblem(r.command);
+        if (problem !== undefined) return `rule ${i}: ${problem}`;
+        if (r.tool !== "bash") return `rule ${i}: a command rule's tool must be bash`;
+        if (r.descriptionSha256 !== undefined) return `rule ${i}: a command rule has no descriptionSha256`;
+      }
     }
   }
   return undefined;
@@ -656,16 +668,44 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
   const hit = rejectKeyFolded(folded);
   if (hit !== undefined) return { action: "deny", normalizedTool, reason: `reject list: ${hit}` };
 
+  // A command rule (section 7) is never a rule for the whole tool.
+  const toolRules = policy.rules.filter((r) => r.command === undefined);
   // Section 4 step 3a (S5): rules on the call's other names narrow it, never widen it.
   const other = narrowingNames(call.tool, policy.servers, call.harness);
   const applies = (r: Rule) => (r.harness === undefined || r.harness === call.harness) && (r.chat === undefined || r.chat === call.chat);
-  const narrowing = policy.rules.filter((r) => r.tool !== "*" && applies(r) && other.names.some((n) => specificity(r.tool, n) >= 0));
+  const narrowing = toolRules.filter((r) => r.tool !== "*" && applies(r) && other.names.some((n) => specificity(r.tool, n) >= 0));
   const narrowDeny = narrowing.find((r) => r.action === "deny");
   if (narrowDeny !== undefined) return { action: "deny", normalizedTool, reason: `rule ${narrowDeny.tool} (also names ${normalizedTool})` };
   const narrowAsk = narrowing.find((r) => r.action === "ask");
 
+  // Section 7: command rules meet shell tools only (the hook core's order).
+  const commandRules = SHELL_TOOLS.has(normalizedTool) ? policy.rules.filter((r) => r.command !== undefined && applies(r)) : [];
+  const narrowers = commandRules.filter((r) => r.action !== "allow");
+  const cmds = narrowers.length > 0 ? headCommands(folded, new Set(narrowers.map((r) => (r.command as string[])[0] as string))) : [];
+  const met = (r: Rule) => cmds.some((c) => commandNarrows(r.command as string[], c));
+  const commandDeny = narrowers.find((r) => r.action === "deny" && met(r));
+  if (commandDeny !== undefined) return { action: "deny", normalizedTool, reason: commandReason(commandDeny.command as string[]) };
+  const commandAsk = narrowers.find((r) => r.action === "ask" && met(r));
+  const commandAllow = commandRules
+    .filter((r) => r.action === "allow" && commandAllows(r.command as string[], folded))
+    .sort((a, b) => (b.command as string[]).length - (a.command as string[]).length);
+  const rankOf = (r: Rule): [number, number, number] => [r.chat !== undefined ? 1 : 0, r.harness !== undefined ? 1 : 0, r.tool === "*" ? 0 : r.tool.endsWith("/*") ? 1 : 2];
+  // An allow command rule widens an ask that step 5 left with no rule, or a
+  // `bash` ask of no higher rank, when nothing narrows it and the text passes
+  // every step an allow passes; else the ask stands.
+  const widen = (asked: Decision, topRank: [number, number, number] | undefined): Decision => {
+    if (commandAsk !== undefined) return asked;
+    const rule = commandAllow.find((r) => topRank === undefined || compareRank(rankOf(r), topRank) >= 0);
+    if (rule === undefined) return asked;
+    if (parseInstalls(folded).length > 0) return asked; // never an install of section 6
+    const ask = narrowAsk !== undefined && !(narrowAsk.tool === "bash" && compareRank(rankOf(rule), rankOf(narrowAsk)) >= 0) ? narrowAsk : undefined;
+    if (ask !== undefined) return asked;
+    const d = allowSteps(normalizedTool, folded, commandReason(rule.command as string[]));
+    return d.action === "allow" ? d : asked;
+  };
+
   let best: { rank: [number, number, number]; rules: Rule[] } | undefined;
-  for (const r of policy.rules) {
+  for (const r of toolRules) {
     const spec = specificity(r.tool, normalizedTool);
     if (spec < 0) continue;
     if (r.harness !== undefined && r.harness !== call.harness) continue;
@@ -675,12 +715,14 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
     else if (compareRank(rank, best.rank) === 0) best.rules.push(r);
   }
   if (!best) {
-    return { action: "ask", normalizedTool, reason: problem ? `no rule (${problem})` : "no rule" };
+    return widen({ action: "ask", normalizedTool, reason: problem ? `no rule (${problem})` : "no rule" }, undefined);
   }
   let winner = best.rules[0] as Rule;
   for (const r of best.rules) if (RESTRICTIVENESS[r.action] > RESTRICTIVENESS[winner.action]) winner = r;
 
+  if (winner.action === "ask" && winner.tool === "bash") return widen({ action: "ask", normalizedTool, reason: describeRule(winner) }, best.rank);
   if (winner.action !== "allow") return { action: winner.action, normalizedTool, reason: describeRule(winner) };
+  if (commandAsk !== undefined) return { action: "ask", normalizedTool, reason: commandReason(commandAsk.command as string[]) };
   if (narrowAsk !== undefined) return { action: "ask", normalizedTool, reason: `rule ${narrowAsk.tool} (also names ${normalizedTool})` };
   if (other.ambiguous) return { action: "ask", normalizedTool, reason: "ambiguous server name: list the server in the policy's servers" };
 
@@ -694,6 +736,11 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
       return { action: "ask", normalizedTool, reason: "description changed since it was approved" };
     }
   }
+  return allowSteps(normalizedTool, folded, describeRule(winner));
+}
+
+/** Step 7 for an allow that stands so far: control files, shell text, an install, PowerShell's plain words. */
+function allowSteps(normalizedTool: string, folded: string, reason: string): Decision {
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
   const texts = withCollapsedSlashes([folded, unquoted]);
@@ -716,7 +763,7 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
   // after an install the lockfile vouches for (installDecision keeps the allow by answering nothing).
   const unplain = POWERSHELL_TOOLS.has(normalizedTool) ? powershellUnplain(folded) : undefined;
   if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
-  return { action: "allow", normalizedTool, reason: describeRule(winner) };
+  return { action: "allow", normalizedTool, reason };
 }
 
 function compareRank(a: [number, number, number], b: [number, number, number]): number {

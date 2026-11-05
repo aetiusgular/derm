@@ -8,6 +8,8 @@
 //! (`policy::evaluate`) is a stub that answers `Ask`; lane B fills it against
 //! `contracts/fixtures/policy/cases.json`.
 
+// Wave 5 lane W: command rules (contracts/policy.md section 7).
+pub mod command;
 pub mod event;
 pub mod harness;
 // Wave 5 lane X's seam (the wave 5 base): `policy::evaluate` calls it.

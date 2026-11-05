@@ -34,6 +34,10 @@ pub struct Rule {
     pub action: Action,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description_sha256: Option<String>,
+    /// Section 7 (wave 5 lane W): a CLI command's first words. `tool` is then
+    /// `bash`; such a rule is never a rule for the whole tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
 }
 
 /// The file. `servers` lists the MCP server names the user has connected,
@@ -954,13 +958,16 @@ fn safe_label(text: &str) -> String {
     text.chars().filter(|c| !c.is_control()).take(64).collect()
 }
 
-/// Evaluates a call against the policy (contract, section 4). Steps:
-/// normalize; the reject list over `fold_text(input_text)`; the matching
-/// rules ranked chat, then harness, then tool specificity, ties to the most
-/// restrictive action; no rule is `Ask`; an `allow` whose pinned description
-/// changed is `Ask`; an `allow` for a shell tool whose input holds text the
-/// shell reads in a way a matcher cannot is `Ask`. The reason never holds
-/// the input text. `Ask` times out to `Deny` in the caller.
+/// Evaluates a call against the policy (contract, section 4, and section 7's
+/// command rules). Steps: normalize; the reject list over
+/// `fold_text(input_text)`; the matching rules ranked chat, then harness,
+/// then tool specificity, ties to the most restrictive action; no rule is
+/// `Ask`; an `allow` whose pinned description changed is `Ask`; an `allow`
+/// for a shell tool whose input holds text the shell reads in a way a matcher
+/// cannot is `Ask`. A command rule narrows a shell call (deny, or an allow
+/// to ask), and an allow command rule may widen an ask that no rule or a
+/// `bash` ask of no higher rank gave. The reason never holds the input text.
+/// `Ask` times out to `Deny` in the caller.
 pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     let normalized = normalize_tool_name_for(&call.tool, &policy.servers, &call.harness);
     let decide = |action: Action, reason: String| Decision {
@@ -982,12 +989,18 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
                 .as_ref()
                 .is_none_or(|c| call.chat.as_deref() == Some(c.as_str()))
     };
+    // A command rule (section 7) is never a rule for the whole tool.
+    let tool_rules: Vec<&Rule> = policy
+        .rules
+        .iter()
+        .filter(|r| r.command.is_none())
+        .collect();
     // Section 4 step 3a (S5): rules on the call's other names narrow it and
     // never widen it. `*` rules already matched the call itself.
     let (other, ambiguous) = narrowing_names(&call.tool, &policy.servers, &call.harness);
-    let narrowing: Vec<&Rule> = policy
-        .rules
+    let narrowing: Vec<&Rule> = tool_rules
         .iter()
+        .copied()
         .filter(|r| {
             r.tool != "*" && applies(r) && other.iter().any(|n| tool_rank(&r.tool, n).is_some())
         })
@@ -998,10 +1011,104 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
             format!("rule {} (also names {normalized})", r.tool),
         );
     }
-    let narrow_ask = narrowing.iter().find(|r| r.action == Action::Ask);
+    let narrow_ask = narrowing.iter().find(|r| r.action == Action::Ask).copied();
+    // Section 7: command rules meet shell tools only.
+    let shell = SHELL_TOOLS.contains(&normalized.as_str());
+    let command_rules: Vec<&Rule> = if shell {
+        policy
+            .rules
+            .iter()
+            .filter(|r| r.command.is_some() && applies(r))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let words_of = |r: &Rule| r.command.clone().unwrap_or_default();
+    let narrowers: Vec<&Rule> = command_rules
+        .iter()
+        .copied()
+        .filter(|r| r.action != Action::Allow)
+        .collect();
+    let cmds = if narrowers.is_empty() {
+        Vec::new()
+    } else {
+        let mut heads: Vec<String> = narrowers
+            .iter()
+            .filter_map(|r| r.command.as_ref().and_then(|w| w.first().cloned()))
+            .collect();
+        heads.dedup();
+        let heads: Vec<&str> = heads.iter().map(String::as_str).collect();
+        crate::command::head_commands(&folded, &heads)
+    };
+    let met = |r: &Rule| {
+        cmds.iter()
+            .any(|c| crate::command::command_narrows(&words_of(r), c))
+    };
+    if let Some(r) = narrowers
+        .iter()
+        .find(|r| r.action == Action::Deny && met(r))
+    {
+        return decide(Action::Deny, crate::command::command_reason(&words_of(r)));
+    }
+    let command_ask = narrowers
+        .iter()
+        .find(|r| r.action == Action::Ask && met(r))
+        .copied();
+    let mut command_allow: Vec<&Rule> = command_rules
+        .iter()
+        .copied()
+        .filter(|r| {
+            r.action == Action::Allow && crate::command::command_allows(&words_of(r), &folded)
+        })
+        .collect();
+    command_allow.sort_by_key(|r| std::cmp::Reverse(words_of(r).len()));
+    let rank_of = |r: &Rule| {
+        let tool = if r.tool == "*" {
+            0
+        } else if r.tool.ends_with("/*") {
+            1
+        } else {
+            2
+        };
+        (
+            u8::from(r.chat.is_some()),
+            u8::from(r.harness.is_some()),
+            tool,
+        )
+    };
+    // An allow command rule widens an ask that step 5 left with no rule, or
+    // a `bash` ask of no higher rank, when nothing narrows it and the text
+    // passes every step an allow passes; else the ask stands.
+    let widen = |asked: Decision, top: Option<(u8, u8, u8)>| -> Decision {
+        if command_ask.is_some() {
+            return asked;
+        }
+        let Some(rule) = command_allow
+            .iter()
+            .find(|r| top.is_none_or(|t| rank_of(r) >= t))
+        else {
+            return asked;
+        };
+        if !crate::installs::parse::parse_installs(&folded).is_empty() {
+            return asked; // never an install of section 6
+        }
+        if narrow_ask.is_some_and(|n| !(n.tool == "bash" && rank_of(rule) >= rank_of(n))) {
+            return asked;
+        }
+        let d = allow_steps(
+            &normalized,
+            &folded,
+            crate::command::command_reason(&words_of(rule)),
+        );
+        if d.action == Action::Allow {
+            d
+        } else {
+            asked
+        }
+    };
     // (chat set, harness set, tool rank) for every matching rule.
     let mut matches: Vec<((u8, u8, u8), &Rule)> = Vec::new();
-    for rule in &policy.rules {
+    for rule in tool_rules.iter().copied() {
         let Some(tool) = tool_rank(&rule.tool, &normalized) else {
             continue;
         };
@@ -1023,7 +1130,7 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         matches.push((rank, rule));
     }
     let Some(top) = matches.iter().map(|(rank, _)| *rank).max() else {
-        return decide(Action::Ask, "no rule".to_string());
+        return widen(decide(Action::Ask, "no rule".to_string()), None);
     };
     let winners: Vec<&Rule> = matches
         .iter()
@@ -1035,10 +1142,16 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         .copied()
         .max_by_key(|rule| restrictiveness(rule.action))
     else {
-        return decide(Action::Ask, "no rule".to_string());
+        return widen(decide(Action::Ask, "no rule".to_string()), None);
     };
+    if winner.action == Action::Ask && winner.tool == "bash" {
+        return widen(decide(Action::Ask, rule_reason(winner)), Some(top));
+    }
     if winner.action != Action::Allow {
         return decide(winner.action, rule_reason(winner));
+    }
+    if let Some(r) = command_ask {
+        return decide(Action::Ask, crate::command::command_reason(&words_of(r)));
     }
     if let Some(r) = narrow_ask {
         return decide(
@@ -1067,9 +1180,20 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
             return decide(Action::Ask, "description changed".to_string());
         }
     }
+    allow_steps(&normalized, &folded, rule_reason(winner))
+}
+
+/// Step 7 for an allow that stands so far: control files, shell text the
+/// matcher cannot read, an install of section 6, PowerShell's plain words.
+fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
+    let decide = |action: Action, reason: String| Decision {
+        action,
+        normalized_tool: normalized.to_string(),
+        reason,
+    };
     // Control files before shell text (contract, section 4, step 7).
-    let unquoted = unquote(&folded);
-    let texts = with_collapsed_slashes(&[folded.clone(), unquoted]);
+    let unquoted = unquote(folded);
+    let texts = with_collapsed_slashes(&[folded.to_string(), unquoted]);
     if let Some(control) = CONTROL_PATHS
         .iter()
         .find(|p| texts.iter().any(|t| names_control_path(t, p)))
@@ -1081,7 +1205,7 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     }
     // On the folded, escape-decoded text: stricter than the raw input
     // (`＄HOME` asks), the side that fails safe (rules section 9, item 7).
-    if SHELL_TOOLS.contains(&normalized.as_str()) {
+    if SHELL_TOOLS.contains(&normalized) {
         if let Some(t) = UNREADABLE_SHELL_TOKENS.iter().find(|t| folded.contains(*t)) {
             // The token named, a glob called one (Mac test w1, M9; the hook
             // core's and derm-pi's text).
@@ -1096,19 +1220,19 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         }
         // Package installs (contract section 6; wave 5 lane X's seam). An
         // install's ask or deny names its packages, so it comes first.
-        if let Some(install) = crate::installs::check(&normalized, &folded) {
+        if let Some(install) = crate::installs::check(normalized, folded) {
             return decide(install.action, install.reason);
         }
         // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
         // after an install the lockfile vouches for (`check` keeps the allow
         // by answering `None`).
-        if POWERSHELL_TOOLS.contains(&normalized.as_str()) {
-            if let Some(c) = powershell_unplain(&folded) {
+        if POWERSHELL_TOOLS.contains(&normalized) {
+            if let Some(c) = powershell_unplain(folded) {
                 return decide(Action::Ask, powershell_reason(c));
             }
         }
     }
-    decide(Action::Allow, rule_reason(winner))
+    decide(Action::Allow, reason)
 }
 
 /// Why a policy file was not used. The default policy (no rules, every call
@@ -1251,6 +1375,19 @@ impl PolicyFile {
                 .is_some_and(|d| !lower_hex_64(d))
             {
                 return Err(format!("rule {i}: descriptionSha256"));
+            }
+            if let Some(words) = &rule.command {
+                // Section 7: a command rule names a shell command, so its
+                // tool is `bash`, and a description pin means nothing on it.
+                if let Some(problem) = crate::command::command_problem(words) {
+                    return Err(format!("rule {i}: {problem}"));
+                }
+                if rule.tool != "bash" {
+                    return Err(format!("rule {i}: a command rule's tool must be bash"));
+                }
+                if rule.description_sha256.is_some() {
+                    return Err(format!("rule {i}: a command rule has no descriptionSha256"));
+                }
             }
         }
         Ok(())

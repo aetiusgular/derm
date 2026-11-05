@@ -31,12 +31,12 @@ const cases = (JSON.parse(readFileSync(join(fixtures, "cases.json"), "utf8")) as
 describe("contract fixture (contracts/fixtures/policy)", () => {
   it("the fixture policy parses with no problem", () => {
     expect(loaded.problem).toBeUndefined();
-    expect(loaded.policy.rules).toHaveLength(14);
+    expect(loaded.policy.rules).toHaveLength(20);
     expect(loaded.policy.askTimeoutSeconds).toBe(30);
   });
 
-  it("has all 84 cases (21 from session 0, 24 from integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5)", () => {
-    expect(cases).toHaveLength(84);
+  it("has all 106 cases (21 from session 0, 24 from integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5, 22 from lane W's command rules)", () => {
+    expect(cases).toHaveLength(106);
   });
 
   for (const c of cases) {
