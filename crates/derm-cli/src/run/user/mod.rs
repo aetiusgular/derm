@@ -225,6 +225,10 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
         }
     }
     rewrite(launch, &sudo, &env_tool, &entry, &program, &set);
+    eprintln!(
+        "derm run: {program} starts as {}, not as you (S2 part c): your daemon, its token and your files stay yours",
+        entry.user
+    );
     Ok(Some(json!({
         "user": entry.user,
         "uid": entry.uid,

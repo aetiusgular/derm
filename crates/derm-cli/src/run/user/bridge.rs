@@ -58,6 +58,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
+    #[cfg(test)]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
