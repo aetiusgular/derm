@@ -174,6 +174,17 @@ export function installEvents(call: GateCall, answer: GateAnswer, decision: Acti
     return [];
   }
   const details = installCallDetails(installs.slice(0, MAX_INSTALL_RECORDS), decision, call.toolUseId ?? null);
+  // A package whose name or version the redactor flags (a token's shape) is
+  // left out, and the record counts it (security finding W5C-S9): names and
+  // versions are kept with content off, so they must not carry a secret.
+  for (const detail of details) {
+    const all = detail.packages as { name: string; version: string | null }[];
+    const clean = all.filter((p) => redactText(p.name).count === 0 && (p.version === null || redactText(p.version).count === 0));
+    if (clean.length < all.length) {
+      detail.packages = clean;
+      detail.redacted = all.length - clean.length;
+    }
+  }
   const callPart = (call.toolUseId ?? "unknown").replace(/[^A-Za-z0-9_.:-]/g, "_").slice(0, 48) || "unknown";
   return details.map((detail, i) => {
     const names = (detail.packages as { name: string }[]).map((p) => p.name);

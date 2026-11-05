@@ -111,6 +111,30 @@ describe("installEvents", () => {
     }
   });
 
+  // Security finding W5C-S9 (integration w5 continue): a package name or
+  // version the redactor flags (a token's shape) never reaches the record;
+  // the record counts what it left out.
+  it("leaves out a package the redactor flags, and counts it", () => {
+    // Fake keys built at run time, so no scanner reads them as live.
+    const token = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
+    const ant = ["sk", "ant", "api03", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    for (const cmd of [`pip install ${token}`, `npm i left-pad ${ant}`, `npm i left-pad@${token}`]) {
+      const c = call(cmd, "t9");
+      const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+      expect(events.length, cmd).toBe(1);
+      const text = JSON.stringify(events);
+      expect(text, cmd).not.toContain(token);
+      expect(text, cmd).not.toContain(ant);
+      expect(events[0]?.detail.redacted, cmd).toBe(1);
+    }
+    const kept = installEvents(call(`npm i left-pad ${ant}`, "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
+    expect(kept[0]?.detail.packages).toEqual([{ name: "left-pad", version: null, ecosystem: "npm", inLockfile: null }]);
+    expect(kept[0]?.summary).toBe("npm add left-pad ask");
+    // Nothing flagged: no count.
+    const plain = installEvents(call("npm i left-pad", "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
+    expect(plain[0]?.detail.redacted).toBeUndefined();
+  });
+
   it("gives none for a call that is not an install, or a tool that is not a shell", () => {
     const plain = call("npm test");
     expect(installEvents(plain, decideCall(loaded, plain), "allow", "c")).toEqual([]);

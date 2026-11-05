@@ -124,6 +124,7 @@
         "manager": { "enum": ["npm", "pnpm", "yarn", "bun", "pip", "uv", "poetry", "pdm", "pipx", "cargo", "go"] },
         "form": { "enum": ["add", "run"] },
         "packages": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/package" } },
+        "redacted": { "type": "integer", "minimum": 1 },
         "decision": { "enum": ["allow", "ask", "deny"] },
         "check": {
           "type": ["object", "null"],

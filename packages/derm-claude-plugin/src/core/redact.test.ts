@@ -40,6 +40,21 @@ function oldRedactText(text: string): { text: string; count: number } {
 // does not print it; the oracle carries the same `|$`.
 const OLD_PEM = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g;
 
+// Integration w5 continue (W5C-S9): OpenAI's key prefixes.
+describe("OpenAI keys", () => {
+  it("redacts project, service account and admin keys, and leaves look-alikes", () => {
+    // Built at run time, and without OpenAI's marker, so no scanner reads a
+    // fixture as a live key.
+    const body = "abcdefghijklmnopqrstuvwx-_z";
+    for (const k of ["proj", "svcacct", "admin"].map((kind) => `sk-${kind}-${body}`)) {
+      expect(redactText(`key ${k} end`), k).toEqual({ text: `key ${REDACTED} end`, count: 1 });
+    }
+    for (const t of ["sk-proj-short", "task-proj-abcdefghijklmnopqrstuvwxyz", "sk-project-plan"]) {
+      expect(redactText(t).count, t).toBe(0);
+    }
+  });
+});
+
 describe("the PEM scan (review W4-S2)", () => {
   const parts = ["-----BEGIN ", "-----END ", "PRIVATE KEY-----", "RSA ", "EC ", "-----", "-", " ", "\n", "MIIB", "x", "PRIVATE KEY", "BEGIN", "END"];
   it("gives the old expression's output on 30,000 random strings of PEM fragments", () => {
