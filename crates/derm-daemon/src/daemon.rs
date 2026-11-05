@@ -8,7 +8,11 @@
 //! - Nothing here blocks on a slow client. A `tail` that falls more than
 //!   `MAX_PENDING_LINES` behind is dropped; an approver that has gone is
 //!   skipped (rules, section 4, case 9).
-//! - No outbound connection of any kind (rules, section 5, item 8).
+//! - One outbound path only: the model tap (`derm_tap`, wave 5 lane S),
+//!   which forwards a harness's model requests to the four hosts in
+//!   `derm_tap::upstream::builtin()` and nowhere else (rules, section 5,
+//!   item 8, as changed by integration w5's phase 2). Nothing else here
+//!   connects out.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -224,6 +228,11 @@ impl Paths {
     pub fn endpoint_file(&self) -> PathBuf {
         self.runtime_dir().join("otlp.endpoint")
     }
+
+    /// The model tap's endpoint (wave 5 lane S), read by `derm run`.
+    pub fn tap_endpoint_file(&self) -> PathBuf {
+        self.runtime_dir().join("tap.endpoint")
+    }
     /// Running chats kept across a restart (BX8; integration w2).
     pub fn state_file(&self) -> PathBuf {
         self.runtime_dir().join("chats.json")
@@ -283,7 +292,44 @@ pub struct Daemon {
     /// restart (BX8); `None` in tests that build a daemon by hand.
     state_file: Option<PathBuf>,
     next_conn: AtomicU64,
+    /// The model tap (wave 5 lane S), `None` when it could not bind: chats
+    /// then run untapped and say so (`derm run` finds no `tap.endpoint`).
+    tap: Option<derm_tap::Tap>,
+    /// The join (lane S): intent to effect, fed by every ingested event.
+    join: Mutex<crate::join::Join>,
+    /// Content capture's purge (lane S), run by the service's timer.
+    purger: Mutex<crate::content::Purger>,
     pub counters: Counters,
+}
+
+/// The chat a tap route belongs to: the running chat whose token hashes to
+/// it (`derm_tap::route::of_token_hash`). Read from the receiver's own token
+/// table, so a revoked token's route dies with it and a token restored after
+/// a restart (BX8) brings its route back, with no second table to keep in
+/// step (integration w5, phase 2; lane S's request 1 proposed a route map).
+pub fn chat_for_route(receiver: &Receiver, route: &str) -> Option<derm_tap::Chat> {
+    if !derm_tap::route::well_formed(route) {
+        return None;
+    }
+    receiver
+        .holders_snapshot()
+        .into_iter()
+        .find(|(hash, _, _)| derm_tap::route::of_token_hash(&hex(hash)) == route)
+        .map(|(_, chat, harness)| derm_tap::Chat {
+            id: chat,
+            harness: harness.to_string(),
+        })
+}
+
+/// Content capture's target for a chat, from `~/.derm/settings.json` read
+/// at each request (lane S): `None` while content is off.
+fn content_target(home: Option<&str>, data: &Path) -> Option<derm_tap::content::Target> {
+    let home = home?;
+    let (prefs, _) = derm_tap::settings::load(&derm_tap::settings::path_for(home));
+    prefs.content_days.map(|days| derm_tap::content::Target {
+        root: data.to_path_buf(),
+        retention_days: days,
+    })
 }
 
 #[derive(Default)]
@@ -386,7 +432,31 @@ impl Daemon {
                 }
             }
         });
+        let tap_port = saved
+            .as_ref()
+            .and_then(|v| v.get("tapPort"))
+            .and_then(Value::as_u64)
+            .and_then(|p| u16::try_from(p).ok());
+        let tap_sink: derm_tap::Sink = sink.clone();
         let receiver = Receiver::start_on(settings, sink, preferred)?;
+        let tap = {
+            let routes = receiver.clone();
+            let resolve: derm_tap::Resolver = Arc::new(move |route| chat_for_route(&routes, route));
+            let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'));
+            let data = data_dir.to_path_buf();
+            let content: derm_tap::ContentPolicy =
+                Arc::new(move |_| content_target(home.as_deref(), &data));
+            let mut config = derm_tap::Config::new(resolve, tap_sink);
+            config.preferred_port = tap_port;
+            config.content = content;
+            match derm_tap::Tap::start(config) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("derm-daemon: the model tap did not start ({e}); chats run untapped");
+                    None
+                }
+            }
+        };
         let daemon = Arc::new(Daemon {
             token_hash: derm_core::token::hash(token),
             log,
@@ -404,6 +474,9 @@ impl Daemon {
             minted_at: Mutex::new(HashMap::new()),
             state_file,
             next_conn: AtomicU64::new(1),
+            tap,
+            join: Mutex::new(crate::join::Join::new()),
+            purger: Mutex::new(crate::content::Purger::new(data_dir)),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -571,9 +644,11 @@ impl Daemon {
             .rsplit(':')
             .next()
             .and_then(|p| p.parse::<u16>().ok());
+        let tap_port = self.tap.as_ref().map(derm_tap::Tap::port);
         let text = json!({
             "version": 1,
             "otlpPort": port,
+            "tapPort": tap_port,
             "tokens": tokens,
             "runs": runs,
         })
@@ -583,6 +658,27 @@ impl Daemon {
 
     pub fn endpoint(&self) -> String {
         self.receiver.endpoint()
+    }
+
+    /// The model tap's loopback URL, which the service publishes as
+    /// `tap.endpoint`; `None` when the tap did not start.
+    pub fn tap_endpoint(&self) -> Option<String> {
+        self.tap.as_ref().map(derm_tap::Tap::endpoint)
+    }
+
+    /// One pass of content capture's purge (lane S, case 126): the files past
+    /// their retention go, and each chat's `content.purge` is recorded.
+    pub fn content_pass(&self, now: i64) -> usize {
+        let made = self
+            .purger
+            .lock()
+            .map(|mut p| p.pass(now))
+            .unwrap_or_default();
+        let n = made.len();
+        for e in made {
+            self.ingest(e);
+        }
+        n
     }
 
     pub fn next_conn(&self) -> u64 {
@@ -622,6 +718,19 @@ impl Daemon {
             });
         }
         drop(ring);
+        // The join (lane S) reads every event but its own; what it makes is
+        // ingested after its lock is released, and `observe` ignores the
+        // `derm` records it gets back, so this never loops.
+        if event.source != Source::Derm {
+            let made = self
+                .join
+                .lock()
+                .map(|mut j| j.observe(&event))
+                .unwrap_or_default();
+            for e in made {
+                self.ingest(e);
+            }
+        }
         event.id
     }
 
@@ -774,6 +883,9 @@ impl Daemon {
                 // greeted keeps its scope until it closes.
                 if event.source == Source::Run && event.kind == "run.stop" {
                     self.receiver.revoke_chat(&event.chat_id);
+                    if let Some(tap) = &self.tap {
+                        tap.forget_chat(&event.chat_id);
+                    }
                     if let Ok(mut runs) = self.runs.lock() {
                         runs.remove(&event.chat_id);
                     }
@@ -1644,6 +1756,154 @@ mod tests {
             start_time: None,
         };
         assert!(d.approver_refusal(&unread).is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn ev_of(chat: &str, source: Source, kind: &str, pid: Option<u32>, detail: Value) -> Event {
+        Event {
+            id: format!("{kind}-{}", uuid::Uuid::new_v4().simple()),
+            at: 0,
+            chat_id: chat.into(),
+            harness: "claude-code".into(),
+            source,
+            kind: kind.into(),
+            summary: String::new(),
+            detail,
+            pid,
+            approval_id: None,
+        }
+    }
+
+    /// Lane S's request 1 (integration w5, phase 2): a tap route resolves to
+    /// the running chat whose token makes it, read from the receiver's own
+    /// table; the chat's `run.stop` kills the route with the token; a route
+    /// no chat holds, or one not well formed, resolves to nothing.
+    #[test]
+    fn a_tap_route_is_its_chats_until_the_chat_stops() {
+        let (d, root) = daemon();
+        assert!(d.tap_endpoint().is_some(), "the tap started");
+        let reply = d.op_mint(&Who::Daemon, "chat-r", "claude-code");
+        let token = reply.token.expect("minted");
+        let route = derm_tap::route::of_token(&token);
+        assert_eq!(
+            chat_for_route(&d.receiver, &route),
+            Some(derm_tap::Chat {
+                id: "chat-r".into(),
+                harness: "claude-code".into()
+            })
+        );
+        assert_eq!(chat_for_route(&d.receiver, &"0".repeat(32)), None);
+        assert_eq!(chat_for_route(&d.receiver, &route.to_uppercase()), None);
+        assert_eq!(chat_for_route(&d.receiver, "../x"), None);
+        let stop = ev_of("chat-r", Source::Run, "run.stop", None, json!({}));
+        assert!(d.op_event(&Who::Daemon, stop).ok);
+        assert_eq!(
+            chat_for_route(&d.receiver, &route),
+            None,
+            "gone with the token"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A restarted daemon takes back a running chat's token (BX8), so its
+    /// route resolves again and the tap binds its old port (case 86).
+    #[test]
+    fn a_restart_brings_back_a_running_chats_route_and_the_taps_port() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-tapstate-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = root.join("chats.json");
+        let start = || {
+            let log: &'static ActivityLog = Box::leak(Box::new(ActivityLog::start(
+                root.join(format!("data-{}", uuid::Uuid::new_v4().simple())),
+            )));
+            Daemon::new_with_state(TOKEN, log, &root, false, Some(state.clone())).unwrap()
+        };
+        let first = start();
+        let port = first.tap.as_ref().map(derm_tap::Tap::port).unwrap();
+        let token = first
+            .op_mint(&Who::Daemon, "chat-k", "claude-code")
+            .token
+            .unwrap();
+        let mut harness = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let begin = ev_of(
+            "chat-k",
+            Source::Run,
+            "run.start",
+            Some(harness.id()),
+            json!({"cwd": "/tmp", "boundary": "srt"}),
+        );
+        assert!(first.op_event(&Who::Daemon, begin).ok);
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(saved["tapPort"], port, "{saved}");
+        drop(first);
+        let second = start();
+        assert_eq!(
+            second.tap.as_ref().map(derm_tap::Tap::port),
+            Some(port),
+            "the old port, free again, is taken back"
+        );
+        let route = derm_tap::route::of_token(&token);
+        assert_eq!(
+            chat_for_route(&second.receiver, &route).map(|c| c.id),
+            Some("chat-k".to_string())
+        );
+        let _ = harness.kill();
+        let _ = harness.wait();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The join runs on what the daemon ingests: a tap call naming a path,
+    /// then the OS feed's write to it, makes one `join.candidates` record
+    /// (source `derm`) with that call chosen, and nothing loops.
+    #[test]
+    fn the_join_reads_what_the_daemon_ingests() {
+        let (d, root) = daemon();
+        d.ingest(ev_of(
+            "chat-j",
+            Source::Run,
+            "run.start",
+            Some(4242),
+            json!({"cwd": "/w"}),
+        ));
+        let mut call = ev_of(
+            "chat-j",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_A", "toolNormalized": "write", "paths": ["/w/x"], "resultSha256": null}),
+        );
+        call.id = "tap-chat-j-toolu_A".into();
+        d.ingest(call);
+        d.ingest(ev_of(
+            "chat-j",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_A", "decision": "allow"}),
+        ));
+        d.ingest(ev_of(
+            "chat-j",
+            Source::Auditd,
+            "write",
+            Some(4300),
+            json!({"ppid": 4242, "auditAt": now_ms(), "path": "/w/x"}),
+        ));
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let joins: Vec<&Event> = ring
+            .iter()
+            .filter(|e| e.kind == "join.candidates")
+            .collect();
+        assert_eq!(joins.len(), 1, "{ring:?}");
+        assert_eq!(joins[0].source, Source::Derm);
+        assert_eq!(joins[0].detail["chosen"], "tap-chat-j-toolu_A");
+        assert_eq!(ring.len(), 5, "four events and one join record");
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -17,6 +17,9 @@ use crate::socket;
 
 /// How often the daemon runs retention itself.
 pub const RETENTION_EVERY: Duration = Duration::from_secs(3_600);
+/// How often content capture's purge runs (case 126). Shorter than the log's
+/// retention pass, so a file is gone within this long of its time.
+pub const CONTENT_PURGE_EVERY: Duration = Duration::from_secs(600);
 
 /// A started daemon. The pid file's lock lives as long as `lock`: a second
 /// daemon cannot start while this one runs, and the lock goes with the
@@ -104,6 +107,19 @@ pub fn start(paths: Paths, log_prompts: bool) -> Result<Running, String> {
     )?;
     write_private(&paths.endpoint_file(), &format!("{}\n", daemon.endpoint()))
         .map_err(|e| fail("endpoint file", e))?;
+    // The model tap's endpoint (wave 5 lane S), beside the OTLP one. With no
+    // tap, an old file goes, so `derm run` never points a chat at a port no
+    // tap listens on.
+    match daemon.tap_endpoint() {
+        Some(url) => write_private(&paths.tap_endpoint_file(), &format!("{url}\n"))
+            .map_err(|e| fail("tap endpoint file", e))?,
+        None => match std::fs::remove_file(paths.tap_endpoint_file()) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(fail("tap endpoint file", e))
+            }
+            _ => {}
+        },
+    }
     let listener = socket::bind(&paths.socket).map_err(|e| fail("socket", e))?;
     let retention = daemon.clone();
     let _ = std::thread::Builder::new()
@@ -111,6 +127,13 @@ pub fn start(paths: Paths, log_prompts: bool) -> Result<Running, String> {
         .spawn(move || loop {
             retention.retention_pass(crate::activity::store::now_ms());
             std::thread::sleep(RETENTION_EVERY);
+        });
+    let purge = daemon.clone();
+    let _ = std::thread::Builder::new()
+        .name("derm-daemon-content-purge".into())
+        .spawn(move || loop {
+            purge.content_pass(crate::activity::store::now_ms());
+            std::thread::sleep(CONTENT_PURGE_EVERY);
         });
     Ok(Running {
         daemon,

@@ -344,3 +344,29 @@ fn report_lists_running_chats_across_a_restart_and_drops_a_stopped_one() {
     let _ = harness.wait();
     stop(daemon);
 }
+
+/// Lane S's request 1 (integration w5, phase 2): the daemon publishes its
+/// model tap as `tap.endpoint`, private and loopback, beside `otlp.endpoint`,
+/// and a restart keeps the tap's port when it is free (case 86).
+#[test]
+fn the_tap_endpoint_is_published_private_and_kept_across_a_restart() {
+    let d = Dirs::new();
+    let child = start(&d);
+    let file = d.run().join("tap.endpoint");
+    assert_eq!(mode(&file), 0o600);
+    let first = std::fs::read_to_string(&file).unwrap();
+    let url = first.trim();
+    let port = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("loopback http with a port: {url}"));
+    assert!(port > 0);
+    stop(child);
+    let child = start(&d);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        first,
+        "the tap's port came back"
+    );
+    stop(child);
+}
