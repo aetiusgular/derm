@@ -113,6 +113,18 @@ pub(crate) fn choose(argv: &[String]) -> Result<Choice, (u8, String)> {
     choose_with(argv, &mut probe::Real::new())
 }
 
+/// What `derm setup sandbox` (lane W) shows: for one harness, whether sbx
+/// and srt can run it here now, each with its reason and install line when
+/// not, probed as `derm run` probes them. `None` for a harness `derm run`
+/// does not know. Reaching it from `setup/` needs `run/mod.rs` to say
+/// `pub(crate) mod boundary` (request T-8).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn availability(harness_id: &str) -> Option<[Result<(), Reason>; 2]> {
+    let h = harness::find(harness_id)?;
+    let mut p = probe::Real::new();
+    Some([p.sbx(h), p.srt(h, None)])
+}
+
 /// What the raw argv says before `args::parse` reads it.
 struct Shape<'a> {
     /// The harness, when the argv names one derm knows.

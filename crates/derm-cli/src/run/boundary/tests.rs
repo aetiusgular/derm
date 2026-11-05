@@ -360,3 +360,15 @@ fn every_record_follows_the_schema() {
         }
     }
 }
+
+#[test]
+fn availability_answers_for_a_known_harness_only() {
+    assert!(availability("no-such-agent").is_none());
+    let [sbx, srt] = availability("goose").unwrap();
+    // goose has no sbx kit, so sbx is never available for it here.
+    assert!(sbx.unwrap_err().why.contains("no sbx kit"));
+    // srt depends on this machine; whichever way, a reason names srt.
+    if let Err(r) = srt {
+        assert_eq!(r.boundary, "srt");
+    }
+}
