@@ -804,12 +804,14 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
     // side that fails safe (integration w1; derm-core and derm-pi do the same).
     const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
     if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
-    // PowerShell (lane Z's request 3): plain words only, or ask.
+    // Package installs (contracts/policy.md section 6; lane X's seam). An
+    // install's ask or deny names its packages, so it comes first.
+    const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
+    if (install !== undefined && install.action !== "allow") return { action: install.action, normalizedTool, reason: install.reason };
+    // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
+    // also for an install the lockfile vouches for.
     const unplain = (POWERSHELL_TOOLS as readonly string[]).includes(normalizedTool) ? powershellUnplain(folded) : undefined;
     if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
-    // Package installs (contracts/policy.md section 6; lane X's seam). The
-    // wave 5 base's stub reads no call as an install.
-    const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
     if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
   }
   return { action: top.action, normalizedTool, reason };

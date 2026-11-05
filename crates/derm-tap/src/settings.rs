@@ -145,7 +145,9 @@ pub fn parse(text: &str) -> Result<Settings, String> {
 /// (`upstream::key_well_formed`) and not one of the built-in keys, with a
 /// `base` that is `https://`, or `http://` only when `local` is true, no
 /// query, fragment or user part, at most 255 characters.
-fn parse_upstreams(u: &serde_json::Map<String, Value>) -> Result<BTreeMap<String, Upstream>, String> {
+fn parse_upstreams(
+    u: &serde_json::Map<String, Value>,
+) -> Result<BTreeMap<String, Upstream>, String> {
     if u.len() > MAX_UPSTREAMS {
         return Err(format!("has more than {MAX_UPSTREAMS} tap.upstreams"));
     }
@@ -156,7 +158,9 @@ fn parse_upstreams(u: &serde_json::Map<String, Value>) -> Result<BTreeMap<String
             || builtin.contains_key(key)
             || key == upstream::OPENAI_AUTO
         {
-            return Err(format!("has tap.upstreams.{key}, a key the schema does not allow"));
+            return Err(format!(
+                "has tap.upstreams.{key}, a key the schema does not allow"
+            ));
         }
         let e = v
             .as_object()
@@ -167,7 +171,11 @@ fn parse_upstreams(u: &serde_json::Map<String, Value>) -> Result<BTreeMap<String
             match (k.as_str(), v) {
                 ("base", Value::String(b)) => base = Some(b),
                 ("local", Value::Bool(l)) => local = *l,
-                _ => return Err(format!("has tap.upstreams.{key}.{k} the schema does not allow")),
+                _ => {
+                    return Err(format!(
+                        "has tap.upstreams.{key}.{k} the schema does not allow"
+                    ))
+                }
             }
         }
         let base = base.ok_or_else(|| format!("has tap.upstreams.{key} with no base"))?;
@@ -183,7 +191,9 @@ fn parse_upstreams(u: &serde_json::Map<String, Value>) -> Result<BTreeMap<String
             || base.contains(['?', '#', '@', ' ', '\\'])
             || base.chars().any(char::is_control)
         {
-            return Err(format!("has tap.upstreams.{key}.base the schema does not allow"));
+            return Err(format!(
+                "has tap.upstreams.{key}.base the schema does not allow"
+            ));
         }
         out.insert(
             key.clone(),
@@ -241,7 +251,10 @@ mod tests {
         let many: Vec<String> = (0..=MAX_UPSTREAMS)
             .map(|i| format!(r#""u{i}":{{"base":"https://h{i}.example"}}"#))
             .collect();
-        let text = format!(r#"{{"version":1,"tap":{{"upstreams":{{{}}}}}}}"#, many.join(","));
+        let text = format!(
+            r#"{{"version":1,"tap":{{"upstreams":{{{}}}}}}}"#,
+            many.join(",")
+        );
         assert!(parse(&text).is_err());
     }
 

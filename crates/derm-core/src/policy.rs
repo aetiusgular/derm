@@ -1094,16 +1094,21 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
                 ),
             );
         }
-        // PowerShell (lane Z's request 3): plain words only, or ask.
+        // Package installs (contract section 6; wave 5 lane X's seam). An
+        // install's ask or deny names its packages, so it comes first.
+        let install = crate::installs::check(&normalized, &folded);
+        if let Some(i) = install.as_ref().filter(|i| i.action != Action::Allow) {
+            return decide(i.action, i.reason.clone());
+        }
+        // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
+        // also for an install the lockfile vouches for.
         if POWERSHELL_TOOLS.contains(&normalized.as_str()) {
             if let Some(c) = powershell_unplain(&folded) {
                 return decide(Action::Ask, powershell_reason(c));
             }
         }
-        // Package installs (contract section 6; wave 5 lane X's seam, cut by
-        // the wave 5 base). The base's stub reads no call as an install.
-        if let Some(install) = crate::installs::check(&normalized, &folded) {
-            return decide(install.action, install.reason);
+        if let Some(i) = install {
+            return decide(i.action, i.reason);
         }
     }
     decide(Action::Allow, rule_reason(winner))

@@ -708,12 +708,14 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
     const glob = token === "*" || token === "?" || token === "[";
     return { action: "ask", normalizedTool, reason: `shell text the matcher cannot read: \`${token}\`${glob ? " (a glob)" : ""}` };
   }
-  // PowerShell (lane Z's request 3): plain words only, or ask.
+  // Package installs (lane X's seam): an install's ask or deny names its
+  // packages, so it comes first.
+  const install = SHELL_TOOLS.has(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
+  if (install !== undefined && install.action !== "allow") return { action: install.action, normalizedTool, reason: install.reason };
+  // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
+  // also for an install the lockfile vouches for.
   const unplain = POWERSHELL_TOOLS.has(normalizedTool) ? powershellUnplain(folded) : undefined;
   if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
-  // Package installs (lane X's seam). The wave 5 base's stub reads no call
-  // as an install.
-  const install = SHELL_TOOLS.has(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
   if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
   return { action: "allow", normalizedTool, reason: describeRule(winner) };
 }

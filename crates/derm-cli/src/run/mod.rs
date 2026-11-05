@@ -1725,8 +1725,14 @@ mod end_to_end {
             "{}",
             steps[0]
         );
+        // `derm run` mounts the folder canonicalized (macOS: /var is a link
+        // to /private/var, case 111; CI's rust-macos job, P3-1).
+        let real = std::fs::canonicalize(&cwd)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         assert!(
-            steps[0].ends_with(&format!(" docker.io/sbx/pi-kit:latest {cwd}")),
+            steps[0].ends_with(&format!(" docker.io/sbx/pi-kit:latest {real}")),
             "{}",
             steps[0]
         );
