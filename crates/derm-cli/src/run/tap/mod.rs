@@ -2,18 +2,363 @@
 //! 115, 127). The wave 5 base cut this seam: `run_io` calls [`environment`]
 //! once the plan is built, and adds the returned record to `run.start` as
 //! `detail.tap` (`contracts/events.md` section 5). The variable or flag per
-//! agent comes from `crates/derm-cli/src/connect/presets/wave5/tap.json`.
+//! agent comes from `crates/derm-cli/src/connect/presets/wave5/tap.json`,
+//! the launch shapes from `derm_tap::launch`.
 //!
-//! Lane S owns this folder. The base's stub changes nothing: no base URL is
-//! set, and there is no record (so a chat reads as it did before wave 5, not
-//! as "untapped").
+//! The tap runs in the daemon, which publishes it as `tap.endpoint` beside
+//! `otlp.endpoint`. A chat is tapped when the chat token was minted, the
+//! user's settings leave the tap on, the agent takes a base URL, and the
+//! daemon publishes a tap. Otherwise it runs untapped, says so on the
+//! terminal, and `run.start` says `tap.on: false` (case 127).
+//!
+//! Case 113: a base URL the user (or a planted file) already set would make
+//! the harness skip the tap, or send it somewhere the tap would not, so
+//! `derm run` refuses and names where it is set. The user removes it, or
+//! turns the tap off in `~/.derm/settings.json`.
 
-use serde_json::Value;
+use std::path::{Path, PathBuf};
 
-use super::plan::Plan;
+use derm_tap::{launch, route, settings};
+use serde_json::{json, Value};
 
-/// The wave 5 base's stub: the plan unchanged, no record.
-pub(crate) fn environment(harness: &str, plan: &mut Plan) -> Result<Option<Value>, (u8, String)> {
-    let _ = (harness, plan);
-    Ok(None)
+use super::plan::{split_url, Plan};
+
+/// What the seam reads beyond the plan. `environment` gathers it from the
+/// process as `RunEnv::real` does; the tests give their own.
+pub(crate) struct Inputs {
+    pub daemon_dir: Option<PathBuf>,
+    pub home: Option<String>,
+    pub cwd: Option<String>,
+    /// Variables `derm run` inherited (for case 113).
+    pub inherited: Vec<(String, String)>,
+    /// Claude Code's managed settings file (and its `.d` folder).
+    pub claude_managed: PathBuf,
 }
+
+impl Inputs {
+    fn real(plan: &Plan) -> Self {
+        Inputs {
+            daemon_dir: derm_audit_linux::client::socket_path().and_then(|s| s.parent().map(Path::to_path_buf)),
+            home: std::env::var("HOME").ok(),
+            cwd: plan
+                .folders
+                .first()
+                .cloned()
+                .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned())),
+            inherited: std::env::vars().collect(),
+            claude_managed: PathBuf::from(if cfg!(target_os = "macos") {
+                "/Library/Application Support/ClaudeCode/managed-settings.json"
+            } else {
+                "/etc/claude-code/managed-settings.json"
+            }),
+        }
+    }
+}
+
+/// The seam `run_io` calls.
+pub(crate) fn environment(harness: &str, plan: &mut Plan) -> Result<Option<Value>, (u8, String)> {
+    let inputs = Inputs::real(plan);
+    environment_with(harness, plan, &inputs)
+}
+
+fn off(reason: Option<&str>) -> Option<Value> {
+    let mut v = json!({"on": false, "via": "none"});
+    if let Some(r) = reason {
+        v["reason"] = json!(r);
+    }
+    Some(v)
+}
+
+/// The preset row's `tap` value, when it has one.
+fn tap_row(harness: &str) -> Option<Value> {
+    let table: Value = serde_json::from_str(crate::connect::presets::table_json()).ok()?;
+    ["harnesses", "planned"].iter().find_map(|list| {
+        table
+            .get(*list)?
+            .as_array()?
+            .iter()
+            .find(|r| r.get("id").and_then(Value::as_str) == Some(harness))
+            .and_then(|r| r.get("tap").cloned())
+            .filter(|t| !t.is_null())
+    })
+}
+
+/// `tap.endpoint` in the daemon's folder: a loopback `http://` URL with a
+/// port, else `None`.
+pub(crate) fn read_endpoint(dir: &Path) -> Option<String> {
+    let path = dir.join("tap.endpoint");
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.file_type().is_file() || meta.len() > 256 {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let url = text.trim();
+    let (scheme, host, port, rest) = split_url(url)?;
+    let loopback = host == "127.0.0.1" || host == "::1" || host == "localhost";
+    (scheme == "http" && loopback && port > 0 && (rest.is_empty() || rest == "/")).then(|| url.trim_end_matches('/').to_string())
+}
+
+pub(crate) fn environment_with(harness: &str, plan: &mut Plan, i: &Inputs) -> Result<Option<Value>, (u8, String)> {
+    // No chat token: `--no-daemon` or a dry run. Nothing is recorded, so
+    // nothing is said here; the tap runs in the daemon.
+    let Some(token) = plan
+        .env_set
+        .iter()
+        .find(|(k, _)| k == "DERM_CHAT_TOKEN")
+        .map(|(_, v)| v.clone())
+    else {
+        return Ok(None);
+    };
+    let (prefs, warning) = match &i.home {
+        Some(h) => settings::load(&settings::path_for(h)),
+        None => (settings::Settings::default(), None),
+    };
+    if let Some(w) = warning {
+        eprintln!("derm run: {w}");
+    }
+    if !prefs.tap_on {
+        eprintln!("derm run: the model tap is off in your settings; this chat's tool calls are recorded by its gate and the OS feed only");
+        return Ok(off(Some("setting")));
+    }
+    let Some(row) = tap_row(harness) else {
+        return Ok(off(Some("no-base-url")));
+    };
+    if row.get("via").and_then(Value::as_str).unwrap_or("none") == "none" {
+        return Ok(off(Some("no-base-url")));
+    }
+    let Some(endpoint) = i.daemon_dir.as_deref().and_then(read_endpoint) else {
+        eprintln!("derm run: the daemon published no model tap (tap.endpoint); this chat runs untapped");
+        return Ok(off(None));
+    };
+    if let Some(why) = base_url_already_set(harness, plan, i) {
+        return Err((
+            1,
+            format!(
+                "derm run: {why}, so {harness} would not reach the model tap. Remove it, or turn the tap off \
+                 (\"tap\": {{\"on\": false}} in ~/.derm/settings.json) to run this chat untapped"
+            ),
+        ));
+    }
+    let sbx = plan.sandbox_name.is_some();
+    let reach = if sbx {
+        let (scheme, _, port, _) = split_url(&endpoint).ok_or((1, "bad tap endpoint".to_string()))?;
+        plan.notes.push(format!(
+            "derm run: the sandbox reaches the model tap on the host's port {port} only if your sbx policy allows it: \
+             sbx policy allow network localhost:{port} (derm does not change sbx policy)"
+        ));
+        format!("{scheme}://host.docker.internal:{port}")
+    } else {
+        endpoint.clone()
+    };
+    let route_text = route::of_token(&token);
+    let l = match launch::launch(&row, &reach, &route_text) {
+        Ok(l) => l,
+        Err(launch::Off::NoBaseUrl) => return Ok(off(Some("no-base-url"))),
+    };
+    if sbx && !l.args.is_empty() {
+        // Where an agent's own flags sit in an sbx argv is lane T's to
+        // settle (SB1, SB6); until then a Codex chat under sbx runs untapped.
+        eprintln!("derm run: under sbx the tap does not reach {harness} yet; this chat runs untapped");
+        return Ok(off(None));
+    }
+    for (k, v) in &l.env {
+        plan.env_set.retain(|(n, _)| n != k);
+        plan.env_remove.retain(|n| n != k);
+        plan.env_set.push((k.clone(), v.clone()));
+    }
+    if !l.args.is_empty() {
+        let at = harness_args_start(plan);
+        let mut args = plan.args.clone();
+        args.splice(at..at, l.args.iter().cloned());
+        plan.args = args;
+    }
+    if sbx {
+        // `sbx run --name <n>` first; the variables are named after it and
+        // copied by sbx from the child's environment, as plan.rs does.
+        let at = plan.args.iter().position(|a| a == "--name").map_or(1, |p| p + 2).min(plan.args.len());
+        let mut names: Vec<String> = Vec::new();
+        for (k, _) in &l.env {
+            names.extend(["-e".to_string(), k.clone()]);
+        }
+        plan.args.splice(at..at, names);
+    }
+    if let Some(text) = plan.srt_settings.as_deref() {
+        let mut v: Value = serde_json::from_str(text).map_err(|e| (1, e.to_string()))?;
+        let (_, host, port, _) = split_url(&endpoint).ok_or((1, "bad tap endpoint".to_string()))?;
+        let host = if host == "localhost" { "127.0.0.1".to_string() } else { host };
+        let allow = if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") };
+        if let Some(list) = v.pointer_mut("/network/allowedDomains").and_then(Value::as_array_mut) {
+            if !list.iter().any(|x| x.as_str() == Some(allow.as_str())) {
+                list.push(json!(allow));
+            }
+        }
+        plan.srt_settings = Some(serde_json::to_string_pretty(&v).map_err(|e| (1, e.to_string()))?);
+    }
+    Ok(Some(json!({
+        "on": true,
+        "via": l.via,
+        "api": l.api.name(),
+        "upstream": l.upstream,
+    })))
+}
+
+/// Where the harness's own arguments start in `plan.args`: 0 when the plan
+/// starts the harness itself, after `-- <command>` under srt.
+fn harness_args_start(plan: &Plan) -> usize {
+    if plan.program == "srt" {
+        if let Some(p) = plan.args.iter().position(|a| a == "--") {
+            return (p + 2).min(plan.args.len());
+        }
+    }
+    0
+}
+
+/// Case 113: where a base URL is already set for this harness, in words for
+/// the terminal; `None` when nothing is.
+pub(crate) fn base_url_already_set(harness: &str, plan: &Plan, i: &Inputs) -> Option<String> {
+    let inherited = |name: &str| i.inherited.iter().any(|(k, v)| k == name && !v.is_empty());
+    match harness {
+        "claude-code" => {
+            for var in [
+                "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_USE_BEDROCK",
+                "CLAUDE_CODE_USE_VERTEX",
+                "CLAUDE_CODE_USE_FOUNDRY",
+                "CLAUDE_CODE_USE_MANTLE",
+            ] {
+                if inherited(var) {
+                    return Some(format!("{var} is set in derm run's environment"));
+                }
+            }
+            let mut files: Vec<PathBuf> = Vec::new();
+            let config_dir = i
+                .inherited
+                .iter()
+                .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && v.starts_with('/'))
+                .map(|(_, v)| PathBuf::from(v))
+                .or_else(|| i.home.as_ref().map(|h| Path::new(h).join(".claude")));
+            if let Some(d) = config_dir {
+                files.push(d.join("settings.json"));
+            }
+            if let Some(c) = &i.cwd {
+                files.push(Path::new(c).join(".claude/settings.json"));
+                files.push(Path::new(c).join(".claude/settings.local.json"));
+            }
+            files.push(i.claude_managed.clone());
+            if let Some(dir) = i.claude_managed.parent().map(|p| p.join("managed-settings.d")) {
+                if let Ok(rd) = std::fs::read_dir(&dir) {
+                    let mut more: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+                    more.sort();
+                    files.extend(more);
+                }
+            }
+            for f in files {
+                if let Some(var) = claude_settings_route(&f) {
+                    return Some(format!("{} sets {var}", f.display()));
+                }
+            }
+            let mut a = plan.args.iter();
+            while let Some(x) = a.next() {
+                let v = if x == "--settings" { a.next().map(String::as_str) } else { x.strip_prefix("--settings=") };
+                if let Some(v) = v {
+                    let text = if v.trim_start().starts_with('{') {
+                        v.to_string()
+                    } else {
+                        std::fs::read_to_string(v).unwrap_or_default()
+                    };
+                    if let Some(var) = settings_text_route(&text) {
+                        return Some(format!("--settings sets {var}"));
+                    }
+                }
+            }
+            None
+        }
+        "codex" => {
+            for x in &plan.args {
+                let x = x.as_str();
+                if x == "--oss" || x == "--profile" || x == "-p" || x.starts_with("--profile=") || x.starts_with("--local-provider") {
+                    return Some(format!("{x} chooses Codex's provider on its command line"));
+                }
+            }
+            let mut a = plan.args.iter();
+            while let Some(x) = a.next() {
+                let v = if x == "-c" || x == "--config" { a.next().map(String::as_str) } else { x.strip_prefix("--config=") };
+                if let Some(v) = v {
+                    let key = v.split('=').next().unwrap_or("").trim();
+                    if key == "model_provider" || key == "openai_base_url" || key == "profile" || key.starts_with("model_providers.") || key.starts_with("profiles.") {
+                        return Some(format!("-c {key} chooses Codex's provider on its command line"));
+                    }
+                }
+            }
+            if inherited("OPENAI_BASE_URL") {
+                return Some("OPENAI_BASE_URL is set in derm run's environment".into());
+            }
+            let codex_home = i
+                .inherited
+                .iter()
+                .find(|(k, v)| k == "CODEX_HOME" && v.starts_with('/'))
+                .map(|(_, v)| PathBuf::from(v))
+                .or_else(|| i.home.as_ref().map(|h| Path::new(h).join(".codex")))?;
+            let file = codex_home.join("config.toml");
+            codex_config_route(&file).map(|what| format!("{} sets {what}", file.display()))
+        }
+        "gemini" => inherited("GOOGLE_GEMINI_BASE_URL").then(|| "GOOGLE_GEMINI_BASE_URL is set in derm run's environment".into()),
+        _ => None,
+    }
+}
+
+/// The routing variable a Claude Code settings file's `env` sets, if any.
+fn claude_settings_route(path: &Path) -> Option<&'static str> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 1024 * 1024 {
+        return None;
+    }
+    settings_text_route(&std::fs::read_to_string(path).ok()?)
+}
+
+fn settings_text_route(text: &str) -> Option<&'static str> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let env = v.get("env")?.as_object()?;
+    [
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "CLAUDE_CODE_USE_MANTLE",
+    ]
+    .into_iter()
+    .find(|k| env.get(*k).is_some_and(|x| !x.is_null() && x.as_str() != Some("")))
+}
+
+/// What in Codex's `config.toml` chooses a provider other than its own
+/// OpenAI one, if anything: `model_provider`, `openai_base_url`, or a
+/// `profile` whose table sets `model_provider`.
+fn codex_config_route(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > 1024 * 1024 {
+        return None;
+    }
+    let doc: toml_edit::DocumentMut = std::fs::read_to_string(path).ok()?.parse().ok()?;
+    if doc.get("openai_base_url").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
+        return Some("openai_base_url".into());
+    }
+    if let Some(p) = doc.get("model_provider").and_then(|v| v.as_str()) {
+        if p != "openai" {
+            return Some(format!("model_provider = \"{p}\""));
+        }
+    }
+    if let Some(name) = doc.get("profile").and_then(|v| v.as_str()) {
+        let p = doc
+            .get("profiles")
+            .and_then(|t| t.get(name))
+            .and_then(|t| t.get("model_provider"))
+            .and_then(|v| v.as_str());
+        if let Some(p) = p.filter(|p| *p != "openai") {
+            return Some(format!("profile \"{name}\" with model_provider = \"{p}\""));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests;

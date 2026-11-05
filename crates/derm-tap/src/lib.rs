@@ -15,6 +15,8 @@
 //!   records;
 //! - [`content`]: content capture's files, when the user turned it on;
 //! - [`fold`]: case 94's fold for a local upstream;
+//! - [`launch`]: what `derm run` adds to a harness's start;
+//! - [`settings`]: the tap's and content's keys in `~/.derm/settings.json`;
 //! - [`tap`]: the server.
 //!
 //! What it does not do yet (lane S status doc, "Not built"): the Responses
@@ -24,8 +26,10 @@ pub mod apis;
 pub mod content;
 pub mod fold;
 pub mod http;
+pub mod launch;
 pub mod record;
 pub mod route;
+pub mod settings;
 pub mod sse;
 pub mod tap;
 pub mod upstream;
