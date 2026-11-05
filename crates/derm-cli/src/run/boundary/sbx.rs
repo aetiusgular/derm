@@ -89,10 +89,13 @@ pub(crate) struct Stages {
 /// variables. `interactive` is whether a person can answer sbx's own
 /// questions (a kit's credential question, the first-run policy); without
 /// one, `--no-input` makes such a question fail and say what to run.
+/// `mixins` are kits layered on the workload at the create (derm's own,
+/// [`super::kit`]); the attach does not name them.
 pub(crate) fn stages(
     args: &[String],
     env_set: &[(String, String)],
     interactive: bool,
+    mixins: &[String],
 ) -> Result<Stages, String> {
     if args.first().map(String::as_str) != Some("run") {
         return Err("the sbx argv does not start with run".into());
@@ -149,6 +152,11 @@ pub(crate) fn stages(
 
     let mut create = vec!["create".to_string(), "--name".into(), name.clone()];
     create.extend(env.iter().cloned());
+    // A mixin goes with --kit, as sbx means it ("Adds a mixin kit
+    // reference", the run and create pages); the workload stays positional.
+    for m in mixins {
+        create.extend(["--kit".to_string(), m.clone()]);
+    }
     if !interactive {
         create.push("--no-input".into());
     }
@@ -264,12 +272,66 @@ pub(crate) fn start(
     plan: &mut Plan,
     interactive: bool,
 ) -> Result<Sandbox, (u8, String)> {
-    let st = stages(&plan.args, &plan.env_set, interactive).map_err(|e| (1, e))?;
-    eprintln!(
-        "derm run: inside the sbx VM {} runs without derm's gate: your host's hooks, plugins and extensions are not in the VM. \
-         The VM is the boundary; sbx's policy log, the model tap and the host's OS feed record the chat.",
-        st.workload
-    );
+    let policy = derm_core::policy::default_path();
+    let switch = std::env::var(super::kit::SWITCH).ok();
+    start_with(
+        sbx,
+        plan,
+        interactive,
+        &KitInputs {
+            policy: policy.as_deref(),
+            parent: &std::env::temp_dir(),
+            switch: switch.as_deref(),
+        },
+    )
+}
+
+/// Where [`start`] finds what derm's kit needs; tests give their own.
+pub(crate) struct KitInputs<'a> {
+    /// The person's policy file.
+    pub policy: Option<&'a Path>,
+    /// Where the chat's kit folder is made.
+    pub parent: &'a Path,
+    /// [`super::kit::SWITCH`]'s value.
+    pub switch: Option<&'a str>,
+}
+
+pub(crate) fn start_with(
+    sbx: &str,
+    plan: &mut Plan,
+    interactive: bool,
+    inputs: &KitInputs,
+) -> Result<Sandbox, (u8, String)> {
+    let harness = plan
+        .env_set
+        .iter()
+        .find(|(k, _)| k == "DERM_HARNESS")
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("");
+    // derm's gate in the VM (Tony's O1 decision): built for the chat now,
+    // read by sbx at the create, removed right after it.
+    let kit = super::kit::prepare(harness, inputs.policy, inputs.parent, inputs.switch)
+        .map_err(|e| (1, e))?;
+    let mixins: Vec<String> = match &kit {
+        super::kit::Kit::Built(p) => vec![p.path().to_string_lossy().into_owned()],
+        super::kit::Kit::Without(_) => Vec::new(),
+    };
+    let st = stages(&plan.args, &plan.env_set, interactive, &mixins).map_err(|e| (1, e))?;
+    match &kit {
+        super::kit::Kit::Built(_) => eprintln!(
+            "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
+             The agent runs in full access there, so what your policy would ask is denied. The agent has sudo in the VM and could remove the gate; \
+             the VM stays the boundary, and sbx's policy log, the model tap and the host's OS feed record the chat. \
+             The gate's own decisions are not sent to the host yet. To run without the kit: {}=off",
+            st.workload,
+            super::kit::SWITCH
+        ),
+        super::kit::Kit::Without(why) => eprintln!(
+            "derm run: inside the sbx VM {} runs without derm's gate ({why}): your host's hooks, plugins and extensions are not in the VM. \
+             The VM is the boundary; sbx's policy log, the model tap and the host's OS feed record the chat.",
+            st.workload
+        ),
+    }
     let mut cmd = Command::new(sbx);
     cmd.args(&st.create).env("SBX_NO_TELEMETRY", "1");
     for k in &plan.env_remove {
@@ -282,6 +344,8 @@ pub(crate) fn start(
         cmd.stdin(Stdio::null());
     }
     let status = cmd.status().map_err(|e| (127, format!("{sbx}: {e}")))?;
+    // sbx has read the kit (SPEC-v2 5.8: files are copied at the create).
+    drop(kit);
     if !status.success() {
         return Err((
             1,
@@ -384,7 +448,7 @@ mod tests {
             ),
             ("OTHER".to_string(), "http://example.com:9".to_string()),
         ];
-        let st = stages(&args, &env, true).unwrap();
+        let st = stages(&args, &env, true, &[]).unwrap();
         assert_eq!(st.workload, "docker.io/sbx/pi-kit:latest");
         assert_eq!(
             st.create,
@@ -441,7 +505,7 @@ mod tests {
         );
         assert_eq!(st.remove, s(&["rm", "--force", "derm-c1"]));
         // With no one to answer sbx's own questions, they fail instead.
-        let quiet = stages(&args, &env, false).unwrap();
+        let quiet = stages(&args, &env, false, &[]).unwrap();
         assert!(quiet.create.contains(&"--no-input".to_string()));
         assert!(!quiet.attach.contains(&"--no-input".to_string()));
     }
@@ -457,7 +521,7 @@ mod tests {
             "claude",
             "/w",
         ]);
-        let st = stages(&args, &[], true).unwrap();
+        let st = stages(&args, &[], true, &[]).unwrap();
         assert_eq!(st.workload, "claude");
         assert_eq!(
             st.attach,
@@ -474,17 +538,20 @@ mod tests {
             "claude",
             "/w",
         ]);
-        assert!(stages(&bad, &[], true).unwrap_err().contains("bare name"));
+        assert!(stages(&bad, &[], true, &[])
+            .unwrap_err()
+            .contains("bare name"));
         // Anything plan.rs does not build is refused rather than guessed.
-        assert!(stages(&s(&["exec", "x"]), &[], true).is_err());
+        assert!(stages(&s(&["exec", "x"]), &[], true, &[]).is_err());
         assert!(stages(
             &s(&["run", "--name", "n", "--rm", "claude", "/w"]),
             &[],
-            true
+            true,
+            &[]
         )
         .is_err());
-        assert!(stages(&s(&["run", "--name", "n", "claude"]), &[], true).is_err());
-        assert!(stages(&s(&["run", "claude", "/w"]), &[], true).is_err());
+        assert!(stages(&s(&["run", "--name", "n", "claude"]), &[], true, &[]).is_err());
+        assert!(stages(&s(&["run", "claude", "/w"]), &[], true, &[]).is_err());
     }
 
     fn fake_sbx(dir: &Path, fail_on: &str) -> String {
@@ -637,5 +704,159 @@ mod tests {
             "{calls}"
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A fake sbx that, on `create`, writes what the kit folder named with
+    /// `--kit` held at that moment: derm removes it right after.
+    fn fake_sbx_reading_the_kit(dir: &Path) -> String {
+        let log = dir.join("calls");
+        let seen = dir.join("kit-seen");
+        let p = dir.join("sbx");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {log}\n\
+                 if [ \"$1\" = create ]; then\n\
+                   prev=\n\
+                   for a in \"$@\"; do\n\
+                     if [ \"$prev\" = --kit ]; then\n\
+                       (cd \"$a\" && find . -type f | sort) > {seen}\n\
+                       cat \"$a/files/home/.derm-kit/policy.json\" >> {seen}\n\
+                     fi\n\
+                     prev=$a\n\
+                   done\n\
+                 fi\nexit 0\n",
+                log = log.display(),
+                seen = seen.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    fn claude_plan() -> Plan {
+        let mut p = plan_for(s(&[
+            "run",
+            "--name",
+            "derm-c3",
+            "-e",
+            "DERM_CHAT_TOKEN",
+            "claude",
+            "/w",
+        ]));
+        p.env_set
+            .push(("DERM_HARNESS".into(), "claude-code".into()));
+        p
+    }
+
+    /// Phase 4, item 4: Claude Code under sbx gets derm's kit on the create,
+    /// as a mixin, with the person's policy; the attach does not name it,
+    /// and the folder is gone once the create has read it.
+    #[test]
+    fn claude_code_gets_derms_kit_on_the_create_and_the_folder_goes_after() {
+        let d = tmp("kit");
+        let sbx = fake_sbx_reading_the_kit(&d);
+        let policy = d.join("policy.json");
+        std::fs::write(&policy, r#"{"version":1}"#).unwrap();
+        std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let parent = d.join("kits");
+        std::fs::create_dir_all(&parent).unwrap();
+        let mut p = claude_plan();
+        let inputs = KitInputs {
+            policy: Some(&policy),
+            parent: &parent,
+            switch: None,
+        };
+        let sandbox = start_with(&sbx, &mut p, false, &inputs).unwrap();
+        let calls = std::fs::read_to_string(d.join("calls")).unwrap();
+        let create = calls.lines().next().unwrap();
+        let words: Vec<&str> = create.split(' ').collect();
+        let at = words.iter().position(|w| *w == "--kit").expect(create);
+        assert!(words[at + 1].contains("derm-sbx-kit-"), "{create}");
+        assert_eq!(
+            &words[at + 2..],
+            &["--no-input", "claude", "/w"],
+            "the kit is a mixin; the agent stays the workload"
+        );
+        let seen = std::fs::read_to_string(d.join("kit-seen")).unwrap();
+        assert!(seen.contains("./spec.yaml"), "{seen}");
+        assert!(
+            seen.contains("./files/home/.derm-kit/plugin/bin/derm-hook.mjs"),
+            "{seen}"
+        );
+        assert!(seen.trim_end().ends_with(r#"{"version":1}"#), "{seen}");
+        assert!(!p.args.iter().any(|a| a == "--kit"), "{:?}", p.args);
+        assert_eq!(
+            std::fs::read_dir(&parent).unwrap().count(),
+            0,
+            "the kit folder is removed after the create"
+        );
+        sandbox.remove().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn no_kit_without_a_usable_policy_or_with_the_switch_off_and_none_for_others() {
+        let d = tmp("nokit");
+        let sbx = fake_sbx_reading_the_kit(&d);
+        let parent = d.join("kits");
+        std::fs::create_dir_all(&parent).unwrap();
+        let policy = d.join("policy.json");
+        std::fs::write(&policy, r#"{"version":1}"#).unwrap();
+        std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let missing = d.join("missing.json");
+        let cases: Vec<(Plan, KitInputs)> = vec![
+            (
+                claude_plan(),
+                KitInputs {
+                    policy: Some(&missing),
+                    parent: &parent,
+                    switch: None,
+                },
+            ),
+            (
+                claude_plan(),
+                KitInputs {
+                    policy: Some(&policy),
+                    parent: &parent,
+                    switch: Some("off"),
+                },
+            ),
+            (
+                plan_for(s(&["run", "--name", "derm-c3", "claude", "/w"])),
+                KitInputs {
+                    policy: Some(&policy),
+                    parent: &parent,
+                    switch: None,
+                },
+            ),
+        ];
+        for (mut p, inputs) in cases {
+            let _ = std::fs::remove_file(d.join("calls"));
+            let sandbox = start_with(&sbx, &mut p, false, &inputs).unwrap();
+            let calls = std::fs::read_to_string(d.join("calls")).unwrap();
+            assert!(!calls.lines().next().unwrap().contains("--kit"), "{calls}");
+            sandbox.remove().unwrap();
+        }
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_mixin_goes_on_the_create_only() {
+        let args = s(&[
+            "run", "--name", "n", "-e", "A", "claude", "/w", "--", "-p", "x",
+        ]);
+        let st = stages(&args, &[], true, &["/k".to_string()]).unwrap();
+        assert_eq!(
+            st.create,
+            s(&["create", "--name", "n", "-e", "A", "--kit", "/k", "claude", "/w"])
+        );
+        assert_eq!(
+            st.attach,
+            s(&["run", "--name", "n", "-e", "A", "--", "-p", "x"])
+        );
+        assert_eq!(st.workload, "claude");
     }
 }

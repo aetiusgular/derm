@@ -35,6 +35,7 @@
 // and T-3, applied at the phase 3 merge, `2dcc6a2`).
 #[cfg_attr(not(test), allow(dead_code))]
 mod io_uring;
+mod kit;
 mod probe;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sbx;
