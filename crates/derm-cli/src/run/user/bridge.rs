@@ -117,9 +117,13 @@ pub fn open(spec: &Spec) -> Result<Bridge, String> {
             write_new(&bridge.policy, &text, 0o644)?;
         }
     }
-    write_new(&bridge.token_file, format!("{}\n", spec.token).as_bytes(), 0o644)?;
-    let listener =
-        UnixListener::bind(&bridge.socket).map_err(|e| format!("{}: {e}", bridge.socket.display()))?;
+    write_new(
+        &bridge.token_file,
+        format!("{}\n", spec.token).as_bytes(),
+        0o644,
+    )?;
+    let listener = UnixListener::bind(&bridge.socket)
+        .map_err(|e| format!("{}: {e}", bridge.socket.display()))?;
     std::fs::set_permissions(&bridge.socket, std::fs::Permissions::from_mode(0o666))
         .map_err(|e| format!("{}: {e}", bridge.socket.display()))?;
     std::fs::set_permissions(&bridge.dir, std::fs::Permissions::from_mode(0o711))
@@ -163,7 +167,11 @@ fn check_base(base: &Path, parent_owner: u32, me: u32) -> Result<(), String> {
             parent.display()
         )
     })?;
-    if pm.file_type().is_symlink() || !pm.is_dir() || pm.uid() != parent_owner || pm.mode() & 0o022 != 0 {
+    if pm.file_type().is_symlink()
+        || !pm.is_dir()
+        || pm.uid() != parent_owner
+        || pm.mode() & 0o022 != 0
+    {
         return Err(format!(
             "{} must be a folder of uid {parent_owner} that no one else can write",
             parent.display()
@@ -176,7 +184,10 @@ fn check_base(base: &Path, parent_owner: u32, me: u32) -> Result<(), String> {
         )
     })?;
     if m.file_type().is_symlink() || !m.is_dir() || m.uid() != me {
-        return Err(format!("{} must be a folder of yours, not a link", base.display()));
+        return Err(format!(
+            "{} must be a folder of yours, not a link",
+            base.display()
+        ));
     }
     if m.mode() & 0o066 != 0 {
         return Err(format!(
@@ -217,7 +228,10 @@ fn read_policy(src: &Path, me: u32) -> Option<Vec<u8>> {
         return None;
     }
     let mut buf = Vec::new();
-    Read::by_ref(&mut f).take(MAX_POLICY_BYTES).read_to_end(&mut buf).ok()?;
+    Read::by_ref(&mut f)
+        .take(MAX_POLICY_BYTES)
+        .read_to_end(&mut buf)
+        .ok()?;
     Some(buf)
 }
 
@@ -347,7 +361,10 @@ mod tests {
     impl Tmp {
         fn new() -> Self {
             // Short: a Unix socket path holds 108 bytes (case 111).
-            let p = PathBuf::from(format!("/tmp/dv-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]));
+            let p = PathBuf::from(format!(
+                "/tmp/dv-{}",
+                &uuid::Uuid::new_v4().simple().to_string()[..10]
+            ));
             std::fs::create_dir_all(&p).unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             Tmp(p)
@@ -361,10 +378,19 @@ mod tests {
 
     /// `<tmp>/base` (0711, ours) in `<tmp>` (0755, ours), a fake daemon that
     /// echoes every line it reads, and a policy file.
-    fn setup() -> (Tmp, PathBuf, PathBuf, PathBuf, std::sync::mpsc::Receiver<String>) {
+    fn setup() -> (
+        Tmp,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        std::sync::mpsc::Receiver<String>,
+    ) {
         let t = Tmp::new();
         let base = t.0.join("base");
-        std::fs::DirBuilder::new().mode(0o711).create(&base).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o711)
+            .create(&base)
+            .unwrap();
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o711)).unwrap();
         let sock = t.0.join("d.sock");
         let listener = UnixListener::bind(&sock).unwrap();
@@ -424,10 +450,19 @@ mod tests {
         assert_eq!(mode(b.dir()), 0o711, "others pass through, never list");
         assert_eq!(mode(b.policy()), 0o644);
         assert_eq!(mode(b.token_file()), 0o644);
-        assert_eq!(std::fs::read(b.policy()).unwrap(), std::fs::read(&policy).unwrap());
-        assert_eq!(std::fs::read_to_string(b.token_file()).unwrap(), format!("{TOKEN}\n"));
+        assert_eq!(
+            std::fs::read(b.policy()).unwrap(),
+            std::fs::read(&policy).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(b.token_file()).unwrap(),
+            format!("{TOKEN}\n")
+        );
         let name = b.dir().file_name().unwrap().to_string_lossy().into_owned();
-        assert!(name.starts_with("derm-0123abcd-") && name.len() == "derm-0123abcd-".len() + 32, "{name}");
+        assert!(
+            name.starts_with("derm-0123abcd-") && name.len() == "derm-0123abcd-".len() + 32,
+            "{name}"
+        );
         let dir = b.dir().to_path_buf();
         drop(b);
         assert!(!dir.exists(), "dropping the bridge removes its folder");
@@ -441,7 +476,10 @@ mod tests {
         assert_eq!(got.len(), 2, "{got:?}");
         assert!(got[0].starts_with("echo {\"op\":\"hello\""), "{got:?}");
         assert_eq!(got[1], r#"echo {"op":"event"}"#);
-        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().contains(TOKEN));
+        assert!(rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .contains(TOKEN));
     }
 
     #[test]
@@ -459,7 +497,10 @@ mod tests {
             let got = talk(b.socket(), &[&first, r#"{"op":"approver"}"#]);
             assert!(got.is_empty(), "{first}: {got:?}");
         }
-        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing reached the daemon");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "nothing reached the daemon"
+        );
     }
 
     #[test]
@@ -499,7 +540,9 @@ mod tests {
         std::os::unix::fs::symlink(&base, &link).unwrap();
         let err = open(&spec(&link, &sock, &policy, euid())).err().unwrap();
         assert!(err.contains("not a link"), "{err}");
-        let err = open(&spec(&t.0.join("absent"), &sock, &policy, euid())).err().unwrap();
+        let err = open(&spec(&t.0.join("absent"), &sock, &policy, euid()))
+            .err()
+            .unwrap();
         assert!(err.contains("tmpfiles"), "{err}");
     }
 
@@ -509,8 +552,14 @@ mod tests {
         assert!(hello_for(format!("{}\n", hello(TOKEN)).as_bytes(), TOKEN));
         assert!(!hello_for(hello(&TOKEN.to_uppercase()).as_bytes(), TOKEN));
         assert!(!hello_for(br#"{"op":"hello"}"#, TOKEN));
-        assert!(!hello_for(format!(r#"{{"op":"Hello","token":"{TOKEN}"}}"#).as_bytes(), TOKEN));
-        assert!(!hello_for(format!(r#"{{"op":"hello","token":["{TOKEN}"]}}"#).as_bytes(), TOKEN));
+        assert!(!hello_for(
+            format!(r#"{{"op":"Hello","token":"{TOKEN}"}}"#).as_bytes(),
+            TOKEN
+        ));
+        assert!(!hello_for(
+            format!(r#"{{"op":"hello","token":["{TOKEN}"]}}"#).as_bytes(),
+            TOKEN
+        ));
     }
 
     #[test]
@@ -518,6 +567,8 @@ mod tests {
         assert_eq!(chat_part("derm-0123abcd"), "derm-0123abcd");
         assert_eq!(chat_part("Chat/../x"), "chat----x");
         assert_eq!(chat_part("9lives"), "_9lives");
-        assert!(super::super::anchor::plain_name(&chat_part(&"x".repeat(80))));
+        assert!(super::super::anchor::plain_name(&chat_part(
+            &"x".repeat(80)
+        )));
     }
 }

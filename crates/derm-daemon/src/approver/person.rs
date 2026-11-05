@@ -201,7 +201,9 @@ impl UnixChkpwd {
         let mut seen = Vec::new();
         for p in paths {
             let path = Path::new(p);
-            let Ok(m) = std::fs::metadata(path) else { continue };
+            let Ok(m) = std::fs::metadata(path) else {
+                continue;
+            };
             let ok = m.is_file()
                 && m.uid() == trusted
                 && m.mode() & 0o022 == 0
@@ -219,7 +221,10 @@ impl UnixChkpwd {
         Err(if seen.is_empty() {
             "unix_chkpwd is not installed (Linux-PAM's pam_unix)".into()
         } else {
-            format!("{} is not root's and set-id, or sits in a folder others can write", seen.join(", "))
+            format!(
+                "{} is not root's and set-id, or sits in a folder others can write",
+                seen.join(", ")
+            )
         })
     }
 }
@@ -308,7 +313,8 @@ pub fn own_user() -> Option<String> {
     // pointers stored in it and we copy the name out before it drops.
     let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
     let mut out: *mut libc::passwd = std::ptr::null_mut();
-    let rc = unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr().cast(), buf.len(), &mut out) };
+    let rc =
+        unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr().cast(), buf.len(), &mut out) };
     if rc != 0 || out.is_null() {
         return None;
     }
@@ -359,14 +365,23 @@ mod tests {
         assert_eq!(needed(&runs, "srt-chat", false), None);
         assert_eq!(needed(&runs, "sbx-chat", false), None);
         assert_eq!(needed(&runs, "agent-chat", false), None);
-        assert!(needed(&runs, "unknown", false).unwrap().contains("not started by derm run"));
-        assert!(needed(&runs, "srt-chat", true).unwrap().contains("since the daemon started"));
+        assert!(needed(&runs, "unknown", false)
+            .unwrap()
+            .contains("not started by derm run"));
+        assert!(needed(&runs, "srt-chat", true)
+            .unwrap()
+            .contains("since the daemon started"));
 
         runs.insert("you-chat".to_string(), info("none", None));
-        assert!(needed(&runs, "you-chat", false).unwrap().contains("runs as you"));
+        assert!(needed(&runs, "you-chat", false)
+            .unwrap()
+            .contains("runs as you"));
         // While a chat runs as you, it can answer an srt chat's ask too.
         let why = needed(&runs, "srt-chat", false).unwrap();
-        assert!(why.contains("you-chat") && why.contains("for others"), "{why}");
+        assert!(
+            why.contains("you-chat") && why.contains("for others"),
+            "{why}"
+        );
     }
 
     #[test]
@@ -374,30 +389,48 @@ mod tests {
         for b in ["", "none", "SRT", "srt ", "other"] {
             assert!(runs_as_person(&info(b, None)), "{b:?}");
         }
-        assert!(runs_as_person(&json!({"boundary": "none", "agentUser": ""})));
+        assert!(runs_as_person(
+            &json!({"boundary": "none", "agentUser": ""})
+        ));
         assert!(!runs_as_person(&info("srt", None)));
     }
 
     #[test]
     fn the_right_password_passes_and_is_wiped() {
-        let fake = Fake { right: b"hunter2", calls: AtomicUsize::new(0) };
+        let fake = Fake {
+            right: b"hunter2",
+            calls: AtomicUsize::new(0),
+        };
         let backoff = Backoff::default();
         let mut pw = b"hunter2".to_vec();
-        assert_eq!(verify(&fake, &backoff, "tony", Some(&mut pw), Instant::now()), Verdict::Person);
+        assert_eq!(
+            verify(&fake, &backoff, "tony", Some(&mut pw), Instant::now()),
+            Verdict::Person
+        );
         assert!(pw.iter().all(|b| *b == 0), "wiped");
     }
 
     #[test]
     fn a_wrong_password_backs_off_doubling_and_the_wait_holds_the_right_one_too() {
-        let fake = Fake { right: b"hunter2", calls: AtomicUsize::new(0) };
+        let fake = Fake {
+            right: b"hunter2",
+            calls: AtomicUsize::new(0),
+        };
         let backoff = Backoff::default();
         let t0 = Instant::now();
         let v = verify(&fake, &backoff, "tony", Some(&mut b"guess".to_vec()), t0);
         assert_eq!(v, Verdict::Wrong("wrong password".into()));
         // Within the back-off even the right password is refused unchecked.
         let v = verify(&fake, &backoff, "tony", Some(&mut b"hunter2".to_vec()), t0);
-        assert!(matches!(v, Verdict::Wrong(ref w) if w.contains("try again")), "{v:?}");
-        assert_eq!(fake.calls.load(Ordering::SeqCst), 1, "the helper was not run during the wait");
+        assert!(
+            matches!(v, Verdict::Wrong(ref w) if w.contains("try again")),
+            "{v:?}"
+        );
+        assert_eq!(
+            fake.calls.load(Ordering::SeqCst),
+            1,
+            "the helper was not run during the wait"
+        );
         let t1 = t0 + Duration::from_secs(1);
         let _ = verify(&fake, &backoff, "tony", Some(&mut b"guess2".to_vec()), t1);
         assert_eq!(backoff.waiting(t1).unwrap(), Duration::from_secs(2));
@@ -407,20 +440,44 @@ mod tests {
             assert!(backoff.waiting(at).unwrap() <= MAX_BACKOFF);
         }
         let later = t1 + Duration::from_secs(5000);
-        assert_eq!(verify(&fake, &backoff, "tony", Some(&mut b"hunter2".to_vec()), later), Verdict::Person);
+        assert_eq!(
+            verify(
+                &fake,
+                &backoff,
+                "tony",
+                Some(&mut b"hunter2".to_vec()),
+                later
+            ),
+            Verdict::Person
+        );
         assert_eq!(backoff.waiting(later), None, "a pass clears the back-off");
     }
 
     #[test]
     fn no_password_an_empty_one_or_one_with_a_nul_is_refused_without_the_helper() {
-        let fake = Fake { right: b"", calls: AtomicUsize::new(0) };
+        let fake = Fake {
+            right: b"",
+            calls: AtomicUsize::new(0),
+        };
         let backoff = Backoff::default();
         let now = Instant::now();
-        assert!(matches!(verify(&fake, &backoff, "tony", None, now), Verdict::Wrong(_)));
-        assert!(matches!(verify(&fake, &backoff, "tony", Some(&mut Vec::new()), now), Verdict::Wrong(_)));
-        assert!(matches!(verify(&fake, &backoff, "tony", Some(&mut b"a\0b".to_vec()), now), Verdict::Wrong(_)));
+        assert!(matches!(
+            verify(&fake, &backoff, "tony", None, now),
+            Verdict::Wrong(_)
+        ));
+        assert!(matches!(
+            verify(&fake, &backoff, "tony", Some(&mut Vec::new()), now),
+            Verdict::Wrong(_)
+        ));
+        assert!(matches!(
+            verify(&fake, &backoff, "tony", Some(&mut b"a\0b".to_vec()), now),
+            Verdict::Wrong(_)
+        ));
         let mut long = vec![b'a'; MAX_PASSWORD + 1];
-        assert!(matches!(verify(&fake, &backoff, "tony", Some(&mut long), now), Verdict::Wrong(_)));
+        assert!(matches!(
+            verify(&fake, &backoff, "tony", Some(&mut long), now),
+            Verdict::Wrong(_)
+        ));
         assert!(long.iter().all(|b| *b == 0));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
     }
@@ -429,16 +486,27 @@ mod tests {
     fn a_platform_with_no_check_refuses_rather_than_passes() {
         let none = NoChecker("no check here");
         let backoff = Backoff::default();
-        let v = verify(&none, &backoff, "tony", Some(&mut b"pw".to_vec()), Instant::now());
+        let v = verify(
+            &none,
+            &backoff,
+            "tony",
+            Some(&mut b"pw".to_vec()),
+            Instant::now(),
+        );
         assert_eq!(v, Verdict::Unavailable("no check here".into()));
-        assert_eq!(backoff.waiting(Instant::now()), None, "unavailable is not a wrong try");
+        assert_eq!(
+            backoff.waiting(Instant::now()),
+            None,
+            "unavailable is not a wrong try"
+        );
     }
 
     #[test]
     fn a_helper_that_is_not_roots_and_set_id_is_not_trusted() {
         // A plain file of the test's: not set-id, and (as a non-root test) not
         // root's; trusted as the test's own uid it still lacks the set-id bit.
-        let dir = std::env::temp_dir().join(format!("derm-chkpwd-{}", uuid::Uuid::new_v4().simple()));
+        let dir =
+            std::env::temp_dir().join(format!("derm-chkpwd-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("unix_chkpwd");
         std::fs::write(&fake, b"#!/bin/sh\nexit 0\n").unwrap();
@@ -446,7 +514,9 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         // SAFETY: geteuid has no preconditions.
         let me = unsafe { libc::geteuid() };
-        let err = UnixChkpwd::find_in(&[fake.to_str().unwrap()], me).err().unwrap();
+        let err = UnixChkpwd::find_in(&[fake.to_str().unwrap()], me)
+            .err()
+            .unwrap();
         assert!(err.contains("set-id"), "{err}");
         assert!(UnixChkpwd::find_in(&["/nonexistent/unix_chkpwd"], 0)
             .err()

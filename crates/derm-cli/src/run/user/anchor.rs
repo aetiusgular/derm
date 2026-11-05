@@ -78,13 +78,20 @@ pub fn load(
         return Err(format!("{} is not a regular file", file.display()));
     }
     if meta.len() > MAX_BYTES {
-        return Err(format!("{} is larger than {MAX_BYTES} bytes", file.display()));
+        return Err(format!(
+            "{} is larger than {MAX_BYTES} bytes",
+            file.display()
+        ));
     }
     let text = read_nofollow(file)?;
     let parsed: File = serde_json::from_str(&text)
         .map_err(|e| format!("{}: not the expected JSON ({e})", file.display()))?;
     if parsed.version != 1 {
-        return Err(format!("{}: version {} is not 1", file.display(), parsed.version));
+        return Err(format!(
+            "{}: version {} is not 1",
+            file.display(),
+            parsed.version
+        ));
     }
     let mine: Vec<&Entry> = parsed
         .agents
@@ -274,7 +281,8 @@ fn group_name(gid: libc::gid_t) -> String {
     // outlives the pointers stored in it.
     let mut gr: libc::group = unsafe { std::mem::zeroed() };
     let mut out: *mut libc::group = std::ptr::null_mut();
-    let rc = unsafe { libc::getgrgid_r(gid, &mut gr, buf.as_mut_ptr().cast(), buf.len(), &mut out) };
+    let rc =
+        unsafe { libc::getgrgid_r(gid, &mut gr, buf.as_mut_ptr().cast(), buf.len(), &mut out) };
     if rc != 0 || out.is_null() {
         return format!("gid {gid}");
     }
@@ -312,7 +320,10 @@ pub fn refusal(agent: &Account, groups: &[String], owner: &Account) -> Option<St
         return Some(format!("{} has uid 0", agent.name));
     }
     if agent.uid == owner.uid {
-        return Some(format!("{} is uid {}, the owner's own", agent.name, owner.uid));
+        return Some(format!(
+            "{} is uid {}, the owner's own",
+            agent.name, owner.uid
+        ));
     }
     for g in groups {
         if FORBIDDEN_GROUPS.contains(&g.as_str()) {
@@ -324,7 +335,7 @@ pub fn refusal(agent: &Account, groups: &[String], owner: &Account) -> Option<St
     }
     // The owner's own group reads the owner's home on Ubuntu (HOME_MODE 0750).
     if let Some(g) = owner_group(owner) {
-        if groups.iter().any(|x| *x == g) {
+        if groups.contains(&g) {
             return Some(format!(
                 "{} is in `{g}`, the owner's own group, which can read the owner's files",
                 agent.name
@@ -469,7 +480,8 @@ mod tests {
 
     #[test]
     fn unknown_keys_two_entries_or_another_version_are_refused() {
-        let extra = entry_json(me()).replace(r#""how":"sudo""#, r#""how":"sudo","shell":"/bin/sh""#);
+        let extra =
+            entry_json(me()).replace(r#""how":"sudo""#, r#""how":"sudo","shell":"/bin/sh""#);
         let (_d, file) = tree(&extra);
         assert!(load_here(&file).unwrap_err().contains("expected JSON"));
 
@@ -489,7 +501,16 @@ mod tests {
         for ok in ["derm-agent", "_derm", "a1", "derm_agent"] {
             assert!(plain_name(ok), "{ok}");
         }
-        for bad in ["", "Derm", "1abc", "-x", "a b", "a/b", "a$", &"a".repeat(33)] {
+        for bad in [
+            "",
+            "Derm",
+            "1abc",
+            "-x",
+            "a b",
+            "a/b",
+            "a$",
+            &"a".repeat(33),
+        ] {
             assert!(!plain_name(bad), "{bad}");
         }
     }
@@ -513,7 +534,10 @@ mod tests {
             let why = refusal(&agent, &["derm-agent".into(), g.into()], &owner).unwrap();
             assert!(why.contains(g), "{why}");
         }
-        let root = Account { uid: 0, ..agent.clone() };
+        let root = Account {
+            uid: 0,
+            ..agent.clone()
+        };
         assert!(refusal(&root, &[], &owner).unwrap().contains("uid 0"));
         let same = Account { uid: 1000, ..agent };
         assert!(refusal(&same, &[], &owner).unwrap().contains("owner's own"));
@@ -534,10 +558,8 @@ mod tests {
         pub struct Dir(std::path::PathBuf);
         impl Dir {
             pub fn new() -> Self {
-                let p = std::env::temp_dir().join(format!(
-                    "derm-anchor-{}",
-                    uuid::Uuid::new_v4().simple()
-                ));
+                let p = std::env::temp_dir()
+                    .join(format!("derm-anchor-{}", uuid::Uuid::new_v4().simple()));
                 std::fs::create_dir_all(&p).unwrap();
                 Dir(p)
             }
