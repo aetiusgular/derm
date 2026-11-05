@@ -1,0 +1,15 @@
+diff --git a/crates/derm-cli/src/run/boundary/kit.rs b/crates/derm-cli/src/run/boundary/kit.rs
+index 584e62a..9a5fe1d 100644
+--- a/crates/derm-cli/src/run/boundary/kit.rs
++++ b/crates/derm-cli/src/run/boundary/kit.rs
+@@ -44,6 +44,10 @@ pub(crate) const PLUGIN: &[(&str, &str)] = &[
+         "src/hook.ts",
+         include_str!("../../../../../packages/derm-claude-plugin/src/hook.ts"),
+     ),
++    (
++        "src/core/command.ts",
++        include_str!("../../../../../packages/derm-claude-plugin/src/core/command.ts"),
++    ),
+     (
+         "src/core/confusables.ts",
+         include_str!("../../../../../packages/derm-claude-plugin/src/core/confusables.ts"),
