@@ -33,7 +33,7 @@ Rules:
 
 - The emitter never blocks a turn. A failed POST is counted and dropped; the count is shown in Pi's status line if lane A adds one.
 - No token, no POST. No endpoint, no POST. Nothing is sent anywhere but `DERM_OTLP_ENDPOINT`, which must be a loopback URL (`127.0.0.1`, `::1`, `localhost`); any other host is refused and counted.
-- Under sbx, `derm run` rewrites the endpoint to `host.docker.internal:<port>` (lane D), which is not loopback, so the emitter refuses it and a Pi chat under sbx has no OTLP feed in wave 1. Integration w1 kept the loopback rule (lane D's request 1): widening it would let any `DERM_OTLP_ENDPOINT` an agent sets name a host on the network, and whether sbx's proxy keeps the `Host` header the receiver checks is not known. The sbx policy log is that chat's feed. The box test records what sbx does with the header; a later wave can allow the one name only when `DERM_BOUNDARY=sbx`.
+- Under sbx, `derm run` rewrites the endpoint to `host.docker.internal:<port>` (lane D), which is not loopback, so the emitter refuses it and a Pi chat under sbx has no OTLP feed in wave 1. Integration w1 kept the loopback rule (lane D's request 1): widening it would let any `DERM_OTLP_ENDPOINT` an agent sets name a host on the network, and whether sbx's proxy keeps the `Host` header the receiver checks is not known. The sbx policy log is that chat's feed. The box test records what sbx does with the header; a later wave can allow the one name only when `DERM_BOUNDARY=sbx`. Since integration w5's continue, the hook core does that for its own records and asks (`daemon-protocol.md` section 4, the derm routes); Pi's emitter does not yet.
 - Content off by default; hashes and sizes on.
 
 ## 3. What lane B changed in the receiver

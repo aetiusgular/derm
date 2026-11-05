@@ -488,6 +488,18 @@ impl Daemon {
         if let Ok(mut c) = cell.lock() {
             *c = Some(Arc::downgrade(&daemon));
         }
+        // Lane T's P4-R1 (integration w5, continue): a chat's `event` and
+        // `approve` over the receiver's HTTP port, for a gate inside an sbx
+        // VM. The body is parsed as the socket's line is, and answered under
+        // the chat scope the same token gets on the socket (rule 2).
+        let weak = Arc::downgrade(&daemon);
+        daemon.receiver.set_ops(Arc::new(move |chat, harness, op| {
+            let reply = match weak.upgrade() {
+                Some(d) => d.http_op(chat, harness, op),
+                None => error("the daemon is stopping"),
+            };
+            serde_json::to_value(reply).unwrap_or(Value::Null)
+        }));
         if let Some(saved) = saved {
             daemon.restore_state(&saved);
         }
@@ -860,6 +872,28 @@ impl Daemon {
             }
         }
         After::Continue
+    }
+
+    /// A chat's op over HTTP (P4-R1): the field is read as the socket reads
+    /// its line, with `deny_unknown_fields`, then answered as the socket's
+    /// chat scope answers it.
+    fn http_op(&self, chat: &str, harness: &str, op: otel_receiver::ChatOp) -> Reply {
+        let who = Who::Chat {
+            chat: chat.to_string(),
+            harness: harness.to_string(),
+        };
+        let line = match op {
+            otel_receiver::ChatOp::Event(event) => json!({"op": "event", "event": event}),
+            otel_receiver::ChatOp::Approve(request) => {
+                json!({"op": "approve", "request": request})
+            }
+        };
+        match serde_json::from_value::<Request>(line) {
+            Ok(Request::Event { event }) => self.op_event(&who, event),
+            Ok(Request::Approve { request }) => self.op_approve(&who, request),
+            Ok(_) => error("not an op this route takes"),
+            Err(e) => error(format!("bad request: {e}")),
+        }
     }
 
     fn op_event(&self, who: &Who, mut event: Event) -> Reply {

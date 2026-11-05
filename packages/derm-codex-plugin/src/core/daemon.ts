@@ -6,6 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 import { constants, lstatSync, readFileSync } from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import { homedir, platform } from "node:os";
 import path from "node:path";
@@ -92,6 +93,102 @@ export function chatToken(env: NodeJS.ProcessEnv = process.env, cwd: string = pr
 
 type Reply = Record<string, unknown> & { ok?: boolean; error?: string };
 
+/** The host name sbx's VM reaches the host by (Docker's "Develop and test locally" page). */
+export const SBX_HOST = "host.docker.internal";
+
+/**
+ * Inside an sbx VM the daemon's socket is not there (the sbx smoke test, step
+ * 5: no host folder but the project is mounted), and the only way to the host
+ * is the receiver's HTTP port at `host.docker.internal` (step 4). The hook
+ * takes that route only when `derm run` said so: `DERM_BOUNDARY=sbx`,
+ * `DERM_OTLP_ENDPOINT` a plain `http://host.docker.internal:<port>` with no
+ * user, path, query or fragment, and no socket file where the socket would
+ * be (lane T's P4-R2, integration w5 continue). On the host the socket is
+ * always the route; a project that sets these variables reaches only a
+ * daemon port on the host that sbx's own rule opened, and the daemon there
+ * applies the token's chat scope (contracts/daemon-protocol.md section 4).
+ */
+export function vmEndpoint(env: NodeJS.ProcessEnv = process.env): URL | undefined {
+  if (env.DERM_BOUNDARY?.trim() !== "sbx") return undefined;
+  const raw = env.DERM_OTLP_ENDPOINT?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" || url.hostname !== SBX_HOST || url.port === "") return undefined;
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return undefined;
+  if (url.pathname !== "/" && url.pathname !== "") return undefined;
+  try {
+    lstatSync(socketPath(env));
+    return undefined;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? url : undefined;
+  }
+}
+
+const VM_ROUTES: Record<string, { path: string; field: string }> = {
+  event: { path: "/derm/v1/event", field: "event" },
+  approve: { path: "/derm/v1/approve", field: "request" },
+};
+
+/** One HTTP request to the daemon's derm route; its reply line, or why not. */
+export function postVm(url: URL, token: string, request: Record<string, unknown>, replyTimeoutMs: number): Promise<Reply | { failed: string }> {
+  const route = VM_ROUTES[String(request.op)];
+  if (!route) return Promise.resolve({ failed: `no route for ${String(request.op)} from a VM` });
+  const body = JSON.stringify({ [route.field]: request[route.field] });
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const done = (r: Reply | { failed: string }) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      req.destroy();
+      resolve(r);
+    };
+    const req = http.request(
+      {
+        host: url.hostname,
+        port: Number(url.port),
+        method: "POST",
+        path: route.path,
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "x-derm-token": token },
+        agent: false,
+      },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c: string) => {
+          text += c;
+          if (text.length > MAX_LINE_BYTES) done({ failed: "daemon reply too long" });
+        });
+        res.on("end", () => {
+          if (res.statusCode !== 200) return done({ failed: `daemon answered HTTP ${String(res.statusCode)}` });
+          try {
+            const reply = JSON.parse(text) as unknown;
+            done(typeof reply === "object" && reply !== null && !Array.isArray(reply) ? (reply as Reply) : { failed: "daemon sent a bad reply" });
+          } catch {
+            done({ failed: "daemon sent a reply that is not JSON" });
+          }
+        });
+        res.on("error", () => done({ failed: "daemon reply failed" }));
+      },
+    );
+    timer = setTimeout(() => done({ failed: "daemon connect timed out" }), CONNECT_TIMEOUT_MS);
+    req.on("socket", (sock) => {
+      sock.on("connect", () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => done({ failed: "daemon reply timed out" }), replyTimeoutMs);
+      });
+    });
+    req.on("error", (e: NodeJS.ErrnoException) => done({ failed: `daemon unreachable (${e.code ?? "error"})` }));
+    req.end(body);
+  });
+}
+
 /** One connection: hello, then each request in order, one reply line each. */
 export async function exchange(
   requests: readonly Record<string, unknown>[],
@@ -109,6 +206,16 @@ export async function exchange(
   if (insideFolder(sock, cwd)) return { error: "the daemon socket is inside the session folder, which a project can set; not used" };
   const token = chatToken(env, cwd);
   if (!token) return { error: "no chat token (start the harness with derm run)" };
+  const vm = vmEndpoint(env);
+  if (vm) {
+    const replies: Reply[] = [];
+    for (const request of requests) {
+      const r = await postVm(vm, token, request, opts.replyTimeoutMs);
+      if ("failed" in r) return { error: r.failed as string };
+      replies.push(r);
+    }
+    return { replies };
+  }
   const notOwned = socketLooksOwned(sock);
   if (notOwned) return { error: notOwned };
 

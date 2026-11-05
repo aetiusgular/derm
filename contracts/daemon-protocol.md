@@ -80,9 +80,21 @@ As in the fork (`otel_receiver.rs` at `159ef3e`): loopback only, a free port, `P
 
 The endpoint is published to clients as `DERM_OTLP_ENDPOINT` (`http://127.0.0.1:<port>`) by `derm run`, and lane B writes it to `otlp.endpoint` beside the socket for clients started another way.
 
+Since integration w5's continue (5 Nov; lane T's P4-R1 and P4-R2), the receiver also takes a chat's `event` and `approve` for a gate inside an sbx VM, which cannot see the socket (the sbx smoke test, steps 4 and 5):
+
+| Route | Body | Reply body |
+|---|---|---|
+| `POST /derm/v1/event` | `{"event": {...}}` and nothing else | the socket's reply line to `event` |
+| `POST /derm/v1/approve` | `{"request": {...}}` and nothing else | the socket's reply line to `approve`, sent when the request is answered |
+
+- The chat token in `x-derm-token` (or `authorization: bearer`), checked before the body is read, as for `/v1/logs`; the daemon's own token is not a receiver token and gets 401. The body is read as the socket's line is (`deny_unknown_fields` on the op) and answered under the chat scope that token gets on the socket (section 2, rule 2): only `adapter` and `otel` events, into the token's own chat, a gate decision written once, `approve` for its own chat. A daemon refusal is a 200 with `ok: false`, as on the socket.
+- JSON only (`application/json`), at most 1 MiB (the socket's line cap). At most 4 `approve` requests wait at once over HTTP (503 beyond), so the waiting asks never hold every one of the 16 connections. Until the daemon has set its ops (start), both routes answer 503.
+- `Host` may also be `host.docker.internal:<port>` on these two routes (not on `/v1/logs`): sbx's proxy turns that name into `localhost` (Docker's "Develop and test locally" page: "the sandbox proxy translates `host.docker.internal` to `localhost`"), and whether a client that bypasses the forward proxy arrives with the name rewritten is not found; a browser cannot send the token header cross-origin without a preflight, which the receiver never answers.
+- The hook core uses them only when `DERM_BOUNDARY=sbx`, `DERM_OTLP_ENDPOINT` is a plain `http://host.docker.internal:<port>`, and no file is where the socket would be (`packages/derm-claude-plugin/src/core/daemon.ts`, `vmEndpoint`). On the host the socket is always the route.
+
 ## 5. Not decided here
 
 - Retention: the fork's 7 days of logs, 3 of screenshots and a 1 GiB cap stay (`activity/retention.rs`); lane B also runs it hourly.
 - The units are written (`crates/derm-daemon/units/`); the box test and the Mac test install them.
 - Persisting chat-token hashes across a daemon restart (lane B: a small follow-up).
-- An OTLP endpoint for a harness inside sbx: `host.docker.internal` is not loopback, so lane A's emitter refuses it and a Pi chat under sbx has the sbx policy log as its only feed in wave 1 (integration w1 decision; the box test records whether sbx keeps the `Host` header).
+- An OTLP endpoint for a harness inside sbx: `host.docker.internal` is not loopback, so lane A's emitter refuses it and a Pi chat under sbx has the sbx policy log as its only feed in wave 1 (integration w1 decision). The sbx smoke test (4 Nov) saw `curl` from the VM get 200 on `/v1/logs` with the chat token after a per-sandbox `localhost:<port>` rule, so sbx's forward proxy delivers a `Host` the receiver accepts; the hooks' own route from a VM is section 4's derm routes. Pi's emitter still refuses the name.

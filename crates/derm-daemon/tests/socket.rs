@@ -1331,3 +1331,219 @@ fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
     let _ = sleeper.kill();
     let _ = sleeper.wait();
 }
+
+/// One request to the receiver's HTTP port; the status and the body.
+fn http(port: &str, path: &str, host: &str, token: Option<&str>, body: &str) -> (u16, String) {
+    let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    let auth = token.map_or(String::new(), |t| format!("x-derm-token: {t}\r\n"));
+    write!(
+        s,
+        "POST {path} HTTP/1.1\r\nhost: {host}\r\n{auth}content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    let _ = s.read_to_string(&mut reply);
+    let status = reply.get(9..12).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let body = reply.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    (status, body)
+}
+
+/// Lane T's P4-R1 (integration w5, continue): a chat's `event` over the
+/// receiver's HTTP port, for a gate inside an sbx VM, under the socket's
+/// chat-scope rules (`daemon-protocol.md`, rule 2).
+#[test]
+fn a_chat_posts_events_over_http_with_the_sockets_chat_rules() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-h", "claude-code");
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "chat": "chat-h"}));
+    let endpoint = f.daemon.endpoint();
+    let port = endpoint.rsplit(':').next().unwrap().to_string();
+    let local = format!("127.0.0.1:{port}");
+    let vm = format!("host.docker.internal:{port}");
+    let post = |id: &str, source: &str, kind: &str| {
+        json!({"event": event(id, "chat-other", source, kind, json!({"toolUseId": "t1"}))["event"]})
+            .to_string()
+    };
+    // An adapter record, from loopback and with sbx's host name: stored in
+    // the token's chat and harness, whatever the record says.
+    for (id, host) in [("h-1", &local), ("h-2", &vm)] {
+        let (status, body) = http(
+            &port,
+            "/derm/v1/event",
+            host,
+            Some(&token),
+            &post(id, "adapter", "tool.call"),
+        );
+        assert_eq!(status, 200, "{body}");
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(reply["ok"], true, "{body}");
+        let e = &t.recv()["event"];
+        assert_eq!(e["id"], id);
+        assert_eq!(e["chatId"], "chat-h");
+        assert_eq!(e["harness"], "claude-code");
+    }
+    // What a chat token may not post on the socket, it may not post here.
+    for (source, kind) in [
+        ("run", "run.start"),
+        ("approval", "approval"),
+        ("auditd", "write"),
+        ("derm", "install.lockdiff"),
+    ] {
+        let (status, body) = http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            Some(&token),
+            &post("h-x", source, kind),
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["ok"],
+            false,
+            "{source}: {body}"
+        );
+    }
+    // No token, the daemon's own token, a stranger's host, the OTLP route
+    // with sbx's host name, a second field, a bad body: refused before the
+    // daemon sees anything.
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            None,
+            &post("h-3", "adapter", "tool.call")
+        )
+        .0,
+        401
+    );
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            Some(DAEMON_TOKEN),
+            &post("h-3", "adapter", "tool.call")
+        )
+        .0,
+        401
+    );
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &format!("evil.example:{port}"),
+            Some(&token),
+            &post("h-3", "adapter", "tool.call")
+        )
+        .0,
+        403
+    );
+    assert_eq!(http(&port, "/v1/logs", &vm, Some(&token), "{}").0, 403);
+    let two = json!({"event": event("h-3", "c", "adapter", "tool.call", json!({}))["event"], "request": {}}).to_string();
+    assert_eq!(
+        http(&port, "/derm/v1/event", &local, Some(&token), &two).0,
+        400
+    );
+    assert_eq!(
+        http(&port, "/derm/v1/event", &local, Some(&token), "[1]").0,
+        400
+    );
+    assert_eq!(
+        http(&port, "/derm/v1/nothing", &local, Some(&token), "{}").0,
+        404
+    );
+    // An event the socket answers one way is answered the same way here.
+    let mut extra = event("h-4", "c", "adapter", "tool.call", json!({}));
+    extra["event"]["stranger"] = json!(1);
+    let (mut c, _) = Client::hello(&f, &token);
+    let on_socket = c.ask(extra.clone())["ok"].clone();
+    extra["event"]["id"] = json!("h-4b");
+    let (_, body) = http(
+        &port,
+        "/derm/v1/event",
+        &local,
+        Some(&token),
+        &json!({"event": extra["event"]}).to_string(),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ok"],
+        on_socket,
+        "{body}"
+    );
+    // After the run stops, the token opens nothing here either.
+    assert_eq!(
+        d.ask(event("run-stop-h", "chat-h", "run", "run.stop", json!({})))["ok"],
+        true
+    );
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            Some(&token),
+            &post("h-5", "adapter", "tool.call")
+        )
+        .0,
+        401
+    );
+}
+
+/// P4-R1's `approve`: the same request path as the socket's, so with no
+/// approver it is `no` at once, and an approver's answer comes back in the
+/// reply body; the chat and harness come from the token.
+#[test]
+fn a_chat_asks_over_http_and_gets_the_approvers_answer() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-ha", "claude-code");
+    let endpoint = f.daemon.endpoint();
+    let port = endpoint.rsplit(':').next().unwrap().to_string();
+    let local = format!("127.0.0.1:{port}");
+    let request = |id: &str| {
+        json!({"request": {"id": id, "chat": "ignored", "harness": "ignored", "tool": "bash", "summary": "npm i x", "timeoutSeconds": 30}}).to_string()
+    };
+    let (status, body) = http(
+        &port,
+        "/derm/v1/approve",
+        &local,
+        Some(&token),
+        &request("ap-h1"),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({"ok": true, "id": "ap-h1", "answer": "no", "by": "none"})
+    );
+    let mut a = Client::daemon(&f);
+    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    let mut harness = started_under_srt(&mut d, "chat-ha");
+    let (p, t) = (port.clone(), token.clone());
+    let asker = std::thread::spawn(move || {
+        http(
+            &p,
+            "/derm/v1/approve",
+            &format!("host.docker.internal:{p}"),
+            Some(&t),
+            &request("ap-h2"),
+        )
+    });
+    let asked = a.recv();
+    assert_eq!(asked["approve"]["chat"], "chat-ha");
+    assert_eq!(asked["approve"]["harness"], "claude-code");
+    assert_eq!(
+        a.ask(json!({"op": "answer", "id": "ap-h2", "answer": "no"}))["ok"],
+        true
+    );
+    let (status, body) = asker.join().unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({"ok": true, "id": "ap-h2", "answer": "no", "by": "approver"})
+    );
+    let _ = harness.kill();
+    let _ = harness.wait();
+}

@@ -170,3 +170,96 @@ describe("the daemon's endpoint on Windows (lane Z's request 2)", () => {
     expect(socketLooksOwned(path.join(tmpdir(), "no-such-derm-socket"), "linux")).toBe("no daemon socket");
   });
 });
+
+// Lane T's P4-R2 (integration w5, continue): inside an sbx VM the socket is
+// not there, and the hook reaches the daemon over the receiver's HTTP port
+// at host.docker.internal, only when derm run said so.
+describe("the VM route", () => {
+  const absent = path.join(root, "no-such-folder", "daemon.sock");
+  const vmEnv = (extra: Record<string, string> = {}) => ({
+    DERM_BOUNDARY: "sbx",
+    DERM_OTLP_ENDPOINT: "http://host.docker.internal:4318",
+    DERM_DAEMON_SOCKET: absent,
+    ...extra,
+  });
+
+  it("is taken only for sbx, a plain host.docker.internal URL, and no socket", async () => {
+    const { vmEndpoint } = await import("./daemon.ts");
+    expect(vmEndpoint(vmEnv())?.port).toBe("4318");
+    for (const extra of [
+      { DERM_BOUNDARY: "srt" },
+      { DERM_BOUNDARY: "" },
+      { DERM_OTLP_ENDPOINT: "http://127.0.0.1:4318" },
+      { DERM_OTLP_ENDPOINT: "https://host.docker.internal:4318" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal.evil.example:4318" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal" },
+      { DERM_OTLP_ENDPOINT: "http://u:p@host.docker.internal:4318" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal:4318/v1/logs" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal:4318/?x=1" },
+      { DERM_OTLP_ENDPOINT: "not a url" },
+      // A socket file where the socket would be: the host, never the VM route.
+      { DERM_DAEMON_SOCKET: tokenFile },
+    ]) {
+      expect(vmEndpoint(vmEnv(extra)), JSON.stringify(extra)).toBeUndefined();
+    }
+  });
+
+  it("posts each op to its route with the chat token and reads the reply line", async () => {
+    const http = await import("node:http");
+    const { postVm } = await import("./daemon.ts");
+    const seen: { path: string | undefined; token: string | undefined; body: string }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        seen.push({ path: req.url, token: req.headers["x-derm-token"] as string, body });
+        if (req.url === "/derm/v1/approve") return res.end(JSON.stringify({ ok: true, id: "ap", answer: "yes", by: "approver" }));
+        if (req.url === "/derm/v1/event") return res.end(JSON.stringify({ ok: true, id: "e1" }));
+        res.statusCode = 404;
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const url = new URL(`http://127.0.0.1:${port}`);
+    try {
+      const ev = await postVm(url, CHAT, { op: "event", event: { id: "e1" } }, 1000);
+      expect(ev).toEqual({ ok: true, id: "e1" });
+      const ap = await postVm(url, CHAT, { op: "approve", request: { id: "ap" } }, 1000);
+      expect(ap).toMatchObject({ answer: "yes", by: "approver" });
+      expect(seen.map((s) => [s.path, s.token, JSON.parse(s.body)])).toEqual([
+        ["/derm/v1/event", CHAT, { event: { id: "e1" } }],
+        ["/derm/v1/approve", CHAT, { request: { id: "ap" } }],
+      ]);
+      // An op with no route from a VM is never sent anywhere.
+      expect(await postVm(url, CHAT, { op: "tail" }, 1000)).toEqual({ failed: "no route for tail from a VM" });
+      expect(seen.length).toBe(2);
+    } finally {
+      server.close();
+    }
+    // Nothing listening: unreachable, within the connect timeout.
+    const closed = await postVm(new URL(`http://127.0.0.1:${port}`), CHAT, { op: "event", event: {} }, 1000);
+    expect(closed).toMatchObject({ failed: expect.stringMatching(/unreachable|timed out/) });
+  });
+
+  it("a status other than 200 is not a reply", async () => {
+    const http = await import("node:http");
+    const { postVm } = await import("./daemon.ts");
+    const server = http.createServer((_req, res) => {
+      res.statusCode = 401;
+      res.end("{}");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect(await postVm(new URL(`http://127.0.0.1:${port}`), CHAT, { op: "approve", request: {} }, 1000)).toEqual({ failed: "daemon answered HTTP 401" });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("with no chat token the VM route is not tried", async () => {
+    const r = await exchange([{ op: "event", event: {} }], { env: vmEnv(), client: "t", replyTimeoutMs: 500, cwd: project });
+    expect(r).toEqual({ error: "no chat token (start the harness with derm run)" });
+  });
+});

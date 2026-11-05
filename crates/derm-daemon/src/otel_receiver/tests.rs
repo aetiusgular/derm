@@ -449,7 +449,7 @@ fn the_whole_reply_goes_out_in_one_write() {
         (200, Some(BodyKind::Protobuf)),
     ] {
         let mut out = Recorder::default();
-        respond(&mut out, status, kind).unwrap();
+        respond(&mut out, status, kind.map(Answer::Otlp)).unwrap();
         assert_eq!(
             out.writes.len(),
             1,
@@ -773,4 +773,75 @@ fn every_preset_id_and_other_can_get_a_token() {
         let t = f.receiver.mint("c-mw46", h).unwrap();
         assert_eq!(f.receiver.holder_of(&t), Some(("c-mw46".to_string(), h)));
     }
+}
+
+/// P4-R1 (integration w5, continue): the derm routes answer 503 until the
+/// daemon sets its ops, take JSON only, and hold at most `MAX_APPROVING`
+/// approve requests at once, so a chat cannot hold every connection.
+#[test]
+fn the_derm_routes_wait_for_the_daemon_and_bound_waiting_asks() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-d", "claude-code").unwrap();
+    let json = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let ask = br#"{"request":{"id":"a","chat":"","harness":"","tool":"bash","summary":"s","timeoutSeconds":5}}"#;
+    assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 503);
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let held = release.clone();
+    f.receiver.set_ops(Arc::new(move |chat, harness, op| {
+        assert_eq!((chat, harness), ("chat-d", "claude-code"));
+        if let ChatOp::Approve(_) = op {
+            let (lock, cv) = &*held;
+            let mut open = lock.lock().unwrap();
+            while !*open {
+                open = cv.wait(open).unwrap();
+            }
+        }
+        serde_json::json!({"ok": true})
+    }));
+    let proto = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/x-protobuf"),
+    ];
+    assert_eq!(post(port, "/derm/v1/event", &proto, b""), 415);
+    assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 200);
+    let waiting: Vec<_> = (0..MAX_APPROVING)
+        .map(|_| {
+            let t = token.clone();
+            std::thread::spawn(move || {
+                post(
+                    port,
+                    "/derm/v1/approve",
+                    &[
+                        ("x-derm-token", t.as_str()),
+                        ("content-type", "application/json"),
+                    ],
+                    ask,
+                )
+            })
+        })
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f.receiver.approving.load(Ordering::SeqCst) < MAX_APPROVING && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(f.receiver.approving.load(Ordering::SeqCst), MAX_APPROVING);
+    assert_eq!(post(port, "/derm/v1/approve", &json, ask), 503);
+    // Events still go through while the asks wait.
+    assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 200);
+    {
+        let (lock, cv) = &*release;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+    }
+    for w in waiting {
+        assert_eq!(w.join().unwrap(), 200);
+    }
+    assert_eq!(f.receiver.approving.load(Ordering::SeqCst), 0);
+    // A body over the socket's line cap is refused before it is read.
+    let big = format!(r#"{{"event":"{}"}}"#, "x".repeat(MAX_DERM_BODY_BYTES));
+    assert_eq!(post(port, "/derm/v1/event", &json, big.as_bytes()), 413);
 }

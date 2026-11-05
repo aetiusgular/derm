@@ -23,6 +23,15 @@
 //!   before every read, a request rate cap, 2,000 records per request.
 //! - Off in Settings means no harness is pointed here and anything still
 //!   arriving is dropped.
+//! - Two more routes, for a gate inside an sbx VM, which cannot see the
+//!   daemon's socket (lane T's P4-R1, integration w5 continue):
+//!   `POST /derm/v1/event` and `POST /derm/v1/approve`, a JSON body holding
+//!   the socket op's one field (`event` or `request`), the same chat token,
+//!   and the socket's chat-scope rules, applied by the daemon (`ops`). A
+//!   reply is the socket's reply line as the body. sbx's proxy turns
+//!   `host.docker.internal` into `localhost` (Docker's "Develop and test
+//!   locally" page), and these routes also take `Host: host.docker.internal:
+//!   <port>`, which a client that bypasses the forward proxy may send.
 
 #[path = "decode.rs"]
 pub mod decode;
@@ -54,6 +63,11 @@ const BODY_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_TOKENS: usize = 512;
 /// Chats the window may name in one configure call.
 const MAX_CHATS: usize = 5000;
+/// A derm route's body: the socket's line cap (`daemon-protocol.md`, 2).
+pub const MAX_DERM_BODY_BYTES: usize = 1024 * 1024;
+/// `approve` requests waiting at once over HTTP; each holds a connection
+/// until it is answered, so they may not take every slot.
+const MAX_APPROVING: usize = 4;
 /// Requests per second over all chats, with this many in a burst.
 const RATE_PER_SEC: f64 = 40.0;
 const RATE_BURST: f64 = 200.0;
@@ -76,6 +90,17 @@ struct Holder {
 /// Where each request's batch of normalized events goes.
 pub type Sink = Arc<dyn Fn(Vec<ActivityEvent>) + Send + Sync>;
 
+/// A chat's socket op, arrived over HTTP (P4-R1): the one field of the
+/// socket's line, not yet checked.
+pub enum ChatOp {
+    Event(serde_json::Value),
+    Approve(serde_json::Value),
+}
+
+/// The daemon's answer to a `ChatOp` for the token's chat and harness: the
+/// socket's reply line, as JSON.
+pub type Ops = Arc<dyn Fn(&str, &'static str, ChatOp) -> serde_json::Value + Send + Sync>;
+
 /// One receiver: its port, its tokens, its counters.
 pub struct Receiver {
     port: u16,
@@ -88,6 +113,9 @@ pub struct Receiver {
     sink: Sink,
     open: AtomicUsize,
     rate: Mutex<(f64, Instant)>,
+    /// The daemon's ops for the derm routes; until set, they answer 503.
+    ops: OnceLock<Ops>,
+    approving: AtomicUsize,
     pub counters: Counters,
 }
 
@@ -151,6 +179,8 @@ impl Receiver {
             sink,
             open: AtomicUsize::new(0),
             rate: Mutex::new((RATE_BURST, Instant::now())),
+            ops: OnceLock::new(),
+            approving: AtomicUsize::new(0),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -280,6 +310,11 @@ impl Receiver {
         hash(token)
     }
 
+    /// The daemon's ops for the derm routes (P4-R1). Set once.
+    pub fn set_ops(&self, ops: Ops) {
+        let _ = self.ops.set(ops);
+    }
+
     /// The chat and harness a token was minted for, by its hash.
     pub fn holder_of(&self, token: &str) -> Option<(String, &'static str)> {
         self.holder(token).map(|h| (h.chat_id, h.harness))
@@ -324,7 +359,7 @@ impl Receiver {
                     let mut stream = stream;
                     let status = receiver.handle(&stream);
                     let (code, kind) = match status {
-                        Ok(kind) => (200, Some(kind)),
+                        Ok(answer) => (200, Some(answer)),
                         Err(code) => {
                             if code == 401 {
                                 receiver
@@ -348,14 +383,25 @@ impl Receiver {
         }
     }
 
-    /// One request. `Ok` holds the body kind to answer with.
-    fn handle(&self, stream: &TcpStream) -> Result<BodyKind, u16> {
+    /// One request. `Ok` holds what to answer with.
+    fn handle(&self, stream: &TcpStream) -> Result<Answer, u16> {
         self.counters.requests.fetch_add(1, Ordering::Relaxed);
         let mut reader = BufReader::new(Armed::new(stream, Instant::now() + HEAD_DEADLINE));
         let head = read_head(&mut reader)?;
+        let path = head.target.split('?').next().unwrap_or("");
+        let signal = match path {
+            "/v1/logs" => Signal::Logs,
+            "/v1/metrics" | "/v1/traces" => Signal::Other,
+            "/derm/v1/event" => Signal::DermEvent,
+            "/derm/v1/approve" => Signal::DermApprove,
+            _ => Signal::Unknown,
+        };
+        let derm = matches!(signal, Signal::DermEvent | Signal::DermApprove);
         let host_ok = head.header("host").is_some_and(|host| {
             host == format!("127.0.0.1:{}", self.port)
                 || host.eq_ignore_ascii_case(&format!("localhost:{}", self.port))
+                || (derm
+                    && host.eq_ignore_ascii_case(&format!("host.docker.internal:{}", self.port)))
         });
         if !host_ok {
             return Err(403);
@@ -363,12 +409,9 @@ impl Receiver {
         if head.method != "POST" {
             return Err(405);
         }
-        let path = head.target.split('?').next().unwrap_or("");
-        let signal = match path {
-            "/v1/logs" => Signal::Logs,
-            "/v1/metrics" | "/v1/traces" => Signal::Other,
-            _ => return Err(404),
-        };
+        if signal == Signal::Unknown {
+            return Err(404);
+        }
         // The token, before any of the body is read.
         let holder = token_from(&head)
             .and_then(|t| self.holder(&t))
@@ -395,9 +438,26 @@ impl Receiver {
             }
             _ => return Err(415),
         };
-        let body = read_body(&mut reader, &head, Instant::now() + BODY_DEADLINE)?;
+        if derm {
+            if kind != BodyKind::Json {
+                return Err(415);
+            }
+            let body = read_body(
+                &mut reader,
+                &head,
+                Instant::now() + BODY_DEADLINE,
+                MAX_DERM_BODY_BYTES,
+            )?;
+            return self.derm_op(signal, &body, &holder).map(Answer::Json);
+        }
+        let body = read_body(
+            &mut reader,
+            &head,
+            Instant::now() + BODY_DEADLINE,
+            MAX_BODY_BYTES,
+        )?;
         if signal == Signal::Other {
-            return Ok(kind);
+            return Ok(Answer::Otlp(kind));
         }
         let (enabled, log_prompts) = match self.settings.lock() {
             Ok(s) => (s.enabled, s.log_prompts),
@@ -412,7 +472,7 @@ impl Receiver {
             .dropped_records
             .fetch_add(decoded.dropped as u64, Ordering::Relaxed);
         if !enabled {
-            return Ok(kind);
+            return Ok(Answer::Otlp(kind));
         }
         let received = now_ms();
         let events: Vec<ActivityEvent> = decoded
@@ -428,7 +488,46 @@ impl Receiver {
                 .fetch_add(events.len() as u64, Ordering::Relaxed);
             (self.sink)(events);
         }
-        Ok(kind)
+        Ok(Answer::Otlp(kind))
+    }
+
+    /// A derm route's body, `{"event": {...}}` or `{"request": {...}}` and
+    /// nothing else (the socket refuses unknown fields too), handed to the
+    /// daemon's ops for the token's chat. The reply line is the body; a
+    /// refusal by the daemon is still a 200 with `ok: false`, as on the
+    /// socket.
+    fn derm_op(&self, signal: Signal, body: &[u8], holder: &Holder) -> Result<Vec<u8>, u16> {
+        let ops = self.ops.get().ok_or(503u16)?;
+        let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| 400u16)?;
+        let serde_json::Value::Object(mut map) = value else {
+            return Err(400);
+        };
+        let field = if signal == Signal::DermEvent {
+            "event"
+        } else {
+            "request"
+        };
+        if map.len() != 1 {
+            return Err(400);
+        }
+        let inner = map.remove(field).ok_or(400u16)?;
+        let reply = if signal == Signal::DermEvent {
+            ops(&holder.chat_id, holder.harness, ChatOp::Event(inner))
+        } else {
+            if self.approving.fetch_add(1, Ordering::SeqCst) >= MAX_APPROVING {
+                self.approving.fetch_sub(1, Ordering::SeqCst);
+                return Err(503);
+            }
+            struct Done<'a>(&'a AtomicUsize);
+            impl Drop for Done<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let _done = Done(&self.approving);
+            ops(&holder.chat_id, holder.harness, ChatOp::Approve(inner))
+        };
+        serde_json::to_vec(&reply).map_err(|_| 500u16)
     }
 }
 
@@ -436,6 +535,16 @@ impl Receiver {
 enum Signal {
     Logs,
     Other,
+    DermEvent,
+    DermApprove,
+    Unknown,
+}
+
+/// What a request is answered with: an OTLP reply of its kind, or a derm
+/// route's JSON body.
+enum Answer {
+    Otlp(BodyKind),
+    Json(Vec<u8>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -467,9 +576,14 @@ fn token_from(head: &Head) -> Option<String> {
 /// The whole reply in one buffer and one `write_all`: written in pieces,
 /// a close right after can leave the client holding only the first of them
 /// (Mac test 0.5).
-fn respond<W: Write>(stream: &mut W, status: u16, kind: Option<BodyKind>) -> std::io::Result<()> {
-    let (content_type, body): (&str, &[u8]) = match kind {
-        Some(BodyKind::Protobuf) => ("application/x-protobuf", b""),
+fn respond<W: Write>(stream: &mut W, status: u16, answer: Option<Answer>) -> std::io::Result<()> {
+    let json;
+    let (content_type, body): (&str, &[u8]) = match answer {
+        Some(Answer::Otlp(BodyKind::Protobuf)) => ("application/x-protobuf", b""),
+        Some(Answer::Json(bytes)) => {
+            json = bytes;
+            ("application/json", json.as_slice())
+        }
         _ => ("application/json", b"{}"),
     };
     let mut reply = format!(
@@ -538,6 +652,7 @@ fn reason(status: u16) -> &'static str {
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
         429 => "Too Many Requests",
+        500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "Status",
     }
@@ -642,7 +757,12 @@ fn read_head(reader: &mut Reader) -> Result<Head, u16> {
     })
 }
 
-fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<u8>, u16> {
+fn read_body(
+    reader: &mut Reader,
+    head: &Head,
+    deadline: Instant,
+    max: usize,
+) -> Result<Vec<u8>, u16> {
     reader.get_ref().deadline.set(deadline);
     let chunked = head
         .header("transfer-encoding")
@@ -659,7 +779,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| 400u16)?;
             let total = body.len().checked_add(size).ok_or(413u16)?;
-            if total > MAX_BODY_BYTES {
+            if total > max {
                 return Err(413);
             }
             let mut chunk = vec![0; size.checked_add(2).ok_or(413u16)?];
@@ -677,7 +797,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             .ok_or(411u16)?
             .parse()
             .map_err(|_| 400u16)?;
-        if length > MAX_BODY_BYTES {
+        if length > max {
             return Err(413);
         }
         reader
