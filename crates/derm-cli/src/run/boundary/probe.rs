@@ -88,6 +88,51 @@ impl Probe for Real {
     fn say(&mut self, line: &str) {
         eprintln!("{line}");
     }
+
+    fn gate(&mut self, h: &harness::Harness, cwd: Option<&str>) -> bool {
+        let mut env = crate::watch::status::Env::real();
+        if let Some(c) = cwd {
+            env.cwd = Some(PathBuf::from(c));
+        }
+        gate_holds(h.id, &env)
+    }
+}
+
+/// Whether derm's gate for `id` runs here and blocks the call when it
+/// fails: the preset row's gate is `built`, its `coverage.failMode` is
+/// `blocks` or `blocks-with-switch` (derm sets the switch when it registers,
+/// rules case 70), and `derm status`'s own registration check says yes for
+/// the folder the chat starts in (`watch::register::check`, case 103). An
+/// agent whose gate lets a call through when it fails or times out
+/// (`open`, `open-on-timeout`) gains less from srt over sbx, so it keeps the
+/// default order. The registration's detail is not returned: it holds text
+/// from files an agent can write (`register.rs`, fix pass 3's review).
+pub(crate) fn gate_holds(id: &str, env: &crate::watch::status::Env) -> bool {
+    use crate::watch::register::{check, Registered};
+    let Ok(table) =
+        serde_json::from_str::<serde_json::Value>(crate::connect::presets::table_json())
+    else {
+        return false;
+    };
+    let Some(row) = table
+        .get("harnesses")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|rows| {
+            rows.iter()
+                .find(|r| r.get("id").and_then(|v| v.as_str()) == Some(id))
+        })
+    else {
+        return false;
+    };
+    let built = row
+        .pointer("/coverage/gate/status")
+        .and_then(|v| v.as_str())
+        == Some("built");
+    let blocks = matches!(
+        row.pointer("/coverage/failMode").and_then(|v| v.as_str()),
+        Some("blocks" | "blocks-with-switch")
+    );
+    built && blocks && matches!(check(id, env), Registered::Yes(_) | Registered::YesNote(_))
 }
 
 /// One line from descriptor 0, a byte at a time, so nothing past the line
@@ -601,6 +646,72 @@ mod tests {
             let r = r.unwrap_err();
             assert!(r.why.contains("which the sandbox can write"), "{}", r.why);
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn status_env(home: &Path, cwd: Option<&Path>) -> crate::watch::status::Env {
+        crate::watch::status::Env {
+            home: Some(home.to_path_buf()),
+            path: String::new(),
+            vars: Vec::new(),
+            cwd: cwd.map(Path::to_path_buf),
+        }
+    }
+
+    fn put(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    /// Phase 4, item 2: srt first only where derm's gate runs here and
+    /// blocks when it fails, read as `derm status` reads it.
+    #[test]
+    fn the_gate_holds_only_when_built_registered_and_failing_closed() {
+        let d = tmp("gate");
+        let env = status_env(&d, None);
+        // Nothing registered: no.
+        assert!(!gate_holds("claude-code", &env));
+        // Claude Code's plugin installed for the user: its row blocks with
+        // derm's switch set (`onFailure: block`), so yes.
+        let installed = d.join(".claude/plugins/installed_plugins.json");
+        put(
+            &installed,
+            r#"{"version":2,"plugins":{"derm@derm":[{"scope":"user","installPath":"/x","version":"0.0.0"}]}}"#,
+        );
+        assert!(gate_holds("claude-code", &env));
+        // Turned off in the user's settings: no.
+        put(
+            &d.join(".claude/settings.json"),
+            r#"{"enabledPlugins":{"derm@derm":false}}"#,
+        );
+        assert!(!gate_holds("claude-code", &env));
+        put(&d.join(".claude/settings.json"), "{}");
+        assert!(gate_holds("claude-code", &env));
+        // An agent whose gate lets a call through when it fails keeps the
+        // default order, registered or not (codex: `failMode: open`).
+        assert!(!gate_holds("codex", &env));
+        // An agent derm does not know, and the program form.
+        assert!(!gate_holds("no-such-agent", &env));
+        assert!(!gate_holds("other", &env));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Case 103: a project-scope install counts only in its own folder, the
+    /// one `--cwd` names when the command line gives it.
+    #[test]
+    fn a_project_install_holds_only_in_its_folder_case_103() {
+        let d = tmp("gate-project");
+        let project = d.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        put(
+            &d.join(".claude/plugins/installed_plugins.json"),
+            &format!(
+                r#"{{"version":2,"plugins":{{"derm@derm":[{{"scope":"project","projectPath":"{}","installPath":"/x","version":"0.0.0"}}]}}}}"#,
+                project.display()
+            ),
+        );
+        assert!(gate_holds("claude-code", &status_env(&d, Some(&project))));
+        assert!(!gate_holds("claude-code", &status_env(&d, Some(&d))));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

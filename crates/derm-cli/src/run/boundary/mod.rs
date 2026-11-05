@@ -10,6 +10,12 @@
 //!    `sbx login`, `plans/parallel/tk_sbx_smoke.md` step 1);
 //! 2. else srt, when its dependencies pass `preflight::srt` and a probe,
 //!    `srt --settings <file> -- true`, exits 0;
+//!
+//!    For an agent whose derm gate is registered here and blocks when it
+//!    fails ([`Probe::gate`]), srt comes first and sbx second: under srt the
+//!    gate runs, under sbx the agent runs in the VM without it until derm's
+//!    kit passes the box test (Tony's O1 decision, 4 Nov, the interim half;
+//!    lane T phase 4). The record names sbx as passed over.
 //! 3. else a warning that names why each one is unavailable and the line
 //!    that would install it, and a question: run as you, or stop. Only a
 //!    person at a terminal answers it (stdin and stderr both terminals);
@@ -25,11 +31,11 @@
 //! pty can answer it (case 89). The gate, the agents' user (lane V) and the
 //! person check at the approver are what stand against an agent.
 
-// `io_uring` and `sbx` are built here and called from `run_io` and
-// `plan.rs` once integration applies requests T-2 and T-3 (those files are
-// integration's in wave 5); until then only their tests call them.
+// `io_uring` and `sbx` are called from `run_io` and `plan.rs` (requests T-2
+// and T-3, applied at the phase 3 merge, `2dcc6a2`).
 #[cfg_attr(not(test), allow(dead_code))]
 mod io_uring;
+mod kit;
 mod probe;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sbx;
@@ -106,6 +112,14 @@ pub(crate) trait Probe {
     fn pre_answer(&mut self) -> (Option<PreAnswer>, Option<String>);
     /// Lines for the person (stderr in the real probe).
     fn say(&mut self, line: &str);
+    /// `true` when derm's gate for this harness is built, registered here
+    /// (as `derm status` reads it, from `cwd` when the command line names
+    /// one), and blocks the call when it fails or times out (the preset
+    /// row's `coverage.failMode` is `blocks` or `blocks-with-switch`). Such
+    /// an agent keeps its gate under srt and loses it under sbx until derm's
+    /// kit passes the box test (Tony's O1 decision, 4 Nov), so the default
+    /// tries srt first for it.
+    fn gate(&mut self, harness: &harness::Harness, cwd: Option<&str>) -> bool;
 }
 
 /// The real choice, against this process's environment.
@@ -209,26 +223,56 @@ pub(crate) fn choose_with(argv: &[String], probe: &mut dyn Probe) -> Result<Choi
     }
 
     let mut reasons = Vec::new();
-    match probe.sbx(h) {
-        Ok(()) => {
-            probe.say(&format!(
-                "derm run: no --boundary given; {} runs under sbx (installed and signed in)",
-                name_of(h)
-            ));
-            return Ok(chosen(argv, &s, "sbx", reasons, "default", None));
+    if probe.gate(h, s.cwd) {
+        // srt first (O1, interim): under srt the agent keeps derm's gate;
+        // under sbx it runs in the VM without it until derm's kit passes the
+        // box test. sbx is not probed when srt will do, so a signed-in sbx is
+        // not started for nothing.
+        match probe.srt(h, s.cwd) {
+            Ok(()) => {
+                probe.say(&format!(
+                    "derm run: no --boundary given; {} runs under srt, which keeps derm's gate (it is registered here and blocks when it fails). \
+                     sbx is tried second for it: in the VM it would run without derm's gate. --boundary sbx still picks sbx",
+                    name_of(h)
+                ));
+                reasons.push(passed_over_sbx(h));
+                return Ok(chosen(argv, &s, "srt", reasons, "default", None));
+            }
+            Err(r) => reasons.push(r),
         }
-        Err(r) => reasons.push(r),
-    }
-    match probe.srt(h, s.cwd) {
-        Ok(()) => {
-            probe.say(&format!(
-                "derm run: no --boundary given; {} runs under srt (sbx: {})",
-                name_of(h),
-                reasons[0].why
-            ));
-            return Ok(chosen(argv, &s, "srt", reasons, "default", None));
+        match probe.sbx(h) {
+            Ok(()) => {
+                probe.say(&format!(
+                    "derm run: no --boundary given; {} runs under sbx, without derm's gate in the VM (srt: {})",
+                    name_of(h),
+                    reasons[0].why
+                ));
+                return Ok(chosen(argv, &s, "sbx", reasons, "default", None));
+            }
+            Err(r) => reasons.push(r),
         }
-        Err(r) => reasons.push(r),
+    } else {
+        match probe.sbx(h) {
+            Ok(()) => {
+                probe.say(&format!(
+                    "derm run: no --boundary given; {} runs under sbx (installed and signed in)",
+                    name_of(h)
+                ));
+                return Ok(chosen(argv, &s, "sbx", reasons, "default", None));
+            }
+            Err(r) => reasons.push(r),
+        }
+        match probe.srt(h, s.cwd) {
+            Ok(()) => {
+                probe.say(&format!(
+                    "derm run: no --boundary given; {} runs under srt (sbx: {})",
+                    name_of(h),
+                    reasons[0].why
+                ));
+                return Ok(chosen(argv, &s, "srt", reasons, "default", None));
+            }
+            Err(r) => reasons.push(r),
+        }
     }
 
     // Neither: warn, then ask a person, or take the pre-answer, or stop.
@@ -285,6 +329,20 @@ pub(crate) fn choose_with(argv: &[String], probe: &mut dyn Probe) -> Result<Choi
              To run without one anyway, pass --boundary none, or set \"boundary\": {\"preAnswer\": \"run-as-you\"} in ~/.derm/settings.json"
                 .into(),
         )),
+    }
+}
+
+/// The record's reason for not trying sbx first for a gated agent. sbx was
+/// not probed, so nothing is said about whether it would have run, and no
+/// install line is given: nothing is missing.
+fn passed_over_sbx(h: &harness::Harness) -> Reason {
+    Reason {
+        boundary: "sbx",
+        why: format!(
+            "not tried first: derm's gate for {} is registered here and blocks when it fails; srt keeps it, and sbx runs the agent in its VM without it until derm's kit passes the box test",
+            name_of(h)
+        ),
+        install: None,
     }
 }
 
@@ -366,7 +424,7 @@ fn warning(h: &harness::Harness, reasons: &[Reason]) -> Vec<String> {
 fn warn_none_named(h: &harness::Harness, probe: &mut dyn Probe) {
     probe.say(&format!(
         "derm run: --boundary none: {} runs as you, with no sandbox. Only its own gate and the OS feed watch it. \
-         With no --boundary, derm picks sbx, then srt, and asks before it runs without either.",
+         With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is registered), and asks before it runs without either.",
         name_of(h)
     ));
 }

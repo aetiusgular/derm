@@ -18,6 +18,9 @@ struct Fake {
     asked: Vec<String>,
     said: Vec<String>,
     probed: Vec<&'static str>,
+    /// What [`Probe::gate`] answers, and how often it was asked.
+    gate: bool,
+    gate_asked: usize,
 }
 
 fn no(boundary: &'static str, why: &str, install: Option<&str>) -> Result<(), Reason> {
@@ -53,6 +56,10 @@ impl Probe for Fake {
     }
     fn say(&mut self, line: &str) {
         self.said.push(line.to_string());
+    }
+    fn gate(&mut self, _: &harness::Harness, _: Option<&str>) -> bool {
+        self.gate_asked += 1;
+        self.gate
     }
 }
 
@@ -371,4 +378,150 @@ fn availability_answers_for_a_known_harness_only() {
     if let Err(r) = srt {
         assert_eq!(r.boundary, "srt");
     }
+}
+
+// Phase 4, item 2: srt first for an agent whose derm gate is registered here
+// and blocks when it fails (Tony's O1 decision, the interim half).
+
+fn sbx_signed_out() -> Result<(), Reason> {
+    no(
+        "sbx",
+        "sbx is installed and not signed in to Docker",
+        Some("sbx login"),
+    )
+}
+
+#[test]
+fn a_gated_agent_gets_srt_first_and_sbx_is_not_probed() {
+    let mut f = Fake {
+        gate: true,
+        srt: Some(Ok(())),
+        // sbx left unset: probing it would panic.
+        ..Fake::default()
+    };
+    let c = choose_with(&s(&["claude-code", "--", "-p", "x"]), &mut f).unwrap();
+    assert_eq!(
+        c.argv,
+        s(&["claude-code", "--boundary", "srt", "--", "-p", "x"])
+    );
+    assert_eq!(f.probed, vec!["srt"], "sbx is not started when srt will do");
+    let r = c.record.unwrap();
+    assert_eq!(r["chosen"], "srt");
+    assert_eq!(r["named"], false);
+    assert_eq!(r["answeredBy"], "default");
+    let reasons = r["reasons"].as_array().unwrap();
+    assert_eq!(reasons.len(), 1);
+    assert_eq!(reasons[0]["boundary"], "sbx");
+    let why = reasons[0]["why"].as_str().unwrap();
+    assert!(
+        why.starts_with("not tried first: derm's gate for claude-code"),
+        "{why}"
+    );
+    assert!(why.chars().count() <= 300);
+    assert!(
+        reasons[0].get("install").is_none(),
+        "nothing is missing, so no install line"
+    );
+    assert_eq!(f.said.len(), 1);
+    assert!(
+        f.said[0].contains("runs under srt, which keeps derm's gate"),
+        "{}",
+        f.said[0]
+    );
+    assert!(
+        f.said[0].contains("--boundary sbx still picks sbx"),
+        "{}",
+        f.said[0]
+    );
+}
+
+#[test]
+fn a_gated_agent_falls_back_to_sbx_and_is_told_the_gate_is_not_in_the_vm() {
+    let mut f = Fake {
+        gate: true,
+        srt: Some(no(
+            "srt",
+            "srt is not installed (no srt on PATH)",
+            Some("npm install -g @anthropic-ai/sandbox-runtime"),
+        )),
+        sbx: Some(Ok(())),
+        ..Fake::default()
+    };
+    let c = choose_with(&s(&["claude-code"]), &mut f).unwrap();
+    assert_eq!(c.argv, s(&["claude-code", "--boundary", "sbx"]));
+    assert_eq!(f.probed, vec!["srt", "sbx"]);
+    let r = c.record.unwrap();
+    assert_eq!(r["chosen"], "sbx");
+    assert_eq!(r["reasons"].as_array().unwrap().len(), 1);
+    assert_eq!(r["reasons"][0]["boundary"], "srt");
+    assert!(
+        f.said[0]
+            .contains("runs under sbx, without derm's gate in the VM (srt: srt is not installed"),
+        "{}",
+        f.said[0]
+    );
+}
+
+#[test]
+fn a_gated_agent_with_neither_warns_with_srt_then_sbx_and_still_asks_case_129() {
+    let mut f = Fake {
+        gate: true,
+        srt: Some(no("srt", "srt is not installed (no srt on PATH)", None)),
+        sbx: Some(sbx_signed_out()),
+        terminal: true,
+        answer: Some("no".into()),
+        ..Fake::default()
+    };
+    let e = choose_with(&s(&["claude-code"]), &mut f).unwrap_err();
+    assert_eq!(e.0, STOPPED);
+    assert_eq!(f.probed, vec!["srt", "sbx"]);
+    assert_eq!(f.asked.len(), 1);
+    // The warning lists the reasons in the order they were tried.
+    let srt_line = f.said.iter().position(|l| l.starts_with("  srt:")).unwrap();
+    let sbx_line = f.said.iter().position(|l| l.starts_with("  sbx:")).unwrap();
+    assert!(srt_line < sbx_line, "{:?}", f.said);
+}
+
+#[test]
+fn an_agent_without_a_gate_that_holds_keeps_sbx_first() {
+    let mut f = Fake {
+        gate: false,
+        sbx: Some(Ok(())),
+        ..Fake::default()
+    };
+    let c = choose_with(&s(&["codex"]), &mut f).unwrap();
+    assert_eq!(c.argv, s(&["codex", "--boundary", "sbx"]));
+    assert_eq!(f.probed, vec!["sbx"]);
+    assert_eq!(f.gate_asked, 1);
+    assert!(c.record.unwrap()["reasons"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_named_boundary_does_not_read_the_gate_d1() {
+    for b in ["sbx", "srt", "none"] {
+        let mut f = Fake {
+            gate: true,
+            ..Fake::default()
+        };
+        let argv = s(&["claude-code", "--boundary", b]);
+        let c = choose_with(&argv, &mut f).unwrap();
+        assert_eq!(c.argv, argv, "{b}");
+        assert_eq!(f.gate_asked, 0, "{b}");
+        assert!(f.probed.is_empty(), "{b}");
+    }
+}
+
+#[test]
+fn a_gated_agent_in_a_dry_run_is_described_in_the_same_order() {
+    let mut f = Fake {
+        gate: true,
+        srt: Some(Ok(())),
+        ..Fake::default()
+    };
+    let c = choose_with(&s(&["claude-code", "--dry-run"]), &mut f).unwrap();
+    assert_eq!(
+        c.argv,
+        s(&["claude-code", "--boundary", "srt", "--dry-run"])
+    );
+    assert_eq!(f.probed, vec!["srt"]);
 }

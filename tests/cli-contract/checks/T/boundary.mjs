@@ -97,6 +97,19 @@ function withPi(dirs, binPath, { srt = true } = {}) {
   if (srt) symlinkSync(srtBin(), path.join(dirs.bin, "srt"));
 }
 
+/** derm-pi registered as `derm status` reads it (`watch/register.rs`, `pi`):
+ *  a local package folder whose package.json is named
+ *  `@aetiusgular/derm-pi`, listed in `~/.pi/agent/settings.json`. The folder
+ *  is a stand-in with no extension: `pi --version` loads none. */
+function registerDermPi(dirs) {
+  const pkg = path.join(dirs.root, "derm-pi");
+  mkdirSync(pkg);
+  writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "@aetiusgular/derm-pi", version: "0.0.0" }));
+  const agent = path.join(dirs.home, ".pi", "agent");
+  mkdirSync(agent, { recursive: true });
+  writeFileSync(path.join(agent, "settings.json"), JSON.stringify({ packages: [pkg] }));
+}
+
 const done = (dirs, result) => {
   rmSync(dirs.root, { recursive: true, force: true });
   return result;
@@ -105,7 +118,7 @@ const done = (dirs, result) => {
 export const checks = [
   {
     id: "boundary-default-srt",
-    title: "no --boundary, no sbx: derm picks srt and the real Pi starts under it",
+    title: "no --boundary, no sbx: derm picks srt and the real Pi starts under it; with derm's gate registered, srt comes before a signed-in sbx",
     harness: "pi",
     async run({ binPath, version }) {
       const why = needs();
@@ -120,7 +133,31 @@ export const checks = [
       if (!/no --boundary given; pi runs under srt \(sbx: sbx is not installed/.test(r.err)) {
         return done(dirs, { status: "fail", finding: `no note of the choice: ${JSON.stringify(r.err.slice(0, 300))}` });
       }
-      return done(dirs, { status: "pass", finding: `srt chosen with sbx's reason; Pi ${v} answered under it` });
+      rmSync(dirs.root, { recursive: true, force: true });
+      // Phase 4, item 2 (Tony's O1 decision, the interim half): Pi with
+      // derm's gate registered (its row blocks when it fails) and sbx
+      // installed and signed in. derm picks srt, which keeps the gate, and
+      // never calls sbx; a named --boundary sbx still picks sbx (D1).
+      const gated = box("srt-gated");
+      withPi(gated, binPath);
+      const log = fakeSbx(gated.bin, { signedIn: true });
+      registerDermPi(gated);
+      const g = derm(gated, ["pi", "--no-daemon", "--", "--version"]);
+      const calls = existsSync(log) ? readFileSync(log, "utf8") : "";
+      if (g.code !== 0 || !g.out.includes(v) || !/no --boundary given; pi runs under srt, which keeps derm's gate/.test(g.err)) {
+        return done(gated, { status: "fail", finding: `gated: exit ${g.code}; stderr ${JSON.stringify(g.err.slice(0, 400))}` });
+      }
+      if (calls !== "") {
+        return done(gated, { status: "fail", finding: `gated: sbx was called though srt would do: ${JSON.stringify(calls)}` });
+      }
+      const dry = derm(gated, ["pi", "--boundary", "sbx", "--no-daemon", "--dry-run", "--", "--version"]);
+      if (dry.code !== 0 || !/sbx/.test(dry.out + dry.err) || /runs under srt/.test(dry.err)) {
+        return done(gated, { status: "fail", finding: `gated, --boundary sbx named: exit ${dry.code}; ${JSON.stringify((dry.out + dry.err).slice(0, 300))}` });
+      }
+      return done(gated, {
+        status: "pass",
+        finding: `srt chosen with sbx's reason; Pi ${v} answered under it. With derm-pi registered and sbx signed in: srt first, sbx never called; --boundary sbx still plans sbx`,
+      });
     },
   },
   {
