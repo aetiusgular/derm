@@ -284,6 +284,72 @@ fn a_restart_keeps_a_running_chat_and_its_otlp_port() {
     stop(daemon);
 }
 
+/// Integration w5's close (lane T's T-7, lane V's V-4, lane S's request 7):
+/// `report.running` carries what a chat's `run.start` said about its
+/// boundary choice, io_uring, the tap and content capture, cut to size, and
+/// keeps it across a restart, so `derm status` can say "runs as you",
+/// "io_uring not audited" and "untapped" per chat (cases 127 to 129).
+#[test]
+fn report_running_carries_the_wave_5_marks_across_a_restart() {
+    let d = Dirs::new();
+    let daemon = start(&d);
+    let (mut w, mut r) = session(&d);
+    let mut harness = Command::new("sleep").arg("60").spawn().unwrap();
+    let long = "x".repeat(500);
+    let started = ask(
+        &mut w,
+        &mut r,
+        json!({"op": "event", "event": {
+            "id": "start-m", "at": 0, "chatId": "chat-m", "harness": "pi",
+            "source": "run", "kind": "run.start", "summary": "",
+            "detail": {"cwd": "/tmp", "boundary": "none",
+                "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal",
+                    "reasons": [{"boundary": "sbx", "why": long}], "preAnswer": null},
+                "ioUring": "not-audited",
+                "tap": {"on": false, "reason": "no-tap-flag"},
+                "content": {"on": true, "retentionDays": 3}},
+            "pid": harness.id()
+        }}),
+    );
+    assert_eq!(started["ok"], true, "{started}");
+    let running = |w: &mut _, r: &mut _| -> Vec<Value> {
+        let rep = ask(
+            w,
+            r,
+            json!({"op": "report", "since": 0, "until": i64::MAX / 2}),
+        );
+        rep["report"]["running"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let want = json!({
+        "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal"},
+        "ioUring": "not-audited",
+        "tap": {"on": false, "reason": "no-tap-flag"},
+        "content": {"on": true, "retentionDays": 3},
+    });
+    let rows = running(&mut w, &mut r);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    for k in ["boundaryChoice", "ioUring", "tap", "content"] {
+        assert_eq!(rows[0][k], want[k], "{k} in {}", rows[0]);
+    }
+    // The reasons' text stays in the record, not in the running list.
+    assert!(!rows[0].to_string().contains(&long));
+    drop((w, r));
+    stop(daemon);
+    let daemon = start(&d);
+    let (mut w, mut r) = session(&d);
+    let rows = running(&mut w, &mut r);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    for k in ["boundaryChoice", "ioUring", "tap", "content"] {
+        assert_eq!(rows[0][k], want[k], "after a restart: {k} in {}", rows[0]);
+    }
+    let _ = harness.kill();
+    let _ = harness.wait();
+    stop(daemon);
+}
+
 /// Box test w2, BW3: `derm status` lost a running chat behind newer events
 /// because it read run starts from the tail's backlog. `report` now carries
 /// the daemon's own list of running chats, and it survives a restart with

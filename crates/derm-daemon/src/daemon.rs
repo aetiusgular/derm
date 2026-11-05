@@ -1428,14 +1428,66 @@ fn run_info_of(event: &Event, received: i64) -> Value {
         .and_then(Value::as_array)
         .map(|a| a.iter().take(16).map(|f| cut(Some(f), 64)).collect())
         .unwrap_or_default();
-    json!({
+    let mut out = json!({
         "harness": Value::String(event.harness.chars().take(64).collect()),
         "boundary": cut(event.detail.get("boundary"), 16),
         "since": received,
         "fullAccessFlags": flags,
         // The agents' user the chat runs as (lane V), its name only.
         "agentUser": cut(event.detail.get("agentUser").and_then(|u| u.get("user")), 32),
-    })
+    });
+    if let Value::Object(m) = &mut out {
+        m.extend(wave5_marks(&event.detail));
+    }
+    out
+}
+
+/// The wave 5 marks of a `run.start` (`contracts/events.md` section 5) as the
+/// running list keeps them: the boundary choice without its reasons, the
+/// io_uring mark, whether the tap is on and why not, and content capture.
+/// Each value cut to a fixed size and shape (review W2-S9: `chats.json` is
+/// read, not trusted). Integration w5's close (T-7, V-4, request S-7).
+fn wave5_marks(d: &Value) -> serde_json::Map<String, Value> {
+    let s = |v: Option<&Value>, max: usize| -> Value {
+        v.and_then(Value::as_str)
+            .map(|x| Value::String(x.chars().take(max).collect()))
+            .unwrap_or(Value::Null)
+    };
+    let b = |v: Option<&Value>| v.and_then(Value::as_bool).map_or(Value::Null, Value::Bool);
+    let mut m = serde_json::Map::new();
+    if let Some(c) = d.get("boundaryChoice").filter(|v| v.is_object()) {
+        m.insert(
+            "boundaryChoice".into(),
+            json!({
+                "chosen": s(c.get("chosen"), 8),
+                "named": b(c.get("named")),
+                "answeredBy": s(c.get("answeredBy"), 16),
+            }),
+        );
+    }
+    if d.get("ioUring").is_some() {
+        m.insert("ioUring".into(), s(d.get("ioUring"), 16));
+    }
+    if let Some(t) = d.get("tap").filter(|v| v.is_object()) {
+        let mut tap = serde_json::Map::new();
+        tap.insert("on".into(), b(t.get("on")));
+        if t.get("reason").is_some() {
+            tap.insert("reason".into(), s(t.get("reason"), 32));
+        }
+        m.insert("tap".into(), Value::Object(tap));
+    }
+    if let Some(c) = d.get("content").filter(|v| v.is_object()) {
+        let days = c
+            .get("retentionDays")
+            .and_then(Value::as_u64)
+            .filter(|n| (1..=7).contains(n))
+            .map_or(Value::Null, Value::from);
+        m.insert(
+            "content".into(),
+            json!({"on": b(c.get("on")), "retentionDays": days}),
+        );
+    }
+    m
 }
 
 /// A run's info as `chats.json` held it: the same fields, re-cut, nothing
@@ -1458,13 +1510,17 @@ fn run_info_restored(v: &Value) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    json!({
+    let mut out = json!({
         "harness": cut("harness", 64),
         "boundary": cut("boundary", 16),
         "since": v.get("since").and_then(Value::as_i64),
         "fullAccessFlags": flags,
         "agentUser": cut("agentUser", 32),
-    })
+    });
+    if let Value::Object(m) = &mut out {
+        m.extend(wave5_marks(v));
+    }
+    out
 }
 
 pub fn merge_backlog<'a>(

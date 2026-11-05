@@ -460,7 +460,66 @@ fn running_row(r: &Value) -> Value {
         "pid": r.get("pid"),
         "alive": r.get("alive"),
         "fullAccessFlags": r.get("fullAccessFlags"),
+        // Wave 5 (integration w5's close): what the chat's run.start said.
+        "agentUser": r.get("agentUser"),
+        "boundaryChoice": r.get("boundaryChoice"),
+        "ioUring": r.get("ioUring"),
+        "tap": r.get("tap"),
+        "content": r.get("content"),
     })
+}
+
+/// How a running chat runs, in a few words each (integration w5's close:
+/// lane T's T-7, lane V's V-4, lane S's request 7, lane T's P4-R4): who it
+/// runs as, the sbx VM's gate, io_uring (case 128), the tap (case 127),
+/// content capture, and how the boundary was chosen (case 129).
+fn chat_marks(c: &Value) -> Vec<String> {
+    fn s(v: Option<&Value>) -> &str {
+        v.and_then(Value::as_str).unwrap_or("")
+    }
+    let mut out = Vec::new();
+    let boundary = s(c.get("boundary"));
+    let user = s(c.get("agentUser"));
+    if !user.is_empty() {
+        out.push(format!("as the agents' user {}", clean(user, 32)));
+    } else if boundary == "none" {
+        out.push("runs as you".into());
+    }
+    if boundary == "sbx" {
+        // Only Claude Code has derm's kit (P4-R3: run.start does not yet say
+        // whether the kit went on; the start line does).
+        out.push(if s(c.get("harness")) == "claude-code" {
+            "derm's gate in the VM through its kit, unless the start line said otherwise".into()
+        } else {
+            "no derm gate in the VM".into()
+        });
+    }
+    if s(c.get("ioUring")) == "not-audited" {
+        out.push("io_uring not audited".into());
+    }
+    if let Some(tap) = c.get("tap").filter(|t| t.is_object()) {
+        if tap.get("on").and_then(Value::as_bool) == Some(false) {
+            let why = s(tap.get("reason"));
+            out.push(if why.is_empty() {
+                "untapped".into()
+            } else {
+                format!("untapped ({})", clean(why, 32))
+            });
+        }
+    }
+    if let Some(ct) = c.get("content").filter(|t| t.is_object()) {
+        if ct.get("on").and_then(Value::as_bool) == Some(true) {
+            let days = ct.get("retentionDays").and_then(Value::as_u64).unwrap_or(0);
+            out.push(format!("content kept {days} days"));
+        }
+    }
+    let choice = c.get("boundaryChoice");
+    match s(choice.and_then(|b| b.get("answeredBy"))) {
+        "terminal" if boundary == "none" => out.push("no boundary, chosen at a terminal".into()),
+        "pre-answer" => out.push("started by your pre-answer".into()),
+        _ => {}
+    }
+    out
 }
 
 /// For a daemon without `report.running`: chats with a `run.start` in the
@@ -780,14 +839,21 @@ fn render_daemon(d: &Value) -> String {
                     )
                 };
                 let full = full_text.as_str();
+                let marks = chat_marks(c);
+                let marks = if marks.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", marks.join(", "))
+                };
                 out.push_str(&format!(
-                    "    {}  {:<12} boundary {:<5} since {}  {}{}\n",
+                    "    {}  {:<12} boundary {:<5} since {}  {}{}{}\n",
                     clean(s("chat"), 24),
                     clean(s("harness"), 12),
                     clean(s("boundary"), 5),
                     clock(c.get("since").and_then(Value::as_i64).unwrap_or(0)),
                     alive,
-                    full
+                    full,
+                    marks
                 ));
             }
         }
@@ -829,6 +895,51 @@ mod tests {
         assert!(!out.contains("plain yes"), "{out}");
         assert!(out.contains("(docs/install/agents.md)\\u{1B}[2J"), "{out}");
         assert!(!out.contains('\u{1b}'), "{out}");
+    }
+
+    /// Integration w5's close (T-7, V-4, request S-7, P4-R4): each running
+    /// chat says how it runs: as you with no boundary, as the agents' user,
+    /// with no derm gate in an sbx VM, io_uring not audited, untapped, and
+    /// content kept, from the daemon's `report.running` (cases 127 to 129).
+    #[test]
+    fn status_marks_each_running_chat_with_its_wave_5_state() {
+        let row = |extra: serde_json::Value| {
+            let mut r = serde_json::json!({"chat": "c1", "harness": "pi", "boundary": "none",
+                "since": 1_700_000_000_000i64, "pid": 1, "alive": true, "fullAccessFlags": []});
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            running_row(&r)
+        };
+        let render = |c: serde_json::Value| {
+            render_daemon(&serde_json::json!({"running": true,
+                "daemon": {"version": "0.1.3", "protocol": 1}, "chats": [c]}))
+        };
+        let t = render(row(serde_json::json!({"ioUring": "not-audited",
+            "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal"},
+            "tap": {"on": false, "reason": "no-tap-flag"},
+            "content": {"on": true, "retentionDays": 3}})));
+        assert!(t.contains("runs as you"), "{t}");
+        assert!(t.contains("io_uring not audited"), "{t}");
+        assert!(t.contains("untapped (no-tap-flag)"), "{t}");
+        assert!(t.contains("content kept 3 days"), "{t}");
+        assert!(t.contains("no boundary, chosen at a terminal"), "{t}");
+        let t = render(row(serde_json::json!({"agentUser": "derm-agent"})));
+        assert!(t.contains("as the agents' user derm-agent"), "{t}");
+        assert!(!t.contains("runs as you"), "{t}");
+        let t = render(row(
+            serde_json::json!({"boundary": "sbx", "harness": "codex",
+            "ioUring": "own-kernel", "tap": {"on": true}}),
+        ));
+        assert!(t.contains("no derm gate in the VM"), "{t}");
+        assert!(!t.contains("untapped") && !t.contains("io_uring"), "{t}");
+        let t = render(row(
+            serde_json::json!({"boundary": "sbx", "harness": "claude-code"}),
+        ));
+        assert!(t.contains("derm's gate in the VM through its kit"), "{t}");
+        let t = render(row(serde_json::json!({"boundary": "srt",
+            "boundaryChoice": {"chosen": "srt", "named": false, "answeredBy": "pre-answer"}})));
+        assert!(t.contains("started by your pre-answer"), "{t}");
     }
 
     #[cfg(unix)]
