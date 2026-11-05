@@ -86,6 +86,9 @@ const RATE_BURST: f64 = 200.0;
 /// so it cannot spend every other chat's share.
 const RATE_PER_CHAT_SEC: f64 = 10.0;
 const RATE_BURST_PER_CHAT: f64 = 50.0;
+/// Content bytes one chat writes in a day, at most (W5C-S6). Counted in
+/// memory: a daemon restart starts the count again.
+const MAX_CONTENT_BYTES_PER_CHAT_DAY: u64 = 256 * 1024 * 1024;
 
 /// What the window set: the switch, the prompt text switch, and which
 /// session ids are chats (helpers and probes are not).
@@ -119,12 +122,15 @@ pub enum ChatOp {
 pub type Ops =
     Arc<dyn Fn(&str, &'static str, ChatOp, &dyn Fn() -> bool) -> serde_json::Value + Send + Sync>;
 
-/// Per chat: its open requests, its waiting approves, and its rate bucket.
+/// Per chat: its open requests, its waiting approves, its rate bucket and
+/// its content bytes today.
 #[derive(Default)]
 struct PerChat {
     open: HashMap<String, usize>,
     approving: HashMap<String, usize>,
     rate: HashMap<String, (f64, Instant)>,
+    /// Content bytes written since the day's start (ms), per chat.
+    content: HashMap<String, (i64, u64)>,
 }
 
 #[derive(Clone, Copy)]
@@ -181,6 +187,9 @@ pub struct Receiver {
     content: OnceLock<ContentFor>,
     approving: AtomicUsize,
     per_chat: Mutex<PerChat>,
+    /// Content bytes one chat may write a day (W5C-S6); a field so a test
+    /// can lower it.
+    content_allowance: Mutex<u64>,
     pub counters: Counters,
 }
 
@@ -248,6 +257,7 @@ impl Receiver {
             content: OnceLock::new(),
             approving: AtomicUsize::new(0),
             per_chat: Mutex::new(PerChat::default()),
+            content_allowance: Mutex::new(MAX_CONTENT_BYTES_PER_CHAT_DAY),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -436,6 +446,32 @@ impl Receiver {
         true
     }
 
+    /// Takes `bytes` of content from `chat`'s allowance for the day that
+    /// started at its first write, or refuses (W5C-S6).
+    fn allow_content(&self, chat: &str, bytes: u64, now: i64) -> bool {
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        let cap = self.content_allowance.lock().map_or(0, |c| *c);
+        let Ok(mut per) = self.per_chat.lock() else {
+            return false;
+        };
+        if !per.content.contains_key(chat) && per.content.len() >= MAX_TOKENS {
+            per.content
+                .retain(|_, (start, _)| now.saturating_sub(*start) < DAY_MS);
+            if per.content.len() >= MAX_TOKENS {
+                return false;
+            }
+        }
+        let day = per.content.entry(chat.to_string()).or_insert((now, 0));
+        if now.saturating_sub(day.0) >= DAY_MS {
+            *day = (now, 0);
+        }
+        if day.1.saturating_add(bytes) > cap {
+            return false;
+        }
+        day.1 += bytes;
+        true
+    }
+
     /// A place in one of `chat`'s counts, or none when it holds `cap`.
     fn hold(&self, chat: &str, count: Count, cap: usize) -> Option<Held<'_>> {
         let mut per = self.per_chat.lock().ok()?;
@@ -605,23 +641,20 @@ impl Receiver {
         let received = now_ms();
         // The content switch decides once per request, as the tap's does.
         let target = self.content.get().and_then(|c| c(&holder.chat_id));
-        let events: Vec<ActivityEvent> = decoded
+        let mut items: Vec<(&decode::OtelLog, ActivityEvent)> = decoded
             .logs
             .iter()
             .filter_map(|log| {
-                let mut event = normalize::to_activity(
-                    log,
-                    &holder.chat_id,
-                    holder.harness,
-                    log_prompts,
-                    received,
-                )?;
-                if let Some(t) = &target {
-                    keep_content(t, &holder.chat_id, log, &mut event, received);
-                }
-                Some(event)
+                normalize::to_activity(log, &holder.chat_id, holder.harness, log_prompts, received)
+                    .map(|event| (log, event))
             })
             .collect();
+        if let Some(t) = &target {
+            keep_content(t, &holder.chat_id, &mut items, received, &|bytes| {
+                self.allow_content(&holder.chat_id, bytes, received)
+            });
+        }
+        let events: Vec<ActivityEvent> = items.into_iter().map(|(_, e)| e).collect();
         if !events.is_empty() {
             self.counters
                 .events
@@ -718,61 +751,93 @@ fn is_mark(v: &serde_json::Value) -> bool {
         .is_some_and(|t| matches!(t.trim(), "<REDACTED>" | "[REDACTED]" | ""))
 }
 
-/// Writes a record's prompt and reply text to content files (the part
-/// `request` for a prompt, `response` for a reply), as the tap keeps bodies,
-/// and marks the record `contentKept: true` with the files' names. Text a
-/// record already holds (only in tests, `log_prompts`) stays as it is. A
-/// file that cannot be written keeps nothing and says so in the record.
+/// Writes one request's prompt and reply text to content files, as the tap
+/// keeps bodies: at most one file per part for the whole request (`request`
+/// for prompts and a call's arguments, `response` for replies and a call's
+/// output), one line `{"record": <id>, "fields": {...}}` per record, so a
+/// request of 2,000 records makes two files, not 2,000 (security finding
+/// W5C-S6). Each record that had text says `contentKept: true` and names its
+/// files. `allow` takes the bytes from the chat's allowance before anything
+/// is written; refused, nothing is written and the records say
+/// `contentCapped: true`. Text a record already holds (only in tests,
+/// `log_prompts`) stays as it is. A file that cannot be written keeps
+/// nothing and its records say `contentFailed`.
 pub(crate) fn keep_content(
     target: &derm_tap::content::Target,
     chat: &str,
-    log: &decode::OtelLog,
-    event: &mut ActivityEvent,
+    items: &mut [(&decode::OtelLog, ActivityEvent)],
     at: i64,
+    allow: &dyn Fn(u64) -> bool,
 ) {
-    let mut parts: [(&str, serde_json::Map<String, serde_json::Value>); 2] = [
-        ("request", serde_json::Map::new()),
-        ("response", serde_json::Map::new()),
-    ];
-    for (key, value) in &log.attributes {
-        if !normalize::is_prompt_text(key) || is_mark(value) {
-            continue;
+    const PARTS: [&str; 2] = ["request", "response"];
+    let mut text: [String; 2] = [String::new(), String::new()];
+    // Which parts each record has a line in.
+    let mut has: Vec<[bool; 2]> = Vec::with_capacity(items.len());
+    for (log, event) in items.iter() {
+        let mut fields: [serde_json::Map<String, serde_json::Value>; 2] =
+            [serde_json::Map::new(), serde_json::Map::new()];
+        for (key, value) in &log.attributes {
+            if !normalize::is_prompt_text(key) || is_mark(value) {
+                continue;
+            }
+            let i = usize::from(normalize::is_reply_text(key));
+            fields[i].insert(key.clone(), value.clone());
         }
-        let i = usize::from(normalize::is_reply_text(key));
-        parts[i].1.insert(key.clone(), value.clone());
+        let mut mine = [false; 2];
+        for (i, f) in fields.into_iter().enumerate() {
+            if f.is_empty() {
+                continue;
+            }
+            let line = serde_json::json!({ "record": event.id, "fields": f });
+            text[i].push_str(&line.to_string());
+            text[i].push('\n');
+            mine[i] = true;
+        }
+        has.push(mine);
     }
-    let id: String = event
-        .id
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-    let mut kept = Vec::new();
-    let mut failed = false;
-    for (part, fields) in parts {
-        if fields.is_empty() {
+    let total = (text[0].len() + text[1].len()) as u64;
+    if total == 0 {
+        return;
+    }
+    let mark =
+        |items: &mut [(&decode::OtelLog, ActivityEvent)], key: &str, which: Option<usize>| {
+            for ((_, event), mine) in items.iter_mut().zip(&has) {
+                let hit = which.map_or(mine[0] || mine[1], |i| mine[i]);
+                if let (true, serde_json::Value::Object(detail)) = (hit, &mut event.detail) {
+                    detail.insert(key.into(), serde_json::Value::Bool(true));
+                }
+            }
+        };
+    if !allow(total) {
+        mark(items, "contentCapped", None);
+        return;
+    }
+    let id = format!("otel_{}", uuid::Uuid::new_v4().simple());
+    let mut names: [Option<String>; 2] = [None, None];
+    for (i, part) in PARTS.iter().enumerate() {
+        if text[i].is_empty() {
             continue;
         }
         match derm_tap::content::open(target, chat, at, &id, part) {
             Ok(mut f) => {
-                f.append(serde_json::Value::Object(fields).to_string().as_bytes());
+                f.append(text[i].as_bytes());
                 if f.failed {
-                    failed = true;
-                } else if let Some(name) = f.path.file_name() {
-                    kept.push(serde_json::Value::String(
-                        name.to_string_lossy().into_owned(),
-                    ));
+                    mark(items, "contentFailed", Some(i));
+                } else {
+                    names[i] = f.path.file_name().map(|n| n.to_string_lossy().into_owned());
                 }
             }
-            Err(_) => failed = true,
+            Err(_) => mark(items, "contentFailed", Some(i)),
         }
     }
-    if let serde_json::Value::Object(detail) = &mut event.detail {
-        if !kept.is_empty() {
+    for ((_, event), mine) in items.iter_mut().zip(&has) {
+        let kept: Vec<serde_json::Value> = (0..2)
+            .filter(|i| mine[*i])
+            .filter_map(|i| names[i].clone().map(serde_json::Value::String))
+            .collect();
+        if let (false, serde_json::Value::Object(detail)) = (kept.is_empty(), &mut event.detail) {
             detail.insert("contentKept".into(), serde_json::Value::Bool(true));
             detail.insert("contentFiles".into(), serde_json::Value::Array(kept));
-        }
-        if failed {
-            detail.insert("contentFailed".into(), serde_json::Value::Bool(true));
         }
     }
 }

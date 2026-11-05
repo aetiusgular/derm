@@ -1256,3 +1256,120 @@ fn a_calls_arguments_and_output_are_content_for_codex_and_claude_code() {
     assert!(!serde_json::to_string(&e).unwrap().contains("secret-arg"));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Security finding W5C-S6 (integration w5 continue): one request makes at
+/// most one content file per part, whatever its record count (2,000 records
+/// made 2,000 files before), each line naming its record; and a chat writes
+/// at most its allowance of content bytes a day, past which a record says
+/// `contentCapped` and nothing is written, while another chat still writes.
+#[test]
+fn one_request_makes_one_content_file_per_part_within_the_chats_allowance() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let a = f.receiver.mint("chat-fa", "claude-code").unwrap();
+    let b = f.receiver.mint("chat-fb", "claude-code").unwrap();
+    let root =
+        std::env::temp_dir().join(format!("derm-otel-files-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    let data = root.clone();
+    f.receiver.set_content(Arc::new(move |_| {
+        Some(derm_tap::content::Target {
+            root: data.clone(),
+            retention_days: 1,
+        })
+    }));
+    let rec = |name: &str, key: &str, text: &str| {
+        serde_json::json!({ "timeUnixNano": "5000000", "attributes": [
+            { "key": "event.name", "value": { "stringValue": name } },
+            { "key": key, "value": { "stringValue": text } }
+        ]})
+    };
+    let body = |recs: Vec<serde_json::Value>| {
+        serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": recs }]}]})
+            .to_string()
+            .into_bytes()
+    };
+    let headers = |t: &str| {
+        [
+            ("x-derm-token", t.to_string()),
+            ("content-type", "application/json".to_string()),
+        ]
+    };
+    let send = |t: &str, b: &[u8]| {
+        let h = headers(t);
+        let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        post(port, "/v1/logs", &h, b)
+    };
+    let mut recs = Vec::new();
+    for i in 0..50 {
+        recs.push(rec("user_prompt", "prompt", &format!("prompt number {i}")));
+        recs.push(rec(
+            "assistant_response",
+            "response",
+            &format!("answer number {i}"),
+        ));
+    }
+    assert_eq!(send(&a, &body(recs)), 200);
+    let events = f.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(events.len(), 100);
+    let dir = root.join("content").join("chat-fa");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names[0].ends_with(".request") && names[1].ends_with(".response"));
+    let request = std::fs::read_to_string(dir.join(&names[0])).unwrap();
+    let lines: Vec<serde_json::Value> = request
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 50);
+    for e in &events {
+        assert_eq!(e.detail["contentKept"], true);
+        let files = e.detail["contentFiles"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(names.contains(&files[0].as_str().unwrap().to_string()));
+    }
+    let response = std::fs::read_to_string(dir.join(&names[1])).unwrap();
+    let mut by_record = std::collections::HashMap::new();
+    for (name, text) in [(&names[0], &request), (&names[1], &response)] {
+        for l in text.lines() {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            by_record.insert(v["record"].as_str().unwrap().to_string(), name.clone());
+        }
+    }
+    for e in &events {
+        assert_eq!(
+            by_record.get(&e.id),
+            Some(&e.detail["contentFiles"][0].as_str().unwrap().to_string())
+        );
+    }
+    assert!(lines.iter().all(|l| l["fields"]["prompt"]
+        .as_str()
+        .is_some_and(|p| p.starts_with("prompt number"))));
+    // Past the allowance: nothing written, the record says so.
+    *f.receiver.content_allowance.lock().unwrap() = 64;
+    let big = body(vec![rec("user_prompt", "prompt", &"x".repeat(200))]);
+    assert_eq!(send(&a, &big), 200);
+    let e = f
+        .events
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .remove(0);
+    assert_eq!(e.detail["contentCapped"], true);
+    assert!(e.detail.get("contentKept").is_none());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    assert!(!serde_json::to_string(&e).unwrap().contains("xxxx"));
+    // Another chat's allowance is its own.
+    *f.receiver.content_allowance.lock().unwrap() = 1 << 20;
+    assert_eq!(send(&b, &big), 200);
+    let e = f
+        .events
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .remove(0);
+    assert_eq!(e.detail["contentKept"], true);
+    let _ = std::fs::remove_dir_all(&root);
+}
