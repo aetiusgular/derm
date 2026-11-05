@@ -14,8 +14,8 @@ use serde_json::{json, Value};
 
 /// The largest line from the helper: a tool result with a screenshot.
 #[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(dead_code, reason = "the helper is launched on macOS only")
+    all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "the helper runs on macOS and Linux only")
 )]
 pub const MAX_LINE: usize = 64 * 1024 * 1024;
 
@@ -32,8 +32,8 @@ impl HelperClient {
     /// Takes a connected stream's two halves. `on_event` gets each event line
     /// (`record`, `exited`) and, once, `{"event":"closed"}`.
     #[cfg_attr(
-        all(not(target_os = "macos"), not(test)),
-        expect(dead_code, reason = "the helper is launched on macOS only")
+        all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
+        expect(dead_code, reason = "the helper runs on macOS and Linux only")
     )]
     pub fn new(
         reader: impl Read + Send + 'static,
@@ -171,8 +171,8 @@ impl HelperError {
 }
 
 #[cfg_attr(
-    all(not(target_os = "macos"), not(test)),
-    expect(dead_code, reason = "the helper is launched on macOS only")
+    all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "the helper runs on macOS and Linux only")
 )]
 fn read_line(reader: &mut BufReader<impl Read>) -> Option<Vec<u8>> {
     let mut line = Vec::new();
@@ -298,5 +298,42 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(closed());
+    }
+
+    /// Lane U, case 120: a call with no answer in time is a timeout, a
+    /// helper that went away is a lost transport, and a refusal is neither.
+    #[test]
+    fn a_request_says_whether_it_timed_out_was_lost_or_was_refused() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let client = HelperClient::new(ours.try_clone().unwrap(), ours, Box::new(|_| {}));
+        let silent = thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(theirs.try_clone().unwrap());
+            let mut writer = theirs;
+            let mut line = String::new();
+            // The first request gets no answer; the second a refusal; then
+            // the helper goes away.
+            std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+            line.clear();
+            std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+            let id = serde_json::from_str::<Value>(&line).unwrap()["id"].clone();
+            writeln!(writer, "{}", json!({"id": id, "ok": false, "error": "no"})).unwrap();
+        });
+        assert!(matches!(
+            client.request_typed("call", json!({}), Duration::from_millis(100)),
+            Err(HelperError::Timeout(_))
+        ));
+        assert_eq!(
+            client.request_typed("call", json!({}), Duration::from_secs(5)),
+            Err(HelperError::Refused("no".into()))
+        );
+        silent.join().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while client.is_open() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(
+            client.request_typed("call", json!({}), Duration::from_secs(1)),
+            Err(HelperError::Closed(_))
+        ));
     }
 }

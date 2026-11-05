@@ -38,6 +38,42 @@ const NEVER: &[&str] = &[
     "com.dashlane.",
 ];
 
+/// Program file names never granted on Linux (lane U; `direct.rs` names an
+/// app by its executable): derm's own programs, cua-driver, the session's
+/// lockers and password stores, as `NEVER` does for bundle ids on macOS.
+const LINUX_NEVER: &[&str] = &[
+    "derm",
+    "derm-daemon",
+    "derm-audit-feed",
+    "cua-driver",
+    "gnome-screensaver",
+    "xscreensaver",
+    "i3lock",
+    "swaylock",
+    "light-locker",
+    "kscreenlocker_greet",
+    "gnome-keyring-daemon",
+    "seahorse",
+    "kwalletmanager5",
+    "kwalletmanager",
+    "keepassxc",
+    "1password",
+    "bitwarden",
+    "polkit-gnome-authentication-agent-1",
+    "polkit-kde-authentication-agent-1",
+    "pinentry",
+    "pinentry-gnome3",
+    "pinentry-qt",
+];
+
+/// True for a program file name that is never granted (lane U).
+pub fn is_never_program(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    LINUX_NEVER.contains(&lower.as_str())
+        || lower.starts_with("derm-")
+        || lower.starts_with("pinentry")
+}
+
 /// What the approval card warns about for an app (C5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,8 +100,30 @@ const TERMINALS: &[&str] = &[
     "co.zeit.hyper",
     "com.microsoft.vscode",
     "com.todesktop.230313mzl4w4u92",
+    // Linux programs, as `direct.rs` names them (lane U).
+    "exe.gnome-terminal-server",
+    "exe.gnome-terminal",
+    "exe.ptyxis",
+    "exe.konsole",
+    "exe.xterm",
+    "exe.kitty",
+    "exe.alacritty",
+    "exe.wezterm-gui",
+    "exe.foot",
+    "exe.tilix",
+    "exe.ghostty",
+    "exe.xfce4-terminal",
+    "exe.terminator",
+    "exe.code",
 ];
-const FINDERS: &[&str] = &["com.apple.finder"];
+const FINDERS: &[&str] = &[
+    "com.apple.finder",
+    "exe.nautilus",
+    "exe.dolphin",
+    "exe.thunar",
+    "exe.nemo",
+    "exe.pcmanfm",
+];
 /// Ids, or prefixes ending in `.`, of apps that run code they are given.
 const RUNS_CODE: &[&str] = &[
     "com.apple.scripteditor2",
@@ -81,6 +139,8 @@ const SETTINGS: &[&str] = &[
     "com.apple.systempreferences",
     "com.apple.settings",
     "com.apple.systemsettings",
+    "exe.gnome-control-center",
+    "exe.systemsettings",
 ];
 
 /// Why a bundle id was refused.
