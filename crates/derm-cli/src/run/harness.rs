@@ -2,13 +2,14 @@
 //! runs it, and the folders it keeps its own state in. Ids and commands are
 //! the preset table (`crates/derm-cli/src/connect/presets/`, `id`, `cli`).
 //!
-//! sbx: the built-in agents of `sbx run` are claude, codex, copilot, cursor,
-//! devin, docker-agent, droid, gemini, kiro, opencode, shell
-//! (https://docs.docker.com/reference/cli/sbx/run/, read 27 Oct 2026). Pi
-//! runs from the community kit `docker.io/sbx/pi-kit:latest` as Pi 1.4.0's
-//! `docs/containerization.md:110` and the kit's README give it:
-//! `sbx run --kit "docker.io/sbx/pi-kit:latest" pi`. The other harnesses
-//! have no sbx form here; `--boundary sbx` refuses them rather than guess.
+//! sbx: each harness's form is the preset table's `kit` field
+//! (`connect/presets/wave5/kit.json`, lane T's request T-5): sbx's built-in
+//! agents (claude, codex, copilot, cursor, devin, docker-agent, droid,
+//! gemini, kiro, opencode, shell; https://docs.docker.com/reference/cli/sbx/run/)
+//! and sbx-kits-contrib's kits (Pi's `docker.io/sbx/pi-kit:latest`, Hermes,
+//! OpenClaw, Amp, Crush, Grok), with the words each kit adds that turn the
+//! agent's approvals off. A harness with no kit there has no sbx form, and
+//! `--boundary sbx` refuses it rather than guess.
 //!
 //! State folders are where a harness writes its sessions and settings, so
 //! srt lets it write there and the feed reads those writes as its own. Pi
@@ -22,7 +23,6 @@ pub struct Harness {
     pub id: &'static str,
     /// The command, from the presets' `cli`.
     pub command: &'static str,
-    pub sbx: Option<Sbx>,
     /// Folders and files under the home it writes on its own.
     pub state: &'static [&'static str],
     /// Its own credential file under the home, which srt leaves readable
@@ -41,12 +41,86 @@ pub struct Harness {
     pub launch: Launch,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// How sbx runs a harness, from the preset table's `kit` field
+/// (`crates/derm-cli/src/connect/presets/wave5/kit.json`, lane T's request
+/// T-5): one table for `derm run`, the default boundary and `derm status`.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sbx {
-    /// The AGENT argument of `sbx run`.
-    pub agent: &'static str,
-    /// A kit passed with `--kit`, when the agent is not built in.
-    pub kit: Option<&'static str>,
+    /// The AGENT argument of `sbx run`: sbx's built-in agent, or the
+    /// harness's own command when a kit is the workload.
+    pub agent: String,
+    /// A sandbox kit, when the agent is not built in: the workload, first
+    /// positional on `sbx create` (SB1).
+    pub kit: Option<String>,
+    /// The words the kit adds that turn the agent's approvals off
+    /// (`fullAccess`; rules case 83).
+    pub full_access: Vec<String>,
+}
+
+impl Harness {
+    /// The sbx form for this harness, or `None` when sbx has no agent and
+    /// no kit for it (`--boundary sbx` refuses it rather than guess).
+    pub fn sbx(&self) -> Option<Sbx> {
+        let (from, name, full) = kit_rows().iter().find(|(id, _)| id == self.id)?.1.clone();
+        Some(if from == "sbx" {
+            Sbx {
+                agent: name,
+                kit: None,
+                full_access: full,
+            }
+        } else {
+            Sbx {
+                agent: self.command.to_string(),
+                kit: Some(name),
+                full_access: full,
+            }
+        })
+    }
+}
+
+/// `(id, (from, name, fullAccess))` for every preset row with a kit.
+type KitRow = (String, (String, String, Vec<String>));
+
+fn kit_rows() -> &'static [KitRow] {
+    static ROWS: std::sync::OnceLock<Vec<KitRow>> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        let table: serde_json::Value =
+            serde_json::from_str(crate::connect::presets::table_json()).unwrap_or_default();
+        let mut out = Vec::new();
+        for list in ["harnesses", "planned"] {
+            for row in table
+                .get(list)
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let (Some(id), Some(kit)) = (
+                    row.get("id").and_then(serde_json::Value::as_str),
+                    row.get("kit").filter(|k| k.is_object()),
+                ) else {
+                    continue;
+                };
+                let s = |k: &str| kit.get(k).and_then(serde_json::Value::as_str);
+                let (Some(from @ ("sbx" | "sbx-kits-contrib")), Some(name)) =
+                    (s("from"), s("name"))
+                else {
+                    continue;
+                };
+                let full = kit
+                    .get("fullAccess")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.push((id.to_string(), (from.to_string(), name.to_string(), full)));
+            }
+        }
+        out
+    })
 }
 
 /// Launch settings some gates need (toolkit plan T2.9; `contracts/hook-dialects.md`
@@ -63,15 +137,12 @@ pub enum Launch {
     Goose,
 }
 
-pub const PI_KIT: &str = "docker.io/sbx/pi-kit:latest";
-
 /// The harness `derm run --boundary <b> -- <argv>` starts when the program is
 /// not one in this table (rules case 80): nothing about it is known, so it
 /// gets the outside shape only. Its command comes from the argv.
 pub const OTHER: Harness = Harness {
     id: "other",
     command: "",
-    sbx: None,
     state: &[],
     credential: None,
     control: &[],
@@ -82,10 +153,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "pi",
         command: "pi",
-        sbx: Some(Sbx {
-            agent: "pi",
-            kit: Some(PI_KIT),
-        }),
         state: &[".pi/agent"],
         credential: Some(".pi/agent/auth.json"),
         control: &[
@@ -98,10 +165,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "claude-code",
         command: "claude",
-        sbx: Some(Sbx {
-            agent: "claude",
-            kit: None,
-        }),
         state: &[".claude", ".claude.json"],
         credential: Some(".claude/.credentials.json"),
         // `.claude.json` also holds MCP servers, but Claude Code writes it
@@ -120,10 +183,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "codex",
         command: "codex",
-        sbx: Some(Sbx {
-            agent: "codex",
-            kit: None,
-        }),
         state: &[".codex"],
         credential: Some(".codex/auth.json"),
         // `rules/` holds execpolicy `.rules` files, which allow commands
@@ -140,10 +199,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "opencode",
         command: "opencode",
-        sbx: Some(Sbx {
-            agent: "opencode",
-            kit: None,
-        }),
         state: &[".local/share/opencode", ".config/opencode"],
         credential: None,
         control: &[
@@ -157,10 +212,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "gemini",
         command: "gemini",
-        sbx: Some(Sbx {
-            agent: "gemini",
-            kit: None,
-        }),
         state: &[".gemini"],
         credential: Some(".gemini/oauth_creds.json"),
         // `.env` is loaded into the environment when the folder is trusted;
@@ -179,10 +230,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "copilot-cli",
         command: "copilot",
-        sbx: Some(Sbx {
-            agent: "copilot",
-            kit: None,
-        }),
         state: &[".copilot"],
         credential: None,
         control: &[".copilot/hooks", ".copilot/mcp-config.json"],
@@ -190,11 +237,11 @@ pub const HARNESSES: &[Harness] = &[
     },
     // Hermes: lane C verified the CLI `hermes` and the folder `~/.hermes`
     // (HERMES_HOME; its preset row). Added by integration
-    // w1; sbx has no Hermes agent, and its credential file is not read (NF).
+    // w1; sbx has no Hermes agent (its form is sbx-kits-contrib's kit), and
+    // its credential file is not read (NF).
     Harness {
         id: "hermes",
         command: "hermes",
-        sbx: None,
         state: &[".hermes"],
         credential: None,
         control: &[".hermes/config.yaml", ".hermes/plugins"],
@@ -203,7 +250,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "openclaw",
         command: "openclaw",
-        sbx: None,
         state: &[".openclaw"],
         credential: None,
         // OpenClaw's plugin and config files were not read for this (NF);
@@ -214,7 +260,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "goose",
         command: "goose",
-        sbx: None,
         state: &[".config/goose", ".local/share/goose"],
         credential: None,
         control: &[".config/goose/config.yaml", ".config/goose/permission.yaml"],
@@ -223,7 +268,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "qwen-code",
         command: "qwen",
-        sbx: None,
         state: &[".qwen"],
         credential: None,
         control: &[".qwen/settings.json"],
@@ -238,7 +282,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "openclaude",
         command: "openclaude",
-        sbx: None,
         state: &[".openclaude", ".openclaude.json"],
         credential: None,
         // As Claude Code's row: `settings.local.json` and `plugins` load
@@ -255,7 +298,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "amp",
         command: "amp",
-        sbx: None,
         state: &[".config/amp", ".local/share/amp"],
         credential: None,
         control: &[".config/amp/settings.json", ".config/amp/plugins"],
@@ -264,7 +306,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "crush",
         command: "crush",
-        sbx: None,
         state: &[".config/crush", ".local/share/crush"],
         credential: None,
         control: &[".config/crush/crush.json", ".config/crush/crushrc"],
@@ -304,10 +345,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "cursor",
         command: "cursor-agent",
-        sbx: Some(Sbx {
-            agent: "cursor",
-            kit: None,
-        }),
         state: &[".cursor"],
         credential: None,
         // Re-review FP5-R1: Cursor itself write-protects every
@@ -338,7 +375,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "grok",
         command: "grok",
-        sbx: None,
         state: &[".grok"],
         credential: None,
         control: &[".grok/hooks", ".grok/config.toml"],
@@ -347,7 +383,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "oh-my-pi",
         command: "omp",
-        sbx: None,
         state: &[".omp/agent"],
         credential: None,
         control: &[
@@ -360,7 +395,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "cline",
         command: "cline",
-        sbx: None,
         state: &[".cline"],
         credential: None,
         // `.cline/plugins`: derm's own gate is installed there (the agents
@@ -371,7 +405,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "command-code",
         command: "cmd",
-        sbx: None,
         state: &[".commandcode"],
         credential: None,
         control: &[".commandcode/settings.json", ".commandcode/mcp.json"],
@@ -380,10 +413,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "droid",
         command: "droid",
-        sbx: Some(Sbx {
-            agent: "droid",
-            kit: None,
-        }),
         state: &[".factory"],
         credential: None,
         // `hooks.json` too: Droid's binary merges it over `settings.json`,
@@ -398,7 +427,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "kilo",
         command: "kilo",
-        sbx: None,
         state: &[".config/kilo", ".local/share/kilo"],
         credential: None,
         control: &[".config/kilo/kilo.json", ".config/kilo/plugin"],
@@ -407,7 +435,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "kimi",
         command: "kimi",
-        sbx: None,
         state: &[".kimi-code"],
         credential: None,
         control: &[".kimi-code/config.toml", ".kimi-code/mcp.json"],
@@ -416,10 +443,6 @@ pub const HARNESSES: &[Harness] = &[
     Harness {
         id: "kiro",
         command: "kiro-cli",
-        sbx: Some(Sbx {
-            agent: "kiro",
-            kit: None,
-        }),
         state: &[".kiro"],
         credential: None,
         control: &[".kiro/hooks", ".kiro/settings", ".kiro/agents"],
@@ -548,12 +571,62 @@ mod tests {
         assert_eq!(by_command("agent").map(|h| h.id), None);
     }
 
+    /// Request T-5: the forms come from the kit table, the nine derm ran
+    /// before are unchanged, and the kits for harnesses that had none now
+    /// give them one.
     #[test]
-    fn only_pi_needs_a_kit_and_paths_are_relative_and_inside_the_state() {
+    fn sbx_forms_come_from_the_kit_table() {
+        let f = |id: &str| find(id).unwrap_or_else(|| panic!("{id}")).sbx();
+        assert_eq!(
+            f("pi"),
+            Some(Sbx {
+                agent: "pi".into(),
+                kit: Some("docker.io/sbx/pi-kit:latest".into()),
+                full_access: vec![],
+            })
+        );
+        for (id, agent) in [
+            ("claude-code", "claude"),
+            ("codex", "codex"),
+            ("opencode", "opencode"),
+            ("gemini", "gemini"),
+            ("copilot-cli", "copilot"),
+            ("cursor", "cursor"),
+            ("droid", "droid"),
+            ("kiro", "kiro"),
+        ] {
+            let s = f(id).unwrap();
+            assert_eq!((s.agent.as_str(), s.kit.as_deref()), (agent, None), "{id}");
+        }
+        assert_eq!(
+            f("claude-code").unwrap().full_access,
+            vec!["--dangerously-skip-permissions".to_string()]
+        );
+        assert_eq!(
+            f("kiro").unwrap().full_access,
+            vec!["--trust-all-tools".to_string()]
+        );
+        for id in ["hermes", "openclaw", "amp", "crush", "grok"] {
+            let s = f(id).unwrap();
+            assert!(s.kit.is_some(), "{id}");
+            assert_eq!(s.agent, find(id).unwrap().command, "{id}");
+        }
+        for id in [
+            "goose",
+            "qwen-code",
+            "openclaude",
+            "cline",
+            "command-code",
+            "oh-my-pi",
+        ] {
+            assert_eq!(f(id), None, "{id}");
+        }
+        assert_eq!(OTHER.sbx(), None);
+    }
+
+    #[test]
+    fn paths_are_relative_and_inside_the_state() {
         for h in HARNESSES {
-            if let Some(s) = h.sbx {
-                assert_eq!(s.kit.is_some(), h.id == "pi", "{}", h.id);
-            }
             for p in h.state.iter().chain(h.credential.iter()).chain(h.control) {
                 assert!(!p.starts_with('/') && !p.contains(".."), "{p}");
             }

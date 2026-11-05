@@ -35,6 +35,12 @@
       "properties": {
         "name": { "type": "string", "minLength": 1, "maxLength": 200 },
         "from": { "enum": ["sbx", "sbx-kits-contrib"] },
+        "fullAccess": {
+          "description": "The words the kit's own entrypoint or default command adds that turn the agent's approvals off (rules case 83), a flag or a flag and its value, as the kit's spec.yaml gives them. derm run adds them to the chat's full-access record and sets DERM_FULL_ACCESS=1 under sbx. An empty list: none in the entrypoint (settings files the kit writes are not read). Lane T's request T-5.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "maxItems": 8
+        },
         "verifiedAt": { "type": "string" },
         "note": { "type": "string" }
       },

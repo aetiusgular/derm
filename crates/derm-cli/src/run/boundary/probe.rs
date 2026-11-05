@@ -191,7 +191,7 @@ pub(crate) fn sbx_probe(h: &harness::Harness, path: &str, run: Runner) -> Result
         why,
         install: install.map(str::to_string),
     };
-    if h.sbx.is_none() {
+    if h.sbx().is_none() {
         return Err(reason(
             format!(
                 "derm knows no sbx kit for {}",

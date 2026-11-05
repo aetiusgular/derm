@@ -328,7 +328,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
         ));
     }
     // Case 83: flags that turn the agent's own approvals off.
-    let full = full_access(&i.args.rest, h.id, i.goose_mode.as_deref());
+    let mut full = full_access(&i.args.rest, h.id, i.goose_mode.as_deref());
     // Launch settings (T2.9), before the boundary wraps the command.
     let mut launch_args: Vec<String> = Vec::new();
     let mut companion = None;
@@ -387,7 +387,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             ));
         }
         Boundary::Sbx => {
-            let sbx = h.sbx.ok_or_else(|| {
+            let sbx = h.sbx().ok_or_else(|| {
                 format!(
                     "{} has no sbx form here (no built-in agent, no kit known); use srt or none",
                     h.id
@@ -401,6 +401,18 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                         "derm run: the sandbox reaches the host's port {port} only if your sbx policy allows it: \
                          sbx policy allow network localhost:{port} (derm does not change sbx policy)"
                     ));
+                }
+            }
+            // Case 83 under sbx (request T-5): the kit starts the agent with
+            // its own approvals off (`fullAccess`, read in each kit's
+            // spec.yaml), whatever the command line says, so the gate gets
+            // the hint and the record says so. A kit named with --kit is the
+            // user's, and its words are not known.
+            if i.args.kit.is_none() {
+                for w in &sbx.full_access {
+                    if !full.contains(w) {
+                        full.push(w.clone());
+                    }
                 }
             }
             program = "sbx".into();
@@ -425,12 +437,12 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             for n in names {
                 args.extend(["-e".to_string(), n.to_string()]);
             }
-            let k = i.args.kit.clone().or(sbx.kit.map(str::to_string));
+            let k = i.args.kit.clone().or(sbx.kit.clone());
             if let Some(k) = &k {
                 args.extend(["--kit".to_string(), k.clone()]);
             }
             kit = k;
-            args.push(sbx.agent.into());
+            args.push(sbx.agent.clone());
             args.push(i.cwd.clone());
             if !i.args.rest.is_empty() || !launch_args.is_empty() {
                 args.push("--".into());
@@ -1155,9 +1167,58 @@ mod tests {
         let args = a(&["codex", "--boundary", "sbx", "--", "--yolo"]);
         let p = build(&inputs(&args)).unwrap();
         assert!(p.args.windows(2).any(|w| w == ["-e", "DERM_FULL_ACCESS"]));
-        let args = a(&["codex", "--boundary", "sbx"]);
+        // OpenCode's kit adds no such word (request T-5: the codex kit
+        // itself starts Codex in full access, so it is no longer the case
+        // to check this with).
+        let args = a(&["opencode", "--boundary", "sbx"]);
         let p = build(&inputs(&args)).unwrap();
         assert!(!p.args.iter().any(|x| x == "DERM_FULL_ACCESS"));
+    }
+
+    /// Request T-5, case 83 under sbx: the kit's own full-access words are
+    /// the chat's too, whatever the command line says, so the gate gets the
+    /// hint and the record names them. Under srt and none they are not the
+    /// kit's to add, and a kit named with --kit is the user's.
+    #[test]
+    fn a_kits_own_full_access_words_set_the_hint_under_sbx() {
+        for (harness, words) in [
+            ("claude-code", vec!["--dangerously-skip-permissions"]),
+            ("codex", vec!["--dangerously-bypass-approvals-and-sandbox"]),
+            ("gemini", vec!["--yolo"]),
+            ("kiro", vec!["--trust-all-tools"]),
+            ("amp", vec!["--dangerously-allow-all"]),
+        ] {
+            let args = a(&[harness, "--boundary", "sbx"]);
+            let p = build(&inputs(&args)).unwrap();
+            assert_eq!(p.full_access, words, "{harness}");
+            assert_eq!(env(&p, "DERM_FULL_ACCESS"), Some("1"), "{harness}");
+            assert!(
+                p.args.windows(2).any(|w| w == ["-e", "DERM_FULL_ACCESS"]),
+                "{harness}"
+            );
+            // The same word on the command line is not counted twice.
+            let args = a(&[harness, "--boundary", "sbx", "--", words[0]]);
+            assert_eq!(
+                build(&inputs(&args)).unwrap().full_access,
+                words,
+                "{harness}"
+            );
+            for b in ["srt", "none"] {
+                let args = a(&[harness, "--boundary", b]);
+                let p = build(&inputs(&args)).unwrap();
+                assert!(p.full_access.is_empty(), "{harness} {b}");
+                assert_eq!(env(&p, "DERM_FULL_ACCESS"), None, "{harness} {b}");
+            }
+        }
+        for harness in ["pi", "opencode", "droid"] {
+            let args = a(&[harness, "--boundary", "sbx"]);
+            assert!(
+                build(&inputs(&args)).unwrap().full_access.is_empty(),
+                "{harness}"
+            );
+        }
+        let args = a(&["claude-code", "--boundary", "sbx", "--kit", "./my-kit"]);
+        assert!(build(&inputs(&args)).unwrap().full_access.is_empty());
     }
 
     #[test]
