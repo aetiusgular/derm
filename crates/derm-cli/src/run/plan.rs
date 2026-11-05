@@ -404,7 +404,9 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 }
             }
             program = "sbx".into();
-            let name = format!("derm-{}", i.chat);
+            // The chat id already starts with `derm-` (SB2: not `derm-derm-`),
+            // and sbx refuses an underscore a `--chat` id may hold (lane T).
+            let name = super::boundary::sbx::sandbox_name(&i.chat);
             args.extend(["run".to_string(), "--name".into(), name.clone()]);
             sandbox_name = Some(name);
             // The variables are named here and copied by sbx from its own

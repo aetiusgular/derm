@@ -74,10 +74,10 @@ Every record keeps hashes, sizes, paths, package names and versions, and never c
 
 | Field | Set by | Shape |
 |---|---|---|
-| `boundaryChoice` | lane T, `crates/derm-cli/src/run/boundary/` | `chosen` (`sbx`, `srt`, `none`), `named` (the user gave `--boundary`), `reasons` (each unavailable boundary, why, and its install line), `answeredBy` (`flag`, `terminal`, `pre-answer`, `no-one`; with `no-one` there is no start, case 129), `preAnswer` (the setting used, or null) |
+| `boundaryChoice` | lane T, `crates/derm-cli/src/run/boundary/` | `chosen` (`sbx`, `srt`, `none`), `named` (the user gave `--boundary`), `reasons` (each unavailable boundary, why, and its install line), `answeredBy` (`flag`; `default`, derm picked sbx or srt with no question, lane T's request T-1; `terminal`, `pre-answer`, `no-one`; with `no-one` there is no start, case 129, except in a dry run, which starts nothing anyway), `preAnswer` (the setting used, or null) |
 | `tap` | lane S, `run/tap/` | `on`, and when off the `reason` (`--no-tap`, the setting, or the agent takes no base URL), `via`, `api`, `upstream`. A chat with `on: false` is "untapped" in `derm status` (case 127) |
 | `agentUser` | lane V, `run/user/` | `user`, `uid`, `how` (the route lane V reads first: a fixed `sudo` rule, a systemd unit, or another) |
 | `content` | lane S | `on`, `retentionDays` |
-| `ioUring` | lane T | `not-audited` for srt and no boundary on Linux (case 128), `own-kernel` under sbx; absent elsewhere |
+| `ioUring` | lane T | `not-audited` for no boundary on Linux, and for srt where its seccomp helper does not run (case 128); `blocked` for srt where it does (x86_64 and aarch64 Linux: srt 0.0.81 refuses `io_uring_setup`, `io_uring_enter` and `io_uring_register`, its README line 1214, lane T by run; request T-1); `own-kernel` under sbx; absent elsewhere |
 
 The user's switches for all of this are one file, `~/.derm/settings.json` (`settings.schema.json`): lane W's `derm setup` writes it, behind a question per switch; lanes S, T, U and X read their own key. `~/.derm/` is a control path (`policy.md`, section 4, step 7a), so a gated agent's write to it asks and srt denies it.

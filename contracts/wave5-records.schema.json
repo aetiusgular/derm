@@ -245,7 +245,7 @@
                 "additionalProperties": false
               }
             },
-            "answeredBy": { "enum": ["flag", "terminal", "pre-answer", "no-one"] },
+            "answeredBy": { "enum": ["flag", "default", "terminal", "pre-answer", "no-one"] },
             "preAnswer": { "enum": ["run-as-you", "stop", null] }
           },
           "additionalProperties": false
@@ -274,7 +274,7 @@
           "properties": { "on": { "type": "boolean" }, "retentionDays": { "type": ["integer", "null"], "minimum": 1, "maximum": 7 } },
           "additionalProperties": false
         },
-        "ioUring": { "enum": ["not-audited", "own-kernel"] }
+        "ioUring": { "enum": ["not-audited", "blocked", "own-kernel"] }
       }
     }
   },

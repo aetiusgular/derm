@@ -260,6 +260,9 @@ describe("wave 5 contracts", () => {
     const runStart = ajv.getSchema(base + "wave5-records.schema.json#/$defs/runStartWave5")!;
     expect(runStart(read("fixtures/tap/runstart.example.json"))).toBe(true);
     expect(runStart({ boundaryChoice: { chosen: "none", named: false, reasons: [], answeredBy: "maybe", preAnswer: null } })).toBe(false);
+    // Lane T's request T-1: an automatic pick, and srt's refusal of io_uring.
+    expect(runStart({ boundaryChoice: { chosen: "srt", named: false, reasons: [{ boundary: "sbx", why: "sbx is installed and not signed in to Docker", install: "sbx login" }], answeredBy: "default", preAnswer: null }, ioUring: "blocked" })).toBe(true);
+    expect(runStart({ ioUring: "unknown" })).toBe(false);
     expect(check("settings.schema.json", read("fixtures/tap/settings.example.json"))).toEqual([]);
     expect(check("settings.schema.json", { version: 1, content: { on: true } })).not.toEqual([]);
     expect(check("settings.schema.json", { version: 1, content: { on: true, retentionDays: 8 } })).not.toEqual([]);

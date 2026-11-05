@@ -27,7 +27,7 @@ mod preflight;
 // Wave 5's seams (the wave 5 base, `plans/parallel_build_tk.md` section 7c):
 // each folder is one lane's, and each stub changes nothing. The rest of
 // `run/` is integration's in wave 5.
-mod boundary; // lane T
+pub(crate) mod boundary; // lane T (pub(crate) for lane W's `derm setup sandbox`, request T-8)
 mod tap; // lane S
 mod user; // lane V
 
@@ -803,6 +803,18 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             }
         }
     }
+    // sbx (lane T's request T-2): create the sandbox, let it reach derm's
+    // ports on the host with a rule for it alone (case 117), then attach;
+    // it is removed when the harness ends, or on any way out from here (SB3).
+    let mut sandbox = if p.sandbox_name.is_some() {
+        Some(boundary::sbx::start(
+            env.program("sbx"),
+            &mut launch,
+            filter.is_none() && boundary::sbx::interactive(),
+        )?)
+    } else {
+        None
+    };
     // The agents' user (lane V's seam), after the companion, which runs as
     // you whatever the harness runs as.
     let daemon_dir_text = dir.as_ref().map(|d| d.to_string_lossy().into_owned());
@@ -859,10 +871,24 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "acp": filter.is_some(),
         "trust": "client",
     });
+    // Where the audit feed cannot see io_uring operations (lane T's request
+    // T-3, case 128): no boundary on Linux; srt blocks them where its
+    // seccomp helper runs; sbx runs the agent on the VM's own kernel.
+    let io_uring = boundary::io_uring_mark(
+        a.boundary.name(),
+        p.srt_settings.as_deref(),
+        cfg!(target_os = "linux"),
+        std::env::consts::ARCH,
+    );
+    if io_uring == Some("not-audited") {
+        eprintln!("derm run: io_uring operations in this chat are not audited (the audit feed reads syscalls only, case 128)");
+    }
+    let io_uring = io_uring.map(|m| json!(m));
     // Wave 5's records, only where a seam made one (`contracts/events.md`
     // section 5); the base's stubs make none.
     for (key, record) in [
         ("boundaryChoice", &choice.record),
+        ("ioUring", &io_uring),
         ("tap", &tap_record),
         ("content", &content_record),
         ("agentUser", &agent_user),
@@ -947,6 +973,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let (code, signal) = exec::code(&status);
     // The agents' user's bridge (lane V) ends with the harness.
     user::finish();
+    // The sandbox goes before `run.stop`, so no VM writes into the project
+    // after its chat has stopped (SB3).
+    let sandbox_removed = sandbox.take().map(|s| match s.remove() {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("derm run: {e}");
+            false
+        }
+    });
     if let Some(c) = cleanup.companion.as_mut() {
         exec::stop_companion(c, Duration::from_secs(2));
     }
@@ -971,6 +1006,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         detail["exitCode"] = json!(status.code());
         detail["signal"] = json!(signal);
         detail["durationMs"] = json!(started.elapsed().as_millis() as u64);
+        if let Some(removed) = sandbox_removed {
+            detail["sandboxRemoved"] = json!(removed);
+        }
         let summary = format!(
             "{} under {} ended, code {code}",
             a.harness.id,
@@ -1041,7 +1079,11 @@ mod tests {
     #[test]
     fn usage_errors_exit_2() {
         assert_eq!(main(&[]), 2);
-        assert_eq!(main(&["pi".into()]), 2);
+        // Since case 129, `derm run pi` with no `--boundary` depends on the
+        // machine (lane T's request T-4); a flag with no value is a usage
+        // error everywhere. The no-boundary paths are tested with a fake
+        // machine in `boundary/tests.rs`.
+        assert_eq!(main(&["pi".into(), "--boundary".into()]), 2);
         assert_eq!(
             main(&[
                 "pi".into(),
@@ -1325,6 +1367,20 @@ mod end_to_end {
         assert_eq!(ev[1]["kind"], "run.stop");
         assert_eq!(ev[1]["detail"]["exitCode"], 3);
         assert_eq!(ev[0]["pid"], ev[1]["pid"]);
+        // Lane T: the boundary as the command line named it, and where the
+        // audit feed cannot see io_uring (case 128).
+        assert_eq!(
+            ev[0]["detail"]["boundaryChoice"],
+            serde_json::json!({"chosen": "none", "named": true, "reasons": [], "answeredBy": "flag", "preAnswer": null})
+        );
+        assert_eq!(
+            ev[0]["detail"]["ioUring"],
+            if cfg!(target_os = "linux") {
+                serde_json::json!("not-audited")
+            } else {
+                serde_json::Value::Null
+            }
+        );
         // The token is in no line the daemon got but the mint reply's.
         for l in st.fake.lines() {
             assert!(!l.to_string().contains(fake::CHAT_TOKEN), "{l}");
@@ -1435,6 +1491,15 @@ mod end_to_end {
             !st.fake.dir.join("srt/chat-s.json").exists(),
             "removed after the run"
         );
+        // Lane T's request T-3: srt's seccomp helper refuses io_uring on
+        // x86_64 and aarch64 Linux (case 128).
+        let ev = events(&st);
+        let want = match (cfg!(target_os = "linux"), std::env::consts::ARCH) {
+            (true, "x86_64" | "aarch64") => serde_json::json!("blocked"),
+            (true, _) => serde_json::json!("not-audited"),
+            _ => serde_json::Value::Null,
+        };
+        assert_eq!(ev[0]["detail"]["ioUring"], want);
     }
 
     #[test]
@@ -1582,21 +1647,32 @@ mod end_to_end {
     fn sbx_names_the_variables_and_posts_the_blocks_its_log_shows() {
         let st = setup("sbx");
         let n = st.fake.dir.join("polls");
+        let calls = st.fake.dir.join("sbx-calls");
         // `policy log`: nothing before the start (no sandbox yet), then one
-        // block. `run`: checks it got the token by name only, waits for a poll.
+        // block. `create` (lane T's request T-2): the token by name only,
+        // its value in the environment. `policy allow`: the rule for this
+        // sandbox. `run` (the attach): checks it got the token by name only,
+        // waits for a poll. `rm`: the sandbox goes at the end (SB3).
         let sbx = script(
             &st.fake.dir,
             "sbx",
             &format!(
-                "if [ \"$1\" = policy ]; then echo x >> '{n}'; \
+                "echo \"$*\" >> '{calls}'; \
+                 if [ \"$1 $2\" = 'policy log' ]; then echo x >> '{n}'; \
                  if [ \"$(wc -l < '{n}')\" -le 1 ]; then echo 'no such sandbox' >&2; exit 1; fi; \
                  echo '{{\"blocked\":[{{\"Sandbox\":\"derm-chat-x\",\"Host\":\"evil.example:443\",\"Rule\":\"<default policy>\",\"Count\":1}}]}}'; exit 0; fi; \
+                 if [ \"$1 $2\" = 'policy allow' ]; then exit 0; fi; \
+                 if [ \"$1\" = rm ]; then exit 0; fi; \
+                 if [ \"$1\" = create ]; then \
+                   case \"$*\" in *\"{tok}\"*) exit 85;; esac; \
+                   [ \"$DERM_CHAT_TOKEN\" = {tok} ] || exit 86; exit 0; fi; \
                  [ \"$1\" = run ] || exit 80; \
                  case \"$*\" in *\"{tok}\"*) exit 81;; esac; \
                  case \"$*\" in *\"-e DERM_CHAT_TOKEN\"*) ;; *) exit 82;; esac; \
                  [ \"$DERM_CHAT_TOKEN\" = {tok} ] || exit 83; \
                  [ \"$DERM_OTLP_ENDPOINT\" = http://host.docker.internal:4318 ] || exit 84; \
                  sleep 3; exit 0",
+                calls = calls.display(),
                 n = n.display(),
                 tok = fake::CHAT_TOKEN
             ),
@@ -1639,6 +1715,39 @@ mod end_to_end {
         );
         assert_eq!(ev[0]["detail"]["kit"], "docker.io/sbx/pi-kit:latest");
         assert_eq!(ev[0]["detail"]["sandboxName"], "derm-chat-x");
+        // Lane T's request T-2: create with the kit as the workload (SB1),
+        // a rule for this sandbox alone to the daemon's port (case 117),
+        // the attach, and the removal before `run.stop` (SB3).
+        let calls = std::fs::read_to_string(&calls).unwrap();
+        let steps: Vec<&str> = calls
+            .lines()
+            .filter(|l| !l.starts_with("policy log"))
+            .collect();
+        assert_eq!(steps.len(), 4, "{calls}");
+        assert!(
+            steps[0].starts_with("create --name derm-chat-x -e "),
+            "{}",
+            steps[0]
+        );
+        assert!(
+            steps[0].ends_with(&format!(" docker.io/sbx/pi-kit:latest {cwd}")),
+            "{}",
+            steps[0]
+        );
+        assert!(!steps[0].contains("--kit"), "{}", steps[0]);
+        assert_eq!(
+            steps[1],
+            "policy allow network --sandbox derm-chat-x localhost:4318"
+        );
+        assert!(
+            steps[2].starts_with("run --name derm-chat-x -e "),
+            "{}",
+            steps[2]
+        );
+        assert!(!steps[2].contains("pi-kit"), "{}", steps[2]);
+        assert_eq!(steps[3], "rm --force derm-chat-x");
+        let stop = ev.last().unwrap();
+        assert_eq!(stop["detail"]["sandboxRemoved"], true);
     }
 
     /// Lane R: Claude Code's own OTel goes to the daemon under `derm run`
