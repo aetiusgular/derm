@@ -41,6 +41,10 @@ const NEVER: &[&str] = &[
 /// Program file names never granted on Linux (lane U; `direct.rs` names an
 /// app by its executable): derm's own programs, cua-driver, the session's
 /// lockers and password stores, as `NEVER` does for bundle ids on macOS.
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "direct.rs, its reader, is Linux only")
+)]
 const LINUX_NEVER: &[&str] = &[
     "derm",
     "derm-daemon",
@@ -67,6 +71,10 @@ const LINUX_NEVER: &[&str] = &[
 ];
 
 /// True for a program file name that is never granted (lane U).
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "direct.rs, its reader, is Linux only")
+)]
 pub fn is_never_program(file_name: &str) -> bool {
     let lower = file_name.to_ascii_lowercase();
     LINUX_NEVER.contains(&lower.as_str())
@@ -336,5 +344,23 @@ mod tests {
             Some(AppWarning::RunsCode)
         );
         assert_eq!(warning_for("com.apple.calculator"), None);
+    }
+
+    #[test]
+    fn derms_own_programs_the_driver_and_password_stores_are_never_programs() {
+        for name in [
+            "derm",
+            "DERM-daemon",
+            "derm-anything",
+            "cua-driver",
+            "keepassxc",
+            "pinentry-tty",
+            "swaylock",
+        ] {
+            assert!(is_never_program(name), "{name}");
+        }
+        for name in ["gnome-calculator", "firefox", "code", "dermatology"] {
+            assert!(!is_never_program(name), "{name}");
+        }
     }
 }
