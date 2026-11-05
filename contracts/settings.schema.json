@@ -14,9 +14,27 @@
       "additionalProperties": false
     },
     "tap": {
-      "description": "Lane S. The model tap, on by default (Tony, 4 Nov). `derm run --no-tap` turns it off for one chat (case 127).",
+      "description": "Lane S. The model tap, on by default (Tony, 4 Nov). `derm run --no-tap` turns it off for one chat (case 127). `upstreams` (lane S's request 6, case 113; decided at the phase 3 merge): model servers you confirmed, by key, that the tap may forward to besides its built-in hosts; `local` is true for a server on this machine or your own box (case 94's fold applies, and only then may `base` be http). derm setup (lane W) writes an entry behind a question; nothing else adds one. A key is never a built-in one.",
       "type": "object",
-      "properties": { "on": { "type": "boolean", "default": true } },
+      "properties": {
+        "on": { "type": "boolean", "default": true },
+        "upstreams": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": { "pattern": "^[a-z0-9-]{1,32}$", "not": { "enum": ["anthropic", "openai", "chatgpt", "openai-auto", "gemini"] } },
+          "additionalProperties": {
+            "type": "object",
+            "required": ["base"],
+            "properties": {
+              "base": { "type": "string", "maxLength": 255, "pattern": "^https?://[^/?#@\\s\\\\]+(/[^?#@\\s\\\\]*)?$" },
+              "local": { "type": "boolean", "default": false }
+            },
+            "if": { "properties": { "local": { "const": false } } },
+            "then": { "properties": { "base": { "type": "string", "pattern": "^https://" } } },
+            "additionalProperties": false
+          }
+        }
+      },
       "additionalProperties": false
     },
     "content": {

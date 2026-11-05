@@ -267,6 +267,16 @@ describe("wave 5 contracts", () => {
     expect(check("settings.schema.json", { version: 1, content: { on: true } })).not.toEqual([]);
     expect(check("settings.schema.json", { version: 1, content: { on: true, retentionDays: 8 } })).not.toEqual([]);
     expect(check("settings.schema.json", { version: 1, boundary: { preAnswer: "yes" } })).not.toEqual([]);
+    // Lane S's request 6 (case 113): confirmed upstreams, as the tap's reader takes them.
+    expect(check("settings.schema.json", { version: 1, tap: { upstreams: { box: { base: "http://100.64.0.2:8080/v1", local: true }, gw: { base: "https://gw.example.com" } } } })).toEqual([]);
+    for (const bad of [
+      { anthropic: { base: "https://evil.example" } },
+      { Box: { base: "https://box.lan" } },
+      { box: { base: "http://box.lan:8080" } },
+      { box: { base: "https://u:p@box.lan" } },
+      { box: { base: "https://box.lan/?x" } },
+      { box: { local: true } },
+    ]) expect(check("settings.schema.json", { version: 1, tap: { upstreams: bad } }), JSON.stringify(bad)).not.toEqual([]);
   });
 
   it("the computer_use input schema takes Hermes's actions and refuses an unknown field", () => {
