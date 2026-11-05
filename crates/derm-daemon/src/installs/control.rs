@@ -133,6 +133,9 @@ pub fn control_path(path: &str) -> Option<String> {
 struct Chat {
     /// toolUseId to the `install.call` record's id.
     installs: HashMap<String, String>,
+    /// Those toolUseIds, oldest first: a flood evicts the oldest, never every
+    /// entry (review W5C-S8).
+    install_order: VecDeque<String>,
     /// An event id (gate or tap record) to its toolUseId.
     calls: HashMap<String, String>,
     order: VecDeque<String>,
@@ -186,10 +189,14 @@ impl ControlFlags {
         if e.kind == "install.call" && e.source != Source::Derm {
             if let Some(t) = str_at(&e.detail, "toolUseId") {
                 let c = self.chat(&e.chat_id);
-                if c.installs.len() >= MAX_IDS {
-                    c.installs.clear();
+                if c.installs.insert(t.to_string(), e.id.clone()).is_none() {
+                    c.install_order.push_back(t.to_string());
                 }
-                c.installs.insert(t.to_string(), e.id.clone());
+                while c.install_order.len() > MAX_IDS {
+                    if let Some(old) = c.install_order.pop_front() {
+                        c.installs.remove(&old);
+                    }
+                }
             }
             return Vec::new();
         }
@@ -542,5 +549,23 @@ mod tests {
             ));
         }
         assert_eq!(f.chats["chat-fixture"].effects.len(), MAX_EFFECTS);
+    }
+
+    /// W5C-S8: a flood of install calls evicts the oldest, never every one.
+    #[test]
+    fn a_flood_of_install_calls_keeps_the_newest() {
+        let mut f = ControlFlags::new();
+        for i in 0..(MAX_IDS + 5) {
+            f.observe(&ev(
+                &format!("i{i}"),
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": format!("t{i}")}),
+            ));
+        }
+        let c = &f.chats["chat-fixture"];
+        assert_eq!(c.installs.len(), MAX_IDS);
+        assert!(!c.installs.contains_key("t0"));
+        assert!(c.installs.contains_key(&format!("t{}", MAX_IDS + 4)));
     }
 }

@@ -23,6 +23,14 @@ use serde_json::{json, Value};
 pub const MAX_PENDING: usize = 256;
 /// A call with no end seen is dropped after this long.
 pub const PENDING_MS: i64 = 30 * 60 * 1000;
+/// Calls one chat may have in flight; its oldest goes first. A chat token is
+/// the agent's (case 66), so it can post `install.call` at will (review
+/// W5C-S1, integration w5 continue).
+pub const MAX_PER_CHAT: usize = 8;
+/// Entries a kept snapshot may hold; a larger lockfile gets no diff, never a
+/// snapshot that grows the daemon without bound (W5C-S1: 40 forged calls on
+/// a 16 MiB go.sum took the daemon to 4.5 GB).
+pub const MAX_ENTRIES: usize = 50_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Diff {
@@ -94,14 +102,16 @@ pub struct LockDiffs {
 }
 
 /// The lockfile `manager` writes for a project folder: the nearest one at or
-/// above `cwd`, else the first name in `cwd` itself (a lockfile the install
-/// is about to create).
-pub fn lockfile_for(manager: Manager, cwd: &Path) -> Option<(PathBuf, LockKind)> {
+/// above `cwd` and inside `top`, else the first name in `cwd` itself (a
+/// lockfile the install is about to create). Never above `top`, the chat's
+/// folder: the daemon reads with your rights, and a lockfile above it
+/// (`~/go.sum`) is not the chat's (review W5C-S7).
+pub fn lockfile_for(manager: Manager, cwd: &Path, top: &Path) -> Option<(PathBuf, LockKind)> {
     let names = lockfiles(manager);
-    if names.is_empty() || !cwd.is_absolute() {
+    if names.is_empty() || !cwd.is_absolute() || !cwd.starts_with(top) {
         return None;
     }
-    for dir in cwd.ancestors().take(32) {
+    for dir in cwd.ancestors().take(32).take_while(|d| d.starts_with(top)) {
         for (file, kind) in names {
             let p = dir.join(file);
             if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_file()) {
@@ -112,8 +122,13 @@ pub fn lockfile_for(manager: Manager, cwd: &Path) -> Option<(PathBuf, LockKind)>
     names.first().map(|(file, kind)| (cwd.join(file), *kind))
 }
 
-fn read(file: &Path, kind: LockKind) -> Option<Vec<LockEntry>> {
-    read_lockfile_text(file).map(|t| parse_lockfile(kind, &t))
+/// A lockfile's entries, `Err` when there are more than `MAX_ENTRIES`; `Ok(None)`
+/// when it cannot be read (a lockfile not there yet).
+fn read(file: &Path, kind: LockKind) -> Result<Option<Vec<LockEntry>>, ()> {
+    match read_lockfile_text(file).map(|t| parse_lockfile(kind, &t)) {
+        Some(e) if e.len() > MAX_ENTRIES => Err(()),
+        other => Ok(other),
+    }
 }
 
 impl LockDiffs {
@@ -122,27 +137,41 @@ impl LockDiffs {
     }
 
     /// An install call started: keep its project's lockfile as it is now.
-    /// `call` is the `install.call` record's id.
+    /// `call` is the `install.call` record's id; the lockfile is looked for
+    /// from `cwd` up to `top`, the chat's folder.
     pub fn start(
         &mut self,
         call: &str,
         chat: &str,
         harness: &str,
         manager: Manager,
-        cwd: &Path,
+        (cwd, top): (&Path, &Path),
         now: i64,
     ) {
-        let Some((file, kind)) = lockfile_for(manager, cwd) else {
+        let Some((file, kind)) = lockfile_for(manager, cwd, top) else {
             return;
         };
         self.pending.retain(|_, p| now - p.started < PENDING_MS);
         self.order.retain(|c| self.pending.contains_key(c));
+        if self.pending.values().filter(|p| p.chat == chat).count() >= MAX_PER_CHAT {
+            if let Some(i) = self
+                .order
+                .iter()
+                .position(|c| self.pending.get(c).is_some_and(|p| p.chat == chat))
+            {
+                if let Some(old) = self.order.remove(i) {
+                    self.pending.remove(&old);
+                }
+            }
+        }
         if self.pending.len() >= MAX_PENDING {
             if let Some(old) = self.order.pop_front() {
                 self.pending.remove(&old);
             }
         }
-        let before = read(&file, kind);
+        let Ok(before) = read(&file, kind) else {
+            return;
+        };
         self.pending.insert(
             call.to_string(),
             Pending {
@@ -163,7 +192,9 @@ impl LockDiffs {
     pub fn finish(&mut self, call: &str, now: i64) -> Option<Event> {
         let p = self.pending.remove(call)?;
         self.order.retain(|c| c != call);
-        let after = read(&p.file, p.kind);
+        let Ok(after) = read(&p.file, p.kind) else {
+            return None;
+        };
         let before = p.before.clone().unwrap_or_default();
         let after = after.unwrap_or_default();
         let d = diff(&before, &after);
@@ -345,7 +376,7 @@ mod tests {
             "chat-fixture",
             "claude-code",
             Manager::Npm,
-            &dir.join("sub"),
+            (&dir.join("sub"), &dir),
             1_793_000_005_000,
         );
         std::fs::write(
@@ -378,7 +409,14 @@ mod tests {
         );
         // A lockfile the install creates: everything is added.
         std::fs::remove_file(dir.join("package-lock.json")).unwrap();
-        t.start("c2", "chat-fixture", "claude-code", Manager::Npm, &dir, 0);
+        t.start(
+            "c2",
+            "chat-fixture",
+            "claude-code",
+            Manager::Npm,
+            (&dir, &dir),
+            0,
+        );
         std::fs::write(
             dir.join("package-lock.json"),
             fixture("package-lock.before.json"),
@@ -389,7 +427,14 @@ mod tests {
             "package-lock.json: 1 added"
         );
         // Nothing changed: no record.
-        t.start("c3", "chat-fixture", "claude-code", Manager::Npm, &dir, 0);
+        t.start(
+            "c3",
+            "chat-fixture",
+            "claude-code",
+            Manager::Npm,
+            (&dir, &dir),
+            0,
+        );
         assert!(t.finish("c3", 1).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -398,18 +443,76 @@ mod tests {
     fn pending_calls_stay_bounded_and_age_out() {
         let dir = std::env::temp_dir();
         let mut t = LockDiffs::new();
+        // Across chats, at most MAX_PENDING (W5C-S1 adds the per-chat cap, so
+        // the calls come from many chats here).
         for i in 0..(MAX_PENDING + 10) {
-            t.start(&format!("c{i}"), "chat", "pi", Manager::Npm, &dir, 0);
+            t.start(
+                &format!("c{i}"),
+                &format!("chat{}", i % 64),
+                "pi",
+                Manager::Npm,
+                (&dir, &dir),
+                0,
+            );
         }
         assert_eq!(t.pending.len(), MAX_PENDING);
-        t.start("late", "chat", "pi", Manager::Npm, &dir, PENDING_MS + 1);
+        t.start(
+            "late",
+            "chat",
+            "pi",
+            Manager::Npm,
+            (&dir, &dir),
+            PENDING_MS + 1,
+        );
         assert_eq!(t.pending.len(), 1, "the old ones aged out");
         t.forget_chat("chat");
         assert!(t.pending.is_empty());
+        // One chat holds at most MAX_PER_CHAT; its oldest go first.
+        for i in 0..20 {
+            t.start(
+                &format!("one{i}"),
+                "one",
+                "pi",
+                Manager::Npm,
+                (&dir, &dir),
+                1,
+            );
+        }
+        assert_eq!(t.pending.len(), MAX_PER_CHAT);
+        assert!(t.pending.contains_key("one19") && !t.pending.contains_key("one0"));
         assert!(
-            lockfile_for(Manager::Pipx, &dir).is_none(),
+            lockfile_for(Manager::Pipx, &dir, &dir).is_none(),
             "pipx keeps no project lockfile"
         );
-        assert!(lockfile_for(Manager::Npm, Path::new("relative")).is_none());
+        assert!(lockfile_for(Manager::Npm, Path::new("relative"), Path::new("relative")).is_none());
+    }
+
+    /// W5C-S1 and S7: a lockfile over MAX_ENTRIES gets no snapshot, and a
+    /// lockfile above the chat's folder is never read.
+    #[test]
+    fn a_huge_lockfile_gets_no_snapshot_and_a_parent_folders_is_not_read() {
+        let root = std::env::temp_dir().join(format!("derm-lockdiff-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let mut big = String::new();
+        for i in 0..(MAX_ENTRIES + 10) {
+            big.push_str(&format!("example.com/m{i} v1.0.{i} h1:x=\n"));
+        }
+        std::fs::write(work.join("go.sum"), &big).unwrap();
+        let mut t = LockDiffs::new();
+        t.start("big", "c", "pi", Manager::Go, (&work, &work), 0);
+        assert!(t.pending.is_empty(), "no snapshot kept");
+        std::fs::remove_file(work.join("go.sum")).unwrap();
+        std::fs::write(root.join("go.sum"), "example.com/a v1.0.0 h1:x=\n").unwrap();
+        assert_eq!(
+            lockfile_for(Manager::Go, &work, &work).unwrap().0,
+            work.join("go.sum")
+        );
+        assert_eq!(
+            lockfile_for(Manager::Go, &work, &root).unwrap().0,
+            root.join("go.sum")
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

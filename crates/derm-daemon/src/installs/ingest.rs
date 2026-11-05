@@ -29,6 +29,10 @@ use super::lockdiff::LockDiffs;
 
 /// Calls with a diff in flight, across chats (the oldest go first).
 const MAX_CALLS: usize = 1_024;
+/// Lockfile snapshots one chat may start per minute. An `install.call` is
+/// the agent's to post (case 66), and each one reads a lockfile with your
+/// rights on the ingest path (review W5C-S1).
+pub const MAX_STARTS_PER_MINUTE: u32 = 30;
 
 const MANAGERS: &[Manager] = &[
     Manager::Npm,
@@ -63,6 +67,8 @@ pub struct InstallRecords {
     /// (chat, call) to the managers seen and the record ids their diffs run under.
     calls: HashMap<(String, String), Vec<(Manager, String)>>,
     order: VecDeque<(String, String)>,
+    /// Per chat: the minute's start and the snapshots started in it.
+    starts: HashMap<String, (i64, u32)>,
 }
 
 impl InstallRecords {
@@ -86,6 +92,7 @@ impl InstallRecords {
             self.diffs.forget_chat(&e.chat_id);
             self.calls.retain(|(chat, _), _| chat != &e.chat_id);
             self.order.retain(|(chat, _)| chat != &e.chat_id);
+            self.starts.remove(&e.chat_id);
             return out;
         }
         if e.source != Source::Adapter {
@@ -113,17 +120,32 @@ impl InstallRecords {
                 }
                 self.order.push_back(key.clone());
             }
-            let seen = self.calls.entry(key).or_default();
-            if seen.iter().any(|(m, _)| *m == manager) {
+            if self
+                .calls
+                .get(&key)
+                .is_some_and(|seen| seen.iter().any(|(m, _)| *m == manager))
+            {
                 return out;
             }
+            if self.starts.len() >= MAX_CALLS && !self.starts.contains_key(&e.chat_id) {
+                self.starts.clear();
+            }
+            let window = self.starts.entry(e.chat_id.clone()).or_insert((now, 0));
+            if now - window.0 >= 60_000 {
+                *window = (now, 0);
+            }
+            if window.1 >= MAX_STARTS_PER_MINUTE {
+                return out;
+            }
+            window.1 += 1;
+            let seen = self.calls.entry(key).or_default();
             seen.push((manager, e.id.clone()));
             self.diffs.start(
                 &e.id,
                 &e.chat_id,
                 &e.harness,
                 manager,
-                Path::new(&folder),
+                (Path::new(&folder), Path::new(&folder)),
                 now,
             );
             return out;
@@ -425,5 +447,43 @@ mod tests {
         );
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].kind, "install.control");
+    }
+
+    /// W5C-S1: a chat that posts `install.call` at will starts at most
+    /// MAX_STARTS_PER_MINUTE snapshots a minute.
+    #[test]
+    fn forged_install_calls_start_a_bounded_number_of_snapshots() {
+        let dir = tempdir();
+        lockfile(dir.path(), &[("left-pad", "1.3.0")]);
+        let folder = dir.path().to_string_lossy().to_string();
+        let cwd = |_: &str| Some(folder.clone());
+        let mut r = InstallRecords::new();
+        for i in 0..100 {
+            r.observe(
+                &ev(
+                    &format!("i{i}"),
+                    Source::Adapter,
+                    "install.call",
+                    json!({"toolUseId": format!("t{i}"), "manager": "npm"}),
+                ),
+                cwd,
+                1_000,
+            );
+        }
+        assert_eq!(r.calls.len(), MAX_STARTS_PER_MINUTE as usize);
+        // A minute later the chat may start again.
+        r.observe(
+            &ev(
+                "late",
+                Source::Adapter,
+                "install.call",
+                json!({"toolUseId": "late", "manager": "npm"}),
+            ),
+            cwd,
+            61_001,
+        );
+        assert!(r
+            .calls
+            .contains_key(&("c1".to_string(), "late".to_string())));
     }
 }
