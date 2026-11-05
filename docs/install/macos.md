@@ -31,6 +31,10 @@ Run the lines from the unpacked folder, where the plist is. The first start of a
 
 The plist is `crates/derm-daemon/units/io.github.aetiusgular.derm.daemon.plist` in the repository. To stop it: `launchctl bootout gui/$(id -u)/io.github.aetiusgular.derm.daemon`.
 
+## Then
+
+`derm setup` finds your agents and asks, one question each, for a policy, the tap, content capture, computer use, the pre-install check, each agent's gate and a shim that runs it through `derm run` ([derm setup](setup.md)). `derm setup sandbox` says whether sbx and srt can run each agent here.
+
 ## Where derm keeps things
 
 | What | Where |

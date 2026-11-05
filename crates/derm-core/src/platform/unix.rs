@@ -163,8 +163,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Runs `name`, a test of this module, alone in a copy of this test
+    /// binary, and fails if it fails there. A process another test thread
+    /// starts holds a copy of every descriptor this process has open until
+    /// it execs, and a copy keeps a file's flock (flock(2): the lock belongs
+    /// to the open file description). So a lock test beside tests that start
+    /// processes can see a dropped lock still held: CI run 42006478394,
+    /// rust-macos, failed `the_lock_is_held_once` that way while the peer
+    /// tests started theirs. Alone, nothing else starts a process.
+    fn alone(name: &str) -> bool {
+        if std::env::var_os("DERM_PLATFORM_ALONE").is_some() {
+            return true;
+        }
+        let test = format!("platform::unix::tests::{name}");
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test.as_str(), "--exact", "--test-threads=1"])
+            .env("DERM_PLATFORM_ALONE", "1")
+            .output()
+            .unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(out.status.success(), "{test} alone:\n{said}");
+        assert!(
+            said.contains("1 passed"),
+            "{test} did not run alone:\n{said}"
+        );
+        false
+    }
+
     #[test]
     fn the_lock_is_held_once() {
+        if !alone("the_lock_is_held_once") {
+            return;
+        }
         let path = std::env::temp_dir().join(format!("derm-pllk-{}", std::process::id()));
         let a = OpenOptions::new()
             .write(true)
@@ -178,6 +212,66 @@ mod tests {
         drop(a);
         assert!(try_lock_exclusive(&b));
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Starts `true` from another thread and holds the child between its
+    /// fork and its exec (a `pre_exec` closure that waits); returns once the
+    /// child has forked, with the go signal and the thread.
+    fn a_child_held_before_exec() -> (UnixStream, std::thread::JoinHandle<()>) {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        let (mut forked_rx, forked_tx) = UnixStream::pair().unwrap();
+        let (go_tx, go_rx) = UnixStream::pair().unwrap();
+        let (tx, rx) = (forked_tx.as_raw_fd(), go_rx.as_raw_fd());
+        let spawner = std::thread::spawn(move || {
+            let _keep = (forked_tx, go_rx);
+            let mut c = std::process::Command::new("true");
+            // SAFETY: write and read are async-signal-safe; the closure
+            // touches no memory but a one-byte buffer on its own stack.
+            unsafe {
+                c.pre_exec(move || {
+                    let mut b = [1u8];
+                    libc::write(tx, b.as_ptr().cast(), 1);
+                    libc::read(rx, b.as_mut_ptr().cast(), 1);
+                    Ok(())
+                });
+            }
+            assert!(c.status().unwrap().success());
+        });
+        let mut b = [0u8];
+        forked_rx.read_exact(&mut b).unwrap();
+        (go_tx, spawner)
+    }
+
+    /// The cause of CI run 42006478394's failure, held still: a child
+    /// between fork and exec keeps a lock its parent dropped, and frees it
+    /// once it execs (its copies are close-on-exec). Before `alone`, this is
+    /// what `the_lock_is_held_once` met when a peer test started a process
+    /// between its `drop(a)` and its last check.
+    #[test]
+    fn a_child_between_fork_and_exec_keeps_a_dropped_lock_until_it_execs() {
+        use std::io::Write;
+        if !alone("a_child_between_fork_and_exec_keeps_a_dropped_lock_until_it_execs") {
+            return;
+        }
+        let path = std::env::temp_dir().join(format!("derm-pllk-x-{}", std::process::id()));
+        let a = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        let b = OpenOptions::new().write(true).open(&path).unwrap();
+        assert!(try_lock_exclusive(&a));
+        let (mut go, spawner) = a_child_held_before_exec();
+        drop(a);
+        let held_by_the_child = !try_lock_exclusive(&b);
+        go.write_all(&[1]).unwrap();
+        spawner.join().unwrap();
+        let free_after_exec = try_lock_exclusive(&b);
+        let _ = std::fs::remove_file(&path);
+        assert!(held_by_the_child, "the child's copy kept the lock");
+        assert!(free_after_exec, "the exec closed the child's copy");
     }
 
     #[test]
