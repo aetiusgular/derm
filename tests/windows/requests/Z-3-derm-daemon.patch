@@ -1,0 +1,805 @@
+diff --git a/crates/derm-daemon/src/activity/collector.rs b/crates/derm-daemon/src/activity/collector.rs
+index 6ee9e68..bd946af 100644
+--- a/crates/derm-daemon/src/activity/collector.rs
++++ b/crates/derm-daemon/src/activity/collector.rs
+@@ -11,6 +11,8 @@
+ //!    shows the commands for you to run in Terminal yourself. Nothing here
+ //!    builds or runs a shell string.
+ 
++// The socket client below is Unix's; on Windows (lane Z) these stay unused.
++#[cfg_attr(not(unix), allow(unused_imports))]
+ use std::io::{BufRead, BufReader, Read, Write};
+ use std::path::Path;
+ use std::time::Duration;
+@@ -18,6 +20,7 @@ use std::time::Duration;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+ 
++#[cfg_attr(not(unix), allow(unused_imports))]
+ use super::registry::READ_SOCKET;
+ use super::types::{ActivityEvent, ActivitySource};
+ 
+@@ -26,9 +29,11 @@ use super::types::{ActivityEvent, ActivitySource};
+ /// (`io.github.aetiusgular.derm.dev`, decision 1) installs its own label.
+ pub const RELEASE_IDENTIFIER: &str = "io.github.aetiusgular.derm";
+ pub const BINARY_NAME: &str = "derm-activity-collector";
++#[cfg_attr(not(unix), allow(dead_code))]
+ const READ_TIMEOUT: Duration = Duration::from_secs(5);
+ /// An `events` reply waits while the collector verifies every day file in
+ /// the range before it answers (`log.rs` `read_events`).
++#[cfg_attr(not(unix), allow(dead_code))]
+ const EVENTS_TIMEOUT: Duration = Duration::from_secs(15);
+ 
+ /// The daemon's launchd label and paths, from the app's identifier.
+@@ -74,6 +79,7 @@ impl Names {
+         Names::for_identifier(super::identifier()).unwrap_or_else(Names::release)
+     }
+ }
++#[cfg_attr(not(unix), allow(dead_code))]
+ const MAX_REPLY_BYTES: u64 = 64 * 1024 * 1024;
+ pub const MAX_EVENTS: usize = 10_000;
+ /// `EventsReply::problem` when the collector's socket did not connect.
+@@ -272,6 +278,7 @@ pub fn status() -> CollectorStatus {
+     let supported = cfg!(target_os = "macos");
+     let names = Names::current();
+     let installed = is_installed(&names, &crate::collector::app::installed_app());
++    #[cfg_attr(not(unix), allow(unused_mut))]
+     let mut status = CollectorStatus {
+         supported,
+         installed,
+diff --git a/crates/derm-daemon/src/activity/registry.rs b/crates/derm-daemon/src/activity/registry.rs
+index 9f3145c..b3ab3ff 100644
+--- a/crates/derm-daemon/src/activity/registry.rs
++++ b/crates/derm-daemon/src/activity/registry.rs
+@@ -21,6 +21,7 @@ use super::types::ProcessKind;
+ 
+ pub const REGISTER_SOCKET: &str = "/var/run/derm-activity/register.sock";
+ pub const READ_SOCKET: &str = "/var/run/derm-activity/read.sock";
++#[cfg_attr(not(unix), allow(dead_code))]
+ const IO_TIMEOUT: Duration = Duration::from_secs(2);
+ const MAX_LIVE: usize = 4_096;
+ const MAX_GRANTS: usize = 64;
+diff --git a/crates/derm-daemon/src/approver/person.rs b/crates/derm-daemon/src/approver/person.rs
+index b746d80..b2316e3 100644
+--- a/crates/derm-daemon/src/approver/person.rs
++++ b/crates/derm-daemon/src/approver/person.rs
+@@ -31,9 +31,14 @@
+ //! `derm watch --approve` asking for the password) is integration's: lane
+ //! V's request V-2, with its patch in `tests/integration/w5/V/requests/`.
+ 
++// The helper below is Unix's; on Windows (lane Z) these stay unused.
++#[cfg_attr(not(unix), allow(unused_imports))]
+ use std::io::Write;
++#[cfg(unix)]
+ use std::os::unix::fs::MetadataExt;
++#[cfg_attr(not(unix), allow(unused_imports))]
+ use std::path::{Path, PathBuf};
++#[cfg_attr(not(unix), allow(unused_imports))]
+ use std::process::{Command, Stdio};
+ use std::sync::Mutex;
+ use std::time::{Duration, Instant};
+@@ -44,6 +49,7 @@ use serde_json::Value;
+ /// `modules/pam_unix/support.h`); a longer one is refused unread.
+ pub const MAX_PASSWORD: usize = 512;
+ /// How long the helper may take.
++#[cfg_attr(not(unix), allow(dead_code))]
+ const HELPER_DEADLINE: Duration = Duration::from_secs(10);
+ /// The back-off after the n-th wrong password in a row: 1, 2, 4 ... seconds,
+ /// capped here. It is the daemon's, not a connection's: a new connection
+@@ -54,6 +60,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub enum Verdict {
+     /// The password is the person's.
++    #[cfg_attr(not(unix), allow(dead_code))]
+     Person,
+     /// It is not, or none was given.
+     Wrong(String),
+@@ -184,13 +191,16 @@ pub fn wipe(buf: &mut [u8]) {
+ 
+ /// Linux-PAM's helper, found at an absolute path, root's, not writable by
+ /// group or others, set-group-id (to read `/etc/shadow`) or set-user-id.
++#[cfg(unix)]
+ pub struct UnixChkpwd {
+     path: PathBuf,
+ }
+ 
+ /// Where Debian, Ubuntu and Fedora put the helper.
++#[cfg_attr(not(unix), allow(dead_code))]
+ const HELPER_PATHS: &[&str] = &["/usr/sbin/unix_chkpwd", "/sbin/unix_chkpwd"];
+ 
++#[cfg(unix)]
+ impl UnixChkpwd {
+     /// The helper, or why there is none to trust.
+     pub fn find() -> Result<Self, String> {
+@@ -229,6 +239,7 @@ impl UnixChkpwd {
+     }
+ }
+ 
++#[cfg(unix)]
+ fn parents_trusted(real: &Path, trusted: u32) -> bool {
+     real.ancestors().skip(1).all(|p| {
+         std::fs::symlink_metadata(p)
+@@ -237,6 +248,7 @@ fn parents_trusted(real: &Path, trusted: u32) -> bool {
+     })
+ }
+ 
++#[cfg(unix)]
+ impl Checker for UnixChkpwd {
+     /// `unix_chkpwd <user> nonull`, the password and a NUL on a pipe (the
+     /// helper refuses a terminal on stdin), exit 0 for the person's password.
+@@ -291,12 +303,15 @@ impl Checker for NoChecker {
+ 
+ /// The platform's checker.
+ pub fn platform() -> Box<dyn Checker> {
+-    if cfg!(target_os = "linux") {
++    #[cfg(target_os = "linux")]
++    {
+         match UnixChkpwd::find() {
+             Ok(c) => Box::new(c),
+             Err(why) => Box::new(NoChecker(Box::leak(why.into_boxed_str()))),
+         }
+-    } else {
++    }
++    #[cfg(not(target_os = "linux"))]
++    {
+         Box::new(NoChecker(
+             "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
+         ))
+@@ -305,6 +320,7 @@ pub fn platform() -> Box<dyn Checker> {
+ 
+ /// The daemon's user name, for the helper (it compares it with the name of
+ /// the user that runs it).
++#[cfg(unix)]
+ pub fn own_user() -> Option<String> {
+     let uid = derm_core::platform::effective_user();
+     let mut buf = vec![0u8; 16 * 1024];
+@@ -325,6 +341,15 @@ pub fn own_user() -> Option<String> {
+     )
+ }
+ 
++/// Windows (lane Z): the daemon's SID. No checker is built for Windows yet
++/// (`platform()` answers `NoChecker`), so a `yes` that needs a check is
++/// refused, as on macOS (lane V's V-6; note AU section 3.1).
++#[cfg(windows)]
++pub fn own_user() -> Option<String> {
++    let me = derm_core::platform::effective_user();
++    me.is_known().then(|| me.to_string())
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -500,6 +525,7 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_helper_that_is_not_roots_and_set_id_is_not_trusted() {
+         // A plain file of the test's: not set-id, and (as a non-root test) not
+diff --git a/crates/derm-daemon/src/collector/app.rs b/crates/derm-daemon/src/collector/app.rs
+index 7c7f140..e5fdf40 100644
+--- a/crates/derm-daemon/src/collector/app.rs
++++ b/crates/derm-daemon/src/collector/app.rs
+@@ -519,6 +519,7 @@ mod tests {
+         std::fs::remove_dir_all(dir).unwrap();
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_bundle_that_is_not_the_collectors_is_refused_with_its_reason() {
+         let names = Names::release();
+diff --git a/crates/derm-daemon/src/collector/mod.rs b/crates/derm-daemon/src/collector/mod.rs
+index 96262e5..3d6c69e 100644
+--- a/crates/derm-daemon/src/collector/mod.rs
++++ b/crates/derm-daemon/src/collector/mod.rs
+@@ -236,6 +236,7 @@ fn writable_with(path: &std::path::Path, can: impl Fn(&std::path::Path) -> bool)
+ 
+ /// One path: owned by this user (who can always chmod it), or writable by
+ /// this user's effective ids.
++#[cfg(unix)]
+ fn can_change(p: &std::path::Path) -> bool {
+     use std::os::unix::ffi::OsStrExt;
+     use std::os::unix::fs::MetadataExt;
+@@ -255,6 +256,13 @@ fn can_change(p: &std::path::Path) -> bool {
+     unsafe { libc::faccessat(libc::AT_FDCWD, c.as_ptr(), libc::W_OK, libc::AT_EACCESS) == 0 }
+ }
+ 
++/// Windows (lane Z): the collector is the Mac's; every path counts as one
++/// this user can change, the answer the Unix code gives when it cannot read.
++#[cfg(not(unix))]
++fn can_change(_p: &std::path::Path) -> bool {
++    true
++}
++
+ /// Starts what lane K adds to a running daemon. Returns at once.
+ pub fn start(daemon: &Arc<Daemon>, paths: &Paths) {
+     if cfg!(target_os = "macos") {
+@@ -411,6 +419,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(root);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn the_install_plan_pins_the_binary_and_the_peer_and_stages_the_plist() {
+         let root = std::env::temp_dir().join(format!(
+@@ -456,6 +465,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(root);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_peer_is_replaceable_when_any_folder_up_its_path_is_ours() {
+         // Fix pass 1's review, FP1-S3: the first check looked at the file
+diff --git a/crates/derm-daemon/src/computer_use/bridge.rs b/crates/derm-daemon/src/computer_use/bridge.rs
+index 3e28e42..d789536 100644
+--- a/crates/derm-daemon/src/computer_use/bridge.rs
++++ b/crates/derm-daemon/src/computer_use/bridge.rs
+@@ -39,7 +39,7 @@ const POLL: Duration = Duration::from_millis(750);
+ /// daemon's: a live derm chat token (lane K).
+ pub type Resolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+ 
+-#[cfg(test)]
++#[cfg(all(test, unix))]
+ pub fn start(core: Arc<Core>) -> std::io::Result<std::net::SocketAddr> {
+     start_with(core, None)
+ }
+@@ -219,7 +219,9 @@ fn serve(core: &Arc<Core>, resolver: Option<&Resolver>, stream: TcpStream) {
+     }
+ }
+ 
+-#[cfg(test)]
++// Unix-native test fakes (socket pairs, modes); computer use has no
++// Windows runtime yet (lane Z).
++#[cfg(all(test, unix))]
+ mod tests {
+     use super::super::core::tests::{core_with, FakeLauncher};
+     use super::*;
+diff --git a/crates/derm-daemon/src/computer_use/core.rs b/crates/derm-daemon/src/computer_use/core.rs
+index d915478..e05b303 100644
+--- a/crates/derm-daemon/src/computer_use/core.rs
++++ b/crates/derm-daemon/src/computer_use/core.rs
+@@ -312,7 +312,7 @@ impl Core {
+     }
+ 
+     /// The chat's bridge token, if it has one. Spawns take `mint_token`.
+-    #[cfg(test)]
++    #[cfg(all(test, unix))]
+     pub fn token(&self, chat: &str) -> Option<String> {
+         self.lock().tokens.get(chat).cloned()
+     }
+@@ -1319,7 +1319,9 @@ impl Backend for Core {
+     }
+ }
+ 
+-#[cfg(test)]
++// Unix-native test fakes (socket pairs, modes); computer use has no
++// Windows runtime yet (lane Z).
++#[cfg(all(test, unix))]
+ pub mod tests {
+     use super::*;
+     use std::io::{BufRead, BufReader, Write};
+diff --git a/crates/derm-daemon/src/computer_use/helper_client.rs b/crates/derm-daemon/src/computer_use/helper_client.rs
+index 45b9287..fc30575 100644
+--- a/crates/derm-daemon/src/computer_use/helper_client.rs
++++ b/crates/derm-daemon/src/computer_use/helper_client.rs
+@@ -14,7 +14,11 @@ use serde_json::{json, Value};
+ 
+ /// The largest line from the helper: a tool result with a screenshot.
+ #[cfg_attr(
+-    all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
++    all(
++        not(target_os = "macos"),
++        not(target_os = "linux"),
++        any(not(test), not(unix))
++    ),
+     expect(dead_code, reason = "the helper runs on macOS and Linux only")
+ )]
+ pub const MAX_LINE: usize = 64 * 1024 * 1024;
+@@ -32,7 +36,11 @@ impl HelperClient {
+     /// Takes a connected stream's two halves. `on_event` gets each event line
+     /// (`record`, `exited`) and, once, `{"event":"closed"}`.
+     #[cfg_attr(
+-        all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
++        all(
++            not(target_os = "macos"),
++            not(target_os = "linux"),
++            any(not(test), not(unix))
++        ),
+         expect(dead_code, reason = "the helper runs on macOS and Linux only")
+     )]
+     pub fn new(
+@@ -171,7 +179,11 @@ impl HelperError {
+ }
+ 
+ #[cfg_attr(
+-    all(not(target_os = "macos"), not(target_os = "linux"), not(test)),
++    all(
++        not(target_os = "macos"),
++        not(target_os = "linux"),
++        any(not(test), not(unix))
++    ),
+     expect(dead_code, reason = "the helper runs on macOS and Linux only")
+ )]
+ fn read_line(reader: &mut BufReader<impl Read>) -> Option<Vec<u8>> {
+@@ -197,7 +209,9 @@ fn read_line(reader: &mut BufReader<impl Read>) -> Option<Vec<u8>> {
+     }
+ }
+ 
+-#[cfg(test)]
++// Unix-native test fakes (socket pairs, modes); computer use has no
++// Windows runtime yet (lane Z).
++#[cfg(all(test, unix))]
+ mod tests {
+     use super::*;
+     use std::os::unix::net::UnixStream;
+diff --git a/crates/derm-daemon/src/computer_use/relay.rs b/crates/derm-daemon/src/computer_use/relay.rs
+index 697486a..8d549ab 100644
+--- a/crates/derm-daemon/src/computer_use/relay.rs
++++ b/crates/derm-daemon/src/computer_use/relay.rs
+@@ -23,10 +23,12 @@
+ //! shell can reach the bridge too, past the harness's own gate, but only as
+ //! its chat and only for apps the user granted that chat.
+ 
++#[cfg(unix)]
+ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+ use std::path::{Component, Path, PathBuf};
+ 
+ use super::ENDPOINT_FILE;
++use derm_core::platform::UserId;
+ 
+ /// The longest token file and endpoint file read.
+ const MAX_FILE: u64 = 256;
+@@ -54,7 +56,7 @@ pub fn run() -> i32 {
+     }
+ }
+ 
+-fn uid() -> u32 {
++fn uid() -> UserId {
+     derm_core::platform::real_user()
+ }
+ 
+@@ -63,7 +65,7 @@ fn uid() -> u32 {
+ pub fn target(
+     env: &dyn Fn(&str) -> Option<String>,
+     cwd: &Path,
+-    uid: u32,
++    uid: UserId,
+ ) -> Result<Target, String> {
+     let token = chat_token(env, cwd, uid).ok_or(
+         "no chat token: start the harness with derm run (DERM_CHAT_TOKEN or DERM_CHAT_TOKEN_FILE)",
+@@ -80,7 +82,7 @@ fn hex64(text: &str) -> bool {
+ 
+ /// `DERM_CHAT_TOKEN`, else the file `DERM_CHAT_TOKEN_FILE` names, by the hooks'
+ /// rules (module docs).
+-pub fn chat_token(env: &dyn Fn(&str) -> Option<String>, cwd: &Path, uid: u32) -> Option<String> {
++pub fn chat_token(env: &dyn Fn(&str) -> Option<String>, cwd: &Path, uid: UserId) -> Option<String> {
+     if let Some(token) = env("DERM_CHAT_TOKEN") {
+         let token = token.trim();
+         if hex64(token) {
+@@ -123,9 +125,8 @@ pub fn socket_path(env: &dyn Fn(&str) -> Option<String>, cwd: &Path) -> Result<P
+ 
+ /// The bridge's address from `<dir>/cu.endpoint`, when the folder is yours
+ /// and no one else can write it, and the file is yours and private.
+-pub fn endpoint(dir: &Path, uid: u32) -> Result<String, String> {
+-    let meta = std::fs::symlink_metadata(dir).map_err(|_| "no daemon folder".to_string())?;
+-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
++pub fn endpoint(dir: &Path, uid: UserId) -> Result<String, String> {
++    if !folder_yours_alone(dir, uid)? {
+         return Err("the daemon's folder is not yours alone".into());
+     }
+     let file = dir.join(ENDPOINT_FILE);
+@@ -139,7 +140,40 @@ pub fn endpoint(dir: &Path, uid: u32) -> Result<String, String> {
+ 
+ /// A small regular file you own with no group or other bits, read without
+ /// following a link.
+-fn read_private(path: &Path, uid: u32) -> Option<String> {
++#[cfg(unix)]
++fn folder_yours_alone(dir: &Path, uid: UserId) -> Result<bool, String> {
++    let meta = std::fs::symlink_metadata(dir).map_err(|_| "no daemon folder".to_string())?;
++    Ok(meta.is_dir() && meta.uid() == uid && meta.mode() & 0o022 == 0)
++}
++
++/// Windows (lane Z): a folder of ours, no reparse point on its path, that no
++/// one else may change.
++#[cfg(windows)]
++fn folder_yours_alone(dir: &Path, uid: UserId) -> Result<bool, String> {
++    let meta = std::fs::symlink_metadata(dir).map_err(|_| "no daemon folder".to_string())?;
++    Ok(meta.is_dir()
++        && uid == derm_core::platform::effective_user()
++        && derm_core::platform::windows::only_owner_writes(dir))
++}
++
++/// Windows (lane Z): the file itself, checked on the open handle.
++#[cfg(windows)]
++fn read_private(path: &Path, uid: UserId) -> Option<String> {
++    use std::io::Read;
++    if uid != derm_core::platform::effective_user() {
++        return None;
++    }
++    let file = derm_core::platform::windows::open_private_file(path).ok()?;
++    if file.metadata().ok()?.len() > MAX_FILE {
++        return None;
++    }
++    let mut text = String::new();
++    file.take(MAX_FILE).read_to_string(&mut text).ok()?;
++    Some(text)
++}
++
++#[cfg(unix)]
++fn read_private(path: &Path, uid: UserId) -> Option<String> {
+     let meta = std::fs::symlink_metadata(path).ok()?;
+     if !meta.file_type().is_file()
+         || meta.uid() != uid
+@@ -193,7 +227,9 @@ pub fn inside(path: &Path, folder: &Path) -> bool {
+     matches!((real_path, real_folder), (Some(p), Some(f)) if p.starts_with(&f))
+ }
+ 
+-#[cfg(test)]
++// Unix-native test fakes (socket pairs, modes); computer use has no
++// Windows runtime yet (lane Z).
++#[cfg(all(test, unix))]
+ mod tests {
+     use super::*;
+     use std::collections::HashMap;
+diff --git a/crates/derm-daemon/src/computer_use/service.rs b/crates/derm-daemon/src/computer_use/service.rs
+index fa9d5d0..3edb8d5 100644
+--- a/crates/derm-daemon/src/computer_use/service.rs
++++ b/crates/derm-daemon/src/computer_use/service.rs
+@@ -457,7 +457,9 @@ fn write_endpoint(dir: &Path, address: &str) -> Result<(), String> {
+         .map_err(|e| format!("endpoint file: {e}"))
+ }
+ 
+-#[cfg(test)]
++// Unix-native test fakes (socket pairs, modes); computer use has no
++// Windows runtime yet (lane Z).
++#[cfg(all(test, unix))]
+ mod tests {
+     use super::super::core::tests::FakeLauncher;
+     use super::*;
+@@ -955,6 +957,7 @@ mod daemon_tests {
+         let _ = std::fs::remove_dir_all(root);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn start_here_writes_a_private_endpoint_the_relay_reads() {
+         use std::os::unix::fs::PermissionsExt;
+diff --git a/crates/derm-daemon/src/computer_use/settings.rs b/crates/derm-daemon/src/computer_use/settings.rs
+index c604a20..2a3f36c 100644
+--- a/crates/derm-daemon/src/computer_use/settings.rs
++++ b/crates/derm-daemon/src/computer_use/settings.rs
+@@ -9,25 +9,39 @@
+ //! reads as off: a file an agent planted, or one this code cannot read,
+ //! never turns computer use on.
+ 
+-use std::os::unix::fs::MetadataExt;
+ use std::path::Path;
+ 
+ use serde_json::Value;
+ 
+ const MAX_FILE: u64 = 64 * 1024;
+ 
++/// A regular file of `uid`'s, one link, that no one else may write.
++#[cfg(unix)]
++fn owner_only_writes(_path: &Path, meta: &std::fs::Metadata, uid: u32) -> bool {
++    use std::os::unix::fs::MetadataExt;
++    meta.file_type().is_file() && meta.uid() == uid && meta.mode() & 0o022 == 0 && meta.nlink() == 1
++}
++
++/// Windows (lane Z): the same, read from the owner and DACL; only the
++/// daemon's own user is ever asked about.
++#[cfg(windows)]
++fn owner_only_writes(
++    path: &Path,
++    meta: &std::fs::Metadata,
++    uid: derm_core::platform::UserId,
++) -> bool {
++    meta.file_type().is_file()
++        && uid == derm_core::platform::effective_user()
++        && derm_core::platform::windows::only_owner_writes(path)
++}
++
+ /// Whether the settings file at `path` turns computer use on. `false` for
+ /// no file, a file that is not the user's own, or one the schema refuses.
+-pub fn computer_use_on(path: &Path, uid: u32) -> bool {
++pub fn computer_use_on(path: &Path, uid: derm_core::platform::UserId) -> bool {
+     let Ok(meta) = std::fs::symlink_metadata(path) else {
+         return false;
+     };
+-    if !meta.file_type().is_file()
+-        || meta.uid() != uid
+-        || meta.mode() & 0o022 != 0
+-        || meta.nlink() != 1
+-        || meta.len() > MAX_FILE
+-    {
++    if !owner_only_writes(path, &meta, uid) || meta.len() > MAX_FILE {
+         return false;
+     }
+     let Ok(text) = std::fs::read_to_string(path) else {
+@@ -60,6 +74,7 @@ pub fn parse(text: &str) -> Result<bool, String> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
+     #[test]
+@@ -86,6 +101,7 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_file_someone_else_could_write_reads_as_off() {
+         let dir = std::env::temp_dir().join(format!("derm-cu-settings-{}", std::process::id()));
+diff --git a/crates/derm-daemon/src/content/mod.rs b/crates/derm-daemon/src/content/mod.rs
+index a63cc75..3315cb6 100644
+--- a/crates/derm-daemon/src/content/mod.rs
++++ b/crates/derm-daemon/src/content/mod.rs
+@@ -22,7 +22,8 @@
+ 
+ use std::collections::{BTreeMap, HashMap};
+ use std::io::Write;
+-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
++#[cfg(unix)]
++use std::os::unix::fs::MetadataExt;
+ use std::path::{Path, PathBuf};
+ use std::time::Instant;
+ 
+@@ -177,13 +178,55 @@ pub fn kept(data: &Path) -> (u64, u64, Option<i64>) {
+     (files, bytes, until)
+ }
+ 
++#[cfg(unix)]
+ fn private_dir(dir: &Path) -> bool {
+     let uid = derm_core::platform::real_user();
+     std::fs::symlink_metadata(dir)
+         .is_ok_and(|m| m.file_type().is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
+ }
+ 
++#[cfg(windows)]
++fn private_dir(dir: &Path) -> bool {
++    derm_core::platform::owned_private_dir(dir, &derm_core::platform::real_user())
++}
++
+ fn read_ages(path: &Path) -> Option<HashMap<String, i64>> {
++    #[cfg(windows)]
++    {
++        read_ages_windows(path)
++    }
++    #[cfg(unix)]
++    {
++        read_ages_unix(path)
++    }
++}
++
++/// Windows (lane Z): the file itself, checked on the open handle.
++#[cfg(windows)]
++fn read_ages_windows(path: &Path) -> Option<HashMap<String, i64>> {
++    use std::io::Read;
++    let mut f = derm_core::platform::windows::open_private_file(path).ok()?;
++    if f.metadata().ok()?.len() > MAX_AGES_FILE {
++        return None;
++    }
++    let mut text = String::new();
++    f.read_to_string(&mut text).ok()?;
++    ages_from(&text)
++}
++
++#[cfg(windows)]
++fn ages_from(text: &str) -> Option<HashMap<String, i64>> {
++    let v: Value = serde_json::from_str(text).ok()?;
++    Some(
++        v.as_object()?
++            .iter()
++            .filter_map(|(k, v)| v.as_i64().filter(|n| *n >= 0).map(|n| (k.clone(), n)))
++            .collect(),
++    )
++}
++
++#[cfg(unix)]
++fn read_ages_unix(path: &Path) -> Option<HashMap<String, i64>> {
+     let meta = std::fs::symlink_metadata(path).ok()?;
+     let uid = derm_core::platform::real_user();
+     if !meta.file_type().is_file()
+@@ -205,12 +248,12 @@ fn read_ages(path: &Path) -> Option<HashMap<String, i64>> {
+ fn write_ages(path: &Path, ages: &HashMap<String, i64>) -> std::io::Result<()> {
+     let tmp = path.with_extension("json.tmp");
+     let _ = std::fs::remove_file(&tmp);
+-    let mut f = std::fs::OpenOptions::new()
+-        .write(true)
+-        .create_new(true)
+-        .mode(0o600)
+-        .custom_flags(libc::O_NOFOLLOW)
+-        .open(&tmp)?;
++    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
++    // on Unix (lane Z's request Z-2).
++    let mut f = derm_core::platform::private_no_follow(
++        std::fs::OpenOptions::new().write(true).create_new(true),
++    )
++    .open(&tmp)?;
+     let map: BTreeMap<&String, &i64> = ages.iter().collect();
+     f.write_all(
+         serde_json::to_string(&map)
+diff --git a/crates/derm-daemon/src/content/tests.rs b/crates/derm-daemon/src/content/tests.rs
+index 837dcd1..ccafad0 100644
+--- a/crates/derm-daemon/src/content/tests.rs
++++ b/crates/derm-daemon/src/content/tests.rs
+@@ -1,6 +1,21 @@
+ use super::*;
+ use derm_tap::content::{open, Target};
+ 
++/// 0600 on Unix; a private DACL on Windows (lane Z).
++#[cfg(unix)]
++fn assert_private_file(p: &Path) {
++    assert_eq!(std::fs::metadata(p).unwrap().mode() & 0o777, 0o600);
++}
++
++#[cfg(windows)]
++fn assert_private_file(p: &Path) {
++    assert!(
++        derm_core::platform::windows::is_private_path(p),
++        "{}",
++        p.display()
++    );
++}
++
+ const T0: i64 = 1_793_000_000_000;
+ 
+ fn root(name: &str) -> PathBuf {
+@@ -69,7 +84,7 @@ fn case_126_a_clock_set_back_still_deletes_on_time_across_a_restart() {
+     assert!(f.exists());
+     // The daemon restarts: what it saw pass is kept in .ages.json.
+     let ages = data.join("content/.ages.json");
+-    assert_eq!(std::fs::metadata(&ages).unwrap().mode() & 0o777, 0o600);
++    assert_private_file(&ages);
+     let mut p = Purger::new(&data);
+     assert!(p.pass_with(back + DAY_MS, DAY_MS - 1).is_empty());
+     assert_eq!(p.pass_with(back + 2 * DAY_MS, 1).len(), 1);
+@@ -87,6 +102,7 @@ fn a_clock_moved_forward_deletes_early_never_late() {
+     let _ = std::fs::remove_dir_all(data);
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn links_and_strangers_files_are_never_followed_or_deleted() {
+     use std::os::unix::fs::PermissionsExt;
+@@ -120,6 +136,7 @@ fn links_and_strangers_files_are_never_followed_or_deleted() {
+     let _ = std::fs::remove_dir_all(data);
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn a_content_folder_others_can_read_is_left_alone() {
+     use std::os::unix::fs::PermissionsExt;
+diff --git a/crates/derm-daemon/src/daemon.rs b/crates/derm-daemon/src/daemon.rs
+index 0b709c3..dd6b11e 100644
+--- a/crates/derm-daemon/src/daemon.rs
++++ b/crates/derm-daemon/src/daemon.rs
+@@ -119,7 +119,7 @@ pub struct ConnPeer {
+     /// `SO_PEERCRED` / `LOCAL_PEERCRED`; `None` when the OS call failed.
+     pub cred: Option<derm_core::platform::peer::Peer>,
+     /// The connecting process itself, on Linux 6.5 and later.
+-    pub pidfd: Option<std::os::fd::OwnedFd>,
++    pub pidfd: Option<derm_core::platform::Pidfd>,
+     pub program: Option<String>,
+     pub start_time: Option<u64>,
+ }
+@@ -143,7 +143,7 @@ impl ConnPeer {
+     pub fn record(&self) -> Value {
+         json!({
+             "pid": self.cred.as_ref().and_then(|c| c.pid),
+-            "uid": self.cred.as_ref().map(|c| c.uid),
++            "uid": self.cred.as_ref().map(|c| &c.uid),
+             "program": self.program.as_deref().map(|p| clip(p, 300)),
+             "startTime": self.start_time,
+             "pidfd": self.pidfd.is_some(),
+@@ -1363,6 +1363,7 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
+ /// The state file when it is safe to read: a regular file (no link) owned
+ /// by this user, no group or other bits, at most 1 MiB, JSON with
+ /// `version: 1`. Anything else is ignored, and the daemon starts empty.
++#[cfg(unix)]
+ fn read_state(path: &Path) -> Option<Value> {
+     use std::io::Read;
+     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+@@ -1391,6 +1392,25 @@ fn read_state(path: &Path) -> Option<Value> {
+     (value.get("version").and_then(Value::as_u64) == Some(1)).then_some(value)
+ }
+ 
++/// Windows (lane Z): the file itself, never a reparse point's target,
++/// checked on the open handle as on Unix (`open_private_file`).
++#[cfg(windows)]
++fn read_state(path: &Path) -> Option<Value> {
++    use std::io::Read;
++    let mut file = derm_core::platform::windows::open_private_file(path).ok()?;
++    let meta = file.metadata().ok()?;
++    if !meta.file_type().is_file() || meta.len() > STATE_FILE_MAX {
++        return None;
++    }
++    let mut text = String::new();
++    file.by_ref()
++        .take(STATE_FILE_MAX + 1)
++        .read_to_string(&mut text)
++        .ok()?;
++    let value: Value = serde_json::from_str(&text).ok()?;
++    (value.get("version").and_then(Value::as_u64) == Some(1)).then_some(value)
++}
++
+ /// The disk's records and the ring's, as one backlog: one record per chat
+ /// and id, the last copy where it may replace the first (case 35, the
+ /// store's `may_replace`), oldest first, at most `MAX_BACKLOG`.
+@@ -1622,6 +1642,7 @@ mod tests {
+ 
+     /// BX8's state file is taken only when it is this user's own private
+     /// regular file: one others can read or write, or a link, is ignored.
++    #[cfg(unix)]
+     #[test]
+     fn a_state_file_that_is_not_private_is_ignored() {
+         use std::os::unix::fs::PermissionsExt;
+diff --git a/crates/derm-daemon/src/service.rs b/crates/derm-daemon/src/service.rs
+index adab1f8..f177332 100644
+--- a/crates/derm-daemon/src/service.rs
++++ b/crates/derm-daemon/src/service.rs
+@@ -26,6 +26,8 @@ pub struct Running {
+     pub daemon: Arc<Daemon>,
+     pub listener: UnixListener,
+     pub paths: Paths,
++    // Held for its lock; read only by Unix's `pid_file_fd` (lane Z).
++    #[cfg_attr(not(unix), allow(dead_code))]
+     lock: File,
+ }
+ 
+diff --git a/crates/derm-daemon/src/socket.rs b/crates/derm-daemon/src/socket.rs
+index 6036235..33cfd1f 100644
+--- a/crates/derm-daemon/src/socket.rs
++++ b/crates/derm-daemon/src/socket.rs
+@@ -191,6 +191,7 @@ fn read_loop(stream: &UnixStream, daemon: &Arc<Daemon>, out: &Outbox) -> std::io
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
+     fn temp_root() -> std::path::PathBuf {
+@@ -201,6 +202,7 @@ mod tests {
+         ))
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn bind_sets_0600_and_a_0700_parent_and_replaces_a_stale_socket() {
+         let root = temp_root();
+@@ -219,6 +221,7 @@ mod tests {
+         std::fs::remove_dir_all(&root).unwrap();
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_linked_socket_folder_is_refused() {
+         let root = temp_root();
+diff --git a/crates/derm-daemon/tests/service.rs b/crates/derm-daemon/tests/service.rs
+index f7ce27b..0f01e97 100644
+--- a/crates/derm-daemon/tests/service.rs
++++ b/crates/derm-daemon/tests/service.rs
+@@ -1,4 +1,7 @@
+ //! The daemon as a process: the binary, its files, its lock, a restart.
++// The daemon over a Unix socket; its Windows twin is lane Z's
++// `tests/windows/` (the named pipe).
++#![cfg(unix)]
+ 
+ use std::io::{BufRead, BufReader, Write};
+ use std::os::unix::fs::PermissionsExt;
+diff --git a/crates/derm-daemon/tests/socket.rs b/crates/derm-daemon/tests/socket.rs
+index 5c8e97f..be7d1be 100644
+--- a/crates/derm-daemon/tests/socket.rs
++++ b/crates/derm-daemon/tests/socket.rs
+@@ -1,5 +1,8 @@
+ //! The daemon over its socket, as clients use it (`contracts/daemon-protocol.md`).
+ //! Each test runs its own daemon on a temporary socket and log folder.
++// The daemon over a Unix socket; its Windows twin is lane Z's
++// `tests/windows/` (the named pipe).
++#![cfg(unix)]
+ 
+ use std::io::{BufRead, BufReader, Read, Write};
+ use std::os::unix::net::UnixStream;
