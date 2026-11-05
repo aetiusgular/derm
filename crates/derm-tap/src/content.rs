@@ -4,8 +4,9 @@
 //! Layout, shared with the daemon's purge (`derm-daemon/src/content/`):
 //! `<data>/content/<chat>/` (0700) holds `<ms>-r<days>-<id>.<part>` (0600),
 //! where `<ms>` is when the file was opened, `<days>` the retention the user
-//! had chosen then (1 to 7), `<id>` the request's id and `<part>` `request`
-//! or `response`. Each file carries its own retention, so turning content
+//! had chosen then (1 to 7), `<id>` the request's id and `<part>` `request`,
+//! `response`, or `argv` (a run's own argument words, case 85 as changed:
+//! for `derm run` to keep there instead of the activity log). Each file carries its own retention, so turning content
 //! off or shortening it later deletes nothing early (case 126). A file holds
 //! a body as it crossed the tap: never a header, a URL or a query (case 114).
 
@@ -44,7 +45,7 @@ pub fn parse_name(name: &str) -> Option<(i64, u8)> {
     let days: u8 = parts.next()?.strip_prefix('r')?.parse().ok()?;
     let rest = parts.next()?;
     let ok = (1..=7).contains(&days)
-        && (rest.ends_with(".request") || rest.ends_with(".response"))
+        && (rest.ends_with(".request") || rest.ends_with(".response") || rest.ends_with(".argv"))
         && rest
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
@@ -223,5 +224,6 @@ mod tests {
         assert_eq!(parse_name("x-r1-x.request"), None);
         assert_eq!(parse_name("1-r1-x.other"), None);
         assert_eq!(parse_name("1-r7-req_1.response"), Some((1, 7)));
+        assert_eq!(parse_name("1-r2-run_1.argv"), Some((1, 2)));
     }
 }

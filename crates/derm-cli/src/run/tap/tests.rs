@@ -346,3 +346,30 @@ fn the_tap_table_merges_into_the_presets_and_every_row_follows_the_schema() {
         }
     }
 }
+
+#[test]
+fn the_content_record_follows_the_settings_and_defaults_off() {
+    let d = dirs("content", None);
+    let home = d.home.to_string_lossy().into_owned();
+    assert_eq!(
+        content_record(Some(&home)),
+        json!({"on": false, "retentionDays": null})
+    );
+    let f = d.home.join(".derm/settings.json");
+    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+    std::fs::write(
+        &f,
+        r#"{"version":1,"content":{"on":true,"retentionDays":4}}"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        content_record(Some(&home)),
+        json!({"on": true, "retentionDays": 4})
+    );
+    assert_eq!(
+        content_record(None),
+        json!({"on": false, "retentionDays": null})
+    );
+    let _ = std::fs::remove_dir_all(d.root);
+}

@@ -62,6 +62,18 @@ pub(crate) fn environment(harness: &str, plan: &mut Plan) -> Result<Option<Value
     environment_with(harness, plan, &inputs)
 }
 
+/// `run.start`'s `content` field (`contracts/events.md` section 5): the
+/// content switch and its retention as the user's settings hold them when
+/// the chat starts. The seam returns only `tap`, so `run_io` adds this once
+/// integration applies lane S's request 3; until then nothing calls it.
+#[allow(dead_code)]
+pub(crate) fn content_record(home: Option<&str>) -> Value {
+    let s = home
+        .map(|h| settings::load(&settings::path_for(h)).0)
+        .unwrap_or_default();
+    json!({"on": s.content_days.is_some(), "retentionDays": s.content_days})
+}
+
 fn off(reason: Option<&str>) -> Option<Value> {
     let mut v = json!({"on": false, "via": "none"});
     if let Some(r) = reason {
