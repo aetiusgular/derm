@@ -14,3 +14,10 @@ description = "The Windows OS feed: process, file and network events to daemon e
 
 [dependencies]
 derm-core = { path = "../derm-core" }
+# The daemon's event shape (`derm_core::event::Event`) carries `detail` as JSON.
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The event log reader (`reader.rs`): EvtQuery, EvtNext, EvtRender. The same
+# windows-sys as derm-core (=0.61.2, already in Cargo.lock).
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_EventLog"] }
