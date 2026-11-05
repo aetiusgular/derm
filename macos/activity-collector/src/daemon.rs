@@ -442,11 +442,17 @@ pub fn check_socket_path(path: &Path) -> io::Result<()> {
 }
 
 /// Binds a socket at `path` (mode 0666; every caller is checked),
-/// replacing only a stale socket, never another kind of file.
+/// replacing only a stale socket, never another kind of file, and never a
+/// socket another process still listens on (case 40: a second collector,
+/// a dev install beside the signed app or the terminal route left behind,
+/// must not take the first one's clients while it keeps running).
 pub fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     check_socket_path(path)?;
     match fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_socket() => fs::remove_file(path)?,
+        Ok(m) if m.file_type().is_socket() => {
+            stale_socket(path)?;
+            fs::remove_file(path)?;
+        }
         Ok(_) => return Err(io::Error::other("socket path is taken")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
@@ -454,6 +460,33 @@ pub fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o666))?;
     Ok(listener)
+}
+
+/// `Ok` when nothing listens on the socket at `path`: a connect is refused
+/// (`ECONNREFUSED`, a socket file whose listener is gone) or finds nothing.
+/// A connect that succeeds is a live collector, and any other answer cannot
+/// be read as stale, so both keep the file (fail safe).
+fn stale_socket(path: &Path) -> io::Result<()> {
+    match UnixStream::connect(path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "another collector answers on {}; stop it first (sudo launchctl bootout system/<its label>)",
+                path.display()
+            ),
+        )),
+        Err(e) if matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+        ) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("cannot tell whether {} is in use: {e}", path.display()),
+        )),
+    }
 }
 
 /// Runs eslogger forever, restarting it with backoff when it exits.
@@ -723,6 +756,31 @@ mod tests {
             &mut out,
         );
         assert_eq!(out, b"{\"ok\":false,\"error\":\"unknown op\"}\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_socket_another_collector_still_answers_on_is_never_taken_over() {
+        use std::os::unix::fs::MetadataExt;
+        // Case 40, two builds on one Mac: a second collector (a dev install
+        // beside the signed app, or the terminal route left behind when the
+        // app's SMAppService copy starts) bound the same paths by removing
+        // the first one's live socket. The first kept running eslogger and
+        // logging, and every client silently moved to the second.
+        let dir = socket_dir();
+        ensure_plain_dir(&dir, 0o755).unwrap();
+        let path = dir.join("read.sock");
+        let live = bind_socket(&path).unwrap();
+        let err = bind_socket(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{err}");
+        assert!(err.to_string().contains("another collector"), "{err}");
+        // The first collector's socket is still the one at the path.
+        let ino = fs::symlink_metadata(&path).unwrap().ino();
+        assert!(UnixStream::connect(&path).is_ok());
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), ino);
+        // Once it is gone, its socket file is stale and is replaced.
+        drop(live);
+        assert!(bind_socket(&path).is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }
 
