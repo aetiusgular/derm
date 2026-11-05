@@ -19,7 +19,15 @@
 //! lane D status doc, Research.
 
 pub(crate) mod args;
+// The harness's process tree (the platform seam's primitive 5, lane Z's
+// request 1): `exec.rs` on Unix; on Windows the same functions from lane Z's
+// `platform/windows/exec.rs` (`install_handlers`, `forward_sigint`, `spawn`,
+// `spawn_companion`, `stop_companion`, `wait`, `code`,
+// `output_with_timeout`).
+#[cfg(unix)]
 mod exec;
+#[cfg(windows)]
+use crate::platform::windows::exec;
 pub(crate) mod harness;
 pub(crate) mod plan;
 mod policy_log;
@@ -32,7 +40,6 @@ mod tap; // lane S
 mod user; // lane V
 
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -148,15 +155,7 @@ fn now_ms() -> i64 {
 }
 
 fn hostname() -> String {
-    let mut buf = [0u8; 256];
-    // SAFETY: the buffer is valid for its length; gethostname writes at
-    // most that many bytes.
-    let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
-    if r != 0 {
-        return String::new();
-    }
-    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).into_owned()
+    derm_core::platform::host_name()
 }
 
 fn new_chat_id() -> String {
@@ -190,7 +189,7 @@ fn event(
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        derm_core::platform::set_private_dir(dir)?;
     }
     match std::fs::symlink_metadata(path) {
         Ok(m) if !m.file_type().is_file() => {
@@ -202,12 +201,10 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
         Ok(_) => std::fs::remove_file(path)?,
         Err(_) => {}
     }
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
+    let mut f = derm_core::platform::private_no_follow(
+        std::fs::OpenOptions::new().write(true).create_new(true),
+    )
+    .open(path)?;
     f.write_all(text.as_bytes())?;
     f.sync_all()
 }
@@ -247,8 +244,7 @@ impl Daemon {
 fn regular_private_file(path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     std::fs::symlink_metadata(path).is_ok_and(|m| {
-        // SAFETY: getuid takes no arguments and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = derm_core::platform::real_user();
         m.file_type().is_file() && m.uid() == uid && m.nlink() == 1 && m.mode() & 0o022 == 0
     })
 }
@@ -344,8 +340,7 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
 /// its parent checked alone.
 fn no_link_above(path: &Path, home: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -399,7 +394,7 @@ fn make_private_dir(path: &Path, home: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)?;
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            derm_core::platform::set_private_dir(parent)?;
         }
     }
     no_link_above(path, home)?;
@@ -413,7 +408,7 @@ fn make_private_dir(path: &Path, home: &Path) -> std::io::Result<()> {
         Ok(_) => {}
         Err(_) => std::fs::create_dir(path)?,
     }
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    derm_core::platform::set_private_dir(path)
 }
 
 /// What a run leaves to undo, on every way out of `run_io` (security review
@@ -1038,6 +1033,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn chat_ids_are_valid_and_distinct() {

@@ -94,8 +94,7 @@ mod tests {
         let path = dir.join("settings.json");
         std::fs::write(&path, r#"{"version":1,"computerUse":{"on":true}}"#).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        // SAFETY: getuid has no preconditions and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = derm_core::platform::real_user();
         assert!(computer_use_on(&path, uid));
         assert!(!computer_use_on(&path, uid.wrapping_add(1)), "not ours");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o620)).unwrap();

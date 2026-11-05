@@ -5,8 +5,8 @@
 //! keeps its own, and shares the socket path and the token checks with
 //! `derm run`.
 
+use derm_core::platform::Stream as UnixStream;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -48,7 +48,7 @@ impl Conn {
     }
 
     pub fn open_with(socket: &Path, token: &str, client: &str) -> Result<Conn, String> {
-        let stream = UnixStream::connect(socket).map_err(|e| {
+        let stream = derm_core::platform::connect(socket).map_err(|e| {
             format!(
                 "the daemon is not running ({}: {e}); start it with `derm-daemon` or its user unit",
                 socket.display()

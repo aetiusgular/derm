@@ -43,8 +43,7 @@ pub fn load(path: &Path) -> (Settings, Option<String>) {
         Ok(m) => m,
         Err(_) => return (Settings::default(), None),
     };
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let warn = |why: &str| {
         (
             Settings::default(),

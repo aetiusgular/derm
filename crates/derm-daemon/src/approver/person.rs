@@ -306,8 +306,7 @@ pub fn platform() -> Box<dyn Checker> {
 /// The daemon's user name, for the helper (it compares it with the name of
 /// the user that runs it).
 pub fn own_user() -> Option<String> {
-    // SAFETY: geteuid has no preconditions.
-    let uid = unsafe { libc::geteuid() };
+    let uid = derm_core::platform::effective_user();
     let mut buf = vec![0u8; 16 * 1024];
     // SAFETY: a zeroed passwd is a valid out-parameter; buf outlives the
     // pointers stored in it and we copy the name out before it drops.
@@ -512,8 +511,7 @@ mod tests {
         std::fs::write(&fake, b"#!/bin/sh\nexit 0\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // SAFETY: geteuid has no preconditions.
-        let me = unsafe { libc::geteuid() };
+        let me = derm_core::platform::effective_user();
         let err = UnixChkpwd::find_in(&[fake.to_str().unwrap()], me)
             .err()
             .unwrap();

@@ -3,11 +3,9 @@
 //! socket, and the hourly retention pass. `main.rs` calls `start` and then
 //! serves; the tests call it with temporary paths.
 
+use derm_core::platform::Listener as UnixListener;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,7 +30,9 @@ pub struct Running {
 }
 
 impl Running {
+    #[cfg(unix)]
     pub fn pid_file_fd(&self) -> i32 {
+        use std::os::unix::io::AsRawFd;
         self.lock.as_raw_fd()
     }
 }
@@ -42,12 +42,9 @@ impl Running {
 pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&tmp)?;
+    let mut file =
+        derm_core::platform::private_no_follow(OpenOptions::new().write(true).create_new(true))
+            .open(&tmp)?;
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     drop(file);
@@ -59,17 +56,15 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 /// section 1). The check is the lock, not the pid: a pid can be reused, a
 /// lock dies with its process.
 pub fn lock_pid_file(path: &Path) -> std::io::Result<File> {
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    // SAFETY: flock on a descriptor this function owns; no memory involved.
-    let locked = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    if locked != 0 {
+    let mut file = derm_core::platform::private_no_follow(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false),
+    )
+    .open(path)?;
+    if !derm_core::platform::try_lock_exclusive(&file) {
         let held = std::fs::read_to_string(path).unwrap_or_default();
         return Err(std::io::Error::new(
             std::io::ErrorKind::AddrInUse,

@@ -178,16 +178,14 @@ pub fn kept(data: &Path) -> (u64, u64, Option<i64>) {
 }
 
 fn private_dir(dir: &Path) -> bool {
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     std::fs::symlink_metadata(dir)
         .is_ok_and(|m| m.file_type().is_dir() && m.uid() == uid && m.mode() & 0o077 == 0)
 }
 
 fn read_ages(path: &Path) -> Option<HashMap<String, i64>> {
     let meta = std::fs::symlink_metadata(path).ok()?;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     if !meta.file_type().is_file()
         || meta.uid() != uid
         || meta.mode() & 0o077 != 0

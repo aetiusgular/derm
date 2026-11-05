@@ -478,8 +478,7 @@ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
             root.display()
         )
     })?;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let mut at = root.clone();
     let mut parts = vec![at.clone()];
     for c in rel.components() {

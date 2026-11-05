@@ -233,8 +233,7 @@ impl Daemon {
         let Some(cred) = peer.cred.as_ref() else {
             return Some("the daemon cannot read who is asking".into());
         };
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let me = unsafe { libc::geteuid() };
+        let me = derm_core::platform::effective_user();
         if cred.uid != me {
             return Some(format!("uid {} is not this daemon's user", cred.uid));
         }
@@ -248,7 +247,7 @@ impl Daemon {
             return Some(why);
         }
         let mut line = vec![pid];
-        line.extend(derm_core::peer::ancestors(pid));
+        line.extend(derm_core::platform::peer::ancestors(pid));
         let runs = self.runs.lock().map(|r| r.clone()).unwrap_or_default();
         for (chat, run) in &runs {
             let harness_pid = &run.pid;
@@ -259,14 +258,14 @@ impl Daemon {
                 ));
             }
         }
-        if let Some(derm) = derm_core::peer::derm_run_ancestor(pid) {
+        if let Some(derm) = derm_core::platform::peer::derm_run_ancestor(pid) {
             return Some(format!(
                 "it runs under a derm process (pid {derm}), a chat's shell"
             ));
         }
         // Read last, so a pid that was reused while the walk ran is caught.
         if let Some(fd) = peer.pidfd.as_ref() {
-            if !derm_core::peer::pidfd_alive(fd) {
+            if !derm_core::platform::peer::pidfd_alive(fd) {
                 return Some("the process that connected has exited".into());
             }
         }
@@ -279,7 +278,7 @@ impl Daemon {
         let Some(at_accept) = at_accept else {
             return Some("the daemon could not read the process at connect".into());
         };
-        match derm_core::peer::start_time(pid) {
+        match derm_core::platform::peer::start_time(pid) {
             None => Some("the process that connected is gone".into()),
             Some(now) if now != at_accept => {
                 Some(format!("pid {pid} is not the process that connected"))

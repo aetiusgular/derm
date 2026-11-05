@@ -55,8 +55,7 @@ pub fn run() -> i32 {
 }
 
 fn uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
+    derm_core::platform::real_user()
 }
 
 /// The target from the environment `env` gives, for a process whose session

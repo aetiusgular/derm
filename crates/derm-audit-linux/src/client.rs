@@ -8,9 +8,8 @@
 //! Every read and write has a timeout: a daemon that does not answer is an
 //! error, never a hang (rules case 9).
 
+use derm_core::platform::Stream as UnixStream;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -59,6 +58,18 @@ pub fn socket_path() -> Option<PathBuf> {
     derm_core::runtime::socket_path()
 }
 
+/// The file's mode for an error message, where the system has one.
+#[cfg(unix)]
+fn mode_text(meta: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(" (mode {:o})", meta.mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn mode_text(_meta: &std::fs::Metadata) -> String {
+    String::new()
+}
+
 /// Reads `daemon.token` beside the socket. Refused unless it is a regular
 /// file owned by this user with no group or other bits, holding a
 /// well-formed token: a token another user could have written is not ours.
@@ -72,19 +83,18 @@ pub fn read_daemon_token(dir: &Path) -> Result<String, ClientError> {
             path.display()
         )));
     }
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
-    if meta.uid() != me {
+    let me = derm_core::platform::effective_user();
+    if derm_core::platform::owner(&meta) != me {
         return Err(ClientError::Token(format!(
             "{} is not owned by you",
             path.display()
         )));
     }
-    if meta.mode() & 0o077 != 0 {
+    if !derm_core::platform::is_private(&meta) {
         return Err(ClientError::Token(format!(
-            "{} is readable by others (mode {:o})",
+            "{} is readable by others{}",
             path.display(),
-            meta.mode() & 0o777
+            mode_text(&meta)
         )));
     }
     let mut text = String::new();
@@ -167,7 +177,7 @@ impl Client {
         client: &str,
         timeout: Duration,
     ) -> Result<(Client, Hello), ClientError> {
-        let stream = UnixStream::connect(socket)
+        let stream = derm_core::platform::connect(socket)
             .map_err(|e| ClientError::NotRunning(format!("{}: {e}", socket.display())))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;

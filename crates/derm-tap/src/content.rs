@@ -84,8 +84,7 @@ fn private_dir(dir: &Path) -> io::Result<()> {
         Err(e) => return Err(e),
     }
     let m = std::fs::symlink_metadata(dir)?;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     if !m.file_type().is_dir() || m.uid() != uid || m.mode() & 0o077 != 0 {
         return Err(io::Error::other(format!(
             "{} is not a private folder of this user's",

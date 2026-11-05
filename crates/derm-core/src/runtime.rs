@@ -63,14 +63,10 @@ pub fn runtime_dir_with(xdg: Option<&OsStr>, uid: u32, run_user: &Path) -> Optio
 }
 
 /// Whether `dir` is a folder, not a link, owned by `uid`, with no group or
-/// other bits.
+/// other bits (the platform seam's `owned_private_dir`).
 #[cfg(unix)]
 pub fn owned_private_dir(dir: &Path, uid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match std::fs::symlink_metadata(dir) {
-        Ok(m) => m.file_type().is_dir() && m.uid() == uid && m.mode() & 0o077 == 0,
-        Err(_) => false,
-    }
+    crate::platform::owned_private_dir(dir, &uid)
 }
 
 #[cfg(not(unix))]
@@ -80,8 +76,7 @@ pub fn owned_private_dir(_dir: &Path, _uid: u32) -> bool {
 
 #[cfg(unix)]
 pub fn current_uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
+    crate::platform::real_user()
 }
 
 #[cfg(not(unix))]

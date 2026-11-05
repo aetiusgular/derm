@@ -76,8 +76,7 @@ pub fn load_settings(path: &Path) -> (CheckSettings, Option<String>) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        // SAFETY: getuid takes no arguments and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = derm_core::platform::real_user();
         if !meta.file_type().is_file()
             || meta.uid() != uid
             || meta.mode() & 0o022 != 0

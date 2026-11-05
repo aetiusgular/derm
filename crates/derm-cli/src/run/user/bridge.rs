@@ -252,8 +252,7 @@ fn write_new(path: &Path, data: &[u8], mode: u32) -> Result<(), String> {
 }
 
 fn euid() -> u32 {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
+    derm_core::platform::effective_user()
 }
 
 struct Relay {
@@ -291,7 +290,7 @@ impl Relay {
 
     /// One hook connection: who it is, its first line, then the copy.
     fn one(&self, client: UnixStream) -> std::io::Result<()> {
-        let Some(peer) = derm_core::peer::of(&client) else {
+        let Some(peer) = derm_core::platform::peer::of(&client) else {
             return Ok(());
         };
         if peer.uid != self.agent_uid {

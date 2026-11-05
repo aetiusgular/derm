@@ -68,14 +68,17 @@ impl RunPid {
     fn of(pid: u32) -> Self {
         RunPid {
             pid,
-            start_time: derm_core::peer::start_time(pid),
+            start_time: derm_core::platform::peer::start_time(pid),
         }
     }
 
     /// Still the same process: it runs, and its start time matches when one
     /// was recorded.
     fn alive(&self) -> bool {
-        match (self.start_time, derm_core::peer::start_time(self.pid)) {
+        match (
+            self.start_time,
+            derm_core::platform::peer::start_time(self.pid),
+        ) {
             (Some(was), Some(now)) => was == now,
             (None, Some(_)) => true,
             (_, None) => false,
@@ -114,7 +117,7 @@ pub struct Outbox {
 #[derive(Debug, Default)]
 pub struct ConnPeer {
     /// `SO_PEERCRED` / `LOCAL_PEERCRED`; `None` when the OS call failed.
-    pub cred: Option<derm_core::peer::Peer>,
+    pub cred: Option<derm_core::platform::peer::Peer>,
     /// The connecting process itself, on Linux 6.5 and later.
     pub pidfd: Option<std::os::fd::OwnedFd>,
     pub program: Option<String>,
@@ -123,15 +126,15 @@ pub struct ConnPeer {
 
 impl ConnPeer {
     /// Reads the peer of an accepted connection.
-    pub fn of(stream: &std::os::unix::net::UnixStream) -> Self {
-        let cred = derm_core::peer::of(stream);
+    pub fn of(stream: &derm_core::platform::Stream) -> Self {
+        let cred = derm_core::platform::peer::of(stream);
         let pid = cred.as_ref().and_then(|c| c.pid);
         ConnPeer {
-            pidfd: derm_core::peer::pidfd_of(stream),
+            pidfd: derm_core::platform::peer::pidfd_of(stream),
             program: pid
-                .and_then(derm_core::peer::program)
+                .and_then(derm_core::platform::peer::program)
                 .map(|p| p.to_string_lossy().into_owned()),
-            start_time: pid.and_then(derm_core::peer::start_time),
+            start_time: pid.and_then(derm_core::platform::peer::start_time),
             cred,
         }
     }
@@ -1371,8 +1374,7 @@ fn read_state(path: &Path) -> Option<Value> {
         .open(path)
         .ok()?;
     let meta = file.metadata().ok()?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
+    let me = derm_core::platform::effective_user();
     if !meta.file_type().is_file()
         || meta.uid() != me
         || meta.mode() & 0o077 != 0
@@ -1665,7 +1667,7 @@ mod tests {
         // keeps a started chat's token alive for good; neither counts.
         for run in [
             json!({"chat": "chat-x", "pid": std::process::id(), "startTime": null}),
-            json!({"chat": "chat-x", "pid": 1, "startTime": derm_core::peer::start_time(1)}),
+            json!({"chat": "chat-x", "pid": 1, "startTime": derm_core::platform::peer::start_time(1)}),
         ] {
             let planted = json!({
                 "version": 1,
@@ -1715,21 +1717,21 @@ mod tests {
     #[test]
     fn an_approver_whose_process_is_gone_or_reused_is_refused() {
         let (d, root) = daemon();
-        let me = derm_core::peer::Peer {
+        let me = derm_core::platform::peer::Peer {
             pid: None,
-            uid: unsafe { libc::geteuid() },
+            uid: derm_core::platform::effective_user(),
         };
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap();
         let pid = child.id();
-        let started = derm_core::peer::start_time(pid);
+        let started = derm_core::platform::peer::start_time(pid);
         assert!(started.is_some());
         child.kill().unwrap();
         child.wait().unwrap();
         let gone = ConnPeer {
-            cred: Some(derm_core::peer::Peer {
+            cred: Some(derm_core::platform::peer::Peer {
                 pid: Some(pid),
                 ..me.clone()
             }),
@@ -1741,20 +1743,20 @@ mod tests {
         assert!(why.contains("gone"), "{why}");
         let own = std::process::id();
         let reused = ConnPeer {
-            cred: Some(derm_core::peer::Peer {
+            cred: Some(derm_core::platform::peer::Peer {
                 pid: Some(own),
                 ..me.clone()
             }),
             pidfd: None,
             program: None,
-            start_time: derm_core::peer::start_time(own).map(|t| t + 1),
+            start_time: derm_core::platform::peer::start_time(own).map(|t| t + 1),
         };
         let why = d
             .approver_refusal(&reused)
             .expect("another process under the pid is refused");
         assert!(why.contains("not the process"), "{why}");
         let unread = ConnPeer {
-            cred: Some(derm_core::peer::Peer {
+            cred: Some(derm_core::platform::peer::Peer {
                 pid: Some(own),
                 ..me
             }),

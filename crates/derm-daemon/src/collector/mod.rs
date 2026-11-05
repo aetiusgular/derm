@@ -239,8 +239,7 @@ fn writable_with(path: &std::path::Path, can: impl Fn(&std::path::Path) -> bool)
 fn can_change(p: &std::path::Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
-    // SAFETY: getuid has no failure mode.
-    let me = unsafe { libc::getuid() };
+    let me = derm_core::platform::real_user();
     let Ok(meta) = std::fs::symlink_metadata(p) else {
         return true;
     };
@@ -472,8 +471,7 @@ mod tests {
         // On the real system: /bin/sh is root's all the way up, so only root
         // can replace it (CI's macOS runner and a Linux user both run this
         // as a user).
-        // SAFETY: getuid has no failure mode.
-        let root = unsafe { libc::getuid() } == 0;
+        let root = derm_core::platform::real_user() == 0;
         assert_eq!(writable_by_me(std::path::Path::new("/bin/sh")), root);
         // A folder of ours anywhere up the given path counts, even when the
         // path is a link to a file we cannot write.

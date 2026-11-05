@@ -193,8 +193,7 @@ impl HelperLauncher for DirectLauncher {
 }
 
 fn current_uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
+    derm_core::platform::real_user()
 }
 
 /// The driver's environment: a fixed base (telemetry and updates off, as the

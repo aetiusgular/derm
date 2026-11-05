@@ -7,7 +7,6 @@
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -81,7 +80,7 @@ fn to_daemon(socket: &Path, r: &Record) -> Result<(), String> {
         .ok_or_else(|| "the socket has no folder".to_string())?;
     let token = derm_audit_linux::client::read_daemon_token(dir).map_err(|e| e.to_string())?;
     let token = token.as_str();
-    let mut s = UnixStream::connect(socket).map_err(|e| e.to_string())?;
+    let mut s = derm_core::platform::connect(socket).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(DAEMON_TIMEOUT))
         .map_err(|e| e.to_string())?;
     s.set_write_timeout(Some(DAEMON_TIMEOUT))

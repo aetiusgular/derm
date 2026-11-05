@@ -406,8 +406,7 @@ pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) 
     let Some(settings) = settings_path() else {
         return;
     };
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     if !super::settings::computer_use_on(&settings, uid) {
         return;
     }
@@ -971,8 +970,7 @@ mod daemon_tests {
         let file = run.join(super::super::ENDPOINT_FILE);
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        // SAFETY: getuid has no preconditions.
-        let me = unsafe { libc::getuid() };
+        let me = derm_core::platform::real_user();
         let endpoint = super::super::relay::endpoint(&run, me).unwrap();
         assert!(endpoint.starts_with("127.0.0.1:"), "{endpoint}");
 

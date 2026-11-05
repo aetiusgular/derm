@@ -203,8 +203,7 @@ fn last_doctor(path: &Path) -> Option<Value> {
         .open(path)
         .ok()?;
     let m = f.metadata().ok()?;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     if !m.file_type().is_file() || m.len() > 64 * 1024 || m.uid() != uid {
         return None;
     }

@@ -77,8 +77,7 @@ fn system_launcher(data: Option<PathBuf>) -> Box<dyn HelperLauncher> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
-        // SAFETY: getuid has no preconditions and cannot fail.
-        let uid = unsafe { libc::getuid() };
+        let uid = derm_core::platform::real_user();
         let driver = direct::debug_driver(uid)
             .or_else(|| direct::find_driver(&direct::driver_candidates(Some(&home)), uid));
         Box::new(direct::DirectLauncher {

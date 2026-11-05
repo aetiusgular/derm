@@ -232,8 +232,7 @@ fn run_as_you() -> bool {
 }
 
 fn euid() -> u32 {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
+    derm_core::platform::effective_user()
 }
 
 /// `path` resolved, a regular file of root's that no one else can write, in

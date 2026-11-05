@@ -30,8 +30,7 @@ pub(crate) fn load(path: &Path) -> (Option<PreAnswer>, Option<String>) {
         Ok(m) => m,
         Err(_) => return (None, None),
     };
-    // SAFETY: geteuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::geteuid() };
+    let uid = derm_core::platform::effective_user();
     let bad = |why: &str| (None, Some(format!("{} {why}", path.display())));
     if !meta.file_type().is_file()
         || meta.uid() != uid

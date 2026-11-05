@@ -4,9 +4,8 @@
 //! `tail` and `approver` never wait on the reader, and a slow client never
 //! holds up the daemon.
 
+use derm_core::platform::{Listener as UnixListener, Stream as UnixStream};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -24,44 +23,15 @@ pub const HELLO_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Binds `path`, replacing a stale socket file, and sets it to 0600. The
 /// parent folder is created 0700 when missing, and refused when it is a link
-/// or belongs to another user.
+/// or belongs to another user (the platform seam's `bind`).
 pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
-    if let Some(parent) = path.parent() {
-        private_dir(parent)?;
-    }
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_dir() => {
-            return Err(std::io::Error::other("socket path is a folder"));
-        }
-        Ok(_) => std::fs::remove_file(path)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
+    derm_core::platform::bind(path)
 }
 
 /// Makes `dir` (and its parents) and holds it to 0700, owned by this user,
-/// not a link.
+/// not a link (the platform seam's `private_dir`).
 pub fn private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let meta = std::fs::symlink_metadata(dir)?;
-    if !meta.file_type().is_dir() {
-        return Err(std::io::Error::other(format!(
-            "{} is not a folder",
-            dir.display()
-        )));
-    }
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
-    if meta.uid() != me {
-        return Err(std::io::Error::other(format!(
-            "{} belongs to another user",
-            dir.display()
-        )));
-    }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    derm_core::platform::private_dir(dir)
 }
 
 /// Accepts connections until the listener fails. Each one runs on its own
@@ -221,6 +191,7 @@ fn read_loop(stream: &UnixStream, daemon: &Arc<Daemon>, out: &Outbox) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn temp_root() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(

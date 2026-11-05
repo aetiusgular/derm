@@ -346,8 +346,7 @@ pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
     if !file.starts_with('/') || !file.ends_with("/bin/derm-hook.mjs") {
         return None;
     }
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let closed = |m: &std::fs::Metadata| (m.uid() == uid || m.uid() == 0) && m.mode() & 0o022 == 0;
     if node != "node" {
         let name = node.rsplit('/').next().unwrap_or("");

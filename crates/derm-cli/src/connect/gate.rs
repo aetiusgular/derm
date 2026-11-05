@@ -399,8 +399,7 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, 
 /// do not own, or one that named the folder for another plugin, was printed
 /// as derm's advice). `dir` passed `check_hook`'s plain-path check.
 fn marketplace_above(dir: &str, file: &str) -> Option<String> {
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let dir = Path::new(dir);
     let mut at = Some(dir);
     for _ in 0..4 {

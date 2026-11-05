@@ -362,8 +362,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn me() -> u32 {
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        unsafe { libc::geteuid() }
+        derm_core::platform::effective_user()
     }
 
     /// A folder tree a test owns: `<tmp>/derm-anchor-*/etc/derm/agent-users.json`,

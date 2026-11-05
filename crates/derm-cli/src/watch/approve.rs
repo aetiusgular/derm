@@ -155,7 +155,7 @@ pub fn main(args: &Args) -> u8 {
 
 /// Says `approver`, checks the reply, and starts the reader thread that
 /// feeds the daemon's lines into `tx`. Returns the writing half.
-pub fn register(mut conn: Conn, tx: Sender<In>) -> Result<std::os::unix::net::UnixStream, String> {
+pub fn register(mut conn: Conn, tx: Sender<In>) -> Result<derm_core::platform::Stream, String> {
     conn.send(&json!({"op": "approver"}))?;
     check_ok(conn.line()?)?;
     conn.stream_mode()?;
