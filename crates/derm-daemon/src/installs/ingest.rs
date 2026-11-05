@@ -53,11 +53,15 @@ fn manager_named(name: &str) -> Option<Manager> {
 }
 
 /// The call an adapter record names: `toolUseId`, else `callKey`.
+/// A call id the hook sends is at most 128 bytes (`installCallDetails`); a
+/// longer one is forged and names no call (re-review W5R-10).
+pub(crate) const MAX_CALL_ID: usize = 128;
+
 fn call_of(e: &Event) -> Option<&str> {
     ["toolUseId", "callKey"]
         .iter()
         .find_map(|k| e.detail.get(*k).and_then(Value::as_str))
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty() && s.len() <= MAX_CALL_ID)
 }
 
 #[derive(Default)]
@@ -112,14 +116,6 @@ impl InstallRecords {
                 return out;
             };
             let key = (e.chat_id.clone(), call.to_string());
-            if !self.calls.contains_key(&key) {
-                if self.calls.len() >= MAX_CALLS {
-                    if let Some(old) = self.order.pop_front() {
-                        self.calls.remove(&old);
-                    }
-                }
-                self.order.push_back(key.clone());
-            }
             if self
                 .calls
                 .get(&key)
@@ -138,6 +134,17 @@ impl InstallRecords {
                 return out;
             }
             window.1 += 1;
+            // Only a call that starts a diff takes a place in the list, so a
+            // refused record leaves nothing behind (re-review W5R-1).
+            if !self.calls.contains_key(&key) {
+                while self.calls.len() >= MAX_CALLS {
+                    let Some(old) = self.order.pop_front() else {
+                        break;
+                    };
+                    self.calls.remove(&old);
+                }
+                self.order.push_back(key.clone());
+            }
             let seen = self.calls.entry(key).or_default();
             seen.push((manager, e.id.clone()));
             self.diffs.start(
@@ -485,5 +492,45 @@ mod tests {
         assert!(r
             .calls
             .contains_key(&("c1".to_string(), "late".to_string())));
+    }
+
+    /// Re-review W5R-1 (integration w5 continue): a record the start limit
+    /// refuses leaves nothing behind, so a flood of forged records cannot
+    /// grow the call list; W5R-10: an id longer than the hook's 128 bytes is
+    /// forged and ignored.
+    #[test]
+    fn refused_install_calls_leave_nothing_behind() {
+        let dir = tempdir();
+        lockfile(dir.path(), &[("left-pad", "1.3.0")]);
+        let folder = dir.path().to_string_lossy().to_string();
+        let cwd = |_: &str| Some(folder.clone());
+        let mut r = InstallRecords::new();
+        for i in 0..5_000 {
+            r.observe(
+                &ev(
+                    &format!("i{i}"),
+                    Source::Adapter,
+                    "install.call",
+                    json!({"toolUseId": format!("t{i}"), "manager": "npm"}),
+                ),
+                cwd,
+                1_000,
+            );
+        }
+        assert_eq!(r.calls.len(), MAX_STARTS_PER_MINUTE as usize);
+        assert_eq!(r.order.len(), r.calls.len());
+        let long = "x".repeat(MAX_CALL_ID + 1);
+        r.observe(
+            &ev(
+                "long",
+                Source::Adapter,
+                "install.call",
+                json!({"toolUseId": long, "manager": "npm"}),
+            ),
+            cwd,
+            70_000,
+        );
+        assert!(r.calls.keys().all(|(_, c)| c.len() <= MAX_CALL_ID));
+        assert_eq!(r.order.len(), r.calls.len());
     }
 }

@@ -187,7 +187,9 @@ impl ControlFlags {
             return Vec::new();
         }
         if e.kind == "install.call" && e.source != Source::Derm {
-            if let Some(t) = str_at(&e.detail, "toolUseId") {
+            if let Some(t) =
+                str_at(&e.detail, "toolUseId").filter(|t| t.len() <= super::ingest::MAX_CALL_ID)
+            {
                 let c = self.chat(&e.chat_id);
                 if c.installs.insert(t.to_string(), e.id.clone()).is_none() {
                     c.install_order.push_back(t.to_string());
@@ -567,5 +569,21 @@ mod tests {
         assert_eq!(c.installs.len(), MAX_IDS);
         assert!(!c.installs.contains_key("t0"));
         assert!(c.installs.contains_key(&format!("t{}", MAX_IDS + 4)));
+    }
+
+    /// Re-review W5R-10: an id longer than the hook's 128 bytes is not kept.
+    #[test]
+    fn an_install_call_id_past_the_hooks_cap_is_not_kept() {
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "i1",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "x".repeat(super::super::ingest::MAX_CALL_ID + 1)}),
+        ));
+        assert!(f
+            .chats
+            .get("chat-fixture")
+            .is_none_or(|c| c.installs.is_empty()));
     }
 }
