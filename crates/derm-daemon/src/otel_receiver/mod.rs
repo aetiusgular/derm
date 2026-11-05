@@ -55,7 +55,12 @@ use crate::activity::types::ActivityEvent;
 
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-const MAX_CONNECTIONS: usize = 16;
+/// Connections open at once, before a token is known. A chat's own share of
+/// them is [`MAX_OPEN_PER_CHAT`] (security finding W5C-S4, integration w5
+/// continue: 16 slow bodies from one chat's token held them all).
+const MAX_CONNECTIONS: usize = 64;
+/// Requests one chat's token may have open at once, counted from its head.
+const MAX_OPEN_PER_CHAT: usize = 8;
 const HEAD_DEADLINE: Duration = Duration::from_secs(10);
 const BODY_DEADLINE: Duration = Duration::from_secs(30);
 /// Chats with a token. The oldest gives way; its harness's next start gets a
@@ -67,10 +72,20 @@ const MAX_CHATS: usize = 5000;
 pub const MAX_DERM_BODY_BYTES: usize = 1024 * 1024;
 /// `approve` requests waiting at once over HTTP; each holds a connection
 /// until it is answered, so they may not take every slot.
-const MAX_APPROVING: usize = 4;
+const MAX_APPROVING: usize = 16;
+/// Of those, one chat's (W5C-S3, integration w5 continue: one chat held all
+/// four the cap allowed before, and every other chat's ask got 503).
+const MAX_APPROVING_PER_CHAT: usize = 2;
+/// How often a waiting approve looks whether its client has hung up; one
+/// that has lets go of its slot (W5C-S3). The daemon's wait uses it.
+pub(crate) const GONE_CHECK: Duration = Duration::from_millis(250);
 /// Requests per second over all chats, with this many in a burst.
 const RATE_PER_SEC: f64 = 40.0;
 const RATE_BURST: f64 = 200.0;
+/// One chat's own bucket inside that (W5C-S4): a chat spends at most this,
+/// so it cannot spend every other chat's share.
+const RATE_PER_CHAT_SEC: f64 = 10.0;
+const RATE_BURST_PER_CHAT: f64 = 50.0;
 
 /// What the window set: the switch, the prompt text switch, and which
 /// session ids are chats (helpers and probes are not).
@@ -98,8 +113,49 @@ pub enum ChatOp {
 }
 
 /// The daemon's answer to a `ChatOp` for the token's chat and harness: the
-/// socket's reply line, as JSON.
-pub type Ops = Arc<dyn Fn(&str, &'static str, ChatOp) -> serde_json::Value + Send + Sync>;
+/// socket's reply line, as JSON. The last argument says whether the client
+/// has hung up; a waiting approve asks it now and then and stops waiting
+/// when it has (W5C-S3).
+pub type Ops =
+    Arc<dyn Fn(&str, &'static str, ChatOp, &dyn Fn() -> bool) -> serde_json::Value + Send + Sync>;
+
+/// Per chat: its open requests, its waiting approves, and its rate bucket.
+#[derive(Default)]
+struct PerChat {
+    open: HashMap<String, usize>,
+    approving: HashMap<String, usize>,
+    rate: HashMap<String, (f64, Instant)>,
+}
+
+#[derive(Clone, Copy)]
+enum Count {
+    Open,
+    Approving,
+}
+
+/// A chat's place in one of its counts, given back when dropped.
+struct Held<'a> {
+    receiver: &'a Receiver,
+    chat: String,
+    count: Count,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut per) = self.receiver.per_chat.lock() {
+            let map = match self.count {
+                Count::Open => &mut per.open,
+                Count::Approving => &mut per.approving,
+            };
+            if let Some(n) = map.get_mut(&self.chat) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    map.remove(&self.chat);
+                }
+            }
+        }
+    }
+}
 
 /// Where a chat's prompt and reply text goes while the content switch is on
 /// (`contracts/events.md` section 5, case 85 as changed): the daemon reads
@@ -124,6 +180,7 @@ pub struct Receiver {
     /// Content capture for prompt and reply text; unset, it is dropped.
     content: OnceLock<ContentFor>,
     approving: AtomicUsize,
+    per_chat: Mutex<PerChat>,
     pub counters: Counters,
 }
 
@@ -190,6 +247,7 @@ impl Receiver {
             ops: OnceLock::new(),
             content: OnceLock::new(),
             approving: AtomicUsize::new(0),
+            per_chat: Mutex::new(PerChat::default()),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -335,20 +393,69 @@ impl Receiver {
         self.holder(token).map(|h| (h.chat_id, h.harness))
     }
 
-    fn take_rate(&self) -> bool {
-        let Ok(mut rate) = self.rate.lock() else {
+    /// One request from `chat`: its own bucket first, then everyone's. A
+    /// request the chat's bucket refuses spends nothing of everyone's
+    /// (W5C-S4).
+    fn take_rate(&self, chat: &str) -> bool {
+        let now = Instant::now();
+        let fill = |b: &mut (f64, Instant), per_sec: f64, burst: f64| {
+            let refill = now.saturating_duration_since(b.1).as_secs_f64() * per_sec;
+            b.0 = (b.0 + refill).min(burst);
+            b.1 = now;
+        };
+        let Ok(mut per) = self.per_chat.lock() else {
             return false;
         };
-        let now = Instant::now();
-        let refill = now.saturating_duration_since(rate.1).as_secs_f64() * RATE_PER_SEC;
-        rate.0 = (rate.0 + refill).min(RATE_BURST);
-        rate.1 = now;
-        if rate.0 >= 1.0 {
-            rate.0 -= 1.0;
-            true
-        } else {
-            false
+        if !per.rate.contains_key(chat) && per.rate.len() >= MAX_TOKENS {
+            // Buckets that are full again say nothing; drop them first.
+            per.rate.retain(|_, b| {
+                let refill = now.saturating_duration_since(b.1).as_secs_f64() * RATE_PER_CHAT_SEC;
+                b.0 + refill < RATE_BURST_PER_CHAT
+            });
+            if per.rate.len() >= MAX_TOKENS {
+                return false;
+            }
         }
+        let mine = per
+            .rate
+            .entry(chat.to_string())
+            .or_insert((RATE_BURST_PER_CHAT, now));
+        fill(mine, RATE_PER_CHAT_SEC, RATE_BURST_PER_CHAT);
+        if mine.0 < 1.0 {
+            return false;
+        }
+        let Ok(mut all) = self.rate.lock() else {
+            return false;
+        };
+        fill(&mut all, RATE_PER_SEC, RATE_BURST);
+        if all.0 < 1.0 {
+            return false;
+        }
+        all.0 -= 1.0;
+        mine.0 -= 1.0;
+        true
+    }
+
+    /// A place in one of `chat`'s counts, or none when it holds `cap`.
+    fn hold(&self, chat: &str, count: Count, cap: usize) -> Option<Held<'_>> {
+        let mut per = self.per_chat.lock().ok()?;
+        let map = match count {
+            Count::Open => &mut per.open,
+            Count::Approving => &mut per.approving,
+        };
+        let n = map.entry(chat.to_string()).or_insert(0);
+        if *n >= cap {
+            if *n == 0 {
+                map.remove(chat);
+            }
+            return None;
+        }
+        *n += 1;
+        Some(Held {
+            receiver: self,
+            chat: chat.to_string(),
+            count,
+        })
     }
 
     fn serve(self: Arc<Self>, listener: TcpListener) {
@@ -431,7 +538,11 @@ impl Receiver {
         let holder = token_from(&head)
             .and_then(|t| self.holder(&t))
             .ok_or(401u16)?;
-        if !self.take_rate() {
+        // The chat's share of the open requests (W5C-S4), held to the end.
+        let _open = self
+            .hold(&holder.chat_id, Count::Open, MAX_OPEN_PER_CHAT)
+            .ok_or(503u16)?;
+        if !self.take_rate(&holder.chat_id) {
             return Err(429);
         }
         if head
@@ -463,7 +574,9 @@ impl Receiver {
                 Instant::now() + BODY_DEADLINE,
                 MAX_DERM_BODY_BYTES,
             )?;
-            return self.derm_op(signal, &body, &holder).map(Answer::Json);
+            return self
+                .derm_op(signal, &body, &holder, &|| peer_gone(stream))
+                .map(Answer::Json);
         }
         let body = read_body(
             &mut reader,
@@ -523,7 +636,13 @@ impl Receiver {
     /// daemon's ops for the token's chat. The reply line is the body; a
     /// refusal by the daemon is still a 200 with `ok: false`, as on the
     /// socket.
-    fn derm_op(&self, signal: Signal, body: &[u8], holder: &Holder) -> Result<Vec<u8>, u16> {
+    fn derm_op(
+        &self,
+        signal: Signal,
+        body: &[u8],
+        holder: &Holder,
+        gone: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, u16> {
         let ops = self.ops.get().ok_or(503u16)?;
         let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| 400u16)?;
         let serde_json::Value::Object(mut map) = value else {
@@ -539,8 +658,16 @@ impl Receiver {
         }
         let inner = map.remove(field).ok_or(400u16)?;
         let reply = if signal == Signal::DermEvent {
-            ops(&holder.chat_id, holder.harness, ChatOp::Event(inner))
+            ops(
+                &holder.chat_id,
+                holder.harness,
+                ChatOp::Event(inner),
+                &|| false,
+            )
         } else {
+            let _mine = self
+                .hold(&holder.chat_id, Count::Approving, MAX_APPROVING_PER_CHAT)
+                .ok_or(503u16)?;
             if self.approving.fetch_add(1, Ordering::SeqCst) >= MAX_APPROVING {
                 self.approving.fetch_sub(1, Ordering::SeqCst);
                 return Err(503);
@@ -552,10 +679,37 @@ impl Receiver {
                 }
             }
             let _done = Done(&self.approving);
-            ops(&holder.chat_id, holder.harness, ChatOp::Approve(inner))
+            ops(
+                &holder.chat_id,
+                holder.harness,
+                ChatOp::Approve(inner),
+                gone,
+            )
         };
         serde_json::to_vec(&reply).map_err(|_| 500u16)
     }
+}
+
+/// Whether the client of a request still being answered has hung up: a
+/// peek that reads the end of the stream. Bytes waiting (a pipelined
+/// request) or nothing yet both mean it is still there. Only the thread
+/// answering the request calls it, so switching the stream to non-blocking
+/// for the peek races nothing.
+fn peer_gone(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut byte = [0u8; 1];
+    let gone = match stream.peek(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        ),
+    };
+    let _ = stream.set_nonblocking(false);
+    gone
 }
 
 /// A redaction mark a harness sends in place of text (`normalize`'s note).

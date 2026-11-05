@@ -13,6 +13,8 @@
 
 use super::*;
 
+use std::time::Instant;
+
 // S2 part b: the person check before a `yes` an agent could forge (lane V).
 pub(super) mod person;
 
@@ -31,7 +33,11 @@ fn person_backoff() -> &'static person::Backoff {
 impl Daemon {
     /// Sends the request to every approver; the first answer wins. None
     /// connected: `no` at once (case 63). None in time: `no` at the timeout.
-    pub(super) fn wait_for_answer(&self, request: &ApprovalRequest) -> (Answer, AnsweredBy, Value) {
+    pub(super) fn wait_for_answer(
+        &self,
+        request: &ApprovalRequest,
+        gone: &dyn Fn() -> bool,
+    ) -> (Answer, AnsweredBy, Value) {
         let (tx, rx) = mpsc::sync_channel::<(Answer, Value)>(1);
         {
             let Ok(mut pending) = self.pending.lock() else {
@@ -62,9 +68,25 @@ impl Daemon {
         let outcome = if reached == 0 {
             (Answer::No, AnsweredBy::None, Value::Null)
         } else {
-            match rx.recv_timeout(Duration::from_secs(u64::from(request.timeout_seconds))) {
-                Ok((answer, approver)) => (answer, AnsweredBy::Approver, approver),
-                Err(_) => (Answer::No, AnsweredBy::Timeout, Value::Null),
+            // In slices, so an asker that hung up (an HTTP ask, W5C-S3) stops
+            // the wait: `no`, by no one, as when no approver was there.
+            let deadline = Instant::now() + Duration::from_secs(u64::from(request.timeout_seconds));
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break (Answer::No, AnsweredBy::Timeout, Value::Null);
+                }
+                match rx.recv_timeout(left.min(crate::otel_receiver::GONE_CHECK)) {
+                    Ok((answer, approver)) => break (answer, AnsweredBy::Approver, approver),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        break (Answer::No, AnsweredBy::Timeout, Value::Null)
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if gone() {
+                            break (Answer::No, AnsweredBy::None, Value::Null);
+                        }
+                    }
+                }
             }
         };
         if let Ok(mut pending) = self.pending.lock() {

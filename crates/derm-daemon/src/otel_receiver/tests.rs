@@ -777,12 +777,22 @@ fn every_preset_id_and_other_can_get_a_token() {
 
 /// P4-R1 (integration w5, continue): the derm routes answer 503 until the
 /// daemon sets its ops, take JSON only, and hold at most `MAX_APPROVING`
-/// approve requests at once, so a chat cannot hold every connection.
+/// approve requests at once, so the asks cannot hold every connection; and
+/// at most `MAX_APPROVING_PER_CHAT` of one chat's (W5C-S3). Spec change: this
+/// test had one chat hold all of the global cap (then 4); a chat now holds
+/// only its share, and another chat's ask still waits.
 #[test]
 fn the_derm_routes_wait_for_the_daemon_and_bound_waiting_asks() {
     let f = fixture(true);
     let port = f.receiver.port();
-    let token = f.receiver.mint("chat-d", "claude-code").unwrap();
+    let chats: Vec<String> = (0..=MAX_APPROVING / MAX_APPROVING_PER_CHAT)
+        .map(|i| format!("chat-d{i}"))
+        .collect();
+    let tokens: Vec<String> = chats
+        .iter()
+        .map(|c| f.receiver.mint(c, "claude-code").unwrap())
+        .collect();
+    let token = tokens[0].clone();
     let json = [
         ("x-derm-token", token.as_str()),
         ("content-type", "application/json"),
@@ -791,45 +801,64 @@ fn the_derm_routes_wait_for_the_daemon_and_bound_waiting_asks() {
     assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 503);
     let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
     let held = release.clone();
-    f.receiver.set_ops(Arc::new(move |chat, harness, op| {
-        assert_eq!((chat, harness), ("chat-d", "claude-code"));
-        if let ChatOp::Approve(_) = op {
-            let (lock, cv) = &*held;
-            let mut open = lock.lock().unwrap();
-            while !*open {
-                open = cv.wait(open).unwrap();
+    f.receiver
+        .set_ops(Arc::new(move |chat, harness, op, _gone| {
+            assert!(chat.starts_with("chat-d"));
+            assert_eq!(harness, "claude-code");
+            if let ChatOp::Approve(_) = op {
+                let (lock, cv) = &*held;
+                let mut open = lock.lock().unwrap();
+                while !*open {
+                    open = cv.wait(open).unwrap();
+                }
             }
-        }
-        serde_json::json!({"ok": true})
-    }));
+            serde_json::json!({"ok": true})
+        }));
     let proto = [
         ("x-derm-token", token.as_str()),
         ("content-type", "application/x-protobuf"),
     ];
     assert_eq!(post(port, "/derm/v1/event", &proto, b""), 415);
     assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 200);
-    let waiting: Vec<_> = (0..MAX_APPROVING)
-        .map(|_| {
-            let t = token.clone();
-            std::thread::spawn(move || {
-                post(
-                    port,
-                    "/derm/v1/approve",
-                    &[
-                        ("x-derm-token", t.as_str()),
-                        ("content-type", "application/json"),
-                    ],
-                    ask,
-                )
-            })
+    let start_ask = |t: &str| {
+        let t = t.to_string();
+        std::thread::spawn(move || {
+            post(
+                port,
+                "/derm/v1/approve",
+                &[
+                    ("x-derm-token", t.as_str()),
+                    ("content-type", "application/json"),
+                ],
+                ask,
+            )
         })
+    };
+    let wait_for = |n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while f.receiver.approving.load(Ordering::SeqCst) < n && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(f.receiver.approving.load(Ordering::SeqCst), n);
+    };
+    // The first chat holds its share; its next ask is refused at once.
+    let mut waiting: Vec<_> = (0..MAX_APPROVING_PER_CHAT)
+        .map(|_| start_ask(&token))
         .collect();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while f.receiver.approving.load(Ordering::SeqCst) < MAX_APPROVING && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(f.receiver.approving.load(Ordering::SeqCst), MAX_APPROVING);
+    wait_for(MAX_APPROVING_PER_CHAT);
     assert_eq!(post(port, "/derm/v1/approve", &json, ask), 503);
+    // Other chats' asks still wait, up to the global cap.
+    for t in &tokens[1..chats.len() - 1] {
+        for _ in 0..MAX_APPROVING_PER_CHAT {
+            waiting.push(start_ask(t));
+        }
+    }
+    wait_for(MAX_APPROVING);
+    let last = [
+        ("x-derm-token", tokens[chats.len() - 1].as_str()),
+        ("content-type", "application/json"),
+    ];
+    assert_eq!(post(port, "/derm/v1/approve", &last, ask), 503);
     // Events still go through while the asks wait.
     assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 200);
     {
@@ -841,9 +870,122 @@ fn the_derm_routes_wait_for_the_daemon_and_bound_waiting_asks() {
         assert_eq!(w.join().unwrap(), 200);
     }
     assert_eq!(f.receiver.approving.load(Ordering::SeqCst), 0);
+    assert!(f.receiver.per_chat.lock().unwrap().approving.is_empty());
     // A body over the socket's line cap is refused before it is read.
     let big = format!(r#"{{"event":"{}"}}"#, "x".repeat(MAX_DERM_BODY_BYTES));
     assert_eq!(post(port, "/derm/v1/event", &json, big.as_bytes()), 413);
+}
+
+/// W5C-S3: a waiting approve whose client hung up is told so, and lets go
+/// of its slot; one whose client is still there is not.
+#[test]
+fn a_waiting_ask_learns_its_client_hung_up() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-g", "claude-code").unwrap();
+    let (tx, rx) = mpsc::channel::<bool>();
+    let tx = Mutex::new(tx);
+    f.receiver.set_ops(Arc::new(move |_, _, _, gone| {
+        // Waits up to 10 seconds for the hang-up, as the daemon's wait does.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut saw = false;
+        while Instant::now() < deadline {
+            if gone() {
+                saw = true;
+                break;
+            }
+            std::thread::sleep(GONE_CHECK);
+        }
+        let _ = tx.lock().unwrap().send(saw);
+        serde_json::json!({"ok": true})
+    }));
+    let body = br#"{"request":{"id":"g","chat":"","harness":"","tool":"bash","summary":"s","timeoutSeconds":600}}"#;
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let head = format!(
+        "POST /derm/v1/approve HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f.receiver.approving.load(Ordering::SeqCst) < 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Still there: not gone.
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(rx.try_recv().is_err());
+    let started = Instant::now();
+    drop(s);
+    assert!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "the hang-up was not seen"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while f.receiver.approving.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(f.receiver.approving.load(Ordering::SeqCst), 0);
+}
+
+/// W5C-S4: one chat's token spends only its own bucket and its own share of
+/// the open requests, so another chat's records still get through.
+#[test]
+fn one_chat_cannot_spend_another_chats_rate_or_connections() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let a = f.receiver.mint("chat-ra", "claude-code").unwrap();
+    let b = f.receiver.mint("chat-rb", "claude-code").unwrap();
+    let headers = |t: &str| {
+        [
+            ("content-type", "application/json".to_string()),
+            ("x-derm-token", t.to_string()),
+        ]
+    };
+    let send = |t: &str| {
+        let h = headers(t);
+        let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        post(port, "/v1/traces", &h, b"{}")
+    };
+    let mut limited = 0;
+    for _ in 0..(RATE_BURST as usize + 60) {
+        if send(&a) == 429 {
+            limited += 1;
+        }
+    }
+    assert!(limited > 0, "chat a was never limited");
+    assert_eq!(send(&b), 200, "chat a spent chat b's rate");
+    // Chat a's bucket refills enough for its slow bodies to pass it.
+    std::thread::sleep(Duration::from_millis(1200));
+    // Chat a's slow bodies: its share of the open requests, then 503.
+    let slow: Vec<TcpStream> = (0..MAX_OPEN_PER_CHAT)
+        .map(|_| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let head = format!(
+                "POST /v1/logs HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nx-derm-token: {a}\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{{"
+            );
+            s.write_all(head.as_bytes()).unwrap();
+            s
+        })
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f
+        .receiver
+        .per_chat
+        .lock()
+        .unwrap()
+        .open
+        .get("chat-ra")
+        .copied()
+        .unwrap_or(0)
+        < MAX_OPEN_PER_CHAT
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(send(&a), 503);
+    assert_eq!(send(&b), 200, "chat a's slow bodies held chat b out");
+    drop(slow);
 }
 
 /// Lane S's request 3's rest (integration w5, continue): the content switch

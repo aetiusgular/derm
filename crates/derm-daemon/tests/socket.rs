@@ -1547,3 +1547,55 @@ fn a_chat_asks_over_http_and_gets_the_approvers_answer() {
     let _ = harness.kill();
     let _ = harness.wait();
 }
+
+/// Security finding W5C-S3 (integration w5 continue): an HTTP ask whose
+/// client hung up stops waiting soon after, answered `no` by no one, rather
+/// than holding its place until its timeout (up to an hour).
+#[test]
+fn an_http_ask_whose_client_hung_up_stops_waiting() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-hu", "claude-code");
+    let port = f.daemon.endpoint().rsplit(':').next().unwrap().to_string();
+    let mut a = Client::daemon(&f);
+    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "chat": "chat-hu"}));
+    let mut harness = started_under_srt(&mut d, "chat-hu");
+    let body = json!({"request": {"id": "ap-hu", "chat": "", "harness": "", "tool": "bash", "summary": "s", "timeoutSeconds": 600}}).to_string();
+    let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    write!(
+        s,
+        "POST /derm/v1/approve HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let asked = a.recv();
+    assert_eq!(asked["approve"]["id"], "ap-hu");
+    let started = std::time::Instant::now();
+    drop(s);
+    loop {
+        let line = t.recv();
+        let e = &line["event"];
+        if e["kind"] == "approval"
+            && e["detail"]["requestId"] == "ap-hu"
+            && !e["detail"]["answer"].is_null()
+        {
+            assert_eq!(e["detail"]["answer"], "no");
+            assert_eq!(e["detail"]["by"], "none");
+            break;
+        }
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    // The approver's late answer finds nothing waiting.
+    assert_eq!(
+        a.ask(json!({"op": "answer", "id": "ap-hu", "answer": "yes"}))["ok"],
+        false
+    );
+    let _ = harness.kill();
+    let _ = harness.wait();
+}

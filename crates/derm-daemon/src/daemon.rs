@@ -501,13 +501,15 @@ impl Daemon {
         // VM. The body is parsed as the socket's line is, and answered under
         // the chat scope the same token gets on the socket (rule 2).
         let weak = Arc::downgrade(&daemon);
-        daemon.receiver.set_ops(Arc::new(move |chat, harness, op| {
-            let reply = match weak.upgrade() {
-                Some(d) => d.http_op(chat, harness, op),
-                None => error("the daemon is stopping"),
-            };
-            serde_json::to_value(reply).unwrap_or(Value::Null)
-        }));
+        daemon
+            .receiver
+            .set_ops(Arc::new(move |chat, harness, op, gone| {
+                let reply = match weak.upgrade() {
+                    Some(d) => d.http_op(chat, harness, op, gone),
+                    None => error("the daemon is stopping"),
+                };
+                serde_json::to_value(reply).unwrap_or(Value::Null)
+            }));
         if let Some(saved) = saved {
             daemon.restore_state(&saved);
         }
@@ -885,7 +887,13 @@ impl Daemon {
     /// A chat's op over HTTP (P4-R1): the field is read as the socket reads
     /// its line, with `deny_unknown_fields`, then answered as the socket's
     /// chat scope answers it.
-    fn http_op(&self, chat: &str, harness: &str, op: otel_receiver::ChatOp) -> Reply {
+    fn http_op(
+        &self,
+        chat: &str,
+        harness: &str,
+        op: otel_receiver::ChatOp,
+        gone: &dyn Fn() -> bool,
+    ) -> Reply {
         let who = Who::Chat {
             chat: chat.to_string(),
             harness: harness.to_string(),
@@ -898,7 +906,7 @@ impl Daemon {
         };
         match serde_json::from_value::<Request>(line) {
             Ok(Request::Event { event }) => self.op_event(&who, event),
-            Ok(Request::Approve { request }) => self.op_approve(&who, request),
+            Ok(Request::Approve { request }) => self.op_approve_until(&who, request, gone),
             Ok(_) => error("not an op this route takes"),
             Err(e) => error(format!("bad request: {e}")),
         }
@@ -1236,7 +1244,18 @@ impl Daemon {
         })
     }
 
-    fn op_approve(&self, who: &Who, mut request: ApprovalRequest) -> Reply {
+    fn op_approve(&self, who: &Who, request: ApprovalRequest) -> Reply {
+        self.op_approve_until(who, request, &|| false)
+    }
+
+    /// As `op_approve`, and stops waiting with `no`, by no one, once `gone`
+    /// says the client hung up (an HTTP ask, W5C-S3).
+    fn op_approve_until(
+        &self,
+        who: &Who,
+        mut request: ApprovalRequest,
+        gone: &dyn Fn() -> bool,
+    ) -> Reply {
         if let Who::Chat { chat, harness } = who {
             request.chat = chat.clone();
             request.harness = harness.clone();
@@ -1253,7 +1272,7 @@ impl Daemon {
         self.counters.approvals.fetch_add(1, Ordering::Relaxed);
         let record_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
         self.approval_event(&record_id, &request, None, None, Value::Null);
-        let (answer, by, approver) = self.wait_for_answer(&request);
+        let (answer, by, approver) = self.wait_for_answer(&request, gone);
         self.approval_event(&record_id, &request, Some(answer), Some(by), approver);
         self.record_approval(ApprovalRecord {
             id: record_id,
