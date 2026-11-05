@@ -807,12 +807,11 @@ export function evaluate(loaded: LoadedPolicy, call: Call): Decision {
     // Package installs (contracts/policy.md section 6; lane X's seam). An
     // install's ask or deny names its packages, so it comes first.
     const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
-    if (install !== undefined && install.action !== "allow") return { action: install.action, normalizedTool, reason: install.reason };
+    if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
     // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
-    // also for an install the lockfile vouches for.
+    // after an install the lockfile vouches for (installDecision keeps the allow by answering nothing).
     const unplain = (POWERSHELL_TOOLS as readonly string[]).includes(normalizedTool) ? powershellUnplain(folded) : undefined;
     if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
-    if (install !== undefined) return { action: install.action, normalizedTool, reason: install.reason };
   }
   return { action: top.action, normalizedTool, reason };
 }
