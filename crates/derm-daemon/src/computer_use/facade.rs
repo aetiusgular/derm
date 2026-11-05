@@ -1,36 +1,34 @@
 //! The MCP server a chat's harness talks to for computer use (C3).
 //!
-//! MonoCode answers the harness itself and keeps its own MCP session with the
+//! derm answers the harness itself and keeps its own MCP session with the
 //! chat's Cua runtime behind it, so the runtime can start, stop and restart
-//! with a new manifest without the harness noticing. Before any app is
-//! granted the only tool is `request_app_access`, which raises the approval
-//! card. After a grant, the runtime's own tools are offered, filtered again
-//! to the allowed list.
+//! with a new manifest without the harness noticing.
+//!
+//! Since wave 5 (lane U) the harness sees one tool, `computer_use`, in
+//! Hermes Agent's shape (`tool.rs`, `contracts/cu-tool.schema.json`). It
+//! replaces lane K's surface, `request_app_access`, `computer_use_status`
+//! and Cua's own tools: an app is asked for from inside the tool, when a
+//! `capture` or `focus_app` names one the chat does not hold, and the
+//! runtime's tools are called only by `tool.rs`, never by name from the
+//! model.
 //!
 //! Every reply is built here from typed data. Text from the runtime is passed
 //! through as MCP content and never parsed for instructions.
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
 pub use super::bridge_cli::OFF_TEXT;
 use super::grants::Grant;
-use super::manifest::tool_allowed;
+use super::tool;
 
-pub const REQUEST_TOOL: &str = "request_app_access";
-pub const STATUS_TOOL: &str = "computer_use_status";
 /// The protocol versions this server speaks, newest first.
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-/// How long one `request_app_access` call waits for the card. Short enough
-/// for every harness's own tool timeout (Codex's default is 60 seconds);
-/// the model calls again to keep waiting.
+/// How long one `computer_use` call waits for a card. Short enough for
+/// every harness's own tool timeout (Codex's default is 60 seconds); the
+/// model calls again to keep waiting.
 pub const ACCESS_WAIT: Duration = Duration::from_secs(45);
-/// The longest reason shown on the card.
-const MAX_REASON: usize = 400;
-/// The longest app name or bundle id taken from the model.
-const MAX_APP: usize = 255;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessRequest {
@@ -51,7 +49,21 @@ pub enum AccessAnswer {
     Refused(String),
 }
 
-/// What the facade needs from the rest of MonoCode.
+/// How one runtime call ended (lane U). A call that timed out or lost its
+/// transport is never sent again (`tool.rs`, rules case 120).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallOutcome {
+    /// The runtime's MCP result.
+    Done(Value),
+    /// No answer in time: the call may still have taken effect.
+    TimedOut,
+    /// The runtime or the helper went away during the call.
+    Lost(String),
+    /// Refused before it reached the runtime, or the runtime refused it.
+    Failed(String),
+}
+
+/// What the facade needs from the rest of derm.
 pub trait Backend {
     /// The grants that hold for the chat now.
     fn grants(&self, chat: &str) -> Vec<Grant>;
@@ -72,18 +84,42 @@ pub trait Backend {
     fn enabled(&self, _chat: &str) -> bool {
         true
     }
+    /// One runtime call with how it ended (lane U). The default reads every
+    /// error as a refusal; `Core` tells a timeout and a lost helper apart.
+    fn call(&self, chat: &str, name: &str, arguments: Value) -> CallOutcome {
+        match self.runtime_call(chat, name, arguments) {
+            Ok(result) => CallOutcome::Done(result),
+            Err(message) => CallOutcome::Failed(message),
+        }
+    }
+    /// Ends the chat's runtime, so the next call starts a fresh one (after
+    /// a call whose outcome is unknown).
+    fn reset_runtime(&self, _chat: &str) {}
+    /// Asks the person for a scope beyond an app grant (foreground input in
+    /// one app), once per chat and scope. No asker: refused, never allowed.
+    fn ask_scope(
+        &self,
+        _chat: &str,
+        _scope: &str,
+        _summary: &str,
+        _wait: Duration,
+    ) -> AccessAnswer {
+        AccessAnswer::Refused("No one can be asked for that here.".into())
+    }
+    /// One `cu.action` record's detail, for the chat's log.
+    fn record(&self, _chat: &str, _detail: Value) {}
 }
-
-const PLAN_REFUSAL: &str =
-    "This is a plan turn: only look-only computer-use tools run. Describe the action in the plan instead.";
 
 /// One harness connection's MCP session.
 pub struct Facade {
     chat: String,
     initialized: bool,
-    /// The switch and grant set the last `tools/list` answered for, to know
-    /// when to tell the harness the list changed.
-    listed_for: Option<(bool, BTreeSet<String>)>,
+    /// The `computer_use` tool's sticky target and element tokens.
+    cu: tool::State,
+    /// The switch the last `tools/list` answered for, to know when to tell
+    /// the harness the list changed. Grants no longer change the list: the
+    /// one tool is offered whenever computer use is on.
+    listed_for: Option<bool>,
 }
 
 impl Facade {
@@ -91,19 +127,17 @@ impl Facade {
         Self {
             chat: chat.into(),
             initialized: false,
+            cu: tool::State::default(),
             listed_for: None,
         }
     }
 
-    /// A `notifications/tools/list_changed` when the grants differ from the
-    /// set the harness last listed tools for.
+    /// A `notifications/tools/list_changed` when the switch differs from the
+    /// one the harness last listed tools for.
     pub fn list_changed(&mut self, backend: &dyn Backend) -> Option<Value> {
-        let listed = self.listed_for.as_ref()?;
-        let now = (
-            backend.enabled(&self.chat),
-            grant_set(&backend.grants(&self.chat)),
-        );
-        if &now == listed {
+        let listed = self.listed_for?;
+        let now = backend.enabled(&self.chat);
+        if now == listed {
             return None;
         }
         // Answered once: the next tools/list sets it again.
@@ -133,13 +167,12 @@ impl Facade {
             "ping" => result(id, json!({})),
             "tools/list" if self.initialized => {
                 let on = backend.enabled(&self.chat);
-                let grants = backend.grants(&self.chat);
                 let tools = if on {
-                    self.tools(backend, &grants)
+                    vec![tool::definition()]
                 } else {
                     Vec::new()
                 };
-                self.listed_for = Some((on, grant_set(&grants)));
+                self.listed_for = Some(on);
                 result(id, json!({ "tools": tools }))
             }
             "tools/call" if self.initialized && !backend.enabled(&self.chat) => {
@@ -153,106 +186,19 @@ impl Facade {
         })
     }
 
-    fn tools(&self, backend: &dyn Backend, grants: &[Grant]) -> Vec<Value> {
-        let mut tools = vec![request_tool(), status_tool()];
-        if grants.is_empty() {
-            return tools;
-        }
-        // A runtime that did not start leaves only MonoCode's own tools; the
-        // status tool says what is approved.
-        if let Ok(list) = backend.runtime_tools(&self.chat) {
-            tools.extend(
-                list.into_iter()
-                    .filter(|tool| {
-                        tool.get("name")
-                            .and_then(Value::as_str)
-                            .is_some_and(|name| {
-                                tool_allowed(name) && name != REQUEST_TOOL && name != STATUS_TOOL
-                            })
-                    })
-                    .map(with_annotations),
-            );
-        }
-        tools
-    }
-
-    fn call(&self, backend: &dyn Backend, params: &Value) -> Value {
+    fn call(&mut self, backend: &dyn Backend, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let arguments = params
             .get("arguments")
             .cloned()
-            .filter(Value::is_object)
             .unwrap_or_else(|| json!({}));
-        if backend.plan_turn(&self.chat) && name != STATUS_TOOL && !look_only(name) {
-            return tool_error(PLAN_REFUSAL);
-        }
-        match name {
-            REQUEST_TOOL => self.request(backend, &arguments),
-            STATUS_TOOL => self.status(backend),
-            _ if !tool_allowed(name) => tool_error(&format!(
-                "{} is not offered in derm's computer use.",
+        if name != tool::TOOL_NAME {
+            return tool_error(&format!(
+                "{} is not offered in derm's computer use; the one tool is computer_use.",
                 printable(name, 64)
-            )),
-            _ => {
-                if backend.grants(&self.chat).is_empty() {
-                    return tool_error(
-                        "No app is approved for this chat. Call request_app_access first.",
-                    );
-                }
-                match backend.runtime_call(&self.chat, name, arguments) {
-                    Ok(result) if result.is_object() => result,
-                    Ok(_) => tool_error("The computer-use runtime sent a malformed result."),
-                    Err(message) => tool_error(&message),
-                }
-            }
+            ));
         }
-    }
-
-    fn request(&self, backend: &dyn Backend, arguments: &Value) -> Value {
-        let app = arguments
-            .get("app")
-            .and_then(Value::as_str)
-            .map(|app| printable(app, MAX_APP))
-            .unwrap_or_default();
-        if app.trim().is_empty() {
-            return tool_error("Give the app's bundle id or name in `app`.");
-        }
-        let reason = arguments
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(|reason| printable(reason, MAX_REASON))
-            .unwrap_or_default();
-        let request = AccessRequest {
-            app: app.trim().to_string(),
-            reason: reason.trim().to_string(),
-        };
-        match backend.request_access(&self.chat, request, ACCESS_WAIT) {
-            AccessAnswer::Granted { bundle_id } => text_result(&format!(
-                "The user approved {bundle_id} for this chat. Call tools/list again if your tool list has not changed; then use list_windows or get_window_state on that app."
-            )),
-            AccessAnswer::Denied => tool_error(
-                "The user denied access to that app. Do not ask for it again in this turn.",
-            ),
-            AccessAnswer::Pending => text_result(
-                "The approval request is still open with the user. Call request_app_access again with the same app to keep waiting.",
-            ),
-            AccessAnswer::Refused(message) => tool_error(&message),
-        }
-    }
-
-    fn status(&self, backend: &dyn Backend) -> Value {
-        let grants = backend.grants(&self.chat);
-        if grants.is_empty() {
-            return text_result("No app is approved for this chat yet.");
-        }
-        let list: Vec<String> = grants
-            .iter()
-            .map(|grant| match &grant.app_name {
-                Some(name) => format!("{name} ({})", grant.bundle_id),
-                None => grant.bundle_id.clone(),
-            })
-            .collect();
-        text_result(&format!("Approved for this chat: {}.", list.join(", ")))
+        tool::handle(backend, &self.chat, &mut self.cu, &arguments)
     }
 }
 
@@ -275,30 +221,6 @@ pub fn look_only(name: &str) -> bool {
     LOOK_ONLY.contains(&name)
 }
 
-/// MonoCode's own MCP annotations on a runtime tool, replacing any the
-/// runtime sent, so a harness that keeps a plan turn read only (Claude Code's
-/// plan mode) can hold back every tool that acts.
-fn with_annotations(mut tool: Value) -> Value {
-    let look = tool
-        .get("name")
-        .and_then(Value::as_str)
-        .is_some_and(|name| LOOK_ONLY.contains(&name));
-    if let Some(map) = tool.as_object_mut() {
-        map.insert(
-            "annotations".into(),
-            json!({ "readOnlyHint": look, "destructiveHint": !look, "openWorldHint": false }),
-        );
-    }
-    tool
-}
-
-fn grant_set(grants: &[Grant]) -> BTreeSet<String> {
-    grants
-        .iter()
-        .map(|grant| grant.bundle_id.to_ascii_lowercase())
-        .collect()
-}
-
 fn initialize_result(params: &Value) -> Value {
     let asked = params
         .get("protocolVersion")
@@ -313,31 +235,7 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": true } },
         "serverInfo": { "name": "derm-computer-use", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Computer use on this Mac, through derm. Each app needs the user's approval for this chat: call request_app_access with the app's bundle id or name first. derm, its helper and Cua's own app are never available. The user can stop computer use at any time."
-    })
-}
-
-fn request_tool() -> Value {
-    json!({
-        "name": REQUEST_TOOL,
-        "description": "Ask the user to let you control one Mac app in this chat. Give the app's bundle id (for example com.apple.calculator) or its name, and one sentence on why. The user approves or denies it through derm. No other computer-use tool works on an app until it is approved.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "app": { "type": "string", "description": "Bundle id or app name." },
-                "reason": { "type": "string", "description": "Why you need this app, in one sentence." }
-            },
-            "required": ["app"],
-            "additionalProperties": false
-        }
-    })
-}
-
-fn status_tool() -> Value {
-    json!({
-        "name": STATUS_TOOL,
-        "description": "List the apps the user approved for this chat.",
-        "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        "instructions": "Computer use through derm: one tool, computer_use. Start with action='capture' and app=<the app's name>; the first time an app is named, the user is asked to approve it for this chat, and input works only in approved apps. Foreground input needs its own approval. derm, its helper and Cua's own app are never available, nor the whole screen. The user can stop computer use at any time."
     })
 }
 
@@ -347,10 +245,6 @@ fn result(id: Value, result: Value) -> Value {
 
 fn error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
-fn text_result(text: &str) -> Value {
-    json!({"content": [{"type": "text", "text": text}]})
 }
 
 fn tool_error(text: &str) -> Value {
@@ -384,7 +278,6 @@ mod tests {
         answer: RefCell<AccessAnswer>,
         asked: RefCell<Vec<AccessRequest>>,
         calls: RefCell<Vec<(String, Value)>>,
-        runtime_ok: bool,
         plan: RefCell<bool>,
         on: RefCell<bool>,
     }
@@ -396,7 +289,6 @@ mod tests {
                 answer: RefCell::new(AccessAnswer::Denied),
                 asked: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
-                runtime_ok: true,
                 plan: RefCell::new(false),
                 on: RefCell::new(true),
             }
@@ -427,17 +319,10 @@ mod tests {
             self.answer.borrow().clone()
         }
         fn runtime_tools(&self, _chat: &str) -> Result<Vec<Value>, String> {
-            if !self.runtime_ok {
-                return Err("helper not running".into());
-            }
-            Ok(vec![
-                json!({"name": "click", "inputSchema": {"type": "object"}}),
-                json!({"name": "get_window_state", "inputSchema": {"type": "object"}}),
-                json!({"name": "start_recording", "inputSchema": {"type": "object"}}),
-                json!({"name": "get_desktop_state", "inputSchema": {"type": "object"}}),
-                json!({"name": "run_script", "inputSchema": {"type": "object"}}),
-                json!({"name": "request_app_access", "inputSchema": {"type": "object"}}),
-            ])
+            self.calls
+                .borrow_mut()
+                .push(("tools/list".into(), json!({})));
+            Ok(Vec::new())
         }
         fn runtime_call(&self, _chat: &str, name: &str, arguments: Value) -> Result<Value, String> {
             self.calls.borrow_mut().push((name.into(), arguments));
@@ -465,9 +350,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(reply["result"]["tools"], json!([]));
-        for name in [REQUEST_TOOL, STATUS_TOOL, "click"] {
+        for name in ["computer_use", "request_app_access", "click"] {
             let reply = facade
-                .handle(&backend, &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":{"app":"com.apple.calculator"}}}))
+                .handle(&backend, &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":{"action":"capture","app":"com.apple.calculator"}}}))
                 .unwrap();
             assert_eq!(reply["result"]["isError"], true, "{name}");
             assert_eq!(reply["result"]["content"][0]["text"], OFF_TEXT);
@@ -519,185 +404,68 @@ mod tests {
     }
 
     #[test]
-    fn before_a_grant_only_the_request_and_status_tools() {
-        let backend = Fake::new();
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-            )
-            .unwrap();
-        assert_eq!(names(&reply), vec![REQUEST_TOOL, STATUS_TOOL]);
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"click","arguments":{"x":1}}}),
-            )
-            .unwrap();
-        assert_eq!(reply["result"]["isError"], true);
-        assert!(
-            backend.calls.borrow().is_empty(),
-            "nothing reached the runtime"
-        );
-    }
-
-    #[test]
-    fn after_a_grant_only_allowed_runtime_tools_are_listed() {
-        let backend = Fake::new();
-        backend.grant("com.apple.calculator");
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-            )
-            .unwrap();
-        let listed = names(&reply);
-        assert!(listed.contains(&"click".to_string()));
-        assert!(listed.contains(&"get_window_state".to_string()));
-        for never in ["start_recording", "get_desktop_state", "run_script"] {
-            assert!(!listed.contains(&never.to_string()), "{never} listed");
-        }
-        let tool = |name: &str| {
-            reply["result"]["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|t| t["name"] == name)
-                .unwrap()
-                .clone()
-        };
-        assert_eq!(tool("click")["annotations"]["readOnlyHint"], false);
-        assert_eq!(tool("click")["annotations"]["destructiveHint"], true);
-        assert_eq!(
-            tool("get_window_state")["annotations"]["readOnlyHint"],
-            true
-        );
-        // The runtime's own copy of a MonoCode tool name is never listed twice.
-        assert_eq!(listed.iter().filter(|n| *n == REQUEST_TOOL).count(), 1);
-    }
-
-    #[test]
-    fn a_plan_turn_runs_only_look_only_tools() {
-        // Security review S6: Codex's plan turn does not hold MCP tools back.
-        let backend = Fake::new();
-        backend.grant("com.apple.calculator");
-        *backend.plan.borrow_mut() = true;
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let call = |facade: &mut Facade, name: &str| {
-            facade
+    fn the_one_tool_is_computer_use_in_the_contracts_shape_grant_or_not() {
+        // Lane U: Hermes's single tool replaces lane K's request tool, status
+        // tool and Cua's own tools; listing never starts a runtime.
+        for granted in [false, true] {
+            let backend = Fake::new();
+            if granted {
+                backend.grant("com.apple.calculator");
+            }
+            let mut facade = Facade::new("c1");
+            init(&mut facade, &backend);
+            let reply = facade
                 .handle(
                     &backend,
-                    &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":name,"arguments":{"app":"com.apple.TextEdit"}}}),
+                    &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
                 )
-                .unwrap()
-        };
-        let click = call(&mut facade, "click");
-        assert_eq!(click["result"]["isError"], true);
-        let ask = call(&mut facade, REQUEST_TOOL);
-        assert_eq!(ask["result"]["isError"], true);
-        assert!(backend.asked.borrow().is_empty(), "no card in a plan turn");
-        assert!(backend.calls.borrow().is_empty());
-        let look = call(&mut facade, "get_window_state");
-        assert_eq!(look["result"]["content"][0]["text"], "ok");
-        let status = call(&mut facade, STATUS_TOOL);
-        assert!(status["result"]["isError"] != true);
-        // The plan turn ends: actions run again.
-        *backend.plan.borrow_mut() = false;
-        let click = call(&mut facade, "click");
-        assert_eq!(click["result"]["content"][0]["text"], "ok");
+                .unwrap();
+            assert_eq!(names(&reply), vec!["computer_use"]);
+            let tool = &reply["result"]["tools"][0];
+            let contract: Value =
+                serde_json::from_str(include_str!("../../../../contracts/cu-tool.schema.json"))
+                    .unwrap();
+            assert_eq!(tool["inputSchema"]["properties"], contract["properties"]);
+            assert_eq!(tool["inputSchema"]["required"], json!(["action"]));
+            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+            assert_eq!(tool["description"], contract["x-derm-tool"]["description"]);
+            assert_eq!(tool["annotations"]["destructiveHint"], true);
+            assert!(backend.calls.borrow().is_empty(), "listing ran nothing");
+        }
     }
 
     #[test]
-    fn a_call_to_a_tool_off_the_list_never_reaches_the_runtime() {
+    fn a_call_to_any_other_name_never_reaches_the_runtime() {
         let backend = Fake::new();
         backend.grant("com.apple.calculator");
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
         for name in [
+            "request_app_access",
+            "computer_use_status",
+            "click",
+            "get_window_state",
             "start_recording",
             "get_desktop_state",
             "run_script",
             "check_for_update",
+            "Computer_Use",
             "",
         ] {
             let reply = facade
                 .handle(
                     &backend,
-                    &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name}}),
+                    &json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":{"action":"capture","x":1}}}),
                 )
                 .unwrap();
             assert_eq!(reply["result"]["isError"], true, "{name}");
         }
         assert!(backend.calls.borrow().is_empty());
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"click","arguments":{"x":1}}}),
-            )
-            .unwrap();
-        assert_eq!(reply["result"]["content"][0]["text"], "ok");
-        assert_eq!(
-            backend.calls.borrow()[0],
-            ("click".to_string(), json!({"x":1}))
-        );
-    }
-
-    #[test]
-    fn request_tool_raises_the_card_with_clean_text() {
-        let backend = Fake::new();
-        *backend.answer.borrow_mut() = AccessAnswer::Granted {
-            bundle_id: "com.apple.calculator".into(),
-        };
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":REQUEST_TOOL,"arguments":{"app":"Calculator\n\u{202E}x","reason":"add\u{0}numbers"}}}),
-            )
-            .unwrap();
-        assert!(reply["result"]["isError"].is_null());
-        let asked = backend.asked.borrow();
-        assert_eq!(asked[0].app, "Calculator x");
-        assert_eq!(asked[0].reason, "addnumbers");
-    }
-
-    #[test]
-    fn request_without_an_app_asks_nothing() {
-        let backend = Fake::new();
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":REQUEST_TOOL,"arguments":{"app":"  "}}}),
-            )
-            .unwrap();
-        assert_eq!(reply["result"]["isError"], true);
         assert!(backend.asked.borrow().is_empty());
     }
 
     #[test]
-    fn pending_and_denied_answers_are_plain_results() {
-        let backend = Fake::new();
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let call = json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":REQUEST_TOOL,"arguments":{"app":"com.apple.calculator"}}});
-        *backend.answer.borrow_mut() = AccessAnswer::Pending;
-        let reply = facade.handle(&backend, &call).unwrap();
-        assert!(reply["result"]["isError"].is_null());
-        *backend.answer.borrow_mut() = AccessAnswer::Denied;
-        let reply = facade.handle(&backend, &call).unwrap();
-        assert_eq!(reply["result"]["isError"], true);
-    }
-
-    #[test]
-    fn tells_the_harness_when_the_grants_change() {
+    fn a_grant_does_not_change_the_list_only_the_switch_does() {
         let backend = Fake::new();
         let mut facade = Facade::new("c1");
         init(&mut facade, &backend);
@@ -709,27 +477,10 @@ mod tests {
             &backend,
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
         );
+        backend.grant("com.apple.calculator");
         assert!(facade.list_changed(&backend).is_none());
-        backend.grant("com.apple.calculator");
-        let note = facade.list_changed(&backend).unwrap();
-        assert_eq!(note["method"], "notifications/tools/list_changed");
-        assert!(facade.list_changed(&backend).is_none(), "once per change");
-    }
-
-    #[test]
-    fn a_runtime_that_does_not_start_leaves_monocodes_tools() {
-        let mut backend = Fake::new();
-        backend.runtime_ok = false;
-        backend.grant("com.apple.calculator");
-        let mut facade = Facade::new("c1");
-        init(&mut facade, &backend);
-        let reply = facade
-            .handle(
-                &backend,
-                &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-            )
-            .unwrap();
-        assert_eq!(names(&reply), vec![REQUEST_TOOL, STATUS_TOOL]);
+        *backend.on.borrow_mut() = false;
+        assert!(facade.list_changed(&backend).is_some());
     }
 
     #[test]

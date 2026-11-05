@@ -43,6 +43,8 @@ pub const WATCH: Duration = Duration::from_secs(2);
 pub const ASK_SECONDS: u32 = 120;
 /// The tool name approvers see for a computer-use grant.
 pub const GRANT_TOOL: &str = "computer-use/grant-app";
+/// The tool name approvers see for foreground input in a granted app (lane U).
+pub const FOREGROUND_TOOL: &str = "computer-use/foreground";
 /// Chats placed at once. Beyond this a new chat is refused, not queued.
 const MAX_CHATS: usize = 256;
 
@@ -54,6 +56,13 @@ pub trait Host: Send + Sync {
     fn chat_of(&self, token: &str) -> Option<(String, String)>;
     /// Asks the daemon's approvers in the chat's name. True only on yes.
     fn ask(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool;
+    /// Asks for a scope beyond an app grant (lane U: foreground input).
+    /// The default asks the same approver under the same tool name.
+    fn ask_scope(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool {
+        self.ask(chat, harness, id, summary)
+    }
+    /// Stores one `cu.action` record in the chat's log (lane U).
+    fn record(&self, _chat: &str, _harness: &str, _detail: Value) {}
 }
 
 #[derive(Clone, Debug)]
@@ -62,9 +71,16 @@ struct Placed {
     token: String,
 }
 
+/// Whether computer use is switched on in the user's settings now.
+pub type Switch = Box<dyn Fn() -> bool + Send + Sync>;
+
 pub struct Service {
     core: Arc<Core>,
     host: Box<dyn Host>,
+    /// Lane U: `computerUse.on`, read at each placement and each sweep, so
+    /// turning it off ends every chat's computer use within `WATCH`. None:
+    /// on (the service's own tests).
+    switch: Mutex<Option<Switch>>,
     placed: Mutex<HashMap<String, Placed>>,
     /// Card ids already sent to the approver.
     asked: Mutex<HashSet<String>>,
@@ -97,15 +113,46 @@ impl Service {
         let service = Arc::new(Service {
             core,
             host,
+            switch: Mutex::new(None),
             placed: Mutex::new(HashMap::new()),
             asked: Mutex::new(HashSet::new()),
         });
         let _ = cell.set(Arc::downgrade(&service));
+        // Lane U: the tool's foreground cards and its action records go
+        // through the same host, in the chat's harness's name.
+        let asker = Arc::downgrade(&service);
+        let recorder = Arc::downgrade(&service);
+        service.core.set_hooks(
+            Box::new(move |chat: &str, id: &str, summary: &str| {
+                asker.upgrade().is_some_and(|service| {
+                    let harness = service.harness_of(chat);
+                    service.host.ask_scope(chat, &harness, id, summary)
+                })
+            }),
+            Box::new(move |chat: &str, detail: Value| {
+                if let Some(service) = recorder.upgrade() {
+                    let harness = service.harness_of(chat);
+                    service.host.record(chat, &harness, detail);
+                }
+            }),
+        );
         service
+    }
+
+    /// Sets the settings switch (lane U).
+    pub fn set_switch(&self, switch: Switch) {
+        *lock(&self.switch) = Some(switch);
+    }
+
+    fn switched_on(&self) -> bool {
+        lock(&self.switch).as_ref().is_none_or(|on| on())
     }
 
     /// The bridge's resolver: a live derm chat token switches its chat on.
     pub fn place(&self, token: &str) -> Option<String> {
+        if !self.switched_on() {
+            return None;
+        }
         let (chat, harness) = self.host.chat_of(token)?;
         {
             let mut placed = lock(&self.placed);
@@ -132,8 +179,9 @@ impl Service {
             .map(|(c, p)| (c.clone(), p.clone()))
             .collect();
         let mut ended = Vec::new();
+        let on = self.switched_on();
         for (chat, link) in placed {
-            if self.host.chat_of(&link.token).map(|(c, _)| c) == Some(chat.clone()) {
+            if on && self.host.chat_of(&link.token).map(|(c, _)| c) == Some(chat.clone()) {
                 continue;
             }
             lock(&self.placed).remove(&chat);
@@ -288,6 +336,54 @@ impl Host for DaemonHost {
                     && reply.get("answer").and_then(Value::as_str) == Some("yes")
             })
     }
+
+    fn ask_scope(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool {
+        use crate::protocol::{ApprovalRequest, Request};
+        let (out, rx, _) = crate::daemon::Outbox::new(self.0.next_conn());
+        let who = crate::daemon::Who::Chat {
+            chat: chat.to_string(),
+            harness: harness.to_string(),
+        };
+        let request = Request::Approve {
+            request: ApprovalRequest {
+                id: format!("cu-fg-{id}"),
+                chat: chat.to_string(),
+                harness: harness.to_string(),
+                tool: FOREGROUND_TOOL.to_string(),
+                summary: summary.to_string(),
+                timeout_seconds: ASK_SECONDS,
+            },
+        };
+        self.0.handle(&who, request, &out);
+        rx.try_iter()
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .any(|reply| {
+                reply.get("ok").and_then(Value::as_bool) == Some(true)
+                    && reply.get("answer").and_then(Value::as_str) == Some("yes")
+            })
+    }
+
+    /// A `cu.action` record from the daemon itself (`trust: daemon`):
+    /// no socket client posts one (`contracts/events.md` section 5).
+    fn record(&self, chat: &str, harness: &str, detail: Value) {
+        let summary = format!(
+            "{} {}",
+            detail.get("action").and_then(Value::as_str).unwrap_or(""),
+            detail.get("verdict").and_then(Value::as_str).unwrap_or("")
+        );
+        self.0.ingest(derm_core::event::Event {
+            id: format!("cu-{}", uuid::Uuid::new_v4().simple()),
+            at: 0,
+            chat_id: chat.to_string(),
+            harness: harness.to_string(),
+            source: derm_core::event::Source::Cua,
+            kind: "cu.action".into(),
+            summary: summary.chars().take(200).collect(),
+            detail,
+            pid: None,
+            approval_id: None,
+        });
+    }
 }
 
 static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
@@ -299,14 +395,34 @@ pub fn running() -> Option<&'static Arc<Service>> {
 
 /// Starts computer use in a running daemon: the engine, the bridge on
 /// 127.0.0.1, its endpoint in `<runtime dir>/cu.endpoint` (0600), and the
-/// watch thread. macOS only: elsewhere nothing starts and no port opens.
+/// watch thread. macOS and Linux (lane U); elsewhere nothing starts and no
+/// port opens. Only when `computerUse.on` is set (off by default): turning
+/// it on takes a daemon restart; turning it off ends every chat's computer
+/// use at the next sweep.
 pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) {
-    if !cfg!(target_os = "macos") || SERVICE.get().is_some() {
+    if !super::SUPPORTED || SERVICE.get().is_some() {
         return;
     }
-    if let Err(e) = start_here(daemon, paths) {
-        eprintln!("derm-daemon: computer use did not start: {e}");
+    let Some(settings) = settings_path() else {
+        return;
+    };
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    if !super::settings::computer_use_on(&settings, uid) {
+        return;
     }
+    match start_here(daemon, paths) {
+        Ok(service) => service.set_switch(Box::new(move || {
+            super::settings::computer_use_on(&settings, uid)
+        })),
+        Err(e) => eprintln!("derm-daemon: computer use did not start: {e}"),
+    }
+}
+
+/// `$HOME/.derm/settings.json`, the file lane W's `derm setup` writes.
+fn settings_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'))?;
+    Some(derm_tap::settings::path_for(&home))
 }
 
 /// `start` without the OS check, for tests on any system.
@@ -421,6 +537,72 @@ mod tests {
     }
 
     #[test]
+    fn turning_the_setting_off_refuses_new_chats_and_ends_placed_ones() {
+        // Lane U: `computerUse.on` (off by default) is read at each
+        // placement and each sweep.
+        let (service, _, _) = service(true);
+        let on = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let read = on.clone();
+        service.set_switch(Box::new(move || {
+            read.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        service.place(CHAT_TOKEN).unwrap();
+        service
+            .core
+            .grant("c1", "pi", "com.apple.calculator", None, None)
+            .unwrap();
+        on.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(service.sweep(), vec!["c1".to_string()]);
+        assert!(!service.core.is_on("c1"));
+        assert!(service.core.grants("c1").is_empty());
+        assert_eq!(
+            service.place(CHAT_TOKEN),
+            None,
+            "a new placement is refused"
+        );
+        on.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(service.place(CHAT_TOKEN).as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn a_foreground_card_goes_to_the_approver_once_per_chat_and_app() {
+        use super::super::facade::{AccessAnswer, Backend};
+        for (yes, want) in [
+            (
+                true,
+                AccessAnswer::Granted {
+                    bundle_id: "foreground:x".into(),
+                },
+            ),
+            (false, AccessAnswer::Denied),
+        ] {
+            let (service, asks, _) = service(yes);
+            service.place(CHAT_TOKEN).unwrap();
+            let first = service.core.ask_scope(
+                "c1",
+                "foreground:x",
+                "Let this chat bring x to the front",
+                Duration::from_secs(10),
+            );
+            assert_eq!(first, want);
+            let again =
+                service
+                    .core
+                    .ask_scope("c1", "foreground:x", "again", Duration::from_secs(10));
+            assert_eq!(again, want, "the answer holds for the chat");
+            assert_eq!(lock(&asks).len(), 1, "asked once");
+            assert_eq!(lock(&asks)[0].1, "pi", "in the chat's harness's name");
+            // The chat's stop ends the scope with its grants.
+            service.core.stop("c1");
+            service.core.set_chat("c1", true);
+            service
+                .core
+                .ask_scope("c1", "foreground:x", "after stop", Duration::from_secs(10));
+            assert_eq!(lock(&asks).len(), 2, "asked again after a stop");
+        }
+    }
+
+    #[test]
     fn a_card_goes_to_the_approver_and_a_yes_grants_the_app() {
         use super::super::facade::{AccessAnswer, AccessRequest, Backend};
         let (service, asks, _) = service(true);
@@ -503,8 +685,9 @@ mod tests {
             }
         }
         let tools: Value = serde_json::from_str(&line).unwrap();
+        // Lane U: the one tool, computer_use.
         assert_eq!(
-            tools["result"]["tools"][0]["name"], "request_app_access",
+            tools["result"]["tools"][0]["name"], "computer_use",
             "{tools}"
         );
         // The chat's run stops: the next sweep ends the connection.
@@ -708,6 +891,72 @@ mod daemon_tests {
     }
 
     #[test]
+    fn a_grant_the_agent_asks_for_cannot_be_answered_by_the_agent() {
+        // Case 119, through the daemon: the chat's own token cannot register
+        // as an approver or answer a card, so with no person the card is no.
+        let (daemon, root) = daemon();
+        let token = mint(&daemon, "chat-8");
+        let agent = daemon.hello(&token).expect("a chat token");
+        let (out, rx, _) = Outbox::new(daemon.next_conn());
+        daemon.handle(&agent, Request::Approver {}, &out);
+        assert_eq!(reply(&rx)["ok"], false, "approver needs daemon scope");
+        let (out, rx, _) = Outbox::new(daemon.next_conn());
+        daemon.handle(
+            &agent,
+            Request::Answer {
+                id: "cu-x".into(),
+                answer: Answer::Yes,
+                chat: Some("chat-8".into()),
+                proof: None,
+            },
+            &out,
+        );
+        assert_eq!(reply(&rx)["ok"], false, "a chat token answers nothing");
+        let host = DaemonHost(daemon);
+        assert!(!host.ask("chat-8", "pi", "r9", "Let this chat control x"));
+        assert!(!host.ask_scope("chat-8", "pi", "r9", "foreground"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cu_action_is_the_daemons_own_record_in_the_chats_log() {
+        let (daemon, root) = daemon();
+        let (tail, pushes, _) = Outbox::new(daemon.next_conn());
+        daemon.handle(
+            &Who::Daemon,
+            Request::Tail {
+                since: None,
+                chat: Some("chat-5".into()),
+            },
+            &tail,
+        );
+        let host = DaemonHost(daemon.clone());
+        host.record(
+            "chat-5",
+            "claude-code",
+            serde_json::json!({"trust": "daemon", "action": "click", "app": "calc",
+                "delivery": "background", "verdict": "ok", "effect": true, "verified": null,
+                "screenshotSha256": null, "grant": "exe.calc", "contentKept": false}),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let event = loop {
+            assert!(std::time::Instant::now() < deadline, "no cu.action pushed");
+            let line = pushes.recv_timeout(Duration::from_secs(10)).unwrap();
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if v["event"]["kind"] == "cu.action" {
+                break v["event"].clone();
+            }
+        };
+        assert_eq!(event["source"], "cua");
+        assert_eq!(event["chatId"], "chat-5");
+        assert_eq!(event["harness"], "claude-code");
+        assert_eq!(event["summary"], "click ok");
+        assert_eq!(event["detail"]["trust"], "daemon");
+        assert_eq!(event["detail"]["grant"], "exe.calc");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn start_here_writes_a_private_endpoint_the_relay_reads() {
         use std::os::unix::fs::PermissionsExt;
         let (daemon, root) = daemon();
@@ -773,7 +1022,7 @@ mod daemon_tests {
             .as_array()
             .map(|t| t.iter().filter_map(|t| t["name"].as_str()).collect())
             .unwrap_or_default();
-        assert!(names.contains(&"request_app_access"), "{listed}");
+        assert_eq!(names, vec!["computer_use"], "{listed}");
         drop(stdin);
         assert_eq!(relay.join().unwrap(), 0);
         let _ = std::fs::remove_dir_all(root);

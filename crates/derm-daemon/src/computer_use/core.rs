@@ -4,15 +4,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
 use super::apps::{parse_bundle_id, warning_for, AppRefusal, AppWarning};
-use super::facade::{look_only, printable, AccessAnswer, AccessRequest, Backend};
+use super::facade::{
+    look_only, printable, AccessAnswer, AccessRequest, Backend, CallOutcome, OFF_TEXT,
+};
 use super::grants::{Grant, GrantTable};
-use super::helper_client::{EventSink, HelperClient};
+use super::helper_client::{EventSink, HelperClient, HelperError};
 use super::manifest::manifest_yaml;
 use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
 use crate::activity::{ActivityEvent, ApprovalRecord, ProcessKind};
@@ -26,7 +28,11 @@ const MAX_PENDING_PER_CHAT: usize = 4;
 const PENDING_TTL: Duration = Duration::from_secs(15 * 60);
 const START_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOLS_TIMEOUT: Duration = Duration::from_secs(30);
-const CALL_TIMEOUT: Duration = Duration::from_secs(130);
+/// One runtime call. Lane U: under Codex's 60-second default tool timeout,
+/// so a call that hangs comes back to the model as "outcome unknown" from
+/// derm, not as the harness's own timeout (Hermes uses 30 seconds,
+/// `cua_backend_session.py:483`).
+const CALL_TIMEOUT: Duration = Duration::from_secs(40);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -147,6 +153,10 @@ struct Inner {
     /// Chats whose current turn is a plan turn: only look-only tools run
     /// (rules section 5, item 7; security review S6).
     planning: std::collections::HashSet<String>,
+    /// Lane U: scopes asked beyond an app grant (foreground input in one
+    /// app), per chat: `None` while the card is open, then the answer. Ended
+    /// with the chat's grants.
+    scopes: HashMap<(String, String), Option<bool>>,
 }
 
 impl Inner {
@@ -185,8 +195,17 @@ pub struct Status {
     pub pending: Vec<PendingView>,
 }
 
+/// Asks the daemon's approver in a chat's name (chat, card id, summary);
+/// true only on a person's yes.
+pub type Asker = Box<dyn Fn(&str, &str, &str) -> bool + Send + Sync>;
+/// Takes one `cu.action` record's detail for a chat.
+pub type Recorder = Box<dyn Fn(&str, Value) + Send + Sync>;
+
 pub struct Core {
     inner: Mutex<Inner>,
+    /// Lane U: set once by the service (`service.rs`).
+    asker: OnceLock<Asker>,
+    recorder: OnceLock<Recorder>,
     answered: Condvar,
     helper: Mutex<Option<Arc<HelperClient>>>,
     launcher: Box<dyn HelperLauncher>,
@@ -203,6 +222,8 @@ impl Core {
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             inner: Mutex::new(Inner::default()),
+            asker: OnceLock::new(),
+            recorder: OnceLock::new(),
             answered: Condvar::new(),
             helper: Mutex::new(None),
             launcher,
@@ -210,6 +231,13 @@ impl Core {
             supported,
             me: me.clone(),
         })
+    }
+
+    /// The approver and the log for lane U's scope cards and action
+    /// records. Set once; a second call changes nothing.
+    pub fn set_hooks(&self, asker: Asker, recorder: Recorder) {
+        let _ = self.asker.set(asker);
+        let _ = self.recorder.set(recorder);
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -376,6 +404,7 @@ impl Core {
                 pending.answer.get_or_insert(AccessAnswer::Denied);
             }
             inner.pending.retain(|_, p| p.view.chat_id != chat);
+            inner.scopes.retain(|(c, _), _| c != chat);
             (ended, inner.runtimes.remove(chat))
         };
         self.answered.notify_all();
@@ -512,6 +541,11 @@ impl Core {
 
     /// What the model named, as an app the card can show.
     fn resolve_request(&self, app: &str) -> (Option<AppInfo>, Option<String>) {
+        // Lane U: a helper (or, on Linux, a driver) that cannot start says
+        // so, rather than "no app named".
+        if let Err(why) = self.helper_or_launch() {
+            return (None, Some(why));
+        }
         let looked_up = self.resolve(app);
         match parse_bundle_id(app) {
             Ok(id) => (
@@ -1158,20 +1192,31 @@ impl Backend for Core {
     }
 
     fn runtime_call(&self, chat: &str, name: &str, arguments: Value) -> Result<Value, String> {
+        match Backend::call(self, chat, name, arguments) {
+            CallOutcome::Done(result) => Ok(result),
+            CallOutcome::TimedOut => Err("The computer-use helper did not answer in time.".into()),
+            CallOutcome::Lost(message) | CallOutcome::Failed(message) => Err(message),
+        }
+    }
+
+    fn call(&self, chat: &str, name: &str, arguments: Value) -> CallOutcome {
         if !look_only(name) && self.lock().card_open() {
-            return Err(
+            return CallOutcome::Failed(
                 "An approval card is open for the user. Input waits until the user answers it."
                     .into(),
             );
         }
-        let (helper, id) = self.ensure_runtime(chat)?;
-        let reply = helper.request(
+        let (helper, id) = match self.ensure_runtime(chat) {
+            Ok(pair) => pair,
+            Err(message) => return CallOutcome::Failed(message),
+        };
+        let reply = helper.request_typed(
             "call",
             json!({"runtime": id, "name": name, "arguments": arguments}),
             CALL_TIMEOUT,
         );
         match reply {
-            Ok(reply) => Ok(reply.get("result").cloned().unwrap_or(Value::Null)),
+            Ok(reply) => CallOutcome::Done(reply.get("result").cloned().unwrap_or(Value::Null)),
             Err(error) => {
                 // A runtime that failed mid-call is started fresh next time.
                 if !helper.is_open() {
@@ -1180,8 +1225,96 @@ impl Backend for Core {
                         note_runtime_end(chat, entry);
                     }
                 }
-                Err(error)
+                match error {
+                    HelperError::Timeout(_) => CallOutcome::TimedOut,
+                    HelperError::Closed(message) => CallOutcome::Lost(message),
+                    HelperError::Refused(message) => CallOutcome::Failed(message),
+                }
             }
+        }
+    }
+
+    fn reset_runtime(&self, chat: &str) {
+        self.end_runtime(chat);
+    }
+
+    fn ask_scope(&self, chat: &str, scope: &str, summary: &str, wait: Duration) -> AccessAnswer {
+        if self.asker.get().is_none() {
+            return AccessAnswer::Refused("No approver is wired for computer use.".into());
+        }
+        if !self.is_on(chat) {
+            return AccessAnswer::Refused(OFF_TEXT.into());
+        }
+        let key = (chat.to_string(), scope.to_string());
+        let start = {
+            let mut inner = self.lock();
+            match inner.scopes.get(&key) {
+                Some(Some(true)) => {
+                    return AccessAnswer::Granted {
+                        bundle_id: scope.into(),
+                    }
+                }
+                Some(Some(false)) => return AccessAnswer::Denied,
+                Some(None) => false,
+                None => {
+                    if inner.scopes.keys().filter(|(c, _)| c == chat).count()
+                        >= MAX_PENDING_PER_CHAT * 4
+                    {
+                        return AccessAnswer::Refused("Too many cards for this chat.".into());
+                    }
+                    inner.scopes.insert(key.clone(), None);
+                    true
+                }
+            }
+        };
+        if start {
+            let me = self.me.clone();
+            let (chat_s, id, summary) = (chat.to_string(), new_id(), summary.to_string());
+            let key2 = key.clone();
+            // The person's answer can take minutes: off this thread. A stop
+            // in the meantime drops the entry, so a late yes grants nothing.
+            std::thread::spawn(move || {
+                let Some(core) = me.upgrade() else { return };
+                let yes = core
+                    .asker
+                    .get()
+                    .is_some_and(|ask| ask(&chat_s, &id, &summary));
+                {
+                    let mut inner = core.lock();
+                    if let Some(slot) = inner.scopes.get_mut(&key2) {
+                        *slot = Some(yes);
+                    }
+                }
+                core.answered.notify_all();
+            });
+        }
+        let deadline = Instant::now() + wait;
+        let mut inner = self.lock();
+        loop {
+            match inner.scopes.get(&key) {
+                None => return AccessAnswer::Denied,
+                Some(Some(true)) => {
+                    return AccessAnswer::Granted {
+                        bundle_id: scope.into(),
+                    }
+                }
+                Some(Some(false)) => return AccessAnswer::Denied,
+                Some(None) => {}
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return AccessAnswer::Pending;
+            }
+            inner = match self.answered.wait_timeout(inner, left) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+
+    fn record(&self, chat: &str, detail: Value) {
+        if let Some(record) = self.recorder.get() {
+            record(chat, detail);
         }
     }
 }
