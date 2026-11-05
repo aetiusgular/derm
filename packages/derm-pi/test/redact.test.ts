@@ -10,8 +10,8 @@ const SAMPLES: [string, string][] = [
   ["github", `gho_${"a1B2c3D4e5".repeat(3)}abcdef`],
   ["github", `ghs_${"a1B2c3D4e5".repeat(3)}abcdef`],
   ["github", `github_pat_${"A1b2_".repeat(16)}xy`],
-  ["aws-access-key-id", "AKIAABCDEFGHIJKLMNOP"],
-  ["aws-access-key-id", "ASIAQRSTUVWXYZ234567"],
+  ["aws-access-key-id", `${"AKIA"}ABCDEFGHIJKLMNOP`],
+  ["aws-access-key-id", `${"ASIA"}QRSTUVWXYZ234567`],
   ["anthropic", `sk-ant-api03-${"x".repeat(40)}`],
   ["openai", `sk-proj-${"Y".repeat(40)}`],
   ["slack", "xoxb-1234567890-1234567890-abcdefABCDEF"],
@@ -74,7 +74,7 @@ describe("redactText", () => {
 describe("redactDeep", () => {
   it("redacts values under secret-like keys and strings everywhere", () => {
     const kinds = new Set<string>();
-    expect(redactDeep({ apiKey: "abc", nested: [{ note: "AKIAABCDEFGHIJKLMNOP" }], n: 3, ok: true }, kinds)).toEqual({
+    expect(redactDeep({ apiKey: "abc", nested: [{ note: `${"AKIA"}ABCDEFGHIJKLMNOP` }], n: 3, ok: true }, kinds)).toEqual({
       apiKey: REDACTED,
       nested: [{ note: REDACTED }],
       n: 3,
@@ -119,5 +119,16 @@ describe("inputTextFor", () => {
 
   it("a bash call without a command string falls back to keys and values", () => {
     expect(inputTextFor("bash", { cmd: "ls" })).toBe("cmd\nls");
+  });
+});
+
+// GitHub secret scanning reads the source, not the test run: a complete
+// key-shaped literal here opened public alert "Amazon AWS Temporary Access
+// Key ID". Samples are built from parts so the file never holds one whole.
+describe("this file's own samples", () => {
+  it("hold no complete AWS key ID literal", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(new URL(import.meta.url), "utf8");
+    expect(src.match(/\b(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}\b/g)).toBeNull();
   });
 });
