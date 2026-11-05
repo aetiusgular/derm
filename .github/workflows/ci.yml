@@ -28,6 +28,24 @@ jobs:
             grep -E -A4 "^test .* FAILED|panicked at" test.log | head -60 | sed 's/^/::error::/'
             exit 1
           }
+      # The two macOS workspaces are their own Cargo workspaces, so the steps
+      # above never reach them (lane Y's request 1, integration w5 phase 1).
+      # On Linux their Unix code runs; on macos-26 their Apple-only code
+      # (the collector's caller check and SMAppService calls, the helper)
+      # compiles here before it reaches the Mac.
+      - name: macOS workspaces
+        shell: bash
+        run: |
+          set -o pipefail
+          for w in macos/activity-collector macos/computer-use-helper; do
+            echo "== $w"
+            cargo fmt --manifest-path "$w/Cargo.toml" --all --check
+            cargo clippy --locked --manifest-path "$w/Cargo.toml" --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$w/Cargo.toml" 2>&1 | tee "$w.test.log" || {
+              grep -E -A4 "^test .* FAILED|panicked at" "$w.test.log" | head -60 | sed 's/^/::error::/'
+              exit 1
+            }
+          done
   # The daemon's macOS-only code (activity/collector.rs `sm`, the collector
   # paths) compiles nowhere else: the cloud cannot install the Apple target.
   # Added by integration w1's fix pass after the Mac test found the build
@@ -49,6 +67,24 @@ jobs:
             grep -E -A4 "^test .* FAILED|panicked at" test.log | head -60 | sed 's/^/::error::/'
             exit 1
           }
+      # The two macOS workspaces are their own Cargo workspaces, so the steps
+      # above never reach them (lane Y's request 1, integration w5 phase 1).
+      # On Linux their Unix code runs; on macos-26 their Apple-only code
+      # (the collector's caller check and SMAppService calls, the helper)
+      # compiles here before it reaches the Mac.
+      - name: macOS workspaces
+        shell: bash
+        run: |
+          set -o pipefail
+          for w in macos/activity-collector macos/computer-use-helper; do
+            echo "== $w"
+            cargo fmt --manifest-path "$w/Cargo.toml" --all --check
+            cargo clippy --locked --manifest-path "$w/Cargo.toml" --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$w/Cargo.toml" 2>&1 | tee "$w.test.log" || {
+              grep -E -A4 "^test .* FAILED|panicked at" "$w.test.log" | head -60 | sed 's/^/::error::/'
+              exit 1
+            }
+          done
       # A CLI's whole process group ends with its check (Mac test w2, MW6,
       # seen on macOS only); the macOS runner has Node.
       - run: node tests/cli-contract/lib/procs.selftest.mjs
