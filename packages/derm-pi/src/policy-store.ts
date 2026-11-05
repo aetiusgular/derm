@@ -16,6 +16,7 @@
 // the path could be swapped).
 
 import { constants, promises as fsp, realpathSync } from "node:fs";
+import { policyOwnerUid } from "./owner.ts";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { defaultPolicy, parsePolicy, type LoadedPolicy } from "./policy.ts";
@@ -103,7 +104,9 @@ export class PolicyStore {
   constructor(
     path: string | { problem: string },
     fs: FsLike = realFs,
-    uid: number | undefined = typeof process.getuid === "function" ? process.getuid() : undefined,
+    // This user's own, or the person's under an agents' user (lane V,
+    // request V-3; owner.ts).
+    uid: number | undefined = policyOwnerUid(),
     posix: boolean = process.platform !== "win32",
   ) {
     this.path = path;

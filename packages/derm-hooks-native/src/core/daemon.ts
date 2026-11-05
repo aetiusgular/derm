@@ -9,6 +9,7 @@ import { constants, lstatSync, readFileSync } from "node:fs";
 import net from "node:net";
 import { homedir, platform } from "node:os";
 import path from "node:path";
+import { ownedByTrusted, trustedOwners } from "./owner.ts";
 import { insideFolder } from "./policy.ts";
 
 export const CONNECT_TIMEOUT_MS = 800;
@@ -26,18 +27,19 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * The socket is trusted only when it is a socket owned by this user in a
  * folder owned by this user that no one else can write. Another user could
- * otherwise plant a socket that answers `yes` to every approval.
+ * otherwise plant a socket that answers `yes` to every approval. Under an
+ * agents' user (owner.ts), "this user" is the person it works for: the
+ * socket is `derm run`'s bridge, and one the agent made is refused.
  */
 export function socketLooksOwned(sock: string): string | undefined {
   if (typeof process.getuid !== "function") return undefined;
-  const uid = process.getuid();
   try {
     const s = lstatSync(sock);
     if (!s.isSocket()) return "not a socket";
-    if (s.uid !== uid) return "socket owned by another user";
+    if (!ownedByTrusted(s.uid)) return "socket owned by another user";
     const d = lstatSync(path.dirname(sock));
     if (!d.isDirectory()) return "socket folder is not a folder";
-    if (d.uid !== uid) return "socket folder owned by another user";
+    if (!ownedByTrusted(d.uid)) return "socket folder owned by another user";
     if ((d.mode & 0o022) !== 0) return "socket folder writable by others";
     return undefined;
   } catch {
@@ -69,8 +71,11 @@ export function chatToken(env: NodeJS.ProcessEnv = process.env, cwd: string = pr
   try {
     const st = lstatSync(file);
     if (!st.isFile() || st.size > 256) return undefined;
-    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return undefined;
-    if ((st.mode & 0o077) !== 0) return undefined;
+    if (!ownedByTrusted(st.uid)) return undefined;
+    // Yours alone; under an agents' user, the person's copy in the chat's
+    // bridge, which the agent may read but no one but the person may write.
+    const loose = trustedOwners()?.agent ? (st.mode & 0o022) !== 0 : (st.mode & 0o077) !== 0;
+    if (loose) return undefined;
     const t = readFileSync(file, { encoding: "utf8", flag: constants.O_RDONLY | constants.O_NOFOLLOW }).trim();
     return HEX64.test(t) ? t : undefined;
   } catch {

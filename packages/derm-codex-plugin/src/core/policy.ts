@@ -3,6 +3,7 @@
 // contracts/fixtures/policy/. Canonical copy: packages/derm-claude-plugin/src/core/.
 
 import { createHash } from "node:crypto";
+import { ownedByTrusted } from "./owner.ts";
 import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -176,7 +177,7 @@ export function loadPolicy(file: string = policyPath()): LoadedPolicy {
     fd = openSync(file, "r");
     const st = fstatSync(fd);
     if (!st.isFile()) return { policy: emptyPolicy(), problem: "policy file is not a regular file" };
-    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return { policy: emptyPolicy(), problem: "policy file owned by another user" };
+    if (!ownedByTrusted(st.uid)) return { policy: emptyPolicy(), problem: "policy file owned by another user" };
     if ((st.mode & 0o022) !== 0) return { policy: emptyPolicy(), problem: "policy file writable by group or others" };
     // A folder others can write (such as /tmp) lets them swap the file.
     const dir = statSync(path.dirname(file));
