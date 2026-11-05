@@ -97,18 +97,69 @@ type Reply = Record<string, unknown> & { ok?: boolean; error?: string };
 export const SBX_HOST = "host.docker.internal";
 
 /**
+ * The file derm's sbx kit writes in the VM, as root, when sbx creates the
+ * sandbox (packaging/sbx-kit/claude/install.sh). A fixed path no variable
+ * moves, under a root-owned folder.
+ */
+export const VM_MARKER = "/opt/derm-kit/sbx-vm";
+
+/**
+ * Why the VM marker does not hold, or undefined when it does: a regular file
+ * with one link, owned by root and writable by no one else, in a folder owned
+ * by root and writable by no one else, on Linux (the sbx VM is Linux). On
+ * Windows a stat's uid is 0 for every file, so a marker there proves nothing
+ * and is never trusted (security finding W5C-S2, integration w5 continue).
+ */
+export function vmMarker(
+  file: string = VM_MARKER,
+  system: NodeJS.Platform = platform(),
+  stat: (p: string) => { uid: number; mode: number; nlink: number; isFile(): boolean; isDirectory(): boolean } = lstatSync,
+): string | undefined {
+  if (system !== "linux") return "the VM route is only for derm's sbx VM, which is Linux";
+  try {
+    const f = stat(file);
+    if (!f.isFile() || f.nlink !== 1) return "the VM marker is not a plain file";
+    if (f.uid !== 0 || (f.mode & 0o022) !== 0) return "the VM marker is not root's alone";
+    const d = stat(path.dirname(file));
+    if (!d.isDirectory() || d.uid !== 0 || (d.mode & 0o022) !== 0) return "the VM marker's folder is not root's alone";
+    return undefined;
+  } catch {
+    return "no VM marker (derm's sbx kit was not installed here)";
+  }
+}
+
+/**
+ * Where a daemon socket would be on this machine whatever DERM_DAEMON_SOCKET
+ * says: the variable's own path, the defaults with and without the
+ * environment's XDG_RUNTIME_DIR, and the home fallback.
+ */
+function socketCandidates(env: NodeJS.ProcessEnv): string[] {
+  const out = new Set<string>([socketPath(env), socketPath({ ...env, DERM_DAEMON_SOCKET: "" })]);
+  out.add(socketPath({ ...env, DERM_DAEMON_SOCKET: "", XDG_RUNTIME_DIR: "" }));
+  if (typeof process.getuid === "function") out.add(path.join("/run/user", String(process.getuid()), "derm", "daemon.sock"));
+  return [...out];
+}
+
+/**
  * Inside an sbx VM the daemon's socket is not there (the sbx smoke test, step
  * 5: no host folder but the project is mounted), and the only way to the host
  * is the receiver's HTTP port at `host.docker.internal` (step 4). The hook
- * takes that route only when `derm run` said so: `DERM_BOUNDARY=sbx`,
- * `DERM_OTLP_ENDPOINT` a plain `http://host.docker.internal:<port>` with no
- * user, path, query or fragment, and no socket file where the socket would
- * be (lane T's P4-R2, integration w5 continue). On the host the socket is
- * always the route; a project that sets these variables reaches only a
- * daemon port on the host that sbx's own rule opened, and the daemon there
- * applies the token's chat scope (contracts/daemon-protocol.md section 4).
+ * takes that route only when all of these hold (lane T's P4-R2, and security
+ * finding W5C-S2, integration w5 continue):
+ * - the VM marker holds ([`vmMarker`]): a root-owned file derm's sbx kit
+ *   wrote. A project can set every variable below, so the variables alone
+ *   would let a project on the host send the hook's approvals to a listener
+ *   of its own that answers yes; the marker is something it cannot make.
+ * - `DERM_BOUNDARY=sbx`, and `DERM_OTLP_ENDPOINT` a plain
+ *   `http://host.docker.internal:<port>` with no user, path, query or
+ *   fragment, as `derm run` sets them.
+ * - no file where a daemon socket would be, whether DERM_DAEMON_SOCKET names
+ *   it or not: where there is a socket, it is the route.
+ * In the VM a project that sets these variables reaches only the daemon port
+ * on the host that sbx's own rule opened, and the daemon there applies the
+ * token's chat scope (contracts/daemon-protocol.md section 4).
  */
-export function vmEndpoint(env: NodeJS.ProcessEnv = process.env): URL | undefined {
+export function vmEndpoint(env: NodeJS.ProcessEnv = process.env, marker: () => string | undefined = vmMarker): URL | undefined {
   if (env.DERM_BOUNDARY?.trim() !== "sbx") return undefined;
   const raw = env.DERM_OTLP_ENDPOINT?.trim();
   if (!raw) return undefined;
@@ -121,12 +172,16 @@ export function vmEndpoint(env: NodeJS.ProcessEnv = process.env): URL | undefine
   if (url.protocol !== "http:" || url.hostname !== SBX_HOST || url.port === "") return undefined;
   if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return undefined;
   if (url.pathname !== "/" && url.pathname !== "") return undefined;
-  try {
-    lstatSync(socketPath(env));
-    return undefined;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? url : undefined;
+  if (marker() !== undefined) return undefined;
+  for (const sock of socketCandidates(env)) {
+    try {
+      lstatSync(sock);
+      return undefined;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") return undefined;
+    }
   }
+  return url;
 }
 
 const VM_ROUTES: Record<string, { path: string; field: string }> = {

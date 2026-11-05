@@ -203,3 +203,24 @@ fn the_spec_and_the_install_script_agree() {
     assert!(INSTALL.starts_with("#!/bin/sh\n"));
     assert!(INSTALL.contains("set -eu"));
 }
+
+/// Security finding W5C-S2 (integration w5 continue): the install writes the
+/// root-owned marker the hook's VM route needs, at the very path the hook in
+/// the kit reads, and makes it root's alone.
+#[test]
+fn the_install_writes_the_vm_marker_the_kits_hook_reads() {
+    assert!(INSTALL.contains("> \"$dest/sbx-vm\""));
+    assert!(INSTALL.contains("chown root:root \"$dest/sbx-vm\""));
+    assert!(INSTALL.contains("chmod 0644 \"$dest/sbx-vm\""));
+    let daemon = PLUGIN
+        .iter()
+        .find(|(rel, _)| *rel == "src/core/daemon.ts")
+        .map(|(_, text)| *text)
+        .expect("the kit carries the hook's daemon client");
+    assert!(daemon.contains("export const VM_MARKER = \"/opt/derm-kit/sbx-vm\";"));
+    // The marker goes in after the gate's code is copied and its modes set,
+    // so the recursive chmod and the rm -rf before it cannot undo it.
+    let copied = INSTALL.find("chmod -R u=rwX,go=rX \"$dest\"").unwrap();
+    let marker = INSTALL.find("> \"$dest/sbx-vm\"").unwrap();
+    assert!(copied < marker);
+}

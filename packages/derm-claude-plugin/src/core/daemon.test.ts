@@ -183,9 +183,14 @@ describe("the VM route", () => {
     ...extra,
   });
 
+  // W5C-S2 (integration w5 continue): the route also needs the root-owned
+  // marker derm's sbx kit writes; here a stand-in that holds. Spec change:
+  // this test called vmEndpoint with the variables alone before.
+  const marked = () => undefined;
+
   it("is taken only for sbx, a plain host.docker.internal URL, and no socket", async () => {
     const { vmEndpoint } = await import("./daemon.ts");
-    expect(vmEndpoint(vmEnv())?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv(), marked)?.port).toBe("4318");
     for (const extra of [
       { DERM_BOUNDARY: "srt" },
       { DERM_BOUNDARY: "" },
@@ -200,7 +205,74 @@ describe("the VM route", () => {
       // A socket file where the socket would be: the host, never the VM route.
       { DERM_DAEMON_SOCKET: tokenFile },
     ]) {
-      expect(vmEndpoint(vmEnv(extra)), JSON.stringify(extra)).toBeUndefined();
+      expect(vmEndpoint(vmEnv(extra), marked), JSON.stringify(extra)).toBeUndefined();
+    }
+  });
+
+  // W5C-S2: a project can set every variable the route reads. On the host,
+  // with derm's sbx kit nowhere, the variables alone never take the route.
+  it("is never taken on the variables alone: the kit's root-owned marker must hold", async () => {
+    const { vmEndpoint, vmMarker, VM_MARKER } = await import("./daemon.ts");
+    expect(VM_MARKER).toBe("/opt/derm-kit/sbx-vm");
+    expect(vmEndpoint(vmEnv(), () => "no VM marker")).toBeUndefined();
+    // This test box has no kit installed: the default marker does not hold.
+    expect(vmMarker()).toBeDefined();
+    expect(vmEndpoint(vmEnv())).toBeUndefined();
+  });
+
+  it("the marker holds only for a plain file and folder that are root's alone, on Linux", async () => {
+    const { vmMarker } = await import("./daemon.ts");
+    type S = { uid: number; mode: number; nlink: number; file: boolean; dir: boolean };
+    const fakeStat = (f: Partial<S>, d: Partial<S> = {}) => (p: string) => {
+      const s = { uid: 0, mode: 0o100644, nlink: 1, file: true, dir: false, ...(p === "/k/sbx-vm" ? f : { file: false, dir: true, mode: 0o40755, ...d }) };
+      return { uid: s.uid, mode: s.mode, nlink: s.nlink, isFile: () => s.file, isDirectory: () => s.dir };
+    };
+    expect(vmMarker("/k/sbx-vm", "linux", fakeStat({}))).toBeUndefined();
+    const bad: [Partial<S>, Partial<S>][] = [
+      [{ uid: 1000 }, {}],
+      [{ mode: 0o100664 }, {}],
+      [{ mode: 0o100646 }, {}],
+      [{ nlink: 2 }, {}],
+      [{ file: false }, {}],
+      [{}, { uid: 1000 }],
+      [{}, { mode: 0o40775 }],
+      [{}, { dir: false }],
+    ];
+    for (const [f, d] of bad) expect(vmMarker("/k/sbx-vm", "linux", fakeStat(f, d)), JSON.stringify([f, d])).toBeDefined();
+    // Windows gives uid 0 for every file: a marker there proves nothing.
+    for (const sys of ["win32", "darwin"] as const) expect(vmMarker("/k/sbx-vm", sys, fakeStat({}))).toBeDefined();
+    // A real file this user made is not root's.
+    const mine = path.join(safe, "sbx-vm");
+    writeFileSync(mine, "x", { mode: 0o644 });
+    if (process.getuid?.() !== 0) expect(vmMarker(mine, "linux")).toMatch(/not root's alone/);
+    expect(vmMarker(path.join(safe, "none", "sbx-vm"), "linux")).toMatch(/no VM marker/);
+  });
+
+  it("is not taken when a socket is where the default would be, whatever DERM_DAEMON_SOCKET names", async () => {
+    const { vmEndpoint } = await import("./daemon.ts");
+    const runtime = path.join(root, "runtime");
+    mkdirSync(path.join(runtime, "derm"), { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(runtime, "derm", "daemon.sock"), "");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: runtime }), marked)).toBeUndefined();
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked)?.port).toBe("4318");
+  });
+
+  it("a project on the host that sets the variables never reaches its own listener", async () => {
+    const http = await import("node:http");
+    let asked = 0;
+    const server = http.createServer((_req, res) => {
+      asked++;
+      res.end(JSON.stringify({ ok: true, id: "ap", answer: "yes", by: "approver" }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const env = vmEnv({ DERM_OTLP_ENDPOINT: `http://host.docker.internal:${port}`, DERM_CHAT_TOKEN_FILE: tokenFile });
+      const r = await exchange([{ op: "approve", request: { id: "ap" } }], { env, client: "t", replyTimeoutMs: 1000, cwd: project });
+      expect(r).toEqual({ error: "no daemon socket" });
+      expect(asked).toBe(0);
+    } finally {
+      server.close();
     }
   });
 

@@ -174,6 +174,12 @@ export const checks = [
         const agentUid = Number(sh("/usr/bin/id", ["-u", AGENT]).out.trim());
         if (st.uid !== agentUid || (st.mode & 0o022) !== 0) findings.push("the policy in the VM is not the agent's own, or is writable by others");
         if (statSync("/opt/derm-kit/src/hook.ts").uid !== 0) findings.push("the gate's code is not root's");
+        // W5C-S2: the marker the hook's VM route needs, root's alone, and the
+        // installed hook's own check holds on it.
+        const marker = statSync("/opt/derm-kit/sbx-vm");
+        if (marker.uid !== 0 || (marker.mode & 0o022) !== 0) findings.push("the VM marker is not root's alone");
+        const held = sh(process.execPath, ["--input-type=module", "-e", 'const m = await import("/opt/derm-kit/src/core/daemon.ts"); process.exit(m.vmMarker() === undefined ? 0 : 1);']);
+        if (held.code !== 0) findings.push(`the installed hook does not take the VM marker: ${held.err.slice(-200)}`);
         if (existsSync("/home/agent/.derm-kit")) findings.push("the install left its staging folder");
 
         // 3. The real Claude Code, as the agent user, in full access.

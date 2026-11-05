@@ -45,6 +45,15 @@ cp -R "$src/plugin/." "$dest/"
 chown -R root:root "$dest"
 chmod -R u=rwX,go=rX "$dest"
 
+# The VM marker: root's alone, at a path no variable moves. The hook takes
+# its VM route to the daemon's HTTP port only when this file holds, so a
+# project on the host that sets DERM_BOUNDARY and DERM_OTLP_ENDPOINT cannot
+# send the hook's approvals to a listener of its own (src/core/daemon.ts,
+# security finding W5C-S2).
+printf 'derm sbx kit\n' > "$dest/sbx-vm"
+chown root:root "$dest/sbx-vm"
+chmod 0644 "$dest/sbx-vm"
+
 # The policy, where the hook looks for it ($HOME/.derm/policy.json), owned
 # by the agent user and writable by no one else.
 mkdir -p /home/agent/.derm
