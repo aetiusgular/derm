@@ -8,8 +8,9 @@
 //! on a folder inheritable, so files made inside take the same one entry.
 //!
 //! The check (`is_private_handle`) reads the object's owner and DACL and
-//! accepts it when the DACL is present and protected, holds only allow and
-//! deny entries of the plain kinds, and every allow entry names the user, the
+//! accepts it when the DACL is present, holds only allow and deny entries of
+//! the plain kinds (inherited or not: an srt profile grant inherited into a
+//! file is refused by its entry, not by the missing protection), and every allow entry names the user, the
 //! object's owner, LocalSystem or Administrators. The last two can read any
 //! file anyway (as root can on Unix); every other principal is refused,
 //! whatever the right, read included (Win32-OpenSSH's
@@ -137,14 +138,19 @@ pub struct Security {
 }
 
 /// Whether `s` keeps everyone out but `user` (and the object's owner,
-/// LocalSystem and Administrators).
+/// LocalSystem and Administrators), by the entries the object has now.
+/// Inherited entries count as any other: a file made inside a private folder
+/// is private by the folder's one entry, as a Unix file is by its mode bits
+/// at the time of the check. Whether the DACL is protected does not change
+/// the answer: only the owner (or an administrator) can widen the folder it
+/// inherits from, and the owner can widen the file itself anyway. derm's own
+/// `set_private` still protects what it writes (Windows CI, 5 Nov: a file
+/// made in a private folder is not protected, so the strict reading refused
+/// every such file).
 pub fn is_private_security(s: &Security, user: &UserId) -> bool {
     let Some(dacl) = &s.dacl else {
         return false;
     };
-    if !s.protected {
-        return false;
-    }
     let allowed = |who: &UserId| {
         who == user
             || s.owner.as_ref() == Some(who)
@@ -427,7 +433,7 @@ pub fn set_user_only(h: HANDLE, kind: SE_OBJECT_TYPE, folder: bool) -> io::Resul
         return Err(io::Error::from_raw_os_error(err as i32));
     }
     let after = read_security(h, kind)?;
-    if !is_private_security(&after, &me) {
+    if !after.protected || !is_private_security(&after, &me) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "the private permissions did not take (the file system kept another DACL)",
@@ -692,10 +698,18 @@ mod tests {
     }
 
     #[test]
-    fn an_inheriting_or_missing_dacl_or_an_odd_entry_is_not_private() {
+    fn a_missing_dacl_an_odd_entry_or_an_inherited_stranger_is_not_private() {
         let me = sid(ME);
-        assert!(!is_private_security(
+        // Inheriting only the user's entry (a file in a private folder).
+        assert!(is_private_security(
             &sec(ME, false, Some(vec![allow(ME)])),
+            &me
+        ));
+        // Inheriting Users' read (a file under C:\ProgramData): refused.
+        let mut users = allow("S-1-5-32-545");
+        users.mask = 0x120089;
+        assert!(!is_private_security(
+            &sec(ME, false, Some(vec![allow(ME), users])),
             &me
         ));
         assert!(!is_private_security(&sec(ME, true, None), &me));
