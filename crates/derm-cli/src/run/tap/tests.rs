@@ -74,8 +74,21 @@ fn codex_gets_its_provider_flags_before_its_own_and_the_route_only_in_its_enviro
     let mut p = plan("codex", &["exec", "do it"], true);
     let rec = environment_with("codex", &mut p, &inputs(&d)).unwrap().unwrap();
     assert_eq!(rec["via"], "codex-provider");
-    assert_eq!(&p.args[..2], &["-c".to_string(), "model_provider=\"derm-tap\"".to_string()]);
-    assert_eq!(&p.args[p.args.len() - 2..], &["exec".to_string(), "do it".to_string()]);
+    // Codex 0.163.0 ignores a provider set with `-c` before `exec` and
+    // honours it after (run 4 Nov 2026, lane S Research), so the flags go
+    // right after a session subcommand.
+    assert_eq!(&p.args[..3], &["exec".to_string(), "-c".to_string(), "model_provider=\"derm-tap\"".to_string()]);
+    assert_eq!(p.args.last().map(String::as_str), Some("do it"));
+    // With no subcommand (the TUI) they go first.
+    let mut tui = plan("codex", &["fix the tests"], true);
+    environment_with("codex", &mut tui, &inputs(&d)).unwrap();
+    assert_eq!(tui.args[0], "-c");
+    assert_eq!(tui.args.last().map(String::as_str), Some("fix the tests"));
+    for sub in ["e", "review", "resume", "fork", "app-server"] {
+        let mut s = plan("codex", &[sub, "--x"], true);
+        environment_with("codex", &mut s, &inputs(&d)).unwrap();
+        assert_eq!(&s.args[..2], &[sub.to_string(), "-c".to_string()], "{sub}");
+    }
     let route = route::of_token(TOKEN);
     assert!(!p.args.iter().any(|a| a.contains(&route)));
     assert_eq!(env(&p, "DERM_TAP_ROUTE"), Some(route.as_str()));
@@ -86,7 +99,7 @@ fn codex_gets_its_provider_flags_before_its_own_and_the_route_only_in_its_enviro
     let mut p = plan("srt", &["--settings", "/s.json", "--", "/bin/codex", "exec", "x"], true);
     p.srt_settings = Some(srt);
     environment_with("codex", &mut p, &inputs(&d)).unwrap();
-    assert_eq!(&p.args[..5], &["--settings", "/s.json", "--", "/bin/codex", "-c"]);
+    assert_eq!(&p.args[..6], &["--settings", "/s.json", "--", "/bin/codex", "exec", "-c"]);
     let s: Value = serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
     assert_eq!(s["network"]["allowedDomains"], json!(["127.0.0.1:4318", "127.0.0.1:45002"]));
     let _ = std::fs::remove_dir_all(d.root);

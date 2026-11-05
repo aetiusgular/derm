@@ -561,13 +561,15 @@ fn record_results(inner: &Inner, chat: &Chat, api: Api, info: &apis::RequestInfo
         }
         return;
     };
-    // Gemini sends no ids: its history repeats every result in order, so the
-    // k-th result named N in the request is the k-th call named N in the chat.
+    // Gemini's model sends no ids, and Gemini CLI 0.66.0 gives each call one
+    // of its own in its history (`run_shell_command_<ms>_0`, run 4 Nov), so
+    // an id the tap never saw falls back to the name: the history repeats
+    // every result in order, so the k-th result named N in the request is
+    // the k-th call named N in the chat.
     let mut nth: HashMap<String, usize> = HashMap::new();
     for r in &info.results {
-        let id = match &r.call_id {
-            Some(id) => Some(id.clone()),
-            None => r.name.as_ref().and_then(|name| {
+        let by_name = |nth: &mut HashMap<String, usize>| {
+            r.name.as_ref().and_then(|name| {
                 let k = nth.entry(name.clone()).or_insert(0);
                 let found = calls
                     .order
@@ -577,7 +579,16 @@ fn record_results(inner: &Inner, chat: &Chat, api: Api, info: &apis::RequestInfo
                     .cloned();
                 *k += 1;
                 found
-            }),
+            })
+        };
+        let id = match &r.call_id {
+            Some(id) if calls.calls.contains_key(id) => {
+                if r.name.is_some() {
+                    let _ = by_name(&mut nth);
+                }
+                Some(id.clone())
+            }
+            _ => by_name(&mut nth),
         };
         let Some(rec) = id.and_then(|id| calls.calls.get_mut(&id)) else {
             inner.counters.results_unmatched.fetch_add(1, Ordering::Relaxed);

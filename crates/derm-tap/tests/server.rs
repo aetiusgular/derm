@@ -431,3 +431,26 @@ fn content_on_keeps_the_bodies_in_private_files_and_never_a_header() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn gemini_results_under_an_id_the_cli_made_up_join_by_name_and_order() {
+    // Gemini CLI 0.66.0 sends the model's id-less functionCall back in its
+    // history with an id of its own (`run_shell_command_<ms>_0`), and the
+    // functionResponse under that id (run 4 Nov 2026, contract check tap-gemini).
+    let call = json!({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"run_shell_command","args":{"command":"echo hi"}}}]},"finishReason":"STOP"}]});
+    let done = json!({"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]});
+    let piece = |v: &Value| vec![format!("data: {v}\r\n\r\n").into_bytes()];
+    let rig = rig(vec![sse_reply(piece(&call), false), sse_reply(piece(&done), false)], false, None);
+    let path = format!("/r/{}/anthropic/v1beta/models/g:streamGenerateContent?alt=sse", rig.route);
+    send(rig.tap.port(), "POST", &path, &[], br#"{"contents":[{"role":"user","parts":[{"text":"go"}]}]}"#);
+    let next = json!({"contents":[
+        {"role":"user","parts":[{"text":"go"}]},
+        {"role":"model","parts":[{"functionCall":{"id":"run_shell_command_1793846140818_0","name":"run_shell_command","args":{"command":"echo hi"}}}]},
+        {"role":"user","parts":[{"functionResponse":{"id":"run_shell_command_1793846140818_0","name":"run_shell_command","response":{"output":"hi"}}}]}
+    ]});
+    send(rig.tap.port(), "POST", &path, &[], next.to_string().as_bytes());
+    let ev = wait_events(&rig, 4);
+    let joined: Vec<&Event> = ev.iter().filter(|e| e.kind == "tap.call" && e.detail["resultSha256"] != Value::Null).collect();
+    assert_eq!(joined.len(), 1, "{ev:#?}");
+    assert!(joined[0].detail["callId"].as_str().unwrap().starts_with("gemini-"));
+}

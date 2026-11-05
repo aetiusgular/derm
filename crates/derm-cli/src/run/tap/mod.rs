@@ -202,15 +202,26 @@ pub(crate) fn environment_with(harness: &str, plan: &mut Plan, i: &Inputs) -> Re
     })))
 }
 
-/// Where the harness's own arguments start in `plan.args`: 0 when the plan
-/// starts the harness itself, after `-- <command>` under srt.
+/// Codex's subcommands that start a model session. Codex 0.163.0 ignores a
+/// provider set with `-c` before `exec` and honours it after (run 4 Nov
+/// 2026; lane S status doc, Research), so the tap's flags go right after one
+/// of these, and first when there is none (the TUI).
+const CODEX_SESSION_SUBCOMMANDS: &[&str] = &["exec", "e", "review", "resume", "fork", "app-server"];
+
+/// Where the tap's flags go in `plan.args`: where the harness's own
+/// arguments start (0 when the plan starts the harness itself, after
+/// `-- <command>` under srt), then past a session subcommand.
 fn harness_args_start(plan: &Plan) -> usize {
+    let mut at = 0;
     if plan.program == "srt" {
         if let Some(p) = plan.args.iter().position(|a| a == "--") {
-            return (p + 2).min(plan.args.len());
+            at = (p + 2).min(plan.args.len());
         }
     }
-    0
+    if plan.args.get(at).is_some_and(|a| CODEX_SESSION_SUBCOMMANDS.contains(&a.as_str())) {
+        at += 1;
+    }
+    at
 }
 
 /// Case 113: where a base URL is already set for this harness, in words for

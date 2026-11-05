@@ -12,7 +12,9 @@
 //!   lib.rs:140-205`; WebSocket would stall the first turn, `core/src/
 //!   client.rs:2414-2427`). The route rides in a header Codex fills from a
 //!   variable (`env_http_headers`), so no route sits in an argv a run record
-//!   keeps.
+//!   keeps. The flags go after a session subcommand (`exec`): Codex 0.163.0
+//!   ignores a provider set before it (run 4 Nov 2026); `derm run` places
+//!   them.
 //! - `via: "none"`: the harness takes no base URL; its intent comes from
 //!   `intent` (hooks for Cursor, note AS).
 
