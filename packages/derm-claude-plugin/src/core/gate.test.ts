@@ -144,6 +144,15 @@ describe("installEvents", () => {
       expect(events.every((e) => (e.detail.packages as unknown[]).length === 0), cmd).toBe(true);
       expect(events.reduce((n, e) => n + Number(e.detail.redacted ?? 0), 0), cmd).toBeGreaterThan(0);
     }
+    // Re-review W5R2-1: a token split by shell quotes, or written in letters
+    // that fold to it, runs as the token; the folded, unquoted text is read
+    // too, with `-` and `_` alike and any case.
+    const wide = [...gh].map((ch) => String.fromCharCode(ch.charCodeAt(0) + 0xfee0)).join("");
+    for (const cmd of [`pip install ${gh.slice(0, 2)}''${gh.slice(2)}`, `pip install "${gh.slice(0, 4)}"${gh.slice(4)}`, `pip install ${wide}`]) {
+      const c = call(cmd, "t11");
+      const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+      expect(JSON.stringify(events).toLowerCase(), cmd).not.toContain("zx9zx9zx9");
+    }
     // Nothing flagged: no count.
     const plain = installEvents(call("npm i left-pad", "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
     expect(plain[0]?.detail.redacted).toBeUndefined();

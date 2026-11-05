@@ -178,7 +178,15 @@ export function installEvents(call: GateCall, answer: GateAnswer, decision: Acti
   // The parser reads names folded and normalized (lowercase; PyPI's `_` as
   // `-`), where a token's shape no longer shows. A call whose own text holds
   // one keeps no package name at all (re-review W5R-4).
-  const tokenInText = TOKEN_SHAPES.some((shape) => new RegExp(shape.source, shape.flags.replace("g", "")).test(raw));
+  // The folded text too, without quotes, and with every `-` read as `_`: a
+  // token split by shell quotes, or written in letters that fold to it, runs
+  // as the token (re-review W5R2-1).
+  const folded = fold(decodeEscapes(raw)).replace(/['"]/g, "");
+  const texts = [raw, folded, folded.replace(/-/g, "_")];
+  const tokenInText = TOKEN_SHAPES.some((shape) => {
+    const once = new RegExp(shape.source, shape.flags.replace("g", ""));
+    return texts.some((t) => once.test(t));
+  });
   const details = installCallDetails(installs.slice(0, MAX_INSTALL_RECORDS), decision, call.toolUseId ?? null);
   // A package whose name or version the redactor flags (a token's shape) is
   // left out, and the record counts it (security finding W5C-S9): names and

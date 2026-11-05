@@ -207,7 +207,7 @@ impl ControlFlags {
         } else {
             str_at(&e.detail, "toolUseId")
         };
-        if let Some(t) = call_key {
+        if let Some(t) = call_key.filter(|t| t.len() <= super::ingest::MAX_CALL_ID) {
             if e.source != Source::Derm {
                 let c = self.chat(&e.chat_id);
                 c.calls.insert(e.id.clone(), t.to_string());
@@ -585,5 +585,16 @@ mod tests {
             .chats
             .get("chat-fixture")
             .is_none_or(|c| c.installs.is_empty()));
+        // Re-review W5R2-2: nor on any other record that names a call.
+        f.observe(&ev(
+            "g1",
+            "tool.call",
+            Source::Adapter,
+            json!({"toolUseId": "x".repeat(super::super::ingest::MAX_CALL_ID + 1)}),
+        ));
+        assert!(f
+            .chats
+            .get("chat-fixture")
+            .is_none_or(|c| c.calls.is_empty()));
     }
 }
