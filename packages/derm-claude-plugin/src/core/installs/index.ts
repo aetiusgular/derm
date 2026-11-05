@@ -14,9 +14,12 @@
 //   or "no version", and what the check cannot name (a path, a URL, a git
 //   source, a requirements file, an update, names read from another command,
 //   a registry other than the default).
-// The lockfile is read only with a context that gives the call's folder and
-// raw text (`InstallContext`); the seam passes none yet, so today every
-// install asks (a request for integration: tk_lane_X.md). The pre-install
+// The lockfile vouches only through a context that gives the raw text and
+// the lockfile's entries from a snapshot the agent could not write (taken
+// when the chat started), never the live file: an agent with a write tool
+// could add `evil@1.0.0` to package-lock.json and then install it. The seam
+// passes no context yet, so today every install asks (a request for
+// integration: tk_lane_X.md). The pre-install
 // check (registry and OSV, off by default) runs in the daemon
 // (crates/derm-daemon/src/installs/) and can only turn this `ask` into a
 // `deny`.
@@ -25,7 +28,9 @@
 // (`packages/derm-pi/src/installs/`) by contracts/fixtures/installs/.
 
 import type { Action } from "../policy.ts";
-import { findLockfile, type LockEntry } from "./lockfile.ts";
+import type { LockEntry } from "./lockfile.ts";
+export { findLockfile, parseLockfile } from "./lockfile.ts";
+export type { LockEntry } from "./lockfile.ts";
 import { ECOSYSTEM, type Install, type Manager, type Package, parseInstalls, type Unseen } from "./parse.ts";
 
 export { parseInstalls } from "./parse.ts";
@@ -39,10 +44,8 @@ export type InstallContext = {
    * when this, lowercased, equals the folded text: the fold maps look-alike
    * letters, so `lеft-pad` with a Cyrillic `е` reads as `left-pad`. */
   raw?: string;
-  /** The absolute folder the command runs in, where the lockfile is looked up. */
-  cwd?: string;
-  /** Reads a manager's lockfile entries (tests; a caller that read them already).
-   * Defaults to the nearest lockfile at or above `cwd`. */
+  /** A manager's lockfile entries as they were when the chat started (a
+   * snapshot the agent could not write), or undefined. Never the live file. */
   lockfile?: (manager: Manager) => LockEntry[] | undefined;
 };
 
@@ -114,7 +117,8 @@ function pinned(manager: Manager, pkg: Package, entries: LockEntry[], anyVersion
  */
 function allPinned(installs: Install[], folded: string, context: InstallContext): boolean {
   if (context.raw === undefined || context.raw.toLowerCase() !== folded) return false;
-  const read = context.lockfile ?? ((m: Manager) => (context.cwd === undefined ? undefined : findLockfile(m, context.cwd)?.entries));
+  const read = context.lockfile;
+  if (read === undefined) return false;
   const cache = new Map<Manager, LockEntry[] | undefined>();
   for (const inst of installs) {
     if (inst.global || inst.unseen.length || inst.packages.length === 0) return false;

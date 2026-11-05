@@ -8,9 +8,10 @@
 //! whose every package the project's lockfile already pins at the version
 //! the command names, is `None` (the allow stands); any other install is
 //! `Ask`, the reason naming each package and its version or "no version", and
-//! what the check cannot name. The lockfile is read only with a [`Context`]
-//! that gives the call's folder and raw text; the seam passes none yet, so
-//! every install asks (a request for integration: `tk_lane_X.md`).
+//! what the check cannot name. A lockfile vouches only through a [`Context`]
+//! with the raw text and a snapshot of the entries the agent could not write;
+//! the seam passes none yet, so every install asks (a request for
+//! integration: `tk_lane_X.md`).
 //!
 //! A port of the hook core's `packages/derm-claude-plugin/src/core/installs/`
 //! (canonical), held equal to it and to derm-pi's copy by
@@ -18,8 +19,6 @@
 
 pub mod lockfile;
 pub mod parse;
-
-use std::path::Path;
 
 pub use lockfile::{find_lockfile, parse_lockfile, LockEntry, LockKind};
 pub use parse::{parse_installs, Form, Install, Manager, Package, Unseen};
@@ -43,10 +42,9 @@ pub struct Context<'a> {
     /// The shell text as the agent sent it. A lockfile vouches for a name
     /// only when this, lowercased, equals the folded text.
     pub raw: Option<&'a str>,
-    /// The absolute folder the command runs in.
-    pub cwd: Option<&'a Path>,
-    /// Reads a manager's lockfile entries; defaults to the nearest lockfile
-    /// at or above `cwd`.
+    /// A manager's lockfile entries as they were when the chat started (a
+    /// snapshot the agent could not write), never the live file: an agent
+    /// with a write tool could pin `evil@1.0.0` in it and then install it.
     #[allow(clippy::type_complexity)]
     pub lockfile: Option<&'a dyn Fn(Manager) -> Option<Vec<LockEntry>>>,
 }
@@ -207,10 +205,7 @@ fn all_pinned(installs: &[Install], folded: &str, ctx: &Context) -> bool {
         if !cache.iter().any(|(m, _)| *m == inst.manager) {
             let entries = match ctx.lockfile {
                 Some(read) => read(inst.manager),
-                None => ctx
-                    .cwd
-                    .and_then(|cwd| find_lockfile(inst.manager, cwd))
-                    .map(|f| f.entries),
+                None => None,
             };
             cache.push((inst.manager, entries));
         }
@@ -301,13 +296,11 @@ mod tests {
         };
         let ctx = Context {
             raw: Some("npm i left-pad@1.3.0"),
-            cwd: None,
             lockfile: Some(&read),
         };
         assert_eq!(check_with("bash", "npm i left-pad@1.3.0", Some(&ctx)), None);
         let cyrillic = Context {
             raw: Some("npm i l\u{435}ft-pad@1.3.0"),
-            cwd: None,
             lockfile: Some(&read),
         };
         assert_eq!(

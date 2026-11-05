@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { installDecision, installReason, installCallDetails, parseInstalls } from "./index.ts";
+import { installDecision, installReason, installCallDetails, parseInstalls, findLockfile } from "./index.ts";
 import { evaluate, SHELL_TOOLS, type LoadedPolicy } from "../policy.ts";
 import { decideCall } from "../gate.ts";
 import { fold, decodeEscapes } from "../fold.ts";
@@ -137,21 +137,28 @@ describe("the lockfile read from disk", () => {
     return d;
   };
   const npmLock = readFileSync(new URL("lockfiles/package-lock.after.json", dir), "utf8");
+  const snapshot = (cwd: string) => (m: Parameters<typeof findLockfile>[0]) => findLockfile(m, cwd)?.entries;
   it("finds the nearest lockfile above the folder", () => {
     const d = project();
     writeFileSync(path.join(d, "package-lock.json"), npmLock);
     const sub = path.join(d, "packages", "web");
     mkdirSync(sub, { recursive: true });
-    expect(installDecision("bash", "npm i left-pad@1.2.0", { raw: "npm i left-pad@1.2.0", cwd: sub })).toBeUndefined();
-    expect(installDecision("bash", "npm i left-pad@1.3.0", { raw: "npm i left-pad@1.3.0", cwd: sub })?.action).toBe("ask");
+    expect(installDecision("bash", "npm i left-pad@1.2.0", { raw: "npm i left-pad@1.2.0", lockfile: snapshot(sub) })).toBeUndefined();
+    expect(installDecision("bash", "npm i left-pad@1.3.0", { raw: "npm i left-pad@1.3.0", lockfile: snapshot(sub) })?.action).toBe("ask");
   });
   it("does not follow a lockfile that is a link, and does not read a relative folder", () => {
     const d = project();
     const elsewhere = project();
     writeFileSync(path.join(elsewhere, "real.json"), npmLock);
     symlinkSync(path.join(elsewhere, "real.json"), path.join(d, "package-lock.json"));
-    expect(installDecision("bash", "npm i left-pad@1.2.0", { raw: "npm i left-pad@1.2.0", cwd: d })?.action).toBe("ask");
-    expect(installDecision("bash", "npm i left-pad@1.2.0", { raw: "npm i left-pad@1.2.0", cwd: "relative/folder" })?.action).toBe("ask");
+    expect(installDecision("bash", "npm i left-pad@1.2.0", { raw: "npm i left-pad@1.2.0", lockfile: snapshot(d) })?.action).toBe("ask");
+    expect(installDecision("bash", "npm i left-pad@1.2.0", { raw: "npm i left-pad@1.2.0", lockfile: snapshot("relative/folder") })?.action).toBe("ask");
+  });
+  it("never reads the live lockfile itself: with no snapshot, an install the file pins still asks", () => {
+    const d = project();
+    writeFileSync(path.join(d, "package-lock.json"), npmLock);
+    const ctx = { raw: "npm i left-pad@1.2.0", cwd: d } as unknown as Parameters<typeof installDecision>[2];
+    expect(installDecision("bash", "npm i left-pad@1.2.0", ctx)?.action).toBe("ask");
   });
 });
 
