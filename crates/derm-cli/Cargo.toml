@@ -60,6 +60,10 @@ uuid.workspace = true
 # third-party code.
 derm-daemon = { path = "../derm-daemon" }
 # [lane-S]
+# The model tap's route and launch shapes, and the settings reader (lane S's
+# own crate). A path crate of this workspace: no third-party code beyond
+# derm-tap's own (ureq; plans/parallel/tk_lane_S.md, Decisions).
+derm-tap = { path = "../derm-tap" }
 # [lane-T]
 # [lane-U]
 # [lane-V]
