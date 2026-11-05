@@ -739,6 +739,7 @@ mod tests {
 
     /// A fake sbx that, on `create`, writes what the kit folder named with
     /// `--kit` held at that moment: derm removes it right after.
+    #[cfg(unix)]
     fn fake_sbx_reading_the_kit(dir: &Path) -> String {
         let log = dir.join("calls");
         let seen = dir.join("kit-seen");
@@ -766,6 +767,7 @@ mod tests {
         p.to_string_lossy().into_owned()
     }
 
+    #[cfg(unix)]
     fn claude_plan() -> Plan {
         let mut p = plan_for(s(&[
             "run",
@@ -784,6 +786,7 @@ mod tests {
     /// Phase 4, item 4: Claude Code under sbx gets derm's kit on the create,
     /// as a mixin, with the person's policy; the attach does not name it,
     /// and the folder is gone once the create has read it.
+    #[cfg(unix)]
     #[test]
     fn claude_code_gets_derms_kit_on_the_create_and_the_folder_goes_after() {
         let d = tmp("kit");
@@ -829,6 +832,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     #[test]
     fn no_kit_without_a_usable_policy_or_with_the_switch_off_and_none_for_others() {
         let d = tmp("nokit");

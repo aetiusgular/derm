@@ -715,6 +715,7 @@ mod tests {
 
     /// Phase 4, item 2: srt first only where derm's gate runs here and
     /// blocks when it fails, read as `derm status` reads it.
+    #[cfg(unix)]
     #[test]
     fn the_gate_holds_only_when_built_registered_and_failing_closed() {
         let d = tmp("gate");
@@ -748,6 +749,7 @@ mod tests {
 
     /// Case 103: a project-scope install counts only in its own folder, the
     /// one `--cwd` names when the command line gives it.
+    #[cfg(unix)]
     #[test]
     fn a_project_install_holds_only_in_its_folder_case_103() {
         let d = tmp("gate-project");
