@@ -908,10 +908,13 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("t");
         std::fs::write(&f, b"x").unwrap();
-        assert!(
-            open_private_file(&f).is_err(),
-            "inherits the temp folder's entries"
-        );
+        // Everyone may read it. (What the temp folder alone gives depends on
+        // the machine: on GitHub's runner only the user, SYSTEM and
+        // Administrators, which is private.)
+        let me = ident::effective_user();
+        set_dacl_sddl(&f, &format!("D:(A;;FA;;;{me})(A;;FR;;;WD)")).unwrap();
+        assert!(open_private_file(&f).is_err(), "Everyone may read it");
+        assert!(!is_private_path(&f));
         set_private(&f, false).unwrap();
         assert!(is_private_path(&f));
         let mut text = String::new();
