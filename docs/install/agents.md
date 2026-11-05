@@ -1,5 +1,7 @@
 # The agent adapters
 
+`derm setup` registers each installed agent's gate for you, through `derm connect`, one question each, after writing a policy from a preset ([derm setup](setup.md)). The table below is the same by hand.
+
 Each adapter is the gate inside one agent: it reads `~/.derm/policy.json` before every tool call and answers allow, ask or deny in that agent's own terms. An `ask` goes to the agent's own prompt where the agent has one, else to the daemon's approver (`derm watch --approve`), else it becomes a deny. The adapters live in `packages/` of this repository; none is on npm yet (`@aetiusgular/derm-*` when they are).
 
 Write the policy before you register an adapter. With no `~/.derm/policy.json` every call not on the reject list asks: Claude Code, Pi, oh-my-pi, Gemini CLI, Hermes Agent, OpenClaw, OpenClaude, Qwen Code, GitHub Copilot CLI, Grok Build, Antigravity CLI, Amp and Cline CLI then prompt before every tool call, and Codex, OpenCode, Kilo Code, Droid, Command Code, Kimi Code, Auggie, Cursor, goose, Mistral Vibe, Crush and Kiro CLI deny every tool call unless `derm watch --approve` is running and you answer yes. (Cursor prompts for an MCP call, which it decides in `beforeMCPExecution`; its other tools go to the approver.) The format is in [the policy contract](../../contracts/policy.md).

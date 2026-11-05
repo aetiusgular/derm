@@ -1,0 +1,109 @@
+diff --git a/crates/derm-core/tests/setup_presets.rs b/crates/derm-core/tests/setup_presets.rs
+new file mode 100644
+index 0000000..07618d9
+--- /dev/null
++++ b/crates/derm-core/tests/setup_presets.rs
+@@ -0,0 +1,47 @@
++//! Lane W's request W-2: derm setup's policy presets
++//! (`crates/derm-cli/src/setup/presets/`) read by derm-core's matcher, with
++//! command rules (request W-1, `contracts/policy.md` section 7), against
++//! `tests/cli-contract/checks/W/preset-cases.json`.
++
++use derm_core::policy::{evaluate, parse, Action, Call};
++use serde_json::Value;
++
++const PRESETS: &[(&str, &str)] = &[
++    (
++        "workspace-write",
++        include_str!("../../derm-cli/src/setup/presets/workspace-write.json"),
++    ),
++    (
++        "read-only",
++        include_str!("../../derm-cli/src/setup/presets/read-only.json"),
++    ),
++    (
++        "strict",
++        include_str!("../../derm-cli/src/setup/presets/strict.json"),
++    ),
++];
++const CASES: &str = include_str!("../../../tests/cli-contract/checks/W/preset-cases.json");
++
++#[test]
++fn every_preset_parses_and_answers_its_cases() {
++    let cases: Value = serde_json::from_str(CASES).unwrap();
++    let cases = cases["cases"].as_array().unwrap();
++    assert_eq!(cases.len(), 24);
++    for (name, text) in PRESETS {
++        let doc: Value = serde_json::from_str(text).unwrap();
++        let policy = parse(&doc["policy"].to_string()).unwrap_or_else(|e| panic!("{name}: {e}"));
++        for c in cases.iter().filter(|c| c["preset"] == *name) {
++            let call: Call = serde_json::from_value(c["call"].clone()).unwrap();
++            let d = evaluate(&policy, &call);
++            let want: Action = serde_json::from_value(c["expect"]["action"].clone()).unwrap();
++            let prefix = c["expect"]["reasonPrefix"].as_str().unwrap();
++            assert_eq!(d.action, want, "case {} ({name}): {}", c["id"], d.reason);
++            assert!(
++                d.reason.starts_with(prefix),
++                "case {} ({name}): {:?} does not start with {prefix:?}",
++                c["id"],
++                d.reason
++            );
++        }
++    }
++}
+diff --git a/packages/derm-claude-plugin/src/core/setup-presets.test.ts b/packages/derm-claude-plugin/src/core/setup-presets.test.ts
+new file mode 100644
+index 0000000..5f75c01
+--- /dev/null
++++ b/packages/derm-claude-plugin/src/core/setup-presets.test.ts
+@@ -0,0 +1,23 @@
++// Lane W's request W-2: derm setup's policy presets read by the hook core's
++// matcher, with command rules (request W-1), against
++// tests/cli-contract/checks/W/preset-cases.json.
++import { readFileSync } from "node:fs";
++import { describe, expect, it } from "vitest";
++import cases from "../../../../tests/cli-contract/checks/W/preset-cases.json" with { type: "json" };
++import { evaluate, parsePolicy, type Call } from "./policy.ts";
++
++const preset = (name: string) => JSON.parse(readFileSync(new URL(`../../../../crates/derm-cli/src/setup/presets/${name}.json`, import.meta.url), "utf8")).policy;
++
++describe("derm setup's presets in the hook core (request W-2)", () => {
++  for (const name of ["workspace-write", "read-only", "strict"]) {
++    it(`${name} parses and answers its cases`, () => {
++      const p = parsePolicy(preset(name));
++      if (typeof p === "string") throw new Error(`${name}: ${p}`);
++      for (const c of cases.cases.filter((x) => x.preset === name)) {
++        const d = evaluate({ policy: p }, c.call as Call);
++        expect([c.id, d.action]).toEqual([c.id, c.expect.action]);
++        expect([c.id, d.reason.startsWith(c.expect.reasonPrefix)]).toEqual([c.id, true]);
++      }
++    });
++  }
++});
+diff --git a/packages/derm-pi/test/setup-presets.test.ts b/packages/derm-pi/test/setup-presets.test.ts
+new file mode 100644
+index 0000000..b53608d
+--- /dev/null
++++ b/packages/derm-pi/test/setup-presets.test.ts
+@@ -0,0 +1,21 @@
++// Lane W's request W-2: derm setup's policy presets read by derm-pi's matcher.
++import { readFileSync } from "node:fs";
++import { describe, expect, it } from "vitest";
++import cases from "../../../tests/cli-contract/checks/W/preset-cases.json" with { type: "json" };
++import { evaluate, parsePolicy } from "../src/policy.ts";
++
++const preset = (name: string) => readFileSync(new URL(`../../../crates/derm-cli/src/setup/presets/${name}.json`, import.meta.url), "utf8");
++
++describe("derm setup's presets in derm-pi (request W-2)", () => {
++  for (const name of ["workspace-write", "read-only", "strict"]) {
++    it(`${name} parses and answers its cases`, () => {
++      const loaded = parsePolicy(JSON.stringify(JSON.parse(preset(name)).policy));
++      expect(loaded.problem).toBeUndefined();
++      for (const c of cases.cases.filter((x) => x.preset === name)) {
++        const d = evaluate(loaded.policy, c.call);
++        expect([c.id, d.action]).toEqual([c.id, c.expect.action]);
++        expect([c.id, d.reason.startsWith(c.expect.reasonPrefix)]).toEqual([c.id, true]);
++      }
++    });
++  }
++});

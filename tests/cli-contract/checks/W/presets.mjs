@@ -141,7 +141,7 @@ async function checkHost({ claudePath }) {
   const approvals = (seen.approvals ?? []).join("\n");
   const checks = {
     statusRan: !!seen["w-status"] && !text(seen["w-status"]).includes("derm:"),
-    pushAsked: approvals.includes("rule bash git push"),
+    pushAsked: approvals.includes("git push origin main") && text(seen["w-push"]).includes("rule bash git push") && text(seen["w-push"]).includes("declined"),
     pushDidNotRun: !!seen["w-push"] && !/To |Everything up-to-date/.test(text(seen["w-push"])),
     privilegedDenied: text(seen["w-priv"]).includes("rule bash docker run --privileged"),
   };

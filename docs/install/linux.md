@@ -40,6 +40,10 @@ systemctl --user enable --now derm-daemon
 
 The unit in the tarball starts `~/.local/bin/derm-daemon`; the one in the .deb starts `/usr/bin/derm-daemon`.
 
+## Then
+
+`derm setup` finds your agents and asks, one question each, for a policy, the tap, content capture, computer use, the pre-install check, each agent's gate and a shim that runs it through `derm run` ([derm setup](setup.md)). `derm setup sandbox` says whether sbx and srt can run each agent here.
+
 ## Where derm keeps things
 
 | What | Where |
