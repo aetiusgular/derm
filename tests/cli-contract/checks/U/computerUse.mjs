@@ -56,7 +56,18 @@ while IFS= read -r line; do
   [ -z "$id" ] && continue
   case "$line" in
     *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake"}}}\\n' "$id" ;;
-    *'"list_windows"'*) say "call list_windows"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1"}],"structuredContent":{"windows":[{"app_name":"calc","pid":41,"window_id":7,"z_index":1,"title":"calc"}]}}}\\n' "$id" ;;
+    # cua-driver-rs 0.38.0: a listing with no pid is a whole-display
+    # observation, which derm's manifest refuses (box test w5, BW5-19); with
+    # a pid it lists that process's windows (fix pass 1).
+    *'"list_windows"'*)
+      pid=$(printf '%s' "$line" | sed -n 's/.*"pid":\\([0-9][0-9]*\\).*/\\1/p')
+      if [ -z "$pid" ]; then
+        say "refused display"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"desktop display observation is outside the capability manifest"}]}}\\n' "$id"
+      else
+        say "call list_windows pid=$pid"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1"}],"structuredContent":{"windows":[{"app_name":"calc","pid":%s,"window_id":7,"z_index":1,"title":"calc"}]}}}\\n' "$id" "$pid"
+      fi ;;
     *'"get_window_state"'*) say "call get_window_state"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"calc"},{"type":"image","data":"${PNG}","mimeType":"image/png"}],"structuredContent":{"window_title":"calc","elements":[{"element_index":1,"role":"button","label":"seven","frame":{"x":1,"y":1,"w":9,"h":9},"element_token":"s9:1"}]}}}\\n' "$id" ;;
     *'"click"'*) say "call $line"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"clicked"}],"structuredContent":{"effect":"confirmed"}}}\\n' "$id" ;;
     *) say "call other"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}\\n' "$id" ;;
