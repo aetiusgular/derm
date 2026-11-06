@@ -169,6 +169,16 @@ pub fn render(r: &Value) -> String {
         );
     }
     if let Some(n) = r
+        .get("collectorDropped")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!(
+            "OS EVENTS DROPPED: the collector dropped {} eslogger lines since it started (a burst faster than it reads); flags and joins miss what they held\n",
+            count(n)
+        ));
+    }
+    if let Some(n) = r
         .get("tailsDropped")
         .and_then(Value::as_u64)
         .filter(|n| *n > 0)
@@ -326,11 +336,19 @@ mod tests {
             t.contains("tails dropped for falling behind since the daemon started: 2"),
             "{t}"
         );
+        r["collectorDropped"] = json!(1234);
+        let t = render(&r);
+        assert!(
+            t.contains("the collector dropped 1,234 eslogger lines"),
+            "{t}"
+        );
         r["osRegistration"] = json!("running");
         r["tailsDropped"] = json!(0);
+        r["collectorDropped"] = json!(0);
         let t = render(&r);
         assert!(!t.contains("OS REGISTRATION"), "{t}");
         assert!(!t.contains("tails dropped"), "{t}");
+        assert!(!t.contains("OS EVENTS DROPPED"), "{t}");
     }
 
     #[test]

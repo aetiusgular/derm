@@ -327,18 +327,41 @@ impl Pump {
     }
 }
 
+/// Pages one round reads past a truncated reply, at most.
+pub const PUMP_PAGES: usize = 20;
+
 /// One round: ask, ingest what is new. `fetch` is the collector's events
 /// between two times (`activity::collector::fetch_events` on a Mac).
+///
+/// Mac test w5 retest 2, MW5-19: past its limit the collector keeps the
+/// newest events of the window and says `truncated` (`log.rs` `read_events`);
+/// the pump then moved its cursor past them, and the older part of a burst
+/// was never asked for again. A truncated reply is followed by asks for the
+/// window before its oldest event, until one is whole or `PUMP_PAGES` ran.
 pub fn pump_once(
     daemon: &Daemon,
     pump: &mut Pump,
     now: i64,
     fetch: impl Fn(i64, i64) -> crate::activity::collector::EventsReply,
 ) -> usize {
-    let events = pump.take(fetch(pump.since(), now));
-    let n = events.len();
-    for event in events {
-        daemon.ingest(event);
+    let since = pump.since();
+    let mut until = now;
+    let mut n = 0;
+    for _ in 0..PUMP_PAGES {
+        let reply = fetch(since, until);
+        let truncated = reply.truncated;
+        let oldest = reply.events.iter().map(|e| e.at).min();
+        let events = pump.take(reply);
+        n += events.len();
+        for event in events {
+            daemon.ingest(event);
+        }
+        // The next page ends at the oldest event this one held (that
+        // millisecond again, as the seen ids take each event once).
+        match (truncated, oldest) {
+            (true, Some(o)) if o > since && o < until => until = o,
+            _ => break,
+        }
     }
     n
 }
@@ -628,6 +651,66 @@ mod tests {
             Some("chat-after"),
             "the follower stopped after the flood"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// MW5-19: a burst bigger than one reply. The collector keeps the newest
+    /// events of the window past its limit; the pump must ask for the rest.
+    #[test]
+    fn a_truncated_reply_is_paged_back_to_the_window_start() {
+        use crate::activity::collector::EventsReply;
+        use crate::activity::store::ActivityLog;
+        let root =
+            std::env::temp_dir().join(format!("derm-collector-{}", uuid::Uuid::new_v4().simple()));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let daemon = Daemon::new(
+            "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            log,
+            &data,
+            false,
+        )
+        .unwrap();
+        // 2,500 events, 4 a millisecond, from t = 1,000; the stand-in keeps
+        // the newest 1,000 of a window, as `read_events` does.
+        let all: Vec<Event> = (0..2_500)
+            .map(|i| Event {
+                id: format!("es-burst-{i}"),
+                at: 1_000 + i / 4,
+                chat_id: "chat-b".into(),
+                harness: String::new(),
+                source: Source::Eslogger,
+                kind: "create".into(),
+                summary: String::new(),
+                detail: json!({"path": format!("/w/f{i}")}),
+                pid: Some(9),
+                approval_id: None,
+            })
+            .collect();
+        let fetch = |since: i64, until: i64| {
+            let mut v: Vec<Event> = all
+                .iter()
+                .filter(|e| e.at >= since && e.at <= until)
+                .cloned()
+                .collect();
+            let truncated = v.len() > 1_000;
+            if truncated {
+                v = v.split_off(v.len() - 1_000);
+            }
+            EventsReply {
+                events: v,
+                truncated,
+                complete: true,
+                connected: true,
+                chain_ok: true,
+                ..EventsReply::default()
+            }
+        };
+        let mut pump = Pump::new(1_000 + PUMP_OVERLAP_MS);
+        assert_eq!(pump_once(&daemon, &mut pump, 5_000, fetch), 2_500);
+        // Nothing new the next round.
+        assert_eq!(pump_once(&daemon, &mut pump, 6_000, fetch), 0);
         let _ = std::fs::remove_dir_all(root);
     }
 

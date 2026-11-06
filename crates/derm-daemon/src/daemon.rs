@@ -1404,6 +1404,10 @@ impl Daemon {
             // MW5-18: whether new chats still reach the collector, and how
             // many tails the daemon dropped for falling behind.
             "osRegistration": self.registration_state(),
+            // MW5-19: eslogger lines the Mac collector dropped because it
+            // read them slower than they came (its own count, since it
+            // started); null where there is no collector.
+            "collectorDropped": collector_dropped(),
             "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
         })
     }
@@ -1847,6 +1851,17 @@ pub fn retention_pass(dir: &Path, now: i64) -> usize {
         retention::day_of_ms(now),
         retention::CAP_BYTES,
     ))
+}
+
+/// The Mac collector's own count of eslogger lines it dropped (its status
+/// line's `dropped`), on macOS; `None` elsewhere or when it does not answer.
+fn collector_dropped() -> Option<u64> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    crate::activity::collector::fetch_status_detail()?
+        .get("dropped")
+        .and_then(Value::as_u64)
 }
 
 /// The Mac collector's events for a report, as the fork's panel read them;
