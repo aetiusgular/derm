@@ -311,6 +311,14 @@ impl ControlFlags {
                 Some(call) if tree.len() > 1 => {
                     (call, format!(" (one of {} calls running)", tree.len()))
                 }
+                // Under a boundary whose harness was not found, the join
+                // names the shell calls but chooses none, even when one ran
+                // (re-review R1): an install's shell is still flagged.
+                Some(call) if e.detail.get("harnessFound") == Some(&Value::Bool(false)) => (
+                    call,
+                    " (a shell under the boundary; derm did not find the harness there)"
+                        .to_string(),
+                ),
                 _ => return Vec::new(),
             },
         };
@@ -786,6 +794,72 @@ mod tests {
             .chats
             .get("chat-fixture")
             .is_none_or(|c| c.calls.is_empty()));
+    }
+
+    /// Re-review R1: under a boundary whose harness the join did not find,
+    /// a lone install's shell is a tree candidate, none chosen; its
+    /// control-path write is still flagged, saying so.
+    #[test]
+    fn an_install_under_a_boundary_with_no_harness_found_is_still_flagged() {
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "inst",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev(
+            "gate",
+            "approval",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev(
+            "w1",
+            "write",
+            Source::Auditd,
+            json!({"path": "/p/.git/hooks/pre-commit"}),
+        ));
+        let flags = f.observe(&ev(
+            "join-w1",
+            "join.candidates",
+            Source::Derm,
+            json!({"effect": "w1", "candidates": [{"call": "gate", "by": "tree"}], "chosen": null, "harnessFound": false}),
+        ));
+        assert_eq!(flags.len(), 1, "{flags:?}");
+        assert!(
+            flags[0].summary.contains("did not find the harness"),
+            "{flags:?}"
+        );
+        // Without the mark, one tree candidate and none chosen is no flag,
+        // as before (BW5-13).
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "inst",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev(
+            "gate",
+            "approval",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev(
+            "w1",
+            "write",
+            Source::Auditd,
+            json!({"path": "/p/.git/hooks/pre-commit"}),
+        ));
+        assert!(f
+            .observe(&ev(
+                "join-w1",
+                "join.candidates",
+                Source::Derm,
+                json!({"effect": "w1", "candidates": [{"call": "gate", "by": "tree"}], "chosen": null}),
+            ))
+            .is_empty());
     }
 
     /// Review FP3-S3: a chat token may post an adapter record of kind

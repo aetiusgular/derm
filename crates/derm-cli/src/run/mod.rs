@@ -374,18 +374,51 @@ fn words_at(args: &[String], rest: &[String]) -> Option<usize> {
     None
 }
 
-/// The program `derm run` starts, by its real path: a path as given, or the
-/// first match on PATH, with every link resolved, as the OS feeds name an
-/// exec's file. None when it cannot be found, or is not absolute.
+/// What the OS feeds will name as the harness's executable, by its real
+/// path: the program as given or the first match on PATH, with every link
+/// resolved, or, for a script, the interpreter its `#!` line names (through
+/// `env`, looked up on PATH), since the kernel records the interpreter, not
+/// the script (re-review R1: Codex, Gemini CLI and Pi from npm are
+/// `#!/usr/bin/env node` scripts). None when it cannot be found.
 fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
-    let found = if program.contains('/') {
-        std::path::PathBuf::from(program)
-    } else {
-        crate::watch::status::find_on_path(program, path?)?
-    };
-    let real = std::fs::canonicalize(found).ok()?;
-    real.is_absolute()
-        .then(|| real.to_string_lossy().into_owned())
+    fn resolve(program: &str, path: Option<&str>) -> Option<std::path::PathBuf> {
+        let found = if program.contains('/') {
+            std::path::PathBuf::from(program)
+        } else {
+            crate::watch::status::find_on_path(program, path?)?
+        };
+        let real = std::fs::canonicalize(found).ok()?;
+        real.is_absolute().then_some(real)
+    }
+    let mut real = resolve(program, path)?;
+    // At most two `#!` hops (a script run by another script), as the
+    // kernel's own limit is a few; each line read capped at 256 bytes.
+    for _ in 0..2 {
+        let mut head = [0u8; 256];
+        let n = std::fs::File::open(&real)
+            .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+            .unwrap_or(0);
+        let Some(line) = head[..n].strip_prefix(b"#!") else {
+            break;
+        };
+        let line =
+            String::from_utf8_lossy(line.split(|b| *b == b'\n').next().unwrap_or(&[])).into_owned();
+        let mut words = line.split_whitespace();
+        let interp = words.next()?;
+        let interp = if std::path::Path::new(interp)
+            .file_name()
+            .is_some_and(|n| n == "env")
+        {
+            // `env [-S] name ...`: the first word that is not an option.
+            words
+                .find(|w| !w.starts_with('-') && !w.contains('='))?
+                .to_string()
+        } else {
+            interp.to_string()
+        };
+        real = resolve(&interp, path)?;
+    }
+    Some(real.to_string_lossy().into_owned())
 }
 
 fn recorded_argv(
@@ -1524,7 +1557,7 @@ mod end_to_end {
         std::fs::create_dir_all(dir.join("bin")).unwrap();
         std::fs::create_dir_all(dir.join("versions")).unwrap();
         let real = dir.join("versions/claude-9.9.9");
-        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        std::fs::write(&real, [0x7f, b'E', b'L', b'F']).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(&real, dir.join("bin/claude")).unwrap();
@@ -1538,6 +1571,30 @@ mod end_to_end {
         assert_eq!(harness_exe(&linked, None), Some(want));
         assert_eq!(harness_exe("claude", None), None);
         assert_eq!(harness_exe("not-there-derm", Some(&path)), None);
+        // A `#!/usr/bin/env node` script is named by the interpreter the
+        // kernel runs, as the OS feeds record it.
+        let node = dir.join("bin/node-9");
+        std::fs::write(&node, [0x7f, b'E', b'L', b'F']).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = dir.join("versions/cli.js");
+        std::fs::write(
+            &script,
+            "#!/usr/bin/env -S node-9 --no-warnings\nconsole.log(1)\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&script, dir.join("bin/codex")).unwrap();
+        let want_node = std::fs::canonicalize(&node)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(harness_exe("codex", Some(&path)), Some(want_node.clone()));
+        let direct = dir.join("versions/direct.sh");
+        std::fs::write(&direct, format!("#!{}\n", node.display())).unwrap();
+        assert_eq!(
+            harness_exe(&direct.to_string_lossy(), Some(&path)),
+            Some(want_node)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

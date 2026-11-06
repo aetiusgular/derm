@@ -794,6 +794,111 @@ fn with_no_boundary_only_the_root_places() {
     );
 }
 
+/// Re-review R1: a harness that is a `#!/usr/bin/env node` script execs as
+/// `env`, then `node`; `derm run` names the interpreter (`harnessExe`), and
+/// the process that execs it is the harness, so its shell is chosen.
+#[test]
+fn a_script_harness_is_found_by_its_interpreter() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", Some("/usr/bin/node"));
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        104,
+        1101,
+        ROOT,
+        json!({"exe": "/usr/bin/env"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_I", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, 1101, ROOT, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, 1101, json!({"exe": "/bin/sh"}));
+    let r = effect(
+        &mut j,
+        "write",
+        1_300,
+        1300,
+        1101,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert_eq!(
+        r.first().map(|e| e.detail["chosen"].clone()),
+        Some(json!("tap-chat-j-toolu_I")),
+        "{r:?}"
+    );
+    assert!(r[0].detail.get("harnessFound").is_none(), "{r:?}");
+}
+
+/// Re-review R3: srt itself is node, so when the harness is node too the
+/// root's own exec must not name the root the harness.
+#[test]
+fn the_roots_own_exec_never_names_the_harness() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", Some("/usr/bin/node"));
+    effect(&mut j, "exec", 50, ROOT, 1, json!({"exe": "/usr/bin/node"}));
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1100}));
+    effect(
+        &mut j,
+        "exec",
+        101,
+        1100,
+        ROOT,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 103, 1100, ROOT, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        1100,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_S", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, 1101, 1100, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, 1101, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_300, 1300, 1101, json!({"path": "/w/x"}));
+    assert_eq!(
+        r.first().map(|e| e.detail["chosen"].clone()),
+        Some(json!("tap-chat-j-toolu_S")),
+        "{r:?}"
+    );
+}
+
+/// With the harness not found, a shell under the boundary names its call as
+/// a tree candidate, none chosen, and the record says the harness was not
+/// found, so the flagger can still flag an install's shell (re-review R1).
+#[test]
+fn an_unplaced_shell_says_the_harness_was_not_found() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", Some("/opt/never/seen"));
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_I", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, 1101, ROOT, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, 1101, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_300, 1300, 1101, json!({"path": "/w/x"}));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0].detail["chosen"].is_null());
+    assert_eq!(r[0].detail["harnessFound"], false);
+    assert_eq!(r[0].detail["candidates"][0]["by"], "tree");
+}
+
 /// Review FP3-S4: the line is bounded like the owners map.
 #[test]
 fn the_line_is_bounded() {

@@ -122,6 +122,11 @@ enum Owner {
     /// is chosen (fix pass 1's review, F1). Shared, since every descendant
     /// holds it (re-review: at most 64 ids, up to 8,192 processes a chat).
     Among(std::sync::Arc<[String]>),
+    /// A shell a process under a boundary's wrappers started while these
+    /// shell calls ran, before the harness was found by its executable:
+    /// derm cannot tell the harness from a helper it started there, so each
+    /// call is a candidate and none is chosen (review FP3-S2, re-review R1).
+    Unplaced(std::sync::Arc<[String]>),
 }
 
 #[derive(Default)]
@@ -408,6 +413,7 @@ impl Join {
                     st.line_on && st.harness.is_none() && st.line.contains(&p)
                 };
                 if kind == "exec"
+                    && Some(child) != st.root_pid
                     && line_place(st, child)
                     && st.harness_exe.is_some()
                     && program == st.harness_exe.as_deref()
@@ -451,17 +457,17 @@ impl Join {
                             .filter(|(_, c)| c.shell())
                             .map(|(id, _)| id.to_string())
                             .collect();
-                        let placed = match (running.len(), kind) {
+                        match (running.len(), kind) {
                             (0, _) => Some(Owner::Session),
                             (_, "fork") => None,
                             _ if program.is_some_and(shell_program) => match shells.len() {
                                 0 => Some(Owner::Ambiguous),
-                                1 if !by_line => Some(Owner::Call(shells[0].clone())),
+                                _ if by_line => Some(Owner::Unplaced(shells.into())),
+                                1 => Some(Owner::Call(shells[0].clone())),
                                 _ => Some(Owner::Among(shells.into())),
                             },
                             _ => Some(Owner::Ambiguous),
-                        };
-                        placed
+                        }
                     }
                     None => None,
                 };
@@ -507,6 +513,15 @@ impl Join {
                     c.event.clone(),
                     "tree",
                     "a shell started while this call and others ran".into(),
+                ));
+            }
+        }
+        if let Some(Owner::Unplaced(ids)) = &owner {
+            for c in ids.iter().filter_map(|id| st.calls.get(id)) {
+                candidates.push((
+                    c.event.clone(),
+                    "tree",
+                    "a shell a process under the boundary started while this call ran (the harness was not found there)".into(),
                 ));
             }
         }
@@ -562,6 +577,21 @@ impl Join {
             None if n == 1 => format!("{kind} fits 1 call"),
             None => format!("{kind} fits {n} calls"),
         };
+        let mut detail = json!({
+            "trust": "daemon",
+            "effect": e.id,
+            "effectKind": kind,
+            "candidates": candidates
+                .iter()
+                .map(|(call, by, why)| json!({"call": call, "by": by, "why": why}))
+                .collect::<Vec<_>>(),
+            "chosen": chosen,
+        });
+        // Under a boundary with the harness not found by its executable:
+        // the tree candidates are every shell call running then.
+        if matches!(owner, Some(Owner::Unplaced(_))) {
+            detail["harnessFound"] = json!(false);
+        }
         vec![Event {
             id: format!("join-{}", e.id),
             at: e.at,
@@ -570,16 +600,7 @@ impl Join {
             source: Source::Derm,
             kind: "join.candidates".into(),
             summary,
-            detail: json!({
-                "trust": "daemon",
-                "effect": e.id,
-                "effectKind": kind,
-                "candidates": candidates
-                    .iter()
-                    .map(|(call, by, why)| json!({"call": call, "by": by, "why": why}))
-                    .collect::<Vec<_>>(),
-                "chosen": chosen,
-            }),
+            detail,
             pid: e.pid,
             approval_id: None,
         }]
