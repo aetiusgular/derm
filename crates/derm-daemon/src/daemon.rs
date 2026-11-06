@@ -85,27 +85,70 @@ pub struct FlagSource<'a> {
 
 /// Paths a cut report lists first, after derm's guarded folders: what a
 /// process writes to keep itself or reach the user's sign-ins (the
-/// re-review's R2-1). Matched as parts of the path.
+/// re-review's R2-1). Each is a prefix: under the daemon's own home for the
+/// relative ones, from the root for the absolute ones, so an agent cannot
+/// earn the first bucket with a `.ssh` folder of its own under `/tmp`.
 pub const ALWAYS_LISTED: &[&str] = &[
-    "/.ssh/",
-    "/.gnupg/",
-    "/.bashrc",
-    "/.bash_profile",
-    "/.profile",
-    "/.zshrc",
-    "/.zprofile",
-    "/.zshenv",
-    "/.config/fish/config.fish",
+    ".ssh/",
+    ".gnupg/",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".config/fish/config.fish",
+    "Library/LaunchAgents/",
+    ".config/systemd/user/",
+    ".config/autostart/",
+    ".aws/",
+    ".kube/",
+    ".docker/config.json",
     "/Library/LaunchAgents/",
     "/Library/LaunchDaemons/",
-    "/.config/systemd/user/",
-    "/.config/autostart/",
     "/etc/",
     "/var/spool/cron",
-    "/.aws/",
-    "/.kube/",
-    "/.docker/config.json",
 ];
+
+/// How many distinct always-listed paths a cut report names when it cut
+/// their rows.
+pub const ALWAYS_LISTED_KEEP: usize = 200;
+
+/// Whether `path` is under one of `ALWAYS_LISTED`, with `home` the
+/// daemon's own home folder.
+pub fn always_listed_path(path: &str, home: Option<&str>) -> bool {
+    ALWAYS_LISTED.iter().any(|entry| {
+        if entry.starts_with('/') {
+            path.starts_with(entry)
+        } else {
+            home.is_some_and(|h| {
+                let h = h.trim_end_matches('/');
+                !h.is_empty()
+                    && path
+                        .strip_prefix(h)
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .is_some_and(|rest| rest.starts_with(entry))
+            })
+        }
+    })
+}
+
+#[cfg(test)]
+mod always_listed_tests {
+    use super::always_listed_path;
+
+    #[test]
+    fn only_the_homes_own_places_and_system_ones_are_always_listed() {
+        let home = Some("/home/t");
+        assert!(always_listed_path("/home/t/.ssh/authorized_keys", home));
+        assert!(always_listed_path("/home/t/.zshrc", home));
+        assert!(always_listed_path("/etc/cron.d/x", home));
+        assert!(!always_listed_path("/tmp/x/.ssh/authorized_keys", home));
+        assert!(!always_listed_path("/home/t/proj/.ssh/x", home));
+        assert!(!always_listed_path("/home/tony/.ssh/x", home));
+        assert!(!always_listed_path("/home/t/.ssh/x", None));
+    }
+}
 
 /// The order a cut report keeps flags in (fix pass 4's review, FP4-S2 and
 /// its re-reviews' R2, R2-1 to R2-3). Each chat's flags fall into buckets: a
@@ -293,6 +336,10 @@ pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>
     // always in the flag's own context now, adds its source and paths.
     let mut postable_ids = std::collections::HashSet::new();
     let mut listed_ids = std::collections::HashSet::new();
+    // The always-listed path each such event named, for the list of paths a
+    // cut left out (the third re-review's R3-1).
+    let mut listed_paths: std::collections::HashMap<String, String> = Default::default();
+    let home = derm_core::runtime::home_dir().map(|h| h.to_string_lossy().into_owned());
     for e in &full_events {
         let Some(id) = e.get("id").and_then(Value::as_str) else {
             continue;
@@ -302,17 +349,18 @@ pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>
             postable_ids.insert(id.to_string());
         }
         let detail = e.get("detail");
-        let listed = ["path", "dest", "target", "source"].iter().any(|k| {
+        let listed = ["path", "dest", "target", "source"].iter().find_map(|k| {
             detail
                 .and_then(|d| d.get(*k))
                 .and_then(Value::as_str)
-                .is_some_and(|p| {
+                .filter(|p| {
                     crate::activity::check::guarded_path(p, data_dir)
-                        || ALWAYS_LISTED.iter().any(|part| p.contains(part))
+                        || always_listed_path(p, home.as_deref())
                 })
         });
-        if listed {
+        if let Some(p) = listed {
             listed_ids.insert(id.to_string());
+            listed_paths.insert(id.to_string(), p.chars().take(CUT_TEXT).collect());
         }
     }
     let event_of = |f: &Value| {
@@ -384,6 +432,26 @@ pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>
             );
             check.insert("events".into(), Value::Array(kept_events));
             check.insert("flagsOmitted".into(), json!(flags.len() - keep_flags));
+            // Every always-listed path a cut row named, once, so a real
+            // persistence target is named even when its row is cut (R3-1).
+            let mut left: std::collections::BTreeSet<&str> = Default::default();
+            for (i, f) in flags.iter().enumerate() {
+                if chosen.contains(&i) || !listed(f) {
+                    continue;
+                }
+                if let Some(p) = listed_paths.get(&event_of(f)) {
+                    left.insert(p.as_str());
+                }
+            }
+            if !left.is_empty() {
+                let total = left.len();
+                let named: Vec<&str> = left.into_iter().take(ALWAYS_LISTED_KEEP).collect();
+                check.insert("alwaysListedOmitted".into(), json!(named));
+                check.insert("alwaysListedOmittedTotal".into(), json!(total));
+            } else {
+                check.remove("alwaysListedOmitted");
+                check.remove("alwaysListedOmittedTotal");
+            }
             check.insert(
                 "expectedOmitted".into(),
                 json!(expected.len() - keep_expected),

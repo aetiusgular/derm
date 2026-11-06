@@ -1021,7 +1021,10 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
     let mut found: Vec<Candidate> = Vec::new();
     let mut hidden: Vec<Candidate> = Vec::new();
     let mut suppressed: BTreeMap<String, u64> = BTreeMap::new();
-    let mut flagged_hosts: HashSet<(String, String)> = HashSet::new();
+    // Keyed by whether a chat token could have posted the record too, so a
+    // record the agent posts first never takes the row of the kernel's own
+    // connection to that host (fix pass 4's third re-review, R3-2).
+    let mut flagged_hosts: HashSet<(String, String, bool)> = HashSet::new();
     let data_dir = input.data_dir;
 
     let windows = tool_windows(input.events);
@@ -1185,7 +1188,11 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                     event.at,
                     |t| host_matches(t, &lower),
                 );
-                let key = (event.chat_id.clone(), lower.clone());
+                let key = (
+                    event.chat_id.clone(),
+                    lower.clone(),
+                    matches!(event.source, ActivitySource::Adapter | ActivitySource::Otel),
+                );
                 if approved.is_none()
                     && !input.known_hosts.contains(&lower)
                     && !flagged_hosts.contains(&key)

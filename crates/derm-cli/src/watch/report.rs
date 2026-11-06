@@ -254,6 +254,24 @@ pub fn render(r: &Value) -> String {
             count(expected_out)
         ));
     }
+    // The third re-review's R3-1: always-listed paths whose rows were cut.
+    if let Some(paths) = check.get("alwaysListedOmitted").and_then(Value::as_array) {
+        let total = check
+            .get("alwaysListedOmittedTotal")
+            .and_then(Value::as_u64)
+            .unwrap_or(paths.len() as u64);
+        let names: Vec<&str> = paths.iter().filter_map(Value::as_str).collect();
+        out.push_str(&format!(
+            "ALWAYS-LISTED PATHS WHOSE ROWS WERE CUT ({}): {}{}\n",
+            count(total),
+            names.join(", "),
+            if total > names.len() as u64 {
+                ", ..."
+            } else {
+                ""
+            }
+        ));
+    }
     // FP4-S3: what else the daemon cut to keep the reply under its budget.
     let top = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0);
     // Each count map's cut, named apart (the re-review's R3).
@@ -443,6 +461,19 @@ mod tests {
         let t = render(&r);
         assert!(
             t.contains("NOT LISTED: 1,500 more flags and 0 hidden rows"),
+            "{t}"
+        );
+    }
+
+    #[test]
+    fn always_listed_paths_whose_rows_were_cut_are_named() {
+        let mut r = sample();
+        assert!(!render(&r).contains("ALWAYS-LISTED"));
+        r["check"]["alwaysListedOmitted"] = json!(["/home/t/.ssh/authorized_keys"]);
+        r["check"]["alwaysListedOmittedTotal"] = json!(1);
+        let t = render(&r);
+        assert!(
+            t.contains("ALWAYS-LISTED PATHS WHOSE ROWS WERE CUT (1): /home/t/.ssh/authorized_keys"),
             "{t}"
         );
     }

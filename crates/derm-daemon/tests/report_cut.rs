@@ -501,10 +501,13 @@ fn a_real_write_to_an_always_listed_path_in_a_flood_is_kept() {
             "tier": "child"
         }),
     );
+    // The daemon's own home: always-listed paths are anchored there.
+    let home = std::env::var("HOME").unwrap();
+    let ssh = format!("{}/.ssh/authorized_keys", home.trim_end_matches('/'));
     post(
         "real-ssh".into(),
         "write",
-        json!({"path": "/home/t/.ssh/authorized_keys", "tier": "child"}),
+        json!({"path": ssh, "tier": "child"}),
     );
     for i in 0..n {
         post(
@@ -528,4 +531,97 @@ fn a_real_write_to_an_always_listed_path_in_a_flood_is_kept() {
         "the move into derm's log folder is listed"
     );
     assert!(listed("real-ssh"), "the write to ~/.ssh is listed");
+}
+
+/// R3-1 (third re-review of 644041c): `ALWAYS_LISTED` matches parts of a
+/// path, so the agent's own writes to `~/junk/<n>/.ssh/k` (or any path with
+/// `/etc/` in it) join the first bucket, and a real write to
+/// `~/.ssh/authorized_keys` in the middle of them is cut.
+#[test]
+fn r3_1_a_real_persistence_write_is_not_buried_by_look_alike_paths() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-a", "at": 0, "chatId": "chat-a", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let mut post = |id: String, path: String| {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": id, "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "auditd", "kind": "write", "summary": "",
+            "detail": {"path": path, "tier": "child"}, "pid": 77
+        }}));
+        assert_eq!(r["ok"], true, "{r}");
+    };
+    // The daemon's own home: always-listed paths are anchored there.
+    let home = std::env::var("HOME").unwrap();
+    let home = home.trim_end_matches('/').to_string();
+    let long = "x".repeat(150);
+    let n = 3_000;
+    for i in 0..n {
+        post(format!("a-{i}"), format!("{home}/junk/{long}/{i}/.ssh/k"));
+    }
+    post("real".into(), format!("{home}/.ssh/authorized_keys"));
+    for i in 0..n {
+        post(format!("b-{i}"), format!("{home}/junk/{long}/{i}/etc/k"));
+    }
+    let (rep, _) = wait_events(&mut d, Some("chat-a"), 2 * n + 2);
+    let check = &rep["report"]["check"];
+    let flags = check["flags"].as_array().unwrap();
+    assert!(check["flagsOmitted"].as_u64().unwrap_or(0) > 0, "not cut");
+    assert!(
+        flags.iter().any(|f| f["eventId"] == "real"),
+        "the real authorized_keys write is not listed; {} kept, {} omitted",
+        flags.len(),
+        check["flagsOmitted"]
+    );
+}
+
+/// R3-1's rest: the agent floods real `~/.ssh` files of its own around a
+/// real write there. Its row may be cut; its path is still named.
+#[test]
+fn a_flood_of_real_always_listed_writes_still_names_each_path() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-a", "at": 0, "chatId": "chat-a", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let home = std::env::var("HOME").unwrap();
+    let home = home.trim_end_matches('/').to_string();
+    let long = "x".repeat(150);
+    let mut post = |id: String, path: String| {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": id, "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "auditd", "kind": "write", "summary": "",
+            "detail": {"path": path, "tier": "child"}, "pid": 77
+        }}));
+        assert_eq!(r["ok"], true, "{r}");
+    };
+    let n = 2_000;
+    for i in 0..n {
+        post(format!("a-{i}"), format!("{home}/.ssh/k{long}{i:05}"));
+    }
+    post("real".into(), format!("{home}/.ssh/authorized_keys"));
+    for i in 0..n {
+        post(format!("b-{i}"), format!("{home}/.ssh/m{long}{i:05}"));
+    }
+    let (rep, _) = wait_events(&mut d, Some("chat-a"), 2 * n + 2);
+    let check = &rep["report"]["check"];
+    let flags = check["flags"].as_array().unwrap();
+    assert!(check["flagsOmitted"].as_u64().unwrap_or(0) > 0, "not cut");
+    let real = format!("{home}/.ssh/authorized_keys");
+    let listed = flags.iter().any(|f| f["eventId"] == "real");
+    let named = check["alwaysListedOmitted"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|p| p == real.as_str()));
+    assert!(
+        listed || named,
+        "the real write is neither listed nor named"
+    );
+    assert!(check["alwaysListedOmittedTotal"].as_u64().unwrap_or(0) > 0);
 }
