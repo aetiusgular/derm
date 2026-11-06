@@ -1655,8 +1655,11 @@ fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
         report["check"]["flagsOmitted"].as_u64(),
         Some(n as u64 - kept.len() as u64)
     );
-    // The kept rows are the first ones, and every event they name is there.
-    assert_eq!(kept[0]["eventId"], "w-0");
+    // Of rows of one reason in one chat, the newest are kept (fix pass 4's
+    // review, FP4-S2), listed in the check's order, and every event they
+    // name is there.
+    assert_eq!(kept[kept.len() - 1]["eventId"], format!("w-{}", n - 1));
+    assert_eq!(kept[0]["eventId"], format!("w-{}", n as usize - kept.len()));
     let ids: std::collections::HashSet<&str> = report["check"]["events"]
         .as_array()
         .unwrap()

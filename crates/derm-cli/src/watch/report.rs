@@ -244,6 +244,21 @@ pub fn render(r: &Value) -> String {
             count(expected_out)
         ));
     }
+    // FP4-S3: what else the daemon cut to keep the reply under its budget.
+    let top = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let kinds_out = top("byKindOmitted") + top("bySourceOmitted") + top("approvalsOmitted");
+    if kinds_out > 0 {
+        out.push_str(&format!(
+            "NOT COUNTED BY KIND: {} kinds with the fewest events left out of the counts above\n",
+            count(kinds_out)
+        ));
+    }
+    let cut = |v: &Value| v.get("reportCut").and_then(Value::as_bool) == Some(true);
+    if cut(r) || cut(&check) {
+        out.push_str(
+            "REPORT CUT TO ITS TOTALS: even no rows fit under 1 MiB; narrow it with --since or --chat\n",
+        );
+    }
     if let Some(sup) = check.get("suppressed").and_then(Value::as_object) {
         let hidden: u64 = sup.values().filter_map(Value::as_u64).sum();
         if hidden > 0 {
@@ -384,6 +399,21 @@ mod tests {
             t.contains("NOT LISTED: 1,500 more flags and 0 hidden rows"),
             "{t}"
         );
+    }
+
+    #[test]
+    fn a_report_cut_past_its_rows_says_so() {
+        let mut r = sample();
+        assert!(!render(&r).contains("NOT COUNTED BY KIND"));
+        assert!(!render(&r).contains("REPORT CUT"));
+        r["byKindOmitted"] = json!(1200);
+        r["check"]["reportCut"] = json!(true);
+        let t = render(&r);
+        assert!(t.contains("NOT COUNTED BY KIND: 1,200 kinds"), "{t}");
+        assert!(t.contains("REPORT CUT TO ITS TOTALS"), "{t}");
+        // A report left with its totals only still renders.
+        let t = render(&json!({"events": 5, "flags": 2, "reportCut": true}));
+        assert!(t.contains("REPORT CUT TO ITS TOTALS"), "{t}");
     }
 
     #[test]

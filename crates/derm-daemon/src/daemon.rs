@@ -54,78 +54,264 @@ pub const REPORT_READ_LIMIT: usize = 20_000;
 /// test w5 retest 4, MW5-25).
 pub const REPORT_BUDGET: usize = 896 * 1024;
 
-/// Keeps a report under `budget` bytes once serialized. Past it, the check's
-/// hidden rows go first, then its flags are cut to the first that fit (the
-/// order the check lists them), and only the events the kept rows name stay;
-/// `check.flagsOmitted` and `check.expectedOmitted` say how many rows were
-/// left out. The totals (`flags`, `events`, `byKind` and the rest) stay whole.
+/// How many entries a count map (`byKind`, `bySource`, `approvals`) keeps
+/// in a report cut to fit: the largest counts. A chat token can post kinds
+/// of its own, each a new key (fix pass 4's review, FP4-S3).
+pub const REPORT_MAP_KEEP: usize = 256;
+
+/// How much of a named event's text a report cut to fit keeps.
+const CUT_TEXT: usize = 300;
+
+/// A flag's weight when a report is cut: the reasons an agent cannot make
+/// cheaply in bulk come first (FP4-S2).
+fn flag_rank(f: &Value) -> u8 {
+    match f.get("reason").and_then(Value::as_str).unwrap_or("") {
+        "sensitivePath" => 0,
+        "appNotGranted" => 1,
+        "recordingOff" => 2,
+        "newHost" => 3,
+        "leftRunning" => 4,
+        _ => 5,
+    }
+}
+
+/// The order a cut report keeps flags in: each chat's flags by rank, then
+/// newest first, taken one chat at a time in turn, so neither a chat's own
+/// burst of cheap flags nor another chat's can push out a later real one
+/// (FP4-S2).
+fn flag_keep_order(flags: &[Value]) -> Vec<usize> {
+    let mut by_chat: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
+    for (i, f) in flags.iter().enumerate() {
+        let chat = f.get("chatId").and_then(Value::as_str).unwrap_or("");
+        by_chat.entry(chat).or_default().push(i);
+    }
+    let at = |i: usize| {
+        let f = &flags[i];
+        f.get("lastAt")
+            .and_then(Value::as_i64)
+            .filter(|t| *t > 0)
+            .or_else(|| f.get("at").and_then(Value::as_i64))
+            .unwrap_or(0)
+    };
+    let mut queues: Vec<std::collections::VecDeque<usize>> = by_chat
+        .into_values()
+        .map(|mut v| {
+            v.sort_by_key(|&i| (flag_rank(&flags[i]), std::cmp::Reverse(at(i)), i));
+            v.into()
+        })
+        .collect();
+    let mut order = Vec::with_capacity(flags.len());
+    while order.len() < flags.len() {
+        for q in queues.iter_mut() {
+            if let Some(i) = q.pop_front() {
+                order.push(i);
+            }
+        }
+    }
+    order
+}
+
+/// A named event as a cut report keeps it: what it is and where, without
+/// its detail (FP4-S2: a context event's 16 KiB detail made every kept
+/// flag cost more).
+fn slim_event(e: &Value) -> Value {
+    let clip = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .map(|t| Value::String(t.chars().take(CUT_TEXT).collect()))
+    };
+    let mut out = Map::new();
+    for k in ["id", "at", "chatId", "harness", "source", "kind", "pid"] {
+        if let Some(v) = e.get(k) {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    if let Some(v) = clip(e.get("summary")) {
+        out.insert("summary".into(), v);
+    }
+    let mut detail = Map::new();
+    for k in ["path", "host", "tier"] {
+        if let Some(v) = clip(e.get("detail").and_then(|d| d.get(k))) {
+            detail.insert(k.into(), v);
+        }
+    }
+    out.insert("detail".into(), Value::Object(detail));
+    out.insert("cut".into(), json!(true));
+    Value::Object(out)
+}
+
+/// Keeps the `keep` largest counts of a count map and returns how many it
+/// left out.
+fn bound_counts(m: &mut Map<String, Value>, keep: usize) -> usize {
+    if m.len() <= keep {
+        return 0;
+    }
+    let mut all: Vec<(String, Value)> = std::mem::take(m).into_iter().collect();
+    all.sort_by(|a, b| {
+        let n = |v: &Value| v.as_u64().unwrap_or(0);
+        n(&b.1).cmp(&n(&a.1)).then_with(|| a.0.cmp(&b.0))
+    });
+    let left = all.len() - keep;
+    m.extend(all.into_iter().take(keep));
+    left
+}
+
+/// Keeps a report under `budget` bytes once serialized, and never returns
+/// one over it (FP4-S3). Past the budget, in order:
+/// 1. the count maps keep their `REPORT_MAP_KEEP` largest entries
+///    (`byKindOmitted`, `bySourceOmitted`, `approvalsOmitted` say how many
+///    keys went), and the events the check names keep only what they are and
+///    where (`cut: true` on each);
+/// 2. the check's hidden rows go, then its flags are cut to the ones that
+///    fit, chosen by `flag_keep_order` (rank, newest, each chat in turn) and
+///    listed in the check's own order; only the events the kept rows name
+///    stay; `check.flagsOmitted` and `check.expectedOmitted` say how many
+///    rows were left out;
+/// 3. if even no rows do not fit, the check keeps its counts only, then the
+///    count maps go, then the report keeps its totals only, each with
+///    `reportCut: true`.
+///
+/// The totals (`flags`, `events`) stay whole.
 pub fn fit_report(report: &mut Value, budget: usize) {
     let size = |r: &Value| serde_json::to_vec(r).map_or(usize::MAX, |v| v.len());
     if size(report) <= budget {
         return;
     }
-    let Some(check) = report.get_mut("check").and_then(Value::as_object_mut) else {
+    let Some(top) = report.as_object_mut() else {
         return;
     };
+    for (k, omitted) in [
+        ("byKind", "byKindOmitted"),
+        ("bySource", "bySourceOmitted"),
+        ("approvals", "approvalsOmitted"),
+    ] {
+        if let Some(Value::Object(m)) = top.get_mut(k) {
+            let left = bound_counts(m, REPORT_MAP_KEEP);
+            top.insert(omitted.into(), json!(left));
+        }
+    }
     let take = |k: &str, c: &mut Map<String, Value>| match c.remove(k) {
         Some(Value::Array(a)) => a,
         _ => Vec::new(),
     };
-    let flags = take("flags", check);
-    let expected = take("expected", check);
-    let events = take("events", check);
+    let (flags, expected, events) = match top.get_mut("check").and_then(Value::as_object_mut) {
+        Some(check) => (
+            take("flags", check),
+            take("expected", check),
+            take("events", check)
+                .iter()
+                .map(slim_event)
+                .collect::<Vec<_>>(),
+        ),
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+    let has_check = top.get("check").is_some_and(Value::is_object);
+    let order = flag_keep_order(&flags);
     let mut keep_flags = flags.len();
     let mut keep_expected = expected.len();
-    loop {
-        let rows: Vec<&Value> = flags[..keep_flags]
-            .iter()
-            .chain(&expected[..keep_expected])
-            .collect();
-        let named: std::collections::HashSet<&str> = rows
-            .iter()
-            .flat_map(|r| {
-                r.get("eventId").and_then(Value::as_str).into_iter().chain(
-                    r.get("context")
-                        .and_then(Value::as_array)
+    if has_check {
+        loop {
+            let chosen: std::collections::HashSet<usize> =
+                order[..keep_flags].iter().copied().collect();
+            let kept: Vec<Value> = flags
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| chosen.contains(i))
+                .map(|(_, f)| f.clone())
+                .collect();
+            let named: std::collections::HashSet<String> = kept
+                .iter()
+                .chain(&expected[..keep_expected])
+                .flat_map(|r| {
+                    r.get("eventId")
+                        .and_then(Value::as_str)
                         .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str),
-                )
-            })
-            .collect();
-        let kept_events: Vec<Value> = events
-            .iter()
-            .filter(|e| {
-                e.get("id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|i| named.contains(i))
-            })
-            .cloned()
-            .collect();
-        let check = report
-            .get_mut("check")
-            .and_then(Value::as_object_mut)
-            .expect("check is an object");
-        check.insert("flags".into(), Value::Array(flags[..keep_flags].to_vec()));
-        check.insert(
-            "expected".into(),
-            Value::Array(expected[..keep_expected].to_vec()),
-        );
-        check.insert("events".into(), Value::Array(kept_events));
-        check.insert("flagsOmitted".into(), json!(flags.len() - keep_flags));
-        check.insert(
-            "expectedOmitted".into(),
-            json!(expected.len() - keep_expected),
-        );
-        if size(report) <= budget || (keep_flags == 0 && keep_expected == 0) {
-            return;
-        }
-        if keep_expected > 0 {
-            keep_expected = 0;
-        } else {
-            keep_flags /= 2;
+                        .chain(
+                            r.get("context")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str),
+                        )
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let kept_events: Vec<Value> = events
+                .iter()
+                .filter(|e| {
+                    e.get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|i| named.contains(i))
+                })
+                .cloned()
+                .collect();
+            let check = report
+                .get_mut("check")
+                .and_then(Value::as_object_mut)
+                .expect("check is an object");
+            check.insert("flags".into(), Value::Array(kept));
+            check.insert(
+                "expected".into(),
+                Value::Array(expected[..keep_expected].to_vec()),
+            );
+            check.insert("events".into(), Value::Array(kept_events));
+            check.insert("flagsOmitted".into(), json!(flags.len() - keep_flags));
+            check.insert(
+                "expectedOmitted".into(),
+                json!(expected.len() - keep_expected),
+            );
+            if size(report) <= budget || (keep_flags == 0 && keep_expected == 0) {
+                break;
+            }
+            if keep_expected > 0 {
+                keep_expected = 0;
+            } else {
+                keep_flags /= 2;
+            }
         }
     }
+    if size(report) <= budget {
+        return;
+    }
+    // Even no rows do not fit: the check keeps its counts, then the maps go,
+    // then only the totals are left (FP4-S3).
+    if let Some(check) = report.get_mut("check").and_then(Value::as_object_mut) {
+        check.retain(|_, v| !(v.is_array() || v.is_object()));
+        check.insert("reportCut".into(), json!(true));
+    }
+    if size(report) <= budget {
+        return;
+    }
+    if let Some(top) = report.as_object_mut() {
+        for k in ["byKind", "bySource", "approvals"] {
+            if let Some(Value::Object(m)) = top.get_mut(k) {
+                let left = m.len();
+                m.clear();
+                let omitted = format!("{k}Omitted");
+                let before = top.get(&omitted).and_then(Value::as_u64).unwrap_or(0);
+                top.insert(omitted, json!(before + left as u64));
+            }
+        }
+        top.insert("reportCut".into(), json!(true));
+    }
+    if size(report) <= budget {
+        return;
+    }
+    let keep: Map<String, Value> = report
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter(|(_, v)| match v {
+                    Value::Array(_) | Value::Object(_) => false,
+                    Value::String(t) => t.len() <= 200,
+                    _ => true,
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    *report = Value::Object(keep);
+    report["reportCut"] = json!(true);
 }
 /// Approval waits are held to this range, in seconds.
 pub const MIN_APPROVE_SECONDS: u32 = 1;
