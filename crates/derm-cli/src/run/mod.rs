@@ -327,6 +327,34 @@ fn keep_argv(home: &str, chat: &str, days: u8, words: &[String]) -> Option<Resul
     )
 }
 
+/// Where the harness's own words (`rest`, from after `--`) start in `args`.
+/// `plan.rs` appends them last; the tap may then splice its block inside
+/// them, after a session subcommand (Codex's `exec`, `app-server`), so they
+/// are a prefix of `rest`, one block of derm's words, then the rest of
+/// `rest` (Mac test w5, MW5-6). `None` when `args` holds no such split.
+fn words_at(args: &[String], rest: &[String]) -> Option<usize> {
+    if args.ends_with(rest) {
+        return Some(args.len() - rest.len());
+    }
+    // A prefix of `rest` (at least its first word), a block, then the
+    // remaining words at the end. The latest start that fits wins: derm's
+    // own words (srt's settings, `--`, the command) come before the user's.
+    for k in (1..=rest.len()).rev() {
+        let (head, tail) = rest.split_at(k);
+        if !args.ends_with(tail) {
+            continue;
+        }
+        let tail_at = args.len() - tail.len();
+        if let Some(i) = (0..=tail_at.saturating_sub(k))
+            .rev()
+            .find(|&i| i + k < tail_at && args[i..i + k] == *head)
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
 fn recorded_argv(
     program: &str,
     args: &[String],
@@ -365,12 +393,8 @@ fn recorded_argv(
             _ => n(w),
         }
     };
-    let split = if args.ends_with(rest) {
-        args.len() - rest.len()
-    } else {
-        // Not expected (plan.rs appends `rest` last); mask everything.
-        0
-    };
+    // Where the user's words start; with none found, mask everything.
+    let split = words_at(args, rest).unwrap_or(0);
     let mut out = vec![program.to_string()];
     for (i, w) in args[..split].iter().enumerate() {
         let settings = i > 0 && args[i - 1] == "--settings";
@@ -578,7 +602,10 @@ fn wire_export(
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    let at = p.args.len().saturating_sub(rest.len());
+    // Before the user's first word, wherever the tap spliced its own block
+    // (MW5-6): Codex prepends a root `-c` to a session subcommand's own
+    // (0.163.0, `codex-rs/cli/src/main.rs:1162-1165, 2156-2161`).
+    let at = words_at(&p.args, rest).unwrap_or(p.args.len().saturating_sub(rest.len()));
     let range = at..at + added.len();
     p.args.splice(at..at, added);
     for (k, v) in cmd.get_envs() {

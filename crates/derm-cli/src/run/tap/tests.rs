@@ -376,3 +376,79 @@ fn the_content_record_follows_the_settings_and_defaults_off() {
     );
     let _ = std::fs::remove_dir_all(d.root);
 }
+
+/// Mac test w5, MW5-6: with the tap on, `derm run codex -- exec ...` put the
+/// OTel export's `-c` pairs between the tap's last `-c` and its value, so
+/// Codex refused its own command line ("a value is required for
+/// '--config <key=value>'"). The export goes where the user's words begin
+/// (Codex 0.163.0 prepends root `-c` to a subcommand's own,
+/// `codex-rs/cli/src/main.rs:1162-1165, 2156-2161`), whatever the tap
+/// spliced after a session subcommand, and every `-c` keeps its value.
+#[test]
+fn codex_export_and_tap_flags_stay_whole_after_a_session_subcommand() {
+    let d = dirs("codex-mw56", Some("http://127.0.0.1:45003"));
+    for user in [
+        vec!["exec", "do it"],
+        vec!["app-server"],
+        vec!["e", "--json", "x"],
+        vec!["resume", "--last"],
+        vec!["fix the tests"],
+    ] {
+        let mut p = plan("codex", &user, true);
+        p.env_set
+            .push(("CODEX_HOME".into(), d.home.to_string_lossy().into_owned()));
+        let rest: Vec<String> = user.iter().map(|s| s.to_string()).collect();
+        environment_with("codex", &mut p, &inputs(&d)).unwrap();
+        let (what, range) = super::super::wire_export(
+            &mut p,
+            &rest,
+            "codex",
+            Some("http://127.0.0.1:4318"),
+            Some(TOKEN),
+            None,
+            false,
+        );
+        assert_eq!(what, json!("codex"), "{user:?}");
+        let range = range.unwrap();
+        // Codex's grammar: every `-c` takes the next word as its value.
+        let mut i = 0;
+        while i < p.args.len() {
+            if p.args[i] == "-c" {
+                let v = p.args.get(i + 1).map(String::as_str).unwrap_or("");
+                assert!(
+                    !v.is_empty() && v != "-c" && v.contains('='),
+                    "{user:?}: `-c` at {i} has no value: {:?}",
+                    p.args
+                );
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        // The export sits before the user's first word, and the user's
+        // words keep their order.
+        assert_eq!(p.args[range.end], user[0], "{user:?}: {:?}", p.args);
+        assert!(
+            p.args[range.clone()].iter().any(|a| a.starts_with("otel.")),
+            "{:?}",
+            p.args
+        );
+        let theirs: Vec<&str> = p.args[range.end..]
+            .iter()
+            .map(String::as_str)
+            .filter(|a| user.contains(a))
+            .collect();
+        assert_eq!(theirs, user, "{:?}", p.args);
+        // The record keeps the export labelled and masks the user's words.
+        let rec = super::super::recorded_argv("codex", &p.args, &rest, false, Some(range));
+        assert!(
+            rec.iter().any(|w| w.starts_with("otel.")),
+            "{user:?}: the export was masked as the user's: {rec:?}"
+        );
+        assert!(
+            !rec.iter().any(|w| w == "do it" || w == "fix the tests"),
+            "{rec:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(d.root);
+}
