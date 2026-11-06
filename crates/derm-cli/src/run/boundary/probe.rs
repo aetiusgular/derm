@@ -267,8 +267,13 @@ pub(crate) fn srt_probe(
         ));
     };
     // The folders a chat's srt settings let it write, as `run_io` builds
-    // them: the working folder, the harness's state and /tmp.
-    let mut writable = vec![cwd.to_string(), "/tmp".to_string()];
+    // them: the working folder, the harness's state and the temp root by
+    // its real path (MW5-13: on macOS `/tmp` is a link, and the tool's path
+    // this is compared with is a real one, case 111).
+    let mut writable = vec![
+        cwd.to_string(),
+        crate::run::plan::srt_temp_root(cfg!(target_os = "macos")).to_string(),
+    ];
     if let Some(home) = home {
         for s in h.state {
             writable.push(format!("{}/{s}", home.trim_end_matches('/')));

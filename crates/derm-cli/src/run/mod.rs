@@ -1910,7 +1910,16 @@ mod end_to_end {
                 &std::fs::read_to_string(st.fake.dir.join("settings.copy")).unwrap(),
             )
             .unwrap();
-            c["filesystem"]["allowRead"].clone()
+            // The policy's entry only: on macOS the daemon socket is
+            // re-opened beside it (MW5-5's gate half), whatever the policy.
+            let read: Vec<serde_json::Value> = c["filesystem"]["allowRead"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| !e["path"].as_str().unwrap_or("").ends_with("/daemon.sock"))
+                .cloned()
+                .collect();
+            serde_json::Value::Array(read)
         };
         std::os::unix::fs::symlink(derm.join("backups"), derm.join("policy.json")).unwrap();
         assert_eq!(allow("chat-l1"), serde_json::json!([]), "a link");
