@@ -152,7 +152,9 @@ fn codex_config_split(rest: &[String]) -> Option<String> {
 }
 
 /// Codex 0.163.0's subcommands at its root, with their aliases and the
-/// hidden ones (`codex-rs/cli/src/main.rs:147-227`, `codex --help`).
+/// hidden ones (`codex-rs/cli/src/main.rs:147-237`, `codex --help`; the
+/// re-review's R1 added `cloud-tasks`, `responses-api-proxy` and
+/// `stdio-to-uds`).
 const CODEX_ROOT_SUBCOMMANDS: &[&str] = &[
     "agents",
     "tcp-tunnel",
@@ -182,20 +184,25 @@ const CODEX_ROOT_SUBCOMMANDS: &[&str] = &[
     "unarchive",
     "fork",
     "cloud",
+    "cloud-tasks",
     "exec-server",
     "features",
+    "responses-api-proxy",
+    "stdio-to-uds",
     "help",
 ];
 
 /// `codex exec`'s own subcommands (`codex-rs/exec/src/cli.rs:172-182`).
 const CODEX_EXEC_SUBCOMMANDS: &[&str] = &["resume", "fork", "review", "help"];
 
-/// `codex app-server`'s own subcommands (`codex app-server --help`, 0.163.0).
+/// `codex app-server`'s own subcommands (`codex app-server --help`, 0.163.0,
+/// and the hidden `generate-internal-json-schema`, `main.rs:642-643`).
 const CODEX_APP_SERVER_SUBCOMMANDS: &[&str] = &[
     "daemon",
     "proxy",
     "generate-ts",
     "generate-json-schema",
+    "generate-internal-json-schema",
     "help",
 ];
 
@@ -527,6 +534,9 @@ mod tests {
             &["exec", "-m", "x", "resume", "--last", "--config", "a=1"][..],
             &["mcp", "list", "-c", "a=1"][..],
             &["app-server", "proxy", "-c", "a=1"][..],
+            &["cloud-tasks", "-c", "a=1"][..],
+            &["stdio-to-uds", "/x.sock", "-c", "a=1"][..],
+            &["app-server", "generate-internal-json-schema", "-c", "a=1"][..],
         ] {
             let mut argv = s(&["codex", "--boundary", "none", "--"]);
             argv.extend(s(rest));

@@ -62,8 +62,7 @@ pub const REPORT_MAP_KEEP: usize = 256;
 /// How much of a named event's text a report cut to fit keeps.
 const CUT_TEXT: usize = 300;
 
-/// A flag's weight when a report is cut: the reasons an agent cannot make
-/// cheaply in bulk come first (FP4-S2).
+/// A flag's weight when a report is cut, by its reason.
 fn flag_rank(f: &Value) -> u8 {
     match f.get("reason").and_then(Value::as_str).unwrap_or("") {
         "sensitivePath" => 0,
@@ -75,16 +74,25 @@ fn flag_rank(f: &Value) -> u8 {
     }
 }
 
-/// The order a cut report keeps flags in: each chat's flags by rank, then
-/// newest first, taken one chat at a time in turn, so neither a chat's own
-/// burst of cheap flags nor another chat's can push out a later real one
-/// (FP4-S2).
-fn flag_keep_order(flags: &[Value]) -> Vec<usize> {
-    let mut by_chat: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
-    for (i, f) in flags.iter().enumerate() {
-        let chat = f.get("chatId").and_then(Value::as_str).unwrap_or("");
-        by_chat.entry(chat).or_default().push(i);
-    }
+/// What a cut report knows about the event a flag names: whether a chat
+/// token could have posted it (an `adapter` or `otel` record), and whether
+/// it wrote one of derm's guarded paths.
+pub struct FlagSource<'a> {
+    pub chat_postable: &'a dyn Fn(&str) -> bool,
+    pub guarded: &'a dyn Fn(&str) -> bool,
+}
+
+/// The order a cut report keeps flags in (fix pass 4's review, FP4-S2 and
+/// its re-review's R2). Each chat's flags fall into buckets: a write to one
+/// of derm's guarded paths first, then by whether a chat token could have
+/// posted the event (records it cannot post first), then by reason. A chat's
+/// list takes one flag from each bucket in turn, so no burst in one bucket,
+/// such as new hosts a chat token names in bulk, pushes out a lone flag of
+/// another; inside a bucket it takes the newest, then the oldest, then the
+/// next of each. The chats are taken one at a time in turn. Ties in time go
+/// to the later row.
+pub fn flag_keep_order(flags: &[Value], src: &FlagSource) -> Vec<usize> {
+    use std::collections::{BTreeMap, VecDeque};
     let at = |i: usize| {
         let f = &flags[i];
         f.get("lastAt")
@@ -93,16 +101,58 @@ fn flag_keep_order(flags: &[Value]) -> Vec<usize> {
             .or_else(|| f.get("at").and_then(Value::as_i64))
             .unwrap_or(0)
     };
-    let mut queues: Vec<std::collections::VecDeque<usize>> = by_chat
-        .into_values()
-        .map(|mut v| {
-            v.sort_by_key(|&i| (flag_rank(&flags[i]), std::cmp::Reverse(at(i)), i));
-            v.into()
-        })
-        .collect();
+    let bucket = |i: usize| {
+        let f = &flags[i];
+        let id = f.get("eventId").and_then(Value::as_str).unwrap_or("");
+        let guarded = (src.guarded)(id);
+        let postable = (src.chat_postable)(id);
+        (!guarded, postable, flag_rank(f))
+    };
+    // A bucket: not a guarded write, a chat token could post it, its rank.
+    type Buckets = BTreeMap<(bool, bool, u8), Vec<usize>>;
+    let mut by_chat: BTreeMap<&str, Buckets> = BTreeMap::new();
+    for (i, f) in flags.iter().enumerate() {
+        let chat = f.get("chatId").and_then(Value::as_str).unwrap_or("");
+        by_chat
+            .entry(chat)
+            .or_default()
+            .entry(bucket(i))
+            .or_default()
+            .push(i);
+    }
+    let mut chats: Vec<VecDeque<usize>> = Vec::new();
+    for buckets in by_chat.into_values() {
+        // Newest, oldest, next newest, next oldest, ... in each bucket.
+        let mut queues: Vec<VecDeque<usize>> = buckets
+            .into_values()
+            .map(|mut v| {
+                v.sort_by_key(|&i| (at(i), i));
+                let mut out = Vec::with_capacity(v.len());
+                let (mut lo, mut hi) = (0usize, v.len());
+                while lo < hi {
+                    hi -= 1;
+                    out.push(v[hi]);
+                    if lo < hi {
+                        out.push(v[lo]);
+                        lo += 1;
+                    }
+                }
+                out.into()
+            })
+            .collect();
+        let mut chat = VecDeque::new();
+        while queues.iter().any(|q| !q.is_empty()) {
+            for q in queues.iter_mut() {
+                if let Some(i) = q.pop_front() {
+                    chat.push_back(i);
+                }
+            }
+        }
+        chats.push(chat);
+    }
     let mut order = Vec::with_capacity(flags.len());
     while order.len() < flags.len() {
-        for q in queues.iter_mut() {
+        for q in chats.iter_mut() {
             if let Some(i) = q.pop_front() {
                 order.push(i);
             }
@@ -172,6 +222,12 @@ fn bound_counts(m: &mut Map<String, Value>, keep: usize) -> usize {
 ///
 /// The totals (`flags`, `events`) stay whole.
 pub fn fit_report(report: &mut Value, budget: usize) {
+    fit_report_with(report, budget, None)
+}
+
+/// `fit_report`, with `data_dir` naming derm's guarded folders for the
+/// flag order (`check::guarded_path`).
+pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>) {
     let size = |r: &Value| serde_json::to_vec(r).map_or(usize::MAX, |v| v.len());
     if size(report) <= budget {
         return;
@@ -197,15 +253,41 @@ pub fn fit_report(report: &mut Value, budget: usize) {
         Some(check) => (
             take("flags", check),
             take("expected", check),
-            take("events", check)
-                .iter()
-                .map(slim_event)
-                .collect::<Vec<_>>(),
+            take("events", check),
         ),
         None => (Vec::new(), Vec::new(), Vec::new()),
     };
+    let full_events = events;
+    let events: Vec<Value> = full_events.iter().map(slim_event).collect();
     let has_check = top.get("check").is_some_and(Value::is_object);
-    let order = flag_keep_order(&flags);
+    // What each named event is, read before the events are slimmed.
+    let mut postable_ids = std::collections::HashSet::new();
+    let mut guarded_ids = std::collections::HashSet::new();
+    for e in &full_events {
+        let Some(id) = e.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let source = e.get("source").and_then(Value::as_str).unwrap_or("");
+        if matches!(source, "adapter" | "otel") {
+            postable_ids.insert(id.to_string());
+        }
+        let path = e
+            .get("detail")
+            .and_then(|d| d.get("path"))
+            .and_then(Value::as_str);
+        if path.is_some_and(|p| crate::activity::check::guarded_path(p, data_dir)) {
+            guarded_ids.insert(id.to_string());
+        }
+    }
+    let postable = |id: &str| postable_ids.contains(id);
+    let guarded = |id: &str| guarded_ids.contains(id);
+    let order = flag_keep_order(
+        &flags,
+        &FlagSource {
+            chat_postable: &postable,
+            guarded: &guarded,
+        },
+    );
     let mut keep_flags = flags.len();
     let mut keep_expected = expected.len();
     if has_check {
@@ -276,7 +358,14 @@ pub fn fit_report(report: &mut Value, budget: usize) {
     // Even no rows do not fit: the check keeps its counts, then the maps go,
     // then only the totals are left (FP4-S3).
     if let Some(check) = report.get_mut("check").and_then(Value::as_object_mut) {
+        // The hidden rows' counts by reason become one sum (the re-review's R3).
+        let suppressed: u64 = check
+            .get("suppressed")
+            .and_then(Value::as_object)
+            .map(|m| m.values().filter_map(Value::as_u64).sum())
+            .unwrap_or(0);
         check.retain(|_, v| !(v.is_array() || v.is_object()));
+        check.insert("suppressedTotal".into(), json!(suppressed));
         check.insert("reportCut".into(), json!(true));
     }
     if size(report) <= budget {
@@ -1616,7 +1705,7 @@ impl Daemon {
                 .collect();
             m.insert("running".into(), Value::Array(running));
         }
-        fit_report(&mut report, REPORT_BUDGET);
+        fit_report_with(&mut report, REPORT_BUDGET, Some(self.data_dir.as_str()));
         Reply {
             report: Some(report),
             ..ok()
@@ -1659,10 +1748,25 @@ impl Daemon {
         // A chat's run, from its own run records (MW5-23), read over the
         // whole log so a window that misses its start still finds it
         // (FP4-S5): its last start up to `until`, and the first stop after.
+        // The window's own run records when it holds the start; the whole
+        // log only when it does not (the re-review's R5: that read's cost
+        // grows with the log).
+        let is_run = |e: &crate::activity::types::ActivityEvent| {
+            e.source == Source::Run && (e.kind == "run.start" || e.kind == "run.stop")
+        };
+        let in_window = back
+            .events
+            .iter()
+            .any(|e| e.source == Source::Run && e.kind == "run.start");
         let run = chat.and_then(|c| {
-            let runs = store::read_runs(&self.log_dir, c, until, 256);
-            let mut runs: Vec<&crate::activity::types::ActivityEvent> =
-                runs.events.iter().collect();
+            let whole;
+            let runs: Vec<&crate::activity::types::ActivityEvent> = if in_window {
+                back.events.iter().filter(|e| is_run(e)).collect()
+            } else {
+                whole = store::read_runs(&self.log_dir, c, until, 256);
+                whole.events.iter().collect()
+            };
+            let mut runs = runs;
             runs.sort_by_key(|e| e.at);
             let start = runs.iter().rposition(|e| e.kind == "run.start")?;
             let stop = runs[start..]
@@ -1673,6 +1777,10 @@ impl Daemon {
         });
         let (kernel_total, kernel_inside, kernel_during) =
             kernel_drops_for(status.as_ref(), since, until, run);
+        let window_up_to = kernel_inside.as_array().map(|gaps| {
+            gaps.iter()
+                .any(|g| g.get("merged").and_then(Value::as_u64).unwrap_or(1) > 1)
+        });
         json!({
             "since": since,
             "until": until,
@@ -1702,6 +1810,8 @@ impl Daemon {
             // FP4-S5: the count is a bound, not exact, when a gap it takes
             // stands for merged gaps or reaches outside the run.
             "chatOsMissedUpTo": run.map(|r| kernel_drops_up_to(status.as_ref(), r)),
+            // R5: the window's count is a bound when a gap in it is merged.
+            "osKernelDropsUpTo": window_up_to,
             "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
         })
     }

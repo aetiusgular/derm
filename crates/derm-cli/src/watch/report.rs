@@ -195,8 +195,14 @@ pub fn render(r: &Value) -> String {
             })
             .unwrap_or(0);
         out.push_str(&format!(
-            "OS EVENTS THE KERNEL DROPPED: {} since the collector started, {} in this window (eslogger fell behind and Endpoint Security dropped them)\n",
+            "OS EVENTS THE KERNEL DROPPED: {} since the collector started, {}{} in this window (eslogger fell behind and Endpoint Security dropped them)\n",
             count(n),
+            // R5: a merged gap may reach outside the window.
+            if r.get("osKernelDropsUpTo").and_then(Value::as_bool) == Some(true) {
+                "up to "
+            } else {
+                ""
+            },
             count(here)
         ));
     }
@@ -250,11 +256,29 @@ pub fn render(r: &Value) -> String {
     }
     // FP4-S3: what else the daemon cut to keep the reply under its budget.
     let top = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0);
-    let kinds_out = top("byKindOmitted") + top("bySourceOmitted") + top("approvalsOmitted");
-    if kinds_out > 0 {
+    // Each count map's cut, named apart (the re-review's R3).
+    for (k, what) in [
+        ("byKindOmitted", "kinds"),
+        ("bySourceOmitted", "sources"),
+        ("approvalsOmitted", "approval answers"),
+    ] {
+        let n = top(k);
+        if n > 0 {
+            out.push_str(&format!(
+                "NOT COUNTED BY {}: {} {what} with the fewest events left out of the counts above\n",
+                what.to_ascii_uppercase(),
+                count(n)
+            ));
+        }
+    }
+    let hidden_total = check
+        .get("suppressedTotal")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if hidden_total > 0 {
         out.push_str(&format!(
-            "NOT COUNTED BY KIND: {} kinds with the fewest events left out of the counts above\n",
-            count(kinds_out)
+            "expected and hidden: {} (counts only; the report was cut)\n",
+            count(hidden_total)
         ));
     }
     let cut = |v: &Value| v.get("reportCut").and_then(Value::as_bool) == Some(true);
@@ -390,6 +414,8 @@ mod tests {
         assert!(!t.contains("NOT FULLY WATCHED"), "{t}");
         r["chatOsMissed"] = json!(900);
         assert!(render(&r).contains("CHAT NOT FULLY WATCHED: the kernel dropped 900 OS events"));
+        r["osKernelDropsUpTo"] = json!(true);
+        assert!(render(&r).contains("up to 900 in this window"));
         r["chatOsMissedUpTo"] = json!(true);
         assert!(
             render(&r).contains("CHAT NOT FULLY WATCHED: the kernel dropped up to 900 OS events")
@@ -412,12 +438,20 @@ mod tests {
     #[test]
     fn a_report_cut_past_its_rows_says_so() {
         let mut r = sample();
-        assert!(!render(&r).contains("NOT COUNTED BY KIND"));
+        assert!(!render(&r).contains("NOT COUNTED BY"));
         assert!(!render(&r).contains("REPORT CUT"));
         r["byKindOmitted"] = json!(1200);
         r["check"]["reportCut"] = json!(true);
         let t = render(&r);
-        assert!(t.contains("NOT COUNTED BY KIND: 1,200 kinds"), "{t}");
+        assert!(t.contains("NOT COUNTED BY KINDS: 1,200 kinds"), "{t}");
+        r["approvalsOmitted"] = json!(3);
+        r["check"]["suppressedTotal"] = json!(40);
+        let t = render(&r);
+        assert!(
+            t.contains("NOT COUNTED BY APPROVAL ANSWERS: 3 approval answers"),
+            "{t}"
+        );
+        assert!(t.contains("expected and hidden: 40 (counts only"), "{t}");
         assert!(t.contains("REPORT CUT TO ITS TOTALS"), "{t}");
         // A report left with its totals only still renders.
         let t = render(&json!({"events": 5, "flags": 2, "reportCut": true}));

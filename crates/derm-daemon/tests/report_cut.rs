@@ -239,15 +239,22 @@ fn a_chat_report_finds_its_run_outside_the_window() {
         "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
     }}));
     assert_eq!(r["ok"], true);
+    // The daemon stamps a record with its own clock: the window starts after
+    // the run's start by the wall clock.
+    std::thread::sleep(Duration::from_millis(1_100));
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        - 100;
     let r = d.ask(json!({"op": "event", "event": {
-        "id": "w-k", "at": 50_000, "chatId": "chat-k", "harness": "pi", "source": "adapter",
+        "id": "w-k", "at": 0, "chatId": "chat-k", "harness": "pi", "source": "adapter",
         "kind": "tool.call", "summary": "", "detail": {}
     }}));
     assert_eq!(r["ok"], true);
     let mut reply = Value::Null;
     for _ in 0..100 {
-        reply =
-            d.ask(json!({"op": "report", "chat": "chat-k", "since": 10_000, "until": i64::MAX}));
+        reply = d.ask(json!({"op": "report", "chat": "chat-k", "since": since, "until": i64::MAX}));
         if reply["report"]["events"] == 1 {
             break;
         }
@@ -264,4 +271,122 @@ fn a_chat_report_finds_its_run_outside_the_window() {
     );
     let none = d.ask(json!({"op": "report", "chat": "chat-none", "since": 0, "until": i64::MAX}));
     assert!(none["report"]["chatOsMissedUpTo"].is_null());
+}
+
+/// R2 (re-review of 1b91bf9): the cut ranks by reason, newest first, within
+/// a chat. A chat token alone makes rank-3 `newHost` flags in bulk (an
+/// adapter record with `detail.host`, `check.rs` `event_host`: any source
+/// but run and approval), posted after the real act, so a write outside the
+/// folders (rank 5) is pushed out of its own chat's list. And the agent's own
+/// opens of `.env` files anywhere outside its folders are rank-0 flags, so a
+/// burst of them after a real sensitive open pushes that one out too.
+#[test]
+fn r2_flags_a_chat_can_make_in_bulk_do_not_push_out_a_real_one() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-a", "at": 0, "chatId": "chat-a", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    // The real acts first, as the kernel feed records them.
+    for (id, kind, path) in [
+        ("real-write", "write", "/home/t/.ssh/authorized_keys"),
+        ("real-open", "open", "/home/t/other/.env"),
+    ] {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": id, "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "auditd", "kind": kind, "summary": "",
+            "detail": {"path": path, "tier": "child"}, "pid": 78
+        }}));
+        assert_eq!(r["ok"], true, "{r}");
+    }
+    // Then the chat's own token: adapter records naming new hosts.
+    let token = d.ask(json!({"op": "token.mint", "chat": "chat-a", "harness": "pi"}))["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut agent, hello) = Client::hello(&f, &token);
+    assert_eq!(hello["scope"], "chat", "{hello}");
+    let n = 3_000;
+    let mut i = 0;
+    while i < n {
+        let r = agent.ask(json!({"op": "event", "event": {
+            "id": format!("h-{i}"), "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "adapter", "kind": "tool.call", "summary": "",
+            "detail": {"host": format!("h{i}.example.net")}
+        }}));
+        if r["ok"] == true {
+            i += 1;
+        } else {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    // And the agent's own opens of `.env` files outside its folders.
+    for i in 0..n {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": format!("o-{i}"), "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "auditd", "kind": "open", "summary": "",
+            "detail": {"path": format!("/tmp/x{i}/.env"), "tier": "child"}, "pid": 79
+        }}));
+        assert_eq!(r["ok"], true);
+    }
+    let (rep, _) = wait_events(&mut d, Some("chat-a"), 2 * n + 3);
+    let flags = rep["report"]["check"]["flags"].as_array().unwrap();
+    assert!(
+        rep["report"]["check"]["flagsOmitted"].as_u64().unwrap_or(0) > 0,
+        "not cut"
+    );
+    let listed = |id: &str| flags.iter().any(|f| f["eventId"] == id);
+    assert!(
+        listed("real-write") && listed("real-open"),
+        "real write listed: {}; real sensitive open listed: {}; {} flags kept",
+        listed("real-write"),
+        listed("real-open"),
+        flags.len()
+    );
+}
+
+/// R2, the chat token's part alone: adapter records naming new hosts, then
+/// nothing else; the earlier write outside the folders is pushed out.
+#[test]
+fn r2b_a_chat_tokens_new_hosts_do_not_push_out_a_real_write() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "real-write", "at": 0, "chatId": "chat-a", "harness": "pi",
+        "source": "auditd", "kind": "write", "summary": "",
+        "detail": {"path": "/home/t/.ssh/authorized_keys", "tier": "child"}, "pid": 78
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    let token = d.ask(json!({"op": "token.mint", "chat": "chat-a", "harness": "pi"}))["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (mut agent, _) = Client::hello(&f, &token);
+    let n = 3_000;
+    let mut i = 0;
+    while i < n {
+        let r = agent.ask(json!({"op": "event", "event": {
+            "id": format!("h-{i}"), "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "adapter", "kind": "tool.call", "summary": "",
+            "detail": {"host": format!("h{i}.example.net")}
+        }}));
+        if r["ok"] == true {
+            i += 1;
+        } else {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+    let (rep, _) = wait_events(&mut d, Some("chat-a"), n + 1);
+    let check = &rep["report"]["check"];
+    let flags = check["flags"].as_array().unwrap();
+    let hosts = flags.iter().filter(|f| f["reason"] == "newHost").count();
+    assert!(
+        flags.iter().any(|f| f["eventId"] == "real-write"),
+        "{} flags kept, {hosts} of them newHost from the chat token, {} omitted",
+        flags.len(),
+        check["flagsOmitted"]
+    );
 }

@@ -247,7 +247,7 @@ fn data_noise(path: &str, data_dir: Option<&str>) -> bool {
 /// Everything in MonoCode's data folder but a harness home's session state:
 /// the log, computer use's recordings, the OTel helper script Claude Code
 /// runs, the provider accounts' settings, the database (review X6).
-fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+pub fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
     let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) else {
         return false;
     };
