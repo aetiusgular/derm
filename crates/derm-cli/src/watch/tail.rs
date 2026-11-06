@@ -82,7 +82,10 @@ pub fn run(
     }
     conn.send(&req)?;
     // The reply comes before any push (contract section 2).
-    check_ok(conn.line()?)?;
+    let reply = check_ok(conn.line()?)?;
+    if let Some(note) = backlog_note(&reply) {
+        eprintln!("{note}");
+    }
     conn.stream_mode()?;
     if !json_out {
         let _ = writeln!(
@@ -108,6 +111,19 @@ pub fn run(
             }
         }
     }
+}
+
+/// What to say when the daemon cut the backlog to its newest records (box
+/// test w5, BW5-12).
+pub fn backlog_note(reply: &Value) -> Option<String> {
+    let r = reply.get("report")?;
+    if r.get("backlogCut").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(format!(
+        "derm watch tail: only the newest {} records since then are shown; older ones are in the activity log (derm watch report, or the log files)",
+        r.get("backlogSent").and_then(Value::as_u64).unwrap_or(0)
+    ))
 }
 
 /// One event as one terminal line. Every field is cleaned (`text::clean`):
@@ -184,5 +200,15 @@ mod tests {
             "source": "adapter", "kind": "k\n", "summary": ""});
         let line = render(&ev);
         assert!(!line.chars().any(super::super::text::hidden), "{line:?}");
+    }
+
+    /// Box test w5, BW5-12: a cut backlog is said on the terminal.
+    #[test]
+    fn a_cut_backlog_is_said() {
+        let r =
+            serde_json::json!({"ok": true, "report": {"backlogCut": true, "backlogSent": 5000}});
+        let note = backlog_note(&r).unwrap();
+        assert!(note.contains("newest 5000"), "{note}");
+        assert!(backlog_note(&serde_json::json!({"ok": true})).is_none());
     }
 }

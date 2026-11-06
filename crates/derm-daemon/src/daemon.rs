@@ -716,6 +716,12 @@ impl Daemon {
     /// Stores one event and streams it. The daemon stamps `at` (case 35);
     /// a client's own time moves to `detail.harnessAt`. Returns the id kept.
     pub fn ingest(&self, mut event: Event) -> String {
+        // The OS feeds' exec records keep the argv's shape only, whatever the
+        // content switch (box test w5, BW5-12; case 85): a harness's prompt
+        // and an agent's commands were in the log as typed.
+        if event.kind == "exec" && matches!(event.source, Source::Auditd | Source::Eslogger) {
+            shape_exec(&mut event);
+        }
         if event.at > 0 {
             if let Value::Object(map) = &mut event.detail {
                 map.entry("harnessAt").or_insert(Value::from(event.at));
@@ -1141,24 +1147,35 @@ impl Daemon {
         // a client does after it reads `ok` can be ingested before the
         // subscription exists (lane K's request 5: the old order sent `ok`
         // first, and an event ingested in between was never pushed).
-        let mut backlog: Vec<Event> = match since {
+        let (mut backlog, mut cut): (Vec<Event>, bool) = match since {
             Some(since) => {
-                store::read(&self.log_dir, since, i64::MAX, chat.as_deref(), MAX_BACKLOG).events
+                let r = store::read(&self.log_dir, since, i64::MAX, chat.as_deref(), MAX_BACKLOG);
+                (r.events, r.truncated)
             }
-            None => Vec::new(),
+            None => (Vec::new(), false),
         };
         let Ok(ring) = self.order.lock() else {
             out.send(&error("busy"));
             return;
         };
         if let Some(since) = since {
-            backlog = merge_backlog(backlog, ring.iter(), since, chat.as_deref());
+            let merged = merge_backlog(backlog, ring.iter(), since, chat.as_deref());
+            cut |= merged.1;
+            backlog = merged.0;
         }
         let Ok(mut tails) = self.tails.lock() else {
             out.send(&error("busy"));
             return;
         };
-        out.send(&ok());
+        // A backlog cut to the newest records says so (box test w5, BW5-12:
+        // a busy chat's tail stopped at 5,000 with no notice).
+        let mut reply = ok();
+        if cut {
+            reply.report = Some(
+                json!({"backlogCut": true, "backlogSent": backlog.len(), "backlogMax": MAX_BACKLOG}),
+            );
+        }
+        out.send(&reply);
         for event in backlog {
             out.send(&Push::Event(event));
         }
@@ -1501,6 +1518,30 @@ fn read_state(path: &Path) -> Option<Value> {
 /// store's `may_replace`), oldest first, at most `MAX_BACKLOG`.
 /// What a `run.start` says that `derm status` shows, each string cut: the
 /// record is the daemon's own (daemon scope), but its words are `derm run`'s.
+/// An exec record's argv as its shape, and a summary built from it.
+fn shape_exec(event: &mut Event) {
+    let Some(argv) = event.detail.get("argv").and_then(Value::as_array) else {
+        // No argv, but the summary may still hold the words.
+        if event.summary.starts_with("exec ") || event.summary.starts_with("ran ") {
+            event.summary = "exec".into();
+        }
+        return;
+    };
+    let words: Vec<String> = argv
+        .iter()
+        .map(|w| w.as_str().unwrap_or("").to_string())
+        .collect();
+    let shaped = derm_core::argv::shape(&words);
+    event.summary = format!("exec {}", shaped.join(" "))
+        .chars()
+        .take(200)
+        .collect();
+    if let Value::Object(m) = &mut event.detail {
+        m.insert("argv".into(), json!(shaped));
+        m.insert("argvShaped".into(), Value::Bool(true));
+    }
+}
+
 fn run_info_of(event: &Event, received: i64) -> Value {
     let cut = |v: Option<&Value>, max: usize| -> Value {
         v.and_then(Value::as_str)
@@ -1611,12 +1652,14 @@ fn run_info_restored(v: &Value) -> Value {
     out
 }
 
+/// The backlog, oldest first, at most `MAX_BACKLOG`, and whether older
+/// records were left out.
 pub fn merge_backlog<'a>(
     disk: Vec<Event>,
     ring: impl Iterator<Item = &'a Event>,
     since: i64,
     chat: Option<&str>,
-) -> Vec<Event> {
+) -> (Vec<Event>, bool) {
     let mut out: Vec<Event> = Vec::new();
     let mut slot: HashMap<(String, String), usize> = HashMap::new();
     let ring = ring.filter(|e| e.at >= since && chat.is_none_or(|c| c == e.chat_id));
@@ -1635,10 +1678,11 @@ pub fn merge_backlog<'a>(
         }
     }
     out.sort_by_key(|e| e.at);
-    if out.len() > MAX_BACKLOG {
+    let cut = out.len() > MAX_BACKLOG;
+    if cut {
         out.drain(..out.len() - MAX_BACKLOG);
     }
-    out
+    (out, cut)
 }
 
 fn bump(map: &mut Map<String, Value>, key: &Value) {
@@ -2095,6 +2139,63 @@ mod tests {
             json!({"name": "p", "lockfileVersion": 3, "packages": packages}).to_string(),
         )
         .unwrap();
+    }
+
+    /// Box test w5, BW5-12: a tail's backlog past MAX_BACKLOG was cut with
+    /// no word; merge_backlog now says it cut.
+    #[test]
+    fn a_backlog_past_its_cap_says_it_was_cut() {
+        let events: Vec<Event> = (0..MAX_BACKLOG as i64 + 1)
+            .map(|i| {
+                let mut e = ev_of("c", Source::Adapter, "tool.call", None, json!({}));
+                e.id = format!("e{i}");
+                e.at = i + 1;
+                e
+            })
+            .collect();
+        let (out, cut) = merge_backlog(events.clone(), std::iter::empty(), 0, None);
+        assert!(cut);
+        assert_eq!(out.len(), MAX_BACKLOG);
+        assert_eq!(out[0].id, "e1", "the oldest is the one left out");
+        let (out, cut) = merge_backlog(events[1..].to_vec(), std::iter::empty(), 0, None);
+        assert!(!cut);
+        assert_eq!(out.len(), MAX_BACKLOG);
+    }
+
+    /// Box test w5, BW5-12: an OS feed's exec record kept the harness's
+    /// prompt (`claude -p "MARKERZEBRA42 ..."`) in the log with content off
+    /// and on. The record keeps the argv's shape only, in the detail and the
+    /// summary, from auditd and eslogger alike.
+    #[test]
+    fn os_feed_exec_records_keep_only_the_argvs_shape() {
+        let (d, root) = daemon();
+        for (source, summary) in [
+            (Source::Auditd, "exec claude -p MARKERZEBRA42 x"),
+            (Source::Eslogger, "ran claude"),
+        ] {
+            let mut e = ev_of(
+                "chat-a",
+                source,
+                "exec",
+                Some(77),
+                json!({"argv": ["/usr/bin/claude", "-p", "MARKERZEBRA42 do it", "--model=haiku"]}),
+            );
+            e.summary = summary.into();
+            assert!(d.op_event(&Who::Daemon, e).ok);
+        }
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let execs: Vec<&Event> = ring.iter().filter(|e| e.kind == "exec").collect();
+        assert_eq!(execs.len(), 2, "{ring:?}");
+        for e in execs {
+            let all = serde_json::to_string(e).unwrap();
+            assert!(!all.contains("MARKERZEBRA42"), "{all}");
+            assert!(!all.contains("haiku"), "{all}");
+            assert_eq!(
+                e.detail["argv"],
+                json!(["/usr/bin/claude", "-p", "[19 chars]", "--model=[5 chars]"])
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Lane X's request 4 (integration w5, continue): through the daemon's

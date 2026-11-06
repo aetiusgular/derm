@@ -9,6 +9,7 @@
 //! `contracts/fixtures/policy/cases.json`.
 
 // Wave 5 lane W: command rules (contracts/policy.md section 7).
+pub mod argv;
 pub mod command;
 pub mod event;
 pub mod harness;
