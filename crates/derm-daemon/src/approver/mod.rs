@@ -195,8 +195,12 @@ impl Daemon {
                     person::Verdict::Wrong(w) => {
                         return error(format!("your password is needed because {why}: {w}"))
                     }
+                    // Not "your password is needed": no password can pass
+                    // here, so the approver must not ask for one (MW5-4).
                     person::Verdict::Unavailable(u) => {
-                        return error(format!("your password is needed because {why}, and {u}"))
+                        return error(format!(
+                            "a yes for this chat needs a person check because {why}, and {u}"
+                        ))
                     }
                 }
             } else if let Some(p) = password {
@@ -433,7 +437,13 @@ mod tests {
         assert!(!r.ok, "{r:?}");
         let err = r.error.unwrap_or_default();
         assert!(
-            err.contains("password is needed") && err.contains("runs as you"),
+            // Linux asks for the password; where no check is built (macOS)
+            // the daemon says so and asks for none (Mac test w5, MW5-4).
+            err.contains(if cfg!(target_os = "linux") {
+                "your password is needed"
+            } else {
+                "needs a person check"
+            }) && err.contains("runs as you"),
             "{err}"
         );
         // Still waiting: the person can answer no.

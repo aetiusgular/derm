@@ -71,6 +71,11 @@ pub enum Verdict {
 /// Checks a password for the daemon's own user.
 pub trait Checker: Send + Sync {
     fn check(&self, user: &str, password: &[u8]) -> Verdict;
+    /// Why no password can be checked here at all, before one is asked for
+    /// (Mac test w5, MW5-4): `None` where a check can run.
+    fn unavailable(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Whether a `yes` for `chat` needs a person check, and why. `run_info` is
@@ -155,6 +160,14 @@ pub fn verify(
     password: Option<&mut Vec<u8>>,
     now: Instant,
 ) -> Verdict {
+    // Where no check can run, say so before a password is asked for: a
+    // password typed for nothing is a secret sent for nothing (MW5-4).
+    if let Some(why) = checker.unavailable() {
+        if let Some(p) = password {
+            wipe(p);
+        }
+        return Verdict::Unavailable(why);
+    }
     let Some(password) = password else {
         return Verdict::Wrong("no password given".into());
     };
@@ -252,7 +265,12 @@ fn parents_trusted(real: &Path, trusted: u32) -> bool {
 impl Checker for UnixChkpwd {
     /// `unix_chkpwd <user> nonull`, the password and a NUL on a pipe (the
     /// helper refuses a terminal on stdin), exit 0 for the person's password.
-    /// `nonull`: an empty password is no proof.
+    /// `nonull`: an empty password is no proof. Only its exit 7
+    /// (`PAM_AUTH_ERR`) is a wrong password; any other failure, such as 9
+    /// (`PAM_AUTHINFO_UNAVAIL`: it could not read the shadow entry, as under
+    /// no_new_privs), is no verdict on the password (box test w5, BW5-17;
+    /// Linux-PAM 1.7.1 `modules/pam_unix/unix_chkpwd.c:160-176`,
+    /// `libpam/include/security/_pam_types.h:37, 40`).
     fn check(&self, user: &str, password: &[u8]) -> Verdict {
         let child = Command::new(&self.path)
             .args([user, "nonull"])
@@ -276,7 +294,22 @@ impl Checker for UnixChkpwd {
         loop {
             match child.try_wait() {
                 Ok(Some(status)) if status.success() => return Verdict::Person,
-                Ok(Some(_)) => return Verdict::Wrong("wrong password".into()),
+                Ok(Some(status)) if status.code() == Some(PAM_AUTH_ERR) => {
+                    return Verdict::Wrong("wrong password".into())
+                }
+                Ok(Some(status)) => {
+                    return Verdict::Unavailable(format!(
+                        "unix_chkpwd could not check the password ({}): {}",
+                        status
+                            .code()
+                            .map_or_else(|| "killed".to_string(), |c| format!("exit {c}")),
+                        if no_new_privs() {
+                            NNP_WHY
+                        } else {
+                            "it may not read /etc/shadow here"
+                        }
+                    ))
+                }
                 Ok(None) if start.elapsed() < HELPER_DEADLINE => {
                     std::thread::sleep(Duration::from_millis(20))
                 }
@@ -299,6 +332,36 @@ impl Checker for NoChecker {
     fn check(&self, _user: &str, _password: &[u8]) -> Verdict {
         Verdict::Unavailable(self.0.to_string())
     }
+    fn unavailable(&self) -> Option<String> {
+        Some(self.0.to_string())
+    }
+}
+
+/// Linux-PAM's code for a failed authentication, the one exit of
+/// `unix_chkpwd` that means a wrong password.
+#[cfg(unix)]
+const PAM_AUTH_ERR: i32 = 7;
+
+/// Why a set-id helper cannot check a password in a process with
+/// no_new_privs set.
+const NNP_WHY: &str = "the daemon runs with no_new_privs set (systemd's NoNewPrivileges=, \
+or a setting that implies it), so the set-group-id bit unix_chkpwd needs to read \
+/etc/shadow is ignored; start derm-daemon from a unit without it";
+
+/// Whether `/proc/self/status` says no_new_privs is set for this process
+/// (the kernel's `NoNewPrivs:` line; once set it is inherited and never
+/// unset: https://docs.kernel.org/userspace-api/no_new_privs.html).
+pub fn no_new_privs() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .map(|s| no_new_privs_in(&s))
+        .unwrap_or(false)
+}
+
+fn no_new_privs_in(status: &str) -> bool {
+    status.lines().any(|l| {
+        l.strip_prefix("NoNewPrivs:")
+            .is_some_and(|v| v.trim() == "1")
+    })
 }
 
 /// The platform's checker.
@@ -307,6 +370,11 @@ pub fn platform() -> Box<dyn Checker> {
     // (as before lane Z's patch); Windows has no helper to compile.
     #[cfg(unix)]
     if cfg!(target_os = "linux") {
+        // Under no_new_privs the helper's set-group-id bit is ignored, and
+        // every password, the right one too, would fail (BW5-17).
+        if no_new_privs() {
+            return Box::new(NoChecker(NNP_WHY));
+        }
         return match UnixChkpwd::find() {
             Ok(c) => Box::new(c),
             Err(why) => Box::new(NoChecker(Box::leak(why.into_boxed_str()))),
@@ -503,6 +571,121 @@ mod tests {
         ));
         assert!(long.iter().all(|b| *b == 0));
         assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// Box test w5, BW5-17: under the shipped unit's no_new_privs, Linux-PAM's
+    /// helper exits 9 for the right password and the wrong one alike (run in
+    /// the cloud with the real helper, `setpriv --no-new-privs`); only its
+    /// exit 7 is a wrong password, and only a wrong password counts against
+    /// the backoff.
+    #[cfg(unix)]
+    #[test]
+    fn only_the_helpers_auth_error_is_a_wrong_password() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("derm-chkpwd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (code, want) in [
+            (0, "person"),
+            (7, "wrong"),
+            (9, "unavailable"),
+            (1, "unavailable"),
+        ] {
+            // Written from a child process, then exec'd (case 154).
+            let path = dir.join(format!("chk{code}"));
+            let ok = Command::new("sh")
+                .arg("-c")
+                .arg("printf '#!/bin/sh\\ncat >/dev/null\\nexit %s\\n' \"$2\" > \"$1\" && chmod 755 \"$1\"")
+                .arg("sh")
+                .arg(&path)
+                .arg(code.to_string())
+                .status()
+                .unwrap();
+            assert!(ok.success());
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+            let c = UnixChkpwd { path };
+            let backoff = Backoff::default();
+            let v = verify(
+                &c,
+                &backoff,
+                "tony",
+                Some(&mut b"pw".to_vec()),
+                Instant::now(),
+            );
+            let got = match &v {
+                Verdict::Person => "person",
+                Verdict::Wrong(_) => "wrong",
+                Verdict::Unavailable(_) => "unavailable",
+            };
+            assert_eq!(got, want, "exit {code}: {v:?}");
+            assert_eq!(
+                backoff.waiting(Instant::now()).is_some(),
+                code == 7,
+                "exit {code}: only a wrong password waits"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_new_privs_is_read_from_the_status_line() {
+        assert!(no_new_privs_in("Name:\tx\nNoNewPrivs:\t1\nSeccomp:\t0\n"));
+        assert!(!no_new_privs_in("Name:\tx\nNoNewPrivs:\t0\n"));
+        assert!(!no_new_privs_in("Name:\tx\n"));
+    }
+
+    /// BW5-17: the shipped user unit must leave set-id helpers working, so
+    /// it sets neither NoNewPrivileges=yes nor a setting systemd says
+    /// implies it (systemd.exec(5), NoNewPrivileges=; read in Fedora 39's
+    /// man page, v254).
+    #[test]
+    fn the_shipped_unit_keeps_the_person_checks_helper_working() {
+        let unit = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/deb/derm-daemon.service"),
+        )
+        .unwrap();
+        let implying = [
+            "NoNewPrivileges=",
+            "DynamicUser=",
+            "LockPersonality=",
+            "MemoryDenyWriteExecute=",
+            "PrivateDevices=",
+            "ProtectClock=",
+            "ProtectHostname=",
+            "ProtectKernelLogs=",
+            "ProtectKernelModules=",
+            "ProtectKernelTunables=",
+            "RestrictAddressFamilies=",
+            "RestrictNamespaces=",
+            "RestrictRealtime=",
+            "RestrictSUIDSGID=",
+            "SystemCallArchitectures=",
+            "SystemCallFilter=",
+            "SystemCallLog=",
+        ];
+        for line in unit.lines().map(str::trim).filter(|l| !l.starts_with('#')) {
+            for k in implying {
+                assert!(
+                    !line.starts_with(k) || line == "NoNewPrivileges=no",
+                    "the unit sets {line}, which turns no_new_privs on"
+                );
+            }
+        }
+    }
+
+    /// MW5-4: where no check can run (macOS today), the daemon says so before
+    /// a password is asked for, and the reply does not read as a request
+    /// for one.
+    #[test]
+    fn a_platform_with_no_check_says_so_before_any_password() {
+        let none = NoChecker("no person check is built for this system yet");
+        let v = verify(&none, &Backoff::default(), "tony", None, Instant::now());
+        assert_eq!(
+            v,
+            Verdict::Unavailable("no person check is built for this system yet".into())
+        );
     }
 
     #[test]

@@ -1303,7 +1303,13 @@ fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
     assert_eq!(r["ok"], false, "{r}");
     let why = r["error"].as_str().unwrap_or("");
     assert!(
-        why.contains("password is needed") && why.contains("runs as you"),
+        // Linux asks for the password; where no check is built (macOS) the
+        // daemon says so and asks for none (Mac test w5, MW5-4).
+        why.contains(if cfg!(target_os = "linux") {
+            "your password is needed"
+        } else {
+            "needs a person check"
+        }) && why.contains("runs as you"),
         "{why}"
     );
     let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes",
