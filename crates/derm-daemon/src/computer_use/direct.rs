@@ -668,7 +668,7 @@ fn granted_pids(proc_root: &Path, uid: u32, programs: &[PathBuf]) -> Vec<(u64, P
         let Ok(exe) = fs::read_link(dir.join("exe")) else {
             continue;
         };
-        if programs.iter().any(|p| *p == exe) {
+        if programs.contains(&exe) {
             found.push((pid, exe));
         }
     }
