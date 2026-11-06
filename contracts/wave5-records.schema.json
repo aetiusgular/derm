@@ -276,6 +276,11 @@
           "additionalProperties": false
         },
         "ioUring": { "enum": ["not-audited", "blocked", "own-kernel"] },
+        "harnessExe": {
+          "description": "The program derm run started, by its real path, or null when it could not be resolved. The daemon's join finds the harness under a boundary's wrappers by it (Mac test w5, MW5-16; review FP3-S2). Integration w5's fix pass 3.",
+          "type": ["string", "null"],
+          "maxLength": 4096
+        },
         "sbxKit": {
           "description": "Under sbx: whether derm's kit (its gate in the VM) went on the create, and why not. Lane T's request P4-R3, integration w5's close.",
           "type": "object",

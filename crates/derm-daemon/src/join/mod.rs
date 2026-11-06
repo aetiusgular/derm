@@ -24,7 +24,10 @@
 //!    running belongs to that call, and so do its descendants; with several
 //!    shell calls, to them together, none chosen. The harness is `run.start`'s
 //!    pid, or, under a boundary or the agents' user, the process under its
-//!    wrappers that starts the first such shell (MW5-16).
+//!    wrappers that execs the program `derm run` started (`harnessExe`,
+//!    MW5-16). Until that process is seen, a shell any process under the
+//!    wrappers starts is a candidate of the shell calls running, none chosen
+//!    (review FP3-S2).
 //! 2. **Path.** A write to a path exactly one running call names is that
 //!    call's; several calls naming it make a candidate set.
 //! 3. **MCP server.** A child the harness started while no call ran (a stdio
@@ -125,15 +128,23 @@ enum Owner {
 struct ChatState {
     cwd: Option<String>,
     root_pid: Option<u32>,
+    /// Whether the run's root is a wrapper rather than the harness: under a
+    /// boundary (`run.start`'s `boundary` other than `none`) or the agents'
+    /// user (`agentUser`). With no boundary the root is the harness.
+    line_on: bool,
     /// The processes between the run's root and the harness, and the
     /// harness (Mac test w5 retest 2, MW5-16): under srt, `run.start`'s pid is
     /// srt's own, then its wrappers (`sandbox-exec`, `bwrap`, a shell's `-c`,
     /// `env`), and the harness under them; under the agents' user, `sudo`.
-    /// Every process started from one of these before the harness is known
-    /// joins them, while no call runs.
+    /// Every process started from one of these while no call runs joins
+    /// them until the harness is found, at most `MAX_PIDS` (review FP3-S4).
     line: std::collections::HashSet<u32>,
-    /// The harness, learned at the first shell a line process starts for a
-    /// shell call; from then on only it (and the root) places children.
+    /// The harness's executable as `derm run` resolved it (`harnessExe`).
+    harness_exe: Option<String>,
+    /// The line process that exec'd `harness_exe`; from then on only it
+    /// (and the root) places children. Never learned from what a process
+    /// does: an MCP server started with the session is a line process too,
+    /// and a chat token can post a call for any shell it starts (FP3-S2).
     harness: Option<u32>,
     /// When the chat's `run.stop` arrived (daemon time); its state is kept
     /// `STOPPED_KEEP_MS` after it (MW5-17).
@@ -275,7 +286,15 @@ impl Join {
                 let st = self.chat(&e.chat_id);
                 st.cwd = str_at(&e.detail, "cwd").map(str::to_string);
                 st.root_pid = e.pid;
-                st.line.extend(e.pid);
+                let boundary = str_at(&e.detail, "boundary");
+                st.line_on = boundary.is_some_and(|b| b != "none")
+                    || e.detail.get("agentUser").is_some_and(|v| !v.is_null());
+                if st.line_on {
+                    st.line.extend(e.pid);
+                    st.harness_exe = str_at(&e.detail, "harnessExe")
+                        .filter(|p| p.starts_with('/') && p.len() <= 4096)
+                        .map(str::to_string);
+                }
                 Vec::new()
             }
             (Source::Run, "run.stop") => {
@@ -373,20 +392,39 @@ impl Join {
             if let Some(child) = child {
                 let parent = if kind == "fork" { pid } else { ppid };
                 let program = str_at(&e.detail, "exe").or_else(|| str_at(&e.detail, "comm"));
-                // MW5-16: the processes between the run's root and the harness
-                // place children as the root does. Before the harness is
-                // known, anything a line process starts while no call runs
-                // joins the line (a wrapper, the harness, or a helper started
-                // with the session); a line process's shell for a shell call
-                // names the harness, and from then on only the root and the
-                // harness place children, so an MCP server started with the
-                // session keeps its children the session's (BW5-11).
-                let places = parent.is_some_and(|p| {
-                    Some(p) == st.root_pid
-                        || Some(p) == st.harness
-                        || (st.harness.is_none() && st.line.contains(&p))
-                });
-                if places && st.harness.is_none() && st.running(t).is_empty() {
+                // MW5-16: under a boundary the processes between the run's
+                // root and the harness place children as the root does.
+                // Until the harness is found, anything a line process starts
+                // while no call runs joins the line (a wrapper, the harness,
+                // or a helper started with the session). The harness is the
+                // line process that execs the program `derm run` started
+                // (`harnessExe`); from then on only the root and the harness
+                // place children, so an MCP server started with the session
+                // keeps its children the session's (BW5-11). Until then a
+                // line process's shell is a candidate of the shell calls
+                // running, never chosen: derm cannot tell the harness from a
+                // helper it started (review FP3-S2).
+                let line_place = |st: &ChatState, p: u32| {
+                    st.line_on && st.harness.is_none() && st.line.contains(&p)
+                };
+                if kind == "exec"
+                    && line_place(st, child)
+                    && st.harness_exe.is_some()
+                    && program == st.harness_exe.as_deref()
+                {
+                    st.harness = Some(child);
+                    st.line.clear();
+                }
+                let by_root =
+                    parent.is_some_and(|p| Some(p) == st.root_pid || Some(p) == st.harness);
+                let by_line = !by_root && parent.is_some_and(|p| line_place(st, p));
+                let places = by_root || by_line;
+                if places
+                    && st.line_on
+                    && st.harness.is_none()
+                    && st.running(t).is_empty()
+                    && st.line.len() < MAX_PIDS
+                {
                     st.line.insert(child);
                 }
                 let inherited = if places {
@@ -418,19 +456,11 @@ impl Join {
                             (_, "fork") => None,
                             _ if program.is_some_and(shell_program) => match shells.len() {
                                 0 => Some(Owner::Ambiguous),
-                                1 => Some(Owner::Call(shells[0].clone())),
+                                1 if !by_line => Some(Owner::Call(shells[0].clone())),
                                 _ => Some(Owner::Among(shells.into())),
                             },
                             _ => Some(Owner::Ambiguous),
                         };
-                        // The first shell a line process starts for shell
-                        // calls names that process as the harness.
-                        if st.harness.is_none()
-                            && kind == "exec"
-                            && matches!(placed, Some(Owner::Call(_)) | Some(Owner::Among(_)))
-                        {
-                            st.harness = parent;
-                        }
                         placed
                     }
                     None => None,

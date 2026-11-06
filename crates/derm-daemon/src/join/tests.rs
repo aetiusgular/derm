@@ -28,6 +28,18 @@ fn start(j: &mut Join) {
     ));
 }
 
+/// `run.start` under a boundary, with the harness's executable as `derm run`
+/// resolved it (or none, as for a harness `derm run` could not resolve).
+fn start_under(j: &mut Join, boundary: &str, exe: Option<&str>) {
+    j.observe(&ev(
+        Source::Run,
+        "run.start",
+        0,
+        Some(ROOT),
+        json!({"cwd": "/w", "boundary": boundary, "harnessExe": exe}),
+    ));
+}
+
 /// A tool call: the tap sees it at `t`, the gate allows it at `t + 10`, the
 /// hook reports it ran at `end`.
 fn call(j: &mut Join, id: &str, tool: &str, paths: &[&str], t: i64, end: Option<i64>) {
@@ -471,8 +483,8 @@ fn an_untapped_shell_call_still_owns_its_shell() {
 #[test]
 fn under_a_boundarys_wrappers_the_harness_shells_are_still_its_calls() {
     let mut j = Join::new();
-    start(&mut j); // ROOT is srt's node.
-                   // srt -> sandbox-exec -> sh -c -> env -> claude, all before any call.
+    start_under(&mut j, "srt", Some("/opt/claude/claude")); // ROOT is srt's node.
+                                                            // srt -> sandbox-exec -> sh -c -> env -> claude, all before any call.
     effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1100}));
     effect(
         &mut j,
@@ -561,6 +573,240 @@ fn under_a_boundarys_wrappers_the_harness_shells_are_still_its_calls() {
     let r = effect(&mut j, "write", 3_100, 1500, ROOT, json!({"path": "/w/z"}));
     // The root still places, as it always has: under none it is the harness.
     assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_S", "{r:?}");
+}
+
+/// Review FP3-S2: an MCP server started with the session is a process under
+/// the wrappers too. A shell it starts during a Bash call, before the
+/// harness's own, must not be chosen for that call, and must not make it the
+/// placer: the harness is the process that execs `harnessExe`.
+#[test]
+fn an_mcp_servers_shell_under_a_boundary_is_never_chosen_for_a_call() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", Some("/opt/claude/claude"));
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1100}));
+    effect(
+        &mut j,
+        "exec",
+        101,
+        1100,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(&mut j, "fork", 103, 1100, ROOT, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        1100,
+        json!({"exe": "/opt/claude/claude"}),
+    );
+    effect(&mut j, "fork", 200, 1101, 1100, json!({"child": 1200}));
+    effect(
+        &mut j,
+        "exec",
+        201,
+        1200,
+        1101,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_S", "bash", &[], 1_000, Some(5_000));
+    // The MCP server's shell, 40 ms before the harness's.
+    effect(&mut j, "fork", 1_050, 1200, 1101, json!({"child": 1400}));
+    effect(&mut j, "exec", 1_060, 1400, 1200, json!({"exe": "/bin/sh"}));
+    let mcp = effect(
+        &mut j,
+        "write",
+        1_070,
+        1400,
+        1200,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    effect(&mut j, "fork", 1_100, 1101, 1100, json!({"child": 1300}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        1300,
+        1101,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let real = effect(
+        &mut j,
+        "write",
+        1_300,
+        1300,
+        1101,
+        json!({"path": "/w/out.txt"}),
+    );
+    assert!(
+        mcp.iter().all(|e| e.detail["chosen"].is_null()),
+        "mcp write chosen: {mcp:?}"
+    );
+    assert_eq!(
+        real.first().map(|e| e.detail["chosen"].clone()),
+        Some(json!("tap-chat-j-toolu_S")),
+        "real write: {real:?}"
+    );
+}
+
+/// Review FP3-S2b: a chat token can post an approval for a Bash call that
+/// never ran, so a shell started then must not take the harness's place for
+/// the rest of the chat.
+#[test]
+fn a_forged_call_cannot_take_the_harness_place() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", Some("/opt/claude/claude"));
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        ROOT,
+        json!({"exe": "/opt/claude/claude"}),
+    );
+    effect(&mut j, "fork", 200, 1101, ROOT, json!({"child": 1200}));
+    effect(
+        &mut j,
+        "exec",
+        201,
+        1200,
+        1101,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        500,
+        None,
+        json!({"toolUseId": "toolu_FORGED", "tool": "Bash", "decision": "allow"}),
+    ));
+    effect(&mut j, "fork", 510, 1200, 1101, json!({"child": 1400}));
+    effect(&mut j, "exec", 520, 1400, 1200, json!({"exe": "/bin/sh"}));
+    let t = 20 * 60 * 1000;
+    call(&mut j, "toolu_R", "bash", &[], t, Some(t + 4_000));
+    effect(&mut j, "fork", t + 100, 1101, ROOT, json!({"child": 1300}));
+    effect(
+        &mut j,
+        "exec",
+        t + 110,
+        1300,
+        1101,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let real = effect(
+        &mut j,
+        "write",
+        t + 300,
+        1300,
+        1101,
+        json!({"path": "/w/out.txt"}),
+    );
+    assert_eq!(
+        real.first().map(|e| e.detail["chosen"].clone()),
+        Some(json!("tap-chat-j-toolu_R")),
+        "real write: {real:?}"
+    );
+}
+
+/// Where `derm run` could not name the harness's executable (a script run by
+/// its interpreter, a shim), no process under the wrappers is taken for the
+/// harness: their shells are candidates of the running shell calls, none
+/// chosen (case 123's rule), so the writes are still seen.
+#[test]
+fn with_no_harness_exe_shells_under_a_boundary_are_candidates_only() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", None);
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    effect(&mut j, "fork", 200, 1101, ROOT, json!({"child": 1200}));
+    effect(
+        &mut j,
+        "exec",
+        201,
+        1200,
+        1101,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_S", "bash", &[], 1_000, Some(5_000));
+    for (shell, parent) in [(1400, 1200), (1300, 1101)] {
+        effect(&mut j, "fork", 1_050, parent, ROOT, json!({"child": shell}));
+        effect(
+            &mut j,
+            "exec",
+            1_060,
+            shell,
+            parent,
+            json!({"exe": "/bin/sh"}),
+        );
+        let r = effect(
+            &mut j,
+            "write",
+            1_070,
+            shell,
+            parent,
+            json!({"path": "/w/x"}),
+        );
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(r[0].detail["chosen"].is_null(), "{r:?}");
+        assert_eq!(
+            r[0].detail["candidates"][0]["call"], "tap-chat-j-toolu_S",
+            "{r:?}"
+        );
+        assert_eq!(r[0].detail["candidates"][0]["by"], "tree", "{r:?}");
+    }
+}
+
+/// With no boundary the root is the harness, and a helper it started with
+/// the session (an MCP server) places nothing (BW5-11, as before MW5-16).
+#[test]
+fn with_no_boundary_only_the_root_places() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some("/opt/claude/claude"));
+    effect(&mut j, "fork", 200, ROOT, 1, json!({"child": 1200}));
+    effect(
+        &mut j,
+        "exec",
+        201,
+        1200,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_S", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_050, 1200, ROOT, json!({"child": 1400}));
+    effect(&mut j, "exec", 1_060, 1400, 1200, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_070, 1400, 1200, json!({"path": "/w/x"}));
+    assert!(
+        r.iter().all(|e| e.detail["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["by"] != "tree")),
+        "{r:?}"
+    );
+}
+
+/// Review FP3-S4: the line is bounded like the owners map.
+#[test]
+fn the_line_is_bounded() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", None);
+    for n in 0..(MAX_PIDS as u32 + 1_000) {
+        effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 100_000 + n}));
+    }
+    let len = j.chats.get(CHAT).unwrap().line.len();
+    assert!(
+        len <= MAX_PIDS,
+        "line holds {len} pids, MAX_PIDS {MAX_PIDS}"
+    );
 }
 
 /// Mac test w5 retest 2, MW5-17: the Mac's OS events reach the daemon

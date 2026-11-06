@@ -374,6 +374,20 @@ fn words_at(args: &[String], rest: &[String]) -> Option<usize> {
     None
 }
 
+/// The program `derm run` starts, by its real path: a path as given, or the
+/// first match on PATH, with every link resolved, as the OS feeds name an
+/// exec's file. None when it cannot be found, or is not absolute.
+fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
+    let found = if program.contains('/') {
+        std::path::PathBuf::from(program)
+    } else {
+        crate::watch::status::find_on_path(program, path?)?
+    };
+    let real = std::fs::canonicalize(found).ok()?;
+    real.is_absolute()
+        .then(|| real.to_string_lossy().into_owned())
+}
+
 fn recorded_argv(
     program: &str,
     args: &[String],
@@ -1097,6 +1111,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "dangerousFlags": dangerous,
         "fullAccess": !dangerous.is_empty(),
         "outsideShapeOnly": a.harness.id == "other",
+        // The harness's executable by its real path, so the daemon's join
+        // can find the harness under a boundary's wrappers by what it execs
+        // (MW5-16, review FP3-S2); null when it cannot be resolved here.
+        "harnessExe": harness_exe(
+            a.program.as_deref().unwrap_or(a.harness.command),
+            std::env::var("PATH").ok().as_deref(),
+        ),
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
@@ -1493,6 +1514,31 @@ mod end_to_end {
         assert!(!all.contains(&secret), "{all}");
         assert!(!all.contains("sk-ant-inline"), "{all}");
         assert!(all.contains("--api-key"), "{all}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_harness_exe_is_the_programs_real_path() {
+        let dir = std::env::temp_dir().join(format!("derm-hexe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("versions")).unwrap();
+        let real = dir.join("versions/claude-9.9.9");
+        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&real, dir.join("bin/claude")).unwrap();
+        let path = format!("relative:{}", dir.join("bin").display());
+        let want = std::fs::canonicalize(&real)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(harness_exe("claude", Some(&path)), Some(want.clone()));
+        let linked = dir.join("bin/claude").to_string_lossy().into_owned();
+        assert_eq!(harness_exe(&linked, None), Some(want));
+        assert_eq!(harness_exe("claude", None), None);
+        assert_eq!(harness_exe("not-there-derm", Some(&path)), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
