@@ -411,7 +411,7 @@ pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) 
         // Mac test w5, MW5-2: an endpoint left by an earlier daemon stayed,
         // and `derm-daemon cu-mcp` sent its chat token to whatever listened
         // on that port. As for the tap's endpoint, no service, no file.
-        clear_endpoint(&paths.runtime_dir());
+        clear_endpoint(paths.runtime_dir());
         return;
     }
     let Some(settings) = settings_path() else {
@@ -423,7 +423,7 @@ pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) 
             super::settings::computer_use_on(&settings, uid)
         })),
         Err(e) => {
-            clear_endpoint(&paths.runtime_dir());
+            clear_endpoint(paths.runtime_dir());
             eprintln!("derm-daemon: computer use did not start: {e}");
         }
     }
