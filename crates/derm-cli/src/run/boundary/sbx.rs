@@ -195,6 +195,23 @@ pub(crate) fn stages(
     })
 }
 
+/// What a dry run prints for sbx (box test w5, BW5-5's rest): the steps
+/// `start` runs, not the one-step `sbx run` argv the plan holds. derm's kit,
+/// when it goes on, is added to the create at the start (`--kit <kit>`).
+pub(crate) fn describe_steps(args: &[String], env_set: &[(String, String)]) -> Option<String> {
+    let st = stages(args, env_set, interactive(), &[]).ok()?;
+    let mut out = String::from("sbx steps derm runs (in order):\n");
+    let line = |w: &[String]| format!("  sbx {}\n", w.join(" "));
+    out.push_str(&line(&st.create));
+    for a in &st.allow {
+        out.push_str(&line(a));
+    }
+    out.push_str(&line(&st.attach));
+    out.push_str(&line(&st.remove));
+    out.push_str("  (derm's kit, when it goes on, is added to the create as --kit <kit>; the rules go with the sandbox)\n");
+    Some(out)
+}
+
 /// The host ports the plan points the VM at: every variable whose value is
 /// an http or https URL on `host.docker.internal` (plan.rs and the tap
 /// rewrite loopback to that name under sbx).
@@ -445,6 +462,42 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// Box test w5, BW5-5's rest: the dry run printed the one-step `sbx run`
+    /// argv, not the create, rule, attach and remove derm runs.
+    #[test]
+    fn the_dry_run_names_the_four_steps() {
+        let args = s(&[
+            "run",
+            "--name",
+            "derm-c1",
+            "-e",
+            "DERM_OTLP_ENDPOINT",
+            "claude",
+            "/work",
+        ]);
+        let env = vec![(
+            "DERM_OTLP_ENDPOINT".to_string(),
+            "http://host.docker.internal:4318".to_string(),
+        )];
+        let t = describe_steps(&args, &env).unwrap();
+        let lines: Vec<&str> = t.lines().collect();
+        assert!(
+            lines[1].starts_with("  sbx create --name derm-c1 -e DERM_OTLP_ENDPOINT"),
+            "{t}"
+        );
+        assert!(lines[1].ends_with("claude /work"), "{t}");
+        assert_eq!(
+            lines[2], "  sbx policy allow network --sandbox derm-c1 localhost:4318",
+            "{t}"
+        );
+        assert_eq!(
+            lines[3], "  sbx run --name derm-c1 -e DERM_OTLP_ENDPOINT",
+            "{t}"
+        );
+        assert_eq!(lines[4], "  sbx rm --force derm-c1", "{t}");
+        assert!(describe_steps(&s(&["exec"]), &env).is_none());
     }
 
     #[test]

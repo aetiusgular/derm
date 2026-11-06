@@ -889,6 +889,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     }
     if a.dry_run {
         print!("{}", plan::describe(&p));
+        // BW5-5's rest: under sbx the plan's one-step argv is not what runs.
+        if a.boundary == Boundary::Sbx {
+            if let Some(steps) = boundary::sbx::describe_steps(&p.args, &p.env_set) {
+                print!("{steps}");
+            }
+        }
         if !a.no_daemon {
             println!("(dry run: no token minted, nothing started, nothing recorded)");
         }
