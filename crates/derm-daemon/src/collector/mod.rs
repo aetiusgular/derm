@@ -263,18 +263,117 @@ fn can_change(_p: &std::path::Path) -> bool {
     true
 }
 
+/// How often the pump asks the collector for what it saw.
+pub const PUMP_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// How far back each ask reaches before the newest event already taken: an
+/// event the collector stamps a little before one it already gave.
+pub const PUMP_OVERLAP_MS: i64 = 5_000;
+/// How many recent ids the pump remembers, to take an event once.
+pub const PUMP_SEEN: usize = 50_000;
+
+/// The collector's events into the daemon's own feed (Mac test w5, MW5-14).
+/// Until this, the daemon read them only for `report`'s flags, so on macOS
+/// no eslogger record reached `Daemon::ingest`: no join candidate set, no
+/// install control flag, no argv shaped. The Linux feed has always posted
+/// its records through the socket (`derm-audit-feed`); this does the same
+/// from inside the daemon. Each event is taken once (by id), keeps the
+/// collector's own time as `osAt` (the join's effect time), and keeps its
+/// id, so `report` counts it once (`flags_report` skips a collector event
+/// the log already holds).
+#[derive(Debug)]
+pub struct Pump {
+    cursor: i64,
+    seen: std::collections::HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl Pump {
+    /// A pump that takes events from `since` on (the daemon's start).
+    pub fn new(since: i64) -> Self {
+        Pump {
+            cursor: since,
+            seen: Default::default(),
+            order: Default::default(),
+        }
+    }
+
+    /// The window to ask for next.
+    pub fn since(&self) -> i64 {
+        self.cursor.saturating_sub(PUMP_OVERLAP_MS)
+    }
+
+    /// The events of one reply that are new, ready for `ingest`.
+    pub fn take(&mut self, reply: crate::activity::collector::EventsReply) -> Vec<Event> {
+        let mut out = Vec::new();
+        for mut event in reply.events {
+            if event.source != Source::Eslogger || event.id.is_empty() {
+                continue;
+            }
+            if !self.seen.insert(event.id.clone()) {
+                continue;
+            }
+            self.order.push_back(event.id.clone());
+            while self.order.len() > PUMP_SEEN {
+                if let Some(old) = self.order.pop_front() {
+                    self.seen.remove(&old);
+                }
+            }
+            self.cursor = self.cursor.max(event.at);
+            if let Value::Object(map) = &mut event.detail {
+                map.entry("osAt").or_insert(Value::from(event.at));
+            }
+            out.push(event);
+        }
+        out
+    }
+}
+
+/// One round: ask, ingest what is new. `fetch` is the collector's events
+/// between two times (`activity::collector::fetch_events` on a Mac).
+pub fn pump_once(
+    daemon: &Daemon,
+    pump: &mut Pump,
+    now: i64,
+    fetch: impl Fn(i64, i64) -> crate::activity::collector::EventsReply,
+) -> usize {
+    let events = pump.take(fetch(pump.since(), now));
+    let n = events.len();
+    for event in events {
+        daemon.ingest(event);
+    }
+    n
+}
+
 /// Starts what lane K adds to a running daemon. Returns at once.
 pub fn start(daemon: &Arc<Daemon>, paths: &Paths) {
     if cfg!(target_os = "macos") {
-        let daemon = daemon.clone();
+        let follower = daemon.clone();
         let _ = std::thread::Builder::new()
             .name("derm-daemon-collector".into())
             .spawn(move || {
-                follow(&daemon, |event| {
+                follow(&follower, |event| {
                     if let Some(r) = registration(&event) {
                         apply(r);
                     }
                 })
+            });
+        let pumped = daemon.clone();
+        let _ = std::thread::Builder::new()
+            .name("derm-daemon-collector-pump".into())
+            .spawn(move || {
+                use crate::activity::collector;
+                let mut pump = Pump::new(crate::activity::store::now_ms());
+                loop {
+                    std::thread::sleep(PUMP_EVERY);
+                    pump_once(
+                        &pumped,
+                        &mut pump,
+                        crate::activity::store::now_ms(),
+                        |since, until| {
+                            collector::fetch_events(since, until, None, collector::MAX_EVENTS)
+                        },
+                    );
+                }
             });
     }
     #[cfg(feature = "computer-use")]

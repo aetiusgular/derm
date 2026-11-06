@@ -2421,6 +2421,120 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Mac test w5, MW5-14: on macOS the collector's eslogger events were
+    /// read only for `report`, so none reached `ingest`: no join, no
+    /// control-path flag, no argv shape. Through the pump they do, each
+    /// once, with the collector's own time as the effect time.
+    #[test]
+    fn the_mac_collectors_events_reach_ingest_through_the_pump() {
+        use crate::activity::collector::EventsReply;
+        use crate::collector::{pump_once, Pump};
+        let (d, root) = daemon();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        package_lock(&work, &[("left-pad", "1.3.0")]);
+        let chat = Who::Chat {
+            chat: "chat-m".into(),
+            harness: "claude-code".into(),
+        };
+        let mut start = ev_of(
+            "chat-m",
+            Source::Run,
+            "run.start",
+            Some(6161),
+            json!({"cwd": work.to_string_lossy()}),
+        );
+        start.harness = "claude-code".into();
+        assert!(d.op_event(&Who::Daemon, start).ok);
+        let install = json!({"trust": "client", "toolUseId": "toolu_M", "manager": "npm", "form": "add", "packages": [{"name": "pkghook", "version": null, "ecosystem": "npm", "inLockfile": null}], "decision": "allow", "check": null});
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of("", Source::Adapter, "install.call", None, install)
+            )
+            .ok
+        );
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "approval",
+                    None,
+                    json!({"toolUseId": "toolu_M", "tool": "bash", "decision": "allow"})
+                )
+            )
+            .ok
+        );
+        // What eslogger saw, as the collector gives it: its own `at`, no
+        // auditAt or osAt.
+        let t = now_ms();
+        let mut seq = 0;
+        let mut os = |kind: &str, pid: u32, detail: Value| {
+            seq += 1;
+            let mut e = ev_of("chat-m", Source::Eslogger, kind, Some(pid), detail);
+            e.id = format!("es-{seq}");
+            e.at = t + seq;
+            e
+        };
+        let events = vec![
+            os("fork", 6161, json!({"ppid": 1, "child": 6190})),
+            os(
+                "exec",
+                6190,
+                json!({"ppid": 6161, "exe": "/bin/zsh", "argv": ["/bin/zsh", "-c", "npm install ../pkghook MARKERZEBRA42"]}),
+            ),
+            os("fork", 6190, json!({"ppid": 6161, "child": 6200})),
+            os(
+                "write",
+                6200,
+                json!({"ppid": 6190, "path": format!("{}/.git/hooks/pre-commit", work.to_string_lossy()), "exe": "/usr/local/bin/node"}),
+            ),
+        ];
+        let reply = || EventsReply {
+            events: events.clone(),
+            complete: true,
+            connected: true,
+            chain_ok: true,
+            ..EventsReply::default()
+        };
+        let mut pump = Pump::new(t - 1);
+        assert_eq!(pump_once(&d, &mut pump, t + 100, |_, _| reply()), 4);
+        // The same events again (the overlap): taken once.
+        assert_eq!(pump_once(&d, &mut pump, t + 200, |_, _| reply()), 0);
+        assert!(pump.since() <= t + 4);
+        package_lock(&work, &[("left-pad", "1.3.0"), ("pkghook", "1.0.0")]);
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "tool.call",
+                    None,
+                    json!({"toolUseId": "toolu_M"})
+                )
+            )
+            .ok
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let of = |k: &str| ring.iter().filter(|e| e.kind == k).collect::<Vec<_>>();
+        let exec = of("exec");
+        assert_eq!(exec.len(), 1, "{ring:?}");
+        assert_eq!(exec[0].detail["argvShaped"], json!(true));
+        assert!(!serde_json::to_string(exec[0])
+            .unwrap()
+            .contains("MARKERZEBRA42"));
+        assert_eq!(exec[0].detail["osAt"], json!(t + 2));
+        assert!(!of("join.candidates").is_empty(), "{ring:?}");
+        let flags = of("install.control");
+        assert_eq!(flags.len(), 1, "{ring:?}");
+        assert_eq!(flags[0].detail["call"], of("install.call")[0].id.as_str());
+        assert_eq!(of("install.lockdiff").len(), 1, "{ring:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// A chat token cannot point the diff at another folder: the record's
     /// own cwd is never read, and a chat with no daemon-scope run.start has
     /// no folder.
