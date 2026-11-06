@@ -19,7 +19,7 @@
 //!   process can only post into the chat whose token it holds.
 //! - Requests whose `Host` is not this listener are refused (DNS rebinding),
 //!   and a browser's preflight gets no CORS answer.
-//! - Bounded: 16 connections, a 16 KiB head, a 4 MiB body, deadlines re-armed
+//! - Bounded: 64 connections (16 before a token, W5R-2), a 16 KiB head, a 4 MiB body, deadlines re-armed
 //!   before every read, a request rate cap, 2,000 records per request.
 //! - Off in Settings means no harness is pointed here and anything still
 //!   arriving is dropped.
@@ -61,7 +61,14 @@ pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
 /// Requests one chat's token may have open at once, counted from its head.
 const MAX_OPEN_PER_CHAT: usize = 8;
-const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+/// How long a connection has to send its head (re-review W5R-2: 10 s let
+/// idle connections from any local process hold every slot that long). A
+/// hook, a harness's exporter and the kit's route send theirs at once.
+const HEAD_DEADLINE: Duration = Duration::from_secs(2);
+/// Connections that have not shown a token yet, at most, out of
+/// `MAX_CONNECTIONS`: idle ones cannot take the slots a chat's requests need
+/// (W5R-2). A request leaves this pool once its token is known.
+const MAX_HEADS: usize = 16;
 const BODY_DEADLINE: Duration = Duration::from_secs(30);
 /// Chats with a token. The oldest gives way; its harness's next start gets a
 /// new one.
@@ -180,6 +187,8 @@ pub struct Receiver {
     settings: Arc<Mutex<Settings>>,
     sink: Sink,
     open: AtomicUsize,
+    /// Of `open`, those that have not shown a token yet (W5R-2).
+    heads: AtomicUsize,
     rate: Mutex<(f64, Instant)>,
     /// The daemon's ops for the derm routes; until set, they answer 503.
     ops: OnceLock<Ops>,
@@ -252,6 +261,7 @@ impl Receiver {
             settings,
             sink,
             open: AtomicUsize::new(0),
+            heads: AtomicUsize::new(0),
             rate: Mutex::new((RATE_BURST, Instant::now())),
             ops: OnceLock::new(),
             content: OnceLock::new(),
@@ -508,14 +518,24 @@ impl Receiver {
                 close_without_waiting(&stream);
                 continue;
             }
+            if self.heads.fetch_add(1, Ordering::SeqCst) >= MAX_HEADS {
+                self.heads.fetch_sub(1, Ordering::SeqCst);
+                self.open.fetch_sub(1, Ordering::SeqCst);
+                let mut stream = stream;
+                let _ = respond(&mut stream, 503, None);
+                close_without_waiting(&stream);
+                continue;
+            }
             let slot = OpenSlot(self.clone());
+            let mut head_slot = Some(HeadSlot(self.clone()));
             let receiver = self.clone();
             let _ = std::thread::Builder::new()
                 .name("otel-receiver-conn".into())
                 .spawn(move || {
                     let _slot = slot;
                     let mut stream = stream;
-                    let status = receiver.handle(&stream);
+                    let status = receiver.handle(&stream, &mut head_slot);
+                    drop(head_slot);
                     let (code, kind) = match status {
                         Ok(answer) => (200, Some(answer)),
                         Err(code) => {
@@ -542,7 +562,7 @@ impl Receiver {
     }
 
     /// One request. `Ok` holds what to answer with.
-    fn handle(&self, stream: &TcpStream) -> Result<Answer, u16> {
+    fn handle(&self, stream: &TcpStream, head_slot: &mut Option<HeadSlot>) -> Result<Answer, u16> {
         self.counters.requests.fetch_add(1, Ordering::Relaxed);
         let mut reader = BufReader::new(Armed::new(stream, Instant::now() + HEAD_DEADLINE));
         let head = read_head(&mut reader)?;
@@ -574,6 +594,8 @@ impl Receiver {
         let holder = token_from(&head)
             .and_then(|t| self.holder(&t))
             .ok_or(401u16)?;
+        // A token is known: the connection leaves the pool of heads.
+        head_slot.take();
         // The chat's share of the open requests (W5C-S4), held to the end.
         let _open = self
             .hold(&holder.chat_id, Count::Open, MAX_OPEN_PER_CHAT)
@@ -865,6 +887,15 @@ enum BodyKind {
 }
 
 struct OpenSlot(Arc<Receiver>);
+
+/// A place in the pool of connections with no token yet (W5R-2).
+struct HeadSlot(Arc<Receiver>);
+
+impl Drop for HeadSlot {
+    fn drop(&mut self) {
+        self.0.heads.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 impl Drop for OpenSlot {
     fn drop(&mut self) {

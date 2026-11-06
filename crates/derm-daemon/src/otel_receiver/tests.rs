@@ -1373,3 +1373,40 @@ fn one_request_makes_one_content_file_per_part_within_the_chats_allowance() {
     assert_eq!(e.detail["contentKept"], true);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// Re-review W5R-2: before a token is read, any local process could hold
+/// every connection slot with idle connections for the 10 s head deadline,
+/// and every chat's records got 503 (run by the reviewer). Connections with
+/// no token yet share a smaller pool and a shorter deadline, so a chat's
+/// request gets through within seconds of a flood of idle ones. A local
+/// flood can still delay it (any loopback port can be flooded); it cannot
+/// hold it out.
+#[test]
+fn idle_connections_before_a_token_cannot_hold_a_chat_out() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-w5r2", "claude-code").unwrap();
+    let held: Vec<TcpStream> = (0..64)
+        .filter_map(|_| TcpStream::connect(("127.0.0.1", port)).ok())
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let started = Instant::now();
+    let mut got = 0;
+    while started.elapsed() < Duration::from_secs(4) {
+        got = post(
+            port,
+            "/v1/traces",
+            &[
+                ("content-type", "application/json"),
+                ("x-derm-token", &token),
+            ],
+            b"{}",
+        );
+        if got == 200 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(got, 200, "held out for {:?}", started.elapsed());
+    drop(held);
+}

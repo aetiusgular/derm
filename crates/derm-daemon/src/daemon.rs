@@ -261,6 +261,22 @@ pub fn default_data_dir() -> Option<PathBuf> {
         .map(|d| d.join("derm"))
 }
 
+/// A chat token's records a second over the socket, and its burst
+/// (re-review W5R-3). A hook posts a few records per tool call.
+pub const SOCKET_RATE_PER_CHAT_SEC: f64 = 50.0;
+pub const SOCKET_BURST_PER_CHAT: f64 = 500.0;
+/// A chat token's bytes of records a day over the socket (W5R-3).
+pub const SOCKET_BYTES_PER_CHAT_DAY: usize = 128 * 1024 * 1024;
+/// Chats with a quota at once.
+const MAX_QUOTA_CHATS: usize = 2_048;
+
+struct Quota {
+    tokens: f64,
+    at: std::time::Instant,
+    day: i64,
+    bytes: usize,
+}
+
 pub struct Daemon {
     token_hash: String,
     log: &'static ActivityLog,
@@ -284,6 +300,9 @@ pub struct Daemon {
     /// daemon did: what it left running may hold `daemon.token`, so every
     /// `yes` needs the person check from then on (S2 part b, lane V).
     ran_as_you: std::sync::atomic::AtomicBool,
+    /// Each chat token's share of the socket (re-review W5R-3): its records
+    /// a second and its bytes a day.
+    chat_quota: Mutex<HashMap<String, Quota>>,
     /// What `derm status` shows for each running chat, from its `run.start`:
     /// harness, boundary, when, full-access flags (box test w2, BW3: the
     /// tail's backlog lost a chat behind a flood of newer events).
@@ -483,6 +502,7 @@ impl Daemon {
             chats: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
             ran_as_you: std::sync::atomic::AtomicBool::new(false),
+            chat_quota: Mutex::new(HashMap::new()),
             run_info: Mutex::new(HashMap::new()),
             minted_at: Mutex::new(HashMap::new()),
             state_file,
@@ -918,6 +938,54 @@ impl Daemon {
         }
     }
 
+    /// Takes one record of `bytes` from a chat's share of the socket.
+    fn take_chat_quota(
+        &self,
+        chat: &str,
+        bytes: usize,
+        now_ms: i64,
+        now: std::time::Instant,
+    ) -> Result<(), &'static str> {
+        let Ok(mut all) = self.chat_quota.lock() else {
+            return Err("busy");
+        };
+        if !all.contains_key(chat) && all.len() >= MAX_QUOTA_CHATS {
+            // A chat at rest gives way first; else the one with the least
+            // spent today.
+            if let Some(k) = all
+                .iter()
+                .min_by_key(|(_, q)| q.bytes)
+                .map(|(k, _)| k.clone())
+            {
+                all.remove(&k);
+            }
+        }
+        let day = now_ms.div_euclid(86_400_000);
+        let q = all.entry(chat.to_string()).or_insert(Quota {
+            tokens: SOCKET_BURST_PER_CHAT,
+            at: now,
+            day,
+            bytes: 0,
+        });
+        q.tokens = (q.tokens
+            + now.saturating_duration_since(q.at).as_secs_f64() * SOCKET_RATE_PER_CHAT_SEC)
+            .min(SOCKET_BURST_PER_CHAT);
+        q.at = now;
+        if q.day != day {
+            q.day = day;
+            q.bytes = 0;
+        }
+        if q.tokens < 1.0 {
+            return Err("this chat posts too fast; record dropped");
+        }
+        if q.bytes.saturating_add(bytes) > SOCKET_BYTES_PER_CHAT_DAY {
+            return Err("this chat has posted its day's share of records; record dropped");
+        }
+        q.tokens -= 1.0;
+        q.bytes += bytes;
+        Ok(())
+    }
+
     fn op_event(&self, who: &Who, mut event: Event) -> Reply {
         // A computer-use action record is the daemon's own (lane U's request
         // R1; `trust: daemon` in `contracts/wave5-records.schema.json`): no
@@ -938,6 +1006,16 @@ impl Daemon {
                 }
                 event.chat_id = chat.clone();
                 event.harness = harness.clone();
+                // A chat token is the agent's too (case 66), so its posts are
+                // bounded per chat: the reviewer's agent wrote 1.3 GB in
+                // 22 s over the socket (re-review W5R-3).
+                let bytes = serde_json::to_vec(&event).map(|v| v.len()).unwrap_or(0);
+                if let Err(why) =
+                    self.take_chat_quota(chat, bytes, now_ms(), std::time::Instant::now())
+                {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return error(why);
+                }
             }
             Who::Daemon => {
                 // Approval records are the daemon's own (`approve`).
@@ -2139,6 +2217,41 @@ mod tests {
             json!({"name": "p", "lockfileVersion": 3, "packages": packages}).to_string(),
         )
         .unwrap();
+    }
+
+    /// Re-review W5R-3: a chat token had no rate or byte limit on the
+    /// socket. Its posts are bounded per chat, and another chat is not.
+    #[test]
+    fn a_chat_tokens_posts_are_bounded_per_chat() {
+        let (d, root) = daemon();
+        let a = Who::Chat {
+            chat: "chat-qa".into(),
+            harness: "claude-code".into(),
+        };
+        let b = Who::Chat {
+            chat: "chat-qb".into(),
+            harness: "claude-code".into(),
+        };
+        let mut refused = 0;
+        for i in 0..(SOCKET_BURST_PER_CHAT as usize + 200) {
+            let mut e = ev_of("", Source::Adapter, "tool.call", None, json!({"n": i}));
+            e.id = format!("q{i}");
+            if !d.op_event(&a, e).ok {
+                refused += 1;
+            }
+        }
+        assert!(refused > 0, "chat a was never limited");
+        let e = ev_of("", Source::Adapter, "tool.call", None, json!({}));
+        assert!(d.op_event(&b, e).ok, "chat a spent chat b's share");
+        // The day's bytes: one more record past the allowance is refused.
+        let now = std::time::Instant::now();
+        assert!(d
+            .take_chat_quota("chat-qc", SOCKET_BYTES_PER_CHAT_DAY - 10, 0, now)
+            .is_ok());
+        assert!(d.take_chat_quota("chat-qc", 100, 1, now).is_err());
+        // The next day starts again.
+        assert!(d.take_chat_quota("chat-qc", 100, 86_400_000, now).is_ok());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Box test w5, BW5-12: a tail's backlog past MAX_BACKLOG was cut with
