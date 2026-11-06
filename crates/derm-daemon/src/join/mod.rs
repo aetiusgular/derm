@@ -20,9 +20,11 @@
 //! record only for effects.
 //!
 //! How an effect is credited:
-//! 1. **Tree.** A process the harness starts while exactly one call is
-//!    running belongs to that call, and so do its descendants. With two
-//!    calls running, a new child belongs to neither (window, below).
+//! 1. **Tree.** A shell the harness starts while exactly one shell call is
+//!    running belongs to that call, and so do its descendants; with several
+//!    shell calls, to them together, none chosen. The harness is `run.start`'s
+//!    pid, or, under a boundary or the agents' user, the process under its
+//!    wrappers that starts the first such shell (MW5-16).
 //! 2. **Path.** A write to a path exactly one running call names is that
 //!    call's; several calls naming it make a candidate set.
 //! 3. **MCP server.** A child the harness started while no call ran (a stdio
@@ -32,7 +34,8 @@
 //!
 //! `chosen` names a call only when the tree or a path picks exactly one.
 //! An effect no running call fits gets no record. Memory is bounded per chat
-//! and in chats; `forget` drops a chat at its `run.stop`.
+//! and in chats; a chat is kept `STOPPED_KEEP_MS` after its `run.stop` for
+//! effects the OS feed delivers late (MW5-17), then dropped.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -49,6 +52,11 @@ pub const MAX_CHATS: usize = 512;
 pub const MAX_CANDIDATES: usize = 64;
 /// A call with no end seen is taken as running this long after its start.
 pub const OPEN_CALL_MS: i64 = 10 * 60 * 1000;
+/// How long a stopped chat's calls are kept for effects that reach the
+/// daemon after its `run.stop` (Mac test w5 retest 2, MW5-17: the Mac's OS
+/// events arrived 2 to 8 s late, 7 to 17 s after a burst), by the daemon's
+/// own clock (`Event::at` of what arrives).
+pub const STOPPED_KEEP_MS: i64 = 30_000;
 /// How far before a call's recorded start an effect may fall (the OS feed
 /// and the hook each stamp with some delay).
 pub const SLACK_BEFORE_MS: i64 = 500;
@@ -117,6 +125,19 @@ enum Owner {
 struct ChatState {
     cwd: Option<String>,
     root_pid: Option<u32>,
+    /// The processes between the run's root and the harness, and the
+    /// harness (Mac test w5 retest 2, MW5-16): under srt, `run.start`'s pid is
+    /// srt's own, then its wrappers (`sandbox-exec`, `bwrap`, a shell's `-c`,
+    /// `env`), and the harness under them; under the agents' user, `sudo`.
+    /// Every process started from one of these before the harness is known
+    /// joins them, while no call runs.
+    line: std::collections::HashSet<u32>,
+    /// The harness, learned at the first shell a line process starts for a
+    /// shell call; from then on only it (and the root) places children.
+    harness: Option<u32>,
+    /// When the chat's `run.stop` arrived (daemon time); its state is kept
+    /// `STOPPED_KEEP_MS` after it (MW5-17).
+    stopped_at: Option<i64>,
     calls: HashMap<String, Call>,
     order: VecDeque<String>,
     owners: HashMap<u32, Owner>,
@@ -213,14 +234,27 @@ impl Join {
         Join::default()
     }
 
-    /// Drops a chat's state (at its `run.stop`).
+    /// Drops a chat's state.
     pub fn forget(&mut self, chat: &str) {
         self.chats.remove(chat);
     }
 
+    /// Drops the chats stopped longer than `STOPPED_KEEP_MS` before `now`.
+    fn sweep(&mut self, now: i64) {
+        self.chats
+            .retain(|_, st| st.stopped_at.is_none_or(|s| now - s <= STOPPED_KEEP_MS));
+    }
+
     fn chat(&mut self, chat: &str) -> &mut ChatState {
         if !self.chats.contains_key(chat) && self.chats.len() >= MAX_CHATS {
-            if let Some(k) = self.chats.keys().next().cloned() {
+            // A stopped chat goes first, then any.
+            let k = self
+                .chats
+                .iter()
+                .find(|(_, st)| st.stopped_at.is_some())
+                .map(|(k, _)| k.clone())
+                .or_else(|| self.chats.keys().next().cloned());
+            if let Some(k) = k {
                 self.chats.remove(&k);
             }
         }
@@ -233,15 +267,23 @@ impl Join {
         if e.chat_id.is_empty() {
             return Vec::new();
         }
+        self.sweep(e.at);
         match (&e.source, e.kind.as_str()) {
             (Source::Run, "run.start") => {
+                // A chat id started again begins afresh.
+                self.forget(&e.chat_id);
                 let st = self.chat(&e.chat_id);
                 st.cwd = str_at(&e.detail, "cwd").map(str::to_string);
                 st.root_pid = e.pid;
+                st.line.extend(e.pid);
                 Vec::new()
             }
             (Source::Run, "run.stop") => {
-                self.forget(&e.chat_id);
+                // Kept a while for effects that arrive after it (MW5-17); a
+                // chat no record ever named is not made here.
+                if let Some(st) = self.chats.get_mut(&e.chat_id) {
+                    st.stopped_at.get_or_insert(e.at);
+                }
                 Vec::new()
             }
             (Source::Tap, "tap.call") => {
@@ -330,11 +372,31 @@ impl Join {
             let st = self.chat(&e.chat_id);
             if let Some(child) = child {
                 let parent = if kind == "fork" { pid } else { ppid };
-                let inherited = parent.and_then(|p| st.owners.get(&p).cloned());
                 let program = str_at(&e.detail, "exe").or_else(|| str_at(&e.detail, "comm"));
+                // MW5-16: the processes between the run's root and the harness
+                // place children as the root does. Before the harness is
+                // known, anything a line process starts while no call runs
+                // joins the line (a wrapper, the harness, or a helper started
+                // with the session); a line process's shell for a shell call
+                // names the harness, and from then on only the root and the
+                // harness place children, so an MCP server started with the
+                // session keeps its children the session's (BW5-11).
+                let places = parent.is_some_and(|p| {
+                    Some(p) == st.root_pid
+                        || Some(p) == st.harness
+                        || (st.harness.is_none() && st.line.contains(&p))
+                });
+                if places && st.harness.is_none() && st.running(t).is_empty() {
+                    st.line.insert(child);
+                }
+                let inherited = if places {
+                    None
+                } else {
+                    parent.and_then(|p| st.owners.get(&p).cloned())
+                };
                 let owner = match inherited {
                     Some(o) => Some(o),
-                    None if parent.is_some() && parent == st.root_pid => {
+                    None if places => {
                         // A child of the harness while a call runs belongs to
                         // that call only with certainty (case 43): a shell
                         // started for a shell call. The harness also starts
@@ -351,7 +413,7 @@ impl Join {
                             .filter(|(_, c)| c.shell())
                             .map(|(id, _)| id.to_string())
                             .collect();
-                        match (running.len(), kind) {
+                        let placed = match (running.len(), kind) {
                             (0, _) => Some(Owner::Session),
                             (_, "fork") => None,
                             _ if program.is_some_and(shell_program) => match shells.len() {
@@ -360,7 +422,16 @@ impl Join {
                                 _ => Some(Owner::Among(shells.into())),
                             },
                             _ => Some(Owner::Ambiguous),
+                        };
+                        // The first shell a line process starts for shell
+                        // calls names that process as the harness.
+                        if st.harness.is_none()
+                            && kind == "exec"
+                            && matches!(placed, Some(Owner::Call(_)) | Some(Owner::Among(_)))
+                        {
+                            st.harness = parent;
                         }
+                        placed
                     }
                     None => None,
                 };

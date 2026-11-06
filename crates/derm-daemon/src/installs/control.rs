@@ -11,7 +11,8 @@
 //! are installs, by `toolUseId`); the gate's and the tap's records (which
 //! event id is which `toolUseId`); the OS feed's writes (their paths); and
 //! the join's `join.candidates` (which call a write fits). Memory is bounded
-//! per chat and in chats; `forget` drops a chat at its `run.stop`.
+//! per chat and in chats; a chat is kept as long as the join keeps it after
+//! its `run.stop` (MW5-17), and a path is flagged once per install (MW5-21).
 //!
 //! A path under a package store (`node_modules/`, `site-packages/`, a
 //! manager's cache) is the package's own files being unpacked, not a
@@ -142,6 +143,13 @@ struct Chat {
     /// An effect's id to its paths, executable and pid.
     effects: HashMap<String, (Vec<String>, String, Option<u32>)>,
     effect_order: VecDeque<String>,
+    /// The (install record, path) pairs already flagged: one write's create
+    /// and write effects flag it once (Mac test w5 retest 2, MW5-21).
+    flagged: std::collections::HashSet<(String, String)>,
+    flagged_order: VecDeque<(String, String)>,
+    /// When its `run.stop` came (daemon time); kept a while after it for the
+    /// join records of effects that arrive late (MW5-17).
+    stopped_at: Option<i64>,
 }
 
 #[derive(Default)]
@@ -182,8 +190,24 @@ impl ControlFlags {
         if e.chat_id.is_empty() {
             return Vec::new();
         }
+        // Chats stopped longer ago than the join keeps them go (MW5-17).
+        let now = e.at;
+        let gone: Vec<String> = self
+            .chats
+            .iter()
+            .filter(|(_, c)| {
+                c.stopped_at
+                    .is_some_and(|s| now - s > crate::join::STOPPED_KEEP_MS)
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in gone {
+            self.forget(&k);
+        }
         if e.kind == "run.stop" {
-            self.forget(&e.chat_id);
+            if let Some(c) = self.chats.get_mut(&e.chat_id) {
+                c.stopped_at.get_or_insert(e.at);
+            }
             return Vec::new();
         }
         if e.kind == "install.call" && e.source != Source::Derm {
@@ -288,10 +312,24 @@ impl ControlFlags {
             },
         };
         let mut out = Vec::new();
+        let paths = paths.clone();
+        let exe = exe.clone();
+        let pid = *pid;
+        let chat = self.chats.get_mut(&e.chat_id).expect("read above");
         for (k, path) in paths.iter().enumerate() {
             let Some(marker) = control_path(path) else {
                 continue;
             };
+            let key = (call.clone(), path.clone());
+            if !chat.flagged.insert(key.clone()) {
+                continue;
+            }
+            chat.flagged_order.push_back(key);
+            while chat.flagged_order.len() > MAX_EFFECTS {
+                if let Some(old) = chat.flagged_order.pop_front() {
+                    chat.flagged.remove(&old);
+                }
+            }
             out.push(Event {
                 id: format!("install-control-{effect}-{k}"),
                 at: e.at,
@@ -307,7 +345,7 @@ impl ControlFlags {
                     "exe": exe.chars().take(4096).collect::<String>(),
                     "effect": effect,
                 }),
-                pid: *pid,
+                pid,
                 approval_id: None,
             });
         }
@@ -411,6 +449,97 @@ mod tests {
             json!({"trust": "daemon", "call": "claude-code-toolu_INSTALL1-install", "path": "/home/u/project/.git/hooks/pre-commit", "exe": "/usr/bin/node", "effect": "auditd-1793000009400-7"})
         );
         assert_eq!(r.pid, Some(5555));
+    }
+
+    /// Mac test w5 retest 2, MW5-21: a postinstall's one write of
+    /// `.git/hooks/pre-commit` gave two flags, one for its create effect and
+    /// one for its write. A path is flagged once per install call.
+    #[test]
+    fn one_install_flags_a_path_once_whatever_its_effects() {
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "inst",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev(
+            "gate",
+            "approval",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        let mut flags = 0;
+        for (id, kind) in [("es-1", "create"), ("es-2", "write"), ("es-3", "write")] {
+            f.observe(&ev(
+                id,
+                kind,
+                Source::Eslogger,
+                json!({"path": "/p/.git/hooks/pre-commit", "exe": "/usr/bin/node"}),
+            ));
+            flags += f
+                .observe(&ev(
+                    &format!("join-{id}"),
+                    "join.candidates",
+                    Source::Derm,
+                    json!({"effect": id, "candidates": [{"call": "gate", "by": "tree"}], "chosen": "gate"}),
+                ))
+                .len();
+        }
+        assert_eq!(flags, 1);
+        // Another path of the same install, or the same path by another
+        // install, is flagged.
+        f.observe(&ev(
+            "es-4",
+            "create",
+            Source::Eslogger,
+            json!({"path": "/p/.git/hooks/post-checkout"}),
+        ));
+        assert_eq!(
+            f.observe(&ev(
+                "join-es-4",
+                "join.candidates",
+                Source::Derm,
+                json!({"effect": "es-4", "candidates": [{"call": "gate", "by": "tree"}], "chosen": "gate"}),
+            ))
+            .len(),
+            1
+        );
+    }
+
+    /// A stopped chat's late join record still flags its install (MW5-17).
+    #[test]
+    fn a_join_record_after_the_stop_still_flags_the_install() {
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "inst",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev(
+            "gate",
+            "approval",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I"}),
+        ));
+        f.observe(&ev("stop", "run.stop", Source::Run, json!({})));
+        let mut w = ev(
+            "es-9",
+            "write",
+            Source::Eslogger,
+            json!({"path": "/p/.github/workflows/x.yml"}),
+        );
+        w.at += 6_000;
+        f.observe(&w);
+        let mut j = ev(
+            "join-es-9",
+            "join.candidates",
+            Source::Derm,
+            json!({"effect": "es-9", "candidates": [{"call": "gate", "by": "tree"}], "chosen": "gate"}),
+        );
+        j.at += 6_000;
+        assert_eq!(f.observe(&j).len(), 1);
     }
 
     /// Box test w5, BW5-13: a control-path write the join could only place
@@ -591,7 +720,14 @@ mod tests {
             json!({"toolUseId": "t1"}),
         ));
         assert!(f.chats.contains_key("chat-fixture"));
+        // Kept after the stop for late join records (MW5-17), gone past the
+        // join's keep (before, gone at the stop itself).
         f.observe(&ev("s", "run.stop", Source::Derm, json!({})));
+        assert!(f.chats.contains_key("chat-fixture"));
+        let mut later = ev("x", "tool.call", Source::Adapter, json!({}));
+        later.chat_id = "other".into();
+        later.at += crate::join::STOPPED_KEEP_MS + 1;
+        f.observe(&later);
         assert!(!f.chats.contains_key("chat-fixture"));
         for i in 0..(MAX_EFFECTS + 50) {
             f.observe(&ev(

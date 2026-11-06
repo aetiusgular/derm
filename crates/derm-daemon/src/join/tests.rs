@@ -278,8 +278,18 @@ fn records_follow_the_wave5_schema_shape_and_other_chats_never_mix() {
         keys,
         vec!["candidates", "chosen", "effect", "effectKind", "trust"]
     );
+    // After the stop and past the keep for late effects (MW5-17; before,
+    // the chat was dropped at the stop itself), the chat records nothing.
     j.observe(&ev(Source::Run, "run.stop", 99_000, Some(ROOT), json!({})));
-    assert!(effect(&mut j, "write", 2_000, ROOT, 1, json!({"path": "/w/x"})).is_empty());
+    let mut late = ev(
+        Source::Auditd,
+        "write",
+        99_000 + STOPPED_KEEP_MS + 1,
+        Some(ROOT),
+        json!({"ppid": 1, "auditAt": 2_000, "path": "/w/x"}),
+    );
+    late.id = "late".into();
+    assert!(j.observe(&late).is_empty());
 }
 
 /// Box test w5, BW5-11: Claude Code started its MCP servers (`uv`, `npm
@@ -451,4 +461,146 @@ fn an_untapped_shell_call_still_owns_its_shell() {
         "{}",
         r[0].detail
     );
+}
+
+/// Mac test w5 retest 2, MW5-16: under srt, `run.start`'s pid is srt's own
+/// node, and the harness runs under its wrappers (`sandbox-exec`, a shell's
+/// `-c`, `env`). Every child of the root started before a call was the
+/// session's, so the harness and every shell it started for a call were the
+/// session's too, and a real Claude Code turn under srt got no join record.
+#[test]
+fn under_a_boundarys_wrappers_the_harness_shells_are_still_its_calls() {
+    let mut j = Join::new();
+    start(&mut j); // ROOT is srt's node.
+                   // srt -> sandbox-exec -> sh -c -> env -> claude, all before any call.
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1100}));
+    effect(
+        &mut j,
+        "exec",
+        101,
+        1100,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(&mut j, "exec", 102, 1100, ROOT, json!({"exe": "/bin/sh"}));
+    effect(&mut j, "fork", 103, 1100, ROOT, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        104,
+        1101,
+        1100,
+        json!({"exe": "/usr/bin/env"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        1100,
+        json!({"exe": "/opt/claude/claude"}),
+    );
+    // An MCP server the harness starts with the session.
+    effect(&mut j, "fork", 200, 1101, 1100, json!({"child": 1200}));
+    effect(
+        &mut j,
+        "exec",
+        201,
+        1200,
+        1101,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_S", "bash", &[], 1_000, Some(5_000));
+    // The harness's shell for the Bash call, and what it runs.
+    effect(&mut j, "fork", 1_100, 1101, 1100, json!({"child": 1300}));
+    let r = effect(
+        &mut j,
+        "exec",
+        1_110,
+        1300,
+        1101,
+        json!({"exe": "/bin/zsh"}),
+    );
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_S", "{r:?}");
+    effect(&mut j, "fork", 1_200, 1300, 1101, json!({"child": 1301}));
+    let r = effect(
+        &mut j,
+        "write",
+        1_300,
+        1301,
+        1300,
+        json!({"path": "/w/.github/workflows/x.yml"}),
+    );
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_S", "{r:?}");
+    assert_eq!(r[0].detail["candidates"][0]["by"], "tree");
+    // The MCP server stays the session's: a shell it starts during the Bash
+    // call is not that call's (BW5-11).
+    effect(&mut j, "fork", 2_000, 1200, 1101, json!({"child": 1400}));
+    effect(&mut j, "exec", 2_010, 1400, 1200, json!({"exe": "/bin/sh"}));
+    let r = effect(
+        &mut j,
+        "write",
+        2_100,
+        1400,
+        1200,
+        json!({"path": "/w/cache"}),
+    );
+    assert!(
+        r.iter().all(|e| e.detail["chosen"].is_null()
+            && e.detail["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c["by"] != "tree")),
+        "{r:?}"
+    );
+    // A wrapper (srt's own node) starting a process during a call does not
+    // place it once the harness is known.
+    effect(&mut j, "fork", 3_000, ROOT, 1, json!({"child": 1500}));
+    effect(&mut j, "exec", 3_010, 1500, ROOT, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 3_100, 1500, ROOT, json!({"path": "/w/z"}));
+    // The root still places, as it always has: under none it is the harness.
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_S", "{r:?}");
+}
+
+/// Mac test w5 retest 2, MW5-17: the Mac's OS events reach the daemon
+/// seconds after they happen, and the join forgot a chat at its `run.stop`,
+/// so the end of every short chat (its Bash call's own `ls` exec among them)
+/// fit no call. A stopped chat is kept `STOPPED_KEEP_MS` for them.
+#[test]
+fn effects_that_arrive_after_the_stop_are_still_joined_for_a_while() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_L", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6001}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        6001,
+        ROOT,
+        json!({"exe": "/bin/zsh"}),
+    );
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    // The exec of `ls` happened at 1,200 and reached the daemon 6 s later.
+    let mut late = ev(
+        Source::Eslogger,
+        "exec",
+        8_500,
+        Some(6002),
+        json!({"ppid": 6001, "osAt": 1_200, "exe": "/bin/ls"}),
+    );
+    late.id = "es-late-1".into();
+    effect(&mut j, "fork", 1_150, 6001, ROOT, json!({"child": 6002}));
+    let r = j.observe(&late);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_L");
+    // Past the keep, the chat is gone.
+    let mut later = late.clone();
+    later.id = "es-late-2".into();
+    later.at = 2_500 + STOPPED_KEEP_MS + 1;
+    assert!(j.observe(&later).is_empty());
+    // A chat id started again begins afresh: an old call does not carry over.
+    start(&mut j);
+    assert!(effect(&mut j, "write", 1_300, 6002, 6001, json!({"path": "/w/x"})).is_empty());
 }
