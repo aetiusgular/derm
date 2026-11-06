@@ -26,7 +26,10 @@ use serde::Serialize;
 
 use crate::timefmt;
 
-/// How many gaps the collector keeps, newest last.
+/// How many gaps the collector keeps, oldest first. Past it, the two
+/// neighbouring gaps closest in time become one (fix pass 4's review,
+/// FP4-S5): no count is ever lost, only how finely it is placed, so a
+/// chat's own drops stay placed after any number of later gaps.
 pub const KEEP_GAPS: usize = 64;
 
 /// One gap: what the kernel dropped between two lines eslogger printed.
@@ -40,6 +43,14 @@ pub struct Gap {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_ms: Option<i64>,
     pub count: u64,
+    /// How many gaps this one stands for, once neighbours were merged; its
+    /// times then span them all, so a run it overlaps lost at most `count`.
+    #[serde(skip_serializing_if = "is_one")]
+    pub merged: u64,
+}
+
+fn is_one(n: &u64) -> bool {
+    *n == 1
 }
 
 /// Follows eslogger's `global_seq_num` across its lines.
@@ -72,12 +83,13 @@ impl SeqWatch {
                 if gap > 0 {
                     self.total = self.total.saturating_add(gap);
                     if self.gaps.len() == KEEP_GAPS {
-                        self.gaps.pop_front();
+                        self.merge_closest();
                     }
                     self.gaps.push_back(Gap {
                         from_ms: self.last_time_ms,
                         to_ms: time,
                         count: gap,
+                        merged: 1,
                     });
                 }
             }
@@ -87,6 +99,32 @@ impl SeqWatch {
         self.last = Some(seq);
         self.last_time_ms = time;
         self.unread = 0;
+    }
+
+    /// Merges the two neighbouring gaps whose joined span is shortest; a
+    /// gap with no time is never closer than one with times.
+    fn merge_closest(&mut self) {
+        let span = |a: &Gap, b: &Gap| match (a.from_ms.or(a.to_ms), b.to_ms.or(b.from_ms)) {
+            (Some(f), Some(t)) => t.saturating_sub(f).max(0),
+            _ => i64::MAX,
+        };
+        let Some(at) = (0..self.gaps.len().saturating_sub(1))
+            .min_by_key(|&i| (span(&self.gaps[i], &self.gaps[i + 1]), i))
+        else {
+            return;
+        };
+        let b = self.gaps.remove(at + 1).expect("a neighbour");
+        let a = &mut self.gaps[at];
+        a.from_ms = match (a.from_ms, b.from_ms) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, y) => x.or(y),
+        };
+        a.to_ms = match (a.to_ms, b.to_ms) {
+            (Some(x), Some(y)) => Some(x.max(y)),
+            (x, y) => x.or(y),
+        };
+        a.count = a.count.saturating_add(b.count);
+        a.merged = a.merged.saturating_add(b.merged);
     }
 
     /// A line the reader could not look at (too long, not UTF-8).
@@ -205,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_newest_gaps_are_kept() {
+    fn past_the_limit_gaps_merge_and_no_count_is_lost() {
         let mut w = SeqWatch::new();
         let mut seq = 1;
         for i in 0..(KEEP_GAPS as u64 + 10) {
@@ -214,5 +252,12 @@ mod tests {
         }
         assert_eq!(w.gaps().len(), KEEP_GAPS);
         assert_eq!(w.total, KEEP_GAPS as u64 + 9);
+        let kept: u64 = w.gaps().iter().map(|g| g.count).sum();
+        assert_eq!(
+            kept, w.total,
+            "the kept gaps still hold every dropped event"
+        );
+        let stands_for: u64 = w.gaps().iter().map(|g| g.merged).sum();
+        assert_eq!(stands_for, KEEP_GAPS as u64 + 9);
     }
 }

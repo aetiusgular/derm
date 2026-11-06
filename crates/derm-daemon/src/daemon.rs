@@ -1656,16 +1656,20 @@ impl Daemon {
         );
         check.dropped = self.log.dropped();
         let status = collector_status();
-        // A chat's run, from its own run records in the window (MW5-23).
-        let run = chat.and_then(|_| {
-            let at = |k: &str| {
-                back.events
-                    .iter()
-                    .filter(|e| e.source == Source::Run && e.kind == k)
-                    .map(|e| e.at)
-                    .next()
-            };
-            at("run.start").map(|start| (start, at("run.stop")))
+        // A chat's run, from its own run records (MW5-23), read over the
+        // whole log so a window that misses its start still finds it
+        // (FP4-S5): its last start up to `until`, and the first stop after.
+        let run = chat.and_then(|c| {
+            let runs = store::read_runs(&self.log_dir, c, until, 256);
+            let mut runs: Vec<&crate::activity::types::ActivityEvent> =
+                runs.events.iter().collect();
+            runs.sort_by_key(|e| e.at);
+            let start = runs.iter().rposition(|e| e.kind == "run.start")?;
+            let stop = runs[start..]
+                .iter()
+                .find(|e| e.kind == "run.stop")
+                .map(|e| e.at);
+            Some((runs[start].at, stop))
         });
         let (kernel_total, kernel_inside, kernel_during) =
             kernel_drops_for(status.as_ref(), since, until, run);
@@ -1695,6 +1699,9 @@ impl Daemon {
             "osKernelDropped": kernel_total,
             "osKernelDrops": kernel_inside,
             "chatOsMissed": kernel_during,
+            // FP4-S5: the count is a bound, not exact, when a gap it takes
+            // stands for merged gaps or reaches outside the run.
+            "chatOsMissedUpTo": run.map(|r| kernel_drops_up_to(status.as_ref(), r)),
             "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
         })
     }
@@ -2198,6 +2205,29 @@ pub fn kernel_drops_for(
     (json!(total), Value::Array(inside), json!(during))
 }
 
+/// Whether `kernel_drops_for`'s count for a run is a bound rather than
+/// exact: a gap it takes stands for merged gaps, or begins before the run
+/// or ends after it, so some of its events may have fallen outside (FP4-S5).
+pub fn kernel_drops_up_to(status: Option<&Value>, run: (i64, Option<i64>)) -> bool {
+    let (start, stop) = run;
+    let end = stop.map_or(i64::MAX, |s| s.saturating_add(crate::join::STOPPED_KEEP_MS));
+    status
+        .and_then(|s| s.get("kernelDrops"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|g| {
+            let to = g.get("toMs").and_then(Value::as_i64);
+            let from = g.get("fromMs").and_then(Value::as_i64).or(to);
+            let to = to.or(from);
+            let (Some(f), Some(t)) = (from, to) else {
+                return false;
+            };
+            let merged = g.get("merged").and_then(Value::as_u64).unwrap_or(1) > 1;
+            f <= end && t >= start && (merged || f < start || t > end)
+        })
+}
+
 /// The Mac collector's events for a report, as the fork's panel read them;
 /// `None` off macOS. Lane K registers the collector with the daemon in
 /// wave 2.
@@ -2313,6 +2343,29 @@ mod tests {
             kernel_drops_for(None, 0, 1, Some((0, None))),
             (Value::Null, Value::Null, Value::Null)
         );
+    }
+
+    /// FP4-S5: a count that takes a merged gap, or one reaching outside the
+    /// run, is a bound and says so.
+    #[test]
+    fn a_chats_missed_count_says_when_it_is_a_bound() {
+        let inside = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 2_000, "toMs": 3_000, "count": 5}
+        ]});
+        assert!(!kernel_drops_up_to(Some(&inside), (1_000, Some(10_000))));
+        let merged = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 2_000, "toMs": 3_000, "count": 5, "merged": 3}
+        ]});
+        assert!(kernel_drops_up_to(Some(&merged), (1_000, Some(10_000))));
+        let reaching = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 500, "toMs": 3_000, "count": 5}
+        ]});
+        assert!(kernel_drops_up_to(Some(&reaching), (1_000, Some(10_000))));
+        // A gap that does not touch the run says nothing about it.
+        let apart = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 500_000, "toMs": 600_000, "count": 5, "merged": 9}
+        ]});
+        assert!(!kernel_drops_up_to(Some(&apart), (1_000, Some(10_000))));
     }
     use crate::activity::types::ActivitySource;
     use std::sync::mpsc::RecvTimeoutError;

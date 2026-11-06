@@ -255,6 +255,17 @@ pub fn is_gate_decision(event: &ActivityEvent) -> bool {
     event.kind == "approval" && matches!(event.source, Adapter | Otel)
 }
 
+/// One chat's run records (`run.start`, `run.stop`, posted by the daemon
+/// scope only) up to `until_ms`, over the whole log, so a report on a
+/// window that misses the chat's start still finds its run (fix pass 4's
+/// review, FP4-S5).
+pub fn read_runs(dir: &Path, chat_id: &str, until_ms: i64, limit: usize) -> ReadBack {
+    read_where(dir, 0, until_ms, Some(chat_id), limit, &|e| {
+        e.source == super::types::ActivitySource::Run
+            && (e.kind == "run.start" || e.kind == "run.stop")
+    })
+}
+
 /// `read`, keeping only the new events `keep` accepts, so the cap counts
 /// only those (review V5).
 fn read_where(

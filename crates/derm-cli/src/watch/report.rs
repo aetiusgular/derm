@@ -205,8 +205,12 @@ pub fn render(r: &Value) -> String {
         .and_then(Value::as_u64)
         .filter(|n| *n > 0)
     {
+        // FP4-S5: a count from merged gaps, or gaps reaching outside the
+        // run, is a bound.
+        let up_to = r.get("chatOsMissedUpTo").and_then(Value::as_bool) == Some(true);
         out.push_str(&format!(
-            "CHAT NOT FULLY WATCHED: the kernel dropped {} OS events while this chat ran; its OS records, joins and control flags are incomplete\n",
+            "CHAT NOT FULLY WATCHED: the kernel dropped {}{} OS events while this chat ran; its OS records, joins and control flags are incomplete\n",
+            if up_to { "up to " } else { "" },
             count(n)
         ));
     }
@@ -386,6 +390,10 @@ mod tests {
         assert!(!t.contains("NOT FULLY WATCHED"), "{t}");
         r["chatOsMissed"] = json!(900);
         assert!(render(&r).contains("CHAT NOT FULLY WATCHED: the kernel dropped 900 OS events"));
+        r["chatOsMissedUpTo"] = json!(true);
+        assert!(
+            render(&r).contains("CHAT NOT FULLY WATCHED: the kernel dropped up to 900 OS events")
+        );
     }
 
     #[test]

@@ -225,3 +225,43 @@ fn a_report_is_never_returned_over_its_budget() {
         2_000 - derm_daemon::daemon::REPORT_MAP_KEEP
     );
 }
+
+/// FP4-S5: a report on one chat whose window misses the chat's `run.start`
+/// still finds its run, so the per-chat drop count is never left out for
+/// that reason (`chatOsMissedUpTo` is set exactly when a run was found).
+#[test]
+fn a_chat_report_finds_its_run_outside_the_window() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-k", "at": 1_000, "chatId": "chat-k", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "w-k", "at": 50_000, "chatId": "chat-k", "harness": "pi", "source": "adapter",
+        "kind": "tool.call", "summary": "", "detail": {}
+    }}));
+    assert_eq!(r["ok"], true);
+    let mut reply = Value::Null;
+    for _ in 0..100 {
+        reply =
+            d.ask(json!({"op": "report", "chat": "chat-k", "since": 10_000, "until": i64::MAX}));
+        if reply["report"]["events"] == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        reply["report"]["events"], 1,
+        "the window holds only the later event"
+    );
+    assert_eq!(
+        reply["report"]["chatOsMissedUpTo"], false,
+        "{}",
+        reply["report"]
+    );
+    let none = d.ask(json!({"op": "report", "chat": "chat-none", "since": 0, "until": i64::MAX}));
+    assert!(none["report"]["chatOsMissedUpTo"].is_null());
+}
