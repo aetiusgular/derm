@@ -564,7 +564,7 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
         rec.output_tokens = info.output_tokens;
         rec.tool_calls = info.calls.len() as u64;
         rec.response_form = info.form.map(|f| f.name());
-        let streamed = info.form.is_some_and(|f| f.is_stream());
+        let streamed = info.read_as_stream;
         let stream_open = streamed && (200..300).contains(&status) && !info.complete;
         rec.incomplete = cut || client_gone || stream_open;
         rec.content_kept = content_kept;

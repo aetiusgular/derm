@@ -300,6 +300,10 @@ pub struct ResponseInfo {
     pub complete: bool,
     /// The body could not be read (too big, not JSON, an event too long).
     pub unparsed: bool,
+    /// The body was read as an event stream, typed or by its first bytes,
+    /// whether or not the reader later stopped (fix pass 4's review,
+    /// FP4-S4: a stream whose event passed the limit is still an open one).
+    pub read_as_stream: bool,
 }
 
 /// One call while its stream is still open.
@@ -323,6 +327,10 @@ pub struct ResponseParser {
     typed: bool,
     /// Untyped: whether the body's first bytes have said which form it is.
     decided: bool,
+    /// Untyped and undecided: how many leading bytes are a byte order mark
+    /// or white space, so each feed looks only at new bytes (FP4-S6).
+    lead: usize,
+    bom_checked: bool,
     body: Vec<u8>,
     too_big: bool,
     calls: BTreeMap<u64, Pending>,
@@ -351,6 +359,8 @@ impl ResponseParser {
             sse: event_stream.then(|| SseReader::new(MAX_PARSE)),
             typed: event_stream,
             decided: event_stream,
+            lead: 0,
+            bom_checked: false,
             body: Vec::new(),
             too_big: false,
             calls: BTreeMap::new(),
@@ -379,7 +389,21 @@ impl ResponseParser {
         if self.decided || self.too_big {
             return;
         }
-        let head = meaningful(&self.body);
+        const BOM: &[u8] = b"\xEF\xBB\xBF";
+        if !self.bom_checked {
+            // Part of a byte order mark so far: nothing said yet.
+            if self.body.len() < BOM.len() && BOM.starts_with(&self.body) {
+                return;
+            }
+            self.bom_checked = true;
+            if self.body.starts_with(BOM) {
+                self.lead = BOM.len();
+            }
+        }
+        while self.lead < self.body.len() && self.body[self.lead].is_ascii_whitespace() {
+            self.lead += 1;
+        }
+        let head = &self.body[self.lead..];
         if head.is_empty() {
             return;
         }
@@ -428,6 +452,7 @@ impl ResponseParser {
 
     pub fn finish(mut self) -> ResponseInfo {
         let form = self.form();
+        self.info.read_as_stream = self.sse.is_some();
         if let Some(sse) = &self.sse {
             if sse.overflowed {
                 self.info.unparsed = true;

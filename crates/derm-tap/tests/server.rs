@@ -781,3 +781,52 @@ fn a_stream_typed_otherwise_still_gives_its_calls_and_tokens() {
         .unwrap();
     assert_eq!(req.detail["incomplete"], true, "{}", req.detail);
 }
+
+/// FP4-S4 (security review of fix pass 4): a typed stream whose one event
+/// passes MAX_PARSE (32 MiB) stops the reader (`sse.rs` `overflowed`), so
+/// its completion is never seen. Before 2acfcb1 the record said
+/// `incomplete: true` (`event_stream && 2xx && !complete`); now the form is
+/// `unparsed`, which is not a stream, so the record says `incomplete: false`.
+#[test]
+fn fp4_s4_an_overflowed_stream_stays_incomplete() {
+    let big = "y".repeat(derm_tap::apis::MAX_PARSE + 1024);
+    let pieces = vec![
+        sse(&[json!({"type":"response.created","response":{"model":"gpt-x"}})]).concat(),
+        format!("event: response.output_text.delta\ndata: {{\"type\":\"response.output_text.delta\",\"delta\":\"{big}\"}}\n\n").into_bytes(),
+    ];
+    let rig = rig(vec![sse_reply(pieces, false)], false, None);
+    let path = format!("/r/{}/openai/responses", rig.route);
+    let body = json!({"model":"gpt-x","stream":true,"input":[]});
+    let (status, _, _, _) = send(
+        rig.tap.port(),
+        "POST",
+        &path,
+        &[],
+        body.to_string().as_bytes(),
+    );
+    assert_eq!(status, 200);
+    let ev = wait_events(&rig, 1);
+    let req = ev.iter().find(|e| e.kind == "tap.request").unwrap();
+    assert_eq!(req.detail["incomplete"], true, "{}", req.detail);
+}
+
+/// FP4-S6: an untyped body that is all ASCII whitespace so far is scanned
+/// from its start on every feed (`meaningful(&self.body)`), so an upstream
+/// that sends whitespace in small pieces costs the tap quadratic CPU, up to
+/// MAX_PARSE (32 MiB).
+#[test]
+fn fp4_s6_leading_whitespace_costs_linear_time() {
+    use derm_tap::apis::ResponseParser;
+    use derm_tap::record::Api;
+    let n = 200_000;
+    let mut p = ResponseParser::new(Api::OpenAiResponses, false, "g");
+    let started = std::time::Instant::now();
+    for _ in 0..n {
+        p.feed(b" ");
+    }
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(1),
+        "{n} bytes of whitespace took {took:?}"
+    );
+}
