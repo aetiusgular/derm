@@ -28,6 +28,9 @@ pub(crate) struct Real {
     path: String,
     home: Option<String>,
     userns: Option<String>,
+    /// Ubuntu's AppArmor profile for bubblewrap is installed (box test w5,
+    /// BW5-10).
+    bwrap_profile: bool,
 }
 
 impl Real {
@@ -41,6 +44,7 @@ impl Real {
                 "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
             )
             .ok(),
+            bwrap_profile: Path::new(UBUNTU_BWRAP_PROFILE).exists(),
         }
     }
 }
@@ -62,6 +66,7 @@ impl Probe for Real {
             &self.path,
             self.home.as_deref(),
             self.userns.as_deref(),
+            self.bwrap_profile,
             &cwd,
             &|p, a, l| run(p, a, l),
         )
@@ -237,11 +242,16 @@ pub(crate) fn sbx_probe(h: &harness::Harness, path: &str, run: Runner) -> Result
     }
 }
 
+/// Ubuntu's AppArmor profile for bubblewrap (24.10 and later; seen on the
+/// box's 26.04, box test w5, BW5-10).
+pub(crate) const UBUNTU_BWRAP_PROFILE: &str = "/etc/apparmor.d/bwrap-userns-restrict";
+
 pub(crate) fn srt_probe(
     h: &harness::Harness,
     path: &str,
     home: Option<&str>,
     userns: Option<&str>,
+    bwrap_profile: bool,
     cwd: &str,
     run: Runner,
 ) -> Result<(), Reason> {
@@ -311,7 +321,16 @@ pub(crate) fn srt_probe(
         Ok(r) if r.ok => Ok(()),
         Ok(r) => {
             let mut why = format!("srt could not start a program here: {}", r.line);
-            if linux && userns.map(str::trim) == Some("1") {
+            if linux && bwrap_profile {
+                // Box test w5, BW5-10: on Ubuntu 26.04 the sysctl at 0 did
+                // not help. Ubuntu's profile confines /usr/bin/bwrap and runs
+                // what it starts under a child profile that denies every
+                // capability, which srt's seccomp step needs.
+                why.push_str(&format!(
+                    "; Ubuntu's AppArmor profile {UBUNTU_BWRAP_PROFILE} confines bubblewrap and takes the capabilities from what it starts, which srt's seccomp step needs, whatever kernel.apparmor_restrict_unprivileged_userns says. \
+                     The fix is root's: an AppArmor profile that allows userns for the bubblewrap srt runs without that child profile (srt README, Ubuntu 24.04+ note), or use sbx"
+                ));
+            } else if linux && userns.map(str::trim) == Some("1") {
                 why.push_str(
                     "; kernel.apparmor_restrict_unprivileged_userns is 1, which srt's README says to set to 0 or answer with an AppArmor profile that allows userns for bwrap",
                 );
@@ -621,7 +640,10 @@ mod tests {
     fn srt_is_unavailable_when_missing_or_when_its_probe_fails() {
         let d = tmp("srt");
         let path = d.to_string_lossy().into_owned();
-        let r = srt_probe(pi(), &path, None, None, "/", &|_, _, _| panic!("no run")).unwrap_err();
+        let r = srt_probe(pi(), &path, None, None, false, "/", &|_, _, _| {
+            panic!("no run")
+        })
+        .unwrap_err();
         assert!(r.why.contains("not installed"));
         assert_eq!(r.install.as_deref(), Some(srt_install_line()));
         // srt on PATH, its tools beside it, and a probe that fails.
@@ -651,10 +673,17 @@ mod tests {
         let cwd = d.join("cwd");
         std::fs::create_dir_all(&cwd).unwrap();
         let cwd = cwd.to_string_lossy().into_owned();
-        let r = srt_probe(pi(), &path, None, Some("1\n"), &cwd, fail).unwrap_err();
+        let r = srt_probe(pi(), &path, None, Some("1\n"), false, &cwd, fail).unwrap_err();
         assert!(r.why.contains("Permission denied"), "{}", r.why);
         if cfg!(target_os = "linux") {
             assert!(r.why.contains("apparmor_restrict_unprivileged_userns"));
+        }
+        // Box test w5, BW5-10: with Ubuntu's bwrap profile installed the
+        // reason names it, with the sysctl at 0 too, and not the sysctl.
+        let r = srt_probe(pi(), &path, None, Some("0\n"), true, &cwd, fail).unwrap_err();
+        if cfg!(target_os = "linux") {
+            assert!(r.why.contains("bwrap-userns-restrict"), "{}", r.why);
+            assert!(!r.why.contains("set to 0"), "{}", r.why);
         }
         let ok: Runner = &|_, _, _| {
             Ok(Ran {
@@ -662,7 +691,7 @@ mod tests {
                 line: String::new(),
             })
         };
-        assert!(srt_probe(pi(), &path, None, None, &cwd, ok).is_ok());
+        assert!(srt_probe(pi(), &path, None, None, false, &cwd, ok).is_ok());
         // The probe's folder is gone afterwards.
         let left: Vec<_> = std::fs::read_dir(std::env::temp_dir())
             .unwrap()
@@ -689,7 +718,7 @@ mod tests {
             script(&d, t, "exit 0");
         }
         let cwd = d.to_string_lossy().into_owned();
-        let r = srt_probe(pi(), &path, None, None, &cwd, &|_, _, _| {
+        let r = srt_probe(pi(), &path, None, None, false, &cwd, &|_, _, _| {
             panic!("not started")
         });
         if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
