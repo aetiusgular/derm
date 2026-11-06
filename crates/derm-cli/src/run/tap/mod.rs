@@ -244,7 +244,8 @@ pub(crate) fn environment_with(
 /// provider set with `-c` before `exec` and honours it after (run 4 Nov
 /// 2026; lane S status doc, Research), so the tap's flags go right after one
 /// of these, and first when there is none (the TUI).
-const CODEX_SESSION_SUBCOMMANDS: &[&str] = &["exec", "e", "review", "resume", "fork", "app-server"];
+pub(crate) const CODEX_SESSION_SUBCOMMANDS: &[&str] =
+    &["exec", "e", "review", "resume", "fork", "app-server"];
 
 /// Where the tap's flags go in `plan.args`: where the harness's own
 /// arguments start (0 when the plan starts the harness itself, after

@@ -425,18 +425,26 @@ fn codex_export_and_tap_flags_stay_whole_after_a_session_subcommand() {
                 i += 1;
             }
         }
-        // The export sits before the user's first word, and the user's
-        // words keep their order.
-        assert_eq!(p.args[range.end], user[0], "{user:?}: {:?}", p.args);
+        // The export sits before the user's first word, or right after it
+        // when that word is a session subcommand, beside the tap's pairs
+        // (MW5-15: Codex keeps `-c` from one side of a subcommand only).
+        // The user's words keep their order.
+        if CODEX_SESSION_SUBCOMMANDS.contains(&user[0]) {
+            assert_eq!(p.args[range.start - 1], user[0], "{user:?}: {:?}", p.args);
+        } else {
+            assert_eq!(p.args[range.end], user[0], "{user:?}: {:?}", p.args);
+        }
         assert!(
             p.args[range.clone()].iter().any(|a| a.starts_with("otel.")),
             "{:?}",
             p.args
         );
-        let theirs: Vec<&str> = p.args[range.end..]
+        let theirs: Vec<&str> = p
+            .args
             .iter()
-            .map(String::as_str)
-            .filter(|a| user.contains(a))
+            .enumerate()
+            .filter(|(i, a)| !range.contains(i) && user.contains(&a.as_str()))
+            .map(|(_, a)| a.as_str())
             .collect();
         assert_eq!(theirs, user, "{:?}", p.args);
         // The record keeps the export labelled and masks the user's words.
@@ -449,6 +457,99 @@ fn codex_export_and_tap_flags_stay_whole_after_a_session_subcommand() {
             !rec.iter().any(|w| w == "do it" || w == "fix the tests"),
             "{rec:?}"
         );
+    }
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// Mac test w5 retest 4, MW5-15's Codex half: Codex 0.163.0's `-c` is a
+/// clap `global = true` argument (`codex-rs/utils/cli/src/config_override.rs:29-35`),
+/// and clap 4.5.58 keeps the subcommand's occurrences and drops the root's
+/// when both come from the command line (`clap_builder` 4.5.58
+/// `parser/arg_matcher.rs:53-78`). Run with the real Codex 0.163.0
+/// (`/home/claude/repro/mw515c`): `-c otel... exec -c model=...` exported no
+/// OTel log and applied only the child's `model`. So every `-c` derm adds
+/// sits on one side of a session subcommand: after it when the user's first
+/// word is one, before everything when not.
+#[test]
+fn codex_pairs_sit_on_one_side_of_a_session_subcommand() {
+    let d = dirs("codex-mw515", Some("http://127.0.0.1:45004"));
+    let side = |args: &[String], from: usize| -> (usize, usize) {
+        let sub = args[from..]
+            .iter()
+            .position(|a| CODEX_SESSION_SUBCOMMANDS.contains(&a.as_str()))
+            .map(|i| i + from);
+        let Some(sub) = sub else {
+            return (args.iter().filter(|a| *a == "-c").count(), 0);
+        };
+        let before = args[..sub].iter().filter(|a| *a == "-c").count();
+        let after = args[sub..].iter().filter(|a| *a == "-c").count();
+        (before, after)
+    };
+    for tapped in [true, false] {
+        for srt in [false, true] {
+            for user in [
+                vec!["exec", "do it"],
+                vec!["app-server"],
+                vec!["e", "--json", "x"],
+                vec!["resume", "--last"],
+                vec!["fix the tests"],
+            ] {
+                let mut args: Vec<&str> = Vec::new();
+                if srt {
+                    args.extend(["--settings", "/s.json", "--", "/bin/codex"]);
+                }
+                args.extend(user.iter().copied());
+                let mut p = plan(if srt { "srt" } else { "codex" }, &args, true);
+                if srt {
+                    p.srt_settings = Some(
+                        json!({"network": {"allowedDomains": [], "deniedDomains": []}}).to_string(),
+                    );
+                }
+                p.env_set
+                    .push(("CODEX_HOME".into(), d.home.to_string_lossy().into_owned()));
+                let rest: Vec<String> = user.iter().map(|s| s.to_string()).collect();
+                if tapped {
+                    environment_with("codex", &mut p, &inputs(&d)).unwrap();
+                }
+                let (what, range) = super::super::wire_export(
+                    &mut p,
+                    &rest,
+                    "codex",
+                    Some("http://127.0.0.1:4318"),
+                    Some(TOKEN),
+                    None,
+                    false,
+                );
+                assert_eq!(what, json!("codex"));
+                let range = range.unwrap();
+                let from = if srt { 4 } else { 0 };
+                let (before, after) = side(&p.args, from);
+                assert!(
+                    before == 0 || after == 0,
+                    "tapped {tapped}, srt {srt}, {user:?}: `-c` on both sides of the \
+                     subcommand, so Codex drops the root's: {:?}",
+                    p.args
+                );
+                assert!(
+                    p.args[range.clone()].iter().any(|a| a.starts_with("otel.")),
+                    "{:?}",
+                    p.args
+                );
+                // The record keeps derm's export as derm's, wherever it sits.
+                let rec = super::super::recorded_argv(
+                    if srt { "srt" } else { "codex" },
+                    &p.args,
+                    &rest,
+                    false,
+                    Some(range),
+                );
+                assert!(
+                    rec.iter().any(|w| w.starts_with("otel.")),
+                    "{user:?}: the export was masked as the user's: {rec:?}"
+                );
+                assert!(!rec.iter().any(|w| w == "do it" || w == "fix the tests"));
+            }
+        }
     }
     let _ = std::fs::remove_dir_all(d.root);
 }

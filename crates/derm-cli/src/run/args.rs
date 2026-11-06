@@ -102,6 +102,40 @@ pub fn valid_host_port(s: &str) -> bool {
     host_ok && port.parse::<u16>().is_ok_and(|p| p > 0) && port.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Codex's `-c` is a clap global argument, and clap 4.5.58 keeps one side
+/// of it: given both before and after a subcommand, the root's are dropped
+/// (`clap_builder` `parser/arg_matcher.rs:53-78`; run against Codex 0.163.0,
+/// Mac test w5 retest 4, MW5-15). derm's own `-c` pairs go right after a
+/// session subcommand that is the first word, and first otherwise; so a
+/// session subcommand later in the words with a `-c` after it would drop
+/// derm's pairs and the chat would run untapped and unrecorded without a
+/// word. That command line is refused, with the way to write it.
+fn codex_config_split(rest: &[String]) -> Option<String> {
+    let first_is_sub = rest
+        .first()
+        .is_some_and(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()));
+    if first_is_sub {
+        return None;
+    }
+    let sub = rest
+        .iter()
+        .position(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()))?;
+    let config = |w: &String| {
+        w == "-c"
+            || w == "--config"
+            || w.starts_with("--config=")
+            || (w.starts_with("-c") && !w.starts_with("--") && w.len() > 2)
+    };
+    rest[sub + 1..].iter().any(config).then(|| {
+        format!(
+            "codex: put {:?} first (derm run codex -- {} ...): Codex keeps `-c` from one side \
+             of a subcommand only, so a `-c` after {:?} would drop derm's own and this chat \
+             would run untapped and unrecorded",
+            rest[sub], rest[sub], rest[sub]
+        )
+    })
+}
+
 pub fn parse(args: &[String]) -> Result<Args, String> {
     let Some(id) = args.first() else {
         return Err(USAGE.to_string());
@@ -208,6 +242,11 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             out.harness = h;
         }
         out.program = Some(program);
+    }
+    if out.harness.id == "codex" {
+        if let Some(why) = codex_config_split(&out.rest) {
+            return Err(why);
+        }
     }
     if out.boundary != Boundary::Srt && (!out.allow_hosts.is_empty() || out.model_url.is_some()) {
         return Err(
@@ -363,5 +402,51 @@ mod tests {
         assert!(parse(&s(&["pi", "--boundary", "none", "--allow-host", "h:1"])).is_err());
         assert!(parse(&s(&["pi", "--boundary", "srt", "--kit", "x"])).is_err());
         assert!(parse(&s(&["pi", "--boundary", "sbx", "--kit", "x"])).is_ok());
+    }
+
+    /// MW5-15's Codex half: clap keeps one side of a global `-c` (Codex
+    /// 0.163.0, clap 4.5.58), so a session subcommand that is not the first
+    /// word, with `-c` after it, would drop every `-c` derm puts first: the
+    /// chat would run untapped and unrecorded without a word. Refused.
+    #[test]
+    fn codex_with_config_on_both_sides_of_a_later_subcommand_is_refused() {
+        for rest in [
+            &["-m", "gpt", "exec", "-c", "a=1", "hi"][..],
+            &["--full-auto", "exec", "--config", "a=1"][..],
+            &["--full-auto", "exec", "--config=a=1"][..],
+            &["-p", "work", "app-server", "-ca=1"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            let e = parse(&argv).unwrap_err();
+            assert!(
+                e.contains("first") && e.contains("untapped"),
+                "{rest:?}: {e}"
+            );
+        }
+        for rest in [
+            &["exec", "-c", "a=1", "hi"][..],
+            &["-c", "a=1", "fix the tests"][..],
+            &["-m", "gpt", "exec", "hi"][..],
+            &["-c", "a=1", "exec", "hi"][..],
+            &["app-server"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            assert!(parse(&argv).is_ok(), "{rest:?}");
+        }
+        // Another harness's words are its own.
+        let argv = s(&[
+            "pi",
+            "--boundary",
+            "none",
+            "--",
+            "-m",
+            "x",
+            "exec",
+            "-c",
+            "a",
+        ]);
+        assert!(parse(&argv).is_ok());
     }
 }

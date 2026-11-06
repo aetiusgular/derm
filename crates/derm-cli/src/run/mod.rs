@@ -462,16 +462,21 @@ fn recorded_argv(
     // Where the user's words start; with none found, mask everything.
     let split = words_at(args, rest).unwrap_or(0);
     let mut out = vec![program.to_string()];
-    for (i, w) in args[..split].iter().enumerate() {
-        let settings = i > 0 && args[i - 1] == "--settings";
-        match &export {
-            Some(r) if r.contains(&i) && settings => {
-                out.push(format!("[derm otel settings, {} chars]", w.chars().count()))
+    for (i, w) in args.iter().enumerate() {
+        let exported = export.as_ref().is_some_and(|r| r.contains(&i));
+        // derm's own words: everything before the user's, and the export,
+        // which for Codex follows a session subcommand (MW5-15).
+        if i < split || exported {
+            let settings = i > 0 && args[i - 1] == "--settings";
+            if exported && settings {
+                out.push(format!("[derm otel settings, {} chars]", w.chars().count()));
+            } else {
+                out.push(w.clone());
             }
-            _ => out.push(w.clone()),
+        } else {
+            out.push(mask(w));
         }
     }
-    out.extend(args[split..].iter().map(mask));
     derm_audit_linux::redact::argv(&out)
 }
 
@@ -669,9 +674,20 @@ fn wire_export(
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     // Before the user's first word, wherever the tap spliced its own block
-    // (MW5-6): Codex prepends a root `-c` to a session subcommand's own
-    // (0.163.0, `codex-rs/cli/src/main.rs:1162-1165, 2156-2161`).
-    let at = words_at(&p.args, rest).unwrap_or(p.args.len().saturating_sub(rest.len()));
+    // (MW5-6). For Codex, every `-c` sits on one side of a session
+    // subcommand: its `-c` is a clap global argument, and clap 4.5.58 keeps
+    // the subcommand's occurrences and drops the root's when both are given
+    // (`clap_builder` `parser/arg_matcher.rs:53-78`; run against Codex
+    // 0.163.0, retest 4's MW5-15). The tap's pairs follow a session
+    // subcommand, so the export follows it too.
+    let mut at = words_at(&p.args, rest).unwrap_or(p.args.len().saturating_sub(rest.len()));
+    if matches!(applied, Applied::Codex)
+        && p.args
+            .get(at)
+            .is_some_and(|w| tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()))
+    {
+        at += 1;
+    }
     let range = at..at + added.len();
     p.args.splice(at..at, added);
     for (k, v) in cmd.get_envs() {
