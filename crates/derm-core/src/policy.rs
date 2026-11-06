@@ -660,6 +660,12 @@ pub const CONTROL_PATHS: &[&str] = &[
     "cline_plugin_",
     "cline-approvals/",
     "derm-approval/",
+    // The sbx kit's folder: its marker, `/opt/derm-kit/sbx-vm`, turns the
+    // hook's VM route on, so an allowed call on a host must not write it
+    // (integration w5's re-reviews, W5R-7(a) and W5R2-3). The marker's own
+    // name too, for `cd /opt/derm-kit && touch sbx-vm`.
+    "derm-kit/",
+    "sbx-vm",
 ];
 
 /// The path the shell opens is the same with `//` or `/./` in it, so a

@@ -543,6 +543,12 @@ export const CONTROL_PATH_MARKERS = [
   "cline_plugin_",
   "cline-approvals/",
   "derm-approval/",
+  // The sbx kit's folder: its marker, `/opt/derm-kit/sbx-vm`, turns the
+  // hook's VM route on, so an allowed call on a host must not write it
+  // (integration w5's re-reviews, W5R-7(a) and W5R2-3). The marker's own
+  // name too, for `cd /opt/derm-kit && touch sbx-vm`.
+  "derm-kit/",
+  "sbx-vm",
 ] as const;
 
 // A folder entry's bare name, for `mv ~/.derm old` and `cd ~/.derm && cp x

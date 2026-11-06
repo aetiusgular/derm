@@ -44,8 +44,8 @@ fn fixture_has_thirteen_rules_and_fifty_three_cases() {
     );
     assert_eq!(
         cases.len(),
-        116,
-        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3), 22 from wave 5 lane W (command rules), 10 from integration w5's close (review W5-S1, S3, S4)"
+        119,
+        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3), 22 from wave 5 lane W (command rules), 10 from integration w5's close (review W5-S1, S3, S4), 3 from its fix pass (W5R-7(a), W5R2-3)"
     );
 }
 
