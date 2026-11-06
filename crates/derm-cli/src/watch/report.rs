@@ -139,6 +139,19 @@ pub fn render(r: &Value) -> String {
             count(conflicts)
         ));
     }
+    // Mac test w5 retest 2, MW5-21: an install's control-path writes were
+    // in the by-kind counts only.
+    let control = r
+        .get("byKind")
+        .and_then(|k| k.get("install.control"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if control > 0 {
+        out.push_str(&format!(
+            "INSTALL CONTROL WRITES: {} paths a package's install script wrote that a program runs later (derm watch tail --json lists each, kind install.control)\n",
+            count(control)
+        ));
+    }
     let check = r.get("check").cloned().unwrap_or(Value::Null);
     if let Some(reach) = check.get("collectorReachable").and_then(Value::as_str) {
         let why = check
@@ -289,6 +302,15 @@ mod tests {
         assert!(t.contains("/etc/hosts (x2)"), "{t}");
         assert!(t.contains("os collector: no (not running)"), "{t}");
         assert!(t.contains("expected and hidden: 5"), "{t}");
+    }
+
+    #[test]
+    fn install_control_writes_are_named_beside_the_flags() {
+        let mut r = sample();
+        r["byKind"]["install.control"] = json!(2);
+        let t = render(&r);
+        assert!(t.contains("INSTALL CONTROL WRITES: 2 paths"), "{t}");
+        assert!(!render(&sample()).contains("INSTALL CONTROL"));
     }
 
     #[test]
