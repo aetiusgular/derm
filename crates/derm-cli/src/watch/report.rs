@@ -263,7 +263,19 @@ pub fn render(r: &Value) -> String {
         ("approvalsOmitted", "approval answers"),
     ] {
         let n = top(k);
-        if n > 0 {
+        let key = k.trim_end_matches("Omitted");
+        let emptied = r
+            .get(key)
+            .and_then(Value::as_object)
+            .is_some_and(|m| m.is_empty());
+        if n > 0 && emptied {
+            // The second re-review's R2-4: the map went whole.
+            out.push_str(&format!(
+                "NOT COUNTED BY {}: all {} {what} left out; the report was cut to its totals\n",
+                what.to_ascii_uppercase(),
+                count(n)
+            ));
+        } else if n > 0 {
             out.push_str(&format!(
                 "NOT COUNTED BY {}: {} {what} with the fewest events left out of the counts above\n",
                 what.to_ascii_uppercase(),
@@ -453,6 +465,9 @@ mod tests {
         );
         assert!(t.contains("expected and hidden: 40 (counts only"), "{t}");
         assert!(t.contains("REPORT CUT TO ITS TOTALS"), "{t}");
+        let mut empty = r.clone();
+        empty["byKind"] = json!({});
+        assert!(render(&empty).contains("NOT COUNTED BY KINDS: all 1,200 kinds left out"));
         // A report left with its totals only still renders.
         let t = render(&json!({"events": 5, "flags": 2, "reportCut": true}));
         assert!(t.contains("REPORT CUT TO ITS TOTALS"), "{t}");

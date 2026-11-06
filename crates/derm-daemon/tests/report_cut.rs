@@ -390,3 +390,142 @@ fn r2b_a_chat_tokens_new_hosts_do_not_push_out_a_real_write() {
         check["flagsOmitted"]
     );
 }
+
+/// R2-2's control: the same flood, with a plain write to the guarded path
+/// (in `path`) and the move into it (in `dest`): the write is kept, the
+/// move is not.
+#[test]
+fn r2_2_a_move_into_the_guarded_folder_is_kept_like_a_write_there() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-a", "at": 0, "chatId": "chat-a", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let mut post = |id: String, kind: &str, detail: Value| {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": id, "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "auditd", "kind": kind, "summary": "", "detail": detail, "pid": 77
+        }}));
+        assert_eq!(r["ok"], true, "{r}");
+    };
+    let long = "x".repeat(180);
+    let n = 3_000;
+    for i in 0..n {
+        post(
+            format!("w1-{i}"),
+            "write",
+            json!({"path": format!("/home/t/out/{long}-a{i}.txt"), "tier": "child"}),
+        );
+    }
+    let guarded = f.root.join("data/activity/2026-11-06.jsonl");
+    let g = guarded.to_string_lossy().to_string();
+    post(
+        "real-write".into(),
+        "write",
+        json!({"path": g, "tier": "child"}),
+    );
+    post(
+        "real-move".into(),
+        "rename",
+        json!({"path": "/home/t/proj/forged.jsonl", "dest": g, "tier": "child"}),
+    );
+    for i in 0..n {
+        post(
+            format!("w2-{i}"),
+            "write",
+            json!({"path": format!("/home/t/out/{long}-b{i}.txt"), "tier": "child"}),
+        );
+    }
+    let (rep, _) = wait_events(&mut d, Some("chat-a"), 2 * n + 3);
+    let check = &rep["report"]["check"];
+    let flags = check["flags"].as_array().unwrap();
+    let listed = |id: &str| flags.iter().any(|f| f["eventId"] == id);
+    let all = d.ask(json!({"op": "report", "chat": "chat-a", "since": 0, "until": 1}));
+    let _ = all;
+    assert!(
+        listed("real-write") && listed("real-move"),
+        "write to the guarded path listed: {}; move into it listed: {}; {} kept, {} omitted",
+        listed("real-write"),
+        listed("real-move"),
+        flags.len(),
+        check["flagsOmitted"]
+    );
+}
+
+/// The second re-review's R2-1, the part this pass fixes: in the middle of
+/// the agent's own flood of `.env` opens and writes outside its folders, a
+/// move into derm's log folder (named in `dest`, R2-2) and a write to
+/// `~/.ssh` (an always-listed path) are still listed. A real `.env` open in
+/// the middle of the same flood is not promised (R2-1's rest, open).
+#[test]
+fn a_real_write_to_an_always_listed_path_in_a_flood_is_kept() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-a", "at": 0, "chatId": "chat-a", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let mut post = |id: String, kind: &str, detail: Value| {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": id, "at": 0, "chatId": "chat-a", "harness": "pi",
+            "source": "auditd", "kind": kind, "summary": "", "detail": detail, "pid": 77
+        }}));
+        assert_eq!(r["ok"], true, "{r}");
+    };
+    let long = "x".repeat(180);
+    let n = 1_500;
+    for i in 0..n {
+        post(
+            format!("o1-{i}"),
+            "open",
+            json!({"path": format!("/tmp/a{i}/.env"), "tier": "child"}),
+        );
+        post(
+            format!("w1-{i}"),
+            "write",
+            json!({"path": format!("/home/t/out/{long}-a{i}.txt"), "tier": "child"}),
+        );
+    }
+    let guarded = f.root.join("data/activity/2026-11-06.jsonl");
+    post(
+        "real-move".into(),
+        "rename",
+        json!({
+            "path": "/home/t/proj/forged.jsonl",
+            "dest": guarded.to_string_lossy(),
+            "tier": "child"
+        }),
+    );
+    post(
+        "real-ssh".into(),
+        "write",
+        json!({"path": "/home/t/.ssh/authorized_keys", "tier": "child"}),
+    );
+    for i in 0..n {
+        post(
+            format!("o2-{i}"),
+            "open",
+            json!({"path": format!("/tmp/b{i}/.env"), "tier": "child"}),
+        );
+        post(
+            format!("w2-{i}"),
+            "write",
+            json!({"path": format!("/home/t/out/{long}-b{i}.txt"), "tier": "child"}),
+        );
+    }
+    let (rep, _) = wait_events(&mut d, Some("chat-a"), 4 * n + 3);
+    let check = &rep["report"]["check"];
+    let flags = check["flags"].as_array().unwrap();
+    let listed = |id: &str| flags.iter().any(|f| f["eventId"] == id);
+    assert!(check["flagsOmitted"].as_u64().unwrap_or(0) > 0, "not cut");
+    assert!(
+        listed("real-move"),
+        "the move into derm's log folder is listed"
+    );
+    assert!(listed("real-ssh"), "the write to ~/.ssh is listed");
+}

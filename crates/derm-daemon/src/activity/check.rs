@@ -89,6 +89,15 @@ pub struct Flag {
     /// Where in the chat's process tree it came from (collector events).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// A write to one of derm's guarded folders (the log, the recordings),
+    /// whatever the path field that named it (fix pass 4's re-review, R2-2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guarded: bool,
+    /// Its event is one a chat token could post (`adapter` or `otel`), so
+    /// a report cut ranks it after what only the daemon and the OS feeds
+    /// write (R2-3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat_postable: bool,
 }
 
 fn one() -> u32 {
@@ -996,6 +1005,11 @@ fn dedupe(events: &[ActivityEvent], mut found: Vec<Candidate>) -> Vec<Flag> {
             count: 1,
             last_at: c.event.at,
             tier: c.tier,
+            guarded: c.alone,
+            chat_postable: matches!(
+                c.event.source,
+                ActivitySource::Adapter | ActivitySource::Otel
+            ),
         });
     }
     rows
@@ -1372,12 +1386,19 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
 }
 
 fn context_ids(events: &[ActivityEvent], center: &ActivityEvent) -> Vec<String> {
+    // The flagged event is always in its own context, however many events
+    // share its millisecond (fix pass 4's re-review, R2-3).
     let mut near: Vec<&ActivityEvent> = events
         .iter()
-        .filter(|e| e.chat_id == center.chat_id && (e.at - center.at).abs() <= CONTEXT_WINDOW_MS)
+        .filter(|e| {
+            e.chat_id == center.chat_id
+                && e.id != center.id
+                && (e.at - center.at).abs() <= CONTEXT_WINDOW_MS
+        })
         .collect();
     near.sort_by_key(|e| ((e.at - center.at).abs(), e.at));
-    near.truncate(MAX_CONTEXT);
+    near.truncate(MAX_CONTEXT - 1);
+    near.push(center);
     near.sort_by_key(|e| e.at);
     near.into_iter().map(|e| e.id.clone()).collect()
 }

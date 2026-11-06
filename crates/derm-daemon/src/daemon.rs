@@ -74,18 +74,45 @@ fn flag_rank(f: &Value) -> u8 {
     }
 }
 
-/// What a cut report knows about the event a flag names: whether a chat
-/// token could have posted it (an `adapter` or `otel` record), and whether
-/// it wrote one of derm's guarded paths.
+/// What a cut report knows about a flag: whether a chat token could have
+/// posted its event (an `adapter` or `otel` record), and whether it touched
+/// a path that is always listed (derm's guarded folders, and the places a
+/// process persists itself: `ALWAYS_LISTED`).
 pub struct FlagSource<'a> {
-    pub chat_postable: &'a dyn Fn(&str) -> bool,
-    pub guarded: &'a dyn Fn(&str) -> bool,
+    pub chat_postable: &'a dyn Fn(&Value) -> bool,
+    pub always_listed: &'a dyn Fn(&Value) -> bool,
 }
 
+/// Paths a cut report lists first, after derm's guarded folders: what a
+/// process writes to keep itself or reach the user's sign-ins (the
+/// re-review's R2-1). Matched as parts of the path.
+pub const ALWAYS_LISTED: &[&str] = &[
+    "/.ssh/",
+    "/.gnupg/",
+    "/.bashrc",
+    "/.bash_profile",
+    "/.profile",
+    "/.zshrc",
+    "/.zprofile",
+    "/.zshenv",
+    "/.config/fish/config.fish",
+    "/Library/LaunchAgents/",
+    "/Library/LaunchDaemons/",
+    "/.config/systemd/user/",
+    "/.config/autostart/",
+    "/etc/",
+    "/var/spool/cron",
+    "/.aws/",
+    "/.kube/",
+    "/.docker/config.json",
+];
+
 /// The order a cut report keeps flags in (fix pass 4's review, FP4-S2 and
-/// its re-review's R2). Each chat's flags fall into buckets: a write to one
-/// of derm's guarded paths first, then by whether a chat token could have
-/// posted the event (records it cannot post first), then by reason. A chat's
+/// its re-reviews' R2, R2-1 to R2-3). Each chat's flags fall into buckets: a
+/// flag on an OS feed's or the daemon's event that touched a guarded or
+/// always-listed path first (`ALWAYS_LISTED`), then by whether a chat token
+/// could have posted the event (records it cannot post first), then by
+/// reason. A chat's
 /// list takes one flag from each bucket in turn, so no burst in one bucket,
 /// such as new hosts a chat token names in bulk, pushes out a lone flag of
 /// another; inside a bucket it takes the newest, then the oldest, then the
@@ -103,12 +130,13 @@ pub fn flag_keep_order(flags: &[Value], src: &FlagSource) -> Vec<usize> {
     };
     let bucket = |i: usize| {
         let f = &flags[i];
-        let id = f.get("eventId").and_then(Value::as_str).unwrap_or("");
-        let guarded = (src.guarded)(id);
-        let postable = (src.chat_postable)(id);
-        (!guarded, postable, flag_rank(f))
+        (
+            !(src.always_listed)(f),
+            (src.chat_postable)(f),
+            flag_rank(f),
+        )
     };
-    // A bucket: not a guarded write, a chat token could post it, its rank.
+    // A bucket: not always listed, a chat token could post it, its rank.
     type Buckets = BTreeMap<(bool, bool, u8), Vec<usize>>;
     let mut by_chat: BTreeMap<&str, Buckets> = BTreeMap::new();
     for (i, f) in flags.iter().enumerate() {
@@ -260,9 +288,11 @@ pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>
     let full_events = events;
     let events: Vec<Value> = full_events.iter().map(slim_event).collect();
     let has_check = top.get("check").is_some_and(Value::is_object);
-    // What each named event is, read before the events are slimmed.
+    // What each named event is, read before the events are slimmed. The flag
+    // carries its own `guarded` and `chatPostable` (R2-2, R2-3); the event,
+    // always in the flag's own context now, adds its source and paths.
     let mut postable_ids = std::collections::HashSet::new();
-    let mut guarded_ids = std::collections::HashSet::new();
+    let mut listed_ids = std::collections::HashSet::new();
     for e in &full_events {
         let Some(id) = e.get("id").and_then(Value::as_str) else {
             continue;
@@ -271,21 +301,37 @@ pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>
         if matches!(source, "adapter" | "otel") {
             postable_ids.insert(id.to_string());
         }
-        let path = e
-            .get("detail")
-            .and_then(|d| d.get("path"))
-            .and_then(Value::as_str);
-        if path.is_some_and(|p| crate::activity::check::guarded_path(p, data_dir)) {
-            guarded_ids.insert(id.to_string());
+        let detail = e.get("detail");
+        let listed = ["path", "dest", "target", "source"].iter().any(|k| {
+            detail
+                .and_then(|d| d.get(*k))
+                .and_then(Value::as_str)
+                .is_some_and(|p| {
+                    crate::activity::check::guarded_path(p, data_dir)
+                        || ALWAYS_LISTED.iter().any(|part| p.contains(part))
+                })
+        });
+        if listed {
+            listed_ids.insert(id.to_string());
         }
     }
-    let postable = |id: &str| postable_ids.contains(id);
-    let guarded = |id: &str| guarded_ids.contains(id);
+    let event_of = |f: &Value| {
+        f.get("eventId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let flag_true = |f: &Value, k: &str| f.get(k).and_then(Value::as_bool) == Some(true);
+    let postable = |f: &Value| flag_true(f, "chatPostable") || postable_ids.contains(&event_of(f));
+    // A chat token's own record never earns the first bucket by naming a
+    // path there: only a flag on an OS feed's or the daemon's event does.
+    let listed =
+        |f: &Value| !postable(f) && (flag_true(f, "guarded") || listed_ids.contains(&event_of(f)));
     let order = flag_keep_order(
         &flags,
         &FlagSource {
             chat_postable: &postable,
-            guarded: &guarded,
+            always_listed: &listed,
         },
     );
     let mut keep_flags = flags.len();
@@ -1777,9 +1823,15 @@ impl Daemon {
         });
         let (kernel_total, kernel_inside, kernel_during) =
             kernel_drops_for(status.as_ref(), since, until, run);
+        // A bound when a gap in the window is merged or reaches past either
+        // edge (R5, the second re-review's R2-5).
         let window_up_to = kernel_inside.as_array().map(|gaps| {
-            gaps.iter()
-                .any(|g| g.get("merged").and_then(Value::as_u64).unwrap_or(1) > 1)
+            gaps.iter().any(|g| {
+                let merged = g.get("merged").and_then(Value::as_u64).unwrap_or(1) > 1;
+                let from = g.get("fromMs").and_then(Value::as_i64);
+                let to = g.get("toMs").and_then(Value::as_i64);
+                merged || from.is_none_or(|t| t < since) || to.is_none_or(|t| t > until)
+            })
         });
         json!({
             "since": since,
