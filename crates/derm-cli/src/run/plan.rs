@@ -781,6 +781,14 @@ pub fn srt_loopback_through_proxy(p: &mut Plan) {
     let Some(at) = p.args.iter().position(|a| a == "--") else {
         return;
     };
+    // env reads `A=b` as a variable and `-x` as its own option, and would
+    // run the next word instead (review F5): such a word is left unwrapped.
+    if p.args
+        .get(at + 1)
+        .is_none_or(|w| w.starts_with('-') || w.contains('='))
+    {
+        return;
+    }
     let wrap = [
         "/usr/bin/env".to_string(),
         format!("NO_PROXY={SRT_NO_PROXY_WITHOUT_LOOPBACK}"),
@@ -1747,5 +1755,21 @@ mod tests {
         let before = p.args.clone();
         srt_loopback_through_proxy(&mut p);
         assert_eq!(p.args, before);
+    }
+
+    /// Fix pass 1's review, F5: env reads a word with `=` as a variable and
+    /// one with a leading `-` as its own option, and would run the next word
+    /// instead. Such a program word is left as srt would run it, unwrapped.
+    #[test]
+    fn a_program_word_env_would_misread_is_not_wrapped() {
+        for word in ["A=b", "-i"] {
+            let args = a(&["--boundary", "srt", "--", "aider"]);
+            let mut p = build(&inputs(&args)).unwrap();
+            let at = p.args.iter().position(|x| x == "--").unwrap();
+            p.args[at + 1] = word.into();
+            let before = p.args.clone();
+            srt_loopback_through_proxy(&mut p);
+            assert_eq!(p.args, before, "{word}");
+        }
     }
 }

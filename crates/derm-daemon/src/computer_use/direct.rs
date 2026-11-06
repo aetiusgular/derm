@@ -404,7 +404,12 @@ impl Server {
                 .pointer("/structuredContent/windows")
                 .and_then(Value::as_array)
             {
-                windows.extend(list.iter().cloned());
+                // Only the windows of the pid asked for (review F6).
+                windows.extend(
+                    list.iter()
+                        .filter(|w| w.get("pid").and_then(Value::as_u64) == Some(*pid))
+                        .cloned(),
+                );
             }
         }
         Ok(json!({

@@ -6,7 +6,7 @@
 //! ran (box test w5, BW5-12).
 
 /// A flag: `-x`, or `--name` with letters, digits and `-` after a first
-/// letter, at most 40 (`-pPROMPT`, or a prompt that starts with `-`, is a
+/// letter, at most 41 characters in all (`-pPROMPT`, or a prompt that starts with `-`, is a
 /// word, not a flag).
 fn flag(f: &str) -> bool {
     let (name, short) = match f.strip_prefix("--") {

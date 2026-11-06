@@ -37,7 +37,7 @@ while IFS= read -r line; do
         *'"pid":'*)
           pid=$(printf '%s' "$line" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
           say "call list_windows pid=$pid"
-          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1 window"}],"structuredContent":{"windows":[{"app_name":"calc","pid":%s,"window_id":7,"z_index":1}]}}}\n' "$id" "$pid" ;;
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1 window"}],"structuredContent":{"windows":[{"app_name":"calc","pid":%s,"window_id":7,"z_index":1},{"app_name":"other","pid":999,"window_id":8,"z_index":2}]}}}\n' "$id" "$pid" ;;
         *)
           say "refused display"
           printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"protected resource is outside the capability manifest: desktop display observation is outside the capability manifest"}]}}\n' "$id" ;;
@@ -328,6 +328,15 @@ fn a_runtime_starts_bounded_with_the_executable_in_its_manifest_and_ends_on_stop
     // Box test w5, BW5-19: the driver refuses an unfiltered listing under
     // derm's manifest, so the daemon lists per granted program's pid.
     assert_eq!(result["structuredContent"]["windows"][0]["pid"], 500);
+    // Fix pass 1's review, F6: a window the driver returns for another pid
+    // is not passed on.
+    assert_eq!(
+        result["structuredContent"]["windows"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "{result}"
+    );
     let apps = Backend::call(&*core, "c1", "list_apps", json!({}));
     let CallOutcome::Done(apps) = apps else {
         panic!("{apps:?}");
