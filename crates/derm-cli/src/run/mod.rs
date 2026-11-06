@@ -920,11 +920,50 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // ports on the host with a rule for it alone (case 117), then attach;
     // it is removed when the harness ends, or on any way out from here (SB3).
     let mut sandbox = if p.sandbox_name.is_some() {
-        Some(boundary::sbx::start(
+        match boundary::sbx::start(
             env.program("sbx"),
             &mut launch,
             filter.is_none() && boundary::sbx::interactive(),
-        )?)
+        ) {
+            Ok(s) => Some(s),
+            Err((code, why)) => {
+                // An attempt the feed can see (box test w5, BW5-7): the
+                // chat's start and stop, marked as never started, with the
+                // reason, so `derm watch` and the daemon's running list
+                // close it at once.
+                if let Some(d) = &daemon {
+                    let detail = json!({
+                        "boundary": a.boundary.name(),
+                        "cwd": cwd,
+                        "sandboxName": p.sandbox_name,
+                        "notStarted": true,
+                        "reason": why,
+                    });
+                    for (kind, summary) in [
+                        (
+                            "run.start",
+                            format!("{} under sbx: not started", a.harness.id),
+                        ),
+                        (
+                            "run.stop",
+                            format!("{} under sbx: not started", a.harness.id),
+                        ),
+                    ] {
+                        if let Err(e) = d.post(&event(
+                            &chat,
+                            a.harness.id,
+                            kind,
+                            summary,
+                            detail.clone(),
+                            None,
+                        )) {
+                            eprintln!("derm run: {kind} was not recorded: {e}");
+                        }
+                    }
+                }
+                return Err((code, why));
+            }
+        }
     } else {
         None
     };
@@ -1892,6 +1931,59 @@ mod end_to_end {
         assert!(seen(&st).is_empty(), "the harness never started");
         assert!(!st.fake.dir.join("srt/chat-d.json").exists());
         assert!(events(&st).is_empty(), "nothing recorded");
+    }
+
+    /// Box test w5, BW5-7: a chat whose `sbx create` fails (there, sbx
+    /// 0.51.0 refusing derm's v2 kit beside its v3 claude, BW5-6) left no
+    /// record at all. Its start and stop are posted, marked not started,
+    /// with the reason, and the error still stops `derm run`.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_sbx_create_is_recorded_as_a_chat_that_did_not_start() {
+        let st = setup("sbx-create-fails");
+        let sbx = script(
+            &st.fake.dir,
+            "sbx",
+            "if [ \"$1 $2\" = 'policy log' ]; then echo 'no such sandbox' >&2; exit 1; fi; \
+             if [ \"$1\" = create ]; then echo 'error: resolve kits: cannot mix v3 kits with v1/v2 kits in one sandbox' >&2; exit 1; fi; \
+             exit 80",
+        );
+        let mut env = clone_env(&st.env);
+        env.programs.push(("sbx".into(), sbx));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let err = run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "sbx",
+                "--chat",
+                "chat-nf",
+                "--cwd",
+                &cwd,
+            ]),
+            &env,
+        )
+        .unwrap_err();
+        assert_eq!(err.0, 1, "{err:?}");
+        assert!(
+            err.1.contains("did not make the sandbox derm-chat-nf"),
+            "{err:?}"
+        );
+        let ev = events(&st);
+        let kinds: Vec<&str> = ev.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["run.start", "run.stop"], "{ev:?}");
+        for e in &ev {
+            assert_eq!(e["chatId"], "chat-nf");
+            assert_eq!(e["detail"]["notStarted"], true, "{e}");
+            assert!(
+                e["detail"]["reason"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("did not make the sandbox"),
+                "{e}"
+            );
+        }
+        assert!(seen(&st).is_empty(), "the harness never started");
     }
 
     #[cfg(unix)]

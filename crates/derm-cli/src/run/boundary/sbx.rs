@@ -340,7 +340,7 @@ pub(crate) fn start_with(
             "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
              The agent runs in full access there, so what your policy would ask is denied. The agent has sudo in the VM and could remove the gate; \
              the VM stays the boundary, and sbx's policy log, the model tap and the host's OS feed record the chat. \
-             The gate's own decisions are not sent to the host yet. To run without the kit: {}=off",
+             The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
             st.workload,
             super::kit::SWITCH
         ),
@@ -367,18 +367,10 @@ pub(crate) fn start_with(
         super::kit::Kit::Built(_) => None,
         super::kit::Kit::Without(why) => Some(why.clone()),
     };
+    let kit_went_on = kit_note.is_none();
     drop(kit);
     if !status.success() {
-        return Err((
-            1,
-            format!(
-                "sbx create did not make the sandbox {} (exit {:?}); nothing started. \
-                 If one by that name is left from an earlier run: sbx rm --force {}",
-                st.name,
-                status.code(),
-                st.name
-            ),
-        ));
+        return Err((1, create_failed(&st.name, status.code(), kit_went_on)));
     }
     let sandbox = Sandbox {
         sbx: sbx.to_string(),
@@ -422,6 +414,27 @@ pub(crate) fn start_with(
     plan.args = st.attach;
     plan.sandbox_name = Some(st.name);
     Ok(sandbox)
+}
+
+/// Why a create made no sandbox, and what to do. With derm's kit on the
+/// create, sbx's refusal may be of the kit: sbx 0.51.0 ships `claude` as a
+/// v3 kit and refuses a v1 or v2 mixin beside it ("cannot mix v3 kits with
+/// v1/v2 kits in one sandbox"; box test w5 BW5-6, Mac test w5 MW5-7), and
+/// derm's kit is v2 until its v3 form is built and run.
+fn create_failed(name: &str, code: Option<i32>, kit_went_on: bool) -> String {
+    let mut why = format!(
+        "sbx create did not make the sandbox {name} (exit {code:?}); nothing started. \
+         If one by that name is left from an earlier run: sbx rm --force {name}"
+    );
+    if kit_went_on {
+        why.push_str(&format!(
+            ". derm's gate went on this create as a kit, and sbx may have refused the kit: \
+             sbx 0.51.0 cannot compose derm's v2 kit with its own v3 claude kit (its error above names it). \
+             To run under sbx without derm's gate in the VM: {}=off; to keep the gate: --boundary srt",
+            super::kit::SWITCH
+        ));
+    }
+    why
 }
 
 #[cfg(test)]
@@ -629,6 +642,19 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// BW5-6 and MW5-7: with derm's kit on the create, a failure names the
+    /// v3 refusal and both ways on; without the kit, it does not.
+    #[test]
+    fn a_failed_create_with_the_kit_names_the_v3_refusal_and_the_way_on() {
+        let with = create_failed("derm-x", Some(1), true);
+        assert!(with.contains("v3 claude kit"), "{with}");
+        assert!(with.contains("DERM_SBX_KIT=off"), "{with}");
+        assert!(with.contains("--boundary srt"), "{with}");
+        let without = create_failed("derm-x", Some(1), false);
+        assert!(!without.contains("v3"), "{without}");
+        assert!(without.contains("sbx rm --force derm-x"), "{without}");
     }
 
     #[cfg(unix)]
