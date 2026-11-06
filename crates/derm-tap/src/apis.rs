@@ -554,7 +554,9 @@ impl ResponseParser {
             }
             return Some(k);
         }
-        // Past any index a stream gives, so the two never share a slot.
+        // Past the indexes a well-formed stream gives (a hostile upstream can
+        // send any `output_index`, and at worst merges two of its own calls;
+        // review FP3-S7).
         let k = (1u64 << 32) + self.next_key();
         if self.by_item.len() < 4_096 {
             for n in names {

@@ -816,8 +816,8 @@ impl Daemon {
         }
         drop(ring);
         // `derm run`'s own records to the in-process watchers (MW5-18). Only
-        // the daemon scope posts `run.start` (`op_event`), and a chat's
-        // `run.stop` is rate-limited with its other posts, so this stays small.
+        // the daemon scope posts `run` records (`op_event` refuses them from a
+        // chat token), so this stays small (review FP3-S6).
         if event.source == Source::Run {
             if let Ok(mut watchers) = self.run_watchers.lock() {
                 watchers.retain(|w| w.send(event.clone()).is_ok());
