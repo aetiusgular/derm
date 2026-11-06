@@ -522,6 +522,17 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             if let Some(e) = cu {
                 allowed.push(e.to_string());
             }
+            // MW5-24: the harness's own sign-in host, so it can renew an
+            // expired access token inside srt (`harness::sign_in_hosts`).
+            let sign_in = super::harness::sign_in_hosts(h.id);
+            if !sign_in.is_empty() {
+                allowed.extend(sign_in.iter().map(|s| s.to_string()));
+                notes.push(format!(
+                    "derm run: under srt {} may reach its sign-in host {} to renew its sign-in, and no other host but derm's",
+                    h.id,
+                    sign_in.join(", ")
+                ));
+            }
             allowed.sort();
             allowed.dedup();
             let mut deny_read: Vec<String> = [
@@ -1186,6 +1197,50 @@ mod tests {
 
     fn srt_of(p: &Plan) -> serde_json::Value {
         serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap()
+    }
+
+    /// Mac test w5 retest 4, MW5-24: under derm's srt, Claude Code could not
+    /// renew its sign-in ("OAuth refresh failed (expected): proxy refused the
+    /// connection"), so once its access token expired every chat under the
+    /// default boundary ended with "401 OAuth access token has expired".
+    /// Claude Code 2.1.311 refreshes at `https://platform.claude.com/v1/oauth/token`
+    /// (its bundle), Codex 0.163.0 at `https://auth.openai.com/oauth/token`
+    /// (`codex-rs/login/src/auth/manager.rs:212`). srt's proxy admits each
+    /// harness's own sign-in host and no other harness's.
+    #[test]
+    fn srt_lets_a_harness_renew_its_own_sign_in() {
+        for (id, host, other) in [
+            (
+                "claude-code",
+                "platform.claude.com:443",
+                "auth.openai.com:443",
+            ),
+            ("codex", "auth.openai.com:443", "platform.claude.com:443"),
+        ] {
+            let args = a(&[id, "--boundary", "srt"]);
+            let p = build(&inputs(&args)).unwrap();
+            let allowed = srt_of(&p)["network"]["allowedDomains"].clone();
+            let list = allowed.as_array().unwrap();
+            assert!(list.contains(&json!(host)), "{id}: {allowed}");
+            assert!(!list.contains(&json!(other)), "{id}: {allowed}");
+            assert!(
+                p.notes
+                    .iter()
+                    .any(|n| n.contains(host) && n.contains("sign-in")),
+                "{id}: {:?}",
+                p.notes
+            );
+        }
+        let args = a(&["pi", "--boundary", "srt"]);
+        let p = build(&inputs(&args)).unwrap();
+        let allowed = srt_of(&p)["network"]["allowedDomains"].clone();
+        assert!(
+            !allowed.as_array().unwrap().iter().any(|h| {
+                let h = h.as_str().unwrap();
+                h.starts_with("platform.claude.com") || h.starts_with("auth.openai.com")
+            }),
+            "{allowed}"
+        );
     }
 
     #[test]

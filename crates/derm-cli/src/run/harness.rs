@@ -57,6 +57,21 @@ pub struct Sbx {
     pub full_access: Vec<String>,
 }
 
+/// The host each harness renews its own sign-in at, which srt's proxy must
+/// admit or a chat fails once its access token expires (Mac test w5 retest
+/// 4, MW5-24), read in the harness's code at the version in use:
+/// Claude Code 2.1.311 posts to `https://platform.claude.com/v1/oauth/token`
+/// (its bundle; Docker's own sbx `claude` kit allows the same host), Codex
+/// 0.163.0 to `https://auth.openai.com/oauth/token`
+/// (`codex-rs/login/src/auth/manager.rs:212`). Others: not read, none.
+pub fn sign_in_hosts(id: &str) -> &'static [&'static str] {
+    match id {
+        "claude-code" => &["platform.claude.com:443"],
+        "codex" => &["auth.openai.com:443"],
+        _ => &[],
+    }
+}
+
 impl Harness {
     /// The sbx form for this harness, or `None` when sbx has no agent and
     /// no kit for it (`--boundary sbx` refuses it rather than guess).
