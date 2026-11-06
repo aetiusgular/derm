@@ -30,6 +30,10 @@ describe("parseLockfile", () => {
       { name: "b", version: "1.0.0", registry: true },
     ]);
   });
+  it("reads a linked local folder with its folder's version (BW5-14)", () => {
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: { "": {}, "../pkghook": { version: "1.0.0" }, "node_modules/pkghook": { resolved: "../pkghook", link: true }, "node_modules/gone": { resolved: "../gone", link: true } } });
+    expect(parseLockfile("package-lock", lock)).toEqual([{ name: "pkghook", version: "1.0.0", registry: false }]);
+  });
   it("reads a lockfile v1's nested dependencies", () => {
     const lock = JSON.stringify({ lockfileVersion: 1, dependencies: { a: { version: "1.0.0", dependencies: { b: { version: "2.0.0" } } }, g: { version: "github:u/g#abc" } } });
     expect(parseLockfile("package-lock", lock)).toEqual([

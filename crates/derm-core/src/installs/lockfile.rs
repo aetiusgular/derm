@@ -112,10 +112,24 @@ fn package_lock(text: &str) -> Vec<LockEntry> {
             let Some(i) = key.rfind("node_modules/") else {
                 continue;
             };
-            if !v.is_object() || v.get("link") == Some(&serde_json::Value::Bool(true)) {
+            if !v.is_object() {
                 continue;
             }
-            let Some(version) = v.get("version").and_then(|x| x.as_str()) else {
+            // A local folder npm links (`npm install ../pkg`): `link: true`
+            // and `resolved` naming the folder's own entry, which holds the
+            // version (npm 10.9.9, run; box test w5, BW5-14).
+            let target = if v.get("link") == Some(&serde_json::Value::Bool(true)) {
+                v.get("resolved")
+                    .and_then(|r| r.as_str())
+                    .and_then(|r| packages.get(r))
+                    .filter(|t| t.is_object())
+            } else {
+                Some(v)
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let Some(version) = target.get("version").and_then(|x| x.as_str()) else {
                 continue;
             };
             let name = match v.get("name").and_then(|x| x.as_str()) {

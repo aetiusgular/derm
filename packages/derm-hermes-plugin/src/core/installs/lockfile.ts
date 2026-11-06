@@ -86,9 +86,18 @@ function packageLock(text: string): LockEntry[] {
       const i = key.lastIndexOf("node_modules/");
       if (i < 0 || typeof v !== "object" || v === null) continue;
       const e = v as { version?: unknown; link?: unknown; resolved?: unknown; name?: unknown };
-      if (e.link === true || typeof e.version !== "string") continue;
+      // A local folder npm links (`npm install ../pkg`): `link: true` and
+      // `resolved` naming the folder's own entry, which holds the version
+      // (npm 10.9.9, run; box test w5, BW5-14).
+      let t: { version?: unknown; resolved?: unknown } = e;
+      if (e.link === true) {
+        const r = typeof e.resolved === "string" ? (packages as Record<string, unknown>)[e.resolved] : undefined;
+        if (typeof r !== "object" || r === null) continue;
+        t = r as { version?: unknown; resolved?: unknown };
+      }
+      if (typeof t.version !== "string") continue;
       const name = typeof e.name === "string" ? e.name : key.slice(i + "node_modules/".length);
-      out.push({ name, version: e.version, registry: registryResolved(e.resolved) });
+      out.push({ name, version: t.version, registry: e.link === true ? false : registryResolved(e.resolved) });
     }
     return out;
   }

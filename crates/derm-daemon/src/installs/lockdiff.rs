@@ -515,4 +515,26 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// Box test w5, BW5-14: `npm install ../pkghook` (a local folder) ran its
+    /// postinstall and left no `install.lockdiff`: npm 10.9.9 locks it as a
+    /// `link: true` entry under `node_modules/` plus the folder's own entry,
+    /// which carries the version, and the parser skipped links. The
+    /// lockfiles are npm's own, from a run (5 Nov 2026).
+    #[test]
+    fn a_local_folder_installed_by_link_is_an_addition() {
+        let before = "{\n  \"name\": \"p82\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"p82\",\n      \"version\": \"1.0.0\",\n      \"license\": \"ISC\",\n      \"dependencies\": {\n        \"left-pad\": \"^1.3.0\"\n      }\n    },\n    \"node_modules/left-pad\": {\n      \"version\": \"1.3.0\",\n      \"resolved\": \"https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz\",\n      \"integrity\": \"sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA==\",\n      \"deprecated\": \"use String.prototype.padStart()\",\n      \"license\": \"WTFPL\"\n    }\n  }\n}\n";
+        let after = "{\n  \"name\": \"p82\",\n  \"version\": \"1.0.0\",\n  \"lockfileVersion\": 3,\n  \"requires\": true,\n  \"packages\": {\n    \"\": {\n      \"name\": \"p82\",\n      \"version\": \"1.0.0\",\n      \"license\": \"ISC\",\n      \"dependencies\": {\n        \"left-pad\": \"^1.3.0\",\n        \"pkghook\": \"file:../pkghook\"\n      }\n    },\n    \"../pkghook\": {\n      \"version\": \"1.0.0\"\n    },\n    \"node_modules/left-pad\": {\n      \"version\": \"1.3.0\",\n      \"resolved\": \"https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz\",\n      \"integrity\": \"sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA==\",\n      \"deprecated\": \"use String.prototype.padStart()\",\n      \"license\": \"WTFPL\"\n    },\n    \"node_modules/pkghook\": {\n      \"resolved\": \"../pkghook\",\n      \"link\": true\n    }\n  }\n}\n";
+        let d = diff(
+            &parse_lockfile(LockKind::PackageLock, before),
+            &parse_lockfile(LockKind::PackageLock, after),
+        );
+        let added: Vec<(&str, &str)> = d
+            .added
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(added, vec![("pkghook", "1.0.0")], "{d:?}");
+        assert!(d.changed.is_empty() && d.removed.is_empty(), "{d:?}");
+    }
 }
