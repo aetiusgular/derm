@@ -108,8 +108,9 @@ enum Owner {
     /// Started while two or more calls ran: no single owner.
     Ambiguous,
     /// A shell started while these shell calls ran: each may own it, none
-    /// is chosen (fix pass 1's review, F1).
-    Among(Vec<String>),
+    /// is chosen (fix pass 1's review, F1). Shared, since every descendant
+    /// holds it (re-review: at most 64 ids, up to 8,192 processes a chat).
+    Among(std::sync::Arc<[String]>),
 }
 
 #[derive(Default)]
@@ -356,7 +357,7 @@ impl Join {
                             _ if program.is_some_and(shell_program) => match shells.len() {
                                 0 => Some(Owner::Ambiguous),
                                 1 => Some(Owner::Call(shells[0].clone())),
-                                _ => Some(Owner::Among(shells)),
+                                _ => Some(Owner::Among(shells.into())),
                             },
                             _ => Some(Owner::Ambiguous),
                         }
@@ -395,21 +396,17 @@ impl Join {
                 chosen = Some(c.event.clone());
             }
         }
+        // Each of the shell's calls stays a candidate after it ends, as a
+        // tree owner does, and none is chosen: a call still open at the
+        // write may be one a chat token posted with no call after it
+        // (re-review N1).
         if let Some(Owner::Among(ids)) = &owner {
-            let live: Vec<&Call> = running
-                .iter()
-                .filter(|(id, _)| ids.contains(id))
-                .map(|(_, c)| *c)
-                .collect();
-            for c in &live {
+            for c in ids.iter().filter_map(|id| st.calls.get(id)) {
                 candidates.push((
                     c.event.clone(),
                     "tree",
                     "a shell started while this call and others ran".into(),
                 ));
-            }
-            if live.len() == 1 {
-                chosen = Some(live[0].event.clone());
             }
         }
         // 2. Path.

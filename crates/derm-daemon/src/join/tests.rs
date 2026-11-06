@@ -385,6 +385,45 @@ fn a_shell_started_while_shell_calls_run_is_theirs_together() {
     assert_eq!(by_tree.len(), 2, "{}", r[0].detail);
 }
 
+/// Fix pass 1's re-review, N1: a shell placed among a forged open call and
+/// the real install call wrote after the real call ended (a postinstall's
+/// background child), and only the forged call was left to choose. A
+/// shell's calls stay its candidates after they end, and none is chosen.
+#[test]
+fn a_shells_calls_stay_its_candidates_after_they_end() {
+    let mut j = Join::new();
+    start(&mut j);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        900,
+        None,
+        json!({"toolUseId": "toolu_FORGED", "tool": "bash", "decision": "allow"}),
+    ));
+    call(&mut j, "toolu_I", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 3201}));
+    effect(&mut j, "exec", 1_110, 3201, ROOT, json!({"exe": "/bin/sh"}));
+    let r = effect(
+        &mut j,
+        "write",
+        8_000,
+        3201,
+        ROOT,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    let tree: Vec<&str> = r[0].detail["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["by"] == "tree")
+        .filter_map(|c| c["call"].as_str())
+        .collect();
+    assert_eq!(tree.len(), 2, "{}", r[0].detail);
+    assert!(tree.iter().any(|c| c.ends_with("toolu_I")), "{tree:?}");
+}
+
 /// An untapped chat (Pi) names its call's tool only in the gate's record.
 #[test]
 fn an_untapped_shell_call_still_owns_its_shell() {
