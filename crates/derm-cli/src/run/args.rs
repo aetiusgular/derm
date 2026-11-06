@@ -111,30 +111,93 @@ pub fn valid_host_port(s: &str) -> bool {
 /// derm's pairs and the chat would run untapped and unrecorded without a
 /// word. That command line is refused, with the way to write it.
 fn codex_config_split(rest: &[String]) -> Option<String> {
-    let first_is_sub = rest
+    // Where derm's own `-c` pairs sit: after a leading session subcommand,
+    // else at the root (`wire_export`, the tap's pairs). clap keeps a global
+    // `-c` from the deepest level that has one, so a user's `-c` after any
+    // subcommand below that level drops derm's (fix pass 4's review,
+    // FP4-S1: `exec resume`, `agents`). Any deeper level lives under one of
+    // these names, so naming the next level is enough.
+    let lead = rest
         .first()
-        .is_some_and(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()));
-    if first_is_sub {
-        return None;
-    }
-    let sub = rest
-        .iter()
-        .position(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()))?;
+        .filter(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()))
+        .map(String::as_str);
+    let below: &[&str] = match lead {
+        None => CODEX_ROOT_SUBCOMMANDS,
+        Some("exec" | "e") => CODEX_EXEC_SUBCOMMANDS,
+        Some("app-server") => CODEX_APP_SERVER_SUBCOMMANDS,
+        Some(_) => &[],
+    };
+    let from = usize::from(lead.is_some());
     let config = |w: &String| {
         w == "-c"
             || w == "--config"
             || w.starts_with("--config=")
             || (w.starts_with("-c") && !w.starts_with("--") && w.len() > 2)
     };
-    rest[sub + 1..].iter().any(config).then(|| {
-        format!(
-            "codex: put {:?} first (derm run codex -- {} ...): Codex keeps `-c` from one side \
-             of a subcommand only, so a `-c` after {:?} would drop derm's own and this chat \
-             would run untapped and unrecorded",
-            rest[sub], rest[sub], rest[sub]
-        )
+    let sub = (from..rest.len())
+        .find(|&i| below.contains(&rest[i].as_str()) && rest[i + 1..].iter().any(config))?;
+    let word = &rest[sub];
+    Some(match lead {
+        None if super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&word.as_str()) => format!(
+            "codex: put {word:?} first (derm run codex -- {word} ...): Codex keeps `-c` from \
+             one side of a subcommand only, so a `-c` after {word:?} would drop derm's own and \
+             this chat would run untapped and unrecorded"
+        ),
+        _ => format!(
+            "codex: put your `-c` before {word:?}: Codex keeps `-c` from the deepest \
+             subcommand that has one, so a `-c` after {word:?} would drop derm's own and this \
+             chat would run untapped and unrecorded"
+        ),
     })
 }
+
+/// Codex 0.163.0's subcommands at its root, with their aliases and the
+/// hidden ones (`codex-rs/cli/src/main.rs:147-227`, `codex --help`).
+const CODEX_ROOT_SUBCOMMANDS: &[&str] = &[
+    "agents",
+    "tcp-tunnel",
+    "exec",
+    "e",
+    "review",
+    "login",
+    "logout",
+    "mcp",
+    "plugin",
+    "app-server",
+    "remote-control",
+    "app",
+    "completion",
+    "update",
+    "doctor",
+    "sandbox",
+    "debug",
+    "execpolicy",
+    "apply",
+    "a",
+    "resume",
+    "queue",
+    "archive",
+    "delete",
+    "migrate-rollouts",
+    "unarchive",
+    "fork",
+    "cloud",
+    "exec-server",
+    "features",
+    "help",
+];
+
+/// `codex exec`'s own subcommands (`codex-rs/exec/src/cli.rs:172-182`).
+const CODEX_EXEC_SUBCOMMANDS: &[&str] = &["resume", "fork", "review", "help"];
+
+/// `codex app-server`'s own subcommands (`codex app-server --help`, 0.163.0).
+const CODEX_APP_SERVER_SUBCOMMANDS: &[&str] = &[
+    "daemon",
+    "proxy",
+    "generate-ts",
+    "generate-json-schema",
+    "help",
+];
 
 pub fn parse(args: &[String]) -> Result<Args, String> {
     let Some(id) = args.first() else {
@@ -448,5 +511,39 @@ mod tests {
             "a",
         ]);
         assert!(parse(&argv).is_ok());
+    }
+
+    /// Fix pass 4's review, FP4-S1: Codex keeps a global `-c` from the
+    /// deepest level only, so a `-c` below derm's level is refused at every
+    /// depth (`exec resume`, `e fork`, `exec review`, `agents`; run against
+    /// the real 0.163.0 binary by the reviewer).
+    #[test]
+    fn fp4_s1_codex_nested_session_subcommand_with_config_is_refused() {
+        for rest in [
+            &["exec", "resume", "--last", "-c", "a=1"][..],
+            &["e", "fork", "abc", "--config=a=1", "go"][..],
+            &["exec", "review", "--uncommitted", "-ca=1"][..],
+            &["agents", "-c", "a=1"][..],
+            &["exec", "-m", "x", "resume", "--last", "--config", "a=1"][..],
+            &["mcp", "list", "-c", "a=1"][..],
+            &["app-server", "proxy", "-c", "a=1"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            let err = parse(&argv).expect_err(&format!("{rest:?} was accepted"));
+            assert!(err.contains("untapped"), "{err}");
+        }
+        // A `-c` at derm's own level, or none below it, still runs.
+        for rest in [
+            &["exec", "-c", "a=1", "resume", "--last"][..],
+            &["exec", "resume", "--last"][..],
+            &["-c", "a=1", "exec", "hi"][..],
+            &["exec", "-c", "a=1", "fix the review"][..],
+            &["mcp", "list"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            assert!(parse(&argv).is_ok(), "{rest:?} was refused");
+        }
     }
 }
