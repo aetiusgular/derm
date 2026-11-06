@@ -117,6 +117,13 @@ pub fn inspect_request(api: Api, path: &str, body: &Value) -> RequestInfo {
                 .flatten()
             {
                 let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
+                // Codex 0.163.0 with `use_responses_lite` sends its tools in
+                // these items and no `tools` (`codex-rs/core/src/client.rs:980-993`,
+                // MW5-20).
+                if kind == "additional_tools" {
+                    info.tools_offered += count(item.get("tools"));
+                    continue;
+                }
                 if matches!(
                     kind,
                     "function_call_output" | "custom_tool_call_output" | "local_shell_call_output"
@@ -213,9 +220,78 @@ fn gemini_model(path: &str) -> String {
     last.split(':').next().unwrap_or("").to_string()
 }
 
+/// How the parser read a response body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseForm {
+    /// An event stream, typed `text/event-stream`.
+    Stream,
+    /// An event stream whose `content-type` said otherwise (MW5-20).
+    StreamUntyped,
+    /// A whole JSON body.
+    Json,
+    /// A body the parser could not read.
+    Unparsed,
+}
+
+impl ResponseForm {
+    pub fn name(self) -> &'static str {
+        match self {
+            ResponseForm::Stream => "stream",
+            ResponseForm::StreamUntyped => "stream-untyped",
+            ResponseForm::Json => "json",
+            ResponseForm::Unparsed => "unparsed",
+        }
+    }
+
+    pub fn is_stream(self) -> bool {
+        matches!(self, ResponseForm::Stream | ResponseForm::StreamUntyped)
+    }
+}
+
+/// The SSE field names a stream can begin with (the WHATWG event stream
+/// format; a line starting with `:` is a comment).
+const SSE_FIELDS: [&[u8]; 4] = [b"data:", b"event:", b"id:", b"retry:"];
+
+/// Whether `head` (the body's first meaningful bytes) begins an event
+/// stream: `Some(true)` or `Some(false)` once it can tell, `None` while the
+/// bytes are still a prefix of a field name.
+fn starts_a_stream(head: &[u8]) -> Option<bool> {
+    if head.first() == Some(&b':') {
+        return Some(true);
+    }
+    let mut undecided = false;
+    for f in SSE_FIELDS {
+        if head.len() >= f.len() {
+            if head.starts_with(f) {
+                return Some(true);
+            }
+        } else if f.starts_with(head) {
+            undecided = true;
+        }
+    }
+    (!undecided).then_some(false)
+}
+
+/// The body without a UTF-8 byte order mark and leading ASCII whitespace.
+fn meaningful(body: &[u8]) -> &[u8] {
+    const BOM: &[u8] = b"\xEF\xBB\xBF";
+    // Part of a byte order mark so far: nothing said yet.
+    if body.len() < BOM.len() && BOM.starts_with(body) {
+        return &[];
+    }
+    let body = body.strip_prefix(BOM).unwrap_or(body);
+    let at = body
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(body.len());
+    &body[at..]
+}
+
 /// What the response says.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ResponseInfo {
+    /// How the body was read; `None` for an empty one.
+    pub form: Option<ResponseForm>,
     pub model: Option<String>,
     pub calls: Vec<Call>,
     pub input_tokens: Option<u64>,
@@ -243,6 +319,10 @@ struct Pending {
 pub struct ResponseParser {
     api: Api,
     sse: Option<SseReader>,
+    /// The response's own type said `text/event-stream`.
+    typed: bool,
+    /// Untyped: whether the body's first bytes have said which form it is.
+    decided: bool,
     body: Vec<u8>,
     too_big: bool,
     calls: BTreeMap<u64, Pending>,
@@ -259,11 +339,18 @@ pub struct ResponseParser {
 
 impl ResponseParser {
     /// `event_stream`: the response's `content-type` is `text/event-stream`.
+    /// Otherwise the body's first meaningful bytes decide: an SSE field or
+    /// comment makes it a stream, read as one (MW5-20: Codex reads its
+    /// responses as a stream whatever their type,
+    /// `codex-rs/codex-api/src/sse/responses.rs:525-548` at `rust-v0.163.0`),
+    /// anything else a whole body.
     /// `gemini_prefix` names Gemini calls that carry no id of their own.
     pub fn new(api: Api, event_stream: bool, gemini_prefix: &str) -> Self {
         ResponseParser {
             api,
             sse: event_stream.then(|| SseReader::new(MAX_PARSE)),
+            typed: event_stream,
+            decided: event_stream,
             body: Vec::new(),
             too_big: false,
             calls: BTreeMap::new(),
@@ -276,28 +363,71 @@ impl ResponseParser {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        if let Some(sse) = self.sse.as_mut() {
-            let events = sse.feed(bytes);
-            for e in events {
-                if e.data == "[DONE]" {
-                    self.info.complete = true;
-                    continue;
-                }
-                if let Ok(v) = serde_json::from_str::<Value>(&e.data) {
-                    self.on_event(&e.event, &v);
-                }
-            }
-        } else if !self.too_big {
+        if self.sse.is_some() {
+            self.feed_stream(bytes);
+            return;
+        }
+        if !self.too_big {
             if self.body.len() + bytes.len() > MAX_PARSE {
                 self.too_big = true;
                 self.body = Vec::new();
-            } else {
-                self.body.extend_from_slice(bytes);
+                self.decided = true;
+                return;
+            }
+            self.body.extend_from_slice(bytes);
+        }
+        if self.decided || self.too_big {
+            return;
+        }
+        let head = meaningful(&self.body);
+        if head.is_empty() {
+            return;
+        }
+        match starts_a_stream(head) {
+            None => {}
+            Some(false) => self.decided = true,
+            Some(true) => {
+                self.decided = true;
+                self.sse = Some(SseReader::new(MAX_PARSE));
+                let body = std::mem::take(&mut self.body);
+                let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&body).to_vec();
+                self.feed_stream(&body);
             }
         }
     }
 
+    fn feed_stream(&mut self, bytes: &[u8]) {
+        let Some(sse) = self.sse.as_mut() else { return };
+        let events = sse.feed(bytes);
+        for e in events {
+            if e.data == "[DONE]" {
+                self.info.complete = true;
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(&e.data) {
+                self.on_event(&e.event, &v);
+            }
+        }
+    }
+
+    /// How the body is being read: `None` until its first meaningful bytes
+    /// have said, for an untyped response.
+    pub fn form(&self) -> Option<ResponseForm> {
+        if self.sse.is_some() {
+            return Some(if self.typed {
+                ResponseForm::Stream
+            } else {
+                ResponseForm::StreamUntyped
+            });
+        }
+        if self.too_big {
+            return Some(ResponseForm::Unparsed);
+        }
+        (self.decided).then_some(ResponseForm::Json)
+    }
+
     pub fn finish(mut self) -> ResponseInfo {
+        let form = self.form();
         if let Some(sse) = &self.sse {
             if sse.overflowed {
                 self.info.unparsed = true;
@@ -338,6 +468,14 @@ impl ResponseParser {
             });
         }
         self.info.calls.retain(|c| !c.call_id.is_empty());
+        self.info.form = if self.info.unparsed {
+            Some(ResponseForm::Unparsed)
+        } else if form.is_none() && !meaningful(&self.body).is_empty() {
+            // Undecided to the end (a body shorter than a field name).
+            Some(ResponseForm::Json)
+        } else {
+            form
+        };
         self.info
     }
 

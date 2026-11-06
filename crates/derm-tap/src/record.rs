@@ -308,6 +308,9 @@ pub struct RequestRecord {
     pub tool_calls: u64,
     pub incomplete: bool,
     pub content_kept: bool,
+    /// How the tap read the response body (`apis::ResponseForm::name`): the
+    /// form, never a header's value (case 114).
+    pub response_form: Option<&'static str>,
 }
 
 impl RequestRecord {
@@ -325,6 +328,9 @@ impl RequestRecord {
         d.insert("toolsOffered".into(), json!(self.tools_offered));
         d.insert("toolCalls".into(), json!(self.tool_calls));
         d.insert("incomplete".into(), json!(self.incomplete));
+        if let Some(f) = self.response_form {
+            d.insert("responseForm".into(), json!(f));
+        }
         if self.content_kept {
             d.insert("contentKept".into(), json!(true));
         }

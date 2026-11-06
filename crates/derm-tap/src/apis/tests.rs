@@ -346,3 +346,117 @@ fn responses_items_without_an_output_index_are_still_calls() {
     );
     assert!(info.calls.iter().all(|c| !c.incomplete));
 }
+
+/// The stream Codex 0.163.0 reads from chatgpt.com, by shape (Mac test w5
+/// retest 4, the tap's content files read for keys and types only): a
+/// `custom_tool_call` item with `output_index`, its input deltas, and usage
+/// in `response.completed`.
+fn codex_chatgpt_stream() -> Vec<u8> {
+    sse(&[
+        (
+            "response.created",
+            json!({"type":"response.created","response":{"model":"gpt-5.6-luna"}}),
+        ),
+        (
+            "response.output_item.added",
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_s1","name":"exec","input":""}}),
+        ),
+        (
+            "response.custom_tool_call_input.delta",
+            json!({"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_1","delta":"sleep "}),
+        ),
+        (
+            "response.custom_tool_call_input.delta",
+            json!({"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_1","delta":"5"}),
+        ),
+        (
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_s1","name":"exec","input":"sleep 5"}}),
+        ),
+        (
+            "response.completed",
+            json!({"type":"response.completed","response":{"model":"gpt-5.6-luna","usage":{"input_tokens":7000,"output_tokens":30}}}),
+        ),
+    ])
+}
+
+/// Mac test w5 retest 4, MW5-20: every `tap.request` of a Codex chat on
+/// chatgpt.com said no tokens, no calls and `incomplete: false`, which only
+/// a parser started for a whole JSON body gives; so the reply was not typed
+/// `text/event-stream` (inferred: the tap keeps no header). Codex itself
+/// reads the body as a stream whatever its type (`codex-rs/codex-api/src/sse/responses.rs:525-548`
+/// at `rust-v0.163.0`, `eventsource_stream`, no content-type check), so the
+/// parser reads it by its shape.
+#[test]
+fn a_stream_not_typed_as_one_is_read_as_a_stream() {
+    let bytes = codex_chatgpt_stream();
+    for lead in [
+        &b""[..],
+        b"\n",
+        b"\r\n",
+        b"\xEF\xBB\xBF",
+        b": keepalive\n\n",
+    ] {
+        let body = [lead, &bytes[..]].concat();
+        let info = parse_split(Api::OpenAiResponses, false, &body);
+        assert!(info.complete, "lead {lead:?}");
+        assert!(!info.unparsed, "lead {lead:?}");
+        assert_eq!(
+            (info.input_tokens, info.output_tokens),
+            (Some(7000), Some(30))
+        );
+        let ids: Vec<&str> = info.calls.iter().map(|c| c.call_id.as_str()).collect();
+        assert_eq!(ids, vec!["call_s1"], "lead {lead:?}");
+        assert_eq!(info.calls[0].args, ArgsText::Text("sleep 5".into()));
+    }
+    // Cut before its end: the call is there and incomplete, and so is the
+    // response.
+    let cut = &bytes[..bytes.len() / 2];
+    let info = parse_split(Api::OpenAiResponses, false, cut);
+    assert!(!info.complete);
+    assert!(info.calls.iter().all(|c| c.incomplete));
+    // A whole JSON body untyped is still a body, and HTML is still unparsed.
+    let whole = json!({"model":"gpt-x","output":[{"type":"function_call","call_id":"c","name":"shell","arguments":"{}"}],"usage":{"input_tokens":3,"output_tokens":1}});
+    let info = parse_split(Api::OpenAiResponses, false, format!("  {whole}").as_bytes());
+    assert!(info.complete && !info.unparsed);
+    assert_eq!(info.calls.len(), 1);
+    assert!(parse_split(Api::OpenAiResponses, false, b"<html>x</html>").unparsed);
+    // Which form the parser read.
+    let mut p = ResponseParser::new(Api::OpenAiResponses, false, "g");
+    p.feed(&bytes);
+    assert_eq!(p.form(), Some(ResponseForm::StreamUntyped));
+    let mut p = ResponseParser::new(Api::OpenAiResponses, true, "g");
+    p.feed(&bytes);
+    assert_eq!(p.form(), Some(ResponseForm::Stream));
+    let mut p = ResponseParser::new(Api::OpenAiResponses, false, "g");
+    p.feed(whole.to_string().as_bytes());
+    assert_eq!(p.form(), Some(ResponseForm::Json));
+    assert_eq!(
+        ResponseParser::new(Api::OpenAiResponses, false, "g").form(),
+        None
+    );
+}
+
+/// MW5-20: Codex 0.163.0 with `use_responses_lite` sends no `tools` and puts
+/// them in an `additional_tools` input item instead
+/// (`codex-rs/core/src/client.rs:980-993`, `protocol/src/models.rs:1028-1035`
+/// at `rust-v0.163.0`), so `toolsOffered` was 0.
+#[test]
+fn tools_in_an_additional_tools_item_are_counted() {
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "input": [
+            {"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec"},{"type":"function","name":"view_image"}]},
+            {"type":"message","role":"user","content":[]},
+            {"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"mcp"}]},
+            {"type":"additional_tools","role":"developer","tools":"not a list"}
+        ]
+    });
+    let info = inspect_request(Api::OpenAiResponses, "/responses", &body);
+    assert_eq!(info.tools_offered, 3);
+    let both = json!({"tools":[{"name":"a"}],"input":[{"type":"additional_tools","tools":[{"name":"b"}]}]});
+    assert_eq!(
+        inspect_request(Api::OpenAiResponses, "/responses", &both).tools_offered,
+        2
+    );
+}

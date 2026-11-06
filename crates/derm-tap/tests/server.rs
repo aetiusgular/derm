@@ -714,3 +714,70 @@ fn gemini_results_under_an_id_the_cli_made_up_join_by_name_and_order() {
         .unwrap()
         .starts_with("gemini-"));
 }
+
+/// Mac test w5 retest 4, MW5-20: a Responses stream that comes back typed as
+/// something other than `text/event-stream` still gives its calls, its
+/// tokens and a true `incomplete`, and the record says which form it read.
+#[test]
+fn a_stream_typed_otherwise_still_gives_its_calls_and_tokens() {
+    let events = [
+        json!({"type":"response.created","response":{"model":"gpt-5.6-luna"}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_s1","name":"exec","input":""}}),
+        json!({"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"ctc_1","delta":"sleep 5"}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_s1","name":"exec","input":"sleep 5"}}),
+        json!({"type":"response.completed","response":{"model":"gpt-5.6-luna","usage":{"input_tokens":7000,"output_tokens":30}}}),
+    ];
+    let pieces = sse(&events);
+    let untyped = |cut: bool, pieces: Vec<Vec<u8>>| Reply {
+        status: 200,
+        headers: vec![("content-type", "text/plain; charset=utf-8")],
+        pieces,
+        cut,
+    };
+    let rig = rig(
+        vec![
+            untyped(false, pieces.clone()),
+            untyped(true, pieces[..3].to_vec()),
+        ],
+        false,
+        None,
+    );
+    let path = format!("/r/{}/openai/responses", rig.route);
+    let body = json!({"model":"gpt-5.6-luna","stream":true,"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec"},{"type":"function","name":"view_image"}]}]});
+    let (status, _, got, _) = send(
+        rig.tap.port(),
+        "POST",
+        &path,
+        &[],
+        body.to_string().as_bytes(),
+    );
+    assert_eq!(status, 200);
+    assert_eq!(got, pieces.concat(), "the body passes byte for byte");
+    let ev = wait_events(&rig, 2);
+    let req = ev.iter().find(|e| e.kind == "tap.request").unwrap();
+    let d = &req.detail;
+    assert_eq!(d["toolCalls"], 1, "{d}");
+    assert_eq!(d["inputTokens"], 7000, "{d}");
+    assert_eq!(d["toolsOffered"], 2, "{d}");
+    assert_eq!(d["incomplete"], false, "{d}");
+    assert_eq!(d["responseForm"], "stream-untyped", "{d}");
+    assert!(ev
+        .iter()
+        .any(|e| e.kind == "tap.call" && e.detail["callId"] == "call_s1"));
+
+    // The same stream cut early: incomplete, as a typed stream would be.
+    let _ = send(
+        rig.tap.port(),
+        "POST",
+        &path,
+        &[],
+        body.to_string().as_bytes(),
+    );
+    let ev = wait_events(&rig, 4);
+    let req = ev
+        .iter()
+        .filter(|e| e.kind == "tap.request")
+        .nth(1)
+        .unwrap();
+    assert_eq!(req.detail["incomplete"], true, "{}", req.detail);
+}

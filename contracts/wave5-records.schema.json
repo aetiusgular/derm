@@ -63,7 +63,8 @@
         "toolsOffered": { "type": "integer", "minimum": 0 },
         "toolCalls": { "type": "integer", "minimum": 0 },
         "incomplete": { "type": "boolean" },
-        "contentKept": { "type": "boolean" }
+        "contentKept": { "type": "boolean" },
+        "responseForm": { "enum": ["stream", "stream-untyped", "json", "unparsed"] }
       },
       "additionalProperties": false
     },
