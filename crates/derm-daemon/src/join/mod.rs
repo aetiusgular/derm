@@ -229,6 +229,33 @@ fn effect_time(e: &Event) -> i64 {
 
 /// A shell's own program, by file name: what a harness runs a shell tool's
 /// command in (and Codex's Linux sandbox helper, which execs the shell).
+/// A program a boundary or a launcher runs between the run's root and the
+/// harness, by file name: never the harness's own executable.
+fn wrapper_program(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        name,
+        "env"
+            | "sandbox-exec"
+            | "bwrap"
+            | "sudo"
+            | "sudo-rs"
+            | "doas"
+            | "su"
+            | "runuser"
+            | "setpriv"
+            | "unshare"
+            | "nsenter"
+            | "nice"
+            | "nohup"
+            | "timeout"
+            | "stdbuf"
+            | "script"
+            | "socat"
+            | "apply-seccomp"
+    )
+}
+
 fn shell_program(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     matches!(
@@ -296,8 +323,13 @@ impl Join {
                     || e.detail.get("agentUser").is_some_and(|v| !v.is_null());
                 if st.line_on {
                     st.line.extend(e.pid);
+                    // A shell or a wrapper program names no harness: srt's
+                    // own `bash -c` and its wrappers exec those before the
+                    // harness (second re-review S1), so the harness stays
+                    // not found and its shells are candidates.
                     st.harness_exe = str_at(&e.detail, "harnessExe")
                         .filter(|p| p.starts_with('/') && p.len() <= 4096)
+                        .filter(|p| !shell_program(p) && !wrapper_program(p))
                         .map(str::to_string);
                 }
                 Vec::new()
@@ -486,12 +518,20 @@ impl Join {
         }
         let st = self.chat(&e.chat_id);
         let running = st.running(t);
-        if running.is_empty() {
+        let owner = pid.and_then(|p| st.owners.get(&p).cloned());
+        // A process a call's tree owns is that call's after the call's
+        // window closes too, so a chat token's early "it ran" for a running
+        // install cannot drop its own shell's later writes (second
+        // re-review S3); with no tree owner, no call running fits none.
+        let tree_owned = matches!(
+            owner,
+            Some(Owner::Call(_)) | Some(Owner::Among(_)) | Some(Owner::Unplaced(_))
+        );
+        if running.is_empty() && !tree_owned {
             return Vec::new();
         }
         let mut candidates: Vec<(String, &'static str, String)> = Vec::new();
         let mut chosen: Option<String> = None;
-        let owner = pid.and_then(|p| st.owners.get(&p).cloned());
         // 1. Tree.
         if let Some(Owner::Call(id)) = &owner {
             if let Some(c) = st.calls.get(id) {
@@ -525,7 +565,12 @@ impl Join {
                 ));
             }
         }
-        // 2. Path.
+        // 2. Path. With tree candidates (a shell several calls, or calls
+        // under a boundary, may own), a call naming the path joins them and
+        // is not chosen: the kernel says which process wrote, and a Read the
+        // model runs beside an install must not take the install's write
+        // (second re-review S2).
+        let tree_set = !candidates.is_empty();
         if chosen.is_none() {
             let paths: Vec<String> = ["path", "dest"]
                 .iter()
@@ -544,7 +589,7 @@ impl Join {
                     "names this path in its arguments".into(),
                 ));
             }
-            if named.len() == 1 {
+            if named.len() == 1 && !tree_set {
                 chosen = Some(named[0].event.clone());
             }
         }

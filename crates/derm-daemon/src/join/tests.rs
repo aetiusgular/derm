@@ -899,6 +899,161 @@ fn an_unplaced_shell_says_the_harness_was_not_found() {
     assert_eq!(r[0].detail["candidates"][0]["by"], "tree");
 }
 
+/// Second re-review S1: a harness launched by a shell script (an asdf shim,
+/// a bash launcher) resolves to the shell, and srt's own `bash -c` wrappers
+/// exec that shell first; a shell or wrapper names no harness, so the real
+/// harness's shells stay candidates instead of vanishing.
+#[test]
+fn a_shell_as_the_harness_exe_names_no_harness() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", Some("/usr/bin/bash"));
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1100}));
+    effect(
+        &mut j,
+        "exec",
+        101,
+        1100,
+        ROOT,
+        json!({"exe": "/usr/bin/bash"}),
+    );
+    effect(&mut j, "fork", 102, 1100, ROOT, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        103,
+        1101,
+        1100,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 104, 1101, 1100, json!({"child": 1102}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1102,
+        1101,
+        json!({"exe": "/usr/bin/bash"}),
+    );
+    effect(&mut j, "fork", 106, 1102, 1101, json!({"child": 1103}));
+    effect(
+        &mut j,
+        "exec",
+        107,
+        1103,
+        1102,
+        json!({"exe": "/usr/bin/bash"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        108,
+        1103,
+        1102,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_S", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, 1103, 1102, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, 1103, json!({"exe": "/bin/sh"}));
+    let r = effect(
+        &mut j,
+        "write",
+        1_300,
+        1300,
+        1103,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert_eq!(
+        r.len(),
+        1,
+        "the real call's write has no join record: {r:?}"
+    );
+    assert_eq!(
+        r[0].detail["candidates"][0]["call"], "tap-chat-j-toolu_S",
+        "{r:?}"
+    );
+    assert_eq!(r[0].detail["harnessFound"], false, "{r:?}");
+}
+
+/// Second re-review S2: a call the model runs beside a shell call, naming
+/// the path the shell writes, joins the tree candidates and is not chosen.
+#[test]
+fn a_path_naming_call_does_not_take_a_tree_candidates_write() {
+    let mut j = Join::new();
+    start_under(&mut j, "srt", None);
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 1101}));
+    effect(
+        &mut j,
+        "exec",
+        105,
+        1101,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_I", "bash", &[], 1_000, Some(9_000));
+    call(
+        &mut j,
+        "toolu_R",
+        "read",
+        &["/w/.git/hooks/pre-commit"],
+        1_020,
+        Some(9_000),
+    );
+    effect(&mut j, "fork", 1_100, 1101, ROOT, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, 1101, json!({"exe": "/bin/sh"}));
+    let r = effect(
+        &mut j,
+        "write",
+        1_300,
+        1300,
+        1101,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert!(r[0].detail["chosen"].is_null(), "{r:?}");
+    let by: Vec<_> = r[0].detail["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["call"].clone(), c["by"].clone()))
+        .collect();
+    assert!(
+        by.contains(&(json!("tap-chat-j-toolu_I"), json!("tree"))),
+        "{r:?}"
+    );
+    assert!(
+        by.contains(&(json!("tap-chat-j-toolu_R"), json!("path"))),
+        "{r:?}"
+    );
+}
+
+/// Second re-review S3: a chat token's "it ran" for a running install ends
+/// its window early; a later write of the install's own shell is still
+/// that call's.
+#[test]
+fn an_early_end_does_not_drop_a_calls_own_writes() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", None);
+    call(&mut j, "toolu_I", "bash", &[], 1_000, None);
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, ROOT, json!({"exe": "/bin/sh"}));
+    j.observe(&ev(
+        Source::Adapter,
+        "tool.call",
+        1_200,
+        None,
+        json!({"toolUseId": "toolu_I"}),
+    ));
+    let r = effect(
+        &mut j,
+        "write",
+        60_000,
+        1300,
+        ROOT,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert_eq!(r.len(), 1, "the shell's own write has no record: {r:?}");
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_I", "{r:?}");
+}
+
 /// Review FP3-S4: the line is bounded like the owners map.
 #[test]
 fn the_line_is_bounded() {

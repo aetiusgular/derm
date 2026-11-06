@@ -309,7 +309,12 @@ impl ControlFlags {
             },
             None => match tree.iter().find_map(|c| install_of(c)) {
                 Some(call) if tree.len() > 1 => {
-                    (call, format!(" (one of {} calls running)", tree.len()))
+                    let why = if e.detail.get("harnessFound") == Some(&Value::Bool(false)) {
+                        "; derm did not find the harness under the boundary"
+                    } else {
+                        ""
+                    };
+                    (call, format!(" (one of {} calls running{why})", tree.len()))
                 }
                 // Under a boundary whose harness was not found, the join
                 // names the shell calls but chooses none, even when one ran
