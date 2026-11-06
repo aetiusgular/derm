@@ -425,13 +425,16 @@ pub fn daemon_state(socket: &Path) -> Value {
         .and_then(|r| r.get("report").cloned());
     // The daemon's own list of running chats (box test w2, BW3), else, from
     // a daemon before it, the tail's backlog.
-    let chats = match report
+    let (chats, chats_from) = match report
         .as_ref()
         .and_then(|r| r.get("running"))
         .and_then(Value::as_array)
     {
-        Some(rows) => Value::Array(rows.iter().map(running_row).collect()),
-        None => running_chats(socket, now),
+        Some(rows) => (
+            Value::Array(rows.iter().map(running_row).collect()),
+            "report",
+        ),
+        None => (running_chats(socket, now), "tail"),
     };
     json!({
         "running": true,
@@ -446,6 +449,39 @@ pub fn daemon_state(socket: &Path) -> Value {
             "collectorReachable": r.get("check").and_then(|c| c.get("collectorReachable")),
         })),
         "chats": chats,
+        // Where the list came from: the daemon's own list, or, when its
+        // report did not answer, the tail's backlog (box test w5, BW5-16).
+        "chatsFrom": chats_from,
+    })
+}
+
+/// One running chat from its `run.start` in the tail's backlog, with what
+/// the daemon's own list would keep (box test w5, BW5-16).
+fn tail_row(e: &Value) -> Value {
+    let pid = e.get("pid").and_then(Value::as_u64).map(|p| p as u32);
+    let d = e.get("detail").cloned().unwrap_or(Value::Null);
+    // What the chat's run.start said, as the daemon's list keeps it
+    // (box test w5, BW5-16: a chat as the agents' user read as
+    // "runs as you" when this fallback dropped it).
+    let user = d
+        .get("agentUser")
+        .and_then(|u| u.get("user"))
+        .and_then(Value::as_str)
+        .map(|u| u.chars().take(32).collect::<String>());
+    json!({
+        "chat": e.get("chatId"),
+        "harness": e.get("harness"),
+        "boundary": d.get("boundary"),
+        "since": e.get("at"),
+        "pid": pid,
+        "alive": pid.map(alive),
+        "fullAccessFlags": d.get("dangerousFlags"),
+        "agentUser": user,
+        "boundaryChoice": d.get("boundaryChoice"),
+        "ioUring": d.get("ioUring"),
+        "sbxKit": d.get("sbxKit"),
+        "tap": d.get("tap"),
+        "content": d.get("content"),
     })
 }
 
@@ -571,19 +607,7 @@ pub fn running_chats(socket: &Path, now: i64) -> Value {
             let c = e.get("chatId").and_then(Value::as_str).unwrap_or("");
             !stopped.iter().any(|s| s == c)
         })
-        .map(|e| {
-            let pid = e.get("pid").and_then(Value::as_u64).map(|p| p as u32);
-            let d = e.get("detail").cloned().unwrap_or(Value::Null);
-            json!({
-                "chat": e.get("chatId"),
-                "harness": e.get("harness"),
-                "boundary": d.get("boundary"),
-                "since": e.get("at"),
-                "pid": pid,
-                "alive": pid.map(alive),
-                "fullAccessFlags": d.get("dangerousFlags"),
-            })
-        })
+        .map(|e| tail_row(&e))
         .collect();
     Value::Array(rows)
 }
@@ -818,6 +842,9 @@ fn render_daemon(d: &Value) -> String {
     match d.get("chats").and_then(Value::as_array) {
         Some(chats) if !chats.is_empty() => {
             out.push_str("  chats started by derm run and not stopped:\n");
+            if d.get("chatsFrom").and_then(Value::as_str) == Some("tail") {
+                out.push_str("    (read from the event log's tail: the daemon's report did not answer; older chats may be missing)\n");
+            }
             for c in chats {
                 let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
                 let alive = match c.get("alive").and_then(Value::as_bool) {
@@ -911,6 +938,26 @@ mod tests {
     /// chat says how it runs: as you with no boundary, as the agents' user,
     /// with no derm gate in an sbx VM, io_uring not audited, untapped, and
     /// content kept, from the daemon's `report.running` (cases 127 to 129).
+    /// Box test w5, BW5-16: from the tail's backlog (the daemon's report
+    /// did not answer), a chat as the agents' user read "runs as you". The
+    /// row keeps what run.start said, and the list says where it came from.
+    #[test]
+    fn a_chat_read_from_the_tail_keeps_its_agents_user_and_marks() {
+        let ev = serde_json::json!({"chatId": "vb3b", "harness": "pi", "at": 1_700_000_000_000i64,
+            "pid": 1, "source": "run", "kind": "run.start",
+            "detail": {"boundary": "none", "runsAs": "derm-agent",
+                "agentUser": {"how": "sudo", "uid": 997, "user": "derm-agent"},
+                "ioUring": "not-audited", "tap": {"on": false, "reason": "no-base-url"}}});
+        let row = tail_row(&ev);
+        assert_eq!(row["agentUser"], "derm-agent", "{row}");
+        let t = render_daemon(&serde_json::json!({"running": true,
+            "daemon": {"version": "0.1.3", "protocol": 1}, "chats": [row], "chatsFrom": "tail"}));
+        assert!(t.contains("as the agents' user derm-agent"), "{t}");
+        assert!(!t.contains("runs as you"), "{t}");
+        assert!(t.contains("io_uring not audited"), "{t}");
+        assert!(t.contains("read from the event log's tail"), "{t}");
+    }
+
     #[test]
     fn status_marks_each_running_chat_with_its_wave_5_state() {
         let row = |extra: serde_json::Value| {

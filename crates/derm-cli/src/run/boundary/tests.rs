@@ -103,7 +103,9 @@ fn none_named_skips_the_question_and_still_warns() {
     assert_eq!(c.record.unwrap()["answeredBy"], "flag");
     assert!(f.probed.is_empty() && f.asked.is_empty());
     assert_eq!(f.said.len(), 1);
-    assert!(f.said[0].contains("runs as you"), "{}", f.said[0]);
+    // Who it runs as is said once lane V's seam decides (BW5-16).
+    assert!(f.said[0].contains("runs with no sandbox"), "{}", f.said[0]);
+    assert!(!f.said[0].contains("as you"), "{}", f.said[0]);
 }
 
 #[test]

@@ -307,7 +307,9 @@ fn report_running_carries_the_wave_5_marks_across_a_restart() {
                     "reasons": [{"boundary": "sbx", "why": long}], "preAnswer": null},
                 "ioUring": "not-audited", "sbxKit": {"added": false, "why": long},
                 "tap": {"on": false, "reason": "no-tap-flag"},
-                "content": {"on": true, "retentionDays": 3}},
+                "content": {"on": true, "retentionDays": 3},
+                "runsAs": "derm-agent",
+                "agentUser": {"how": "sudo", "uid": 997, "user": "derm-agent"}},
             "pid": harness.id()
         }}),
     );
@@ -335,6 +337,8 @@ fn report_running_carries_the_wave_5_marks_across_a_restart() {
     for k in ["boundaryChoice", "ioUring", "sbxKit", "tap", "content"] {
         assert_eq!(rows[0][k], want[k], "{k} in {}", rows[0]);
     }
+    // Box test w5, BW5-16: the agents' user the chat runs as.
+    assert_eq!(rows[0]["agentUser"], "derm-agent", "{}", rows[0]);
     // The reasons' text stays in the record, not in the running list.
     assert!(!rows[0].to_string().contains(&long));
     drop((w, r));

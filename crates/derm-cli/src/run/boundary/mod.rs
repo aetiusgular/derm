@@ -423,7 +423,7 @@ fn warning(h: &harness::Harness, reasons: &[Reason]) -> Vec<String> {
 /// `--boundary none` on the command line: no question, still a warning.
 fn warn_none_named(h: &harness::Harness, probe: &mut dyn Probe) {
     probe.say(&format!(
-        "derm run: --boundary none: {} runs as you, with no sandbox. Only its own gate and the OS feed watch it. \
+        "derm run: --boundary none: {} runs with no sandbox. Only its own gate and the OS feed watch it. \
          With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is registered), and asks before it runs without either.",
         name_of(h)
     ));

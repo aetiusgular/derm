@@ -382,7 +382,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             args.extend(launch_args.iter().cloned());
             args.extend(i.args.rest.iter().cloned());
             notes.push(format!(
-                "derm run: {} runs as you, with no sandbox; only its own gate and the OS feed watch it",
+                "derm run: {} runs with no sandbox; only its own gate and the OS feed watch it",
                 h.id
             ));
         }
@@ -843,7 +843,9 @@ mod tests {
             Some("http://127.0.0.1:8811/mcp")
         );
         assert_eq!(env(&p, "DERM_BOUNDARY"), Some("none"));
-        assert!(p.notes.iter().any(|n| n.contains("runs as you")));
+        // Who it runs as is said once lane V's seam decides (BW5-16).
+        assert!(p.notes.iter().any(|n| n.contains("runs with no sandbox")));
+        assert!(!p.notes.iter().any(|n| n.contains("as you")));
         for v in OWNED_VARS {
             assert!(p.env_remove.iter().any(|r| r == v), "{v} is cleared first");
         }

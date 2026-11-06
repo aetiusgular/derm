@@ -987,6 +987,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             policy: &policy_path,
         },
     )?;
+    // Who it runs as, once lane V's seam has decided (box test w5, BW5-16:
+    // the lines before said "as you" for a chat that then ran as the
+    // agents' user).
+    if agent_user.is_none() && a.boundary == Boundary::None {
+        eprintln!("derm run: {} runs as you", a.harness.id);
+    }
     let mut child = exec::spawn(&launch, &cwd, filter.is_some())
         .map_err(|e| (127, format!("{}: {e}", p.program)))?;
     let pid = child.id();
