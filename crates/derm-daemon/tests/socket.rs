@@ -1605,3 +1605,68 @@ fn an_http_ask_whose_client_hung_up_stops_waiting() {
     let _ = harness.kill();
     let _ = harness.wait();
 }
+
+/// Mac test w5 retest 4, MW5-25: after a 3,000-file burst, `derm watch
+/// report` failed with "the daemon sent a line over 1 MiB": the report is one
+/// line and its check carried every flag, every hidden row and the full
+/// event each names. The reply now fits under the client's line limit
+/// (`derm_audit_linux::client::MAX_LINE`), keeps its totals, keeps the
+/// events its kept rows name, and says how many rows it left out.
+#[test]
+fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-b", "at": 0, "chatId": "chat-b", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let n = 3_000;
+    let long = "x".repeat(180);
+    for i in 0..n {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": format!("w-{i}"), "at": i, "chatId": "chat-b", "harness": "pi",
+            "source": "auditd", "kind": "write", "summary": "",
+            "detail": {"path": format!("/home/t/out/{long}-{i}.txt"), "tier": "child"},
+            "pid": 77
+        }}));
+        assert_eq!(r["ok"], true);
+    }
+    let mut reply = Value::Null;
+    for _ in 0..100 {
+        reply = d.ask(json!({"op": "report", "chat": "chat-b", "since": 0, "until": i64::MAX}));
+        if reply["report"]["events"] == n + 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let report = &reply["report"];
+    assert_eq!(report["events"], n + 1, "the log holds every event");
+    let line = serde_json::to_vec(&reply).unwrap().len() + 1;
+    assert!(
+        line < derm_daemon::socket::MAX_LINE_BYTES,
+        "the report line is {line} bytes"
+    );
+    assert_eq!(report["flags"], n, "the total stays whole");
+    let kept = report["check"]["flags"].as_array().unwrap();
+    assert!(!kept.is_empty() && kept.len() < n as usize);
+    assert_eq!(
+        report["check"]["flagsOmitted"].as_u64(),
+        Some(n as u64 - kept.len() as u64)
+    );
+    // The kept rows are the first ones, and every event they name is there.
+    assert_eq!(kept[0]["eventId"], "w-0");
+    let ids: std::collections::HashSet<&str> = report["check"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["id"].as_str())
+        .collect();
+    for flag in kept {
+        assert!(ids.contains(flag["eventId"].as_str().unwrap()), "{flag}");
+    }
+    // A quiet window carries no mark.
+    let quiet = d.ask(json!({"op": "report", "chat": "chat-none", "since": 0, "until": i64::MAX}));
+    assert!(quiet["report"]["check"].get("flagsOmitted").is_none());
+}

@@ -47,6 +47,86 @@ pub const MAX_PENDING_LINES: usize = 4_096;
 pub const MAX_BACKLOG: usize = 5_000;
 /// Events one `report` reads.
 pub const REPORT_READ_LIMIT: usize = 20_000;
+
+/// The most a report reply holds, in bytes: every client reads at most 1 MiB
+/// a line (`socket::MAX_LINE_BYTES`, `derm_audit_linux::client::MAX_LINE`),
+/// and a busy window's flags with the events they name passed that (Mac
+/// test w5 retest 4, MW5-25).
+pub const REPORT_BUDGET: usize = 896 * 1024;
+
+/// Keeps a report under `budget` bytes once serialized. Past it, the check's
+/// hidden rows go first, then its flags are cut to the first that fit (the
+/// order the check lists them), and only the events the kept rows name stay;
+/// `check.flagsOmitted` and `check.expectedOmitted` say how many rows were
+/// left out. The totals (`flags`, `events`, `byKind` and the rest) stay whole.
+pub fn fit_report(report: &mut Value, budget: usize) {
+    let size = |r: &Value| serde_json::to_vec(r).map_or(usize::MAX, |v| v.len());
+    if size(report) <= budget {
+        return;
+    }
+    let Some(check) = report.get_mut("check").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let take = |k: &str, c: &mut Map<String, Value>| match c.remove(k) {
+        Some(Value::Array(a)) => a,
+        _ => Vec::new(),
+    };
+    let flags = take("flags", check);
+    let expected = take("expected", check);
+    let events = take("events", check);
+    let mut keep_flags = flags.len();
+    let mut keep_expected = expected.len();
+    loop {
+        let rows: Vec<&Value> = flags[..keep_flags]
+            .iter()
+            .chain(&expected[..keep_expected])
+            .collect();
+        let named: std::collections::HashSet<&str> = rows
+            .iter()
+            .flat_map(|r| {
+                r.get("eventId").and_then(Value::as_str).into_iter().chain(
+                    r.get("context")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str),
+                )
+            })
+            .collect();
+        let kept_events: Vec<Value> = events
+            .iter()
+            .filter(|e| {
+                e.get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|i| named.contains(i))
+            })
+            .cloned()
+            .collect();
+        let check = report
+            .get_mut("check")
+            .and_then(Value::as_object_mut)
+            .expect("check is an object");
+        check.insert("flags".into(), Value::Array(flags[..keep_flags].to_vec()));
+        check.insert(
+            "expected".into(),
+            Value::Array(expected[..keep_expected].to_vec()),
+        );
+        check.insert("events".into(), Value::Array(kept_events));
+        check.insert("flagsOmitted".into(), json!(flags.len() - keep_flags));
+        check.insert(
+            "expectedOmitted".into(),
+            json!(expected.len() - keep_expected),
+        );
+        if size(report) <= budget || (keep_flags == 0 && keep_expected == 0) {
+            return;
+        }
+        if keep_expected > 0 {
+            keep_expected = 0;
+        } else {
+            keep_flags /= 2;
+        }
+    }
+}
 /// Approval waits are held to this range, in seconds.
 pub const MIN_APPROVE_SECONDS: u32 = 1;
 pub const MAX_APPROVE_SECONDS: u32 = 3_600;
@@ -1350,6 +1430,7 @@ impl Daemon {
                 .collect();
             m.insert("running".into(), Value::Array(running));
         }
+        fit_report(&mut report, REPORT_BUDGET);
         Reply {
             report: Some(report),
             ..ok()

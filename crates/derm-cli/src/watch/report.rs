@@ -202,6 +202,16 @@ pub fn render(r: &Value) -> String {
             out.push('\n');
         }
     }
+    // MW5-25: a report the daemon cut to fit one line says so.
+    let omitted = |k: &str| check.get(k).and_then(Value::as_u64).unwrap_or(0);
+    let (flags_out, expected_out) = (omitted("flagsOmitted"), omitted("expectedOmitted"));
+    if flags_out > 0 || expected_out > 0 {
+        out.push_str(&format!(
+            "NOT LISTED: {} more flags and {} hidden rows, to keep the report under 1 MiB; narrow it with --since or --chat\n",
+            count(flags_out),
+            count(expected_out)
+        ));
+    }
     if let Some(sup) = check.get("suppressed").and_then(Value::as_object) {
         let hidden: u64 = sup.values().filter_map(Value::as_u64).sum();
         if hidden > 0 {
@@ -312,6 +322,19 @@ mod tests {
         assert!(t.contains("/etc/hosts (x2)"), "{t}");
         assert!(t.contains("os collector: no (not running)"), "{t}");
         assert!(t.contains("expected and hidden: 5"), "{t}");
+    }
+
+    #[test]
+    fn a_report_the_daemon_cut_says_how_many_rows_it_left_out() {
+        let mut r = sample();
+        assert!(!render(&r).contains("NOT LISTED"));
+        r["check"]["flagsOmitted"] = json!(1500);
+        r["check"]["expectedOmitted"] = json!(0);
+        let t = render(&r);
+        assert!(
+            t.contains("NOT LISTED: 1,500 more flags and 0 hidden rows"),
+            "{t}"
+        );
     }
 
     #[test]
