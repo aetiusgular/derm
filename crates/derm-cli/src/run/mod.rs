@@ -773,6 +773,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        macos: cfg!(target_os = "macos"),
+        terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
     };
     let inputs = plan::Inputs {
         policy_regular: regular_private_file(Path::new(&inputs.policy)),
@@ -829,6 +831,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // Under srt, derm's loopback ports through srt's proxy (MW5-5). Last of
     // the argv edits: the tap and the export read the command's position.
     plan::srt_loopback_through_proxy(&mut p);
+    // And Claude Code's OTel export, which takes no proxy for a loopback
+    // name (MW5-15).
+    plan::srt_otlp_through_proxy(&mut p);
     // srt's dependencies and the userns sysctl, before srt fails on them with
     // its own errors (box test w1, BX3 and BX4); the copies srt would run
     // outside the sandbox, never from a folder the sandbox can write, and
@@ -836,7 +841,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     if a.boundary == Boundary::Srt {
         let mut writable: Vec<String> = p.folders.clone();
         writable.extend(p.state_dirs.iter().cloned());
-        writable.push("/tmp".into());
+        writable.push(plan::srt_temp_root(cfg!(target_os = "macos")).into());
         match preflight::srt(
             &env.path,
             cfg!(target_os = "linux"),
@@ -899,7 +904,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             }
             if a.boundary == Boundary::Srt {
                 writable.extend(p.state_dirs.iter().cloned());
-                writable.push("/tmp".into());
+                writable.push(plan::srt_temp_root(cfg!(target_os = "macos")).into());
             }
             let argv = preflight::companion(env.program(prog), &env.path, &writable, &cwd)
                 .map_err(|e| (1, e))?;

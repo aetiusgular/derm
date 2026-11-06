@@ -197,6 +197,26 @@ pub struct Inputs<'a> {
     /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
     /// read-only wherever they sit (re-review FP5-R2).
     pub gate_paths: Vec<String>,
+    /// The host is macOS (`cfg!(target_os = "macos")` in `derm run`; a field
+    /// so the macOS shape of srt's settings is tested on any system).
+    pub macos: bool,
+    /// The harness starts on a terminal (`derm run`'s stdin is one).
+    pub terminal: bool,
+}
+
+/// The temp folder srt's settings let a chat write, named by its real path
+/// (Mac test w5, MW5-13; case 111). On macOS `/tmp` is a link to
+/// `/private/tmp`, and srt 0.0.81 keeps `/tmp` unresolved (its
+/// `isSymlinkOutsideBoundary` exempts `/tmp/...`, not `/tmp` itself,
+/// `dist/sandbox/sandbox-utils.js:229-292`), while Seatbelt compares the
+/// kernel's real path: `/tmp` there granted nothing, and Claude Code's Bash
+/// could not make its folder under `/private/tmp/claude-<uid>`.
+pub fn srt_temp_root(macos: bool) -> &'static str {
+    if macos {
+        "/private/tmp"
+    } else {
+        "/tmp"
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -398,8 +418,8 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 if is_loopback(&host) {
                     *url = with_host(scheme, "host.docker.internal", port, &path);
                     notes.push(format!(
-                        "derm run: the sandbox reaches the host's port {port} only if your sbx policy allows it: \
-                         sbx policy allow network localhost:{port} (derm does not change sbx policy)"
+                        "derm run: the sandbox reaches the host's port {port} through a rule derm adds for this sandbox alone \
+                         (sbx policy allow network --sandbox <its name> localhost:{port}), gone with the sandbox"
                     ));
                 }
             }
@@ -526,7 +546,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 && !i.policy.contains("/../")
                 && !i.policy.contains("/./")
                 && i.policy_regular;
-            let allow_read = if policy_ok {
+            let mut allow_read = if policy_ok {
                 vec![json!({"path": i.policy, "literal": true})]
             } else {
                 notes.push(format!(
@@ -535,9 +555,27 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 ));
                 vec![]
             };
+            // MW5-5's gate half, macOS: the daemon's folder stays hidden, and
+            // its socket alone is re-opened, so the gate inside can check the
+            // socket's owner and connect, and still read no token beside it
+            // (Mac test w5, case d, run with srt 0.0.81: `allowUnixSockets`
+            // admits the connect, `macos-sandbox-utils.js:966-979`;
+            // `allowRead` the `lstat` the hook's owner check makes). srt
+            // ignores `allowUnixSockets` on Linux, where seccomp refuses every
+            // `socket(AF_UNIX)` (README lines 517-523), so nothing is added
+            // there. The chat's token already scopes it to its own chat (case
+            // 66); the socket gives it nothing the token does not.
+            let mut unix_sockets: Vec<String> = Vec::new();
+            if i.macos {
+                if let Some(sock) = i.daemon_socket.as_deref().filter(|s| s.starts_with('/')) {
+                    unix_sockets.push(sock.to_string());
+                    allow_read.push(json!({"path": sock, "literal": true}));
+                    env.push(("DERM_DAEMON_SOCKET".into(), sock.to_string()));
+                }
+            }
             let mut allow_write = vec![i.cwd.clone()];
             allow_write.extend(state_dirs.iter().cloned());
-            allow_write.push("/tmp".into());
+            allow_write.push(srt_temp_root(i.macos).into());
             // The gate's own switches stay read-only inside the state srt
             // lets the harness write (integration w1, security finding S6):
             // its hooks, plugin lists and MCP files, and derm's folder. srt
@@ -586,11 +624,15 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 .into_iter()
                 .map(|p| json!({"path": p, "literal": true}))
                 .collect();
-            let settings = json!({
-                "network": {
-                    "allowedDomains": allowed,
-                    "deniedDomains": [],
-                },
+            let mut network = json!({
+                "allowedDomains": allowed,
+                "deniedDomains": [],
+            });
+            if !unix_sockets.is_empty() {
+                network["allowUnixSockets"] = json!(unix_sockets);
+            }
+            let mut settings = json!({
+                "network": network,
                 "filesystem": {
                     "denyRead": deny_read,
                     "allowRead": allow_read,
@@ -601,6 +643,22 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     "denyWrite": deny_write,
                 },
             });
+            // MW5-8: a harness on a terminal needs `ioctl` on its own
+            // `/dev/ttys*` to read keys (raw mode); srt 0.0.81 on macOS allows
+            // that only with `allowPty` (`macos-sandbox-utils.js:910-915,
+            // 1021-1034`), and without it Claude Code's TUI took no keys.
+            // `allowPty` opens read, write and `ioctl` on every `/dev/ttys*`
+            // of the user's: another terminal's output and its input race,
+            // not an injection into it (XNU `tty.c:1431-1439`: TIOCSTI needs
+            // the caller's controlling tty unless root). Set only for a
+            // harness started on a terminal, and said at the start.
+            if i.macos && i.terminal {
+                settings["allowPty"] = json!(true);
+                notes.push(
+                    "derm run: on a terminal under srt on macOS the harness gets srt's allowPty, so it can read keys: it can also read and write your other terminals (/dev/ttys*), though it cannot type into them; start it with no terminal to leave it off"
+                        .into(),
+                );
+            }
             srt_settings =
                 Some(serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?);
             program = "srt".into();
@@ -797,6 +855,36 @@ pub fn srt_loopback_through_proxy(p: &mut Plan) {
     p.args.splice(at + 1..at + 1, wrap);
 }
 
+/// Mac test w5, MW5-15 (and Linux, reproduced in the cloud): Claude Code
+/// 2.1.311's OTLP exporter never sends a loopback endpoint through a proxy
+/// (its agent chooser skips the proxy for a hostname `localhost`, `::1` or
+/// `127.x.x.x`, read in the binary), and under srt a direct loopback connect
+/// fails, so a chat under srt sent no OTel record. The same port spelled as
+/// an IPv4-mapped address is not loopback to that check, so the export goes
+/// through srt's proxy, which admits it under derm's `127.0.0.1:<port>`
+/// entry and passes `Host: 127.0.0.1:<port>` on (srt 0.0.81, run). Only the
+/// `OTEL_EXPORTER_OTLP_*ENDPOINT` variables change, and only a plain
+/// `http://127.0.0.1:<port>`; a no-op for any other boundary.
+pub fn srt_otlp_through_proxy(p: &mut Plan) {
+    if p.program != "srt" {
+        return;
+    }
+    for (k, v) in p.env_set.iter_mut() {
+        let named = k == "OTEL_EXPORTER_OTLP_ENDPOINT"
+            || (k.starts_with("OTEL_EXPORTER_OTLP_") && k.ends_with("_ENDPOINT"));
+        if !named {
+            continue;
+        }
+        let Some(rest) = v.strip_prefix("http://127.0.0.1:") else {
+            continue;
+        };
+        let port = rest.split('/').next().unwrap_or("");
+        if port.parse::<u16>().is_ok_and(|n| n != 0) {
+            *v = format!("http://[::ffff:127.0.0.1]:{rest}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,6 +912,8 @@ mod tests {
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
             gate_paths: Vec::new(),
+            macos: false,
+            terminal: false,
         }
     }
 
@@ -969,10 +1059,9 @@ mod tests {
             env(&p, "DERM_GATEWAY_URL"),
             Some("http://host.docker.internal:8811/mcp")
         );
-        assert!(p
-            .notes
-            .iter()
-            .any(|n| n.contains("sbx policy allow network localhost:4318")));
+        assert!(p.notes.iter().any(|n| n
+            .contains("sbx policy allow network --sandbox <its name> localhost:4318")
+            && n.contains("for this sandbox alone")));
         assert!(p.notes.iter().any(|n| n.contains("localhost:8811")));
         assert_eq!(p.kit.as_deref(), Some("docker.io/sbx/pi-kit:latest"));
     }
@@ -1050,6 +1139,178 @@ mod tests {
             s["filesystem"]["allowWrite"],
             json!(["/home/u/proj dir", "/home/u/.pi/agent", "/tmp"])
         );
+    }
+
+    fn srt_of(p: &Plan) -> serde_json::Value {
+        serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn srt_names_the_temp_root_by_its_real_path_on_macos() {
+        // MW5-13: srt 0.0.81 keeps `/tmp` unresolved on macOS, where it is a
+        // link, and Seatbelt matched nothing under it.
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let mac = build(&Inputs {
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        let w = srt_of(&mac)["filesystem"]["allowWrite"].clone();
+        assert!(
+            w.as_array().unwrap().contains(&json!("/private/tmp")),
+            "{w}"
+        );
+        assert!(!w.as_array().unwrap().contains(&json!("/tmp")), "{w}");
+        let linux = build(&inputs(&args)).unwrap();
+        let w = srt_of(&linux)["filesystem"]["allowWrite"].clone();
+        assert!(w.as_array().unwrap().contains(&json!("/tmp")), "{w}");
+        assert!(
+            !w.as_array().unwrap().contains(&json!("/private/tmp")),
+            "{w}"
+        );
+    }
+
+    #[test]
+    fn srt_on_macos_opens_the_daemon_socket_and_nothing_else_in_its_folder() {
+        // MW5-5's gate half: the socket by path (connect and lstat), the
+        // folder still hidden, and its path named to the hook.
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let p = build(&Inputs {
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        let s = srt_of(&p);
+        let sock = "/run/user/1000/derm/daemon.sock";
+        assert_eq!(s["network"]["allowUnixSockets"], json!([sock]));
+        let read = s["filesystem"]["allowRead"].as_array().unwrap();
+        assert!(
+            read.contains(&json!({"path": sock, "literal": true})),
+            "{read:?}"
+        );
+        assert!(read.contains(&json!({"path": "/home/u/.derm/policy.json", "literal": true})));
+        assert_eq!(read.len(), 2, "{read:?}");
+        let deny = s["filesystem"]["denyRead"].as_array().unwrap();
+        assert!(deny.contains(&json!("/run/user/1000/derm")), "{deny:?}");
+        assert!(!s["filesystem"]["allowWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w
+                .as_str()
+                .is_some_and(|w| w.starts_with("/run/user/1000/derm"))));
+        assert_eq!(env(&p, "DERM_DAEMON_SOCKET"), Some(sock));
+        assert_eq!(env(&p, "DERM_CHAT_TOKEN_FILE"), None);
+        // Linux: srt ignores allowUnixSockets (seccomp refuses AF_UNIX).
+        let linux = build(&inputs(&args)).unwrap();
+        let s = srt_of(&linux);
+        assert!(s["network"].get("allowUnixSockets").is_none());
+        assert_eq!(s["filesystem"]["allowRead"].as_array().unwrap().len(), 1);
+        assert_eq!(env(&linux, "DERM_DAEMON_SOCKET"), None);
+        // No socket known (no daemon): nothing opened.
+        let none = build(&Inputs {
+            macos: true,
+            daemon_socket: None,
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(srt_of(&none)["network"].get("allowUnixSockets").is_none());
+    }
+
+    #[test]
+    fn srt_on_macos_gives_a_harness_on_a_terminal_its_pty_and_says_so() {
+        // MW5-8: without allowPty the harness cannot set raw mode on its
+        // /dev/ttys* and takes no keys.
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let on = build(&Inputs {
+            macos: true,
+            terminal: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert_eq!(srt_of(&on)["allowPty"], json!(true));
+        assert!(on
+            .notes
+            .iter()
+            .any(|n| n.contains("allowPty") && n.contains("/dev/ttys")));
+        for (macos, terminal) in [(true, false), (false, true), (false, false)] {
+            let p = build(&Inputs {
+                macos,
+                terminal,
+                ..inputs(&args)
+            })
+            .unwrap();
+            assert!(srt_of(&p).get("allowPty").is_none(), "{macos} {terminal}");
+            assert!(!p.notes.iter().any(|n| n.contains("allowPty")));
+        }
+    }
+
+    #[test]
+    fn under_srt_claude_codes_otlp_endpoint_is_spelled_so_it_takes_the_proxy() {
+        // MW5-15: Claude Code 2.1.311 sends no loopback name through a
+        // proxy; the mapped spelling of the same port is not one to it.
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let mut p = build(&inputs(&args)).unwrap();
+        p.env_set.push((
+            "OTEL_EXPORTER_OTLP_ENDPOINT".into(),
+            "http://127.0.0.1:4318".into(),
+        ));
+        p.env_set.push((
+            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT".into(),
+            "http://127.0.0.1:4318/v1/logs".into(),
+        ));
+        p.env_set.push((
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT".into(),
+            "https://collector.example:4318".into(),
+        ));
+        srt_otlp_through_proxy(&mut p);
+        assert_eq!(
+            env(&p, "OTEL_EXPORTER_OTLP_ENDPOINT"),
+            Some("http://[::ffff:127.0.0.1]:4318")
+        );
+        assert_eq!(
+            env(&p, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"),
+            Some("http://[::ffff:127.0.0.1]:4318/v1/logs")
+        );
+        assert_eq!(
+            env(&p, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
+            Some("https://collector.example:4318")
+        );
+        // Only DERM_OTLP_ENDPOINT's own spelling stays as srt_target wrote it.
+        assert_eq!(env(&p, "DERM_OTLP_ENDPOINT"), Some("http://127.0.0.1:4318"));
+        // No change for any other boundary.
+        let none = a(&["claude-code", "--boundary", "none"]);
+        let mut q = build(&inputs(&none)).unwrap();
+        q.env_set.push((
+            "OTEL_EXPORTER_OTLP_ENDPOINT".into(),
+            "http://127.0.0.1:4318".into(),
+        ));
+        srt_otlp_through_proxy(&mut q);
+        assert_eq!(
+            env(&q, "OTEL_EXPORTER_OTLP_ENDPOINT"),
+            Some("http://127.0.0.1:4318")
+        );
+    }
+
+    /// MW5-13 on the machine itself: every srt write root that exists is
+    /// named by its real path (case 111), so Seatbelt can match it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn srt_write_roots_are_real_paths_on_this_mac() {
+        let dir = std::env::temp_dir().canonicalize().unwrap();
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let p = build(&Inputs {
+            macos: cfg!(target_os = "macos"),
+            cwd: dir.to_string_lossy().into_owned(),
+            ..inputs(&args)
+        })
+        .unwrap();
+        for w in srt_of(&p)["filesystem"]["allowWrite"].as_array().unwrap() {
+            let w = w.as_str().unwrap();
+            if let Ok(real) = std::fs::canonicalize(w) {
+                assert_eq!(real, std::path::Path::new(w), "{w} is not its real path");
+            }
+        }
     }
 
     #[test]

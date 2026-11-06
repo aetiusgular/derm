@@ -163,8 +163,8 @@ pub(crate) fn environment_with(
         let (scheme, _, port, _) =
             split_url(&endpoint).ok_or((1, "bad tap endpoint".to_string()))?;
         plan.notes.push(format!(
-            "derm run: the sandbox reaches the model tap on the host's port {port} only if your sbx policy allows it: \
-             sbx policy allow network localhost:{port} (derm does not change sbx policy)"
+            "derm run: the sandbox reaches the model tap on the host's port {port} through a rule derm adds for this sandbox alone \
+             (sbx policy allow network --sandbox <its name> localhost:{port}), gone with the sandbox"
         ));
         format!("{scheme}://host.docker.internal:{port}")
     } else {

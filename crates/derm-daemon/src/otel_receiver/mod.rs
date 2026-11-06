@@ -586,6 +586,7 @@ impl Receiver {
         let host_ok = head.header("host").is_some_and(|host| {
             host == format!("127.0.0.1:{}", self.port)
                 || host.eq_ignore_ascii_case(&format!("localhost:{}", self.port))
+                || mapped_loopback_host(host, self.port)
                 || (derm
                     && host.eq_ignore_ascii_case(&format!("host.docker.internal:{}", self.port)))
         });
@@ -1227,6 +1228,25 @@ pub enum Applied {
     /// Nothing changed, and why: the user already exports OTel, the endpoint
     /// is not loopback, or the harness has no OTel export here.
     StoodDown(&'static str),
+}
+
+/// `[::ffff:127.0.0.1]:<port>` in either spelling of the IPv4-mapped
+/// address (MW5-15: the name derm gives Claude Code's exporter under srt, so
+/// it takes srt's proxy). A literal address, never a name: DNS rebinding
+/// cannot produce it (the reason the host is checked at all).
+fn mapped_loopback_host(host: &str, port: u16) -> bool {
+    let Some((addr, p)) = host.rsplit_once("]:") else {
+        return false;
+    };
+    let Some(addr) = addr.strip_prefix('[') else {
+        return false;
+    };
+    p == port.to_string()
+        && addr
+            .parse::<std::net::Ipv6Addr>()
+            .ok()
+            .and_then(|a| a.to_ipv4_mapped())
+            .is_some_and(|v4| v4 == std::net::Ipv4Addr::LOCALHOST)
 }
 
 /// True for `http://127.0.0.1:<port>` and nothing else: the receiver binds

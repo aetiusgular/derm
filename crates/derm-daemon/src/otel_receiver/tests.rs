@@ -187,6 +187,33 @@ fn no_token_or_a_wrong_one_is_refused_before_the_body() {
 }
 
 #[test]
+fn the_ipv4_mapped_loopback_is_the_receivers_own_host() {
+    // MW5-15: under srt, derm names the receiver to Claude Code as
+    // `[::ffff:127.0.0.1]` so its exporter takes srt's proxy; the request
+    // arrives with that host. Only loopback's own mapped address counts.
+    let f = fixture(true);
+    let token = f.receiver.token_for("c", "claude").unwrap();
+    let port = f.receiver.port();
+    let with_host = |host: &str| {
+        format!("POST /v1/logs HTTP/1.1\r\nhost: {host}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{{}}")
+    };
+    for host in [
+        format!("[::ffff:7f00:1]:{port}"),
+        format!("[::FFFF:127.0.0.1]:{port}"),
+    ] {
+        assert_eq!(send_raw(port, with_host(&host).as_bytes()), 200, "{host}");
+    }
+    for host in [
+        format!("[::ffff:7f00:2]:{port}"),
+        format!("[::ffff:7f00:1]:{}", port.wrapping_add(1)),
+        format!("[::1]:{port}"),
+        "[::ffff:7f00:1]".to_string(),
+    ] {
+        assert_eq!(send_raw(port, with_host(&host).as_bytes()), 403, "{host}");
+    }
+}
+
+#[test]
 fn wrong_host_method_path_type_encoding_and_size_are_refused() {
     let f = fixture(true);
     let token = f.receiver.token_for("c", "claude").unwrap();

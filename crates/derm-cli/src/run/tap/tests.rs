@@ -313,7 +313,7 @@ fn under_sbx_the_tap_is_the_hosts_and_each_variable_is_named_to_sbx() {
     assert!(p
         .notes
         .iter()
-        .any(|n| n.contains("sbx policy allow network localhost:45003")));
+        .any(|n| n.contains("sbx policy allow network --sandbox <its name> localhost:45003")));
     // Codex's flags under sbx wait for lane T: untapped, said.
     let mut p = plan("sbx", &["run", "--name", "derm-c", "codex"], true);
     p.sandbox_name = Some("derm-c".into());
