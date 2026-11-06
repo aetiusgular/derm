@@ -421,6 +421,22 @@ fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
     Some(real.to_string_lossy().into_owned())
 }
 
+/// `range` (words in `before`) as it sits in `after`, where words were
+/// put in right after `before`'s first `--` (`srt_loopback_through_proxy`);
+/// a range after that point moves by as many words (FP4-S8).
+fn shift_after_wrap(
+    range: Option<std::ops::Range<usize>>,
+    before: &[String],
+    after: &[String],
+) -> Option<std::ops::Range<usize>> {
+    let range = range?;
+    let grown = after.len().saturating_sub(before.len());
+    match before.iter().position(|w| w == "--") {
+        Some(dd) if grown > 0 && range.start > dd => Some(range.start + grown..range.end + grown),
+        _ => Some(range),
+    }
+}
+
 fn recorded_argv(
     program: &str,
     args: &[String],
@@ -915,7 +931,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     plan::no_token_in_args(&p, token.as_deref()).map_err(|e| (1, e))?;
     // Under srt, derm's loopback ports through srt's proxy (MW5-5). Last of
     // the argv edits: the tap and the export read the command's position.
+    let before = p.args.clone();
     plan::srt_loopback_through_proxy(&mut p);
+    // The wrap goes in after srt's `--`, before the export: the export's
+    // range moves with it (fix pass 4's review, FP4-S8).
+    let export_at = shift_after_wrap(export_at, &before, &p.args);
     // And Claude Code's OTel export, which takes no proxy for a loopback
     // name (MW5-15).
     plan::srt_otlp_through_proxy(&mut p);
@@ -1612,6 +1632,41 @@ mod end_to_end {
             Some(want_node)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_export_range_moves_with_srts_wrap() {
+        // srt, Codex with a session subcommand: derm's export sits after
+        // `exec`; srt's wrap then goes in right after `--` (FP4-S8).
+        let rest = s(&["exec", "do the thing"]);
+        let before = s(&[
+            "--settings",
+            "/x/s.json",
+            "--",
+            "codex",
+            "exec",
+            "-c",
+            "otel.a=1",
+            "do the thing",
+        ]);
+        let mut after = before.clone();
+        after.splice(3..3, s(&["/usr/bin/env", "NO_PROXY=x", "no_proxy=x"]));
+        let range = shift_after_wrap(Some(5..7), &before, &after).unwrap();
+        assert_eq!(&after[range.clone()], &s(&["-c", "otel.a=1"])[..]);
+        let rec = recorded_argv("srt", &after, &rest, false, Some(range));
+        assert!(
+            rec.contains(&"otel.a=1".to_string()),
+            "derm's export kept: {rec:?}"
+        );
+        assert!(
+            rec.contains(&"[12 chars]".to_string()),
+            "the prompt masked: {rec:?}"
+        );
+        assert!(!rec.contains(&"do the thing".to_string()), "{rec:?}");
+        // Nothing added, or a range before `--`: unchanged.
+        assert_eq!(shift_after_wrap(Some(5..7), &before, &before), Some(5..7));
+        assert_eq!(shift_after_wrap(Some(0..2), &before, &after), Some(0..2));
+        assert_eq!(shift_after_wrap(None, &before, &after), None);
     }
 
     #[test]

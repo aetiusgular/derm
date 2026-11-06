@@ -527,8 +527,11 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             let sign_in = super::harness::sign_in_hosts(h.id);
             if !sign_in.is_empty() {
                 allowed.extend(sign_in.iter().map(|s| s.to_string()));
+                // FP4-S7: srt admits by host and port only (TLS is opaque to
+                // its proxy), so every path on that host is open to every
+                // process in the sandbox, and the tap records none of it.
                 notes.push(format!(
-                    "derm run: under srt {} may reach its sign-in host {} to renew its sign-in, and no other host but derm's",
+                    "derm run: under srt {} may reach its sign-in host {} to renew its sign-in; srt admits any request on that host and port, and derm records none of them",
                     h.id,
                     sign_in.join(", ")
                 ));
@@ -1224,9 +1227,9 @@ mod tests {
             assert!(list.contains(&json!(host)), "{id}: {allowed}");
             assert!(!list.contains(&json!(other)), "{id}: {allowed}");
             assert!(
-                p.notes
-                    .iter()
-                    .any(|n| n.contains(host) && n.contains("sign-in")),
+                p.notes.iter().any(|n| n.contains(host)
+                    && n.contains("sign-in")
+                    && n.contains("records none")),
                 "{id}: {:?}",
                 p.notes
             );
