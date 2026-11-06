@@ -1410,3 +1410,23 @@ fn idle_connections_before_a_token_cannot_hold_a_chat_out() {
     assert_eq!(got, 200, "held out for {:?}", started.elapsed());
     drop(held);
 }
+
+/// Re-review W5R-9 (integration w5's continue): the day's allowance counted
+/// bytes only, so about 1.7 million small content files fit inside it. It
+/// counts the requests that write content too (each writes at most two
+/// files); another chat's count is its own.
+#[test]
+fn a_chats_content_files_are_counted_as_well_as_its_bytes() {
+    let f = fixture(true);
+    *f.receiver.content_writes_allowance.lock().unwrap() = 3;
+    let now = 1_793_000_000_000;
+    for _ in 0..3 {
+        assert!(f.receiver.allow_content("chat-w5r9", 1, now));
+    }
+    assert!(!f.receiver.allow_content("chat-w5r9", 1, now));
+    assert!(f.receiver.allow_content("chat-w5r9-other", 1, now));
+    // A new day starts both counts again.
+    assert!(f
+        .receiver
+        .allow_content("chat-w5r9", 1, now + 24 * 60 * 60 * 1000));
+}

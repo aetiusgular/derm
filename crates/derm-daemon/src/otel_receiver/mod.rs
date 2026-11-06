@@ -96,6 +96,10 @@ const RATE_BURST_PER_CHAT: f64 = 50.0;
 /// Content bytes one chat writes in a day, at most (W5C-S6). Counted in
 /// memory: a daemon restart starts the count again.
 const MAX_CONTENT_BYTES_PER_CHAT_DAY: u64 = 256 * 1024 * 1024;
+/// Requests that write content for one chat in a day, at most: each writes
+/// at most two files, so the bytes' allowance cannot be spent as millions of
+/// small files (re-review W5R-9).
+const MAX_CONTENT_WRITES_PER_CHAT_DAY: u64 = 20_000;
 
 /// What the window set: the switch, the prompt text switch, and which
 /// session ids are chats (helpers and probes are not).
@@ -137,7 +141,7 @@ struct PerChat {
     approving: HashMap<String, usize>,
     rate: HashMap<String, (f64, Instant)>,
     /// Content bytes written since the day's start (ms), per chat.
-    content: HashMap<String, (i64, u64)>,
+    content: HashMap<String, (i64, u64, u64)>,
 }
 
 #[derive(Clone, Copy)]
@@ -199,6 +203,7 @@ pub struct Receiver {
     /// Content bytes one chat may write a day (W5C-S6); a field so a test
     /// can lower it.
     content_allowance: Mutex<u64>,
+    content_writes_allowance: Mutex<u64>,
     pub counters: Counters,
 }
 
@@ -268,6 +273,7 @@ impl Receiver {
             approving: AtomicUsize::new(0),
             per_chat: Mutex::new(PerChat::default()),
             content_allowance: Mutex::new(MAX_CONTENT_BYTES_PER_CHAT_DAY),
+            content_writes_allowance: Mutex::new(MAX_CONTENT_WRITES_PER_CHAT_DAY),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -461,24 +467,26 @@ impl Receiver {
     fn allow_content(&self, chat: &str, bytes: u64, now: i64) -> bool {
         const DAY_MS: i64 = 24 * 60 * 60 * 1000;
         let cap = self.content_allowance.lock().map_or(0, |c| *c);
+        let writes = self.content_writes_allowance.lock().map_or(0, |c| *c);
         let Ok(mut per) = self.per_chat.lock() else {
             return false;
         };
         if !per.content.contains_key(chat) && per.content.len() >= MAX_TOKENS {
             per.content
-                .retain(|_, (start, _)| now.saturating_sub(*start) < DAY_MS);
+                .retain(|_, (start, _, _)| now.saturating_sub(*start) < DAY_MS);
             if per.content.len() >= MAX_TOKENS {
                 return false;
             }
         }
-        let day = per.content.entry(chat.to_string()).or_insert((now, 0));
+        let day = per.content.entry(chat.to_string()).or_insert((now, 0, 0));
         if now.saturating_sub(day.0) >= DAY_MS {
-            *day = (now, 0);
+            *day = (now, 0, 0);
         }
-        if day.1.saturating_add(bytes) > cap {
+        if day.1.saturating_add(bytes) > cap || day.2 >= writes {
             return false;
         }
         day.1 += bytes;
+        day.2 += 1;
         true
     }
 
