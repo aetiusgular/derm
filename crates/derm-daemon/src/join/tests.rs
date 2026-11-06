@@ -1054,6 +1054,59 @@ fn an_early_end_does_not_drop_a_calls_own_writes() {
     assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_I", "{r:?}");
 }
 
+/// Third re-review T1: a pid the OS hands out again is a new process, not
+/// the old one; its writes are not the old call's.
+#[test]
+fn a_reused_pid_does_not_keep_an_old_calls_owner() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_A", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 1300}));
+    effect(&mut j, "exec", 1_110, 1300, ROOT, json!({"exe": "/bin/sh"}));
+    call(&mut j, "toolu_B", "bash", &[], 900_000, Some(905_000));
+    effect(&mut j, "fork", 900_100, ROOT, 1, json!({"child": 1300}));
+    effect(
+        &mut j,
+        "exec",
+        900_110,
+        1300,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    let r = effect(
+        &mut j,
+        "write",
+        900_200,
+        1300,
+        ROOT,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert!(
+        r.iter()
+            .all(|e| e.detail["chosen"] != json!("tap-chat-j-toolu_A")),
+        "{r:?}"
+    );
+    // The owners map's order holds each pid once, so eviction stays exact.
+    let st = j.chats.get(CHAT).unwrap();
+    assert_eq!(
+        st.owner_order.iter().filter(|p| **p == 1300).count(),
+        st.owners.contains_key(&1300) as usize
+    );
+}
+
+/// T1's clearing holds the feed's order: a child's exec that arrives
+/// before its parent's fork record keeps the exec's placement.
+#[test]
+fn a_fork_that_arrives_after_its_childs_exec_keeps_the_childs_owner() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_A", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "exec", 1_110, 1300, ROOT, json!({"exe": "/bin/sh"}));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 1300}));
+    let r = effect(&mut j, "write", 1_300, 1300, ROOT, json!({"path": "/w/x"}));
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_A", "{r:?}");
+}
+
 /// Review FP3-S4: the line is bounded like the owners map.
 #[test]
 fn the_line_is_bounded() {

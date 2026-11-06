@@ -158,6 +158,10 @@ struct ChatState {
     order: VecDeque<String>,
     owners: HashMap<u32, Owner>,
     owner_order: VecDeque<u32>,
+    /// The OS time each owner was set at, so a fork clears only what an
+    /// earlier process held (T1), not its own child's exec that the feed
+    /// delivered first.
+    owned_at: HashMap<u32, i64>,
 }
 
 impl ChatState {
@@ -173,16 +177,29 @@ impl ChatState {
         self.calls.entry(id.to_string()).or_default()
     }
 
-    fn own(&mut self, pid: u32, owner: Owner) {
+    fn own(&mut self, pid: u32, owner: Owner, at: i64) {
         if !self.owners.contains_key(&pid) {
             self.owner_order.push_back(pid);
             while self.owner_order.len() > MAX_PIDS {
                 if let Some(old) = self.owner_order.pop_front() {
                     self.owners.remove(&old);
+                    self.owned_at.remove(&old);
                 }
             }
         }
         self.owners.insert(pid, owner);
+        self.owned_at.insert(pid, at);
+    }
+
+    /// Forgets what a pid held before `at`, for a new process forked under
+    /// it then.
+    fn disown(&mut self, pid: u32, at: i64) {
+        if self.owned_at.get(&pid).is_some_and(|set| *set < at) {
+            self.owners.remove(&pid);
+            self.owned_at.remove(&pid);
+            self.owner_order.retain(|p| *p != pid);
+            self.line.remove(&pid);
+        }
     }
 
     fn running(&self, t: i64) -> Vec<(&String, &Call)> {
@@ -427,6 +444,13 @@ impl Join {
             };
             let st = self.chat(&e.chat_id);
             if let Some(child) = child {
+                // A fork is a new process: whatever an earlier process with
+                // this pid owned or was in the line is not its (third
+                // re-review T1: a reused pid kept an old call's owner and
+                // was chosen for it).
+                if kind == "fork" {
+                    st.disown(child, t);
+                }
                 let parent = if kind == "fork" { pid } else { ppid };
                 let program = str_at(&e.detail, "exe").or_else(|| str_at(&e.detail, "comm"));
                 // MW5-16: under a boundary the processes between the run's
@@ -505,7 +529,7 @@ impl Join {
                 };
                 if let Some(o) = owner {
                     if !(kind == "exec" && st.owners.contains_key(&child)) {
-                        st.own(child, o);
+                        st.own(child, o, t);
                     }
                 }
             }
