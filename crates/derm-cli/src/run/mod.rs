@@ -797,6 +797,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // `derm run` is one chat, so they are this run's.
     cleanup.otel_helpers = export == json!("claude-code, token through otelHeadersHelper");
     plan::no_token_in_args(&p, token.as_deref()).map_err(|e| (1, e))?;
+    // Under srt, derm's loopback ports through srt's proxy (MW5-5). Last of
+    // the argv edits: the tap and the export read the command's position.
+    plan::srt_loopback_through_proxy(&mut p);
     // srt's dependencies and the userns sysctl, before srt fails on them with
     // its own errors (box test w1, BX3 and BX4); the copies srt would run
     // outside the sandbox, never from a folder the sandbox can write, and

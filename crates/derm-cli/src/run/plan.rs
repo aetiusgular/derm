@@ -756,6 +756,39 @@ pub fn describe(p: &Plan) -> String {
     s
 }
 
+/// srt 0.0.81's own `NO_PROXY` without its loopback names
+/// (`dist/sandbox/sandbox-utils.js:705-720`).
+pub const SRT_NO_PROXY_WITHOUT_LOOPBACK: &str =
+    "169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+
+/// Mac test w5, MW5-5 (and Linux, run in the cloud): under srt the harness
+/// reaches derm's own loopback ports (the tap, the OTLP receiver) only
+/// through srt's proxy, which admits exactly the `allowedDomains` derm
+/// lists. srt sets `NO_PROXY` to `localhost,127.0.0.1,::1,...` (srt 0.0.81
+/// `sandbox-utils.js:705-720`), so a client goes direct, and a direct
+/// connect fails: on Linux the sandbox has its own loopback (bwrap
+/// `--unshare-net`, README line 124), on macOS Seatbelt admits loopback only
+/// to the proxy's ports (`macos-sandbox-utils.js:944-992`). srt sets its
+/// variables before the command runs (`env` on macOS, bwrap `--setenv` on
+/// Linux), so `/usr/bin/env` in front of the harness, inside the sandbox,
+/// takes the loopback names out of `NO_PROXY`. Nothing is widened: the
+/// proxy still refuses any port not listed (403, run). A no-op for any
+/// other boundary.
+pub fn srt_loopback_through_proxy(p: &mut Plan) {
+    if p.program != "srt" {
+        return;
+    }
+    let Some(at) = p.args.iter().position(|a| a == "--") else {
+        return;
+    };
+    let wrap = [
+        "/usr/bin/env".to_string(),
+        format!("NO_PROXY={SRT_NO_PROXY_WITHOUT_LOOPBACK}"),
+        format!("no_proxy={SRT_NO_PROXY_WITHOUT_LOOPBACK}"),
+    ];
+    p.args.splice(at + 1..at + 1, wrap);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1680,5 +1713,37 @@ mod tests {
         );
         let args = a(&["--boundary", "none", "--", "claude", "-p", "hi"]);
         assert_eq!(args.harness.id, "claude-code");
+    }
+
+    /// MW5-5: inside srt the harness runs behind `/usr/bin/env` with srt's
+    /// `NO_PROXY` less its loopback names, so derm's loopback ports go
+    /// through srt's proxy; nothing changes for another boundary.
+    #[test]
+    fn under_srt_the_harness_reaches_derms_ports_through_the_proxy() {
+        let args = a(&["--boundary", "srt", "--", "aider", "--model", "m"]);
+        let mut p = build(&inputs(&args)).unwrap();
+        srt_loopback_through_proxy(&mut p);
+        let at = p.args.iter().position(|x| x == "--").unwrap();
+        assert_eq!(
+            &p.args[at + 1..],
+            &[
+                "/usr/bin/env",
+                "NO_PROXY=169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+                "no_proxy=169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+                "aider",
+                "--model",
+                "m"
+            ]
+        );
+        for loopback in ["localhost", "127.0.0.1", "::1"] {
+            assert!(!SRT_NO_PROXY_WITHOUT_LOOPBACK
+                .split(',')
+                .any(|h| h == loopback));
+        }
+        let args = a(&["--boundary", "none", "--", "aider"]);
+        let mut p = build(&inputs(&args)).unwrap();
+        let before = p.args.clone();
+        srt_loopback_through_proxy(&mut p);
+        assert_eq!(p.args, before);
     }
 }
