@@ -201,6 +201,13 @@ pub fn wants_password(error: &str) -> bool {
     error.contains("your password is needed")
 }
 
+/// Whether the daemon refused a yes because no person check can run here
+/// (macOS, or a daemon under no_new_privs): no password can pass, so none
+/// is asked for, and the request still waits for a no (MW5-4).
+pub fn cannot_check(error: &str) -> bool {
+    error.contains("needs a person check")
+}
+
 /// The approver's loop: shows one request at a time, sends the answer typed
 /// for it, and keeps the rest in order. `flush` drops typed-ahead input
 /// when a prompt is shown (the real one calls `tcflush` on the terminal).
@@ -310,8 +317,9 @@ pub fn serve_with(
                         password_for = Some(w);
                     }
                     // A wrong password: the card again, so y can be tried
-                    // once more after the daemon's back-off.
-                    (Err(e), Some(w)) if answer.with_proof => {
+                    // once more after the daemon's back-off. No check can
+                    // run: the reason and the card, so Enter can answer no.
+                    (Err(e), Some(w)) if answer.with_proof || cannot_check(&e) => {
                         let _ = writeln!(out, "  not sent for {id}: {e}");
                         flush();
                         prompt(out, &w, queue.len());
@@ -810,6 +818,48 @@ mod tests {
             serve(&rx, Vec::new(), &mut out, &mut flush),
             Ended::DaemonGone(_)
         ));
+    }
+
+    #[test]
+    fn a_yes_no_person_check_can_pass_shows_the_reason_and_the_card_again() {
+        // Fix pass 1, after MW5-4: where no check is built (macOS) the
+        // daemon refuses the yes before any password. That refusal is not
+        // a timeout: the approver said "too late" and dropped the card, so
+        // the request could only time out. It says why and shows the card,
+        // and Enter answers no.
+        let (tx, rx) = mpsc::channel();
+        let wire = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w = Wire(wire.clone());
+        let h = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut flush = || {};
+            serve(&rx, w, &mut out, &mut flush);
+            String::from_utf8(out).unwrap()
+        });
+        tx.send(req("ap-1", 30)).unwrap();
+        std::thread::sleep(SETTLE + Duration::from_millis(100));
+        tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
+        tx.send(In::Daemon(Incoming::Reply(json!({"ok": false, "error":
+            "a yes for this chat needs a person check because derm-c1 runs as you, \
+             and no person check is built for this system yet: run the chat under a boundary (srt or sbx)"}))))
+            .unwrap();
+        std::thread::sleep(SETTLE + Duration::from_millis(150));
+        tx.send(In::Typed("\n".into(), Instant::now())).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        tx.send(In::TtyGone).unwrap();
+        let out = h.join().unwrap();
+        assert!(!out.contains("too late"), "{out}");
+        assert!(!out.contains("password"), "{out}");
+        assert!(
+            out.contains(
+                "not sent for ap-1: the daemon refused: a yes for this chat needs a person check"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("Allow this one call?").count(), 2, "{out}");
+        let a = answers(&wire);
+        assert_eq!(a.len(), 2, "{out}");
+        assert_eq!(a[1]["answer"], "no", "{out}");
     }
 
     #[test]

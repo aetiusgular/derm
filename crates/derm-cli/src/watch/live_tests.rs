@@ -429,7 +429,9 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
     );
 }
 
-#[cfg(unix)]
+// Linux only since fix pass 1: where no check is built (macOS) the daemon
+// asks for no password (MW5-4), and the test below is that platform's.
+#[cfg(target_os = "linux")]
 /// S2 part b (wave 5 lane V), end to end: the chat runs as you, so the
 /// daemon refuses a `yes` until the person's password comes with it. The
 /// approver asks for it with echo off, sends it once, shows the card again
@@ -479,6 +481,56 @@ fn a_yes_for_a_chat_that_runs_as_you_asks_for_the_password() {
         !text.contains("derm-lane-v-wrong"),
         "the password is never printed: {text}"
     );
+    tx.send(In::TtyGone).unwrap();
+    let _ = h.join();
+    let _ = harness.kill();
+    let _ = harness.wait();
+}
+
+/// S2 part b where no person check is built (macOS; Mac test w5, MW5-4):
+/// the daemon refuses the `yes` and asks for no password, since none could
+/// pass; the approver shows why and the card again, and Enter answers no.
+#[cfg(all(unix, not(target_os = "linux")))]
+#[test]
+fn a_yes_for_a_chat_that_runs_as_you_is_refused_with_no_password_where_no_check_is_built() {
+    let l = live("person-none");
+    let (tx, rx) = mpsc::channel::<In>();
+    let conn = Conn::open(&l.socket, "test approver").unwrap();
+    let writer = approve::register(conn, tx.clone()).unwrap();
+    let mut harness = start_chat(&l, "derm-chat-a", "none");
+    let out = Shared::default();
+    let mut o = out.clone();
+    let echoes = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+    let seen = echoes.clone();
+    let h = std::thread::spawn(move || {
+        let mut flush = || {};
+        let mut echo = |on: bool| seen.lock().unwrap().push(on);
+        approve::serve_with(&rx, writer, &mut o, &mut flush, &mut echo)
+    });
+    let asked = ask(&l, "ap-you", 30);
+    out.wait_for("Allow this one call? [y/N]");
+    std::thread::sleep(approve::SETTLE + Duration::from_millis(50));
+    tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
+    let text = out.wait_for("not sent for ap-you");
+    assert!(text.contains("needs a person check"), "{text}");
+    assert!(
+        !text.contains("login password"),
+        "no password is asked for: {text}"
+    );
+    assert!(echoes.lock().unwrap().is_empty(), "echo never turned off");
+    let t = Instant::now();
+    while out.text().matches("Allow this one call? [y/N]").count() < 2 {
+        assert!(
+            t.elapsed() < Duration::from_secs(10),
+            "the card again: {}",
+            out.text()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(approve::SETTLE + Duration::from_millis(50));
+    tx.send(In::Typed("\n".into(), Instant::now())).unwrap();
+    let reply = asked.join().unwrap();
+    assert_eq!(reply["answer"], "no", "{reply}");
     tx.send(In::TtyGone).unwrap();
     let _ = h.join();
     let _ = harness.kill();
