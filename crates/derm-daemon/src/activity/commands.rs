@@ -173,8 +173,14 @@ pub fn flags_report(
         // words (fix pass review F4).
         report.truncated |= reply.truncated || (!reply.complete && reply.connected);
         // The pump (MW5-14) already put most of these in the log: an event
-        // the log holds is counted from there, once.
-        let logged: HashSet<String> = events.iter().map(|e| e.id.clone()).collect();
+        // the log holds is counted from there, once. Only the collector's own
+        // copy counts as held: a record of another source under its id (one
+        // a chat token posted first, FP2-S1) hides nothing.
+        let logged: HashSet<String> = events
+            .iter()
+            .filter(|e| e.source == ActivitySource::Eslogger)
+            .map(|e| e.id.clone())
+            .collect();
         for mut event in reply.events {
             if logged.contains(&event.id) {
                 continue;
@@ -632,6 +638,65 @@ mod tests {
         assert_eq!(report.flags.len(), 1, "{:?}", report.flags);
         assert_eq!(report.flags[0].count, 1, "{:?}", report.flags);
         assert_eq!(report.events.iter().filter(|e| e.id == "es-dup").count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_of_another_source_under_a_collector_id_hides_nothing() {
+        // FP2-S1: only the collector's own copy in the log stands for a
+        // collector event in the report; a record of another source under
+        // the same id (one a chat posted first) does not.
+        let dir = temp("collector-forged");
+        let day = 20_377 * 86_400_000_i64;
+        let real = ActivityEvent {
+            id: "es-forged".into(),
+            at: day + 10,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source: ActivitySource::Eslogger,
+            kind: "write".into(),
+            summary: "wrote".into(),
+            detail: json!({ "path": "/Users/t/Desktop/EXFIL.txt" }),
+            pid: Some(4),
+            approval_id: None,
+        };
+        let forged = ActivityEvent {
+            source: ActivitySource::Adapter,
+            detail: json!({ "path": "/Users/t/app/ok.txt" }),
+            ..real.clone()
+        };
+        let mut writer = ChainWriter::new(dir.clone());
+        writer.write(&Entry::Event(forged), day + 5).unwrap();
+        let chats = HashMap::from([(
+            "c1".to_string(),
+            ChatContext {
+                chat_id: "c1".into(),
+                harness: "claude".into(),
+                folders: vec!["/Users/t/app".into()],
+            },
+        )]);
+        let reply = collector::EventsReply {
+            events: vec![real],
+            chain_ok: true,
+            complete: true,
+            connected: true,
+            ..collector::EventsReply::default()
+        };
+        let report = flags_report(
+            &dir,
+            Some(DATA),
+            Some("c1"),
+            day,
+            day + 1_000,
+            &chats,
+            Some(reply),
+            day + 2_000,
+        );
+        assert!(
+            report.flags.iter().any(|f| f.summary.contains("EXFIL.txt")),
+            "{:?}",
+            report.flags
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

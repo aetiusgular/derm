@@ -364,6 +364,11 @@ pub struct Counters {
     pub approvals: AtomicU64,
 }
 
+/// The id prefixes the OS feeds write under: the Mac collector's
+/// (`es-<day>-<seq>`), the Linux feed's (`auditd-<ms>-<serial>`), the
+/// Windows feed's (`sysmon-...`). No chat token posts under them (FP2-S1).
+const OS_FEED_ID_PREFIXES: &[&str] = &["es-", "auditd-", "sysmon-"];
+
 fn now_ms() -> i64 {
     store::now_ms()
 }
@@ -1003,6 +1008,20 @@ impl Daemon {
                 if !matches!(event.source, Source::Adapter | Source::Otel) {
                     self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
                     return error("a chat token posts only adapter and otel events");
+                }
+                // Nor under an OS feed's id (fix pass 2's review, FP2-S1):
+                // those ids are predictable, and the log keeps the first
+                // record under an id, so a record posted first would hide
+                // the kernel's. Checked as the log will write the id.
+                let id = store::bound_event(Event {
+                    detail: Value::Null,
+                    ..event.clone()
+                })
+                .id
+                .to_ascii_lowercase();
+                if OS_FEED_ID_PREFIXES.iter().any(|p| id.starts_with(p)) {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return error("ids starting es-, auditd- or sysmon- are the OS feeds'");
                 }
                 event.chat_id = chat.clone();
                 event.harness = harness.clone();
@@ -2418,6 +2437,47 @@ mod tests {
             "{}",
             flags[0].summary
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Fix pass 2's review, FP2-S1: the OS feeds' ids are predictable
+    /// (`es-<day>-<seq>`, `auditd-<ms>-<serial>`, `sysmon-<record>`), and the
+    /// log keeps the first record under an id, so a chat token that posted
+    /// under one first hid the real kernel record from the log and the
+    /// report. A chat posts under none of them, in any spelling.
+    #[test]
+    fn a_chat_token_cannot_take_an_os_feeds_id() {
+        let (d, root) = daemon();
+        let chat = Who::Chat {
+            chat: "chat-f".into(),
+            harness: "claude-code".into(),
+        };
+        for id in [
+            "es-2026-11-05-5000",
+            "ES-2026-11-05-5001",
+            " es-2026-11-05-5002",
+            "auditd-1793943183583-12",
+            "sysmon-4711",
+            "Sysmon-abc-write",
+        ] {
+            let mut e = ev_of("", Source::Adapter, "write", None, json!({"path": "/x"}));
+            e.id = id.into();
+            assert!(!d.op_event(&chat, e).ok, "{id}");
+        }
+        // Any other id is the chat's to choose, as before.
+        let mut e = ev_of("", Source::Adapter, "tool.call", None, json!({}));
+        e.id = "esx-1".into();
+        assert!(d.op_event(&chat, e).ok);
+        // The daemon scope (derm-audit-feed) still posts the feed's own ids.
+        let mut e = ev_of(
+            "chat-f",
+            Source::Auditd,
+            "write",
+            Some(9),
+            json!({"path": "/x"}),
+        );
+        e.id = "auditd-1793943183583-13".into();
+        assert!(d.op_event(&Who::Daemon, e).ok);
         let _ = std::fs::remove_dir_all(root);
     }
 

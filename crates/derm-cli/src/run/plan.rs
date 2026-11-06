@@ -655,7 +655,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             if i.macos && i.terminal {
                 settings["allowPty"] = json!(true);
                 notes.push(
-                    "derm run: on a terminal under srt on macOS the harness gets srt's allowPty, so it can read keys: it can also read and write your other terminals (/dev/ttys*), though it cannot type into them; start it with no terminal to leave it off"
+                    "derm run: on a terminal under srt on macOS the harness gets srt's allowPty, so it can read keys: it can also read your other terminals (/dev/ttys*) and write to them, which can change what they show you, though it cannot type into them; start it with no terminal to leave it off"
                         .into(),
                 );
             }
