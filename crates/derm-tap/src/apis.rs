@@ -247,6 +247,11 @@ pub struct ResponseParser {
     too_big: bool,
     calls: BTreeMap<u64, Pending>,
     order: u64,
+    /// A Responses item's own id (or `call_id`) to its slot, for a stream
+    /// whose events carry no `output_index` (MW5-20; Codex's own parser
+    /// never reads it, `codex-rs/codex-api/src/sse/responses.rs` at
+    /// `rust-v0.163.0`, and its test streams leave it out).
+    by_item: std::collections::HashMap<String, u64>,
     info: ResponseInfo,
     gemini_seq: u64,
     gemini_prefix: String,
@@ -263,6 +268,7 @@ impl ResponseParser {
             too_big: false,
             calls: BTreeMap::new(),
             order: 0,
+            by_item: Default::default(),
             info: ResponseInfo::default(),
             gemini_seq: 0,
             gemini_prefix: gemini_prefix.to_string(),
@@ -530,8 +536,47 @@ impl ResponseParser {
         }
     }
 
+    /// The slot for an item with no `output_index`: by its id, else its
+    /// `call_id`, a new one the first time either is seen.
+    fn item_key(&mut self, item: &Value) -> Option<u64> {
+        let names: Vec<String> = ["id", "call_id"]
+            .iter()
+            .filter_map(|k| item.get(*k).and_then(Value::as_str))
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("noidx:{s}"))
+            .collect();
+        if names.is_empty() {
+            return None;
+        }
+        if let Some(k) = names.iter().find_map(|n| self.by_item.get(n).copied()) {
+            for n in names {
+                self.by_item.insert(n, k);
+            }
+            return Some(k);
+        }
+        // Past any index a stream gives, so the two never share a slot.
+        let k = (1u64 << 32) + self.next_key();
+        if self.by_item.len() < 4_096 {
+            for n in names {
+                self.by_item.insert(n, k);
+            }
+        }
+        Some(k)
+    }
+
     fn responses_event(&mut self, kind: &str, v: &Value) {
-        let key = v.get("output_index").and_then(Value::as_u64).map(|i| i + 1);
+        let mut key = v.get("output_index").and_then(Value::as_u64).map(|i| i + 1);
+        if key.is_none() {
+            key = match kind {
+                "response.output_item.added" | "response.output_item.done" => {
+                    v.get("item").and_then(|item| self.item_key(item))
+                }
+                _ => v
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| self.by_item.get(&format!("noidx:{id}")).copied()),
+            };
+        }
         match kind {
             "response.created" | "response.in_progress" => {
                 self.model_from(v.pointer("/response/model"));

@@ -17,14 +17,24 @@
 
 import http from "node:http";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { startFakeMessages, textBlock, toolUse, isSideRequest as claudeSide } from "../lib/fakeMessages.mjs";
 import { startFakeResponses, call, text, isSideRequest as codexSide } from "../lib/fakeResponses.mjs";
 import { ClaudeSession } from "../lib/claudeDriver.mjs";
 import { CodexClient, makeTempDirs, userInput } from "../lib/codexDriver.mjs";
 
-const TOKEN_HEADER = "x-monocode-token";
+// The daemon's own header name, read from the source the receiver and `derm
+// run` use (case 112: a value one side sends and the other checks comes from
+// one list). Until fix pass 3 this check kept the fork's `x-monocode-token`,
+// and its stand-in receiver took whatever the harness sent, so it never
+// showed whether a harness sends derm's header.
+const TOKEN_HEADER = (() => {
+  const src = readFileSync(new URL("../../../crates/derm-daemon/src/otel_receiver/harness_env.rs", import.meta.url), "utf8");
+  const m = /pub const TOKEN_HEADER: &str = "([a-z-]+)";/.exec(src);
+  if (!m) throw new Error("TOKEN_HEADER not found in harness_env.rs");
+  return m[1];
+})();
 
 /**
  * `claude_env` in harness_env.rs plus `claude_header_var`: the header
@@ -47,7 +57,7 @@ export function claudeEnv(endpoint, token, logPrompts) {
 /**
  * `claude_env` with the header helper (Mac test 2.6): no header variable;
  * the token reaches Claude Code only through `otelHeadersHelper` in
- * `--settings`, a script that prints `{"x-monocode-token":"<token>"}`.
+ * `--settings`, a script that prints `{"x-derm-token":"<token>"}`.
  */
 export function claudeHelperEnv(endpoint, logPrompts) {
   const env = claudeEnv(endpoint, "", logPrompts);

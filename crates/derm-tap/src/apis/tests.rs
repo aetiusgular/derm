@@ -302,3 +302,47 @@ fn bytes_that_are_not_json_are_unparsed_not_calls() {
     assert!(info.unparsed);
     assert!(info.calls.is_empty());
 }
+
+/// Mac test w5 retest 2, MW5-20: a Codex chat through the tap to
+/// chatgpt.com gave `tap.request` records and no `tap.call`. The parser keyed
+/// every item on `output_index`, which Codex's own parser never reads and its
+/// test streams leave out; a stream without it gave no call (the cause on
+/// chatgpt.com is inferred, not seen).
+#[test]
+fn responses_items_without_an_output_index_are_still_calls() {
+    let events = vec![
+        (
+            "response.output_item.added",
+            json!({"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":"shell","arguments":""}}),
+        ),
+        (
+            "response.function_call_arguments.delta",
+            json!({"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"command\":[\"sleep\",\"20\"]}"}),
+        ),
+        (
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":"shell","arguments":"{\"command\":[\"sleep\",\"20\"]}"}}),
+        ),
+        // Only a done item, as Codex's own test fixtures send it.
+        (
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_10","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}),
+        ),
+        (
+            "response.output_item.done",
+            json!({"type":"response.output_item.done","item":{"type":"message","id":"msg_1","content":[]}}),
+        ),
+        (
+            "response.completed",
+            json!({"type":"response.completed","response":{"model":"gpt-5.6-luna"}}),
+        ),
+    ];
+    let info = parse_split(Api::OpenAiResponses, true, &sse(&events));
+    let ids: Vec<&str> = info.calls.iter().map(|c| c.call_id.as_str()).collect();
+    assert_eq!(ids, vec!["call_9", "call_10"]);
+    assert_eq!(
+        info.calls[0].args,
+        ArgsText::Text("{\"command\":[\"sleep\",\"20\"]}".into())
+    );
+    assert!(info.calls.iter().all(|c| !c.incomplete));
+}
