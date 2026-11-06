@@ -204,7 +204,10 @@ impl ControlFlags {
         for k in gone {
             self.forget(&k);
         }
-        if e.kind == "run.stop" {
+        // Only the run's own stop: a chat token posts adapter records of
+        // any kind, and a forged `run.stop` must not drop the chat's
+        // installs before a late postinstall writes (review FP3-S3).
+        if e.kind == "run.stop" && e.source == Source::Run {
             if let Some(c) = self.chats.get_mut(&e.chat_id) {
                 c.stopped_at.get_or_insert(e.at);
             }
@@ -722,7 +725,7 @@ mod tests {
         assert!(f.chats.contains_key("chat-fixture"));
         // Kept after the stop for late join records (MW5-17), gone past the
         // join's keep (before, gone at the stop itself).
-        f.observe(&ev("s", "run.stop", Source::Derm, json!({})));
+        f.observe(&ev("s", "run.stop", Source::Run, json!({})));
         assert!(f.chats.contains_key("chat-fixture"));
         let mut later = ev("x", "tool.call", Source::Adapter, json!({}));
         later.chat_id = "other".into();
@@ -783,5 +786,62 @@ mod tests {
             .chats
             .get("chat-fixture")
             .is_none_or(|c| c.calls.is_empty()));
+    }
+
+    /// Review FP3-S3: a chat token may post an adapter record of kind
+    /// `run.stop`; it must not make the flagger forget the chat's installs.
+    #[test]
+    fn an_adapter_run_stop_does_not_drop_an_install() {
+        let at = |mut e: Event, t: i64| {
+            e.at = t;
+            e
+        };
+        let mut f = ControlFlags::new();
+        f.observe(&at(
+            ev(
+                "inst",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "toolu_I"}),
+            ),
+            1_000,
+        ));
+        f.observe(&at(
+            ev(
+                "gate",
+                "approval",
+                Source::Adapter,
+                json!({"toolUseId": "toolu_I"}),
+            ),
+            1_010,
+        ));
+        f.observe(&at(
+            ev("fake-stop", "run.stop", Source::Adapter, json!({})),
+            1_020,
+        ));
+        let t = 1_020 + crate::join::STOPPED_KEEP_MS + 1;
+        f.observe(&at(
+            ev(
+                "es-9",
+                "write",
+                Source::Eslogger,
+                json!({"path": "/p/.git/hooks/pre-commit"}),
+            ),
+            t,
+        ));
+        let flags = f.observe(&at(
+            ev(
+                "join-es-9",
+                "join.candidates",
+                Source::Derm,
+                json!({"effect": "es-9", "candidates": [{"call": "gate", "by": "tree"}], "chosen": "gate"}),
+            ),
+            t,
+        ));
+        assert_eq!(
+            flags.len(),
+            1,
+            "the forged stop dropped the install's flag: {flags:?}"
+        );
     }
 }
