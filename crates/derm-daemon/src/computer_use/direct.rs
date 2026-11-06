@@ -221,6 +221,8 @@ pub fn launch_env(daemon_env: &[(String, String)], home: &Path) -> Vec<(String, 
 struct Runtime {
     child: Mutex<Child>,
     client: Mutex<Client>,
+    /// The executables its manifest grants, canonical.
+    programs: Vec<PathBuf>,
     /// Set by a stop: a call waiting on the driver returns at once.
     cancel: Arc<AtomicBool>,
 }
@@ -325,6 +327,13 @@ impl Server {
                     return Err("That tool is not allowed.".into());
                 }
                 let arguments = request.get("arguments").cloned().unwrap_or(json!({}));
+                if matches!(name, "list_windows" | "list_apps")
+                    && arguments.get("pid").is_none()
+                    && arguments.get("window_id").is_none()
+                {
+                    let result = self.listing_per_program(&runtime, name, &arguments)?;
+                    return Ok(json!({"result": result}));
+                }
                 let result = lock(&runtime.client).request(
                     "tools/call",
                     json!({"name": name, "arguments": arguments}),
@@ -343,6 +352,65 @@ impl Server {
             }
             _ => Err("Unknown op".into()),
         }
+    }
+
+    /// Box test w5, BW5-19: cua-driver-rs 0.38.0 counts an observation with
+    /// no `pid` and no `window_id` as a whole-display one
+    /// (`cua-driver-core/src/tool.rs:2598-2632`, `authorization.rs:230-244,
+    /// 735-760`), which derm's manifest refuses (`display: false`;
+    /// `session_manifest.rs:204`), so every capture failed at its first
+    /// `list_windows`. The listing is asked per running process of a program
+    /// this runtime's manifest grants, with its `pid` (an application
+    /// observation the grant covers), and merged; `list_apps` is answered
+    /// from those processes without the driver. The driver never sees a
+    /// display observation, and no other app's window reaches the chat.
+    fn listing_per_program(
+        &self,
+        runtime: &Runtime,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<Value, String> {
+        let pids = granted_pids(&self.proc_root, self.uid, &runtime.programs);
+        if name == "list_apps" {
+            let apps: Vec<Value> = pids
+                .iter()
+                .map(|(pid, exe)| {
+                    json!({
+                        "name": exe.file_name().map(|f| f.to_string_lossy().into_owned()),
+                        "pid": pid,
+                    })
+                })
+                .collect();
+            return Ok(json!({
+                "content": [{"type": "text", "text": format!("{} running app(s) this chat holds", apps.len())}],
+                "structuredContent": {"apps": apps},
+            }));
+        }
+        let mut windows: Vec<Value> = Vec::new();
+        for (pid, _) in &pids {
+            let mut args = json!({"pid": pid});
+            if let Some(v) = arguments.get("on_screen_only") {
+                args["on_screen_only"] = v.clone();
+            }
+            let result = lock(&runtime.client).request(
+                "tools/call",
+                json!({"name": "list_windows", "arguments": args}),
+                CALL_TIMEOUT,
+            )?;
+            if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                return Ok(result);
+            }
+            if let Some(list) = result
+                .pointer("/structuredContent/windows")
+                .and_then(Value::as_array)
+            {
+                windows.extend(list.iter().cloned());
+            }
+        }
+        Ok(json!({
+            "content": [{"type": "text", "text": format!("{} window(s) of the apps this chat holds", windows.len())}],
+            "structuredContent": {"windows": windows},
+        }))
     }
 
     fn runtime(&self, id: &str) -> Result<Arc<Runtime>, String> {
@@ -448,6 +516,12 @@ impl Server {
 
     fn start(&self, id: &str, manifest: &str) -> Result<u32, String> {
         let manifest = self.rewrite(manifest)?;
+        let programs: Vec<PathBuf> = manifest
+            .lines()
+            .filter_map(|l| l.strip_prefix("    - executable: "))
+            .filter_map(|q| serde_json::from_str::<String>(q).ok())
+            .map(PathBuf::from)
+            .collect();
         let folder = self
             .private
             .join(format!("m-{}", uuid::Uuid::new_v4().simple()));
@@ -487,6 +561,7 @@ impl Server {
             let runtime = Arc::new(Runtime {
                 child: Mutex::new(child),
                 client: Mutex::new(client),
+                programs,
                 cancel,
             });
             if let Err(error) = initialized {
@@ -569,6 +644,37 @@ pub fn running_program(proc_root: &Path, uid: u32, query: &str) -> Option<PathBu
         .into_iter()
         .map(|(_, exe)| exe)
         .find(|exe| exe.is_absolute() && !exe.to_string_lossy().ends_with(" (deleted)"))
+}
+
+/// Running processes of `uid` whose executable is one of `programs`, by pid,
+/// at most 32 (BW5-19's per-program listing).
+fn granted_pids(proc_root: &Path, uid: u32, programs: &[PathBuf]) -> Vec<(u64, PathBuf)> {
+    let Ok(entries) = fs::read_dir(proc_root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u64, PathBuf)> = Vec::new();
+    for entry in entries.flatten().take(65_536) {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let dir = entry.path();
+        if fs::metadata(&dir).map(|m| m.uid()).ok() != Some(uid) {
+            continue;
+        }
+        let Ok(exe) = fs::read_link(dir.join("exe")) else {
+            continue;
+        };
+        if programs.iter().any(|p| *p == exe) {
+            found.push((pid, exe));
+        }
+    }
+    found.sort();
+    found.truncate(32);
+    found
 }
 
 /// A program on a fixed `PATH` (not the daemon's: a project can change it).

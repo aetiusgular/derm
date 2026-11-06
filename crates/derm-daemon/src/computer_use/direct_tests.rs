@@ -29,7 +29,19 @@ while IFS= read -r line; do
   case "$line" in
     *'"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake"}}}\n' "$id" ;;
     *'"tools/list"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"click"},{"name":"list_windows"}]}}\n' "$id" ;;
-    *'"list_windows"'*) say "call list_windows"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1 window"}],"structuredContent":{"windows":[{"app_name":"calc","pid":41,"window_id":7,"z_index":1}]}}}\n' "$id" ;;
+    *'"list_windows"'*|*'"list_apps"'*)
+      # cua-driver-rs 0.38.0: an observation with no pid and no window_id is
+      # a whole-display one (`cua-driver-core/src/tool.rs:2598-2632`), which
+      # a manifest with `display: false` refuses (`session_manifest.rs:204`).
+      case "$line" in
+        *'"pid":'*)
+          pid=$(printf '%s' "$line" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p')
+          say "call list_windows pid=$pid"
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1 window"}],"structuredContent":{"windows":[{"app_name":"calc","pid":%s,"window_id":7,"z_index":1}]}}}\n' "$id" "$pid" ;;
+        *)
+          say "refused display"
+          printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"protected resource is outside the capability manifest: desktop display observation is outside the capability manifest"}]}}\n' "$id" ;;
+      esac ;;
     *) say "call other"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}\n' "$id" ;;
   esac
 done
@@ -313,6 +325,18 @@ fn a_runtime_starts_bounded_with_the_executable_in_its_manifest_and_ends_on_stop
         result["structuredContent"]["windows"][0]["app_name"],
         "calc"
     );
+    // Box test w5, BW5-19: the driver refuses an unfiltered listing under
+    // derm's manifest, so the daemon lists per granted program's pid.
+    assert_eq!(result["structuredContent"]["windows"][0]["pid"], 500);
+    let apps = Backend::call(&*core, "c1", "list_apps", json!({}));
+    let CallOutcome::Done(apps) = apps else {
+        panic!("{apps:?}");
+    };
+    assert_eq!(apps["structuredContent"]["apps"][0]["pid"], 500, "{apps}");
+    assert_eq!(
+        apps["structuredContent"]["apps"][0]["name"], "calc",
+        "{apps}"
+    );
     let read = fs::read_to_string(base.join("bin/read-manifest.yaml")).unwrap();
     assert!(
         read.contains(&format!("- executable: \"{}\"", app.display())),
@@ -326,6 +350,8 @@ fn a_runtime_starts_bounded_with_the_executable_in_its_manifest_and_ends_on_stop
         !log.contains("bad args") && !log.contains("leaked") && !log.contains("bypass"),
         "{log}"
     );
+    assert!(!log.contains("refused display"), "{log}");
+    assert!(log.contains("call list_windows pid=500"), "{log}");
     // The manifest folder is gone once the driver is up.
     let leftovers: Vec<_> = fs::read_dir(base.join("data/computer-use"))
         .unwrap()
