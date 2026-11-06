@@ -334,6 +334,57 @@ fn a_helper_the_harness_starts_during_a_shell_call_is_not_that_calls() {
     assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
 }
 
+/// Fix pass 1's review, F1: one more call open (a parallel call, or one
+/// approval a chat token posted with no call after it) made the install's
+/// shell no call's, so its writes reached no install flag. A shell started
+/// while several shell calls run is theirs together: its writes are each
+/// call's by tree, none chosen; a non-shell call running beside one shell
+/// call does not take the shell from it.
+#[test]
+fn a_shell_started_while_shell_calls_run_is_theirs_together() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_I", "bash", &[], 1_000, Some(60_000));
+    call(&mut j, "toolu_R", "read", &[], 1_000, Some(60_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 3101}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        3101,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    let r = effect(&mut j, "write", 1_200, 3101, ROOT, json!({"path": "/w/a"}));
+    assert!(!r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    call(&mut j, "toolu_F", "bash", &[], 2_000, Some(60_000));
+    effect(&mut j, "fork", 2_100, ROOT, 1, json!({"child": 3102}));
+    effect(
+        &mut j,
+        "exec",
+        2_110,
+        3102,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    let r = effect(
+        &mut j,
+        "write",
+        2_300,
+        3102,
+        ROOT,
+        json!({"path": "/w/.git/hooks/pre-commit"}),
+    );
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    let by_tree: Vec<&Value> = r[0].detail["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["by"] == "tree")
+        .collect();
+    assert_eq!(by_tree.len(), 2, "{}", r[0].detail);
+}
+
 /// An untapped chat (Pi) names its call's tool only in the gate's record.
 #[test]
 fn an_untapped_shell_call_still_owns_its_shell() {

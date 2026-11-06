@@ -261,8 +261,31 @@ impl ControlFlags {
         // path): a call merely running at the time, or one asked about and
         // then refused (which the daemon never learns), is not credited
         // (box test w5, BW5-13: 658 flags, mostly the harness's own writes).
-        let Some(call) = str_at(&e.detail, "chosen").and_then(install_of) else {
-            return Vec::new();
+        // A shell the join placed among several shell calls (by tree, none
+        // chosen) flags the install among them as one of several (fix pass
+        // 1's review, F1); a window candidate never does.
+        let tree: Vec<&str> = e
+            .detail
+            .get("candidates")
+            .and_then(Value::as_array)
+            .map(|cs| {
+                cs.iter()
+                    .filter(|c| str_at(c, "by") == Some("tree"))
+                    .filter_map(|c| str_at(c, "call"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (call, one_of) = match str_at(&e.detail, "chosen") {
+            Some(chosen) => match install_of(chosen) {
+                Some(call) => (call, String::new()),
+                None => return Vec::new(),
+            },
+            None => match tree.iter().find_map(|c| install_of(c)) {
+                Some(call) if tree.len() > 1 => {
+                    (call, format!(" (one of {} calls running)", tree.len()))
+                }
+                _ => return Vec::new(),
+            },
         };
         let mut out = Vec::new();
         for (k, path) in paths.iter().enumerate() {
@@ -276,7 +299,7 @@ impl ControlFlags {
                 harness: e.harness.clone(),
                 source: Source::Derm,
                 kind: "install.control".into(),
-                summary: format!("install wrote {marker}"),
+                summary: format!("install wrote {marker}{one_of}"),
                 detail: json!({
                     "trust": "daemon",
                     "call": call,
@@ -429,6 +452,39 @@ mod tests {
         assert_eq!(out[0].detail["call"], "i1");
         assert_eq!(out[0].detail["path"], "/p/.github/workflows/x.yml");
         assert_eq!(out[0].summary, "install wrote .github/workflows/");
+    }
+
+    /// Fix pass 1's review, F1: a shell the join places among several
+    /// shell calls (by tree, none chosen) still flags the install among
+    /// them, as one of several; a window candidate still does not.
+    #[test]
+    fn an_install_among_tree_candidates_is_flagged_as_one_of_several() {
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "i1",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "t1"}),
+        ));
+        f.observe(&ev(
+            "tap-1",
+            "tap.call",
+            Source::Tap,
+            json!({"callId": "t1"}),
+        ));
+        f.observe(&ev(
+            "w1",
+            "write",
+            Source::Auditd,
+            json!({"path": "/p/.git/hooks/pre-commit"}),
+        ));
+        let out = f.observe(&ev("j1", "join.candidates", Source::Derm, json!({"effect": "w1", "candidates": [{"call": "g2", "by": "tree"}, {"call": "tap-1", "by": "tree"}], "chosen": null})));
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].detail["call"], "i1");
+        assert_eq!(
+            out[0].summary,
+            "install wrote .git/hooks/ (one of 2 calls running)"
+        );
     }
 
     #[test]

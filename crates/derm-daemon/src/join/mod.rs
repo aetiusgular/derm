@@ -107,6 +107,9 @@ enum Owner {
     Session,
     /// Started while two or more calls ran: no single owner.
     Ambiguous,
+    /// A shell started while these shell calls ran: each may own it, none
+    /// is chosen (fix pass 1's review, F1).
+    Among(Vec<String>),
 }
 
 #[derive(Default)]
@@ -337,15 +340,24 @@ impl Join {
                         // its own helpers then, such as MCP servers, which
                         // are no call's (box test w5, BW5-11). At the fork the
                         // program is not known yet, so its exec decides.
+                        // A shell while several shell calls run is theirs
+                        // together, so one more call open (a parallel one,
+                        // or an approval posted with no call after it) does
+                        // not take its writes from every install (review F1).
                         let running = st.running(t);
+                        let shells: Vec<String> = running
+                            .iter()
+                            .filter(|(_, c)| c.shell())
+                            .map(|(id, _)| id.to_string())
+                            .collect();
                         match (running.len(), kind) {
                             (0, _) => Some(Owner::Session),
                             (_, "fork") => None,
-                            (1, _)
-                                if running[0].1.shell() && program.is_some_and(shell_program) =>
-                            {
-                                Some(Owner::Call(running[0].0.clone()))
-                            }
+                            _ if program.is_some_and(shell_program) => match shells.len() {
+                                0 => Some(Owner::Ambiguous),
+                                1 => Some(Owner::Call(shells[0].clone())),
+                                _ => Some(Owner::Among(shells)),
+                            },
                             _ => Some(Owner::Ambiguous),
                         }
                     }
@@ -381,6 +393,23 @@ impl Join {
                     "a process this call started".into(),
                 ));
                 chosen = Some(c.event.clone());
+            }
+        }
+        if let Some(Owner::Among(ids)) = &owner {
+            let live: Vec<&Call> = running
+                .iter()
+                .filter(|(id, _)| ids.contains(id))
+                .map(|(_, c)| *c)
+                .collect();
+            for c in &live {
+                candidates.push((
+                    c.event.clone(),
+                    "tree",
+                    "a shell started while this call and others ran".into(),
+                ));
+            }
+            if live.len() == 1 {
+                chosen = Some(live[0].event.clone());
             }
         }
         // 2. Path.
