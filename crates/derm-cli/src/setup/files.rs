@@ -43,7 +43,7 @@ pub fn read_private(path: &Path, max: u64) -> Result<Option<String>, String> {
 }
 
 /// `dir` as a folder of yours that no one else can write: made 0700 when
-/// missing; refused when it is a link, another user's, or open to others
+/// missing or readable by others; refused when it is a link, another user's, or open to others
 /// (a folder others can write lets them swap the file, the hook core's
 /// rule for the policy's folder).
 pub fn own_folder(dir: &Path) -> Result<(), String> {
@@ -69,6 +69,14 @@ pub fn own_folder(dir: &Path) -> Result<(), String> {
                     "{} can be written by others; fix it with chmod 700 first",
                     dir.display()
                 ));
+            }
+            // Readable by others (an earlier wave's 0755): made 0700, as a
+            // new one is (BW5-2). Nothing derm runs reads it as another
+            // user: the agents' user reaches the policy through the chat's
+            // bridge, never this folder.
+            if m.mode() & 0o077 != 0 {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(|e| format!("{}: {e}", dir.display()))?;
             }
             Ok(())
         }

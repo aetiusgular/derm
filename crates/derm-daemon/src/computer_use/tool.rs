@@ -561,9 +561,18 @@ pub fn reject_unsafe(action: &str, args: &Value) -> Option<String> {
             .iter()
             .find(|combo| combo.iter().all(|k| keys.iter().any(|have| have == k)))
         {
+            // Keys are matched by their macOS names; the refusal names
+            // them as this system's keyboard does (BW5-20).
+            let named: Vec<&str> = combo
+                .iter()
+                .map(|k| match *k {
+                    "option" if !cfg!(target_os = "macos") => "alt",
+                    k => k,
+                })
+                .collect();
             return Some(format!(
                 "Blocked: {} is a destructive system shortcut.",
-                combo.join("+")
+                named.join("+")
             ));
         }
     }

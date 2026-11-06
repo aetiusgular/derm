@@ -307,9 +307,14 @@ pub fn serve_with(
                     // The daemon wants the person's password for this yes.
                     (Err(e), Some(w)) if wants_password(&e) && !answer.with_proof => {
                         let _ = writeln!(out, "  {e}");
+                        // The password shares the card's time (BW5-18).
+                        let left = w
+                            .deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_secs();
                         let _ = write!(
                             out,
-                            "  Your login password for {id} (not shown; Enter answers no): "
+                            "  Your login password for {id} ({left} s left; not shown; Enter answers no): "
                         );
                         let _ = out.flush();
                         flush();
@@ -818,6 +823,40 @@ mod tests {
             serve(&rx, Vec::new(), &mut out, &mut flush),
             Ended::DaemonGone(_)
         ));
+    }
+
+    #[test]
+    fn the_password_prompt_says_how_long_is_left() {
+        // Box test w5, BW5-18: the password shares the card's time, and a
+        // late y left too little to type it with no word of how little.
+        let (tx, rx) = mpsc::channel();
+        let wire = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w = Wire(wire.clone());
+        let h = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut flush = || {};
+            serve(&rx, w, &mut out, &mut flush);
+            String::from_utf8(out).unwrap()
+        });
+        tx.send(req("ap-1", 30)).unwrap();
+        std::thread::sleep(SETTLE + Duration::from_millis(100));
+        tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
+        tx.send(In::Daemon(Incoming::Reply(json!({"ok": false, "error":
+            "your password is needed because chat derm-c1 runs as you with no boundary"}))))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        tx.send(In::TtyGone).unwrap();
+        let out = h.join().unwrap();
+        let line = out
+            .lines()
+            .find(|l| l.contains("Your login password for ap-1"))
+            .expect(&out);
+        assert!(line.contains("s left"), "{line}");
+        assert!(
+            line.contains("28 s left") || line.contains("27 s left"),
+            "{line}"
+        );
+        assert!(line.contains("not shown; Enter answers no"), "{line}");
     }
 
     #[test]
