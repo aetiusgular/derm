@@ -178,6 +178,38 @@ pub fn render(r: &Value) -> String {
             count(n)
         ));
     }
+    // MW5-23: what the kernel dropped for the collector's eslogger, from the
+    // gaps in its `global_seq_num`; for a chat, the part during its run.
+    if let Some(n) = r
+        .get("osKernelDropped")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        let here: u64 = r
+            .get("osKernelDrops")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|g| g.get("count").and_then(Value::as_u64))
+                    .sum()
+            })
+            .unwrap_or(0);
+        out.push_str(&format!(
+            "OS EVENTS THE KERNEL DROPPED: {} since the collector started, {} in this window (eslogger fell behind and Endpoint Security dropped them)\n",
+            count(n),
+            count(here)
+        ));
+    }
+    if let Some(n) = r
+        .get("chatOsMissed")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!(
+            "CHAT NOT FULLY WATCHED: the kernel dropped {} OS events while this chat ran; its OS records, joins and control flags are incomplete\n",
+            count(n)
+        ));
+    }
     if let Some(n) = r
         .get("tailsDropped")
         .and_then(Value::as_u64)
@@ -322,6 +354,23 @@ mod tests {
         assert!(t.contains("/etc/hosts (x2)"), "{t}");
         assert!(t.contains("os collector: no (not running)"), "{t}");
         assert!(t.contains("expected and hidden: 5"), "{t}");
+    }
+
+    #[test]
+    fn kernel_drops_and_a_chat_not_fully_watched_are_named() {
+        let mut r = sample();
+        assert!(!render(&r).contains("KERNEL"));
+        r["osKernelDropped"] = json!(2400);
+        r["osKernelDrops"] = json!([{"fromMs": 1, "toMs": 2, "count": 900}]);
+        r["chatOsMissed"] = json!(0);
+        let t = render(&r);
+        assert!(
+            t.contains("OS EVENTS THE KERNEL DROPPED: 2,400 since the collector started, 900 in this window"),
+            "{t}"
+        );
+        assert!(!t.contains("NOT FULLY WATCHED"), "{t}");
+        r["chatOsMissed"] = json!(900);
+        assert!(render(&r).contains("CHAT NOT FULLY WATCHED: the kernel dropped 900 OS events"));
     }
 
     #[test]

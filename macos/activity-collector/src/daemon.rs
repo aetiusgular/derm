@@ -3,6 +3,7 @@
 //! plain code that builds and is tested on any Unix; the macOS-only caller
 //! check is passed in as a closure (see `main.rs`).
 
+use crate::seq::SeqWatch;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -112,16 +113,26 @@ pub fn next_backoff(current: Duration) -> Duration {
 }
 
 /// Reads eslogger's output into the channel. A full channel or an
-/// over-long line counts as a drop. Returns at end of input.
-pub fn pump<R: BufRead>(mut reader: R, tx: &SyncSender<String>, dropped: &AtomicU64) {
+/// over-long line counts as a drop. Every line is first shown to `seq`,
+/// which counts what the kernel dropped before eslogger printed it (MW5-23),
+/// so the channel's own drops are not taken for the kernel's. Returns at end
+/// of input.
+pub fn pump<R: BufRead>(
+    mut reader: R,
+    tx: &SyncSender<String>,
+    dropped: &AtomicU64,
+    seq: &Mutex<SeqWatch>,
+) {
     let mut buf = Vec::new();
     loop {
         match lines::read_capped(&mut reader, &mut buf, MAX_ESLOGGER_LINE) {
             Ok(Line::Eof) | Err(_) => return,
             Ok(Line::TooLong) => {
+                lock(seq).unreadable();
                 dropped.fetch_add(1, Ordering::Relaxed);
             }
             Ok(Line::Complete | Line::Cut) => {
+                lock(seq).line(&buf);
                 let Ok(text) = std::str::from_utf8(&buf) else {
                     dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -181,6 +192,8 @@ pub struct Shared {
     pub writer: Mutex<LogWriter>,
     pub log_dir: PathBuf,
     pub dropped: AtomicU64,
+    /// What the kernel dropped before eslogger printed it (MW5-23).
+    pub seq: Mutex<SeqWatch>,
     connections: AtomicUsize,
     es: Mutex<EsInfo>,
     /// eslogger's last stderr line, shown while it is not running.
@@ -195,6 +208,7 @@ impl Shared {
             writer: Mutex::new(LogWriter::open(log_dir)?),
             log_dir: log_dir.to_path_buf(),
             dropped: AtomicU64::new(0),
+            seq: Mutex::new(SeqWatch::new()),
             connections: AtomicUsize::new(0),
             es: Mutex::new(EsInfo {
                 state: EsloggerState::Stopped,
@@ -226,6 +240,12 @@ impl Shared {
             EsloggerState::Running => None,
             _ => lock(&self.es_error).clone(),
         };
+        // One lock for both: a guard in the struct below would live to the
+        // end of the statement and the second would wait on it.
+        let (kernel_dropped, kernel_drops) = {
+            let seq = lock(&self.seq);
+            (seq.total, seq.gaps())
+        };
         let log_bytes = log::list_logs(&self.log_dir)
             .map(|files| files.iter().fold(0u64, |a, f| a.saturating_add(f.bytes)))
             .unwrap_or(0);
@@ -238,6 +258,8 @@ impl Shared {
             tracked: tracked as u64,
             grants: grants as u64,
             dropped: self.dropped.load(Ordering::Relaxed),
+            kernel_dropped,
+            kernel_drops,
             log_bytes,
         }
     }
@@ -533,7 +555,9 @@ pub fn supervise(shared: &Shared, program: &Path, tx: &SyncSender<String>) {
                         scope.spawn(move || keep_last_line(BufReader::new(err), slot));
                     }
                     if let Some(stdout) = child.stdout.take() {
-                        pump(BufReader::new(stdout), tx, &shared.dropped);
+                        // A new eslogger numbers its messages from the start.
+                        lock(&shared.seq).restart();
+                        pump(BufReader::new(stdout), tx, &shared.dropped, &shared.seq);
                     }
                     let _ = child.kill();
                 });
@@ -672,9 +696,49 @@ mod tests {
         let mut input = String::from("a\nb\nc\n");
         input.push_str(&"x".repeat(MAX_ESLOGGER_LINE + 1));
         input.push('\n');
-        pump(Cursor::new(input.into_bytes()), &tx, &dropped);
+        let seq = Mutex::new(SeqWatch::new());
+        pump(Cursor::new(input.into_bytes()), &tx, &dropped, &seq);
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec!["a", "b"]);
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            lock(&seq).total,
+            0,
+            "the channel's drops are not the kernel's"
+        );
+    }
+
+    /// Mac test w5 retest 4, MW5-23: a 1 s chat started during the
+    /// collector's backlog after a burst had no OS record at all, and
+    /// nothing said so: `dropped` counts only this collector's own channel.
+    /// A gap in eslogger's `global_seq_num` is what the kernel dropped for
+    /// it (Apple, es_message_t `global_seq_num`), and the status says so,
+    /// apart from the channel's drops.
+    #[test]
+    fn the_status_counts_what_the_kernel_dropped_apart_from_the_channel() {
+        let dir = temp_dir("daemon-seq");
+        let shared = Shared::open(&dir).unwrap();
+        let (tx, rx) = mpsc::sync_channel(3);
+        let mut input = String::new();
+        for (seq, s) in [(1, 0), (2, 1), (40, 9), (41, 9), (42, 9)] {
+            input.push_str(&format!(
+                "{{\"version\":7,\"event\":{{\"exit\":{{}}}},\"time\":\"2026-11-06T10:00:{s:02}.000Z\",\"global_seq_num\":{seq}}}\n"
+            ));
+        }
+        pump(
+            Cursor::new(input.into_bytes()),
+            &tx,
+            &shared.dropped,
+            &shared.seq,
+        );
+        drop(rx);
+        let status = shared.status();
+        assert_eq!(status.kernel_dropped, 37);
+        assert_eq!(status.dropped, 2, "the channel of three kept three lines");
+        assert_eq!(status.kernel_drops.len(), 1);
+        assert_eq!(status.kernel_drops[0].count, 37);
+        let line = protocol::reply_status(&status);
+        assert!(line.contains("\"kernelDropped\":37"), "{line}");
+        assert!(line.contains("\"kernelDrops\":[{"), "{line}");
     }
 
     fn register_session(shared: &Shared, input: &str) -> String {

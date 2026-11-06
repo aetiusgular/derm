@@ -12,6 +12,7 @@ pub mod log;
 pub mod protocol;
 pub mod replay;
 pub mod retention;
+pub mod seq;
 pub mod service;
 /// `SMAppService` for the app bundle's `register` commands. The file lives
 /// with the daemon's collector seam so that CI's macOS job compiles and runs

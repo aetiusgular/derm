@@ -1469,6 +1469,20 @@ impl Daemon {
             now_ms(),
         );
         check.dropped = self.log.dropped();
+        let status = collector_status();
+        // A chat's run, from its own run records in the window (MW5-23).
+        let run = chat.and_then(|_| {
+            let at = |k: &str| {
+                back.events
+                    .iter()
+                    .filter(|e| e.source == Source::Run && e.kind == k)
+                    .map(|e| e.at)
+                    .next()
+            };
+            at("run.start").map(|start| (start, at("run.stop")))
+        });
+        let (kernel_total, kernel_inside, kernel_during) =
+            kernel_drops_for(status.as_ref(), since, until, run);
         json!({
             "since": since,
             "until": until,
@@ -1488,7 +1502,13 @@ impl Daemon {
             // MW5-19: eslogger lines the Mac collector dropped because it
             // read them slower than they came (its own count, since it
             // started); null where there is no collector.
-            "collectorDropped": collector_dropped(),
+            "collectorDropped": status.as_ref().and_then(|s| s.get("dropped")).and_then(Value::as_u64),
+            // MW5-23: what the kernel dropped for the collector's eslogger
+            // (its total, the gaps in this window, and for a chat, how many
+            // fell during its run, which the OS layer then did not see).
+            "osKernelDropped": kernel_total,
+            "osKernelDrops": kernel_inside,
+            "chatOsMissed": kernel_during,
             "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
         })
     }
@@ -1936,13 +1956,60 @@ pub fn retention_pass(dir: &Path, now: i64) -> usize {
 
 /// The Mac collector's own count of eslogger lines it dropped (its status
 /// line's `dropped`), on macOS; `None` elsewhere or when it does not answer.
-fn collector_dropped() -> Option<u64> {
+/// The Mac collector's status line, as data; `None` off macOS.
+fn collector_status() -> Option<Value> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    crate::activity::collector::fetch_status_detail()?
-        .get("dropped")
+    crate::activity::collector::fetch_status_detail()
+}
+
+/// What the kernel dropped for the collector's eslogger (MW5-23; Apple,
+/// `es_message_t.global_seq_num`): its total since the collector started,
+/// the gaps that fall inside `[since, until]` (by the event times around
+/// each), and, for a chat whose run is known, how many of those dropped
+/// events fell during its run, kept `join::STOPPED_KEEP_MS` past its stop as
+/// the join keeps it. Nulls when the collector says nothing (off macOS, or a
+/// collector built before the count).
+pub fn kernel_drops_for(
+    status: Option<&Value>,
+    since: i64,
+    until: i64,
+    run: Option<(i64, Option<i64>)>,
+) -> (Value, Value, Value) {
+    let Some(total) = status
+        .and_then(|s| s.get("kernelDropped"))
         .and_then(Value::as_u64)
+    else {
+        return (Value::Null, Value::Null, Value::Null);
+    };
+    let gaps: Vec<&Value> = status
+        .and_then(|s| s.get("kernelDrops"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    let span = |g: &Value| {
+        let to = g.get("toMs").and_then(Value::as_i64);
+        let from = g.get("fromMs").and_then(Value::as_i64).or(to);
+        (from, to.or(from))
+    };
+    let overlaps = |g: &Value, a: i64, b: i64| match span(g) {
+        (Some(f), Some(t)) => f <= b && t >= a,
+        _ => false,
+    };
+    let inside: Vec<Value> = gaps
+        .iter()
+        .filter(|g| overlaps(g, since, until))
+        .map(|g| (*g).clone())
+        .collect();
+    let during = run.map(|(start, stop)| {
+        let end = stop.map_or(i64::MAX, |s| s.saturating_add(crate::join::STOPPED_KEEP_MS));
+        gaps.iter()
+            .filter(|g| overlaps(g, start, end))
+            .filter_map(|g| g.get("count").and_then(Value::as_u64))
+            .sum::<u64>()
+    });
+    (json!(total), Value::Array(inside), json!(during))
 }
 
 /// The Mac collector's events for a report, as the fork's panel read them;
@@ -2027,6 +2094,40 @@ fn adapter_call(event: &crate::activity::types::ActivityEvent) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MW5-23: the collector's kernel drops reach the report, in the window
+    /// and during a chat's run, and nothing is claimed where the collector
+    /// says nothing.
+    #[test]
+    fn kernel_drops_are_placed_in_the_window_and_the_chats_run() {
+        let status = json!({"dropped": 0, "kernelDropped": 150, "kernelDrops": [
+            {"fromMs": 1_000, "toMs": 2_000, "count": 100},
+            {"fromMs": 50_000, "toMs": 51_000, "count": 40},
+            {"toMs": 90_000, "count": 10}
+        ]});
+        let (total, inside, during) =
+            kernel_drops_for(Some(&status), 0, 60_000, Some((1_500, Some(15_000))));
+        assert_eq!(total, 150);
+        assert_eq!(inside.as_array().unwrap().len(), 2);
+        assert_eq!(during, 100, "the first gap overlaps the run");
+        // Kept 30 s past the stop, as the join keeps a chat.
+        let (_, _, during) =
+            kernel_drops_for(Some(&status), 0, i64::MAX, Some((30_000, Some(25_000))));
+        assert_eq!(during, 40);
+        // A run still going takes every later gap.
+        let (_, _, during) = kernel_drops_for(Some(&status), 0, i64::MAX, Some((60_000, None)));
+        assert_eq!(during, 10);
+        // No chat: no per-chat count. No count from the collector: nulls.
+        assert_eq!(kernel_drops_for(Some(&status), 0, 1, None).2, Value::Null);
+        assert_eq!(
+            kernel_drops_for(Some(&json!({"dropped": 3})), 0, 1, None),
+            (Value::Null, Value::Null, Value::Null)
+        );
+        assert_eq!(
+            kernel_drops_for(None, 0, 1, Some((0, None))),
+            (Value::Null, Value::Null, Value::Null)
+        );
+    }
     use crate::activity::types::ActivitySource;
     use std::sync::mpsc::RecvTimeoutError;
 

@@ -158,9 +158,9 @@ Same framing. One request a connection.
   When more events match than the limit, the NEWEST `limit` are sent and
   `truncated` is true.
 - `status` answers with one line:
-  `{"version":"…","eslogger":"running"|"stopped"|"missing","esloggerError":"…","events":[…],"missingEvents":[…],"tracked":<n>,"grants":<n>,"dropped":<n>,"logBytes":<n>}`.
+  `{"version":"…","eslogger":"running"|"stopped"|"missing","esloggerError":"…","events":[…],"missingEvents":[…],"tracked":<n>,"grants":<n>,"dropped":<n>,"kernelDropped":<n>,"kernelDrops":[{"fromMs":<ms>,"toMs":<ms>,"count":<n>}],"logBytes":<n>}`.
   `esloggerError` is eslogger's last stderr line (control characters
-  dropped, at most 300 characters), present only while it is not running.
+  dropped, at most 300 characters), present only while it is not running. `dropped` counts eslogger lines this collector dropped itself (its channel full, a line too long). `kernelDropped` counts the events Endpoint Security dropped for eslogger before it printed them, since the collector started: the sum of the gaps in eslogger's top-level `global_seq_num` (Apple: it rises by 1 per message a client receives unless the kernel dropped some; available from message version 5), read on every line before the channel, a line whose number cannot be read counted as read, a falling number taken as a new eslogger. `kernelDrops` keeps the newest 64 gaps, oldest first, with the event times of the lines around each (fix pass 4, Mac test w5 retest 4, MW5-23).
 
 Socket paths must be under 104 bytes, `sun_path` on macOS; the daemon
 refuses a longer one with a clear error.

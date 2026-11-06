@@ -239,6 +239,12 @@ pub struct Status {
     pub tracked: u64,
     pub grants: u64,
     pub dropped: u64,
+    /// Events the kernel dropped for eslogger since the collector started,
+    /// from the gaps in its `global_seq_num` (MW5-23).
+    pub kernel_dropped: u64,
+    /// The newest of those gaps, oldest first, with the event times around
+    /// each.
+    pub kernel_drops: Vec<crate::seq::Gap>,
     pub log_bytes: u64,
 }
 
@@ -445,6 +451,8 @@ mod tests {
             tracked: 1,
             grants: 0,
             dropped: 3,
+            kernel_dropped: 0,
+            kernel_drops: Vec::new(),
             log_bytes: 10,
         };
         let v: Value = serde_json::from_str(&reply_status(&status)).unwrap();
