@@ -247,6 +247,25 @@ fn regular_private_file(path: &Path) -> bool {
     })
 }
 
+/// The daemon's `cu.endpoint` (MW5-22): a regular private file of yours in
+/// its folder, a loopback address and port and nothing else; `None` while
+/// computer use is off (the daemon removes the file then, MW5-2).
+fn read_cu_endpoint(dir: &Path) -> Option<String> {
+    use std::io::Read;
+    let file = dir.join("cu.endpoint");
+    if !regular_private_file(&file) {
+        return None;
+    }
+    let mut text = String::new();
+    std::fs::File::open(&file)
+        .ok()?
+        .take(256)
+        .read_to_string(&mut text)
+        .ok()?;
+    let text = text.trim();
+    plan::cu_endpoint_ok(text).then(|| text.to_string())
+}
+
 /// Windows (lane Z): a regular file of this user's, one link, that no one
 /// else may write.
 #[cfg(windows)]
@@ -773,6 +792,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        // MW5-22: the computer-use bridge's address, when the daemon
+        // publishes one (computer use on), for srt's settings.
+        cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
         macos: cfg!(target_os = "macos"),
         terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
     };

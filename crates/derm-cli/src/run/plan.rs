@@ -197,6 +197,12 @@ pub struct Inputs<'a> {
     /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
     /// read-only wherever they sit (re-review FP5-R2).
     pub gate_paths: Vec<String>,
+    /// The computer-use bridge's address (`127.0.0.1:<port>` or
+    /// `[::1]:<port>`) from the daemon's `cu.endpoint`, when computer use is
+    /// on (Mac test w5 retest 3, MW5-22). Under srt the endpoint file is
+    /// re-opened read-only and the port listed for srt's proxy, so
+    /// `derm-daemon cu-mcp` inside can find and reach the bridge.
+    pub cu_endpoint: Option<String>,
     /// The host is macOS (`cfg!(target_os = "macos")` in `derm run`; a field
     /// so the macOS shape of srt's settings is tested on any system).
     pub macos: bool,
@@ -313,6 +319,21 @@ fn srt_target(url: &str) -> Option<(String, String)> {
         format!("{host}:{port}")
     };
     Some((with_host(scheme, &host, port, &path), allow))
+}
+
+/// A computer-use endpoint as the daemon writes it: a loopback address and a
+/// port, nothing else (`127.0.0.1:<port>` or `[::1]:<port>`).
+pub fn cu_endpoint_ok(e: &str) -> bool {
+    let port = e
+        .strip_prefix("127.0.0.1:")
+        .or_else(|| e.strip_prefix("[::1]:"));
+    port.is_some_and(|p| {
+        !p.is_empty()
+            && p.len() <= 5
+            && p.bytes().all(|b| b.is_ascii_digit())
+            && !p.starts_with('0')
+            && p.parse::<u32>().is_ok_and(|n| (1..=65_535).contains(&n))
+    })
 }
 
 pub fn build(i: &Inputs) -> Result<Plan, String> {
@@ -494,6 +515,13 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 allowed.push(allow);
             }
             allowed.extend(i.args.allow_hosts.iter().cloned());
+            // MW5-22: the computer-use bridge's loopback port, through srt's
+            // proxy like derm's other ports (case 163); the relay tunnels to it
+            // with CONNECT (`bridge_cli::dial`). Only a loopback address.
+            let cu = i.cu_endpoint.as_deref().filter(|e| cu_endpoint_ok(e));
+            if let Some(e) = cu {
+                allowed.push(e.to_string());
+            }
             allowed.sort();
             allowed.dedup();
             let mut deny_read: Vec<String> = [
@@ -571,6 +599,20 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     unix_sockets.push(sock.to_string());
                     allow_read.push(json!({"path": sock, "literal": true}));
                     env.push(("DERM_DAEMON_SOCKET".into(), sock.to_string()));
+                }
+            }
+            // MW5-22: `cu.endpoint` beside the socket, re-opened read-only
+            // like the socket (a literal path, so nothing else in the folder),
+            // with the socket named so the relay finds that folder (macOS sets
+            // it above; on Linux the relay's default is the same path).
+            if cu.is_some() {
+                if let Some(d) = &i.daemon_dir {
+                    allow_read.push(json!({"path": format!("{}/cu.endpoint", d.trim_end_matches('/')), "literal": true}));
+                }
+                if !i.macos {
+                    if let Some(sock) = i.daemon_socket.as_deref().filter(|s| s.starts_with('/')) {
+                        env.push(("DERM_DAEMON_SOCKET".into(), sock.to_string()));
+                    }
                 }
             }
             let mut allow_write = vec![i.cwd.clone()];
@@ -912,6 +954,7 @@ mod tests {
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
             gate_paths: Vec::new(),
+            cu_endpoint: None,
             macos: false,
             terminal: false,
         }
@@ -1168,6 +1211,75 @@ mod tests {
             !w.as_array().unwrap().contains(&json!("/private/tmp")),
             "{w}"
         );
+    }
+
+    #[test]
+    fn srt_opens_the_computer_use_endpoint_and_its_port_and_nothing_else() {
+        // Mac test w5 retest 3, MW5-22: under srt `derm-daemon cu-mcp` found
+        // no `cu.endpoint` (its folder hidden) and could not reach the
+        // bridge's port, so `derm_cu` listed no tools.
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        for macos in [false, true] {
+            let p = build(&Inputs {
+                macos,
+                cu_endpoint: Some("127.0.0.1:53276".into()),
+                ..inputs(&args)
+            })
+            .unwrap();
+            let s = srt_of(&p);
+            let allowed = s["network"]["allowedDomains"].as_array().unwrap();
+            assert!(allowed.contains(&json!("127.0.0.1:53276")), "{s}");
+            let read = s["filesystem"]["allowRead"].as_array().unwrap();
+            assert!(
+                read.contains(&json!({"path": "/run/user/1000/derm/cu.endpoint", "literal": true})),
+                "{s}"
+            );
+            // The folder stays hidden; the token beside it is never re-opened.
+            let deny = s["filesystem"]["denyRead"].as_array().unwrap();
+            assert!(deny.contains(&json!("/run/user/1000/derm")), "{s}");
+            assert!(!read.iter().any(|r| r["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("daemon.token") || p.ends_with("/derm"))));
+            // The relay finds the folder by the socket's path.
+            assert!(
+                p.env_set
+                    .iter()
+                    .any(|(k, v)| k == "DERM_DAEMON_SOCKET"
+                        && v == "/run/user/1000/derm/daemon.sock"),
+                "{:?}",
+                p.env_set
+            );
+        }
+        // Off (no endpoint), or an endpoint that is not loopback and a port:
+        // nothing added.
+        for bad in [
+            None,
+            Some("10.0.0.5:53276"),
+            Some("127.0.0.1:0"),
+            Some("127.0.0.1:65536"),
+            Some("127.0.0.1:80/x"),
+            Some("localhost:53276"),
+        ] {
+            let p = build(&Inputs {
+                cu_endpoint: bad.map(str::to_string),
+                ..inputs(&args)
+            })
+            .unwrap();
+            let s = srt_of(&p);
+            let read = s["filesystem"]["allowRead"].as_array().unwrap();
+            assert!(
+                !read.iter().any(|r| r["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("cu.endpoint"))),
+                "{bad:?} {s}"
+            );
+            if let Some(b) = bad {
+                let allowed = s["network"]["allowedDomains"].as_array().unwrap();
+                assert!(!allowed.contains(&json!(b)), "{b} {s}");
+            }
+        }
+        assert!(cu_endpoint_ok("[::1]:9"));
+        assert!(!cu_endpoint_ok("127.0.0.1:09"));
     }
 
     #[test]
