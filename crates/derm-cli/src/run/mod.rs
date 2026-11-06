@@ -626,7 +626,36 @@ fn wire_export(
     (what, Some(range))
 }
 
+/// `--help` (usage on stdout, exit 0) or an argument error (exit 2),
+/// checked with a stand-in boundary when none is named, so nothing is probed
+/// for either (MW5-1). `None` when the arguments read.
+fn before_the_probes(argv: &[String]) -> Option<Result<u8, (u8, String)>> {
+    let own = argv.iter().take_while(|a| *a != "--");
+    if own.clone().any(|a| a == "--help" || a == "-h") {
+        println!("{}", args::USAGE);
+        return Some(Ok(0));
+    }
+    let mut trial = argv.to_vec();
+    if !own
+        .clone()
+        .any(|a| a == "--boundary" || a.starts_with("--boundary="))
+    {
+        let at = trial.iter().position(|a| a == "--").unwrap_or(trial.len());
+        trial.splice(at..at, ["--boundary".to_string(), "none".to_string()]);
+    }
+    match args::parse(&trial) {
+        Ok(_) => None,
+        Err(e) => Some(Err((2, e))),
+    }
+}
+
 fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<u8, (u8, String)> {
+    // Help and argument errors before any probe (Mac test w5, MW5-1: `derm
+    // run --help` ran `sbx version` and `sbx ls`, which can start sbx's
+    // daemon, and then said no boundary was available).
+    if let Some(early) = before_the_probes(argv) {
+        return early;
+    }
     // The boundary choice reads the raw argv first (lane T's seam).
     let choice = boundary::choose(argv)?;
     let a = args::parse(&choice.argv).map_err(|e| (2, e))?;
@@ -1937,6 +1966,26 @@ mod end_to_end {
         assert!(seen(&st).is_empty(), "the harness never started");
         assert!(!st.fake.dir.join("srt/chat-d.json").exists());
         assert!(events(&st).is_empty(), "nothing recorded");
+    }
+
+    /// Mac test w5, MW5-1: help and argument errors are answered before
+    /// any boundary is probed.
+    #[test]
+    fn help_and_argument_errors_come_before_the_probes() {
+        assert!(matches!(before_the_probes(&s(&["--help"])), Some(Ok(0))));
+        assert!(matches!(before_the_probes(&s(&["pi", "-h"])), Some(Ok(0))));
+        assert!(matches!(
+            before_the_probes(&s(&["--bogus"])),
+            Some(Err((2, _)))
+        ));
+        assert!(matches!(
+            before_the_probes(&s(&["pi", "--bogus"])),
+            Some(Err((2, _)))
+        ));
+        // A harness's own -h after `--` is the harness's.
+        assert!(before_the_probes(&s(&["pi", "--", "-h"])).is_none());
+        assert!(before_the_probes(&s(&["pi"])).is_none());
+        assert!(before_the_probes(&s(&["pi", "--boundary", "srt"])).is_none());
     }
 
     /// Box test w5, BW5-7: a chat whose `sbx create` fails (there, sbx

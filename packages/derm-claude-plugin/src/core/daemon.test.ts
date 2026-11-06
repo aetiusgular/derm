@@ -192,7 +192,9 @@ describe("the VM route", () => {
 
   it("is taken only for sbx, a plain host.docker.internal URL, and no socket", async () => {
     const { vmEndpoint } = await import("./daemon.ts");
-    expect(vmEndpoint(vmEnv(), marked, 1000)?.port).toBe("4318");
+    // Socket candidates of the test's own (MW5-3): the default reads the
+    // account's real home, where a Mac running derm has a socket.
+    expect(vmEndpoint(vmEnv(), marked, 1000, () => [absent])?.port).toBe("4318");
     for (const extra of [
       { DERM_BOUNDARY: "srt" },
       { DERM_BOUNDARY: "" },
@@ -263,8 +265,8 @@ describe("the VM route", () => {
     } finally {
       process.env.HOME = saved;
     }
-    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000)?.port).toBe("4318");
-    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 0)).toBeUndefined();
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000, () => [absent])?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 0, () => [absent])).toBeUndefined();
   });
 
   it("is not taken when a socket is where the default would be, whatever DERM_DAEMON_SOCKET names", async () => {
@@ -273,7 +275,7 @@ describe("the VM route", () => {
     mkdirSync(path.join(runtime, "derm"), { recursive: true, mode: 0o700 });
     writeFileSync(path.join(runtime, "derm", "daemon.sock"), "");
     expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: runtime }), marked, 1000)).toBeUndefined();
-    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000)?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000, () => [absent])?.port).toBe("4318");
   });
 
   it("a project on the host that sets the variables never reaches its own listener", async () => {

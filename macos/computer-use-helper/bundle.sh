@@ -140,4 +140,4 @@ run codesign --force --options runtime --timestamp=none --sign "$sign" \
   --identifier "$helper_id" "$app"
 run codesign --verify --strict --verbose=2 "$app"
 echo "Built $app ($helper_id, answers $app_id)"
-echo "Place it at MonoCode.app/Contents/Helpers/, or set DERM_CU_HELPER to it for a dev build."
+echo "Copy it to /Applications/ (as \"derm Computer Use.app\"), where derm-daemon looks for it (a debug build of derm-daemon also takes DERM_CU_HELPER)."

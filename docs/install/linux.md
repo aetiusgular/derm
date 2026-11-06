@@ -59,7 +59,7 @@ The systemd user unit runs with `XDG_RUNTIME_DIR=/run/user/<uid>`. A shell that 
 
 ## The audit feed (optional, root)
 
-`derm-audit-feed` turns auditd records of a `derm run` chat's processes into daemon events. Its rules are installed by root, and derm only prints them: run `derm-audit-feed rules` as the user your agents run as, read what it prints, and install it yourself as `/etc/audit/rules.d/50-derm.rules`, then `augenrules --load`. Then `derm-audit-feed run`, as that user (it refuses root; it needs read access to `/var/log/audit/audit.log`, the `adm` group on Ubuntu). Without it, `derm status` says the OS layer is off and the feed holds the agents' own telemetry and the gate's records.
+`derm-audit-feed` turns auditd records of a `derm run` chat's processes into daemon events. Its rules are installed by root, and derm only prints them: run `derm-audit-feed rules` as the user your agents run as, read what it prints, and install it yourself as `/etc/audit/rules.d/50-derm-<uid>.rules` (one file per user, so rules for a second user, such as the agents' user, never replace yours), then `augenrules --load`. Then `derm-audit-feed run`, as that user (it refuses root; it needs read access to `/var/log/audit/audit.log`, the `adm` group on Ubuntu). Without it, `derm status` says the OS layer is off and the feed holds the agents' own telemetry and the gate's records.
 
 ## From a clone
 

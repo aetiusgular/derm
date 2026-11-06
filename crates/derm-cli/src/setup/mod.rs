@@ -633,12 +633,31 @@ fn ask_gates(ctx: &mut Ctx, installed: &[String]) {
         if code == 0 {
             ctx.changed
                 .push(format!("{id}: derm's gate, through derm connect"));
+        } else if gate_is_print_only(&id) {
+            // derm connect printed the agent's own commands and wrote
+            // nothing, by design (box test w5, BW5-3; Mac test w5, MW5-9).
+            ctx.ask.say(&format!(
+                "  {id}'s gate installs through its own command: run the lines derm connect printed above; derm wrote nothing for it."
+            ));
         } else {
             ctx.ask.say(&format!(
                 "  derm connect {id} --gate exited {code}; nothing more was done for it."
             ));
         }
     }
+}
+
+/// Whether derm connect only prints an agent's gate install (its own plugin
+/// or extension command), from the same table derm connect reads.
+fn gate_is_print_only(id: &str) -> bool {
+    crate::connect::gate::table().is_ok_and(|t| {
+        t.iter().any(|a| {
+            a.agent == id
+                && a.steps
+                    .iter()
+                    .any(|s| matches!(s, crate::connect::gate::Step::Commands { .. }))
+        })
+    })
 }
 
 /// The package folder that holds an agent's gate (`connect/gates.json`'s

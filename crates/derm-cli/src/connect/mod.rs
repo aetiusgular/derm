@@ -33,7 +33,7 @@ pub mod gateway;
 
 mod allowlist;
 mod diff;
-mod gate;
+pub(crate) mod gate;
 // Shell-script fakes and a live daemon on a Unix socket (lane Z: no
 // Windows twin yet).
 #[cfg(all(test, unix))]

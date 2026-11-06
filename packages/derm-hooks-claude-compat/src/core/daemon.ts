@@ -173,6 +173,9 @@ export function vmEndpoint(
   env: NodeJS.ProcessEnv = process.env,
   marker: () => string | undefined = vmMarker,
   uid: number | undefined = process.getuid?.(),
+  // Where a daemon socket would be; tests pass their own, since the default
+  // reads the account's real home (Mac test w5, MW5-3).
+  candidates: () => string[] = () => socketCandidates(env),
 ): URL | undefined {
   if (env.DERM_BOUNDARY?.trim() !== "sbx") return undefined;
   // In derm's VM the agent runs as its own user; a hook running as root is on
@@ -191,7 +194,7 @@ export function vmEndpoint(
   if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return undefined;
   if (url.pathname !== "/" && url.pathname !== "") return undefined;
   if (marker() !== undefined) return undefined;
-  for (const sock of socketCandidates(env)) {
+  for (const sock of candidates()) {
     try {
       lstatSync(sock);
       return undefined;

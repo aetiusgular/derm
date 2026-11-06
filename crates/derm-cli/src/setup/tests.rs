@@ -605,6 +605,17 @@ fn usage_errors_exit_2_and_a_test_build_never_asks() {
     assert_eq!(super::main(&["presets".to_string()]), 0);
 }
 
+/// Box test w5, BW5-3; Mac test w5, MW5-9: Claude Code's, Pi's and Codex's
+/// gates install through their own commands, which derm connect prints;
+/// derm setup says so instead of reporting an exit code.
+#[test]
+fn print_only_gates_are_named_from_connects_table() {
+    for id in ["claude-code", "pi", "codex"] {
+        assert!(super::gate_is_print_only(id), "{id}");
+    }
+    assert!(!super::gate_is_print_only("zed"));
+}
+
 #[test]
 fn the_gate_package_comes_from_connects_table() {
     assert_eq!(super::gate_package("pi").as_deref(), Some("derm-pi"));

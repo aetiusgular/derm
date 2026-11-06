@@ -400,21 +400,42 @@ pub fn running() -> Option<&'static Arc<Service>> {
 /// it on takes a daemon restart; turning it off ends every chat's computer
 /// use at the next sweep.
 pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) {
-    if !super::SUPPORTED || SERVICE.get().is_some() {
+    if SERVICE.get().is_some() {
+        return;
+    }
+    let on = super::SUPPORTED
+        && settings_path().is_some_and(|settings| {
+            super::settings::computer_use_on(&settings, derm_core::platform::real_user())
+        });
+    if !on {
+        // Mac test w5, MW5-2: an endpoint left by an earlier daemon stayed,
+        // and `derm-daemon cu-mcp` sent its chat token to whatever listened
+        // on that port. As for the tap's endpoint, no service, no file.
+        clear_endpoint(&paths.runtime_dir());
         return;
     }
     let Some(settings) = settings_path() else {
         return;
     };
     let uid = derm_core::platform::real_user();
-    if !super::settings::computer_use_on(&settings, uid) {
-        return;
-    }
     match start_here(daemon, paths) {
         Ok(service) => service.set_switch(Box::new(move || {
             super::settings::computer_use_on(&settings, uid)
         })),
-        Err(e) => eprintln!("derm-daemon: computer use did not start: {e}"),
+        Err(e) => {
+            clear_endpoint(&paths.runtime_dir());
+            eprintln!("derm-daemon: computer use did not start: {e}");
+        }
+    }
+}
+
+/// Removes a `cu.endpoint` no running service wrote (MW5-2).
+fn clear_endpoint(dir: &std::path::Path) {
+    match std::fs::remove_file(dir.join(super::ENDPOINT_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("derm-daemon: a stale computer-use endpoint could not be removed: {e}")
+        }
+        _ => {}
     }
 }
 
@@ -1027,5 +1048,17 @@ mod daemon_tests {
         drop(stdin);
         assert_eq!(relay.join().unwrap(), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Mac test w5, MW5-2: a stale endpoint is removed when no service runs.
+    #[test]
+    fn a_stale_endpoint_is_removed() {
+        let dir = std::env::temp_dir().join(format!("derm-cu-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(super::super::ENDPOINT_FILE), "127.0.0.1:41234\n").unwrap();
+        clear_endpoint(&dir);
+        assert!(!dir.join(super::super::ENDPOINT_FILE).exists());
+        clear_endpoint(&dir); // already gone: no error
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

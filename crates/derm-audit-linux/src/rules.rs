@@ -46,7 +46,11 @@ pub fn render(input: &RulesInput) -> (String, Vec<String>) {
     let mut out = String::new();
     out.push_str("## derm: the Linux OS feed (crates/derm-audit-linux). Generated; do not edit.\n");
     out.push_str("## Install (root, shown before it runs): install -m 0640 this file\n");
-    out.push_str("##   /etc/audit/rules.d/50-derm.rules && augenrules --load\n");
+    // One file per uid, so rules for the agents' user never replace the
+    // person's (box test w5, BW5-15).
+    out.push_str(&format!(
+        "##   /etc/audit/rules.d/50-derm-{uid}.rules && augenrules --load\n"
+    ));
     out.push_str(&format!(
         "## Records processes of uid {uid}; the feed keeps only a derm run chat's process tree.\n"
     ));
