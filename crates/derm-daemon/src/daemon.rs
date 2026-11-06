@@ -323,6 +323,12 @@ pub struct Daemon {
     installs: Mutex<crate::installs::ingest::InstallRecords>,
     /// Content capture's purge (lane S), run by the service's timer.
     purger: Mutex<crate::content::Purger>,
+    /// In-process watchers of `derm run`'s own records (`run.start`,
+    /// `run.stop`): the collector's registration (Mac test w5, MW5-18). Not a
+    /// `tail`: a tail is dropped when it falls behind, and the in-process
+    /// one never counted a line as read, so a flood of OS records ended it
+    /// and no later chat reached the collector until a restart.
+    run_watchers: Mutex<Vec<Sender<Event>>>,
     pub counters: Counters,
 }
 
@@ -362,6 +368,12 @@ pub struct Counters {
     pub refused_events: AtomicU64,
     pub tails_dropped: AtomicU64,
     pub approvals: AtomicU64,
+    /// Whether the collector's registration follower runs (MW5-18): set by
+    /// the follower itself, shown by `report`. Off where there is none.
+    pub registration_running: std::sync::atomic::AtomicBool,
+    /// Set once a registration follower has run, so `report` can tell
+    /// "stopped" from "none on this system".
+    pub registration_started: std::sync::atomic::AtomicBool,
 }
 
 /// The id prefixes the OS feeds write under: the Mac collector's
@@ -516,6 +528,7 @@ impl Daemon {
             join: Mutex::new(crate::join::Join::new()),
             installs: Mutex::new(crate::installs::ingest::InstallRecords::new()),
             purger: Mutex::new(crate::content::Purger::new(data_dir)),
+            run_watchers: Mutex::new(Vec::new()),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -738,6 +751,31 @@ impl Daemon {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// The collector registration's state for `report` (MW5-18): `running`,
+    /// `stopped` (no new chat reaches the collector until a restart), or
+    /// null where none was started (Linux, tests).
+    pub fn registration_state(&self) -> Value {
+        if !self.counters.registration_started.load(Ordering::SeqCst) {
+            return Value::Null;
+        }
+        if self.counters.registration_running.load(Ordering::SeqCst) {
+            json!("running")
+        } else {
+            json!("stopped")
+        }
+    }
+
+    /// Every `derm run` record (`Source::Run`) the daemon takes from now on,
+    /// in order, for an in-process watcher that must not miss one (MW5-18).
+    /// Dropping the receiver ends the watch.
+    pub fn watch_runs(&self) -> Rx<Event> {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut watchers) = self.run_watchers.lock() {
+            watchers.push(tx);
+        }
+        rx
+    }
+
     /// Stores one event and streams it. The daemon stamps `at` (case 35);
     /// a client's own time moves to `detail.harnessAt`. Returns the id kept.
     pub fn ingest(&self, mut event: Event) -> String {
@@ -777,6 +815,14 @@ impl Daemon {
             });
         }
         drop(ring);
+        // `derm run`'s own records to the in-process watchers (MW5-18). Only
+        // the daemon scope posts `run.start` (`op_event`), and a chat's
+        // `run.stop` is rate-limited with its other posts, so this stays small.
+        if event.source == Source::Run {
+            if let Ok(mut watchers) = self.run_watchers.lock() {
+                watchers.retain(|w| w.send(event.clone()).is_ok());
+            }
+        }
         // Install records (lane X's request 4, integration w5 continue): the
         // control-path flags and the lockfile diffs read every event, the
         // join's candidate sets included, before the join sees it, so a write
@@ -1355,6 +1401,10 @@ impl Daemon {
             "truncated": back.truncated || check.truncated,
             "dropped": check.dropped,
             "check": check,
+            // MW5-18: whether new chats still reach the collector, and how
+            // many tails the daemon dropped for falling behind.
+            "osRegistration": self.registration_state(),
+            "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
         })
     }
 

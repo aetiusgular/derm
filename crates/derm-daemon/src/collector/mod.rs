@@ -35,7 +35,10 @@ use derm_core::event::{Event, Source};
 use serde_json::Value;
 
 use crate::activity::ProcessKind;
-use crate::daemon::{Daemon, Outbox, Paths, Who};
+use crate::daemon::{Daemon, Paths};
+#[cfg(test)]
+use crate::daemon::{Outbox, Who};
+#[cfg(test)]
 use crate::protocol::Request;
 
 /// What one event asks of the collector.
@@ -82,25 +85,21 @@ pub fn pushed_event(line: &str) -> Option<Event> {
     serde_json::from_value(value.get("event")?.clone()).ok()
 }
 
-/// Subscribes to every event the daemon takes from now on, as the daemon
-/// scope, and calls `each` for every pushed event until the daemon drops
-/// the subscription. Runs on the caller's thread.
+/// Calls `each` for every `derm run` record (`run.start`, `run.stop`) the
+/// daemon takes from now on, on the caller's thread, for the daemon's life.
+///
+/// Mac test w5 retest 2, MW5-18: this was a `tail` of every event. The
+/// daemon drops a tail 4,096 lines behind, and this in-process one never
+/// counted a line as read (its outbox's pending counter was thrown away), so
+/// after 4,096 events of any kind the daemon dropped it, the loop ended, and
+/// no later chat was registered with the collector until a restart, while
+/// the report still said the collector answered. It now reads the daemon's
+/// run records only, through a channel no flood can fill or close.
 pub fn follow(daemon: &Arc<Daemon>, mut each: impl FnMut(Event)) {
-    let (out, rx, _) = Outbox::new(daemon.next_conn());
-    daemon.handle(
-        &Who::Daemon,
-        Request::Tail {
-            since: None,
-            chat: None,
-        },
-        &out,
-    );
-    for line in rx {
-        if let Some(event) = pushed_event(&line) {
-            each(event);
-        }
+    let runs = daemon.watch_runs();
+    for event in runs {
+        each(event);
     }
-    daemon.forget(out.conn);
 }
 
 /// The collector's install plan. For `derm Activity.app` (or the collector
@@ -351,6 +350,26 @@ pub fn start(daemon: &Arc<Daemon>, paths: &Paths) {
         let _ = std::thread::Builder::new()
             .name("derm-daemon-collector".into())
             .spawn(move || {
+                follower
+                    .counters
+                    .registration_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                follower
+                    .counters
+                    .registration_running
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let running = follower.clone();
+                // Shown as stopped if the loop ever ends, by a panic too.
+                struct Stopped(Arc<Daemon>);
+                impl Drop for Stopped {
+                    fn drop(&mut self) {
+                        self.0
+                            .counters
+                            .registration_running
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+                let _stopped = Stopped(running);
                 follow(&follower, |event| {
                     if let Some(r) = registration(&event) {
                         apply(r);
@@ -515,6 +534,142 @@ mod tests {
             Some(Registration::Follow { chat, .. }) => assert_eq!(chat, "chat-2"),
             other => panic!("no registration: {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Mac test w5 retest 2, MW5-18: the follower's in-process tail never
+    /// counted a line as taken (its outbox's pending counter was dropped),
+    /// so after 4,096 events in the daemon's life the daemon dropped it as a
+    /// slow reader, the thread ended, and no later chat was registered with
+    /// the collector until a restart. A flood of OS records must not stop it.
+    #[test]
+    fn the_follower_keeps_registering_after_a_flood_of_events() {
+        use crate::activity::store::ActivityLog;
+        use std::sync::mpsc;
+        let root =
+            std::env::temp_dir().join(format!("derm-collector-{}", uuid::Uuid::new_v4().simple()));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let daemon = Daemon::new(
+            "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            log,
+            &data,
+            false,
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let following = daemon.clone();
+        std::thread::spawn(move || {
+            follow(&following, |event| {
+                if let Some(r) = registration(&event) {
+                    let _ = tx.send(r);
+                }
+            })
+        });
+        let (out, replies, _) = Outbox::new(daemon.next_conn());
+        let post = |pid: u32, chat: &str| {
+            daemon.handle(
+                &Who::Daemon,
+                Request::Event {
+                    event: Event {
+                        id: format!("run.start-{pid}"),
+                        ..run_event("run.start", chat, Some(pid), Source::Run)
+                    },
+                },
+                &out,
+            );
+            let _ = replies.recv_timeout(std::time::Duration::from_secs(5));
+        };
+        // Wait until the follower hears one, so the flood comes after it
+        // subscribed.
+        let mut heard = false;
+        for n in 0..50 {
+            post(6000 + n, "chat-before");
+            if rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_ok()
+            {
+                heard = true;
+                break;
+            }
+        }
+        assert!(heard, "the follower never subscribed");
+        while rx.try_recv().is_ok() {}
+        // More OS records than a tail may hold back.
+        for n in 0..(crate::daemon::MAX_PENDING_LINES + 500) {
+            daemon.ingest(Event {
+                id: format!("es-flood-{n}"),
+                at: 0,
+                chat_id: "chat-before".into(),
+                harness: String::new(),
+                source: Source::Eslogger,
+                kind: "write".into(),
+                summary: String::new(),
+                detail: json!({"path": format!("/tmp/f{n}")}),
+                pid: Some(77),
+                approval_id: None,
+            });
+        }
+        post(9001, "chat-after");
+        let mut got = None;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < until {
+            match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(Registration::Follow { chat, .. }) if chat == "chat-after" => {
+                    got = Some(chat);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            got.as_deref(),
+            Some("chat-after"),
+            "the follower stopped after the flood"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_report_says_whether_registration_runs() {
+        use crate::activity::store::ActivityLog;
+        let root =
+            std::env::temp_dir().join(format!("derm-collector-{}", uuid::Uuid::new_v4().simple()));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let daemon = Daemon::new(
+            "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            log,
+            &data,
+            false,
+        )
+        .unwrap();
+        use std::sync::atomic::Ordering;
+        let r = daemon.report(None, 0, i64::MAX);
+        assert!(r["osRegistration"].is_null(), "{r}");
+        assert_eq!(r["tailsDropped"], 0);
+        daemon
+            .counters
+            .registration_started
+            .store(true, Ordering::SeqCst);
+        daemon
+            .counters
+            .registration_running
+            .store(true, Ordering::SeqCst);
+        assert_eq!(
+            daemon.report(None, 0, i64::MAX)["osRegistration"],
+            "running"
+        );
+        daemon
+            .counters
+            .registration_running
+            .store(false, Ordering::SeqCst);
+        assert_eq!(
+            daemon.report(None, 0, i64::MAX)["osRegistration"],
+            "stopped"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

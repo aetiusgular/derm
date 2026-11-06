@@ -148,6 +148,23 @@ pub fn render(r: &Value) -> String {
             .unwrap_or_default();
         out.push_str(&format!("os collector: {}{why}\n", clean(reach, 16)));
     }
+    // Mac test w5, MW5-18: the collector can answer while the daemon has
+    // stopped telling it about new chats; say so, never "yes" alone.
+    if r.get("osRegistration").and_then(Value::as_str) == Some("stopped") {
+        out.push_str(
+            "OS REGISTRATION STOPPED: chats started from now on are not followed by the OS feed until derm-daemon restarts\n",
+        );
+    }
+    if let Some(n) = r
+        .get("tailsDropped")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!(
+            "tails dropped for falling behind since the daemon started: {}\n",
+            count(n)
+        ));
+    }
     let flags = check
         .get("flags")
         .and_then(Value::as_array)
@@ -272,6 +289,26 @@ mod tests {
         assert!(t.contains("/etc/hosts (x2)"), "{t}");
         assert!(t.contains("os collector: no (not running)"), "{t}");
         assert!(t.contains("expected and hidden: 5"), "{t}");
+    }
+
+    #[test]
+    fn a_stopped_os_registration_and_dropped_tails_are_named() {
+        // Mac test w5 retest 2, MW5-18: the report said "os collector: yes"
+        // while no new chat reached the collector.
+        let mut r = sample();
+        r["osRegistration"] = json!("stopped");
+        r["tailsDropped"] = json!(2);
+        let t = render(&r);
+        assert!(t.contains("OS REGISTRATION STOPPED"), "{t}");
+        assert!(
+            t.contains("tails dropped for falling behind since the daemon started: 2"),
+            "{t}"
+        );
+        r["osRegistration"] = json!("running");
+        r["tailsDropped"] = json!(0);
+        let t = render(&r);
+        assert!(!t.contains("OS REGISTRATION"), "{t}");
+        assert!(!t.contains("tails dropped"), "{t}");
     }
 
     #[test]
