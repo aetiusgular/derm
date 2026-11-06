@@ -257,26 +257,17 @@ impl ControlFlags {
             let tool_use = chat.calls.get(call)?;
             chat.installs.get(tool_use).cloned()
         };
-        let candidates: Vec<&str> = e
-            .detail
-            .get("candidates")
-            .and_then(Value::as_array)
-            .map(|cs| cs.iter().filter_map(|c| str_at(c, "call")).collect())
-            .unwrap_or_default();
-        let chosen = str_at(&e.detail, "chosen").and_then(install_of);
-        let installs: Vec<String> = candidates.iter().filter_map(|c| install_of(c)).collect();
-        let Some(call) = chosen.or_else(|| installs.first().cloned()) else {
+        // Only a call the join chose (its tree, or the one call naming the
+        // path): a call merely running at the time, or one asked about and
+        // then refused (which the daemon never learns), is not credited
+        // (box test w5, BW5-13: 658 flags, mostly the harness's own writes).
+        let Some(call) = str_at(&e.detail, "chosen").and_then(install_of) else {
             return Vec::new();
         };
         let mut out = Vec::new();
         for (k, path) in paths.iter().enumerate() {
             let Some(marker) = control_path(path) else {
                 continue;
-            };
-            let one_of = if candidates.len() > 1 && str_at(&e.detail, "chosen").is_none() {
-                format!(" (one of {} calls running)", candidates.len())
-            } else {
-                String::new()
             };
             out.push(Event {
                 id: format!("install-control-{effect}-{k}"),
@@ -285,7 +276,7 @@ impl ControlFlags {
                 harness: e.harness.clone(),
                 source: Source::Derm,
                 kind: "install.control".into(),
-                summary: format!("install wrote {marker}{one_of}"),
+                summary: format!("install wrote {marker}"),
                 detail: json!({
                     "trust": "daemon",
                     "call": call,
@@ -399,8 +390,12 @@ mod tests {
         assert_eq!(r.pid, Some(5555));
     }
 
+    /// Box test w5, BW5-13: a control-path write the join could only place
+    /// by time window (the harness's own, or by a call asked about and then
+    /// refused) is credited to no install; this test said the opposite
+    /// before the fix pass.
     #[test]
-    fn a_window_candidate_install_is_flagged_and_says_it_is_one_of_several() {
+    fn a_window_candidate_install_is_not_flagged() {
         let mut f = ControlFlags::new();
         f.observe(&ev(
             "i1",
@@ -426,14 +421,14 @@ mod tests {
             Source::Auditd,
             json!({"path": "/p/tmp.x", "dest": "/p/.github/workflows/x.yml"}),
         ));
-        let out = f.observe(&ev("j1", "join.candidates", Source::Derm, json!({"effect": "w1", "candidates": [{"call": "g2"}, {"call": "tap-1"}], "chosen": null})));
+        let out = f.observe(&ev("j1", "join.candidates", Source::Derm, json!({"effect": "w1", "candidates": [{"call": "g2", "by": "window"}, {"call": "tap-1", "by": "window"}], "chosen": null})));
+        assert!(out.is_empty(), "{out:?}");
+        // The same write chosen by the install's tree is flagged.
+        let out = f.observe(&ev("j2", "join.candidates", Source::Derm, json!({"effect": "w1", "candidates": [{"call": "tap-1", "by": "tree"}], "chosen": "tap-1"})));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].detail["call"], "i1");
         assert_eq!(out[0].detail["path"], "/p/.github/workflows/x.yml");
-        assert_eq!(
-            out[0].summary,
-            "install wrote .github/workflows/ (one of 2 calls running)"
-        );
+        assert_eq!(out[0].summary, "install wrote .github/workflows/");
     }
 
     #[test]

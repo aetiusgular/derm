@@ -2137,11 +2137,29 @@ mod tests {
                     Source::Adapter,
                     "approval",
                     None,
-                    json!({"toolUseId": "toolu_I", "decision": "allow"})
+                    json!({"toolUseId": "toolu_I", "tool": "bash", "decision": "allow"})
                 )
             )
             .ok
         );
+        // The harness forks a shell for the Bash call; the shell runs npm,
+        // whose install script writes a git hook (the join's tree: box test
+        // w5, BW5-11 and BW5-13 credit only what the call started).
+        for (kind, pid, detail) in [
+            ("fork", 5151, json!({"ppid": 1, "child": 5190})),
+            ("exec", 5190, json!({"ppid": 5151, "exe": "/usr/bin/bash"})),
+            ("fork", 5190, json!({"ppid": 5151, "child": 5200})),
+        ] {
+            let mut d2 = detail;
+            d2["auditAt"] = json!(now_ms());
+            assert!(
+                d.op_event(
+                    &Who::Daemon,
+                    ev_of("chat-x", Source::Auditd, kind, Some(pid), d2)
+                )
+                .ok
+            );
+        }
         // The install script writes a git hook, a child of the harness.
         assert!(d
             .op_event(

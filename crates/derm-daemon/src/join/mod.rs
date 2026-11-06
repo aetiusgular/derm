@@ -82,6 +82,12 @@ impl Call {
         self.tool.contains('/')
     }
 
+    /// A shell tool (`derm_core::policy::SHELL_TOOLS`, by normalized name).
+    fn shell(&self) -> bool {
+        let t = self.tool.to_ascii_lowercase();
+        derm_core::policy::SHELL_TOOLS.contains(&t.as_str())
+    }
+
     fn window(&self) -> Option<(i64, i64)> {
         let s = self.start?;
         let e = self.end.unwrap_or(s + OPEN_CALL_MS);
@@ -180,6 +186,24 @@ fn effect_time(e: &Event) -> i64 {
         .unwrap_or(e.at)
 }
 
+/// A shell's own program, by file name: what a harness runs a shell tool's
+/// command in (and Codex's Linux sandbox helper, which execs the shell).
+fn shell_program(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        name,
+        "sh" | "bash"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "mksh"
+            | "ash"
+            | "fish"
+            | "pwsh"
+            | "codex-linux-sandbox"
+    )
+}
+
 impl Join {
     pub fn new() -> Self {
         Join::default()
@@ -253,10 +277,15 @@ impl Join {
                 };
                 let ran = e.kind == "tool.call";
                 let decision = str_at(&e.detail, "decision").unwrap_or("");
+                let tool = str_at(&e.detail, "tool").unwrap_or("").to_string();
                 let st = self.chat(&e.chat_id);
                 let c = st.call_mut(id);
                 if c.event.is_empty() {
                     c.event = e.id.clone();
+                }
+                // The tap's name wins; an untapped chat has only the gate's.
+                if c.tool.is_empty() {
+                    c.tool = tool;
                 }
                 if ran {
                     c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)));
@@ -298,15 +327,27 @@ impl Join {
             if let Some(child) = child {
                 let parent = if kind == "fork" { pid } else { ppid };
                 let inherited = parent.and_then(|p| st.owners.get(&p).cloned());
+                let program = str_at(&e.detail, "exe").or_else(|| str_at(&e.detail, "comm"));
                 let owner = match inherited {
                     Some(o) => Some(o),
                     None if parent.is_some() && parent == st.root_pid => {
+                        // A child of the harness while a call runs belongs to
+                        // that call only with certainty (case 43): a shell
+                        // started for a shell call. The harness also starts
+                        // its own helpers then, such as MCP servers, which
+                        // are no call's (box test w5, BW5-11). At the fork the
+                        // program is not known yet, so its exec decides.
                         let running = st.running(t);
-                        Some(match running.len() {
-                            0 => Owner::Session,
-                            1 => Owner::Call(running[0].0.clone()),
-                            _ => Owner::Ambiguous,
-                        })
+                        match (running.len(), kind) {
+                            (0, _) => Some(Owner::Session),
+                            (_, "fork") => None,
+                            (1, _)
+                                if running[0].1.shell() && program.is_some_and(shell_program) =>
+                            {
+                                Some(Owner::Call(running[0].0.clone()))
+                            }
+                            _ => Some(Owner::Ambiguous),
+                        }
                     }
                     None => None,
                 };

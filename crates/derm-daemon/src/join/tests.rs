@@ -75,7 +75,15 @@ fn a_process_a_call_starts_and_its_children_are_that_calls() {
     call(&mut j, "toolu_A", "bash", &[], 1_000, Some(5_000));
     // The harness forks a shell while only A runs; the shell forks again.
     assert!(effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 2001})).is_empty());
-    let r = effect(&mut j, "exec", 1_110, 2001, ROOT, json!({}));
+    // The program is known at the exec: a shell for a shell call (case 43).
+    let r = effect(
+        &mut j,
+        "exec",
+        1_110,
+        2001,
+        ROOT,
+        json!({"exe": "/usr/bin/bash"}),
+    );
     assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_A");
     effect(&mut j, "fork", 1_200, 2001, ROOT, json!({"child": 2002}));
     let r = effect(
@@ -272,4 +280,85 @@ fn records_follow_the_wave5_schema_shape_and_other_chats_never_mix() {
     );
     j.observe(&ev(Source::Run, "run.stop", 99_000, Some(ROOT), json!({})));
     assert!(effect(&mut j, "write", 2_000, ROOT, 1, json!({"path": "/w/x"})).is_empty());
+}
+
+/// Box test w5, BW5-11: Claude Code started its MCP servers (`uv`, `npm
+/// exec`) while one Bash call ran, and the join credited every write they
+/// made to that call "by tree". A harness child is the call's only when it is
+/// a shell started for a shell call; anything else is no call's for certain.
+#[test]
+fn a_helper_the_harness_starts_during_a_shell_call_is_not_that_calls() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_B", "bash", &[], 1_000, Some(60_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 3001}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        3001,
+        ROOT,
+        json!({"exe": "/home/u/.local/bin/uv"}),
+    );
+    let r = effect(
+        &mut j,
+        "write",
+        1_300,
+        3001,
+        ROOT,
+        json!({"path": "/home/u/.cache/uv/x"}),
+    );
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    assert!(
+        r[0].detail["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["by"] != "tree"),
+        "{}",
+        r[0].detail
+    );
+    // A shell for a non-shell call is not placed either.
+    call(&mut j, "toolu_C", "read", &[], 70_000, Some(71_000));
+    effect(&mut j, "fork", 70_100, ROOT, 1, json!({"child": 3002}));
+    effect(
+        &mut j,
+        "exec",
+        70_110,
+        3002,
+        ROOT,
+        json!({"exe": "/bin/sh"}),
+    );
+    let r = effect(&mut j, "write", 70_200, 3002, ROOT, json!({"path": "/w/y"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+}
+
+/// An untapped chat (Pi) names its call's tool only in the gate's record.
+#[test]
+fn an_untapped_shell_call_still_owns_its_shell() {
+    let mut j = Join::new();
+    start(&mut j);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_000,
+        None,
+        json!({"toolUseId": "toolu_P", "tool": "bash", "decision": "allow"}),
+    ));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 4001}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        4001,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    let r = effect(&mut j, "write", 1_200, 4001, ROOT, json!({"path": "/w/z"}));
+    assert_eq!(
+        r[0].detail["candidates"][0]["by"], "tree",
+        "{}",
+        r[0].detail
+    );
 }
