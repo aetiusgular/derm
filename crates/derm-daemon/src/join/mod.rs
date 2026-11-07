@@ -37,7 +37,12 @@
 //!    wrappers that execs the program `derm run` started (`harnessExe`,
 //!    MW5-16). Until that process is seen, a shell any process under the
 //!    wrappers starts is a candidate of the shell calls running, none chosen
-//!    (review FP3-S2).
+//!    (review FP3-S2). Where a launcher starts the harness as its child
+//!    (Codex 0.163.0's npm launcher), the child that execs the binary
+//!    `derm run` named (`harnessChildExe`) while no call runs places shells
+//!    too (MW5-28). A sandbox the harness runs a command in (`sandbox-exec`,
+//!    `bwrap`, or its own binary run again, Codex's Linux helper) is placed
+//!    by what it runs, as of when the harness started it (MW5-29).
 //! 2. **Path.** A write to a path exactly one running call names is that
 //!    call's; several calls naming it make a candidate set.
 //! 3. **MCP server.** A child the harness started while no call ran (a stdio
@@ -189,6 +194,16 @@ enum Owner {
     /// chat token's, so the call is a candidate and is not chosen (re-review
     /// of fix pass 6, FP6R-1, FP6R-2).
     Posted(String),
+    /// A sandbox wrapper the harness started at this time while a call ran
+    /// (`ChatState::sandbox_launcher`): what it runs is placed at its exec as
+    /// the harness's own child would have been then (Mac test w5 retest 6,
+    /// MW5-29). Its own effects fit by path and window, as `Ambiguous`.
+    Wrapped(i64),
+    /// The harness's own executable started again at this time while a call
+    /// ran (Codex's Linux sandbox helper): its own next exec is placed as a
+    /// wrapper's would be (`bwrap`, then the shell); its children, which
+    /// could be an MCP server's, inherit `Ambiguous`.
+    Pending(i64),
 }
 
 #[derive(Default)]
@@ -213,6 +228,17 @@ struct ChatState {
     /// does: an MCP server started with the session is a line process too,
     /// and a chat token can post a call for any shell it starts (FP3-S2).
     harness: Option<u32>,
+    /// The binary a launcher starts as the harness, as `derm run` resolved it
+    /// (`harnessChildExe`, MW5-28), until a child of the root or the harness
+    /// execs it while no call runs, or the root or the harness execs it
+    /// itself; then `None`.
+    harness_child: Option<String>,
+    /// That child: it places children as the root does.
+    launched: Option<u32>,
+    /// The harness's own executables (`harnessExe`, `harnessChildExe`): a
+    /// child that runs one again while a call runs is a command launcher
+    /// (MW5-29), whatever the boundary.
+    own_exes: Vec<String>,
     /// When the chat's `run.stop` arrived (daemon time); its state is kept
     /// `STOPPED_KEEP_MS` after it (MW5-17).
     stopped_at: Option<i64>,
@@ -375,6 +401,209 @@ impl ChatState {
             None => p.to_string(),
         }
     }
+
+    /// Forgets a pid's owner and its place in the line.
+    fn forget_pid(&mut self, pid: u32) {
+        self.owners.remove(&pid);
+        self.owned_at.remove(&pid);
+        self.owner_order.retain(|p| *p != pid);
+        self.line.remove(&pid);
+    }
+
+    /// Whether `child`, exec'ing `program` at `t`, is the program a launcher
+    /// starts as the harness (Mac test w5 retest 6, MW5-28): Codex 0.163.0's
+    /// npm launcher spawns its native binary as a child (`@openai/codex`
+    /// `bin/codex.js:241`), so the run's root (or, under a boundary, the
+    /// process that exec'd `harnessExe`) is node and the harness is its child.
+    /// Named, never learned (case 177): only the binary `derm run` resolved
+    /// (`harnessChildExe`), only once, only for a child of the root (with no
+    /// boundary) or of the harness found under the wrappers, and only when
+    /// that child started while no call ran. When the root or the harness
+    /// itself execs it (0.167.0's launcher replaces node, `bin/codex.js:236-243`),
+    /// the handoff is spent: the harness is already the one placing.
+    fn hand_off(&mut self, child: u32, parent: Option<u32>, program: Option<&str>, t: i64) -> bool {
+        if self.harness_child.is_none() || program != self.harness_child.as_deref() {
+            return false;
+        }
+        if [self.root_pid, self.harness, self.launched].contains(&Some(child)) {
+            self.harness_child = None;
+            return false;
+        }
+        let placer = parent.is_some_and(|p| {
+            (!self.line_on && Some(p) == self.root_pid) || Some(p) == self.harness
+        });
+        let started_idle = match self.owners.get(&child) {
+            Some(Owner::Session) => true,
+            None => self.running(t).is_empty() && self.code_owners(t).0.is_empty(),
+            _ => false,
+        };
+        if !(placer && started_idle) {
+            return false;
+        }
+        self.launched = Some(child);
+        self.harness_child = None;
+        self.forget_pid(child);
+        true
+    }
+
+    /// Places a process a fork or exec names (`child`, started or run by
+    /// `parent`), as the module's header says.
+    fn place_child(
+        &mut self,
+        kind: &str,
+        child: u32,
+        parent: Option<u32>,
+        program: Option<&str>,
+        t: i64,
+    ) {
+        // MW5-16: under a boundary the processes between the run's root and
+        // the harness place children as the root does. Until the harness is
+        // found, anything a line process starts while no call runs joins the
+        // line (a wrapper, the harness, or a helper started with the
+        // session). The harness is the line process that execs the program
+        // `derm run` started (`harnessExe`); from then on only the root and
+        // the harness place children, so an MCP server started with the
+        // session keeps its children the session's (BW5-11). Until then a
+        // line process's shell is a candidate of the shell calls running,
+        // never chosen: derm cannot tell the harness from a helper it started
+        // (review FP3-S2).
+        let line_place =
+            |st: &ChatState, p: u32| st.line_on && st.harness.is_none() && st.line.contains(&p);
+        if kind == "exec"
+            && Some(child) != self.root_pid
+            && line_place(self, child)
+            && self.harness_exe.is_some()
+            && program == self.harness_exe.as_deref()
+        {
+            self.harness = Some(child);
+            self.line.clear();
+        }
+        let held = self.owners.get(&child).cloned();
+        let by_root = parent.is_some_and(|p| {
+            Some(p) == self.root_pid || Some(p) == self.harness || Some(p) == self.launched
+        });
+        let by_line = !by_root && parent.is_some_and(|p| line_place(self, p));
+        // What a launched harness binary's own child inherits is no
+        // decision: only that process's next exec decides (`Pending`).
+        let inherited = if by_root || by_line {
+            None
+        } else {
+            parent
+                .and_then(|p| self.owners.get(&p).cloned())
+                .map(|o| match o {
+                    Owner::Pending(_) => Owner::Ambiguous,
+                    o => o,
+                })
+        };
+        // A process a harness's sandbox wrapper runs (MW5-29) is placed as
+        // the harness's own child, by when the harness started the wrapper:
+        // the wrapper itself when it execs again (`sandbox-exec` then `zsh`
+        // in one pid), and a wrapper's children at their exec (`bwrap`'s).
+        // The harness's own binary run again decides at its own next exec
+        // only (Codex's Linux helper then execs `bwrap`).
+        let wrapped = match (kind, &held, &inherited) {
+            ("exec", Some(Owner::Wrapped(t0) | Owner::Pending(t0)), _)
+            | ("exec", None, Some(Owner::Wrapped(t0))) => Some(*t0),
+            _ => None,
+        };
+        let places = by_root || by_line || wrapped.is_some();
+        let at = wrapped.unwrap_or(t);
+        // What may own a child placed now: the calls running, and, with no
+        // shell call among them, the code calls whose cell may run (FP5R-1,
+        // FP5R-2).
+        let (cells, cell_chosen) = if places {
+            self.code_owners(at)
+        } else {
+            (Vec::new(), None)
+        };
+        let idle = self.running(at).is_empty() && cells.is_empty();
+        if places
+            && wrapped.is_none()
+            && self.line_on
+            && self.harness.is_none()
+            && idle
+            && self.line.len() < MAX_PIDS
+        {
+            self.line.insert(child);
+        }
+        let owner = match inherited {
+            Some(o) if wrapped.is_none() => Some(o),
+            _ if places => {
+                // A child of the harness while a call runs belongs to that
+                // call only with certainty (case 43): a shell started for a
+                // shell call. The harness also starts its own helpers then,
+                // such as MCP servers, which are no call's (box test w5,
+                // BW5-11). At the fork the program is not known yet, so its
+                // exec decides; a sandbox wrapper the harness runs a command
+                // through defers it to what the wrapper runs (MW5-29). A shell
+                // while several shell calls run is theirs together, so one
+                // more call open (a parallel one, or an approval posted with
+                // no call after it) does not take its writes from every
+                // install (review F1). A shell call running is the shell's
+                // owner; with none, a code tool call is (its nested shell,
+                // MW5-27), running then or with its cell possibly still
+                // running after its result (FP5R-1, FP5R-2): a nested call
+                // the gate reports as a shell call is the more precise of the
+                // two.
+                let running = self.running(at);
+                let shells: Vec<String> = running
+                    .iter()
+                    .filter(|(_, c)| c.shell())
+                    .map(|(id, _)| id.to_string())
+                    .collect();
+                let shell = program.is_some_and(shell_program);
+                if idle {
+                    Some(Owner::Session)
+                } else if kind == "fork" {
+                    None
+                } else if !by_line && program.is_some_and(sandbox_wrapper) {
+                    Some(Owner::Wrapped(at))
+                } else if !by_line && program.is_some_and(|p| self.own_exes.iter().any(|x| x == p))
+                {
+                    Some(Owner::Pending(at))
+                } else if shell && !shells.is_empty() {
+                    if by_line {
+                        Some(Owner::Unplaced(shells.into()))
+                    } else if shells.len() == 1 {
+                        let posted = self
+                            .calls
+                            .get(&shells[0])
+                            .and_then(|c| c.posted_end)
+                            .is_some_and(|p| p < at);
+                        if posted {
+                            Some(Owner::Posted(shells[0].clone()))
+                        } else {
+                            Some(Owner::Call(shells[0].clone()))
+                        }
+                    } else {
+                        Some(Owner::Among(shells.into()))
+                    }
+                } else if shell && !cells.is_empty() {
+                    if by_line {
+                        Some(Owner::Unplaced(cells.into()))
+                    } else if let Some(id) = cell_chosen {
+                        Some(Owner::Call(id))
+                    } else {
+                        Some(Owner::Cells(cells.into()))
+                    }
+                } else if running.is_empty() {
+                    // A helper the harness starts while only a cell may run,
+                    // such as an MCP server: the session's.
+                    Some(Owner::Session)
+                } else {
+                    Some(Owner::Ambiguous)
+                }
+            }
+            _ => None,
+        };
+        if let Some(o) = owner {
+            // An exec keeps the owner its fork or first exec set, but for a
+            // wrapper's, which its next exec decides.
+            if !(kind == "exec" && held.is_some() && wrapped.is_none()) {
+                self.own(child, o, t);
+            }
+        }
+    }
 }
 
 /// The join's state over every chat.
@@ -423,6 +652,18 @@ fn wrapper_program(path: &str) -> bool {
             | "socat"
             | "apply-seccomp"
     )
+}
+
+/// A sandbox the harness runs a command in before the command itself (Mac
+/// test w5 retest 6, MW5-29), by file name: Codex's `/usr/bin/sandbox-exec`
+/// (`sandboxing/src/seatbelt.rs:62` at 0.163.0) and `bwrap`, system or
+/// bundled (`linux-sandbox/src/launcher.rs:222-244`). Codex's Linux helper
+/// runs before `bwrap` as Codex's own binary, through the
+/// `codex-linux-sandbox` link (`arg0/src/lib.rs:360-410`): the harness's own
+/// executable (`ChatState::own_exes`, `Owner::Pending`).
+fn sandbox_wrapper(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(name, "sandbox-exec" | "bwrap")
 }
 
 fn shell_program(path: &str) -> bool {
@@ -487,6 +728,24 @@ impl Join {
                 let st = self.chat(&e.chat_id);
                 st.cwd = str_at(&e.detail, "cwd").map(str::to_string);
                 st.root_pid = e.pid;
+                // A shell or a wrapper program names no harness: srt's own
+                // `bash -c` and its wrappers exec those before the harness
+                // (second re-review S1).
+                let exe_ok = |p: &&str| {
+                    p.starts_with('/')
+                        && p.len() <= 4096
+                        && !shell_program(p)
+                        && !wrapper_program(p)
+                };
+                st.harness_child = str_at(&e.detail, "harnessChildExe")
+                    .filter(exe_ok)
+                    .map(str::to_string);
+                st.own_exes = [str_at(&e.detail, "harnessExe"), st.harness_child.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .filter(exe_ok)
+                    .map(str::to_string)
+                    .collect();
                 let boundary = str_at(&e.detail, "boundary");
                 st.line_on = boundary.is_some_and(|b| b != "none")
                     || e.detail.get("agentUser").is_some_and(|v| !v.is_null());
@@ -694,121 +953,12 @@ impl Join {
                 }
                 let parent = if kind == "fork" { pid } else { ppid };
                 let program = str_at(&e.detail, "exe").or_else(|| str_at(&e.detail, "comm"));
-                // MW5-16: under a boundary the processes between the run's
-                // root and the harness place children as the root does.
-                // Until the harness is found, anything a line process starts
-                // while no call runs joins the line (a wrapper, the harness,
-                // or a helper started with the session). The harness is the
-                // line process that execs the program `derm run` started
-                // (`harnessExe`); from then on only the root and the harness
-                // place children, so an MCP server started with the session
-                // keeps its children the session's (BW5-11). Until then a
-                // line process's shell is a candidate of the shell calls
-                // running, never chosen: derm cannot tell the harness from a
-                // helper it started (review FP3-S2).
-                let line_place = |st: &ChatState, p: u32| {
-                    st.line_on && st.harness.is_none() && st.line.contains(&p)
-                };
-                if kind == "exec"
-                    && Some(child) != st.root_pid
-                    && line_place(st, child)
-                    && st.harness_exe.is_some()
-                    && program == st.harness_exe.as_deref()
-                {
-                    st.harness = Some(child);
-                    st.line.clear();
-                }
-                let by_root =
-                    parent.is_some_and(|p| Some(p) == st.root_pid || Some(p) == st.harness);
-                let by_line = !by_root && parent.is_some_and(|p| line_place(st, p));
-                let places = by_root || by_line;
-                // What may own a child placed now: the calls running, and,
-                // with no shell call among them, the code calls whose cell
-                // may run (FP5R-1, FP5R-2).
-                let (cells, cell_chosen) = if places {
-                    st.code_owners(t)
+                if kind == "exec" && st.hand_off(child, parent, program, t) {
+                    // The launcher's child that execs the binary `derm run`
+                    // named is the harness: no owner, and it places children
+                    // as the root does (MW5-28).
                 } else {
-                    (Vec::new(), None)
-                };
-                let idle = st.running(t).is_empty() && cells.is_empty();
-                if places && st.line_on && st.harness.is_none() && idle && st.line.len() < MAX_PIDS
-                {
-                    st.line.insert(child);
-                }
-                let inherited = if places {
-                    None
-                } else {
-                    parent.and_then(|p| st.owners.get(&p).cloned())
-                };
-                let owner = match inherited {
-                    Some(o) => Some(o),
-                    None if places => {
-                        // A child of the harness while a call runs belongs to
-                        // that call only with certainty (case 43): a shell
-                        // started for a shell call. The harness also starts
-                        // its own helpers then, such as MCP servers, which
-                        // are no call's (box test w5, BW5-11). At the fork the
-                        // program is not known yet, so its exec decides.
-                        // A shell while several shell calls run is theirs
-                        // together, so one more call open (a parallel one,
-                        // or an approval posted with no call after it) does
-                        // not take its writes from every install (review F1).
-                        // A shell call running is the shell's owner; with
-                        // none, a code tool call is (its nested shell,
-                        // MW5-27), running then or with its cell possibly
-                        // still running after its result (FP5R-1, FP5R-2): a
-                        // nested call the gate reports as a shell call is the
-                        // more precise of the two.
-                        let running = st.running(t);
-                        let shells: Vec<String> = running
-                            .iter()
-                            .filter(|(_, c)| c.shell())
-                            .map(|(id, _)| id.to_string())
-                            .collect();
-                        let shell = program.is_some_and(shell_program);
-                        if idle {
-                            Some(Owner::Session)
-                        } else if kind == "fork" {
-                            None
-                        } else if shell && !shells.is_empty() {
-                            if by_line {
-                                Some(Owner::Unplaced(shells.into()))
-                            } else if shells.len() == 1 {
-                                let posted = st
-                                    .calls
-                                    .get(&shells[0])
-                                    .and_then(|c| c.posted_end)
-                                    .is_some_and(|p| p < t);
-                                if posted {
-                                    Some(Owner::Posted(shells[0].clone()))
-                                } else {
-                                    Some(Owner::Call(shells[0].clone()))
-                                }
-                            } else {
-                                Some(Owner::Among(shells.into()))
-                            }
-                        } else if shell && !cells.is_empty() {
-                            if by_line {
-                                Some(Owner::Unplaced(cells.into()))
-                            } else if let Some(id) = cell_chosen {
-                                Some(Owner::Call(id))
-                            } else {
-                                Some(Owner::Cells(cells.into()))
-                            }
-                        } else if running.is_empty() {
-                            // A helper the harness starts while only a cell
-                            // may run, such as an MCP server: the session's.
-                            Some(Owner::Session)
-                        } else {
-                            Some(Owner::Ambiguous)
-                        }
-                    }
-                    None => None,
-                };
-                if let Some(o) = owner {
-                    if !(kind == "exec" && st.owners.contains_key(&child)) {
-                        st.own(child, o, t);
-                    }
+                    st.place_child(kind, child, parent, program, t);
                 }
             }
             if kind == "fork" {

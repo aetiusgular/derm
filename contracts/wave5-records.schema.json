@@ -284,6 +284,11 @@
           "type": ["string", "null"],
           "maxLength": 4096
         },
+        "harnessChildExe": {
+          "description": "The binary a launcher script starts as the harness, by its real path, or null: Codex's npm launcher's native binary, found as the launcher finds it. The daemon's join takes the launcher's child that execs it while no call runs as the harness too, and a child that runs it again as a command's sandbox helper (Mac test w5 retest 6, MW5-28, MW5-29). Integration w5's fix pass 7.",
+          "type": ["string", "null"],
+          "maxLength": 4096
+        },
         "sbxKit": {
           "description": "Under sbx: whether derm's kit (its gate in the VM) went on the create, and why not. Lane T's request P4-R3, integration w5's close.",
           "type": "object",

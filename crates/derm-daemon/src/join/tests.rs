@@ -2011,3 +2011,438 @@ fn fp6r2_1_an_early_tool_call_during_codexs_own_prompt_does_not_drop_the_shell()
     let r = shell_writes(&mut j, 9_000, 7971, "/w/x1");
     assert_eq!(r.len(), 1, "the call's own shell has no record: {r:?}");
 }
+
+// Fix pass 7: the Mac test w5's retest 6 (MW5-28, MW5-29).
+
+/// Codex 0.163.0's npm launcher (`@openai/codex@0.163.0` `bin/codex.js:241`).
+const CODEX_NODE: &str = "/opt/homebrew/Cellar/node@22/22.22.3/bin/node";
+const CODEX_NATIVE: &str = "/opt/homebrew/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex";
+
+/// `run.start` for `derm run codex` from npm: `harnessExe` is the launcher's
+/// interpreter, `harnessChildExe` the native binary the launcher starts.
+fn start_codex(j: &mut Join, boundary: &str, child: Option<&str>) {
+    let mut e = ev(
+        Source::Run,
+        "run.start",
+        0,
+        Some(ROOT),
+        json!({"cwd": "/w", "boundary": boundary, "harnessExe": CODEX_NODE, "harnessChildExe": child}),
+    );
+    e.harness = "codex".into();
+    j.observe(&e);
+}
+
+/// Mac test w5 retest 6, MW5-28: Codex 0.163.0's npm launcher (node, the
+/// run's root under `--boundary none`) spawns the native binary as a child
+/// before any call, so the join gave that child, and every shell it starts,
+/// to the session: a tapped Codex chat got no join record at all. `derm run`
+/// names the native binary (`harnessChildExe`), and the launcher's child that
+/// execs it while no call runs is the harness too.
+#[test]
+fn mw5_28_a_launchers_child_that_execs_the_named_binary_is_the_harness() {
+    let mut j = Join::new();
+    start_codex(&mut j, "none", Some(CODEX_NATIVE));
+    effect(&mut j, "exec", 10, ROOT, 1, json!({"exe": "/usr/bin/env"}));
+    effect(&mut j, "exec", 11, ROOT, 1, json!({"exe": CODEX_NODE}));
+    effect(&mut j, "fork", 20, ROOT, 1, json!({"child": 2000}));
+    effect(&mut j, "exec", 21, 2000, ROOT, json!({"exe": CODEX_NATIVE}));
+    tap_only(&mut j, "codex", "call_L1", "exec", 1_000, 30_000);
+    effect(&mut j, "fork", 1_100, 2000, ROOT, json!({"child": 2001}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        2001,
+        2000,
+        json!({"exe": "/bin/zsh"}),
+    );
+    effect(&mut j, "fork", 1_110, 2001, 2000, json!({"child": 2002}));
+    effect(
+        &mut j,
+        "exec",
+        1_115,
+        2002,
+        2001,
+        json!({"exe": "/bin/sleep"}),
+    );
+    let r = effect(&mut j, "write", 1_120, 2002, 2001, json!({"path": "/w/a"}));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_L1",
+        "{}",
+        r[0].detail
+    );
+    assert_eq!(
+        r[0].detail["candidates"][0]["by"], "tree",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// MW5-28 under srt (inferred by the retest, not run there): the harness
+/// found under the wrappers is the launcher's node, and its child that execs
+/// the native binary places the shells.
+#[test]
+fn mw5_28_under_a_boundary_the_launchers_child_is_the_harness_too() {
+    let mut j = Join::new();
+    start_codex(&mut j, "srt", Some(CODEX_NATIVE));
+    effect(&mut j, "exec", 5, ROOT, 1, json!({"exe": CODEX_NODE}));
+    effect(&mut j, "fork", 10, ROOT, 1, json!({"child": 1100}));
+    effect(
+        &mut j,
+        "exec",
+        11,
+        1100,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(&mut j, "exec", 12, 1100, ROOT, json!({"exe": CODEX_NODE}));
+    effect(&mut j, "fork", 20, 1100, ROOT, json!({"child": 1200}));
+    effect(&mut j, "exec", 21, 1200, 1100, json!({"exe": CODEX_NATIVE}));
+    tap_only(&mut j, "codex", "call_L2", "exec", 1_000, 30_000);
+    effect(&mut j, "fork", 1_100, 1200, 1100, json!({"child": 1201}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        1201,
+        1200,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let r = effect(&mut j, "write", 1_120, 1201, 1200, json!({"path": "/w/b"}));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_L2",
+        "{}",
+        r[0].detail
+    );
+    assert!(r[0].detail.get("harnessFound").is_none(), "{}", r[0].detail);
+}
+
+/// Codex 0.167.0's launcher replaces node with the native binary
+/// (`bin/codex.js:236-243`, `process.execve`): the root is the harness, as
+/// before. The handoff is spent there, so a later child the harness starts
+/// while no call runs that execs the same binary stays the session's and its
+/// shells are no call's.
+#[test]
+fn mw5_28_a_second_native_binary_is_not_the_harness() {
+    let mut j = Join::new();
+    start_codex(&mut j, "none", Some(CODEX_NATIVE));
+    effect(&mut j, "exec", 10, ROOT, 1, json!({"exe": "/usr/bin/env"}));
+    effect(&mut j, "exec", 11, ROOT, 1, json!({"exe": CODEX_NODE}));
+    effect(&mut j, "exec", 12, ROOT, 1, json!({"exe": CODEX_NATIVE}));
+    effect(&mut j, "fork", 20, ROOT, 1, json!({"child": 2100}));
+    effect(&mut j, "exec", 21, 2100, ROOT, json!({"exe": CODEX_NATIVE}));
+    tap_only(&mut j, "codex", "call_L3", "exec", 1_000, 30_000);
+    // The root's own shell is the call's, as it was.
+    let r = shell_writes(&mut j, 1_100, 2200, "/w/c");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_L3",
+        "{}",
+        r[0].detail
+    );
+    // The second native binary's shell is not.
+    effect(&mut j, "fork", 1_300, 2100, ROOT, json!({"child": 2101}));
+    effect(
+        &mut j,
+        "exec",
+        1_305,
+        2101,
+        2100,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let r = effect(&mut j, "write", 1_310, 2101, 2100, json!({"path": "/w/d"}));
+    assert!(r.is_empty(), "{r:?}");
+}
+
+/// The handoff needs a child started while no call ran: a shell a call
+/// started that execs the native binary (`codex exec` run by the agent) is
+/// that call's, not a second harness.
+#[test]
+fn mw5_28_a_calls_own_child_never_becomes_the_harness() {
+    let mut j = Join::new();
+    start_codex(&mut j, "none", Some(CODEX_NATIVE));
+    effect(&mut j, "exec", 11, ROOT, 1, json!({"exe": CODEX_NODE}));
+    call(&mut j, "toolu_L4", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 2300}));
+    effect(&mut j, "exec", 1_105, 2300, ROOT, json!({"exe": "/bin/sh"}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        2300,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    call(&mut j, "toolu_L5", "bash", &[], 6_000, Some(9_000));
+    // The agent's codex starts a shell during a later call: by inheritance it
+    // stays L4's, never placed as the harness's for L5.
+    effect(&mut j, "fork", 6_100, 2300, ROOT, json!({"child": 2301}));
+    effect(
+        &mut j,
+        "exec",
+        6_105,
+        2301,
+        2300,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let r = effect(&mut j, "write", 6_110, 2301, 2300, json!({"path": "/w/e"}));
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_L4",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// Mac test w5 retest 6, MW5-29: Codex runs each command as
+/// `/usr/bin/sandbox-exec -p <profile> -- zsh -c ...` (its
+/// `MACOS_PATH_TO_SEATBELT_EXECUTABLE`, `sandboxing/src/seatbelt.rs:62` at
+/// 0.163.0), then `zsh` and the program in the same pid. The join decided
+/// the child's owner at its first exec, `sandbox-exec`, no shell, so the
+/// command was no call's. A sandbox wrapper the harness starts defers the
+/// decision to the program it runs.
+#[test]
+fn mw5_29_a_command_in_the_harnesss_sandbox_is_its_calls() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    tap_only(&mut j, "codex", "call_S1", "exec", 1_000, 30_000);
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 3000}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        3000,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_102,
+        3000,
+        ROOT,
+        json!({"exe": "/bin/zsh"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_103,
+        3000,
+        ROOT,
+        json!({"exe": "/bin/sleep"}),
+    );
+    let r = effect(&mut j, "write", 1_110, 3000, ROOT, json!({"path": "/w/f"}));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_S1",
+        "{}",
+        r[0].detail
+    );
+    assert_eq!(
+        r[0].detail["candidates"][0]["by"], "tree",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// MW5-29 on Linux, read in Codex 0.163.0, not run: the harness runs its own
+/// binary through the `codex-linux-sandbox` alias (`arg0/src/lib.rs:360-410`,
+/// a link to itself, so the OS feed names Codex's own binary), which execs
+/// `bwrap` (`linux-sandbox/src/launcher.rs:222-244`), whose child runs the
+/// helper again and then the shell.
+#[test]
+fn mw5_29_through_the_harnesss_own_helper_and_bwrap_on_linux() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    call(&mut j, "toolu_S2", "exec_command", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 4000}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        4000,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_102,
+        4000,
+        ROOT,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 1_103, 4000, ROOT, json!({"child": 4001}));
+    effect(
+        &mut j,
+        "exec",
+        1_104,
+        4001,
+        4000,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        4001,
+        4000,
+        json!({"exe": "/bin/bash"}),
+    );
+    effect(&mut j, "fork", 1_106, 4001, 4000, json!({"child": 4002}));
+    effect(
+        &mut j,
+        "exec",
+        1_107,
+        4002,
+        4001,
+        json!({"exe": "/usr/bin/npm"}),
+    );
+    let r = effect(&mut j, "write", 1_110, 4002, 4001, json!({"path": "/w/g"}));
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_S2",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// What a sandbox wrapper defers to keeps the shell rule's limits: two shell
+/// calls running share it, none chosen; a program that is no shell is no
+/// call's choice; a wrapper started while no call runs is the session's; and
+/// the harness's own binary that execs nothing more (Claude Code's ripgrep)
+/// is never chosen for a shell call running beside it.
+#[test]
+fn mw5_29_a_wrapper_keeps_the_shell_rules_limits() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some("/opt/claude/claude"));
+    // Idle: the session's.
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 5000}));
+    effect(
+        &mut j,
+        "exec",
+        101,
+        5000,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(&mut j, "exec", 102, 5000, ROOT, json!({"exe": "/bin/zsh"}));
+    call(&mut j, "toolu_W1", "bash", &[], 1_000, Some(9_000));
+    let r = effect(&mut j, "write", 1_050, 5000, ROOT, json!({"path": "/w/h"}));
+    assert!(r.is_empty(), "{r:?}");
+    // The harness's own binary, then nothing: not chosen.
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 5100}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        5100,
+        ROOT,
+        json!({"exe": "/opt/claude/claude"}),
+    );
+    let r = effect(&mut j, "write", 1_110, 5100, ROOT, json!({"path": "/w/i"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    // A wrapper that runs a program that is no shell: not chosen.
+    effect(&mut j, "fork", 1_200, ROOT, 1, json!({"child": 5200}));
+    effect(
+        &mut j,
+        "exec",
+        1_201,
+        5200,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_202,
+        5200,
+        ROOT,
+        json!({"exe": "/usr/bin/python3"}),
+    );
+    let r = effect(&mut j, "write", 1_210, 5200, ROOT, json!({"path": "/w/j"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    // Two shell calls: both candidates, none chosen.
+    call(&mut j, "toolu_W2", "bash", &[], 1_300, Some(9_000));
+    effect(&mut j, "fork", 1_400, ROOT, 1, json!({"child": 5300}));
+    effect(
+        &mut j,
+        "exec",
+        1_401,
+        5300,
+        ROOT,
+        json!({"exe": "/usr/bin/sandbox-exec"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_402,
+        5300,
+        ROOT,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let r = effect(&mut j, "write", 1_410, 5300, ROOT, json!({"path": "/w/k"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    let c = r[0].detail["candidates"].as_array().unwrap();
+    assert_eq!(c.len(), 2, "{}", r[0].detail);
+    assert!(c.iter().all(|x| x["by"] == "tree"), "{}", r[0].detail);
+}
+
+/// A wrapper decides at the time the harness started it: the call that ran
+/// then, even when the shell's exec arrives after the call's window.
+#[test]
+fn mw5_29_a_wrapper_is_decided_by_when_the_harness_started_it() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    call(&mut j, "toolu_W3", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_500, ROOT, 1, json!({"child": 5400}));
+    effect(
+        &mut j,
+        "exec",
+        1_501,
+        5400,
+        ROOT,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 1_502, 5400, ROOT, json!({"child": 5401}));
+    effect(&mut j, "exec", 8_000, 5401, 5400, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 8_010, 5401, 5400, json!({"path": "/w/l"}));
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_W3",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// The harness's own executable run again counts only for the process's own
+/// next exec: an npm harness's `harnessExe` is node, so an MCP server it
+/// starts as node during a shell call, which then starts a shell, never gives
+/// that shell to the call (BW5-11's class).
+#[test]
+fn mw5_29_a_helper_run_as_the_harnesss_own_program_does_not_pass_a_call_to_its_children() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NODE));
+    call(&mut j, "toolu_P1", "bash", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6000}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        6000,
+        ROOT,
+        json!({"exe": CODEX_NODE}),
+    );
+    effect(&mut j, "fork", 1_200, 6000, ROOT, json!({"child": 6001}));
+    effect(&mut j, "exec", 1_201, 6001, 6000, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_210, 6001, 6000, json!({"path": "/w/m"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    assert!(
+        r[0].detail["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["by"] != "tree"),
+        "{}",
+        r[0].detail
+    );
+}

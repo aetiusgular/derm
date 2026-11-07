@@ -472,6 +472,75 @@ fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
     Some(real.to_string_lossy().into_owned())
 }
 
+/// Codex's target triple and platform package name for this machine, as its
+/// npm launcher maps Node's `process.platform` and `process.arch`
+/// (`@openai/codex` `bin/codex.js:16-68` at 0.163.0 and 0.167.0). Read from
+/// derm's own build, which matches Node's on the machines derm ships for
+/// (an x64 Node under Rosetta on an arm64 Mac would not: not handled).
+fn codex_platform() -> Option<(&'static str, &'static str)> {
+    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux" | "android", "x86_64") => ("x86_64-unknown-linux-musl", "codex-linux-x64"),
+        ("linux" | "android", "aarch64") => ("aarch64-unknown-linux-musl", "codex-linux-arm64"),
+        ("macos", "x86_64") => ("x86_64-apple-darwin", "codex-darwin-x64"),
+        ("macos", "aarch64") => ("aarch64-apple-darwin", "codex-darwin-arm64"),
+        ("windows", "x86_64") => ("x86_64-pc-windows-msvc", "codex-win32-x64"),
+        ("windows", "aarch64") => ("aarch64-pc-windows-msvc", "codex-win32-arm64"),
+        _ => return None,
+    })
+}
+
+/// The binary a launcher script starts as the harness, by its real path
+/// (Mac test w5 retest 6, MW5-28; `harnessChildExe` in `run.start`). Known
+/// for one launcher: Codex's npm package, whose `bin/codex.js` spawns its
+/// native binary as a child at 0.163.0 (`bin/codex.js:241`) and replaces
+/// itself with it where Node has `process.execve` at 0.167.0
+/// (`bin/codex.js:236-243`). Found as the launcher finds it
+/// (`findCodexExecutable`, `bin/codex.js:79-110`): `require.resolve` of the
+/// platform package from the script's folder (Node's `node_modules` walk up
+/// the real path, skipping a folder itself named `node_modules`), else the
+/// package's own `vendor` folder. None for any other program, and when that
+/// binary is not there (the launcher then starts nothing). `NODE_PATH` and
+/// Node's global folders are not read.
+fn harness_child_exe(program: &str, path: Option<&str>) -> Option<String> {
+    let found = if program.contains('/') {
+        std::path::PathBuf::from(program)
+    } else {
+        crate::watch::status::find_on_path(program, path?)?
+    };
+    let script = std::fs::canonicalize(found).ok()?;
+    if script.file_name()? != "codex.js" {
+        return None;
+    }
+    let bin = script.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let root = bin.parent()?;
+    // The package's own manifest names it, read whole up to 1 MiB.
+    let file = std::fs::File::open(root.join("package.json")).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, 1 << 20), &mut text).ok()?;
+    let manifest = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    if manifest.get("name").and_then(serde_json::Value::as_str) != Some("@openai/codex") {
+        return None;
+    }
+    let (triple, plat) = codex_platform()?;
+    let vendor = bin
+        .ancestors()
+        .filter(|d| d.file_name().is_none_or(|n| n != "node_modules"))
+        .map(|d| d.join("node_modules").join("@openai").join(plat))
+        .find(|p| p.join("package.json").is_file())
+        .unwrap_or_else(|| root.to_path_buf())
+        .join("vendor");
+    let exe =
+        vendor
+            .join(triple)
+            .join("bin")
+            .join(if cfg!(windows) { "codex.exe" } else { "codex" });
+    let real = std::fs::canonicalize(exe).ok()?;
+    real.is_file().then(|| real.to_string_lossy().into_owned())
+}
+
 /// `range` (words in `before`) as it sits in `after`, where words were
 /// put in right after `before`'s first `--` (`srt_loopback_through_proxy`);
 /// a range after that point moves by as many words (FP4-S8).
@@ -1253,6 +1322,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             a.program.as_deref().unwrap_or(a.harness.command),
             std::env::var("PATH").ok().as_deref(),
         ),
+        // The binary a launcher starts as the harness (Codex's npm package),
+        // so the join finds the harness under the launcher (MW5-28).
+        "harnessChildExe": harness_child_exe(
+            a.program.as_deref().unwrap_or(a.harness.command),
+            std::env::var("PATH").ok().as_deref(),
+        ),
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
@@ -1738,6 +1813,78 @@ mod end_to_end {
             harness_exe(&direct.to_string_lossy(), Some(&path)),
             Some(want_node)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Mac test w5 retest 6, MW5-28: Codex's npm launcher starts its native
+    /// binary as a child (0.163.0) or in its own place (0.167.0); `derm run`
+    /// names that binary as the launcher finds it (`bin/codex.js:79-110` at
+    /// 0.163.0 and 0.167.0): the platform package by Node's resolution from
+    /// the script's folder up, nested or hoisted, else the package's own
+    /// `vendor` folder.
+    #[cfg(unix)]
+    #[test]
+    fn mw5_28_the_native_binary_codexs_npm_launcher_starts_is_named() {
+        use std::os::unix::fs::PermissionsExt;
+        let (triple, plat) = codex_platform().expect("a platform Codex ships for");
+        let dir = std::env::temp_dir().join(format!("derm-cxlaunch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let pkg = dir.join("lib/node_modules/@openai/codex");
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let node = dir.join("bin/node");
+        std::fs::write(&node, [0x7f, b'E', b'L', b'F']).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = pkg.join("bin/codex.js");
+        std::fs::write(&script, "#!/usr/bin/env node\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name": "@openai/codex", "version": "0.163.0", "bin": {"codex": "bin/codex.js"}}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "../lib/node_modules/@openai/codex/bin/codex.js",
+            dir.join("bin/codex"),
+        )
+        .unwrap();
+        let path = dir.join("bin").to_string_lossy().into_owned();
+        let native_in = |vendor: &std::path::Path| {
+            let exe = vendor.join(triple).join("bin").join("codex");
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(&exe, [0x7f, b'E', b'L', b'F']).unwrap();
+            std::fs::canonicalize(&exe)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        // No native binary anywhere: nothing named.
+        assert_eq!(harness_child_exe("codex", Some(&path)), None);
+        // The package's own vendor folder (the launcher's fallback).
+        let own = native_in(&pkg.join("vendor"));
+        assert_eq!(harness_child_exe("codex", Some(&path)), Some(own.clone()));
+        // Hoisted beside it: Node's resolution finds it first from `bin`'s
+        // ancestors, so it wins over the fallback.
+        let hoisted = dir.join("lib/node_modules/@openai").join(plat);
+        std::fs::create_dir_all(&hoisted).unwrap();
+        std::fs::write(hoisted.join("package.json"), "{}").unwrap();
+        let hoisted_exe = native_in(&hoisted.join("vendor"));
+        assert_eq!(harness_child_exe("codex", Some(&path)), Some(hoisted_exe));
+        // Nested in the package (npm's global layout): nearer, so it wins.
+        let nested = pkg.join("node_modules/@openai").join(plat);
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("package.json"), "{}").unwrap();
+        // The platform package found but its binary missing: the launcher
+        // throws and starts nothing, so nothing is named.
+        assert_eq!(harness_child_exe("codex", Some(&path)), None);
+        let nested_exe = native_in(&nested.join("vendor"));
+        assert_eq!(harness_child_exe("codex", Some(&path)), Some(nested_exe));
+        // Another package's `bin/codex.js` is not Codex's launcher.
+        std::fs::write(pkg.join("package.json"), r#"{"name": "codex-lookalike"}"#).unwrap();
+        assert_eq!(harness_child_exe("codex", Some(&path)), None);
+        // A native install (no script) names no child: the harness is it.
+        std::fs::write(pkg.join("package.json"), r#"{"name": "@openai/codex"}"#).unwrap();
+        assert_eq!(harness_child_exe(&own, Some(&path)), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
