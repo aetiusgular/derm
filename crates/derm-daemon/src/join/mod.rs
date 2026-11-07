@@ -102,8 +102,19 @@ struct Call {
     code: bool,
     /// The tap's result ended the call (`end` is the tap's).
     tap_ended: bool,
-    /// A gate's allow (or other decision that lets the call run) was seen.
+    /// A gate's `allow` was seen.
     allowed: bool,
+    /// The tap recorded the call, so its result will end it.
+    tapped: bool,
+    /// A record says the call's gate records cannot be taken at their word:
+    /// a gate decision `ask` (the harness's own prompt, whose answer no derm
+    /// record carries) or a conflict copy naming the call (re-review of fix
+    /// pass 6, FP6R-1, FP6R-2).
+    contested: bool,
+    /// For a contested tapped call, the earliest end a gate record posted:
+    /// the call stays open until the tap's result, and a shell started after
+    /// this is a candidate of the call, never chosen (`Owner::Posted`).
+    posted_end: Option<i64>,
     /// A code call's cell (Codex's cell id, from `wait`'s arguments or its
     /// result's header), when the tap read one.
     cell: Option<String>,
@@ -168,6 +179,11 @@ enum Owner {
     /// derm cannot tell the harness from a helper it started there, so each
     /// call is a candidate and none is chosen (review FP3-S2, re-review R1).
     Unplaced(std::sync::Arc<[String]>),
+    /// A shell started while this contested shell call ran, after a gate
+    /// record said it ended and before the tap's result: the end may be a
+    /// chat token's, so the call is a candidate and is not chosen (re-review
+    /// of fix pass 6, FP6R-1, FP6R-2).
+    Posted(String),
 }
 
 #[derive(Default)]
@@ -523,6 +539,12 @@ impl Join {
                 // The tap sees the call first: no record moves its start
                 // later (FP5R-3).
                 c.start = Some(c.start.map_or(e.at, |s| s.min(e.at)));
+                c.tapped = true;
+                if c.contested && !c.code && !c.tap_ended {
+                    if let Some(x) = c.end.take() {
+                        c.posted_end = Some(c.posted_end.map_or(x, |p| p.min(x)));
+                    }
+                }
                 if c.code {
                     // A code call's times are the tap's alone (FP5R-4): an
                     // end an adapter record set before the tap's is dropped.
@@ -580,7 +602,25 @@ impl Join {
                 // start later, and a deny ends a call no earlier than its
                 // start (FP5R-3). An early end drops only new harness
                 // children; a call's own tree keeps its writes (S3).
-                if ran {
+                // A gate `ask` (the harness's own prompt: the person's yes
+                // reaches no derm record) or a conflict copy naming the call
+                // makes the call contested: a tapped one is then ended by the
+                // tap's result alone, and an end a gate record posts only
+                // stops it being chosen for later shells (FP6R-1, FP6R-2).
+                if decision == "ask" || e.detail.get("conflictsWith").is_some() {
+                    c.contested = true;
+                    if c.tapped && !c.tap_ended {
+                        if let Some(x) = c.end.take() {
+                            c.posted_end = Some(c.posted_end.map_or(x, |p| p.min(x)));
+                        }
+                    }
+                }
+                let soft = c.contested && c.tapped && !c.tap_ended;
+                if soft && (ran || decision == "deny") {
+                    let s = c.start.map_or(e.at, |s| s.min(e.at));
+                    c.start = Some(s);
+                    c.posted_end = Some(c.posted_end.map_or(e.at, |p| p.min(e.at)).max(s));
+                } else if ran {
                     c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)));
                 } else if decision == "deny" {
                     // A denied call runs nothing: it ends at the deny.
@@ -601,7 +641,9 @@ impl Join {
                     if !c.allowed && !c.tap_ended && c.end.is_some_and(|x| x < e.at) {
                         c.end = None;
                     }
-                    c.allowed = true;
+                    if decision == "allow" {
+                        c.allowed = true;
+                    }
                 }
                 Vec::new()
             }
@@ -720,7 +762,16 @@ impl Join {
                             if by_line {
                                 Some(Owner::Unplaced(shells.into()))
                             } else if shells.len() == 1 {
-                                Some(Owner::Call(shells[0].clone()))
+                                let posted = st
+                                    .calls
+                                    .get(&shells[0])
+                                    .and_then(|c| c.posted_end)
+                                    .is_some_and(|p| p < t);
+                                if posted {
+                                    Some(Owner::Posted(shells[0].clone()))
+                                } else {
+                                    Some(Owner::Call(shells[0].clone()))
+                                }
                             } else {
                                 Some(Owner::Among(shells.into()))
                             }
@@ -768,6 +819,7 @@ impl Join {
                 | Some(Owner::Among(_))
                 | Some(Owner::Unplaced(_))
                 | Some(Owner::Cells(_))
+                | Some(Owner::Posted(_))
         );
         if running.is_empty() && !tree_owned {
             return Vec::new();
@@ -795,6 +847,15 @@ impl Join {
                     c.event.clone(),
                     "tree",
                     "a shell started while this call and others ran".into(),
+                ));
+            }
+        }
+        if let Some(Owner::Posted(id)) = &owner {
+            if let Some(c) = st.calls.get(id) {
+                candidates.push((
+                    c.event.clone(),
+                    "tree",
+                    "a shell started while this call ran, after a gate record said it ended (that record may be a chat token's)".into(),
                 ));
             }
         }

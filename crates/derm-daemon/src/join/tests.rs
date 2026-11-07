@@ -1831,3 +1831,134 @@ fn fp6r_a_deny_before_the_allow_does_not_end_an_untapped_call() {
     let r = shell_writes(&mut j, 6_100, 7931, "/w/u2");
     assert_eq!(r.len(), 1, "{r:?}");
 }
+
+// ---- Re-review of d0c8a07: probes. ----
+
+fn tap_open(j: &mut Join, id: &str, tool: &str, t: i64) {
+    let mut e = ev(
+        Source::Tap,
+        "tap.call",
+        t,
+        None,
+        json!({"callId": id, "toolNormalized": tool, "paths": [], "resultSha256": null}),
+    );
+    e.id = format!("tap-{CHAT}-{id}");
+    j.observe(&e);
+}
+
+/// FP6R-1 probe. The gate's honest decision is `ask` (no approver answered,
+/// so the harness asks the person in its own prompt, `derm-claude-plugin`
+/// `hook.ts:76-99`): no later derm record says when the person allowed it.
+/// A chat token's `tool.call` posted while the person reads the prompt is
+/// not flagged (a gate decision is in the ring) and nothing re-opens the
+/// call, so the shell that starts on the person's yes has no record.
+#[test]
+fn fp6r_1_an_early_tool_call_during_a_native_ask_does_not_drop_the_shell() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_open(&mut j, "toolu_R1", "bash", 1_000);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_010,
+        None,
+        json!({"toolUseId": "toolu_R1", "decision": "ask", "tool": "bash"}),
+    ));
+    j.observe(&ev(
+        Source::Adapter,
+        "tool.call",
+        1_100,
+        None,
+        json!({"toolUseId": "toolu_R1"}),
+    ));
+    let r = shell_writes(&mut j, 8_000, 7951, "/w/r1");
+    assert_eq!(r.len(), 1, "the call's own shell has no record: {r:?}");
+}
+
+/// FP6R-2 probe. The agent posts a decision of its own first (any decision
+/// other than `deny` or `deferred` counts as the first allow), then a
+/// `tool.call`; the gate's real allow arrives as a conflict copy, which the
+/// join still reads but which no longer re-opens the call. The daemon flags
+/// the gate's copy (`gate.conflict`), yet the shell has no join record.
+#[test]
+fn fp6r_2_an_agent_decision_first_disarms_the_re_open() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_open(&mut j, "toolu_R2", "bash", 1_000);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_050,
+        None,
+        json!({"toolUseId": "toolu_R2", "decision": "allow", "tool": "bash"}),
+    ));
+    j.observe(&ev(
+        Source::Adapter,
+        "tool.call",
+        1_100,
+        None,
+        json!({"toolUseId": "toolu_R2"}),
+    ));
+    // The gate's real allow, after the person answered (a conflict copy).
+    let mut real = ev(
+        Source::Adapter,
+        "approval",
+        6_000,
+        None,
+        json!({"toolUseId": "toolu_R2", "decision": "allow", "tool": "bash", "conflictsWith": "x"}),
+    );
+    real.id = "claude-code-toolu_R2-decision-conflict-1".into();
+    j.observe(&real);
+    let r = shell_writes(&mut j, 6_100, 7961, "/w/r2");
+    assert_eq!(r.len(), 1, "the call's own shell has no record: {r:?}");
+}
+
+/// FP6R-1, the honest flow: after a gate `ask` the person answers in the
+/// harness's own prompt; the call's own shell, started before the gate's
+/// real `tool.call`, is chosen for it, and a shell the harness starts after
+/// that end and before the tap's result (a post-tool hook) lists the call
+/// and is not chosen; after the tap's result it is the session's.
+#[test]
+fn fp6r_after_a_native_ask_the_calls_own_shell_is_chosen_and_a_later_one_is_not() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_open(&mut j, "toolu_H", "bash", 1_000);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_010,
+        None,
+        json!({"toolUseId": "toolu_H", "decision": "ask", "tool": "bash"}),
+    ));
+    let own = shell_writes(&mut j, 5_000, 7971, "/w/own");
+    assert_eq!(
+        own[0].detail["chosen"], "tap-chat-j-toolu_H",
+        "{}",
+        own[0].detail
+    );
+    j.observe(&ev(
+        Source::Adapter,
+        "tool.call",
+        6_000,
+        None,
+        json!({"toolUseId": "toolu_H"}),
+    ));
+    let after = shell_writes(&mut j, 6_500, 7981, "/w/hook");
+    assert_eq!(after.len(), 1, "{after:?}");
+    assert!(after[0].detail["chosen"].is_null(), "{}", after[0].detail);
+    assert_eq!(
+        after[0].detail["candidates"][0]["call"],
+        "tap-chat-j-toolu_H"
+    );
+    let mut result = ev(
+        Source::Tap,
+        "tap.call",
+        7_000,
+        None,
+        json!({"callId": "toolu_H", "toolNormalized": "bash", "paths": [], "resultSha256": "ab"}),
+    );
+    result.id = format!("tap-{CHAT}-toolu_H");
+    j.observe(&result);
+    let later = shell_writes(&mut j, 20_000, 7991, "/w/later");
+    assert!(later.is_empty(), "{later:?}");
+}

@@ -755,6 +755,12 @@ pub struct Daemon {
     /// Serializes ingest's ring and broadcast with a tail's backlog, so a
     /// tail neither misses nor repeats an event.
     order: Mutex<VecDeque<Event>>,
+    /// The call ids each chat's gate decisions named, kept apart from the
+    /// ring (which every chat and the OS feeds share), so a decision that
+    /// left the ring still counts for `early_tool_call` (re-review of fix
+    /// pass 6, FP6R-3). Bounded: `DECIDED_PER_CHAT` ids a chat, oldest out,
+    /// and `DECIDED_CHATS` chats, the oldest chat out.
+    decided: Mutex<Decided>,
     tails: Mutex<Vec<TailSub>>,
     approvers: Mutex<Vec<Outbox>>,
     /// Waiting approvals by (chat, request id): two chats may wait on the
@@ -799,6 +805,49 @@ pub struct Daemon {
     /// and no later chat reached the collector until a restart.
     run_watchers: Mutex<Vec<Sender<Event>>>,
     pub counters: Counters,
+}
+
+/// How many call ids `Decided` keeps per chat, and how many chats.
+const DECIDED_PER_CHAT: usize = 4_096;
+const DECIDED_CHATS: usize = 64;
+
+/// The call ids each chat's gate decisions named (FP6R-3).
+#[derive(Default)]
+struct Decided {
+    chats: HashMap<String, (HashSet<String>, VecDeque<String>)>,
+    order: VecDeque<String>,
+}
+
+impl Decided {
+    fn note(&mut self, chat: &str, call: &str) {
+        // An id past the hook's own 128 bytes names no call (W5R-10).
+        if call.len() > 128 {
+            return;
+        }
+        if !self.chats.contains_key(chat) {
+            self.order.push_back(chat.to_string());
+            while self.order.len() > DECIDED_CHATS {
+                if let Some(old) = self.order.pop_front() {
+                    self.chats.remove(&old);
+                }
+            }
+        }
+        let (set, ids) = self.chats.entry(chat.to_string()).or_default();
+        if set.insert(call.to_string()) {
+            ids.push_back(call.to_string());
+            while ids.len() > DECIDED_PER_CHAT {
+                if let Some(old) = ids.pop_front() {
+                    set.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn has(&self, chat: &str, call: &str) -> bool {
+        self.chats
+            .get(chat)
+            .is_some_and(|(set, _)| set.contains(call))
+    }
 }
 
 /// The chat a tap route belongs to: the running chat whose token hashes to
@@ -982,6 +1031,7 @@ impl Daemon {
             data_dir: data_dir.to_string_lossy().into_owned(),
             receiver,
             order: Mutex::new(VecDeque::new()),
+            decided: Mutex::new(Decided::default()),
             tails: Mutex::new(Vec::new()),
             approvers: Mutex::new(Vec::new()),
             pending: Mutex::new(HashMap::new()),
@@ -1267,6 +1317,14 @@ impl Daemon {
         let Ok(mut ring) = self.order.lock() else {
             return event.id;
         };
+        if store::is_gate_decision(&event) {
+            if let (Some(call), Ok(mut decided)) = (
+                event.detail.get("toolUseId").and_then(Value::as_str),
+                self.decided.lock(),
+            ) {
+                decided.note(&event.chat_id, call);
+            }
+        }
         ring.push_back(event.clone());
         while ring.len() > RING_CAPACITY {
             ring.pop_front();
@@ -1765,18 +1823,16 @@ impl Daemon {
             .detail
             .get("toolUseId")
             .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())?;
-        let ring = self.order.lock().ok()?;
-        let names = |old: &&Event| {
-            old.chat_id == event.chat_id
-                && old.detail.get("toolUseId").and_then(Value::as_str) == Some(call)
-        };
-        if ring
-            .iter()
-            .any(|old| store::is_gate_decision(old) && names(&old))
+            .filter(|s| !s.is_empty() && s.len() <= 128)?;
+        if self
+            .decided
+            .lock()
+            .ok()
+            .is_none_or(|d| d.has(&event.chat_id, call))
         {
             return None;
         }
+        let ring = self.order.lock().ok()?;
         ring.iter()
             .rev()
             .find(|old| {
@@ -3157,6 +3213,76 @@ mod tests {
         let flags: Vec<&Event> = ring.iter().filter(|e| e.kind == "gate.conflict").collect();
         assert_eq!(flags.len(), 1, "{ring:?}");
         assert_eq!(flags[0].detail["id"], "tap-chat-s-toolu_S2");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FP6R-3 probe. The tap writes a call's first `tap.call` only when the
+    /// whole response has streamed (`derm-tap/src/tap.rs:553-594`), so a
+    /// gate's decision can reach the ring before it; a long call then pushes
+    /// the decision out of the ring (`RING_CAPACITY`, shared by every chat and
+    /// the OS feeds) while the later `tap.call` stays, and the gate's own
+    /// honest `tool.call` is flagged as an early one.
+    #[test]
+    fn fp6r_3_an_honest_tool_call_after_its_decision_left_the_ring_is_not_flagged() {
+        let (d, root) = daemon();
+        let who = Who::Chat {
+            chat: "chat-h".into(),
+            harness: "claude-code".into(),
+        };
+        let mut allow = ev_of(
+            "chat-h",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_H1", "decision": "allow", "tool": "bash"}),
+        );
+        allow.id = "claude-code-toolu_H1-decision-0123456789abcdef0123456789abcdef".into();
+        assert!(d.op_event(&who, allow).ok);
+        let mut call = ev_of(
+            "chat-h",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_H1", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        call.id = "tap-chat-h-toolu_H1".into();
+        d.ingest(call);
+        // The call's own OS events (an install), from the daemon scope.
+        for i in 0..RING_CAPACITY {
+            let mut e = ev_of(
+                "chat-h",
+                Source::Auditd,
+                "write",
+                Some(9),
+                json!({"path": format!("/w/n/{i}")}),
+            );
+            e.id = format!("auditd-fill-{i}");
+            d.ingest(e);
+        }
+        // Keep the tap's record in the ring, as a parallel call's would be.
+        let mut again = ev_of(
+            "chat-h",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_H1", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        again.id = "tap-chat-h-toolu_H1".into();
+        d.ingest(again);
+        let mut done = ev_of(
+            "chat-h",
+            Source::Adapter,
+            "tool.call",
+            None,
+            json!({"toolUseId": "toolu_H1"}),
+        );
+        done.id = "claude-code-toolu_H1".into();
+        let r = d.op_event(&who, done);
+        assert!(
+            r.id.as_deref().is_some_and(|i| !i.contains("-conflict-")),
+            "an honest tool.call was flagged: {:?}",
+            r.id
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
