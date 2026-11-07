@@ -2245,66 +2245,126 @@ fn mw5_29_a_command_in_the_harnesss_sandbox_is_its_calls() {
     );
 }
 
-/// MW5-29 on Linux, read in Codex 0.163.0, not run: the harness runs its own
-/// binary through the `codex-linux-sandbox` alias (`arg0/src/lib.rs:360-410`,
-/// a link to itself, so the OS feed names Codex's own binary), which execs
-/// `bwrap` (`linux-sandbox/src/launcher.rs:222-244`), whose child runs the
-/// helper again and then the shell.
+/// MW5-29 on Linux, read in Codex 0.163.0 and bubblewrap, not run (review
+/// FP7-S4 corrected the sequence): the harness runs its own binary through
+/// the `codex-linux-sandbox` alias (`arg0/src/lib.rs:360-410`, a link to
+/// itself, so the OS feed names Codex's own binary). With protected-create
+/// targets, which a workspace missing `.git`, `.agents`, `.codex` or `.aws`
+/// has (`protocol/src/permissions.rs:46-50`, `linux-sandbox/src/bwrap.rs:831-853`),
+/// that outer stage forks `bwrap` (`linux_run_main.rs:576-610`). `bwrap
+/// --unshare-pid` clones its pid 1, which forks the command
+/// (`bubblewrap.c:3057-3061`, `3479-3490`): Codex's binary again, the inner
+/// stage, which forks the shell (`linux_run_main.rs:247-256`).
 #[test]
 fn mw5_29_through_the_harnesss_own_helper_and_bwrap_on_linux() {
     let mut j = Join::new();
     start_under(&mut j, "none", Some(CODEX_NATIVE));
     call(&mut j, "toolu_S2", "exec_command", &[], 1_000, Some(9_000));
-    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 4000}));
-    effect(
-        &mut j,
-        "exec",
-        1_101,
-        4000,
-        ROOT,
-        json!({"exe": CODEX_NATIVE}),
-    );
-    effect(
-        &mut j,
-        "exec",
-        1_102,
-        4000,
-        ROOT,
-        json!({"exe": "/usr/bin/bwrap"}),
-    );
-    effect(&mut j, "fork", 1_103, 4000, ROOT, json!({"child": 4001}));
-    effect(
-        &mut j,
-        "exec",
-        1_104,
-        4001,
-        4000,
-        json!({"exe": CODEX_NATIVE}),
-    );
-    effect(
-        &mut j,
-        "exec",
-        1_105,
-        4001,
-        4000,
-        json!({"exe": "/bin/bash"}),
-    );
-    effect(&mut j, "fork", 1_106, 4001, 4000, json!({"child": 4002}));
-    effect(
-        &mut j,
-        "exec",
-        1_107,
-        4002,
-        4001,
-        json!({"exe": "/usr/bin/npm"}),
-    );
-    let r = effect(&mut j, "write", 1_110, 4002, 4001, json!({"path": "/w/g"}));
+    let steps: &[(&str, u32, u32, serde_json::Value)] = &[
+        ("fork", ROOT, 1, json!({"child": 4000})),
+        ("exec", 4000, ROOT, json!({"exe": CODEX_NATIVE})),
+        ("fork", 4000, ROOT, json!({"child": 4001})),
+        ("exec", 4001, 4000, json!({"exe": "/usr/bin/bwrap"})),
+        ("fork", 4001, 4000, json!({"child": 4002})),
+        ("fork", 4002, 4001, json!({"child": 4003})),
+        ("exec", 4003, 4002, json!({"exe": CODEX_NATIVE})),
+        ("fork", 4003, 4002, json!({"child": 4004})),
+        ("exec", 4004, 4003, json!({"exe": "/bin/bash"})),
+        ("fork", 4004, 4003, json!({"child": 4005})),
+        ("exec", 4005, 4004, json!({"exe": "/usr/bin/npm"})),
+    ];
+    for (i, (kind, pid, ppid, d)) in steps.iter().enumerate() {
+        effect(&mut j, kind, 1_100 + i as i64, *pid, *ppid, d.clone());
+    }
+    let r = effect(&mut j, "write", 1_150, 4005, 4004, json!({"path": "/w/g"}));
     assert_eq!(r.len(), 1, "{r:?}");
     assert_eq!(
         r[0].detail["chosen"], "tap-chat-j-toolu_S2",
         "{}",
         r[0].detail
     );
+}
+
+/// The narrowing that FP7-S4's fix keeps: a child the harness's own binary
+/// forks while a call runs is placed only through a sandbox wrapper. One that
+/// runs a shell itself, or an MCP server the npm harness starts as node (an
+/// interpreter, never the harness's own binary) that runs `bwrap` and a
+/// shell, is not chosen.
+#[test]
+fn fp7_s4_only_a_sandbox_wrapper_passes_a_call_through_the_harnesss_own_binary() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    call(&mut j, "toolu_X1", "exec_command", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 4100}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        4100,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(&mut j, "fork", 1_102, 4100, ROOT, json!({"child": 4101}));
+    effect(&mut j, "exec", 1_103, 4101, 4100, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_110, 4101, 4100, json!({"path": "/w/x"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+
+    let mut j = Join::new();
+    start_codex(&mut j, "none", None);
+    call(&mut j, "toolu_X2", "bash", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 4200}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        4200,
+        ROOT,
+        json!({"exe": CODEX_NODE}),
+    );
+    effect(&mut j, "fork", 1_102, 4200, ROOT, json!({"child": 4201}));
+    effect(
+        &mut j,
+        "exec",
+        1_103,
+        4201,
+        4200,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 1_104, 4201, 4200, json!({"child": 4202}));
+    effect(&mut j, "exec", 1_105, 4202, 4201, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_110, 4202, 4201, json!({"path": "/w/y"}));
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+}
+
+/// FP7-S1 for a wrapper: a process forked under a harness's sandbox wrapper
+/// that execs more than `WRAP_MS` after the harness started the wrapper is
+/// no launch, so the call that ran then is not chosen.
+#[test]
+fn fp7_s1_a_wrappers_late_descendant_is_not_chosen_for_an_old_call() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    call(&mut j, "toolu_Q3", "bash", &[], 1_000, Some(3_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 7100}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        7100,
+        ROOT,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 1_102, 7100, ROOT, json!({"child": 7101}));
+    effect(&mut j, "fork", 30_000, 7101, 7100, json!({"child": 7102}));
+    effect(
+        &mut j,
+        "exec",
+        30_001,
+        7102,
+        7101,
+        json!({"exe": "/bin/sh"}),
+    );
+    let r = effect(&mut j, "write", 30_010, 7102, 7101, json!({"path": "/w/z"}));
+    assert!(r.iter().all(|e| e.detail["chosen"].is_null()), "{r:?}");
 }
 
 /// What a sandbox wrapper defers to keeps the shell rule's limits: two shell
@@ -2405,8 +2465,10 @@ fn mw5_29_a_wrapper_is_decided_by_when_the_harness_started_it() {
         json!({"exe": "/usr/bin/bwrap"}),
     );
     effect(&mut j, "fork", 1_502, 5400, ROOT, json!({"child": 5401}));
-    effect(&mut j, "exec", 8_000, 5401, 5400, json!({"exe": "/bin/sh"}));
-    let r = effect(&mut j, "write", 8_010, 5401, 5400, json!({"path": "/w/l"}));
+    // After the call's window (2_000 + `SLACK_AFTER_MS`), within `WRAP_MS`
+    // of the wrapper's start (review FP7-S1).
+    effect(&mut j, "exec", 6_000, 5401, 5400, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 6_010, 5401, 5400, json!({"path": "/w/l"}));
     assert_eq!(
         r[0].detail["chosen"], "tap-chat-j-toolu_W3",
         "{}",
@@ -2442,6 +2504,193 @@ fn mw5_29_a_helper_run_as_the_harnesss_own_program_does_not_pass_a_call_to_its_c
             .unwrap()
             .iter()
             .all(|c| c["by"] != "tree"),
+        "{}",
+        r[0].detail
+    );
+}
+
+// Review of fix pass 7 (FP7-S*): probes. Each fails on 5112623.
+
+/// FP7-S1: a helper the harness starts as its own executable while a shell
+/// call runs (`Owner::Pending`) is re-decided at its next exec with no time
+/// bound, as of the call that ran at its start: an exec into a shell long
+/// after that call ended makes the call chosen (case 43: a helper is never
+/// a call's with certainty).
+#[test]
+fn fp7_s1_a_pending_helpers_late_exec_is_not_chosen_for_an_old_call() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NODE));
+    call(&mut j, "toolu_Q1", "bash", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 7000}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        7000,
+        ROOT,
+        json!({"exe": CODEX_NODE}),
+    );
+    // A minute later, no call running: the same pid execs a shell.
+    effect(
+        &mut j,
+        "exec",
+        60_000,
+        7000,
+        ROOT,
+        json!({"exe": "/bin/sh"}),
+    );
+    call(&mut j, "toolu_Q2", "read", &[], 60_005, Some(70_000));
+    let r = effect(&mut j, "write", 60_010, 7000, ROOT, json!({"path": "/w/q"}));
+    assert!(
+        r.iter()
+            .all(|e| e.detail["chosen"] != json!("tap-chat-j-toolu_Q1")),
+        "{r:?}"
+    );
+}
+
+/// FP7-S2: `launched` is a pid kept for the chat; a fork that names it again
+/// (the pid reused) clears its owner but not its role, so a process of a
+/// call's tree that gets that pid places its children by time: a shell it
+/// starts during a later call is chosen for that call, not its own.
+#[test]
+fn fp7_s2_a_reused_launched_pid_does_not_place_children() {
+    let mut j = Join::new();
+    start_codex(&mut j, "none", Some(CODEX_NATIVE));
+    effect(&mut j, "exec", 11, ROOT, 1, json!({"exe": CODEX_NODE}));
+    effect(&mut j, "fork", 20, ROOT, 1, json!({"child": 2000}));
+    effect(&mut j, "exec", 21, 2000, ROOT, json!({"exe": CODEX_NATIVE}));
+    call(&mut j, "toolu_R1", "bash", &[], 1_000, Some(5_000));
+    effect(&mut j, "fork", 1_100, 2000, ROOT, json!({"child": 2001}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        2001,
+        2000,
+        json!({"exe": "/bin/zsh"}),
+    );
+    // The call's shell starts a process that the OS gives pid 2000 again.
+    effect(&mut j, "fork", 3_000, 2001, 2000, json!({"child": 2000}));
+    effect(
+        &mut j,
+        "exec",
+        3_005,
+        2000,
+        2001,
+        json!({"exe": "/usr/bin/python3"}),
+    );
+    call(&mut j, "toolu_R2", "bash", &[], 20_000, Some(29_000));
+    effect(&mut j, "fork", 20_100, 2000, 2001, json!({"child": 2005}));
+    effect(
+        &mut j,
+        "exec",
+        20_105,
+        2005,
+        2000,
+        json!({"exe": "/bin/zsh"}),
+    );
+    let r = effect(&mut j, "write", 20_110, 2005, 2000, json!({"path": "/w/r"}));
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_R1",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// FP7-S3: the feed can deliver a child's exec before its fork (T1). When
+/// the launcher's child's exec comes first, the handoff forgets nothing yet,
+/// and the late fork then gives the harness itself `Session`: its own write
+/// during a call that is no MCP call gets no record, where in feed order it
+/// gets one.
+#[test]
+fn fp7_s3_a_late_fork_record_does_not_make_the_launched_harness_the_sessions() {
+    let mut j = Join::new();
+    start_codex(&mut j, "none", Some(CODEX_NATIVE));
+    effect(&mut j, "exec", 11, ROOT, 1, json!({"exe": CODEX_NODE}));
+    effect(&mut j, "exec", 21, 2000, ROOT, json!({"exe": CODEX_NATIVE}));
+    effect(&mut j, "fork", 20, ROOT, 1, json!({"child": 2000}));
+    call(&mut j, "toolu_T1", "read", &[], 1_000, Some(5_000));
+    let r = effect(&mut j, "write", 1_500, 2000, ROOT, json!({"path": "/w/t"}));
+    assert_eq!(r.len(), 1, "{r:?}");
+}
+
+/// FP7-S4 (Codex 0.163.0 `linux-sandbox/src/linux_run_main.rs:247-256`):
+/// the inner stage (`--apply-seccomp-then-exec`) forks and its child execs
+/// the command; it does not exec the shell in its own pid as
+/// `mw5_29_through_the_harnesss_own_helper_and_bwrap_on_linux` models. The
+/// fork's child inherits `Ambiguous` from `Pending`, so the shell is never
+/// chosen on Linux.
+#[test]
+fn fp7_s4_codexs_linux_inner_stage_forks_the_command() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    call(&mut j, "toolu_U1", "exec_command", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 4000}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        4000,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_102,
+        4000,
+        ROOT,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 1_103, 4000, ROOT, json!({"child": 4001}));
+    effect(
+        &mut j,
+        "exec",
+        1_104,
+        4001,
+        4000,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(&mut j, "fork", 1_105, 4001, 4000, json!({"child": 4002}));
+    effect(
+        &mut j,
+        "exec",
+        1_106,
+        4002,
+        4001,
+        json!({"exe": "/bin/bash"}),
+    );
+    let r = effect(&mut j, "write", 1_110, 4002, 4001, json!({"path": "/w/u"}));
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_U1",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// FP7-S5: T1's feed order (a child's exec before its fork). A wrapper's
+/// child whose shell exec arrives first is placed on the call, then the late
+/// fork overwrites that with the parent's `Wrapped`, which no later exec
+/// re-decides: the call's shell is not chosen.
+#[test]
+fn fp7_s5_a_wrapped_childs_late_fork_keeps_the_exec_placement() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    call(&mut j, "toolu_V1", "bash", &[], 1_000, Some(9_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 5400}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        5400,
+        ROOT,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "exec", 1_110, 5401, 5400, json!({"exe": "/bin/sh"}));
+    effect(&mut j, "fork", 1_105, 5400, ROOT, json!({"child": 5401}));
+    let r = effect(&mut j, "write", 1_200, 5401, 5400, json!({"path": "/w/v"}));
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_V1",
         "{}",
         r[0].detail
     );

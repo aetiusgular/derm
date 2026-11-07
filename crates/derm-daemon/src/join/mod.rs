@@ -43,6 +43,10 @@
 //!    too (MW5-28). A sandbox the harness runs a command in (`sandbox-exec`,
 //!    `bwrap`, or its own binary run again, Codex's Linux helper) is placed
 //!    by what it runs, as of when the harness started it (MW5-29).
+//!    Only for `WRAP_MS` after that start, and the harness's own binary only
+//!    when it is no interpreter (fix pass 7's review, FP7-S1, FP7-S4). A fork
+//!    that names the launched harness's or the harness's pid later than it
+//!    was learned ends that role (FP7-S2).
 //! 2. **Path.** A write to a path exactly one running call names is that
 //!    call's; several calls naming it make a candidate set.
 //! 3. **MCP server.** A child the harness started while no call ran (a stdio
@@ -199,12 +203,24 @@ enum Owner {
     /// the harness's own child would have been then (Mac test w5 retest 6,
     /// MW5-29). Its own effects fit by path and window, as `Ambiguous`.
     Wrapped(i64),
-    /// The harness's own executable started again at this time while a call
-    /// ran (Codex's Linux sandbox helper): its own next exec is placed as a
-    /// wrapper's would be (`bwrap`, then the shell); its children, which
-    /// could be an MCP server's, inherit `Ambiguous`.
+    /// The harness's own executable (never an interpreter) started again at
+    /// this time while a call ran (Codex's Linux sandbox helper): its own next
+    /// exec is placed as a wrapper's would be (`bwrap`, then the shell); its
+    /// children are `Spawned`.
     Pending(i64),
+    /// A child a `Pending` process forked (Codex's outer stage forks `bwrap`
+    /// when the sandbox has protected-create targets, review FP7-S4): only a
+    /// sandbox wrapper at its exec is placed, as of that time; anything else
+    /// is `Ambiguous`.
+    Spawned(i64),
 }
+
+/// How long after the harness starts a sandbox wrapper (or its own binary)
+/// the processes under it are still placed as of that time (review FP7-S1):
+/// the launch is a chain of execs in milliseconds (`sandbox-exec` then the
+/// shell; Codex's helper, `bwrap`, its pid 1's fork, the helper again, the
+/// shell's fork). An exec later than this under one is no launch: `Ambiguous`.
+pub const WRAP_MS: i64 = 5_000;
 
 #[derive(Default)]
 struct ChatState {
@@ -235,6 +251,11 @@ struct ChatState {
     harness_child: Option<String>,
     /// That child: it places children as the root does.
     launched: Option<u32>,
+    /// The OS time `launched` and `harness` were learned at: a later fork
+    /// that names either pid is a new process, and the role goes (review
+    /// FP7-S2); an earlier one is its own fork, delivered late (T1).
+    launched_at: i64,
+    harness_at: i64,
     /// The harness's own executables (`harnessExe`, `harnessChildExe`): a
     /// child that runs one again while a call runs is a command launcher
     /// (MW5-29), whatever the boundary.
@@ -402,6 +423,19 @@ impl ChatState {
         }
     }
 
+    /// A fork at `at` that names `pid` starts a new process: if the launched
+    /// harness or the harness found under the wrappers had that pid before
+    /// `at`, it has exited and its role goes with it (review FP7-S2: a process
+    /// of a call's tree that got the pid again placed children by time).
+    fn drop_roles(&mut self, pid: u32, at: i64) {
+        if self.launched == Some(pid) && self.launched_at < at {
+            self.launched = None;
+        }
+        if self.harness == Some(pid) && self.harness_at < at {
+            self.harness = None;
+        }
+    }
+
     /// Forgets a pid's owner and its place in the line.
     fn forget_pid(&mut self, pid: u32) {
         self.owners.remove(&pid);
@@ -441,6 +475,7 @@ impl ChatState {
             return false;
         }
         self.launched = Some(child);
+        self.launched_at = t;
         self.harness_child = None;
         self.forget_pid(child);
         true
@@ -476,36 +511,64 @@ impl ChatState {
             && program == self.harness_exe.as_deref()
         {
             self.harness = Some(child);
+            self.harness_at = t;
             self.line.clear();
+        }
+        // The launched harness's own fork, delivered after its exec (T1): it
+        // has no owner (review FP7-S3).
+        if kind == "fork" && Some(child) == self.launched {
+            return;
         }
         let held = self.owners.get(&child).cloned();
         let by_root = parent.is_some_and(|p| {
             Some(p) == self.root_pid || Some(p) == self.harness || Some(p) == self.launched
         });
         let by_line = !by_root && parent.is_some_and(|p| line_place(self, p));
-        // What a launched harness binary's own child inherits is no
-        // decision: only that process's next exec decides (`Pending`).
+        // What a child of the harness's own binary run again inherits is no
+        // decision: only a sandbox wrapper at its exec is (`Spawned`).
         let inherited = if by_root || by_line {
             None
         } else {
             parent
                 .and_then(|p| self.owners.get(&p).cloned())
                 .map(|o| match o {
-                    Owner::Pending(_) => Owner::Ambiguous,
+                    Owner::Pending(t0) => Owner::Spawned(t0),
                     o => o,
                 })
         };
         // A process a harness's sandbox wrapper runs (MW5-29) is placed as
         // the harness's own child, by when the harness started the wrapper:
         // the wrapper itself when it execs again (`sandbox-exec` then `zsh`
-        // in one pid), and a wrapper's children at their exec (`bwrap`'s).
-        // The harness's own binary run again decides at its own next exec
-        // only (Codex's Linux helper then execs `bwrap`).
-        let wrapped = match (kind, &held, &inherited) {
-            ("exec", Some(Owner::Wrapped(t0) | Owner::Pending(t0)), _)
-            | ("exec", None, Some(Owner::Wrapped(t0))) => Some(*t0),
+        // in one pid), and a wrapper's children at their exec (`bwrap`'s
+        // pid 1's child). The harness's own binary run again decides at its
+        // own next exec (Codex's Linux helper then execs `bwrap`) and its
+        // children's (it forks `bwrap`). Only within `WRAP_MS` of that start
+        // (review FP7-S1): later, the process is `Ambiguous`.
+        let deferred = match (kind, &held, &inherited) {
+            ("exec", Some(o @ (Owner::Wrapped(_) | Owner::Pending(_) | Owner::Spawned(_))), _)
+            | (_, None, Some(o @ (Owner::Wrapped(_) | Owner::Spawned(_)))) => Some(o.clone()),
             _ => None,
         };
+        let since = |o: &Owner| match o {
+            Owner::Wrapped(t0) | Owner::Pending(t0) | Owner::Spawned(t0) => *t0,
+            _ => t,
+        };
+        if deferred.as_ref().is_some_and(|o| t - since(o) > WRAP_MS) {
+            self.own(child, Owner::Ambiguous, t);
+            return;
+        }
+        let wrapped = deferred.as_ref().filter(|_| kind == "exec").map(since);
+        // Under a sandbox the harness started, its own binary is the
+        // sandbox's inner stage (Codex's `--apply-seccomp-then-exec`, which
+        // forks the command, `linux-sandbox/src/linux_run_main.rs:247-256`):
+        // still a wrapper. A `Spawned` process that runs no sandbox wrapper
+        // is no launch.
+        let in_sandbox = matches!(deferred, Some(Owner::Wrapped(_)));
+        let spawned = matches!(deferred, Some(Owner::Spawned(_)));
+        if kind == "exec" && spawned && !program.is_some_and(sandbox_wrapper) {
+            self.own(child, Owner::Ambiguous, t);
+            return;
+        }
         let places = by_root || by_line || wrapped.is_some();
         let at = wrapped.unwrap_or(t);
         // What may own a child placed now: the calls running, and, with no
@@ -560,7 +623,11 @@ impl ChatState {
                     Some(Owner::Wrapped(at))
                 } else if !by_line && program.is_some_and(|p| self.own_exes.iter().any(|x| x == p))
                 {
-                    Some(Owner::Pending(at))
+                    if in_sandbox {
+                        Some(Owner::Wrapped(at))
+                    } else {
+                        Some(Owner::Pending(at))
+                    }
                 } else if shell && !shells.is_empty() {
                     if by_line {
                         Some(Owner::Unplaced(shells.into()))
@@ -598,8 +665,13 @@ impl ChatState {
         };
         if let Some(o) = owner {
             // An exec keeps the owner its fork or first exec set, but for a
-            // wrapper's, which its next exec decides.
-            if !(kind == "exec" && held.is_some() && wrapped.is_none()) {
+            // wrapper's, which its next exec decides. A fork keeps what the
+            // child's own exec set when the feed delivered that first (T1;
+            // `disown` left only an owner set at or after the fork): review
+            // FP7-S5.
+            let exec_keeps = kind == "exec" && held.is_some() && wrapped.is_none();
+            let fork_keeps = kind == "fork" && held.is_some();
+            if !(exec_keeps || fork_keeps) {
                 self.own(child, o, t);
             }
         }
@@ -664,6 +736,18 @@ fn wrapper_program(path: &str) -> bool {
 fn sandbox_wrapper(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     matches!(name, "sandbox-exec" | "bwrap")
+}
+
+/// A general interpreter, by file name: a harness that runs as one (node for
+/// npm installs) shares it with the helpers it starts, so running it again
+/// says nothing about a sandbox (review FP7-S1).
+fn interpreter_program(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    matches!(
+        name,
+        "bun" | "deno" | "ruby" | "perl" | "php" | "java" | "lua" | "luajit"
+    ) || name.starts_with("python")
+        || name.starts_with("node")
 }
 
 fn shell_program(path: &str) -> bool {
@@ -740,10 +824,14 @@ impl Join {
                 st.harness_child = str_at(&e.detail, "harnessChildExe")
                     .filter(exe_ok)
                     .map(str::to_string);
+                // An interpreter is no harness's own binary: an npm harness's
+                // `harnessExe` is node, which its MCP servers run too (review
+                // FP7-S1, FP7-S4).
                 st.own_exes = [str_at(&e.detail, "harnessExe"), st.harness_child.as_deref()]
                     .into_iter()
                     .flatten()
                     .filter(exe_ok)
+                    .filter(|p| !interpreter_program(p))
                     .map(str::to_string)
                     .collect();
                 let boundary = str_at(&e.detail, "boundary");
@@ -949,6 +1037,7 @@ impl Join {
                 // re-review T1: a reused pid kept an old call's owner and
                 // was chosen for it).
                 if kind == "fork" {
+                    st.drop_roles(child, t);
                     st.disown(child, t);
                 }
                 let parent = if kind == "fork" { pid } else { ppid };
