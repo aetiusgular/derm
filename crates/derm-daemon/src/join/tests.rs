@@ -1189,6 +1189,41 @@ fn tap_only(j: &mut Join, harness: &str, id: &str, tool: &str, t: i64, end: i64)
     j.observe(&r);
 }
 
+/// A Codex Code Mode call as the tap records it since fix pass 6: its cell
+/// (`cellId`: `wait`'s argument on both records, an `exec`'s from its
+/// result) and its result's header (`codeStatus`).
+fn tap_code(
+    j: &mut Join,
+    id: &str,
+    tool: &str,
+    t: i64,
+    end: i64,
+    cell: Option<&str>,
+    status: Option<&str>,
+) {
+    let first_cell = if tool == "wait" { cell } else { None };
+    let mut e = ev(
+        Source::Tap,
+        "tap.call",
+        t,
+        None,
+        json!({"callId": id, "toolNormalized": tool, "paths": [], "resultSha256": null, "cellId": first_cell}),
+    );
+    e.id = format!("tap-{CHAT}-{id}");
+    e.harness = "codex".into();
+    j.observe(&e);
+    let mut r = ev(
+        Source::Tap,
+        "tap.call",
+        end,
+        None,
+        json!({"callId": id, "toolNormalized": tool, "paths": [], "resultSha256": "ab", "cellId": cell, "codeStatus": status}),
+    );
+    r.id = format!("tap-{CHAT}-{id}");
+    r.harness = "codex".into();
+    j.observe(&r);
+}
+
 /// The harness forks and execs a shell, which forks and execs `sleep`, which
 /// writes: the write's join record.
 fn shell_writes(j: &mut Join, at: i64, sh: u32, path: &str) -> Vec<Event> {
@@ -1223,8 +1258,31 @@ fn mw5_27_a_codex_code_mode_call_owns_the_shells_it_starts() {
         "{}",
         r[0].detail
     );
-    // `wait` resumes a running cell: its shells are its.
-    tap_only(&mut j, "codex", "call_W1", "wait", 40_000, 60_000);
+    // `wait` resumes a running cell: its shells are its. (Since fix pass 6
+    // the tap reads each result's header: E1 yielded cell 1, and the wait
+    // names cell 1 and reports it ended, so the cell is one and the running
+    // wait is chosen; with no header read, the two may be different cells
+    // and none is chosen, `fp6_*` below.)
+    let mut j = Join::new();
+    start(&mut j);
+    tap_code(
+        &mut j,
+        "call_E1",
+        "exec",
+        1_000,
+        30_000,
+        Some("1"),
+        Some("running"),
+    );
+    tap_code(
+        &mut j,
+        "call_W1",
+        "wait",
+        40_000,
+        60_000,
+        Some("1"),
+        Some("ended"),
+    );
     let r = shell_writes(&mut j, 40_100, 7011, "/w/b");
     assert_eq!(
         r[0].detail["chosen"], "tap-chat-j-call_W1",
@@ -1280,4 +1338,349 @@ fn mw5_27_a_gate_record_naming_exec_owns_no_shells() {
     j.observe(&a);
     let r = shell_writes(&mut j, 1_100, 7201, "/w/e");
     assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+}
+
+// ---- Separate review of fix pass 5 (FP5R): its probes, each failing on
+// `429a0f2` but the two guards, kept as fix pass 6's reproducing tests. ----
+
+/// FP5R-1 probe. Codex 0.163.0's `exec` yields while its cell keeps running
+/// (`yield_time_ms`, `yield_control()`: `code-mode-protocol/src/description.rs`
+/// lines 30-31 and 46; `core/src/tools/code_mode/execute_handler.rs:144-160`
+/// closes the cell's dispatch only when the first response is not `Yielded`),
+/// so cell A's nested shell can start while a later, unrelated `exec` B runs.
+/// The join cannot tell the cells apart, yet it now chooses B by tree. At
+/// `8551bed` the same shell was a `window` candidate of B with none chosen.
+#[test]
+fn fp5r_1_a_yielded_cells_shell_is_not_chosen_for_a_later_exec() {
+    let mut j = Join::new();
+    start(&mut j);
+    // exec A yields at once ("Script running with cell ID ..."): its result
+    // reaches the tap at 1_200, and cell A keeps running.
+    tap_only(&mut j, "codex", "call_A", "exec", 1_000, 1_200);
+    // exec B, a different cell, runs from 10_000 to 30_000.
+    tap_only(&mut j, "codex", "call_B", "exec", 10_000, 30_000);
+    // Cell A's nested exec_command starts a shell at 12_000.
+    let r = shell_writes(&mut j, 12_000, 7301, "/w/from-cell-a");
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(
+        r[0].detail["chosen"].is_null(),
+        "a shell that may be a yielded cell's was credited to the running exec: {}",
+        r[0].detail
+    );
+}
+
+/// FP5R-2 probe. The same yielded cell's shell when no call runs (the model
+/// is writing its next reply): the join writes nothing for it or its writes,
+/// as for a session helper. MW5-27 says a Code Mode call owns its shells.
+#[test]
+fn fp5r_2_a_yielded_cells_shell_with_no_call_running_gets_a_record() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "codex", "call_A", "exec", 1_000, 1_200);
+    // `await new Promise(r => setTimeout(r, 5000)); await tools.exec_command(...)`
+    let r = shell_writes(&mut j, 6_200, 7401, "/w/hidden");
+    assert_eq!(
+        r.len(),
+        1,
+        "the yielded cell's write has no join record: {r:?}"
+    );
+}
+
+/// FP5R-3 probe (code call). A chat token tails its own chat
+/// (`daemon.rs:1744-1754`), so the agent learns the running `exec` call's id
+/// and posts an `approval` for it after its shell started but before the OS
+/// feed delivers that shell (2 to 8 s late on the Mac, MW5-17). The approval
+/// moves the call's start (`join/mod.rs`, `c.start = Some(e.at)`), the
+/// shell's exec falls outside the call's window, and the shell is the
+/// session's: no record for it or anything under it.
+#[test]
+fn fp5r_3_a_late_chat_token_approval_does_not_unplace_a_code_calls_shell() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "codex", "call_E9", "exec", 1_000, 30_000);
+    let mut a = ev(
+        Source::Adapter,
+        "approval",
+        1_700,
+        None,
+        json!({"toolUseId": "call_E9", "decision": "allow", "tool": "exec"}),
+    );
+    a.harness = "codex".into();
+    j.observe(&a);
+    let r = shell_writes(&mut j, 1_100, 7501, "/w/f");
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_E9",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// FP5R-3 probe (shell call, a deny; the class is older than fix pass 5).
+#[test]
+fn fp5r_3_a_late_chat_token_deny_does_not_unplace_a_shell_calls_shell() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "claude-code", "toolu_S9", "bash", 1_000, 30_000);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_700,
+        None,
+        json!({"toolUseId": "toolu_S9", "decision": "deny"}),
+    ));
+    let r = shell_writes(&mut j, 1_100, 7601, "/w/g");
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-toolu_S9",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// FP5-S1 check: an adapter record for the tap's own `exec` call id, naming
+/// `bash`, does not turn the code call into a shell call, before or after
+/// the tap's record.
+#[test]
+fn fp5r_guard_a_gate_record_cannot_rename_the_taps_exec_call() {
+    for gate_first in [true, false] {
+        let mut j = Join::new();
+        start(&mut j);
+        let mut a = ev(
+            Source::Adapter,
+            "approval",
+            1_005,
+            None,
+            json!({"toolUseId": "call_E7", "decision": "allow", "tool": "bash"}),
+        );
+        a.harness = "codex".into();
+        if gate_first {
+            j.observe(&a);
+        }
+        tap_only(&mut j, "codex", "call_E7", "exec", 1_000, 30_000);
+        if !gate_first {
+            j.observe(&a);
+        }
+        let st = j.chats.get(CHAT).unwrap();
+        let c = st.calls.get("call_E7").unwrap();
+        assert!(c.code && !c.shell(), "gate_first={gate_first}: {c:?}");
+    }
+}
+
+/// Case and spacing: the tap's normalized name is lowercased and trimmed
+/// (`derm_core::policy::lower_name`), and `mcp_exec` normalizes to `exec`.
+#[test]
+fn fp5r_guard_which_tap_names_count_as_code_tools() {
+    for raw in ["exec", "Exec", " EXEC ", "mcp_exec", "mcp__wait"] {
+        let n = derm_core::policy::normalize_tool_name_for(raw, &[], "codex");
+        assert!(code_tool("codex", &n), "{raw:?} -> {n:?}");
+    }
+    assert!(!code_tool("Codex", "exec"));
+    assert!(!code_tool("codex", "exec_command"));
+}
+
+/// FP5R-4 probe. No race needed: a code call's nested shells are each a new
+/// child of the harness, placed by what runs when it starts, and a chat
+/// token's `tool.call` for the `exec` call id (never a gate decision, so the
+/// daemon keeps no conflict for it, `activity/store.rs:253-256`) ends the call
+/// early (`c.end = min`). Every later nested shell of the same cell is then
+/// the session's, and its writes get no record.
+#[test]
+fn fp5r_4_a_chat_token_tool_call_does_not_end_a_code_call_early() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "codex", "call_E8", "exec", 1_000, 30_000);
+    let mut t = ev(
+        Source::Adapter,
+        "tool.call",
+        2_000,
+        None,
+        json!({"toolUseId": "call_E8"}),
+    );
+    t.harness = "codex".into();
+    j.observe(&t);
+    let r = shell_writes(&mut j, 10_000, 7701, "/w/h");
+    assert_eq!(
+        r.len(),
+        1,
+        "the cell's later shell has no join record: {r:?}"
+    );
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_E8",
+        "{}",
+        r[0].detail
+    );
+}
+
+// ---- Fix pass 6: the cell rule's other edges. ----
+
+/// With no header read for either result, an `exec` and a later `wait` may
+/// be different cells: a shell during the wait is a candidate of both, none
+/// chosen (fails safe toward more candidates, never toward none).
+#[test]
+fn fp6_with_no_header_a_wait_and_an_earlier_exec_choose_none() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "codex", "call_E1", "exec", 1_000, 30_000);
+    tap_only(&mut j, "codex", "call_W1", "wait", 40_000, 60_000);
+    let r = shell_writes(&mut j, 40_100, 7811, "/w/b");
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    let c = r[0].detail["candidates"].as_array().unwrap();
+    assert_eq!(c.len(), 2, "{}", r[0].detail);
+    assert!(c.iter().all(|x| x["by"] == "tree"), "{}", r[0].detail);
+}
+
+/// A yielded cell is the only one that may run: its later shell, with no
+/// call running, is that `exec`'s, chosen; once a `wait` on the cell says it
+/// ended, a later shell with nothing running is the session's again.
+#[test]
+fn fp6_a_yielded_cell_owns_its_later_shells_until_a_wait_says_it_ended() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_code(
+        &mut j,
+        "call_E1",
+        "exec",
+        1_000,
+        1_200,
+        Some("4"),
+        Some("running"),
+    );
+    let r = shell_writes(&mut j, 6_200, 7821, "/w/late");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_E1",
+        "{}",
+        r[0].detail
+    );
+    tap_code(
+        &mut j,
+        "call_W1",
+        "wait",
+        10_000,
+        12_000,
+        Some("4"),
+        Some("ended"),
+    );
+    assert!(shell_writes(&mut j, 20_000, 7831, "/w/after").is_empty());
+    // An exec whose cell completed in its first response leaves nothing open.
+    tap_code(
+        &mut j,
+        "call_E2",
+        "exec",
+        30_000,
+        31_000,
+        None,
+        Some("ended"),
+    );
+    assert!(shell_writes(&mut j, 40_000, 7841, "/w/none").is_empty());
+}
+
+/// Two cells that both yielded: a shell with no call running is a candidate
+/// of both, none chosen.
+#[test]
+fn fp6_two_yielded_cells_share_a_shell_and_none_is_chosen() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_code(
+        &mut j,
+        "call_E1",
+        "exec",
+        1_000,
+        1_200,
+        Some("1"),
+        Some("running"),
+    );
+    tap_code(
+        &mut j,
+        "call_E2",
+        "exec",
+        2_000,
+        2_200,
+        Some("2"),
+        Some("running"),
+    );
+    let r = shell_writes(&mut j, 9_000, 7851, "/w/x");
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+    assert_eq!(
+        r[0].detail["candidates"].as_array().unwrap().len(),
+        2,
+        "{}",
+        r[0].detail
+    );
+}
+
+/// A helper the harness starts while only a yielded cell may run (an MCP
+/// server, no shell) is the session's, as with no call at all.
+#[test]
+fn fp6_a_non_shell_helper_while_a_cell_runs_is_the_sessions() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_code(
+        &mut j,
+        "call_E1",
+        "exec",
+        1_000,
+        1_200,
+        Some("1"),
+        Some("running"),
+    );
+    effect(&mut j, "fork", 5_000, ROOT, 1, json!({"child": 7861}));
+    effect(
+        &mut j,
+        "exec",
+        5_005,
+        7861,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    assert!(effect(&mut j, "write", 5_020, 7861, ROOT, json!({"path": "/w/m"})).is_empty());
+}
+
+/// FP5R-4's other order: a chat token's `tool.call` (or a deny) for an id
+/// before the tap's record names it is undone when the tap marks it a code
+/// call, so the cell's nested shells still find it.
+#[test]
+fn fp6_an_adapter_end_before_the_taps_record_does_not_end_a_code_call() {
+    let mut j = Join::new();
+    start(&mut j);
+    let mut t = ev(
+        Source::Adapter,
+        "tool.call",
+        900,
+        None,
+        json!({"toolUseId": "call_E5"}),
+    );
+    t.harness = "codex".into();
+    j.observe(&t);
+    tap_only(&mut j, "codex", "call_E5", "exec", 1_000, 30_000);
+    let r = shell_writes(&mut j, 10_000, 7871, "/w/n");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_E5",
+        "{}",
+        r[0].detail
+    );
+}
+
+/// FP5R-3 in an untapped chat: a second approval for a call, later than the
+/// first, does not move its start past a shell the call already started.
+#[test]
+fn fp6_a_later_approval_does_not_move_an_untapped_calls_start() {
+    let mut j = Join::new();
+    start(&mut j);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_000,
+        None,
+        json!({"toolUseId": "toolu_U1", "decision": "allow", "tool": "bash"}),
+    ));
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        5_000,
+        None,
+        json!({"toolUseId": "toolu_U1", "decision": "allow", "tool": "bash"}),
+    ));
+    let r = shell_writes(&mut j, 1_100, 7881, "/w/u");
+    assert_eq!(r[0].detail["chosen"], "approval-1000-0", "{}", r[0].detail);
 }

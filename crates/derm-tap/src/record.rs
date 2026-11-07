@@ -214,6 +214,14 @@ pub struct CallRecord {
     pub result: Option<(Digested, Option<bool>)>,
     pub incomplete: bool,
     pub content_kept: bool,
+    /// For a harness's code tool (`derm_core::policy::CODE_TOOLS`): the cell
+    /// the call works on, from Codex's `wait` arguments (`cell_id`) or its
+    /// result's header (fix pass 6, FP5R-1 and FP5R-2).
+    pub cell_id: Option<String>,
+    /// For a code tool's result: whether its header says the cell keeps
+    /// running (`derm_core::policy::cell_status`); `None` when no header was
+    /// read.
+    pub code_status: Option<derm_core::policy::CellStatus>,
 }
 
 impl CallRecord {
@@ -233,6 +241,70 @@ impl CallRecord {
             result: None,
             incomplete: call.incomplete,
             content_kept: false,
+            cell_id: None,
+            code_status: None,
+        }
+        .with_wait_cell(harness, call)
+    }
+
+    /// Codex's `wait` names the cell it resumes in its `cell_id` argument
+    /// (`core/src/tools/code_mode/wait_spec.rs:12`, 0.163.0).
+    fn with_wait_cell(mut self, harness: &str, call: &Call) -> Self {
+        if derm_core::policy::code_tool(harness, &self.tool_normalized)
+            && self.tool_normalized.eq_ignore_ascii_case("wait")
+        {
+            self.cell_id = call
+                .args
+                .parsed()
+                .and_then(|v| match v.get("cell_id") {
+                    Some(Value::String(s)) => Some(s.trim().to_string()),
+                    Some(Value::Number(n)) => Some(n.to_string()),
+                    _ => None,
+                })
+                .filter(|c| derm_core::policy::cell_id_ok(c));
+        }
+        self
+    }
+
+    /// Reads a code tool's result header (`derm_core::policy::cell_status`)
+    /// from every output the request carries for this call: a cell can add
+    /// outputs of its own (`notify()`, `code-mode-protocol/src/description.rs`
+    /// line 40), so a header that says the cell runs wins over one that says
+    /// it ended, and a cell's own text cannot close it early.
+    pub fn read_cell_status<'a>(
+        &mut self,
+        harness: &str,
+        outputs: impl Iterator<Item = &'a Value>,
+    ) {
+        if !derm_core::policy::code_tool(harness, &self.tool_normalized) {
+            return;
+        }
+        for v in outputs {
+            let text = match v {
+                Value::String(s) => Some(s.as_str()),
+                Value::Array(items) => items
+                    .first()
+                    .and_then(|i| i.get("text"))
+                    .and_then(Value::as_str),
+                _ => None,
+            };
+            match text.and_then(derm_core::policy::cell_status) {
+                Some(derm_core::policy::CellStatus::Running(id)) => {
+                    if let Some(id) = id {
+                        self.cell_id = Some(id.clone());
+                        self.code_status = Some(derm_core::policy::CellStatus::Running(Some(id)));
+                    } else if !matches!(
+                        self.code_status,
+                        Some(derm_core::policy::CellStatus::Running(Some(_)))
+                    ) {
+                        self.code_status = Some(derm_core::policy::CellStatus::Running(None));
+                    }
+                }
+                Some(derm_core::policy::CellStatus::Ended) if self.code_status.is_none() => {
+                    self.code_status = Some(derm_core::policy::CellStatus::Ended);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -270,6 +342,18 @@ impl CallRecord {
             }
         }
         d.insert("incomplete".into(), json!(self.incomplete));
+        if let Some(c) = &self.cell_id {
+            d.insert("cellId".into(), json!(c));
+        }
+        match &self.code_status {
+            Some(derm_core::policy::CellStatus::Running(_)) => {
+                d.insert("codeStatus".into(), json!("running"));
+            }
+            Some(derm_core::policy::CellStatus::Ended) => {
+                d.insert("codeStatus".into(), json!("ended"));
+            }
+            None => {}
+        }
         if self.content_kept {
             d.insert("contentKept".into(), json!(true));
         }

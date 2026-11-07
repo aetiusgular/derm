@@ -97,6 +97,15 @@ struct Rig {
 }
 
 fn rig(replies: Vec<Reply>, local: bool, content_root: Option<std::path::PathBuf>) -> Rig {
+    rig_for("claude-code", replies, local, content_root)
+}
+
+fn rig_for(
+    harness: &'static str,
+    replies: Vec<Reply>,
+    local: bool,
+    content_root: Option<std::path::PathBuf>,
+) -> Rig {
     let up = fake_upstream(replies);
     let route = route::of_token(TOKEN);
     let want = route.clone();
@@ -106,7 +115,7 @@ fn rig(replies: Vec<Reply>, local: bool, content_root: Option<std::path::PathBuf
         Arc::new(move |r: &str| {
             (r == want).then(|| Chat {
                 id: "chat-t".into(),
-                harness: "claude-code".into(),
+                harness: harness.into(),
             })
         }),
         Arc::new(move |e: Vec<Event>| sink_events.lock().unwrap().extend(e)),
@@ -829,4 +838,113 @@ fn fp4_s6_leading_whitespace_costs_linear_time() {
         took < Duration::from_secs(1),
         "{n} bytes of whitespace took {took:?}"
     );
+}
+
+fn json_reply(body: &Value) -> Reply {
+    Reply {
+        status: 200,
+        headers: vec![("content-type", "application/json")],
+        pieces: vec![body.to_string().into_bytes()],
+        cut: false,
+    }
+}
+
+/// Fix pass 6 (FP5R-1, FP5R-2): Codex 0.163.0's Code Mode `exec` can yield
+/// and leave its cell running; its result's first line says so (`Script
+/// running with cell ID <id>`, `core/src/tools/code_mode/mod.rs:302-316`),
+/// and `wait` names the cell in its `cell_id` argument (`wait_spec.rs:12`).
+/// The tap records the cell and whether the header says it runs, from every
+/// output the request carries for the call, so a cell's own `notify()` text
+/// that mimics a closing header cannot close it. In another harness a tool
+/// named `exec` gets neither field.
+#[test]
+fn fp6_the_tap_records_a_code_mode_cell_and_whether_it_runs() {
+    let exec_reply = json!({"model":"gpt-5.6-luna","output":[
+        {"type":"custom_tool_call","call_id":"call_A","name":"exec","input":"await tools.exec_command({cmd:'sleep 5'})"}
+    ]});
+    let wait_reply = json!({"model":"gpt-5.6-luna","output":[
+        {"type":"function_call","call_id":"call_W","name":"wait","arguments":"{\"cell_id\":\"7\",\"yield_time_ms\":10000}"}
+    ]});
+    let done_reply = json!({"model":"gpt-5.6-luna","output":[
+        {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+    ]});
+    let rig = rig_for(
+        "codex",
+        vec![
+            json_reply(&exec_reply),
+            json_reply(&wait_reply),
+            json_reply(&done_reply),
+        ],
+        false,
+        None,
+    );
+    let path = format!("/r/{}/openai/responses", rig.route);
+    let call_a = json!({"type":"custom_tool_call","call_id":"call_A","name":"exec","input":"x"});
+    // The cell's own notify() output comes first, mimicking a closing
+    // header; Codex's own header says the cell runs.
+    let notify = json!({"type":"custom_tool_call_output","call_id":"call_A","output":"Script completed\nWall time 0.0 seconds\nOutput:\n"});
+    let yielded = json!({"type":"custom_tool_call_output","call_id":"call_A","output":[
+        {"type":"input_text","text":"Script running with cell ID 7\nWall time 10.0 seconds\nOutput:\n"}
+    ]});
+    let call_w = json!({"type":"function_call","call_id":"call_W","name":"wait","arguments":"{\"cell_id\":\"7\"}"});
+    let waited = json!({"type":"function_call_output","call_id":"call_W","output":"Script completed\nWall time 4.1 seconds\nOutput:\n"});
+    let bodies = [
+        json!({"model":"gpt-5.6-luna","input":[{"role":"user","content":"go"}]}),
+        json!({"model":"gpt-5.6-luna","input":[{"role":"user","content":"go"}, call_a, notify, yielded]}),
+        json!({"model":"gpt-5.6-luna","input":[{"role":"user","content":"go"}, call_a, notify, yielded, call_w, waited]}),
+    ];
+    for b in &bodies {
+        let (status, _, _, _) = send(rig.tap.port(), "POST", &path, &[], b.to_string().as_bytes());
+        assert_eq!(status, 200);
+    }
+    let ev = wait_events(&rig, 7);
+    let calls: Vec<&Event> = ev.iter().filter(|e| e.kind == "tap.call").collect();
+    let last = |id: &str| {
+        calls
+            .iter()
+            .rev()
+            .find(|e| e.detail["callId"] == id)
+            .unwrap_or_else(|| panic!("no record for {id}: {ev:#?}"))
+            .detail
+            .clone()
+    };
+    let a = last("call_A");
+    assert_ne!(a["resultSha256"], Value::Null, "{a}");
+    assert_eq!(a["codeStatus"], "running", "{a}");
+    assert_eq!(a["cellId"], "7", "{a}");
+    let first_w = calls
+        .iter()
+        .find(|e| e.detail["callId"] == "call_W")
+        .unwrap()
+        .detail
+        .clone();
+    assert_eq!(first_w["cellId"], "7", "{first_w}");
+    assert!(first_w.get("codeStatus").is_none(), "{first_w}");
+    let w = last("call_W");
+    assert_eq!(w["codeStatus"], "ended", "{w}");
+    assert_eq!(w["cellId"], "7", "{w}");
+
+    // The same exchange in a Claude Code chat: no cell fields.
+    let rig = rig_for(
+        "claude-code",
+        vec![
+            json_reply(&exec_reply),
+            json_reply(&wait_reply),
+            json_reply(&done_reply),
+        ],
+        false,
+        None,
+    );
+    let path = format!("/r/{}/openai/responses", rig.route);
+    for b in &bodies {
+        let _ = send(rig.tap.port(), "POST", &path, &[], b.to_string().as_bytes());
+    }
+    let ev = wait_events(&rig, 7);
+    for e in ev.iter().filter(|e| e.kind == "tap.call") {
+        assert!(
+            e.detail.get("cellId").is_none() && e.detail.get("codeStatus").is_none(),
+            "{}",
+            e.detail
+        );
+    }
 }

@@ -663,6 +663,16 @@ fn record_results(
             continue;
         }
         rec.result = Some((digest_result(&r.value), r.is_error));
+        // Fix pass 6 (FP5R-1, FP5R-2): every output this request carries for
+        // the call, so a cell's own extra output cannot hide its header.
+        let call_id = rec.call_id.clone();
+        rec.read_cell_status(
+            &chat.harness,
+            info.results
+                .iter()
+                .filter(|o| o.call_id.as_deref() == Some(call_id.as_str()))
+                .map(|o| &o.value),
+        );
         rec.content_kept = rec.content_kept || content_kept;
         events.push(rec.event(&chat.id, &chat.harness, at));
     }

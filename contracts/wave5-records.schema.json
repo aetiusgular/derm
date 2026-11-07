@@ -86,7 +86,9 @@
         "resultBytes": { "oneOf": [{ "$ref": "#/$defs/bytes" }, { "type": "null" }] },
         "resultIsError": { "type": "boolean" },
         "incomplete": { "type": "boolean" },
-        "contentKept": { "type": "boolean" }
+        "contentKept": { "type": "boolean" },
+        "cellId": { "type": "string", "pattern": "^[A-Za-z0-9:._-]{1,64}$" },
+        "codeStatus": { "enum": ["running", "ended"] }
       },
       "additionalProperties": false
     },

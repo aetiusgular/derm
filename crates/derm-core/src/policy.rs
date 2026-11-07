@@ -536,6 +536,64 @@ pub const SHELL_TOOLS: &[&str] = &[
     "run_commands",
 ];
 
+/// Tools that run code which calls the harness's other tools, shells among
+/// them, by harness id and the tap's normalized name (rules cases 74 and 187;
+/// Mac test w5 retest 5, MW5-27). Codex 0.163.0's Code Mode offers the model
+/// `exec` (JavaScript in a V8 isolate that calls nested tools such as
+/// `exec_command`) and `wait` (resumes a running `exec` cell):
+/// `codex-rs/code-mode-protocol/src/lib.rs:54-55` and `description.rs`
+/// (`EXEC_DESCRIPTION_TEMPLATE`, `WAIT_DESCRIPTION_TEMPLATE`) at
+/// `rust-v0.163.0`. Not shell aliases: the shell-text check would read their
+/// JavaScript as a shell line. The join and the tap read this one list.
+pub const CODE_TOOLS: &[(&str, &str)] = &[("codex", "exec"), ("codex", "wait")];
+
+/// Whether `tool` (a normalized name) is a code tool of `harness`.
+pub fn code_tool(harness: &str, tool: &str) -> bool {
+    CODE_TOOLS
+        .iter()
+        .any(|(h, t)| *h == harness && t.eq_ignore_ascii_case(tool))
+}
+
+/// What a Code Mode result's header says of its cell, as Codex 0.163.0 writes
+/// it: the first line of the output's first text item, `Script running with
+/// cell ID <id>` for a cell that yielded and keeps running, else `Script
+/// completed`, `Script failed` or `Script terminated`
+/// (`core/src/tools/code_mode/mod.rs:302-316`, `format_script_status`;
+/// `output.rs:20-38` puts it first). `None` for anything else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CellStatus {
+    /// The cell yielded and keeps running, with its id when it is one derm
+    /// can carry (`cell_id_ok`).
+    Running(Option<String>),
+    Ended,
+}
+
+/// A cell id derm keeps in a record: at most 64 characters of
+/// `[A-Za-z0-9:._-]` (Codex makes them as a number, or `g<n>:<id>` behind its
+/// gRPC host, `code-mode/src/grpc_session/generation.rs:53`).
+pub fn cell_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '_' | '-'))
+}
+
+/// Reads a Code Mode output's header (see `CellStatus`) from the first line
+/// of `text`.
+pub fn cell_status(text: &str) -> Option<CellStatus> {
+    let line = text.lines().next().unwrap_or("").trim_end_matches('\r');
+    if let Some(id) = line.strip_prefix("Script running with cell ID ") {
+        let id = id.trim();
+        return Some(CellStatus::Running(cell_id_ok(id).then(|| id.to_string())));
+    }
+    matches!(
+        line,
+        "Script completed" | "Script failed" | "Script terminated"
+    )
+    .then_some(CellStatus::Ended)
+}
+
 /// Files that control derm or a harness's hooks (contract, section 4, step
 /// 7a): an `allow` whose folded input names one is `Ask`, so an allowed tool
 /// cannot quietly rewrite the policy or switch a gate off. The same list as
@@ -1709,5 +1767,44 @@ mod tests {
         ] {
             assert_eq!(decode_escapes(input), want, "{input:?}");
         }
+    }
+
+    /// FP5R-1 and FP5R-2 (fix pass 6): the header Codex 0.163.0 puts first in
+    /// a Code Mode result (`core/src/tools/code_mode/mod.rs:302-316`,
+    /// `output.rs:27-33`), and what is not one.
+    #[test]
+    fn fp6_a_code_mode_header_says_whether_its_cell_runs() {
+        assert_eq!(
+            cell_status("Script running with cell ID 3\nWall time 10.0 seconds\nOutput:\n"),
+            Some(CellStatus::Running(Some("3".into())))
+        );
+        assert_eq!(
+            cell_status("Script running with cell ID g2:17\n"),
+            Some(CellStatus::Running(Some("g2:17".into())))
+        );
+        // An id derm will not carry still says the cell runs.
+        assert_eq!(
+            cell_status("Script running with cell ID a b\n"),
+            Some(CellStatus::Running(None))
+        );
+        for done in [
+            "Script completed",
+            "Script failed",
+            "Script terminated\r\nWall time",
+        ] {
+            assert_eq!(cell_status(done), Some(CellStatus::Ended), "{done:?}");
+        }
+        for other in [
+            "",
+            "script completed",
+            " Script completed",
+            "Script completed!",
+            "x\nScript completed",
+        ] {
+            assert_eq!(cell_status(other), None, "{other:?}");
+        }
+        assert!(code_tool("codex", "exec") && code_tool("codex", "WAIT"));
+        assert!(!code_tool("claude-code", "exec") && !code_tool("codex", "exec_command"));
+        assert!(!cell_id_ok("") && !cell_id_ok(&"1".repeat(65)) && !cell_id_ok("a/b"));
     }
 }

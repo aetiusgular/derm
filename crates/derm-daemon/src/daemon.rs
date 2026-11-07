@@ -1611,6 +1611,17 @@ impl Daemon {
             // daemon records the conflict, which only it can write.
             return self.keep_conflict(event, held);
         }
+        if let Some(code) = matches!(who, Who::Chat { .. })
+            .then(|| self.held_code_call(&event))
+            .flatten()
+        {
+            // Fix pass 6 (FP5R-3, FP5R-4): no harness's gate posts for a
+            // code tool call (Codex sends no hook for Code Mode's `exec` or
+            // `wait`), so a chat's record naming one is the agent's. It is
+            // kept as a conflict copy and flagged; the join takes a code
+            // call's times from the tap alone.
+            return self.keep_conflict(event, code);
+        }
         let id = self.ingest(event);
         Reply {
             id: Some(id),
@@ -1696,6 +1707,37 @@ impl Daemon {
                         || (call.is_some()
                             && adapter_call(old) == call
                             && !cursor_deferral_then_decision(old, &new)))
+            })
+            .map(|old| old.id.clone())
+    }
+
+    /// The tap's record of a code tool call (`derm_core::policy::CODE_TOOLS`)
+    /// in this event's chat that an adapter `approval` or `tool.call` names
+    /// by `detail.toolUseId`, for a record still in the ring (fix pass 6).
+    fn held_code_call(&self, event: &Event) -> Option<String> {
+        if event.source != Source::Adapter
+            || !matches!(event.kind.as_str(), "approval" | "tool.call")
+        {
+            return None;
+        }
+        let call = event
+            .detail
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())?;
+        let ring = self.order.lock().ok()?;
+        ring.iter()
+            .rev()
+            .find(|old| {
+                old.chat_id == event.chat_id
+                    && old.source == Source::Tap
+                    && old.kind == "tap.call"
+                    && old.detail.get("callId").and_then(Value::as_str) == Some(call)
+                    && old
+                        .detail
+                        .get("toolNormalized")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| derm_core::policy::code_tool(&old.harness, t))
             })
             .map(|old| old.id.clone())
     }
@@ -2935,6 +2977,68 @@ mod tests {
         assert_eq!(joins[0].source, Source::Derm);
         assert_eq!(joins[0].detail["chosen"], "tap-chat-j-toolu_A");
         assert_eq!(ring.len(), 5, "four events and one join record");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Fix pass 6 (FP5R-3, FP5R-4): no gate posts for a code tool call, so a
+    /// chat's `approval` or `tool.call` naming the tap's Code Mode call is
+    /// kept as a conflict copy and flagged; one naming another call is not.
+    #[test]
+    fn fp6_a_chat_record_naming_a_tap_code_call_is_flagged() {
+        let (d, root) = daemon();
+        let mut call = ev_of(
+            "chat-c",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "call_E9", "toolNormalized": "exec", "paths": [], "resultSha256": null}),
+        );
+        call.id = "tap-chat-c-call_E9".into();
+        call.harness = "codex".into();
+        d.ingest(call);
+        let who = Who::Chat {
+            chat: "chat-c".into(),
+            harness: "codex".into(),
+        };
+        for (kind, detail) in [
+            (
+                "approval",
+                json!({"toolUseId": "call_E9", "decision": "allow", "tool": "exec"}),
+            ),
+            ("tool.call", json!({"toolUseId": "call_E9"})),
+        ] {
+            let mut e = ev_of("chat-c", Source::Adapter, kind, None, detail);
+            e.harness = "codex".into();
+            let r = d.op_event(&who, e);
+            assert!(r.ok, "{kind}");
+            assert!(
+                r.id.as_deref().is_some_and(|i| i.contains("-conflict-")),
+                "{kind}: {:?}",
+                r.id
+            );
+        }
+        // A record for a call the tap did not mark as code is ingested as is.
+        let mut other = ev_of(
+            "chat-c",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "call_N1", "decision": "allow", "tool": "bash"}),
+        );
+        other.harness = "codex".into();
+        let r = d.op_event(&who, other);
+        assert!(
+            r.id.as_deref().is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            r.id
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let flags: Vec<&Event> = ring.iter().filter(|e| e.kind == "gate.conflict").collect();
+        assert_eq!(flags.len(), 2, "{ring:?}");
+        assert!(
+            flags.iter().all(|f| f.detail["id"] == "tap-chat-c-call_E9"),
+            "{flags:?}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

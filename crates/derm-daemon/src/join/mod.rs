@@ -11,7 +11,11 @@
 //! - `tap.call` (the call the model asked for: its id, tool, the paths it
 //!   names; its result's arrival ends it);
 //! - the gate's `approval` record (`detail.toolUseId`; the call starts) and
-//!   its `tool.call` record (the call ran; it ends);
+//!   its `tool.call` record (the call ran; it ends). A chat token can post
+//!   these for any call id it reads from its own tail (case 66), so they
+//!   never move a call's start later, a deny never ends it before its start,
+//!   and a code tool call takes its times from the tap alone (fix pass 6,
+//!   FP5R-3, FP5R-4);
 //! - the OS feed's effects (`auditd`, `eslogger`): `exec`, `fork`, writes,
 //!   renames, unlinks, links, connects.
 //!
@@ -23,9 +27,12 @@
 //! 1. **Tree.** A shell the harness starts while exactly one shell call is
 //!    running belongs to that call, and so do its descendants; with several
 //!    shell calls, to them together, none chosen. With no shell call running,
-//!    a harness's code tool call running then (`CODE_TOOLS`: Codex's Code
-//!    Mode, whose nested shells Codex starts itself) takes the shell's place
-//!    (MW5-27). The harness is `run.start`'s
+//!    a harness's code tool call takes the shell's place (MW5-27): one running
+//!    then, or one whose cell may still run after its result (fix pass 6,
+//!    FP5R-1, FP5R-2: Codex's Code Mode `exec` can yield and leave its cell
+//!    running; the tap reads the result's header). One cell's calls choose
+//!    the one running, else the first; calls that may be different cells
+//!    share it, none chosen. The harness is `run.start`'s
 //!    pid, or, under a boundary or the agents' user, the process under its
 //!    wrappers that execs the program `derm run` started (`harnessExe`,
 //!    MW5-16). Until that process is seen, a shell any process under the
@@ -46,6 +53,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use derm_core::event::{Event, Source};
+pub(crate) use derm_core::policy::code_tool;
 use serde_json::{json, Value};
 
 /// Calls one chat keeps (oldest go first).
@@ -90,26 +98,29 @@ struct Call {
     start: Option<i64>,
     end: Option<i64>,
     /// A harness's code tool, which runs shells through nested calls
-    /// (`CODE_TOOLS`).
+    /// (`derm_core::policy::CODE_TOOLS`). Only the tap's record marks one.
     code: bool,
+    /// The tap's result ended the call (`end` is the tap's).
+    tap_ended: bool,
+    /// A code call's cell (Codex's cell id, from `wait`'s arguments or its
+    /// result's header), when the tap read one.
+    cell: Option<String>,
+    /// A code call's result, as the tap read its header: whether its cell
+    /// may still run after it.
+    result: Option<CodeResult>,
 }
 
-/// Tools that run code which calls the harness's other tools, shells among
-/// them, by harness id (rules case 74; Mac test w5 retest 5, MW5-27). The
-/// shells such a call makes start as children of the harness while it runs,
-/// under no shell call of their own when no gate reports the nested call.
-/// Codex 0.163.0's Code Mode offers the model `exec` (JavaScript in a V8
-/// isolate that calls nested tools such as `exec_command`) and `wait` (resumes
-/// a running `exec` cell): `codex-rs/code-mode-protocol/src/lib.rs:54-55`,
-/// `description.rs` (`EXEC_DESCRIPTION_TEMPLATE`, `WAIT_DESCRIPTION_TEMPLATE`)
-/// at `rust-v0.163.0`. Names here are the tap's normalized ones, and only
-/// the tap's own record marks a call as a code tool's.
-const CODE_TOOLS: &[(&str, &str)] = &[("codex", "exec"), ("codex", "wait")];
-
-fn code_tool(harness: &str, tool: &str) -> bool {
-    CODE_TOOLS
-        .iter()
-        .any(|(h, t)| *h == harness && t.eq_ignore_ascii_case(tool))
+/// What a code call's result says of its cell (`tap.call`'s `codeStatus`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CodeResult {
+    /// The cell yielded and keeps running (Codex's `Script running with cell
+    /// ID <id>`): its shells can start after the call ends.
+    Running,
+    /// The cell completed, failed or was terminated.
+    Ended,
+    /// No header the tap could read: taken as running (fails safe toward
+    /// more candidates, never toward none).
+    Unknown,
 }
 
 impl Call {
@@ -142,6 +153,10 @@ enum Owner {
     Session,
     /// Started while two or more calls ran: no single owner.
     Ambiguous,
+    /// A shell started with no shell call running while these code calls'
+    /// cells may have run, more than one cell among them: each may own it,
+    /// none is chosen (fix pass 6, FP5R-1).
+    Cells(std::sync::Arc<[String]>),
     /// A shell started while these shell calls ran: each may own it, none
     /// is chosen (fix pass 1's review, F1). Shared, since every descendant
     /// holds it (re-review: at most 64 ids, up to 8,192 processes a chat).
@@ -235,6 +250,67 @@ impl ChatState {
             .collect();
         v.truncate(MAX_CANDIDATES);
         v
+    }
+
+    /// The code calls whose cell may run at `t`, and the one chosen when
+    /// they are all one cell (fix pass 6, FP5R-1, FP5R-2). A code call
+    /// counts while it runs, and after its result while that result says
+    /// its cell keeps running (or the tap read no header), until a later
+    /// call on the same cell says it ended. Calls on one known cell choose
+    /// the one running then, else the first; calls that may be different
+    /// cells choose none.
+    fn code_owners(&self, t: i64) -> (Vec<String>, Option<String>) {
+        let mut live: Vec<(&String, &Call)> = Vec::new();
+        for (id, c) in self
+            .order
+            .iter()
+            .filter_map(|id| self.calls.get(id).map(|c| (id, c)))
+            .filter(|(_, c)| c.code)
+        {
+            if c.running_at(t) {
+                live.push((id, c));
+                continue;
+            }
+            let after = c.end.is_some_and(|e| e <= t);
+            let open = matches!(c.result, Some(CodeResult::Running | CodeResult::Unknown));
+            if after && open && !self.cell_closed(c, t) {
+                live.push((id, c));
+            }
+        }
+        live.truncate(MAX_CANDIDATES);
+        let key = |(id, c): &(&String, &Call)| match &c.cell {
+            Some(cell) => format!("cell:{cell}"),
+            None => format!("call:{id}"),
+        };
+        let one_cell = live
+            .first()
+            .is_some_and(|first| live.iter().all(|x| key(x) == key(first)));
+        let chosen = one_cell.then(|| {
+            let running: Vec<&String> = live
+                .iter()
+                .filter(|(_, c)| c.running_at(t))
+                .map(|(id, _)| *id)
+                .collect();
+            match running.as_slice() {
+                [only] => (*only).clone(),
+                _ => live[0].0.clone(),
+            }
+        });
+        (live.iter().map(|(id, _)| id.to_string()).collect(), chosen)
+    }
+
+    /// Whether a later call on `c`'s cell said, by `t`, that the cell ended.
+    fn cell_closed(&self, c: &Call, t: i64) -> bool {
+        let (Some(cell), Some(from)) = (&c.cell, c.start) else {
+            return false;
+        };
+        self.calls.values().any(|w| {
+            w.code
+                && w.cell.as_ref() == Some(cell)
+                && w.result == Some(CodeResult::Ended)
+                && w.start.is_some_and(|s| s >= from)
+                && w.end.is_some_and(|e| e <= t)
+        })
     }
 
     fn absolute(&self, path: &str) -> String {
@@ -402,6 +478,10 @@ impl Join {
                     })
                     .unwrap_or_default();
                 let has_result = e.detail.get("resultSha256").is_some_and(|r| !r.is_null());
+                let cell = str_at(&e.detail, "cellId")
+                    .filter(|c| derm_core::policy::cell_id_ok(c))
+                    .map(str::to_string);
+                let status = str_at(&e.detail, "codeStatus");
                 let st = self.chat(&e.chat_id);
                 let paths: Vec<String> = paths.iter().map(|p| st.absolute(p)).collect();
                 let c = st.call_mut(id);
@@ -409,9 +489,29 @@ impl Join {
                 c.code = code_tool(&e.harness, &tool);
                 c.tool = tool;
                 c.paths = paths;
-                c.start.get_or_insert(e.at);
+                // The tap sees the call first: no record moves its start
+                // later (FP5R-3).
+                c.start = Some(c.start.map_or(e.at, |s| s.min(e.at)));
+                if c.code {
+                    // A code call's times are the tap's alone (FP5R-4): an
+                    // end an adapter record set before the tap's is dropped.
+                    if !c.tap_ended {
+                        c.end = None;
+                    }
+                    if cell.is_some() {
+                        c.cell = cell;
+                    }
+                    if has_result {
+                        c.result = Some(match status {
+                            Some("running") => CodeResult::Running,
+                            Some("ended") => CodeResult::Ended,
+                            _ => CodeResult::Unknown,
+                        });
+                    }
+                }
                 if has_result {
                     c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)));
+                    c.tap_ended = true;
                 }
                 Vec::new()
             }
@@ -436,15 +536,30 @@ impl Join {
                 if c.tool.is_empty() {
                     c.tool = tool;
                 }
+                // A code call's times are the tap's alone: Codex sends no
+                // hook for Code Mode's `exec` or `wait`, so a record naming
+                // one is a chat token's, and its cell's nested shells keep
+                // starting until the tap's result (FP5R-3, FP5R-4).
+                if c.code {
+                    return Vec::new();
+                }
+                // A chat token can post these for a call it read from its own
+                // tail, after its shell started and before the OS feed
+                // delivers that shell (MW5-17), so no record moves a call's
+                // start later, and a deny ends a call no earlier than its
+                // start (FP5R-3). An early end drops only new harness
+                // children; a call's own tree keeps its writes (S3).
                 if ran {
                     c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)));
                 } else if decision == "deny" {
-                    // A denied call runs nothing: it ends where it starts.
-                    c.start = Some(e.at);
-                    c.end = Some(e.at);
+                    // A denied call runs nothing: it ends at the deny.
+                    let s = c.start.map_or(e.at, |s| s.min(e.at));
+                    c.start = Some(s);
+                    c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)).max(s));
                 } else if decision != "deferred" {
-                    // The decision is when the call can start running.
-                    c.start = Some(e.at);
+                    // The decision is when an untapped call can start; a
+                    // later one never moves it.
+                    c.start = Some(c.start.map_or(e.at, |s| s.min(e.at)));
                 }
                 Vec::new()
             }
@@ -511,11 +626,16 @@ impl Join {
                     parent.is_some_and(|p| Some(p) == st.root_pid || Some(p) == st.harness);
                 let by_line = !by_root && parent.is_some_and(|p| line_place(st, p));
                 let places = by_root || by_line;
-                if places
-                    && st.line_on
-                    && st.harness.is_none()
-                    && st.running(t).is_empty()
-                    && st.line.len() < MAX_PIDS
+                // What may own a child placed now: the calls running, and,
+                // with no shell call among them, the code calls whose cell
+                // may run (FP5R-1, FP5R-2).
+                let (cells, cell_chosen) = if places {
+                    st.code_owners(t)
+                } else {
+                    (Vec::new(), None)
+                };
+                let idle = st.running(t).is_empty() && cells.is_empty();
+                if places && st.line_on && st.harness.is_none() && idle && st.line.len() < MAX_PIDS
                 {
                     st.line.insert(child);
                 }
@@ -538,32 +658,44 @@ impl Join {
                         // or an approval posted with no call after it) does
                         // not take its writes from every install (review F1).
                         // A shell call running is the shell's owner; with
-                        // none, a code tool call running is (its nested
-                        // shell, MW5-27): a nested call the gate reports
-                        // as a shell call is the more precise of the two.
+                        // none, a code tool call is (its nested shell,
+                        // MW5-27), running then or with its cell possibly
+                        // still running after its result (FP5R-1, FP5R-2): a
+                        // nested call the gate reports as a shell call is the
+                        // more precise of the two.
                         let running = st.running(t);
-                        let mut shells: Vec<String> = running
+                        let shells: Vec<String> = running
                             .iter()
                             .filter(|(_, c)| c.shell())
                             .map(|(id, _)| id.to_string())
                             .collect();
-                        if shells.is_empty() {
-                            shells = running
-                                .iter()
-                                .filter(|(_, c)| c.code)
-                                .map(|(id, _)| id.to_string())
-                                .collect();
-                        }
-                        match (running.len(), kind) {
-                            (0, _) => Some(Owner::Session),
-                            (_, "fork") => None,
-                            _ if program.is_some_and(shell_program) => match shells.len() {
-                                0 => Some(Owner::Ambiguous),
-                                _ if by_line => Some(Owner::Unplaced(shells.into())),
-                                1 => Some(Owner::Call(shells[0].clone())),
-                                _ => Some(Owner::Among(shells.into())),
-                            },
-                            _ => Some(Owner::Ambiguous),
+                        let shell = program.is_some_and(shell_program);
+                        if idle {
+                            Some(Owner::Session)
+                        } else if kind == "fork" {
+                            None
+                        } else if shell && !shells.is_empty() {
+                            if by_line {
+                                Some(Owner::Unplaced(shells.into()))
+                            } else if shells.len() == 1 {
+                                Some(Owner::Call(shells[0].clone()))
+                            } else {
+                                Some(Owner::Among(shells.into()))
+                            }
+                        } else if shell && !cells.is_empty() {
+                            if by_line {
+                                Some(Owner::Unplaced(cells.into()))
+                            } else if let Some(id) = cell_chosen {
+                                Some(Owner::Call(id))
+                            } else {
+                                Some(Owner::Cells(cells.into()))
+                            }
+                        } else if running.is_empty() {
+                            // A helper the harness starts while only a cell
+                            // may run, such as an MCP server: the session's.
+                            Some(Owner::Session)
+                        } else {
+                            Some(Owner::Ambiguous)
                         }
                     }
                     None => None,
@@ -590,7 +722,10 @@ impl Join {
         // re-review S3); with no tree owner, no call running fits none.
         let tree_owned = matches!(
             owner,
-            Some(Owner::Call(_)) | Some(Owner::Among(_)) | Some(Owner::Unplaced(_))
+            Some(Owner::Call(_))
+                | Some(Owner::Among(_))
+                | Some(Owner::Unplaced(_))
+                | Some(Owner::Cells(_))
         );
         if running.is_empty() && !tree_owned {
             return Vec::new();
@@ -618,6 +753,16 @@ impl Join {
                     c.event.clone(),
                     "tree",
                     "a shell started while this call and others ran".into(),
+                ));
+            }
+        }
+        if let Some(Owner::Cells(ids)) = &owner {
+            for c in ids.iter().filter_map(|id| st.calls.get(id)) {
+                candidates.push((
+                    c.event.clone(),
+                    "tree",
+                    "a shell started while this code call's cell may have run, beside others"
+                        .into(),
                 ));
             }
         }
