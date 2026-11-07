@@ -28,6 +28,7 @@ pub(crate) mod args;
 mod exec;
 #[cfg(windows)]
 use crate::platform::windows::exec;
+mod codex_store;
 pub(crate) mod harness;
 pub(crate) mod plan;
 mod policy_log;
@@ -60,6 +61,56 @@ const POLICY_LOG_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What `derm run` reads from its own environment, gathered in one place so
 /// the tests can give a fake daemon and fake programs.
+/// A path with every link in it followed, as the kernel would on an open,
+/// and a missing tail kept as written (`realpath -m`): a link whose target
+/// does not exist yet resolves to that target, since a write through it
+/// creates the target (fix pass 6, FP5R-6). `None` for a relative path or a
+/// chain of more than 40 links.
+fn real_path_lenient(path: &Path) -> Option<PathBuf> {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::path::Component;
+    if !path.is_absolute() {
+        return None;
+    }
+    let parts = |p: &Path| -> Vec<OsString> {
+        p.components()
+            .filter_map(|c| match c {
+                Component::Normal(n) => Some(n.to_os_string()),
+                Component::ParentDir => Some(OsString::from("..")),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut todo: VecDeque<OsString> = parts(path).into();
+    let mut out = PathBuf::from("/");
+    let mut hops = 0;
+    while let Some(c) = todo.pop_front() {
+        if c == ".." {
+            out.pop();
+            continue;
+        }
+        let next = out.join(&c);
+        match std::fs::symlink_metadata(&next) {
+            Ok(m) if m.file_type().is_symlink() => {
+                hops += 1;
+                if hops > 40 {
+                    return None;
+                }
+                let target = std::fs::read_link(&next).ok()?;
+                if target.is_absolute() {
+                    out = PathBuf::from("/");
+                }
+                for x in parts(&target).into_iter().rev() {
+                    todo.push_front(x);
+                }
+            }
+            _ => out = next,
+        }
+    }
+    Some(out)
+}
+
 struct RunEnv {
     socket: Option<PathBuf>,
     home: Option<String>,
@@ -876,12 +927,27 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
         macos: cfg!(target_os = "macos"),
         terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        // FP5R-5: read only for Codex under srt, where it decides.
+        codex_store: if a.harness.id == "codex" && a.boundary == Boundary::Srt {
+            codex_store::read(
+                &home,
+                &cwd,
+                std::env::var("CODEX_HOME").ok().as_deref(),
+                &codex_store::Roots::real(cfg!(target_os = "macos")),
+            )
+        } else {
+            plan::CodexStoreFiles::default()
+        },
     };
     let inputs = plan::Inputs {
         policy_regular: regular_private_file(Path::new(&inputs.policy)),
         ..inputs
     };
     let mut p = plan::build(&inputs).map_err(|e| (2, e))?;
+    // FP5R-6: srt's denies by their real paths too, where a link leads.
+    plan::deny_real_paths(&mut p, &|s: &str| {
+        real_path_lenient(Path::new(s)).and_then(|r| r.to_str().map(str::to_string))
+    });
     // The model tap's launch environment (lane S's seam), unless `--no-tap`
     // (lane S's request 2, case 127): then the chat says it runs untapped.
     let tap_record = if a.no_tap {
@@ -1375,6 +1441,47 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    /// FP5R-6: the resolver follows a linked folder, a link at the leaf
+    /// whose target does not exist yet, `..` after a link, and stops on a
+    /// loop.
+    #[cfg(unix)]
+    #[test]
+    fn fp5r_6_a_path_is_resolved_through_every_link() {
+        use std::os::unix::fs::symlink;
+        let d = std::env::temp_dir().join(format!("derm-fp6-real-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("real/claude")).unwrap();
+        std::fs::create_dir_all(d.join("home")).unwrap();
+        let d = std::fs::canonicalize(&d).unwrap();
+        symlink(d.join("real/claude"), d.join("home/.claude")).unwrap();
+        // A file not there yet, under a linked folder.
+        assert_eq!(
+            real_path_lenient(&d.join("home/.claude/.credentials.json")),
+            Some(d.join("real/claude/.credentials.json"))
+        );
+        // A dangling link at the leaf: a write through it makes its target.
+        symlink("../elsewhere/creds", d.join("real/claude/creds")).unwrap();
+        assert_eq!(
+            real_path_lenient(&d.join("home/.claude/creds")),
+            Some(d.join("real/elsewhere/creds"))
+        );
+        // `..` after a link climbs from where the link led.
+        assert_eq!(
+            real_path_lenient(&d.join("home/.claude/../x")),
+            Some(d.join("real/x"))
+        );
+        // No link: itself.
+        assert_eq!(
+            real_path_lenient(&d.join("home/plain")),
+            Some(d.join("home/plain"))
+        );
+        // A loop, and a relative path.
+        symlink(d.join("loop"), d.join("loop")).unwrap();
+        assert_eq!(real_path_lenient(&d.join("loop/x")), None);
+        assert_eq!(real_path_lenient(Path::new("rel/x")), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn chat_ids_are_valid_and_distinct() {

@@ -208,6 +208,143 @@ pub struct Inputs<'a> {
     pub macos: bool,
     /// The harness starts on a terminal (`derm run`'s stdin is one).
     pub terminal: bool,
+    /// What the files Codex reads say of its sign-in store (fix pass 6,
+    /// FP5R-5; `run::codex_store` reads them, this module reads no file).
+    pub codex_store: CodexStoreFiles,
+}
+
+/// Why Codex's sign-in may live in a store srt cannot write, from its files
+/// (`run::codex_store`): the requirements and managed config, which win over
+/// everything, and the config layers, which `-c` on the command line beats.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CodexStoreFiles {
+    pub managed: Option<String>,
+    pub config: Option<String>,
+    /// `$CODEX_HOME/auth.json` when `CODEX_HOME` moves it from `~/.codex`.
+    pub auth_file: Option<String>,
+}
+
+/// The last `cli_auth_credentials_store` the harness's own words set with
+/// Codex's `-c` (or `--config`), as written: `-c k=v`, `-ck=v`, `--config k=v`
+/// or `--config=k=v`, the value's TOML quotes taken off. Codex applies `-c`
+/// in order, so the last wins.
+pub fn codex_store_from_args(rest: &[String]) -> Option<String> {
+    let mut found = None;
+    let mut it = rest.iter();
+    while let Some(w) = it.next() {
+        let pair = match w.as_str() {
+            "-c" | "--config" => it.next().map(String::as_str),
+            _ => w
+                .strip_prefix("--config=")
+                .or_else(|| w.strip_prefix("-c").filter(|r| !r.is_empty())),
+        };
+        let Some((k, v)) = pair.and_then(|p| p.split_once('=')) else {
+            continue;
+        };
+        if k.trim() == "cli_auth_credentials_store" {
+            let v = v.trim();
+            let v = v
+                .strip_prefix('"')
+                .and_then(|x| x.strip_suffix('"'))
+                .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+                .unwrap_or(v);
+            found = Some(v.to_string());
+        }
+    }
+    found
+}
+
+/// Why Codex's sign-in may live in a store srt cannot write (`keyring`,
+/// `auto`, or a value or file derm cannot read), or `None` for a file
+/// (`file`, the default) or memory (`ephemeral`). The requirements win; then
+/// `-c`; then the config files (Codex 0.163.0,
+/// `core/src/config/mod.rs:4460-4466`).
+pub fn codex_store_risk(rest: &[String], files: &CodexStoreFiles) -> Option<String> {
+    if let Some(m) = &files.managed {
+        return Some(m.clone());
+    }
+    match codex_store_from_args(rest) {
+        Some(v) if matches!(v.as_str(), "file" | "ephemeral") => None,
+        Some(v) => Some(format!("-c cli_auth_credentials_store={v}")),
+        None => files.config.clone(),
+    }
+}
+
+/// Fix pass 6 (FP5R-6): srt 0.0.81 resolves a configured path's links only
+/// when the real path stays inside the path's own tree, and otherwise keeps
+/// the spelling (`dist/sandbox/sandbox-utils.js:229-294, 480-490`), while
+/// Seatbelt on macOS matches the kernel's real path, so a `denyWrite` of
+/// `~/.claude/.credentials.json` with `~/.claude` linked to another folder
+/// misses the file. Each deny in srt's settings (`denyRead`, `denyWrite`) is
+/// written a second time by its real path when that differs, and so is each
+/// literal `allowRead` inside a deny (one file, so nothing widens); the
+/// write roots are left as they are (a link out of them fails closed).
+/// `resolve` follows every link of the path, a missing last part kept as
+/// written; `None` leaves the entry alone. Never `/`.
+pub fn deny_real_paths(p: &mut Plan, resolve: &dyn Fn(&str) -> Option<String>) {
+    let Some(text) = p.srt_settings.as_deref() else {
+        return;
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let mut linked: Vec<(String, String)> = Vec::new();
+    let path_of = |e: &serde_json::Value| -> Option<String> {
+        e.as_str()
+            .or_else(|| e.get("path").and_then(serde_json::Value::as_str))
+            .map(str::to_string)
+    };
+    for key in ["denyRead", "denyWrite", "allowRead"] {
+        let Some(list) = v["filesystem"][key].as_array_mut() else {
+            continue;
+        };
+        let mut extra = Vec::new();
+        for e in list.iter() {
+            if key == "allowRead" && e.get("literal") != Some(&json!(true)) {
+                continue;
+            }
+            let Some(spelled) = path_of(e) else { continue };
+            let Some(real) = resolve(&spelled) else {
+                continue;
+            };
+            if real == spelled || real == "/" || !real.starts_with('/') {
+                continue;
+            }
+            let mut twin = e.clone();
+            match &mut twin {
+                serde_json::Value::String(s) => *s = real.clone(),
+                serde_json::Value::Object(m) => {
+                    m.insert("path".into(), json!(real));
+                }
+                _ => continue,
+            }
+            if !list.contains(&twin) && !extra.contains(&twin) {
+                extra.push(twin);
+                if key != "allowRead" && !linked.iter().any(|(a, _)| *a == spelled) {
+                    linked.push((spelled, real));
+                }
+            }
+        }
+        list.extend(extra);
+    }
+    if linked.is_empty() {
+        return;
+    }
+    let Ok(text) = serde_json::to_string_pretty(&v) else {
+        return;
+    };
+    p.srt_settings = Some(text);
+    let shown: Vec<String> = linked
+        .iter()
+        .take(4)
+        .map(|(a, b)| format!("{a} is {b}"))
+        .collect();
+    p.notes.push(format!(
+        "derm run: {} of srt's denied paths reach another place through a link ({}{}); srt matches the place a link leads to on macOS and keeps the link's spelling, so derm denies the real path too",
+        linked.len(),
+        shown.join(", "),
+        if linked.len() > 4 { ", ..." } else { "" }
+    ));
 }
 
 /// The temp folder srt's settings let a chat write, named by its real path
@@ -532,11 +669,24 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 .macos
                 .then(|| super::harness::macos_keychain_fallback(h.id))
                 .flatten();
+            // FP5R-5: Codex set to keep its sign-in in a keyring (`keyring`,
+            // or `auto`, which falls back to `auth.json`), on any system:
+            // srt lets it write neither the macOS keychain nor, on Linux, the
+            // Secret Service's D-Bus, so a renewal would spend the keyring's
+            // single-use refresh token (`run::codex_store`).
+            let codex_keyring = (h.id == "codex")
+                .then(|| codex_store_risk(&i.args.rest, &i.codex_store))
+                .flatten();
             let sign_in: &[&str] = if keychain.is_some() {
                 notes.push(format!(
                     "derm run: under srt on macOS {} cannot save a renewed sign-in in your keychain, so derm keeps its sign-in host shut and ~/{} read-only: once its access token expires the chat stops; run it once outside srt to renew, then start the chat again",
                     h.id,
                     keychain.unwrap_or_default()
+                ));
+                &[]
+            } else if let Some(why) = &codex_keyring {
+                notes.push(format!(
+                    "derm run: codex may keep its sign-in in a keyring here ({why}), which srt does not let it write, so derm keeps its sign-in host shut and its auth.json read-only: once its access token expires the chat stops; run it once outside srt to renew, then start the chat again"
                 ));
                 &[]
             } else {
@@ -691,8 +841,19 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             deny_write.extend(i.gate_paths.iter().filter(|p| p.starts_with('/')).cloned());
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
-            // MW5-26: never a plaintext copy of a keychain sign-in.
+            // MW5-26: never a plaintext copy of a keychain sign-in; FP5R-5:
+            // nor of a Codex keyring one.
             deny_write.extend(keychain.map(under_home));
+            if codex_keyring.is_some() {
+                deny_write.push(under_home(".codex/auth.json"));
+                deny_write.extend(
+                    i.codex_store
+                        .auth_file
+                        .iter()
+                        .filter(|p| p.starts_with('/'))
+                        .cloned(),
+                );
+            }
             deny_write.sort();
             deny_write.dedup();
             let deny_write: Vec<serde_json::Value> = deny_write
@@ -990,6 +1151,7 @@ mod tests {
             cu_endpoint: None,
             macos: false,
             terminal: false,
+            codex_store: CodexStoreFiles::default(),
         }
     }
 
@@ -2289,5 +2451,225 @@ mod tests {
             srt_loopback_through_proxy(&mut p);
             assert_eq!(p.args, before, "{word}");
         }
+    }
+
+    /// Separate review of fix pass 5, FP5R-5 (was FP5-S2), its probe, kept as
+    /// fix pass 6's reproducing test. Codex
+    /// 0.163.0 with `cli_auth_credentials_store = "auto"` saves to the
+    /// keychain and, when that fails, to `$CODEX_HOME/auth.json`; a load takes
+    /// the keychain's copy first (`login/src/auth/storage.rs:479-524`). Its
+    /// refresh tokens are single use (`refresh_token_reused`,
+    /// `login/src/auth/manager.rs:1688`). On macOS under srt, with its sign-in
+    /// host open, a renewal would leave the rotated token in plaintext and
+    /// the keychain's copy spent. Named on derm's own command line here, and
+    /// derm still opens the host and leaves `auth.json` writable.
+    #[test]
+    fn fp5r_5_codex_auto_store_on_macos_is_treated_like_claude_codes() {
+        let args = a(&[
+            "codex",
+            "--boundary",
+            "srt",
+            "--",
+            "-c",
+            "cli_auth_credentials_store=\"auto\"",
+        ]);
+        let mac = build(&Inputs {
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        let v = srt_of(&mac);
+        let host_open = v["network"]["allowedDomains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("auth.openai.com:443"));
+        let file_shut = v["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path": "/home/u/.codex/auth.json", "literal": true}));
+        assert!(
+            !host_open || file_shut,
+            "host open {host_open}, auth.json read-only {file_shut}"
+        );
+    }
+
+    /// FP5R-5, the rest: on Linux too (srt's seccomp keeps the Secret
+    /// Service's D-Bus out of reach), from Codex's files as `run::codex_store`
+    /// reads them, with the requirements winning over `-c` and `-c` over the
+    /// config files; `file` and `ephemeral` keep the host open; another
+    /// harness is never touched.
+    #[test]
+    fn fp5r_5_codex_keyring_stores_shut_the_sign_in_host_on_any_system() {
+        let host = |p: &Plan| {
+            srt_of(p)["network"]["allowedDomains"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("auth.openai.com:443"))
+        };
+        let shut = |p: &Plan, path: &str| {
+            srt_of(p)["filesystem"]["denyWrite"]
+                .as_array()
+                .unwrap()
+                .contains(&json!({"path": path, "literal": true}))
+        };
+        for words in [
+            vec!["-c", "cli_auth_credentials_store=keyring"],
+            vec!["-ccli_auth_credentials_store='auto'"],
+            vec!["--config", "cli_auth_credentials_store=\"auto\""],
+            vec!["--config=cli_auth_credentials_store=auto"],
+            vec![
+                "-c",
+                "cli_auth_credentials_store=file",
+                "-c",
+                "cli_auth_credentials_store=auto",
+            ],
+        ] {
+            let mut v = vec!["codex", "--boundary", "srt", "--"];
+            v.extend(words.iter().copied());
+            let args = a(&v);
+            let p = build(&inputs(&args)).unwrap();
+            assert!(!host(&p), "{words:?}");
+            assert!(shut(&p, "/home/u/.codex/auth.json"), "{words:?}");
+            assert!(p.notes.iter().any(|n| n.contains("keyring")), "{words:?}");
+        }
+        for words in [
+            vec![],
+            vec!["-c", "cli_auth_credentials_store=file"],
+            vec!["-c", "cli_auth_credentials_store=ephemeral"],
+            vec![
+                "-c",
+                "cli_auth_credentials_store=auto",
+                "-c",
+                "cli_auth_credentials_store=file",
+            ],
+        ] {
+            let mut v = vec!["codex", "--boundary", "srt", "--"];
+            v.extend(words.iter().copied());
+            let args = a(&v);
+            let p = build(&inputs(&args)).unwrap();
+            assert!(host(&p), "{words:?}");
+            assert!(!shut(&p, "/home/u/.codex/auth.json"), "{words:?}");
+        }
+        // From the files: the config layers, which `-c file` beats.
+        let args = a(&["codex", "--boundary", "srt"]);
+        let files = CodexStoreFiles {
+            config: Some(
+                "/home/u/.codex/config.toml sets cli_auth_credentials_store = \"auto\"".into(),
+            ),
+            auth_file: Some("/srv/ch/auth.json".into()),
+            ..CodexStoreFiles::default()
+        };
+        let p = build(&Inputs {
+            codex_store: files.clone(),
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(!host(&p) && shut(&p, "/home/u/.codex/auth.json") && shut(&p, "/srv/ch/auth.json"));
+        let args = a(&[
+            "codex",
+            "--boundary",
+            "srt",
+            "--",
+            "-c",
+            "cli_auth_credentials_store=file",
+        ]);
+        let p = build(&Inputs {
+            codex_store: files.clone(),
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(host(&p), "-c beats the config files");
+        // The requirements win over `-c`.
+        let p = build(&Inputs {
+            codex_store: CodexStoreFiles {
+                managed: Some(
+                    "/etc/codex/requirements.toml sets cli_auth_credentials_store = \"keyring\""
+                        .into(),
+                ),
+                ..CodexStoreFiles::default()
+            },
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(!host(&p), "the requirements beat -c");
+        // Claude Code's row is untouched by Codex's store on Linux.
+        let args = a(&[
+            "claude-code",
+            "--boundary",
+            "srt",
+            "--",
+            "-c",
+            "cli_auth_credentials_store=auto",
+        ]);
+        let p = build(&inputs(&args)).unwrap();
+        assert!(srt_of(&p)["network"]["allowedDomains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("platform.claude.com:443")));
+    }
+
+    /// FP5R-6: a deny through a link is written by its real path too, a
+    /// literal `allowRead` too (one file), the write roots never; a path
+    /// that resolves to itself or to `/` adds nothing, and the start says
+    /// which paths were links.
+    #[test]
+    fn fp5r_6_a_deny_through_a_link_also_names_its_real_path() {
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let mut p = build(&Inputs {
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        let before = srt_of(&p);
+        let resolve = |s: &str| -> Option<String> {
+            if let Some(rest) = s.strip_prefix("/home/u/.claude/") {
+                Some(format!("/Volumes/x/claude/{rest}"))
+            } else if s == "/home/u/.claude" {
+                Some("/Volumes/x/claude".into())
+            } else if s == "/home/u/.ssh" {
+                Some("/".into())
+            } else if s.starts_with("/home/u/.derm") {
+                Some(s.replacen("/home/u/.derm", "/srv/derm", 1))
+            } else {
+                Some(s.to_string())
+            }
+        };
+        deny_real_paths(&mut p, &resolve);
+        let v = srt_of(&p);
+        let has =
+            |key: &str, e: serde_json::Value| v["filesystem"][key].as_array().unwrap().contains(&e);
+        assert!(has(
+            "denyWrite",
+            json!({"path": "/Volumes/x/claude/settings.json", "literal": true})
+        ));
+        assert!(has(
+            "denyWrite",
+            json!({"path": "/home/u/.claude/settings.json", "literal": true})
+        ));
+        assert!(has("denyRead", json!("/srv/derm")));
+        assert!(has(
+            "allowRead",
+            json!({"path": "/srv/derm/policy.json", "literal": true})
+        ));
+        // A link to `/` adds nothing; the write roots are not resolved.
+        assert!(!has("denyRead", json!("/")));
+        assert_eq!(
+            v["filesystem"]["allowWrite"],
+            before["filesystem"]["allowWrite"]
+        );
+        assert!(
+            p.notes.iter().any(|n| n.contains(
+                "/home/u/.claude/.credentials.json is /Volumes/x/claude/.credentials.json"
+            )),
+            "{:?}",
+            p.notes
+        );
+        // With no link, nothing changes.
+        let mut q = build(&inputs(&args)).unwrap();
+        let text = q.srt_settings.clone();
+        let n = q.notes.len();
+        deny_real_paths(&mut q, &|s: &str| Some(s.to_string()));
+        assert_eq!(q.srt_settings, text);
+        assert_eq!(q.notes.len(), n);
     }
 }

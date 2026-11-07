@@ -86,7 +86,9 @@ pub fn sign_in_hosts(id: &str) -> &'static [&'static str] {
 /// token in that file only while the host's Claude Code reads the keychain's
 /// old one. Its Linux build has no keychain: the file is its store. Codex
 /// 0.163.0 keeps its sign-in in `auth.json` unless configured otherwise
-/// (`config/src/types.rs:136-146`, `AuthCredentialsStoreMode::File`).
+/// (`config/src/types.rs:136-146`, `AuthCredentialsStoreMode::File`); a Codex
+/// configured for a keyring is `plan::codex_store_risk`'s, on every system
+/// (fix pass 6, FP5R-5).
 pub fn macos_keychain_fallback(id: &str) -> Option<&'static str> {
     match id {
         "claude-code" => Some(".claude/.credentials.json"),
