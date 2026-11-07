@@ -102,6 +102,8 @@ struct Call {
     code: bool,
     /// The tap's result ended the call (`end` is the tap's).
     tap_ended: bool,
+    /// A gate's allow (or other decision that lets the call run) was seen.
+    allowed: bool,
     /// A code call's cell (Codex's cell id, from `wait`'s arguments or its
     /// result's header), when the tap read one.
     cell: Option<String>,
@@ -260,23 +262,66 @@ impl ChatState {
     /// the one running then, else the first; calls that may be different
     /// cells choose none.
     fn code_owners(&self, t: i64) -> (Vec<String>, Option<String>) {
-        let mut live: Vec<(&String, &Call)> = Vec::new();
+        // One pass over the calls: the code calls running or whose cell may
+        // run, and per cell the ended results seen by `t`. Then each open
+        // call is checked against its own cell's ends by a binary search, so
+        // a chat with thousands of yielded cells costs O(n log n) per event,
+        // not O(n^2) (fix pass 6's review, FP6-S3).
+        let mut live: Vec<(&String, &Call, bool)> = Vec::new();
+        let mut ends: HashMap<&str, Vec<(i64, i64)>> = HashMap::new();
         for (id, c) in self
             .order
             .iter()
             .filter_map(|id| self.calls.get(id).map(|c| (id, c)))
             .filter(|(_, c)| c.code)
         {
+            if let (Some(cell), Some(CodeResult::Ended), Some(s), Some(e)) =
+                (&c.cell, c.result, c.start, c.end)
+            {
+                if e <= t {
+                    ends.entry(cell.as_str()).or_default().push((s, e));
+                }
+            }
             if c.running_at(t) {
-                live.push((id, c));
+                live.push((id, c, true));
                 continue;
             }
             let after = c.end.is_some_and(|e| e <= t);
             let open = matches!(c.result, Some(CodeResult::Running | CodeResult::Unknown));
-            if after && open && !self.cell_closed(c, t) {
-                live.push((id, c));
+            if after && open {
+                live.push((id, c, false));
             }
         }
+        // Per cell: ends sorted by start, with the earliest end from each
+        // start on, so "an end on this cell that started at or after `from`
+        // and came by `t`" is one search.
+        let index: HashMap<&str, (Vec<i64>, Vec<i64>)> = ends
+            .into_iter()
+            .map(|(cell, mut v)| {
+                v.sort_unstable();
+                let starts: Vec<i64> = v.iter().map(|(s, _)| *s).collect();
+                let mut min_end: Vec<i64> = v.iter().map(|(_, e)| *e).collect();
+                for i in (0..min_end.len().saturating_sub(1)).rev() {
+                    min_end[i] = min_end[i].min(min_end[i + 1]);
+                }
+                (cell, (starts, min_end))
+            })
+            .collect();
+        let closed = |c: &Call| -> bool {
+            let (Some(cell), Some(from)) = (&c.cell, c.start) else {
+                return false;
+            };
+            let Some((starts, min_end)) = index.get(cell.as_str()) else {
+                return false;
+            };
+            let i = starts.partition_point(|s| *s < from);
+            i < starts.len() && min_end[i] <= t
+        };
+        let mut live: Vec<(&String, &Call)> = live
+            .into_iter()
+            .filter(|(_, c, running)| *running || !closed(c))
+            .map(|(id, c, _)| (id, c))
+            .collect();
         live.truncate(MAX_CANDIDATES);
         let key = |(id, c): &(&String, &Call)| match &c.cell {
             Some(cell) => format!("cell:{cell}"),
@@ -297,20 +342,6 @@ impl ChatState {
             }
         });
         (live.iter().map(|(id, _)| id.to_string()).collect(), chosen)
-    }
-
-    /// Whether a later call on `c`'s cell said, by `t`, that the cell ended.
-    fn cell_closed(&self, c: &Call, t: i64) -> bool {
-        let (Some(cell), Some(from)) = (&c.cell, c.start) else {
-            return false;
-        };
-        self.calls.values().any(|w| {
-            w.code
-                && w.cell.as_ref() == Some(cell)
-                && w.result == Some(CodeResult::Ended)
-                && w.start.is_some_and(|s| s >= from)
-                && w.end.is_some_and(|e| e <= t)
-        })
     }
 
     fn absolute(&self, path: &str) -> String {
@@ -558,8 +589,19 @@ impl Join {
                     c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)).max(s));
                 } else if decision != "deferred" {
                     // The decision is when an untapped call can start; a
-                    // later one never moves it.
+                    // later one never moves it. An end posted before the
+                    // gate's allow (a chat token's `tool.call` or `deny` for a
+                    // call it read in its tail while an ask waited) is not
+                    // the call's: the call runs from the allow, so it is open
+                    // again until a later end (fix pass 6's review, FP6-S2).
+                    // Only the call's first allow re-opens it, so a late
+                    // allow a chat token posts after the call's real end
+                    // cannot make a finished call own later shells.
                     c.start = Some(c.start.map_or(e.at, |s| s.min(e.at)));
+                    if !c.allowed && !c.tap_ended && c.end.is_some_and(|x| x < e.at) {
+                        c.end = None;
+                    }
+                    c.allowed = true;
                 }
                 Vec::new()
             }

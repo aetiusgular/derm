@@ -1684,3 +1684,150 @@ fn fp6_a_later_approval_does_not_move_an_untapped_calls_start() {
     let r = shell_writes(&mut j, 1_100, 7881, "/w/u");
     assert_eq!(r[0].detail["chosen"], "approval-1000-0", "{}", r[0].detail);
 }
+
+// ---- Separate review of fix pass 6: probes. ----
+
+/// FP6-S1 probe, the join's half: a `wait` on a padded id (Codex answered
+/// for a missing cell, "Script terminated") must not close the still-running
+/// cell 3, so cell 3's later shell keeps a record. The review's probe fed the
+/// tap's old record (cellId "3", trimmed from " 3"); since the fix the tap
+/// keeps `wait`'s id as Codex reads it, and " 3" is no id `cell_id_ok`
+/// takes, so the record names no cell (`record::tests::fp6_s1_...`). This
+/// feeds that record; the assertion is the probe's.
+#[test]
+fn fp6_s1_a_wait_on_another_cell_does_not_close_a_running_cell() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_code(
+        &mut j,
+        "call_E1",
+        "exec",
+        1_000,
+        1_200,
+        Some("3"),
+        Some("running"),
+    );
+    // What the tap records for `wait` on " 3" since FP6-S1: no cellId.
+    tap_code(&mut j, "call_W1", "wait", 5_000, 5_100, None, Some("ended"));
+    let r = shell_writes(&mut j, 20_000, 7901, "/w/after-pad");
+    assert_eq!(r.len(), 1, "the running cell's shell has no record: {r:?}");
+}
+
+/// FP6-S2 probe. A chat token's `tool.call` for a tapped shell call, posted
+/// as soon as the tap's record shows in its tail and before the gate lets the
+/// shell start (an ask the person answers after a few seconds), ends the
+/// call before its shell exists: the shell is the session's, no record.
+/// The code-call half of FP5R-4 is fixed; this shell-call half is not.
+#[test]
+fn fp6_s2_a_chat_token_tool_call_before_a_tapped_shell_starts_drops_it() {
+    let mut j = Join::new();
+    start(&mut j);
+    let mut e = ev(
+        Source::Tap,
+        "tap.call",
+        1_000,
+        None,
+        json!({"callId": "toolu_S2", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+    );
+    e.id = format!("tap-{CHAT}-toolu_S2");
+    j.observe(&e);
+    j.observe(&ev(
+        Source::Adapter,
+        "tool.call",
+        1_100,
+        None,
+        json!({"toolUseId": "toolu_S2"}),
+    ));
+    // The gate's real approval after the person answers, then the shell.
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        6_000,
+        None,
+        json!({"toolUseId": "toolu_S2", "decision": "allow", "tool": "bash"}),
+    ));
+    let r = shell_writes(&mut j, 6_100, 7911, "/w/s2");
+    assert_eq!(r.len(), 1, "the call's own shell has no record: {r:?}");
+}
+
+/// FP6-S3 probe. `code_owners` calls `cell_closed` (a scan of every call)
+/// for every open code call, on each harness fork and exec: 4,096 yielded
+/// cells (MAX_CALLS) cost 4,096 x 4,096 checks per event, under the join's
+/// lock. The bound here is generous for a 2-core box.
+#[test]
+fn fp6_s3_many_open_cells_keep_a_harness_fork_cheap() {
+    let mut j = Join::new();
+    start(&mut j);
+    for i in 0..MAX_CALLS as i64 {
+        let id = format!("call_C{i}");
+        let cell = format!("{i}");
+        tap_code(
+            &mut j,
+            &id,
+            "exec",
+            1_000 + i,
+            1_001 + i,
+            Some(&cell),
+            Some("running"),
+        );
+    }
+    let t0 = std::time::Instant::now();
+    for k in 0..10u32 {
+        effect(
+            &mut j,
+            "fork",
+            100_000 + k as i64,
+            ROOT,
+            1,
+            json!({"child": 8000 + k}),
+        );
+    }
+    let took = t0.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(50),
+        "10 forks took {took:?}"
+    );
+}
+
+/// FP6-S2: only a call's first allow re-opens an end posted before it, so a
+/// chat token's late allow after the call's real end does not make the
+/// finished call own a later harness shell.
+#[test]
+fn fp6r_a_late_allow_does_not_re_open_a_finished_call() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_L", "bash", &[], 1_000, Some(2_000));
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        30_000,
+        None,
+        json!({"toolUseId": "toolu_L", "decision": "allow", "tool": "bash"}),
+    ));
+    let r = shell_writes(&mut j, 30_100, 7921, "/w/late");
+    assert!(r.is_empty(), "{r:?}");
+}
+
+/// FP6-S2, a deny: a chat token's `deny` for an untapped call, posted before
+/// the gate's real allow, ends nothing once the allow comes.
+#[test]
+fn fp6r_a_deny_before_the_allow_does_not_end_an_untapped_call() {
+    let mut j = Join::new();
+    start(&mut j);
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        1_000,
+        None,
+        json!({"toolUseId": "toolu_U", "decision": "deny", "tool": "bash"}),
+    ));
+    j.observe(&ev(
+        Source::Adapter,
+        "approval",
+        6_000,
+        None,
+        json!({"toolUseId": "toolu_U", "decision": "allow", "tool": "bash"}),
+    ));
+    let r = shell_writes(&mut j, 6_100, 7931, "/w/u2");
+    assert_eq!(r.len(), 1, "{r:?}");
+}

@@ -256,9 +256,14 @@ impl CallRecord {
             self.cell_id = call
                 .args
                 .parsed()
+                // As Codex 0.163.0 reads it: `ExecWaitArgs.cell_id` is a
+                // `String` taken as given (`CellId::new(args.cell_id)`,
+                // `core/src/tools/code_mode/wait_handler.rs:28-29, 126`), so
+                // a padded id names another cell, never the trimmed one, and
+                // a number fails Codex's parse and names no cell (fix pass
+                // 6's review, FP6-S1).
                 .and_then(|v| match v.get("cell_id") {
-                    Some(Value::String(s)) => Some(s.trim().to_string()),
-                    Some(Value::Number(n)) => Some(n.to_string()),
+                    Some(Value::String(s)) => Some(s.clone()),
                     _ => None,
                 })
                 .filter(|c| derm_core::policy::cell_id_ok(c));
@@ -463,6 +468,23 @@ pub fn clip(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FP6-S1 probe (review of fix pass 6). Codex 0.163.0 builds the cell id
+    /// from `wait`'s argument as given (`core/src/tools/code_mode/
+    /// wait_handler.rs:126`, `CellId::new(args.cell_id)`, no trim), so a
+    /// padded id names a different cell than the trimmed one. The tap must
+    /// not record the padded id as the live cell's.
+    #[test]
+    fn fp6_s1_a_padded_wait_cell_id_is_not_taken_as_the_trimmed_cell() {
+        let call = Call {
+            call_id: "call_W".into(),
+            tool: "wait".into(),
+            args: ArgsText::Json(json!({"cell_id": " 3"})),
+            incomplete: false,
+        };
+        let rec = CallRecord::new(Api::OpenAiResponses, "m", None, "codex", &call);
+        assert_ne!(rec.cell_id.as_deref(), Some("3"), "{:?}", rec.cell_id);
+    }
 
     #[test]
     fn canonical_json_sorts_keys_and_drops_spaces() {

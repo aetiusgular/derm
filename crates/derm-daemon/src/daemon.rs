@@ -1622,6 +1622,18 @@ impl Daemon {
             // call's times from the tap alone.
             return self.keep_conflict(event, code);
         }
+        if let Some(tap) = matches!(who, Who::Chat { .. })
+            .then(|| self.early_tool_call(&event))
+            .flatten()
+        {
+            // Fix pass 6's review, FP6-S2: every derm gate posts its decision
+            // before the harness runs the call, and its `tool.call` after, so
+            // a chat's `tool.call` for a call the tap recorded and no gate has
+            // decided yet is the agent's, posted to end the call before its
+            // shell starts. It is kept as a conflict copy and flagged; the
+            // join re-opens the call at the gate's first allow.
+            return self.keep_conflict(event, tap);
+        }
         let id = self.ingest(event);
         Reply {
             id: Some(id),
@@ -1738,6 +1750,40 @@ impl Daemon {
                         .get("toolNormalized")
                         .and_then(Value::as_str)
                         .is_some_and(|t| derm_core::policy::code_tool(&old.harness, t))
+            })
+            .map(|old| old.id.clone())
+    }
+
+    /// The tap's record of the call an adapter `tool.call` names by
+    /// `detail.toolUseId`, when no gate decision for that call is in the ring
+    /// yet (fix pass 6's review, FP6-S2).
+    fn early_tool_call(&self, event: &Event) -> Option<String> {
+        if event.source != Source::Adapter || event.kind != "tool.call" {
+            return None;
+        }
+        let call = event
+            .detail
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())?;
+        let ring = self.order.lock().ok()?;
+        let names = |old: &&Event| {
+            old.chat_id == event.chat_id
+                && old.detail.get("toolUseId").and_then(Value::as_str) == Some(call)
+        };
+        if ring
+            .iter()
+            .any(|old| store::is_gate_decision(old) && names(&old))
+        {
+            return None;
+        }
+        ring.iter()
+            .rev()
+            .find(|old| {
+                old.chat_id == event.chat_id
+                    && old.source == Source::Tap
+                    && old.kind == "tap.call"
+                    && old.detail.get("callId").and_then(Value::as_str) == Some(call)
             })
             .map(|old| old.id.clone())
     }
@@ -3039,6 +3085,78 @@ mod tests {
             flags.iter().all(|f| f.detail["id"] == "tap-chat-c-call_E9"),
             "{flags:?}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Fix pass 6's review, FP6-S2: a chat's `tool.call` for a call the tap
+    /// recorded, before any gate decision for it, is kept as a conflict copy
+    /// and flagged; the gate's own `tool.call` after its decision is not.
+    #[test]
+    fn fp6r_a_tool_call_before_its_gates_decision_is_flagged() {
+        let (d, root) = daemon();
+        let mut call = ev_of(
+            "chat-s",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_S2", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        call.id = "tap-chat-s-toolu_S2".into();
+        d.ingest(call);
+        let who = Who::Chat {
+            chat: "chat-s".into(),
+            harness: "claude-code".into(),
+        };
+        let post = |kind: &str, detail: Value| {
+            let mut e = ev_of("chat-s", Source::Adapter, kind, None, detail);
+            e.harness = "claude-code".into();
+            d.op_event(&who, e)
+        };
+        let early = post("tool.call", json!({"toolUseId": "toolu_S2"}));
+        assert!(early.ok);
+        assert!(
+            early
+                .id
+                .as_deref()
+                .is_some_and(|i| i.contains("-conflict-")),
+            "{:?}",
+            early.id
+        );
+        let allow = post(
+            "approval",
+            json!({"toolUseId": "toolu_S2", "decision": "allow", "tool": "bash"}),
+        );
+        assert!(
+            allow
+                .id
+                .as_deref()
+                .is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            allow.id
+        );
+        let after = post("tool.call", json!({"toolUseId": "toolu_S2"}));
+        assert!(
+            after
+                .id
+                .as_deref()
+                .is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            after.id
+        );
+        // A call the tap did not record is ingested as is.
+        let untapped = post("tool.call", json!({"toolUseId": "toolu_X"}));
+        assert!(
+            untapped
+                .id
+                .as_deref()
+                .is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            untapped.id
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let flags: Vec<&Event> = ring.iter().filter(|e| e.kind == "gate.conflict").collect();
+        assert_eq!(flags.len(), 1, "{ring:?}");
+        assert_eq!(flags[0].detail["id"], "tap-chat-s-toolu_S2");
         let _ = std::fs::remove_dir_all(root);
     }
 
