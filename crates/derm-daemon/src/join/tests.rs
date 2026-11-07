@@ -1783,8 +1783,11 @@ fn fp6_s3_many_open_cells_keep_a_harness_fork_cheap() {
         );
     }
     let took = t0.elapsed();
+    // 1 s, not the probe's 50 ms: the probe failed once under the full
+    // suite's load on a 2-core box (re-review FP6R2-4), and the quadratic
+    // scan it guards against took 5.99 s for these 10 forks.
     assert!(
-        took < std::time::Duration::from_millis(50),
+        took < std::time::Duration::from_secs(1),
         "10 forks took {took:?}"
     );
 }
@@ -1961,4 +1964,50 @@ fn fp6r_after_a_native_ask_the_calls_own_shell_is_chosen_and_a_later_one_is_not(
     j.observe(&result);
     let later = shell_writes(&mut j, 20_000, 7991, "/w/later");
     assert!(later.is_empty(), "{later:?}");
+}
+
+// ---- Re-review of 7508cb1: probe. ----
+
+/// FP6R2-1 probe. derm's Codex gate posts `allow` and says nothing to Codex,
+/// so Codex's own approval prompt still runs after it (`packages/
+/// derm-codex-plugin/src/hook.ts:110-111`, "Allow: say nothing, so Codex's
+/// own approval flow runs as configured"). The person answers that prompt
+/// after seconds, and no derm record marks the answer. A chat token's
+/// `tool.call` posted while the prompt waits is not flagged (the call is in
+/// `Decided`), the call is not contested (the decision is `allow`), and the
+/// shell that starts on the person's yes has no record.
+#[test]
+fn fp6r2_1_an_early_tool_call_during_codexs_own_prompt_does_not_drop_the_shell() {
+    let mut j = Join::new();
+    start(&mut j);
+    let mut e = ev(
+        Source::Tap,
+        "tap.call",
+        1_000,
+        None,
+        json!({"callId": "call_X1", "toolNormalized": "exec_command", "paths": [], "resultSha256": null}),
+    );
+    e.id = format!("tap-{CHAT}-call_X1");
+    e.harness = "codex".into();
+    j.observe(&e);
+    let mut allow = ev(
+        Source::Adapter,
+        "approval",
+        1_010,
+        None,
+        json!({"toolUseId": "call_X1", "decision": "allow", "tool": "exec_command"}),
+    );
+    allow.harness = "codex".into();
+    j.observe(&allow);
+    let mut forged = ev(
+        Source::Adapter,
+        "tool.call",
+        1_100,
+        None,
+        json!({"toolUseId": "call_X1"}),
+    );
+    forged.harness = "codex".into();
+    j.observe(&forged);
+    let r = shell_writes(&mut j, 9_000, 7971, "/w/x1");
+    assert_eq!(r.len(), 1, "the call's own shell has no record: {r:?}");
 }

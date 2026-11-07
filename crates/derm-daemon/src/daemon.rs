@@ -824,7 +824,14 @@ impl Decided {
         if call.len() > 128 {
             return;
         }
-        if !self.chats.contains_key(chat) {
+        // The chat noted last moves to the back, so a running chat is not
+        // the one evicted (FP6R2-2).
+        if self.chats.contains_key(chat) {
+            if self.order.back().map(String::as_str) != Some(chat) {
+                self.order.retain(|c| c != chat);
+                self.order.push_back(chat.to_string());
+            }
+        } else {
             self.order.push_back(chat.to_string());
             while self.order.len() > DECIDED_CHATS {
                 if let Some(old) = self.order.pop_front() {
@@ -840,6 +847,14 @@ impl Decided {
                     set.remove(&old);
                 }
             }
+        }
+    }
+
+    /// A chat's ids go at its `run.stop`: its token dies there, so no later
+    /// record of its names a call (FP6R2-2).
+    fn forget(&mut self, chat: &str) {
+        if self.chats.remove(chat).is_some() {
+            self.order.retain(|c| c != chat);
         }
     }
 
@@ -1317,6 +1332,11 @@ impl Daemon {
         let Ok(mut ring) = self.order.lock() else {
             return event.id;
         };
+        if event.source == Source::Run && event.kind == "run.stop" {
+            if let Ok(mut decided) = self.decided.lock() {
+                decided.forget(&event.chat_id);
+            }
+        }
         if store::is_gate_decision(&event) {
             if let (Some(call), Ok(mut decided)) = (
                 event.detail.get("toolUseId").and_then(Value::as_str),
@@ -3141,6 +3161,37 @@ mod tests {
             flags.iter().all(|f| f.detail["id"] == "tap-chat-c-call_E9"),
             "{flags:?}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FP6R2-2: a chat noted again is not the one evicted when more chats
+    /// come, and a chat's ids go at its `run.stop`.
+    #[test]
+    fn fp6r2_2_a_running_chats_decided_calls_outlast_other_chats() {
+        let mut d = Decided::default();
+        d.note("chat-a", "toolu_A");
+        for i in 0..(DECIDED_CHATS * 2) {
+            d.note(&format!("chat-{i}"), "toolu_X");
+            d.note("chat-a", &format!("toolu_A{i}"));
+        }
+        assert!(d.has("chat-a", "toolu_A"));
+        assert!(!d.has("chat-0", "toolu_X"));
+        assert!(d.chats.len() <= DECIDED_CHATS);
+        d.forget("chat-a");
+        assert!(!d.has("chat-a", "toolu_A"));
+        let (daemon, root) = daemon();
+        let mut allow = ev_of(
+            "chat-z",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_Z", "decision": "allow", "tool": "bash"}),
+        );
+        allow.id = "z-decision".into();
+        daemon.ingest(allow);
+        assert!(daemon.decided.lock().unwrap().has("chat-z", "toolu_Z"));
+        daemon.ingest(ev_of("chat-z", Source::Run, "run.stop", None, json!({})));
+        assert!(!daemon.decided.lock().unwrap().has("chat-z", "toolu_Z"));
         let _ = std::fs::remove_dir_all(root);
     }
 

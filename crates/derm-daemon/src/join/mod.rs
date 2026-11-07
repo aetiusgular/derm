@@ -66,6 +66,11 @@ pub const MAX_CHATS: usize = 512;
 pub const MAX_CANDIDATES: usize = 64;
 /// A call with no end seen is taken as running this long after its start.
 pub const OPEN_CALL_MS: i64 = 10 * 60 * 1000;
+
+/// Harnesses whose gate `allow` only means "not blocked": their own
+/// approval prompt still runs after it (rules case 72), so the person's
+/// answer reaches no derm record (re-review of fix pass 6, FP6R2-1).
+const ALLOW_LEAVES_PROMPT: &[&str] = &["codex", "gemini", "qwen-code", "grok"];
 /// How long a stopped chat's calls are kept for effects that reach the
 /// daemon after its `run.stop` (Mac test w5 retest 2, MW5-17: the Mac's OS
 /// events arrived 2 to 8 s late, 7 to 17 s after a burst), by the daemon's
@@ -607,7 +612,14 @@ impl Join {
                 // makes the call contested: a tapped one is then ended by the
                 // tap's result alone, and an end a gate record posts only
                 // stops it being chosen for later shells (FP6R-1, FP6R-2).
-                if decision == "ask" || e.detail.get("conflictsWith").is_some() {
+                // An `allow` from a gate whose allow only means "not
+                // blocked", so the harness's own prompt still runs after it
+                // (case 72: Codex, Gemini, Qwen Code, Grok; derm's Codex gate
+                // says nothing on allow, `packages/derm-codex-plugin/src/
+                // hook.ts:110-111`), is a person's prompt too (FP6R2-1).
+                let prompt_after =
+                    decision == "allow" && ALLOW_LEAVES_PROMPT.contains(&e.harness.as_str());
+                if decision == "ask" || prompt_after || e.detail.get("conflictsWith").is_some() {
                     c.contested = true;
                     if c.tapped && !c.tap_ended {
                         if let Some(x) = c.end.take() {
