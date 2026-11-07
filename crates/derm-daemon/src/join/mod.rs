@@ -22,7 +22,10 @@
 //! How an effect is credited:
 //! 1. **Tree.** A shell the harness starts while exactly one shell call is
 //!    running belongs to that call, and so do its descendants; with several
-//!    shell calls, to them together, none chosen. The harness is `run.start`'s
+//!    shell calls, to them together, none chosen. With no shell call running,
+//!    a harness's code tool call running then (`CODE_TOOLS`: Codex's Code
+//!    Mode, whose nested shells Codex starts itself) takes the shell's place
+//!    (MW5-27). The harness is `run.start`'s
 //!    pid, or, under a boundary or the agents' user, the process under its
 //!    wrappers that execs the program `derm run` started (`harnessExe`,
 //!    MW5-16). Until that process is seen, a shell any process under the
@@ -86,6 +89,26 @@ struct Call {
     paths: Vec<String>,
     start: Option<i64>,
     end: Option<i64>,
+    /// A harness's code tool, which runs shells through nested calls
+    /// (`CODE_TOOLS`).
+    code: bool,
+}
+
+/// Tools that run code which calls the harness's other tools, shells among
+/// them, by harness id (rules case 74; Mac test w5 retest 5, MW5-27). The
+/// shells such a call makes start as children of the harness while it runs,
+/// under no shell call of their own when no gate reports the nested call.
+/// Codex 0.163.0's Code Mode offers the model `exec` (JavaScript in a V8
+/// isolate that calls nested tools such as `exec_command`) and `wait` (resumes
+/// a running `exec` cell): `codex-rs/code-mode-protocol/src/lib.rs:54-55`,
+/// `description.rs` (`EXEC_DESCRIPTION_TEMPLATE`, `WAIT_DESCRIPTION_TEMPLATE`)
+/// at `rust-v0.163.0`. Names here are the tap's normalized ones.
+const CODE_TOOLS: &[(&str, &str)] = &[("codex", "exec"), ("codex", "wait")];
+
+fn code_tool(harness: &str, tool: &str) -> bool {
+    CODE_TOOLS
+        .iter()
+        .any(|(h, t)| *h == harness && t.eq_ignore_ascii_case(tool))
 }
 
 impl Call {
@@ -382,6 +405,7 @@ impl Join {
                 let paths: Vec<String> = paths.iter().map(|p| st.absolute(p)).collect();
                 let c = st.call_mut(id);
                 c.event = e.id.clone();
+                c.code = code_tool(&e.harness, &tool);
                 c.tool = tool;
                 c.paths = paths;
                 c.start.get_or_insert(e.at);
@@ -404,6 +428,7 @@ impl Join {
                 }
                 // The tap's name wins; an untapped chat has only the gate's.
                 if c.tool.is_empty() {
+                    c.code = code_tool(&e.harness, &tool);
                     c.tool = tool;
                 }
                 if ran {
@@ -507,12 +532,23 @@ impl Join {
                         // together, so one more call open (a parallel one,
                         // or an approval posted with no call after it) does
                         // not take its writes from every install (review F1).
+                        // A shell call running is the shell's owner; with
+                        // none, a code tool call running is (its nested
+                        // shell, MW5-27): a nested call the gate reports
+                        // as a shell call is the more precise of the two.
                         let running = st.running(t);
-                        let shells: Vec<String> = running
+                        let mut shells: Vec<String> = running
                             .iter()
                             .filter(|(_, c)| c.shell())
                             .map(|(id, _)| id.to_string())
                             .collect();
+                        if shells.is_empty() {
+                            shells = running
+                                .iter()
+                                .filter(|(_, c)| c.code)
+                                .map(|(id, _)| id.to_string())
+                                .collect();
+                        }
                         match (running.len(), kind) {
                             (0, _) => Some(Owner::Session),
                             (_, "fork") => None,

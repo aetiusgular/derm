@@ -1163,3 +1163,99 @@ fn effects_that_arrive_after_the_stop_are_still_joined_for_a_while() {
     start(&mut j);
     assert!(effect(&mut j, "write", 1_300, 6002, 6001, json!({"path": "/w/x"})).is_empty());
 }
+
+/// A call as the tap alone records it (no gate registered), for a harness:
+/// the call at `t`, its result at `end`.
+fn tap_only(j: &mut Join, harness: &str, id: &str, tool: &str, t: i64, end: i64) {
+    let mut e = ev(
+        Source::Tap,
+        "tap.call",
+        t,
+        None,
+        json!({"callId": id, "toolNormalized": tool, "paths": [], "resultSha256": null}),
+    );
+    e.id = format!("tap-{CHAT}-{id}");
+    e.harness = harness.into();
+    j.observe(&e);
+    let mut r = ev(
+        Source::Tap,
+        "tap.call",
+        end,
+        None,
+        json!({"callId": id, "toolNormalized": tool, "paths": [], "resultSha256": "ab"}),
+    );
+    r.id = format!("tap-{CHAT}-{id}");
+    r.harness = harness.into();
+    j.observe(&r);
+}
+
+/// The harness forks and execs a shell, which forks and execs `sleep`, which
+/// writes: the write's join record.
+fn shell_writes(j: &mut Join, at: i64, sh: u32, path: &str) -> Vec<Event> {
+    effect(j, "fork", at, ROOT, 1, json!({"child": sh}));
+    effect(j, "exec", at + 5, sh, ROOT, json!({"exe": "/bin/zsh"}));
+    effect(j, "fork", at + 10, sh, ROOT, json!({"child": sh + 1}));
+    effect(j, "exec", at + 15, sh + 1, sh, json!({"exe": "/bin/sleep"}));
+    effect(j, "write", at + 20, sh + 1, sh, json!({"path": path}))
+}
+
+/// Mac test w5 retest 5, MW5-27: Codex 0.163.0 in Code Mode offers the model
+/// one tool, `exec` (JavaScript that calls nested tools such as
+/// `exec_command`; `codex-rs/code-mode-protocol/src/lib.rs:54`), and its
+/// shells start during that call as children of Codex itself. The tap
+/// records `exec`, which is no shell tool, so the join placed none of them.
+/// A Code Mode call owns the shells Codex starts while it runs, as a shell
+/// call does; the same names in another harness are not code tools.
+#[test]
+fn mw5_27_a_codex_code_mode_call_owns_the_shells_it_starts() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "codex", "call_E1", "exec", 1_000, 30_000);
+    let r = shell_writes(&mut j, 1_100, 7001, "/w/a");
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_E1",
+        "{}",
+        r[0].detail
+    );
+    assert_eq!(
+        r[0].detail["candidates"][0]["by"], "tree",
+        "{}",
+        r[0].detail
+    );
+    // `wait` resumes a running cell: its shells are its.
+    tap_only(&mut j, "codex", "call_W1", "wait", 40_000, 60_000);
+    let r = shell_writes(&mut j, 40_100, 7011, "/w/b");
+    assert_eq!(
+        r[0].detail["chosen"], "tap-chat-j-call_W1",
+        "{}",
+        r[0].detail
+    );
+    // A tool named `exec` in another harness is not Codex's Code Mode.
+    tap_only(&mut j, "claude-code", "call_X1", "exec", 70_000, 90_000);
+    let r = shell_writes(&mut j, 70_100, 7021, "/w/c");
+    assert!(r[0].detail["chosen"].is_null(), "{}", r[0].detail);
+}
+
+/// With the gate registered, Code Mode's nested `exec_command` reaches it as
+/// `Bash` with its own call id while the outer `exec` runs (Codex 0.163.0,
+/// `core/src/tools/handlers/unified_exec/exec_command.rs:514`). The nested
+/// shell call is the more precise owner: a shell call running wins over the
+/// Code Mode call around it.
+#[test]
+fn mw5_27_a_nested_shell_call_wins_over_the_code_mode_call_around_it() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "codex", "call_E2", "exec", 1_000, 30_000);
+    let mut a = ev(
+        Source::Adapter,
+        "approval",
+        1_050,
+        None,
+        json!({"toolUseId": "call_N2", "decision": "allow", "tool": "bash"}),
+    );
+    a.harness = "codex".into();
+    j.observe(&a);
+    let r = shell_writes(&mut j, 1_100, 7101, "/w/d");
+    assert_eq!(r[0].detail["chosen"], "approval-1050-0", "{}", r[0].detail);
+}
