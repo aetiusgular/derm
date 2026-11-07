@@ -524,7 +524,24 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             }
             // MW5-24: the harness's own sign-in host, so it can renew an
             // expired access token inside srt (`harness::sign_in_hosts`).
-            let sign_in = super::harness::sign_in_hosts(h.id);
+            // MW5-26: not on macOS for a harness whose sign-in lives in the
+            // keychain, which srt does not let it write: a renewal there
+            // would land in a plaintext file and leave the keychain's token
+            // stale, so the host stays shut and the file read-only.
+            let keychain = i
+                .macos
+                .then(|| super::harness::macos_keychain_fallback(h.id))
+                .flatten();
+            let sign_in: &[&str] = if keychain.is_some() {
+                notes.push(format!(
+                    "derm run: under srt on macOS {} cannot save a renewed sign-in in your keychain, so derm keeps its sign-in host shut and ~/{} read-only: once its access token expires the chat stops; run it once outside srt to renew, then start the chat again",
+                    h.id,
+                    keychain.unwrap_or_default()
+                ));
+                &[]
+            } else {
+                super::harness::sign_in_hosts(h.id)
+            };
             if !sign_in.is_empty() {
                 allowed.extend(sign_in.iter().map(|s| s.to_string()));
                 // FP4-S7: srt admits by host and port only (TLS is opaque to
@@ -674,6 +691,8 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             deny_write.extend(i.gate_paths.iter().filter(|p| p.starts_with('/')).cloned());
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
+            // MW5-26: never a plaintext copy of a keychain sign-in.
+            deny_write.extend(keychain.map(under_home));
             deny_write.sort();
             deny_write.dedup();
             let deny_write: Vec<serde_json::Value> = deny_write
@@ -1244,6 +1263,74 @@ mod tests {
             }),
             "{allowed}"
         );
+    }
+
+    /// Mac test w5 retest 5, MW5-26: Claude Code 2.1.318 on macOS keeps its
+    /// sign-in in the login keychain and falls back to a plaintext
+    /// `~/.claude/.credentials.json` when a keychain write fails (its bundle:
+    /// `keychain-with-plaintext-fallback`, `plaintext_fallback_used`), which
+    /// it did under srt, where the keychain write failed. A renewal there
+    /// would leave the rotated token outside the keychain the host reads.
+    /// On macOS derm keeps that file read-only and the sign-in host shut;
+    /// on Linux the file is Claude Code's only store and both stay open.
+    #[test]
+    fn mw5_26_on_macos_claude_codes_sign_in_never_lands_in_a_plaintext_file() {
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let mac = build(&Inputs {
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        let v = srt_of(&mac);
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap();
+        assert!(
+            deny.contains(&json!({"path": "/home/u/.claude/.credentials.json", "literal": true})),
+            "{deny:?}"
+        );
+        let allowed = v["network"]["allowedDomains"].as_array().unwrap();
+        assert!(
+            !allowed
+                .iter()
+                .any(|h| h.as_str().unwrap().starts_with("platform.claude.com")),
+            "{allowed:?}"
+        );
+        assert!(
+            mac.notes
+                .iter()
+                .any(|n| n.contains("keychain") && n.contains("outside srt")),
+            "{:?}",
+            mac.notes
+        );
+        assert!(!mac
+            .notes
+            .iter()
+            .any(|n| n.contains("may reach its sign-in host")));
+        // Linux: the file is the store; renewing there keeps the host's copy.
+        let linux = build(&inputs(&args)).unwrap();
+        let v = srt_of(&linux);
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap();
+        assert!(
+            !deny
+                .iter()
+                .any(|d| d["path"].as_str().unwrap().ends_with(".credentials.json")),
+            "{deny:?}"
+        );
+        assert!(v["network"]["allowedDomains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("platform.claude.com:443")));
+        // Codex keeps its sign-in in `auth.json` by default on every system
+        // (`AuthCredentialsStoreMode::File`), so its host stays open on macOS.
+        let args = a(&["codex", "--boundary", "srt"]);
+        let mac = build(&Inputs {
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(srt_of(&mac)["network"]["allowedDomains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("auth.openai.com:443")));
     }
 
     #[test]

@@ -63,12 +63,34 @@ pub struct Sbx {
 /// Claude Code 2.1.311 posts to `https://platform.claude.com/v1/oauth/token`
 /// (its bundle; Docker's own sbx `claude` kit allows the same host), Codex
 /// 0.163.0 to `https://auth.openai.com/oauth/token`
-/// (`codex-rs/login/src/auth/manager.rs:212`). Others: not read, none.
+/// (`codex-rs/login/src/auth/manager.rs:212`). Others: not read, none. On
+/// macOS a harness in `macos_keychain_fallback` gets none (MW5-26).
 pub fn sign_in_hosts(id: &str) -> &'static [&'static str] {
     match id {
         "claude-code" => &["platform.claude.com:443"],
         "codex" => &["auth.openai.com:443"],
         _ => &[],
+    }
+}
+
+/// A harness whose sign-in lives in the macOS login keychain and falls back
+/// to a plaintext file under the home when a keychain write fails, by id,
+/// with that file (Mac test w5 retest 5, MW5-26). Claude Code 2.1.318's
+/// macOS build stores it as `keychain-with-plaintext-fallback`: a failed
+/// `security add-generic-password` that is not a timeout writes
+/// `~/.claude/.credentials.json` instead (`plaintext_fallback_used`), and a
+/// read takes the keychain's copy first (its bundle, read 6 Nov 2026). Under
+/// srt the keychain write fails (seen at retest 5; why is inferred: srt's
+/// Seatbelt profile allows writes only under its write roots, and the login
+/// keychain's file is not one), so a renewal there would keep the rotated
+/// token in that file only while the host's Claude Code reads the keychain's
+/// old one. Its Linux build has no keychain: the file is its store. Codex
+/// 0.163.0 keeps its sign-in in `auth.json` unless configured otherwise
+/// (`config/src/types.rs:136-146`, `AuthCredentialsStoreMode::File`).
+pub fn macos_keychain_fallback(id: &str) -> Option<&'static str> {
+    match id {
+        "claude-code" => Some(".claude/.credentials.json"),
+        _ => None,
     }
 }
 
