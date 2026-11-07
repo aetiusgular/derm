@@ -2258,9 +2258,20 @@ mod end_to_end {
         )
         .unwrap();
         let path = derm.join("policy.json").to_string_lossy().into_owned();
+        // Fix pass 6 (FP5R-6): where the folder sits under a link (macOS's
+        // temp folder under `/var`, a link to `/private/var`), the entry is
+        // written again by its real path, since Seatbelt matches that one.
+        let real = std::fs::canonicalize(derm.join("policy.json"))
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mut want = vec![serde_json::json!({"path": path, "literal": true})];
+        if real != path {
+            want.push(serde_json::json!({"path": real, "literal": true}));
+        }
         assert_eq!(
             allow("chat-l4"),
-            serde_json::json!([{"path": path, "literal": true}]),
+            serde_json::Value::Array(want),
             "a plain private file"
         );
     }
