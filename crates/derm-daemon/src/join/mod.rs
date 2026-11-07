@@ -102,7 +102,8 @@ struct Call {
 /// isolate that calls nested tools such as `exec_command`) and `wait` (resumes
 /// a running `exec` cell): `codex-rs/code-mode-protocol/src/lib.rs:54-55`,
 /// `description.rs` (`EXEC_DESCRIPTION_TEMPLATE`, `WAIT_DESCRIPTION_TEMPLATE`)
-/// at `rust-v0.163.0`. Names here are the tap's normalized ones.
+/// at `rust-v0.163.0`. Names here are the tap's normalized ones, and only
+/// the tap's own record marks a call as a code tool's.
 const CODE_TOOLS: &[(&str, &str)] = &[("codex", "exec"), ("codex", "wait")];
 
 fn code_tool(harness: &str, tool: &str) -> bool {
@@ -427,8 +428,12 @@ impl Join {
                     c.event = e.id.clone();
                 }
                 // The tap's name wins; an untapped chat has only the gate's.
+                // Never a code tool from a gate record: Codex sends no
+                // hook for Code Mode's `exec` (its default hook payload is
+                // for function calls only, `core/src/tools/registry.rs:150-159`
+                // at 0.163.0), so such a record is a chat token's, and a
+                // chat token cannot post the tap's.
                 if c.tool.is_empty() {
-                    c.code = code_tool(&e.harness, &tool);
                     c.tool = tool;
                 }
                 if ran {
