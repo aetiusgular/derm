@@ -12,6 +12,9 @@ use crate::computer_use::grants::Grant;
 /// A 1x1 PNG.
 const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
+/// A stand-in's answer, made from the call's arguments.
+type Answerer = fn(&Value) -> Value;
+
 struct Fake {
     grants: RefCell<Vec<Grant>>,
     /// What `request_access` answers, and what it was asked.
@@ -27,6 +30,9 @@ struct Fake {
     resets: RefCell<usize>,
     records: RefCell<Vec<Value>>,
     plan: RefCell<bool>,
+    /// When set, `get_window_state` answers from its arguments, as the real
+    /// driver does (MW5-38).
+    window_state_of: RefCell<Option<Answerer>>,
 }
 
 impl Fake {
@@ -42,6 +48,7 @@ impl Fake {
             resets: RefCell::new(0),
             records: RefCell::new(Vec::new()),
             plan: RefCell::new(false),
+            window_state_of: RefCell::new(None),
         }
     }
 
@@ -123,6 +130,13 @@ impl Backend for Fake {
         Err("not used".into())
     }
     fn call(&self, _chat: &str, name: &str, arguments: Value) -> CallOutcome {
+        if name == "get_window_state" {
+            if let Some(answer) = *self.window_state_of.borrow() {
+                let reply = answer(&arguments);
+                self.calls.borrow_mut().push((name.into(), arguments));
+                return CallOutcome::Done(reply);
+            }
+        }
         self.calls.borrow_mut().push((name.into(), arguments));
         if let Some(next) = self
             .script
@@ -461,6 +475,92 @@ fn a_capture_that_finds_no_window_fails_and_never_falls_back() {
     assert!(!backend
         .tools_called()
         .contains(&"get_window_state".to_string()));
+}
+
+/// cua-driver-rs 0.38.0's `get_window_state`, as its source builds it
+/// (MW5-38): the tree comes back as compact markdown unless `tree_format`
+/// asks for `"elements"` or `"both"`, and the markdown default removes
+/// `elements` from structuredContent
+/// (`cua-driver-core/src/window_state_view.rs:155-163, 380-401, 546-558` at
+/// `cua-driver-rs-v0.38.0`; `"elements"` drops `tree_markdown` instead).
+/// The structured keys are `platform-macos/src/tools/get_window_state.rs:
+/// 649-657` and each element `element_entry`, `:1101-1125`, there. The
+/// values are made up; the Mac test's recorded reply is the next check.
+fn window_state_038(args: &Value) -> Value {
+    let format = args
+        .get("tree_format")
+        .and_then(Value::as_str)
+        .unwrap_or("markdown")
+        .to_string();
+    let mut structured = json!({
+        "window_id": 7, "pid": 41,
+        "element_count": 2, "total_element_count": 2, "returned_element_count": 2,
+        "elements_complete": false,
+        "tree_markdown": "- [0] AXButton \"7\"\n- [1] AXButton \"=\"",
+        "elements": [
+            {"role": "AXButton", "depth": 3, "element_index": 0, "element_token": "s5:0",
+             "label": "7", "frame": {"x": 610.0, "y": 420.0, "w": 40.0, "h": 40.0}},
+            {"role": "AXButton", "depth": 3, "element_index": 1, "element_token": "s5:1",
+             "label": "=", "frame": {"x": 700.0, "y": 520.0, "w": 40.0, "h": 40.0}}
+        ],
+        "window_title": "Calculator",
+        "tree_format": format,
+    });
+    let obj = structured.as_object_mut().unwrap();
+    match format.as_str() {
+        "elements" => {
+            obj.remove("tree_markdown");
+        }
+        "both" => {}
+        _ => {
+            obj.remove("elements");
+        }
+    }
+    json!({"content": [{"type": "text", "text": "window_id=7 pid=41 elements=2"},
+                       {"type": "image", "data": PNG, "mimeType": "image/png"}],
+           "structuredContent": structured})
+}
+
+#[test]
+fn mw5_38_a_capture_asks_cua_driver_for_its_elements_and_clicks_by_them() {
+    let backend = Fake::new();
+    backend.grant("com.apple.calculator", "Calculator");
+    *backend.window_state_of.borrow_mut() = Some(window_state_038);
+    let mut state = State::with_screen(Arc::new(Screen::new()), Duration::from_millis(50));
+    for mode in ["som", "ax"] {
+        let reply = run(
+            &backend,
+            &mut state,
+            json!({"action": "capture", "app": "Calculator", "mode": mode}),
+        );
+        let t = text(&reply);
+        assert_eq!(t["total_elements"], 2, "{mode}: {t}");
+        assert_eq!(t["elements"][0]["label"], "7", "{mode}");
+        assert_eq!(
+            backend.last_args("get_window_state")["tree_format"],
+            "elements",
+            "{mode}"
+        );
+    }
+    let reply = run(
+        &backend,
+        &mut state,
+        json!({"action": "click", "element": 0}),
+    );
+    assert!(reply.get("isError").is_none(), "{reply}");
+    let click = backend.last_args("click");
+    assert_eq!(click["element_index"], 0);
+    assert_eq!(click["element_token"], "s5:0");
+    // A vision capture reads no tree and asks for none.
+    run(
+        &backend,
+        &mut state,
+        json!({"action": "capture", "app": "Calculator", "mode": "vision"}),
+    );
+    assert!(backend
+        .last_args("get_window_state")
+        .get("tree_format")
+        .is_none());
 }
 
 // --- Input -------------------------------------------------------------------

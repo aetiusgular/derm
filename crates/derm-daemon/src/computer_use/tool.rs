@@ -1216,6 +1216,11 @@ fn capture_target(
     let mut gws = json!({"pid": target.pid, "window_id": target.window_id});
     if mode != "vision" {
         gws["max_elements"] = json!(MAX_ELEMENTS * 4);
+        // MW5-38: cua-driver-rs 0.38.0 answers with compact markdown unless
+        // asked, and then leaves `elements` out of structuredContent
+        // (`cua-driver-core/src/window_state_view.rs:155-163, 546-558` at
+        // `cua-driver-rs-v0.38.0`); derm reads `elements` only.
+        gws["tree_format"] = json!("elements");
     }
     let flat = match call(backend, chat, "get_window_state", gws) {
         Ok(flat) if !flat.is_error => flat,
