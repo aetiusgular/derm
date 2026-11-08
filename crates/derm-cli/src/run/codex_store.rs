@@ -27,6 +27,10 @@
 //! the TOML files for the one key and fails safe: a file it cannot read, or
 //! managed preferences it does not parse, count as a store that is not a
 //! file. This module only reads; `plan` decides.
+//!
+//! The same managed files are read for Codex's own sandbox (fix pass 8,
+//! MW5-32): under srt derm turns it off with `-c`, and a managed file that
+//! keeps it on (`sandbox_reason`) wins over `-c`, so srt is refused.
 
 use std::path::{Path, PathBuf};
 
@@ -59,9 +63,9 @@ fn safe(value: &str) -> bool {
     matches!(value, "file" | "ephemeral")
 }
 
-/// The top-level `cli_auth_credentials_store` of a TOML file: `Ok(None)`
-/// when the file or the key is absent, `Err` when it cannot be read whole.
-fn value_of(path: &Path) -> Result<Option<String>, String> {
+/// A TOML file's document: `Ok(None)` when the file is absent, `Err` when
+/// it cannot be read whole.
+fn doc_of(path: &Path) -> Result<Option<toml_edit::DocumentMut>, String> {
     let text = match std::fs::metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{} could not be read ({e})", path.display())),
@@ -74,9 +78,17 @@ fn value_of(path: &Path) -> Result<Option<String>, String> {
         Ok(_) => std::fs::read_to_string(path)
             .map_err(|e| format!("{} could not be read ({e})", path.display()))?,
     };
-    let doc: toml_edit::DocumentMut = text
-        .parse()
-        .map_err(|_| format!("{} is not TOML derm can read", path.display()))?;
+    text.parse()
+        .map(Some)
+        .map_err(|_| format!("{} is not TOML derm can read", path.display()))
+}
+
+/// The top-level `cli_auth_credentials_store` of a TOML file: `Ok(None)`
+/// when the file or the key is absent, `Err` when it cannot be read whole.
+fn value_of(path: &Path) -> Result<Option<String>, String> {
+    let Some(doc) = doc_of(path)? else {
+        return Ok(None);
+    };
     match doc.get("cli_auth_credentials_store") {
         None => Ok(None),
         Some(item) => match item.as_str() {
@@ -102,6 +114,55 @@ fn reason(path: &Path) -> Option<String> {
     }
 }
 
+/// Why a managed file keeps Codex in its own sandbox (MW5-32), which cannot
+/// start inside srt's: Codex 0.163.0's requirements constrain the modes
+/// (`allowed_sandbox_modes`), the profiles (`allowed_permission_profiles`)
+/// and the default profile (`default_permissions`)
+/// (`config/src/config_requirements.rs:1046-1056`), and the legacy managed
+/// config is a layer over the command line's `-c`
+/// (`config/src/loader/mod.rs:420-440`), so a `sandbox_mode` or
+/// `default_permissions` there beats derm's. A file derm cannot read counts.
+fn sandbox_reason(path: &Path) -> Option<String> {
+    let doc = match doc_of(path) {
+        Ok(None) => return None,
+        Ok(Some(d)) => d,
+        Err(e) => return Some(e),
+    };
+    let p = path.display();
+    if let Some(item) = doc.get("sandbox_mode") {
+        if item.as_str() != Some("danger-full-access") {
+            return Some(format!(
+                "{p} sets sandbox_mode = {}",
+                item.to_string().trim()
+            ));
+        }
+    }
+    if let Some(item) = doc.get("default_permissions") {
+        if item.as_str() != Some(":danger-full-access") {
+            return Some(format!(
+                "{p} sets default_permissions = {}",
+                item.to_string().trim()
+            ));
+        }
+    }
+    if let Some(item) = doc.get("allowed_sandbox_modes") {
+        let allows = item
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some("danger-full-access")));
+        if !allows {
+            return Some(format!(
+                "{p} sets allowed_sandbox_modes without danger-full-access"
+            ));
+        }
+    }
+    if doc.get("allowed_permission_profiles").is_some() {
+        return Some(format!(
+            "{p} sets allowed_permission_profiles, which derm does not read"
+        ));
+    }
+    None
+}
+
 fn first(reasons: impl IntoIterator<Item = Option<String>>) -> Option<String> {
     let all: Vec<String> = reasons.into_iter().flatten().collect();
     (!all.is_empty()).then(|| all.join("; "))
@@ -117,11 +178,14 @@ pub fn read(home: &str, cwd: &str, codex_home_env: Option<&str>, roots: &Roots) 
         .filter(|h| h.starts_with('/'))
         .map(PathBuf::from)
         .unwrap_or_else(|| default_home.clone());
-    let mut managed = vec![
-        reason(&roots.etc.join("requirements.toml")),
-        reason(&roots.etc.join("managed_config.toml")),
-        reason(&codex_home.join("managed_config.toml")),
+    let managed_files = [
+        roots.etc.join("requirements.toml"),
+        roots.etc.join("managed_config.toml"),
+        codex_home.join("managed_config.toml"),
     ];
+    let mut managed: Vec<Option<String>> = managed_files.iter().map(|f| reason(f)).collect();
+    let mut managed_sandbox: Vec<Option<String>> =
+        managed_files.iter().map(|f| sandbox_reason(f)).collect();
     if let Some(prefs) = &roots.managed_prefs {
         let mut plists = vec![prefs.join("com.openai.codex.plist")];
         if let Some(u) = &roots.user {
@@ -129,10 +193,12 @@ pub fn read(home: &str, cwd: &str, codex_home_env: Option<&str>, roots: &Roots) 
         }
         for p in plists {
             if std::fs::symlink_metadata(&p).is_ok() {
-                managed.push(Some(format!(
+                let why = format!(
                     "{} holds managed preferences for Codex, which derm does not read",
                     p.display()
-                )));
+                );
+                managed.push(Some(why.clone()));
+                managed_sandbox.push(Some(why));
             }
         }
     }
@@ -154,6 +220,7 @@ pub fn read(home: &str, cwd: &str, codex_home_env: Option<&str>, roots: &Roots) 
         config: first(config),
         auth_file: (codex_home != default_home)
             .then(|| codex_home.join("auth.json").to_string_lossy().into_owned()),
+        managed_sandbox: first(managed_sandbox),
     }
 }
 
@@ -262,6 +329,67 @@ mod tests {
             f.auth_file.as_deref(),
             Some(elsewhere.join("auth.json").to_str().unwrap())
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// MW5-32: a managed file that keeps Codex in its own sandbox under srt,
+    /// in each key Codex reads for it, and the ones that do not.
+    #[test]
+    fn mw5_32_a_managed_rule_on_codexs_sandbox_is_read() {
+        let d = scratch("sandbox");
+        let home = d.join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::create_dir_all(d.join("etc")).unwrap();
+        let r = roots(&d);
+        let read_now = || read(home.to_str().unwrap(), home.to_str().unwrap(), None, &r);
+        assert!(read_now().managed_sandbox.is_none());
+        let req = d.join("etc").join("requirements.toml");
+        for (text, kept) in [
+            (
+                "allowed_sandbox_modes = [\"read-only\", \"workspace-write\"]\n",
+                true,
+            ),
+            (
+                "allowed_sandbox_modes = [\"read-only\", \"danger-full-access\"]\n",
+                false,
+            ),
+            ("allowed_sandbox_modes = \"read-only\"\n", true),
+            ("default_permissions = \":workspace\"\n", true),
+            ("default_permissions = \":danger-full-access\"\n", false),
+            (
+                "[allowed_permission_profiles]\n\":workspace\" = true\n",
+                true,
+            ),
+            ("model = \"x\"\n", false),
+            ("allowed_sandbox_modes = \n", true),
+        ] {
+            std::fs::write(&req, text).unwrap();
+            let f = read_now();
+            assert_eq!(f.managed_sandbox.is_some(), kept, "{text}: {f:?}");
+        }
+        std::fs::remove_file(&req).unwrap();
+        // The legacy managed config is a layer over `-c`.
+        for file in [
+            d.join("etc").join("managed_config.toml"),
+            home.join(".codex").join("managed_config.toml"),
+        ] {
+            std::fs::write(&file, "sandbox_mode = \"read-only\"\n").unwrap();
+            assert!(read_now().managed_sandbox.unwrap().contains("sandbox_mode"));
+            std::fs::write(&file, "sandbox_mode = \"danger-full-access\"\n").unwrap();
+            assert!(read_now().managed_sandbox.is_none());
+            std::fs::remove_file(&file).unwrap();
+        }
+        // A user's own config does not count: `-c` beats it.
+        std::fs::write(
+            home.join(".codex").join("config.toml"),
+            "sandbox_mode = \"read-only\"\n",
+        )
+        .unwrap();
+        assert!(read_now().managed_sandbox.is_none());
+        // Managed preferences derm does not parse fail safe.
+        std::fs::create_dir_all(d.join("prefs")).unwrap();
+        std::fs::write(d.join("prefs").join("com.openai.codex.plist"), "x").unwrap();
+        assert!(read_now().managed_sandbox.is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -317,6 +317,54 @@ fn read_cu_endpoint(dir: &Path) -> Option<String> {
     plan::cu_endpoint_ok(text).then(|| text.to_string())
 }
 
+/// MW5-32's Linux half (fix pass 8): Codex 0.163.0 reads its config at start
+/// and treats any error but "not found" as fatal
+/// (`config/src/loader/mod.rs:560-575`), and srt 0.0.81 holds a missing
+/// `denyWrite` file by binding `/dev/null` over it, which reads as
+/// "Permission denied" inside srt (run in the cloud: Codex stopped with
+/// "Failed to read config file ~/.codex/config.toml: Permission denied"). So
+/// before a Codex chat under srt on Linux, derm makes what is missing: the
+/// folder `~/.codex` (0700, which Codex makes on its first run anyway) and an
+/// empty `~/.codex/config.toml` (0600: an empty file is read as no settings,
+/// the same as none). Nothing that exists is touched, a link included.
+/// Returns what was made, for the start line.
+#[cfg(unix)]
+fn codex_home_for_srt(home: &Path) -> Result<Vec<String>, String> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let mut made = Vec::new();
+    let dir = home.join(".codex");
+    match std::fs::symlink_metadata(&dir) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            made.push(dir.display().to_string());
+        }
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    }
+    if !std::fs::symlink_metadata(&dir).is_ok_and(|m| m.file_type().is_dir()) {
+        return Ok(made);
+    }
+    let config = dir.join("config.toml");
+    match std::fs::symlink_metadata(&config) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&config)
+                .map_err(|e| format!("{}: {e}", config.display()))?;
+            made.push(config.display().to_string());
+        }
+        Err(e) => return Err(format!("{}: {e}", config.display())),
+    }
+    Ok(made)
+}
+
 /// Windows (lane Z): a regular file of this user's, one link, that no one
 /// else may write.
 #[cfg(windows)]
@@ -1013,6 +1061,29 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ..inputs
     };
     let mut p = plan::build(&inputs).map_err(|e| (2, e))?;
+    // MW5-32's Linux half: a missing control folder is held as an empty one,
+    // not a device (srt mounts over a missing denied path).
+    plan::keep_absent_control_folders(&mut p, a.harness.id, inputs.macos, &|s: &str| {
+        std::fs::symlink_metadata(s).is_ok()
+    });
+    // And Codex's config file, which it reads at start, is made empty if it
+    // is missing (a missing one would be held by `/dev/null`).
+    #[cfg(unix)]
+    if a.harness.id == "codex" && a.boundary == Boundary::Srt && !inputs.macos {
+        if a.dry_run {
+            if !Path::new(&home).join(".codex/config.toml").exists() {
+                p.notes.push("derm run: before Codex starts under srt on Linux, derm makes an empty ~/.codex/config.toml (0600) where none is, since srt would hold a missing one with /dev/null, which Codex cannot read".into());
+            }
+        } else {
+            let made = codex_home_for_srt(Path::new(&home)).map_err(|e| (1, e))?;
+            if !made.is_empty() {
+                p.notes.push(format!(
+                    "derm run: made {} (empty; Codex reads it at start, and srt on Linux would hold a missing one with /dev/null, which Codex cannot read)",
+                    made.join(" and ")
+                ));
+            }
+        }
+    }
     // FP5R-6: srt's denies by their real paths too, where a link leads.
     plan::deny_real_paths(&mut p, &|s: &str| {
         real_path_lenient(Path::new(s)).and_then(|r| r.to_str().map(str::to_string))
@@ -1516,6 +1587,40 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    /// MW5-32's Linux half: a missing `~/.codex` and `config.toml` are made
+    /// (0700 and 0600, empty); nothing that exists is changed, a link to a
+    /// file elsewhere included.
+    #[cfg(unix)]
+    #[test]
+    fn mw5_32_codexs_missing_config_is_made_empty_before_srt() {
+        use std::os::unix::fs::symlink;
+        let d = std::env::temp_dir().join(format!("derm-mw532-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let made = codex_home_for_srt(&d).unwrap();
+        assert_eq!(made.len(), 2, "{made:?}");
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&d.join(".codex")), 0o700);
+        assert_eq!(mode(&d.join(".codex/config.toml")), 0o600);
+        assert_eq!(
+            std::fs::read(d.join(".codex/config.toml")).unwrap().len(),
+            0
+        );
+        // Again: nothing more to make, and a config with content is kept.
+        std::fs::write(d.join(".codex/config.toml"), "model = \"x\"\n").unwrap();
+        assert!(codex_home_for_srt(&d).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(d.join(".codex/config.toml")).unwrap(),
+            "model = \"x\"\n"
+        );
+        // A link in its place, even a dangling one, is left alone.
+        std::fs::remove_file(d.join(".codex/config.toml")).unwrap();
+        symlink(d.join("elsewhere.toml"), d.join(".codex/config.toml")).unwrap();
+        assert!(codex_home_for_srt(&d).unwrap().is_empty());
+        assert!(!d.join("elsewhere.toml").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// FP5R-6: the resolver follows a linked folder, a link at the leaf
     /// whose target does not exist yet, `..` after a link, and stops on a

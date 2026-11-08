@@ -222,6 +222,11 @@ pub struct CodexStoreFiles {
     pub config: Option<String>,
     /// `$CODEX_HOME/auth.json` when `CODEX_HOME` moves it from `~/.codex`.
     pub auth_file: Option<String>,
+    /// Why a managed file keeps Codex in its own sandbox, which cannot
+    /// start inside srt (MW5-32): a requirement on its modes or profiles, or
+    /// a managed `sandbox_mode` or `default_permissions`, which Codex layers
+    /// over `-c` (`config/src/loader/mod.rs:420-440` at 0.163.0).
+    pub managed_sandbox: Option<String>,
 }
 
 /// The last `cli_auth_credentials_store` the harness's own words set with
@@ -267,6 +272,199 @@ pub fn codex_store_risk(rest: &[String], files: &CodexStoreFiles) -> Option<Stri
         Some(v) if matches!(v.as_str(), "file" | "ephemeral") => None,
         Some(v) => Some(format!("-c cli_auth_credentials_store={v}")),
         None => files.config.clone(),
+    }
+}
+
+/// Mac test w5 retest 7, MW5-32: the `-c` pair that turns Codex's own
+/// sandbox off, so srt is its sandbox. Codex 0.163.0 starts each command in
+/// Seatbelt (`/usr/bin/sandbox-exec`, `sandboxing/src/seatbelt.rs:62`) or
+/// bubblewrap, and neither starts inside srt 0.0.81's: macOS refuses a second
+/// Seatbelt profile ("sandbox_apply: Operation not permitted", run on the
+/// Mac), and srt's seccomp layer refuses a nested user namespace on Linux
+/// (srt README lines 712-715; run in the cloud). `danger-full-access` is the
+/// one mode that starts no sandbox (`sandboxing/src/manager.rs:313-329`,
+/// `policy_transforms.rs:646-666`); `external-sandbox`, the mode Codex has
+/// for this, is not accepted in its config (`config_requirements.rs:1467`).
+/// It leaves Codex's approvals as they are.
+pub const CODEX_SANDBOX_OFF: &str = r#"sandbox_mode="danger-full-access""#;
+
+/// What the harness's own words say of Codex's own sandbox (MW5-32).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CodexOwnSandbox {
+    /// Nothing: Codex's config and defaults decide.
+    Unset,
+    /// Turned off by the user's own words (full access, case 83).
+    Off,
+    /// Turned on by the user's own words, as written.
+    On(String),
+}
+
+/// Reads Codex 0.163.0's sandbox flags in `rest`, at every level: `-s` and
+/// `--sandbox` (`utils/cli/src/shared_options.rs:38-41`), `--approve-for-me`
+/// and its alias `--not-so-yolo` (workspace-write, `:42-50, 82-94`), the
+/// bypass flag and `--yolo` (`:52-59`), and `-c sandbox_mode=` or
+/// `-c default_permissions=` in each form `-c` takes. Stops at `--`. A word
+/// that turns the sandbox on wins over one that turns it off: Codex's `-s`
+/// beats any `-c`, and the user's `-c` after derm's would win too.
+pub fn codex_own_sandbox(rest: &[String]) -> CodexOwnSandbox {
+    let unquote = |v: &str| {
+        let v = v.trim();
+        v.strip_prefix('"')
+            .and_then(|x| x.strip_suffix('"'))
+            .or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')))
+            .unwrap_or(v)
+            .to_string()
+    };
+    let mut on: Option<String> = None;
+    let mut off = false;
+    let mut i = 0;
+    while i < rest.len() {
+        let w = rest[i].as_str();
+        if w == "--" {
+            break;
+        }
+        let next = rest.get(i + 1).map(String::as_str);
+        let mut take = |word: String, is_off: bool| {
+            if is_off {
+                off = true;
+            } else if on.is_none() {
+                on = Some(word);
+            }
+        };
+        match w {
+            "--dangerously-bypass-approvals-and-sandbox" | "--yolo" => take(w.into(), true),
+            "--approve-for-me" | "--not-so-yolo" => take(w.into(), false),
+            "-s" | "--sandbox" => {
+                if let Some(v) = next {
+                    take(format!("{w} {v}"), unquote(v) == "danger-full-access");
+                    i += 1;
+                }
+            }
+            "-c" | "--config" => {
+                if let Some(pair) = next {
+                    if let Some(hit) = codex_sandbox_pair(pair, &unquote) {
+                        take(format!("{w} {pair}"), hit);
+                    }
+                    i += 1;
+                }
+            }
+            _ => {
+                if let Some(v) = w.strip_prefix("--sandbox=") {
+                    take(w.into(), unquote(v) == "danger-full-access");
+                } else if let Some(pair) = w.strip_prefix("--config=") {
+                    if let Some(hit) = codex_sandbox_pair(pair, &unquote) {
+                        take(w.into(), hit);
+                    }
+                } else if let Some(v) = w
+                    .strip_prefix("-s")
+                    .filter(|v| !v.is_empty() && !w.starts_with("--"))
+                {
+                    take(w.into(), unquote(v) == "danger-full-access");
+                } else if let Some(pair) = w
+                    .strip_prefix("-c")
+                    .filter(|v| !v.is_empty() && !w.starts_with("--"))
+                {
+                    if let Some(hit) = codex_sandbox_pair(pair, &unquote) {
+                        take(w.into(), hit);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    match (on, off) {
+        (Some(w), _) => CodexOwnSandbox::On(w),
+        (None, true) => CodexOwnSandbox::Off,
+        (None, false) => CodexOwnSandbox::Unset,
+    }
+}
+
+/// `Some(true)` for a `-c` pair that turns Codex's sandbox off, `Some(false)`
+/// for one that chooses a sandboxed mode or profile, `None` for any other.
+fn codex_sandbox_pair(pair: &str, unquote: &dyn Fn(&str) -> String) -> Option<bool> {
+    let (k, v) = pair.split_once('=')?;
+    match k.trim() {
+        "sandbox_mode" => Some(unquote(v) == "danger-full-access"),
+        "default_permissions" => Some(unquote(v) == ":danger-full-access"),
+        _ => None,
+    }
+}
+
+/// The refusal for a Codex chat under srt whose own sandbox would be on.
+fn codex_sandbox_refusal(what: &str) -> String {
+    format!(
+        "codex: {what} keeps Codex's own sandbox on, and it cannot start inside srt's \
+         (macOS refuses a second Seatbelt profile; srt on Linux refuses a nested user namespace), \
+         so every command would fail while the turn reports it done (MW5-32). Under srt derm \
+         turns Codex's own sandbox off and srt is its sandbox: leave the sandbox to derm, or run \
+         with --boundary none to keep Codex's own"
+    )
+}
+
+/// The name derm denies inside a missing control folder (MW5-32's Linux
+/// half). Nothing creates it: srt holds the folder above it.
+pub const ABSENT_FOLDER_MARK: &str = ".derm-absent";
+
+/// Control entries that are folders, per harness, where it was read: Codex
+/// 0.163.0 reads `rules` with `read_dir` (`core/src/exec_policy.rs:1121-1130`)
+/// and keeps plugins in `plugins/cache` (the Mac's `~/.codex/plugins/cache`).
+/// Other harnesses' control folders are not read for this yet.
+fn control_folders(harness: &str) -> &'static [&'static str] {
+    match harness {
+        "codex" => &[".codex/plugins", ".codex/rules"],
+        _ => &[],
+    }
+}
+
+/// MW5-32's Linux half (fix pass 8). srt 0.0.81 holds a `denyWrite` path that
+/// does not exist by mounting over it, `/dev/null` for a file and an empty
+/// read-only folder for a missing folder above it
+/// (`linux-sandbox-utils.js:2334-2347`; README line 1128), so a missing
+/// control folder becomes a device a program reading it as a folder fails on
+/// (Codex: "failed to read rules files from ~/.codex/rules: Not a directory",
+/// run). A missing control folder of the harness, in its home or the chat's
+/// folder, is denied by a path inside it instead, so srt holds it as an
+/// empty read-only folder: nothing can be made in it, and a reader finds no
+/// entries (run in the cloud with srt 0.0.81). Linux only: Seatbelt denies
+/// a path with no mount. `exists` follows no link the caller does not.
+pub fn keep_absent_control_folders(
+    p: &mut Plan,
+    harness: &str,
+    macos: bool,
+    exists: &dyn Fn(&str) -> bool,
+) {
+    let folders = control_folders(harness);
+    if macos || folders.is_empty() {
+        return;
+    }
+    let Some(text) = p.srt_settings.as_deref() else {
+        return;
+    };
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(text) else {
+        return;
+    };
+    let Some(list) = v["filesystem"]["denyWrite"].as_array_mut() else {
+        return;
+    };
+    let mut changed = false;
+    for e in list.iter_mut() {
+        let Some(path) = e
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let folder = folders.iter().any(|f| path.ends_with(&format!("/{f}")));
+        if folder && !exists(&path) {
+            e["path"] = json!(format!("{path}/{ABSENT_FOLDER_MARK}"));
+            changed = true;
+        }
+    }
+    if changed {
+        if let Ok(t) = serde_json::to_string_pretty(&v) {
+            p.srt_settings = Some(t);
+        }
     }
 }
 
@@ -640,6 +838,23 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             ) {
                 return Err(format!("{command} collides with an srt subcommand"));
             }
+            // MW5-32: Codex's own sandbox cannot start inside srt's, so derm
+            // turns it off and srt is its sandbox; a user's own word that
+            // keeps it on, or a managed file that does, is refused first.
+            let codex_sandbox_off = if h.id == "codex" {
+                match codex_own_sandbox(&i.args.rest) {
+                    CodexOwnSandbox::On(word) => return Err(codex_sandbox_refusal(&word)),
+                    CodexOwnSandbox::Off => false,
+                    CodexOwnSandbox::Unset => {
+                        if let Some(why) = &i.codex_store.managed_sandbox {
+                            return Err(codex_sandbox_refusal(why));
+                        }
+                        true
+                    }
+                }
+            } else {
+                false
+            };
             let mut allowed: Vec<String> = Vec::new();
             for url in [&mut otlp, &mut gateway].into_iter().flatten() {
                 let (rewritten, allow) = srt_target(url).ok_or("bad URL")?;
@@ -905,7 +1120,36 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 command.clone(),
             ]);
             args.extend(launch_args.iter().cloned());
-            args.extend(i.args.rest.iter().cloned());
+            if codex_sandbox_off {
+                // At derm's own `-c` level (case 184): after a session
+                // subcommand that is the first word, else first, where the
+                // tap's and the export's pairs go too.
+                let lead = i
+                    .args
+                    .rest
+                    .first()
+                    .filter(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()));
+                args.extend(lead.cloned());
+                args.extend(["-c".to_string(), CODEX_SANDBOX_OFF.to_string()]);
+                args.extend(
+                    i.args
+                        .rest
+                        .iter()
+                        .skip(usize::from(lead.is_some()))
+                        .cloned(),
+                );
+                notes.push(format!(
+                    "derm run: Codex's own sandbox (Seatbelt on macOS, bubblewrap on Linux) cannot start inside srt's, so derm starts codex with -c {CODEX_SANDBOX_OFF} and srt is its sandbox: its commands may write this folder (not .git/hooks, .git/config or Codex's own config) and reach only the hosts srt lists, whatever sandbox_mode or default_permissions Codex's config sets, and Codex no longer asks to leave a sandbox. Its approvals are unchanged. To keep Codex's own sandbox, run with --boundary none"
+                ));
+                if lead.is_some_and(|w| w == "app-server") {
+                    notes.push(
+                        "derm run: a client that sets Codex's sandbox for a thread (app-server's thread/start) overrides this, and that thread's commands then fail under srt"
+                            .into(),
+                    );
+                }
+            } else {
+                args.extend(i.args.rest.iter().cloned());
+            }
             // Node's fetch takes srt's proxy only when asked (srt README,
             // "Node.js (Windows)": srt sets this on Windows only).
             env.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
@@ -2671,5 +2915,189 @@ mod tests {
         deny_real_paths(&mut q, &|s: &str| Some(s.to_string()));
         assert_eq!(q.srt_settings, text);
         assert_eq!(q.notes.len(), n);
+    }
+
+    /// Mac test w5 retest 7, MW5-32: Codex 0.163.0 starts every command in
+    /// its own sandbox, Seatbelt through `/usr/bin/sandbox-exec` on macOS
+    /// (`sandboxing/src/seatbelt.rs:62`) and bubblewrap on Linux, and neither
+    /// starts inside srt 0.0.81's ("sandbox-exec: sandbox_apply: Operation
+    /// not permitted", run on the Mac; "bwrap: No permissions to create new
+    /// namespace", run in the cloud with derm's settings; srt README lines
+    /// 712-715), so every command failed while the turn said "done". Under
+    /// srt derm starts Codex with `sandbox_mode = "danger-full-access"`, srt
+    /// being its sandbox (Codex's `ExternalSandbox` idea, `protocol.rs:1192-1199`,
+    /// and its help for the bypass flag: "Intended solely for running in
+    /// environments that are externally sandboxed"), at derm's own `-c`
+    /// level (case 184), and says so. Its approvals are left alone, so it is
+    /// not full access (case 83).
+    #[test]
+    fn mw5_32_under_srt_codex_runs_with_its_own_sandbox_off_and_says_so() {
+        let off = r#"sandbox_mode="danger-full-access""#;
+        for macos in [false, true] {
+            for (words, want) in [
+                (vec!["exec", "go"], vec!["exec", "-c", off, "go"]),
+                (vec!["app-server"], vec!["app-server", "-c", off]),
+                (vec![], vec!["-c", off]),
+                (vec!["-m", "x"], vec!["-c", off, "-m", "x"]),
+            ] {
+                let mut v = vec!["codex", "--boundary", "srt", "--"];
+                v.extend(words.iter().copied());
+                let args = a(&v);
+                let p = build(&Inputs {
+                    macos,
+                    ..inputs(&args)
+                })
+                .unwrap();
+                let at = p.args.iter().position(|w| w == "codex").unwrap() + 1;
+                assert_eq!(p.args[at..].to_vec(), want, "{words:?}");
+                assert!(
+                    p.notes.iter().any(|n| n.contains("Codex's own sandbox")),
+                    "{:?}",
+                    p.notes
+                );
+                assert!(p.full_access.is_empty(), "{:?}", p.full_access);
+                assert!(env(&p, "DERM_FULL_ACCESS").is_none());
+            }
+        }
+        // Not under none or sbx, and never for another harness.
+        for v in [
+            vec!["codex", "--boundary", "none", "--", "exec", "go"],
+            vec!["codex", "--boundary", "sbx", "--", "exec", "go"],
+            vec!["claude-code", "--boundary", "srt", "--", "-p", "go"],
+        ] {
+            let args = a(&v);
+            let p = build(&inputs(&args)).unwrap();
+            assert!(
+                !p.args.iter().any(|w| w.contains("sandbox_mode")),
+                "{v:?}: {:?}",
+                p.args
+            );
+        }
+        // Words of the user's own that already turn it off: nothing added.
+        for words in [
+            vec!["--dangerously-bypass-approvals-and-sandbox"],
+            vec!["--yolo"],
+            vec!["-s", "danger-full-access"],
+            vec!["exec", "--sandbox=danger-full-access", "go"],
+            vec!["-c", "sandbox_mode=danger-full-access"],
+        ] {
+            let mut v = vec!["codex", "--boundary", "srt", "--"];
+            v.extend(words.iter().copied());
+            let args = a(&v);
+            let p = build(&inputs(&args)).unwrap();
+            assert!(!p.args.iter().any(|w| w == off), "{words:?}: {:?}", p.args);
+        }
+    }
+
+    /// MW5-32: Codex's own sandbox named on the command line cannot start
+    /// under srt, and derm does not override the user's own words, so the
+    /// chat is refused before anything starts, saying why and the two ways
+    /// out. Under none it is the user's call, as before.
+    #[test]
+    fn mw5_32_codexs_own_sandbox_named_under_srt_is_refused() {
+        for words in [
+            vec!["-s", "workspace-write"],
+            vec!["--sandbox", "read-only"],
+            vec!["--sandbox=read-only"],
+            vec!["-sread-only"],
+            vec!["exec", "-s", "workspace-write", "go"],
+            vec!["--approve-for-me"],
+            vec!["exec", "--not-so-yolo", "go"],
+            vec!["-c", "sandbox_mode=\"workspace-write\""],
+            vec!["exec", "--config=sandbox_mode='read-only'", "go"],
+            vec!["-c", "default_permissions=\":workspace\""],
+            vec!["-cdefault_permissions=\":read-only\""],
+        ] {
+            let mut v = vec!["codex", "--boundary", "srt", "--"];
+            v.extend(words.iter().copied());
+            let args = a(&v);
+            let e = build(&inputs(&args)).unwrap_err();
+            assert!(
+                e.contains("Codex's own sandbox") && e.contains("--boundary none"),
+                "{words:?}: {e}"
+            );
+        }
+        let args = a(&["codex", "--boundary", "none", "--", "-s", "read-only"]);
+        assert!(build(&inputs(&args)).is_ok());
+    }
+
+    /// MW5-32: a managed file that keeps Codex in its own sandbox (a
+    /// requirement on the modes or profiles, or a managed `sandbox_mode`,
+    /// which Codex layers over `-c`, `config/src/loader/mod.rs:420-440`)
+    /// refuses srt, with the file's reason; `run::codex_store` reads them.
+    #[test]
+    fn mw5_32_a_managed_rule_on_codexs_sandbox_refuses_srt() {
+        let why =
+            "/etc/codex/requirements.toml sets allowed_sandbox_modes without danger-full-access";
+        let files = CodexStoreFiles {
+            managed_sandbox: Some(why.into()),
+            ..CodexStoreFiles::default()
+        };
+        let args = a(&["codex", "--boundary", "srt", "--", "exec", "go"]);
+        let e = build(&Inputs {
+            codex_store: files.clone(),
+            ..inputs(&args)
+        })
+        .unwrap_err();
+        assert!(e.contains(why) && e.contains("Codex's own sandbox"), "{e}");
+        let none = a(&["codex", "--boundary", "none", "--", "exec", "go"]);
+        assert!(build(&Inputs {
+            codex_store: files,
+            ..inputs(&none)
+        })
+        .is_ok());
+    }
+
+    /// MW5-32's Linux half (fix pass 8, run in the cloud with derm's srt
+    /// settings and the real Codex 0.163.0): srt 0.0.81 holds a missing
+    /// `denyWrite` file by binding `/dev/null` over it
+    /// (`linux-sandbox-utils.js:2334-2347`), and Codex reads `~/.codex/rules`
+    /// as a folder (`core/src/exec_policy.rs:1121-1130`: a missing one is no
+    /// rules, any other error is fatal), so a fresh Codex under derm's srt
+    /// stopped with "failed to read rules files ...: Not a directory". A
+    /// missing control folder is denied by a path inside it instead, which
+    /// srt holds with an empty read-only folder (run: nothing can be made in
+    /// it, and srt removes it after); one that exists, macOS, and other
+    /// harnesses are left as they are.
+    #[test]
+    fn mw5_32_on_linux_a_missing_codex_control_folder_is_held_as_an_empty_folder() {
+        let args = a(&["codex", "--boundary", "srt", "--", "exec", "go"]);
+        let exists = |s: &str| s.ends_with("/.codex/plugins");
+        let mut p = build(&inputs(&args)).unwrap();
+        keep_absent_control_folders(&mut p, "codex", false, &exists);
+        let v = srt_of(&p);
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap().clone();
+        let has = |s: &str| deny.contains(&json!({"path": s, "literal": true}));
+        for base in ["/home/u/.codex", "/home/u/proj dir/.codex"] {
+            assert!(
+                has(&format!("{base}/rules/{ABSENT_FOLDER_MARK}")),
+                "{deny:?}"
+            );
+            assert!(!has(&format!("{base}/rules")), "{deny:?}");
+            assert!(has(&format!("{base}/plugins")), "{deny:?}");
+            assert!(has(&format!("{base}/config.toml")), "{deny:?}");
+        }
+        for (harness, macos, v) in [
+            (
+                "codex",
+                true,
+                vec!["codex", "--boundary", "srt", "--", "exec", "go"],
+            ),
+            (
+                "claude-code",
+                false,
+                vec!["claude-code", "--boundary", "srt"],
+            ),
+        ] {
+            let args = a(&v);
+            let mut q = build(&Inputs {
+                macos,
+                ..inputs(&args)
+            })
+            .unwrap();
+            let before = q.srt_settings.clone();
+            keep_absent_control_folders(&mut q, harness, macos, &|_| false);
+            assert_eq!(q.srt_settings, before, "{harness} macos {macos}");
+        }
     }
 }
