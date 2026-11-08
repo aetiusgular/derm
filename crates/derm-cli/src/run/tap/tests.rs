@@ -408,9 +408,33 @@ fn fp12_r1_under_sbx_a_project_files_base_url_still_refuses_the_start() {
         assert!(why.contains("BASE_URL"), "{why}");
         std::fs::remove_file(&file).unwrap();
     }
+    // The second re-review's finding 1: forms Gemini's dotenv accepts and a
+    // line parser missed (a BOM, a tab after `export`, a value on the next
+    // line, an invalid byte, a lone CR); and a file derm cannot read whole
+    // is refused.
+    for bytes in [
+        b"\xef\xbb\xbfGOOGLE_GEMINI_BASE_URL=http://p\n".to_vec(),
+        b"export\tGOOGLE_GEMINI_BASE_URL=http://p\n".to_vec(),
+        b"GOOGLE_GEMINI_BASE_URL=\n\"http://p\"\n".to_vec(),
+        b"A=\xff\rGOOGLE_GEMINI_BASE_URL=http://p\r".to_vec(),
+        [
+            b"PAD=".to_vec(),
+            vec![b'x'; 1024 * 1024 + 1],
+            b"\n".to_vec(),
+        ]
+        .concat(),
+    ] {
+        std::fs::write(d.work.join(".env"), &bytes).unwrap();
+        assert!(
+            environment_with("gemini", &mut sbx_plan(&["run", "gemini"]), &i).is_err(),
+            "{:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(60)])
+        );
+    }
+    // Names that only contain the variable's name are not it.
     std::fs::write(
         d.work.join(".env"),
-        "GEMINI_API_KEY=x\nGOOGLE_GEMINI_BASE_URL=\n",
+        "GEMINI_API_KEY=x\nMY_GOOGLE_GEMINI_BASE_URL=http://x\nURL=http://x:8080\n",
     )
     .unwrap();
     assert_eq!(

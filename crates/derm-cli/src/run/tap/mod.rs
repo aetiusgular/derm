@@ -395,15 +395,21 @@ pub(crate) fn base_url_already_set(harness: &str, plan: &Plan, i: &Inputs) -> Op
     }
 }
 
-/// A base URL a project's `.env` sets for Gemini CLI, in words. Gemini CLI
-/// 0.66.0 loads `<cwd>/.gemini/.env`, else `<cwd>/.env`, in a trusted folder
+/// A base URL a project's `.env` may set for Gemini CLI, in words. Gemini
+/// CLI 0.66.0 loads `<cwd>/.gemini/.env`, else `<cwd>/.env`, in a trusted
+/// folder (the sbx gemini kit turns folder trust off, so every folder is)
 /// and sets each variable not already set (bundle `chunk-OYJ7VIJ6.js:
-/// 16575-16690`, dotenv's `KEY=value`, `export KEY=value` and `KEY: value`
-/// forms); under sbx derm sets no base URL, so a planted one would hold
-/// (fix pass 12's re-review, R1). Only the chat's folder is read: it is what
-/// sbx mounts into the VM.
+/// 16575-16690`); under sbx derm sets no base URL, so a planted one would
+/// hold (fix pass 12's re-review, R1). dotenv accepts more forms than a line
+/// reader catches (a BOM, `export` and a tab, a value on the next line, a
+/// lone CR, invalid bytes), so this refuses where either name appears as a
+/// whole word anywhere in the file, and refuses a file it cannot read whole
+/// (the second re-review's finding 1). Only the chat's folder is read: it is
+/// what sbx mounts into the VM.
 fn gemini_env_route(cwd: &str) -> Option<String> {
-    let names = ["GOOGLE_GEMINI_BASE_URL", "GOOGLE_VERTEX_BASE_URL"];
+    const NAMES: [&str; 2] = ["GOOGLE_GEMINI_BASE_URL", "GOOGLE_VERTEX_BASE_URL"];
+    const MAX: u64 = 1024 * 1024;
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     for file in [
         Path::new(cwd).join(".gemini/.env"),
         Path::new(cwd).join(".env"),
@@ -411,20 +417,29 @@ fn gemini_env_route(cwd: &str) -> Option<String> {
         let Ok(meta) = std::fs::metadata(&file) else {
             continue;
         };
-        if !meta.is_file() || meta.len() > 1024 * 1024 {
+        if !meta.is_file() {
             continue;
         }
-        let text = std::fs::read_to_string(&file).unwrap_or_default();
-        for line in text.lines() {
-            let line = line.trim_start();
-            let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
-            let Some(at) = line.find(['=', ':']) else {
-                continue;
-            };
-            let (key, value) = (line[..at].trim(), line[at + 1..].trim());
-            let value = value.trim_matches(['"', '\'', '`']).trim();
-            if names.contains(&key) && !value.is_empty() && !value.starts_with('#') {
-                return Some(format!("{} sets {key}", file.display()));
+        let bytes = if meta.len() > MAX {
+            None
+        } else {
+            std::fs::read(&file).ok()
+        };
+        let Some(bytes) = bytes else {
+            return Some(format!(
+                "{} could set Gemini's base URL and derm cannot read it whole",
+                file.display()
+            ));
+        };
+        for name in NAMES {
+            let n = name.as_bytes();
+            let hit = bytes.windows(n.len()).enumerate().any(|(at, w)| {
+                w == n
+                    && (at == 0 || !word(bytes[at - 1]))
+                    && bytes.get(at + n.len()).is_none_or(|b| !word(*b))
+            });
+            if hit {
+                return Some(format!("{} names {name}", file.display()));
             }
         }
     }
