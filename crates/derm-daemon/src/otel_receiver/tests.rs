@@ -582,6 +582,48 @@ fn the_headers_helper_is_private_new_and_prints_the_header() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Box test w5 retest 2, BW5R2-4: `derm run` asks for
+/// `<runtime>/derm/otel-helper/<chat>`, and the `otel-helper` folder above
+/// the chat's was made 0755 under umask 022. Every folder made on the way is
+/// 0700, and a linked parent is refused, not followed.
+#[cfg(unix)]
+#[test]
+fn bw5r2_4_the_folders_above_a_chats_helper_folder_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("otel-helper-{}", uuid::Uuid::new_v4()));
+    let dir = root.join("derm/otel-helper/chat-a");
+    fresh_private_dir(&dir).unwrap();
+    for folder in [
+        root.join("derm"),
+        root.join("derm/otel-helper"),
+        dir.clone(),
+    ] {
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", folder.display());
+    }
+    // An existing parent another session left open is made private.
+    std::fs::set_permissions(
+        root.join("derm/otel-helper"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fresh_private_dir(&root.join("derm/otel-helper/chat-b")).unwrap();
+    let mode = std::fs::metadata(root.join("derm/otel-helper"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700);
+    // A link in the parent's place is refused; nothing is made behind it.
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let linked = root.join("linked");
+    std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+    assert!(fresh_private_dir(&linked.join("chat-c")).is_err());
+    assert!(!elsewhere.join("chat-c").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn quitting_removes_the_helper_folder_and_never_follows_a_link() {

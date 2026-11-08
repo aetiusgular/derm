@@ -823,3 +823,32 @@ fn key_parsing_takes_the_last_plain_key() {
     assert_eq!(parse_combo("cmd+"), (None, vec!["cmd".into()]));
     assert_eq!(key_set("Alt+F4"), vec!["f4", "option"]);
 }
+
+/// Box test w5 retest 2, BW5R2-3: a capture refused before its card (GNOME
+/// 50, BW5R-1) was recorded with `app: null`, so the log did not say which
+/// app the agent asked for. A refused, denied or pending grant names it.
+#[test]
+fn bw5r2_3_a_refused_grant_names_the_app_it_was_for() {
+    for (answer, code) in [
+        (
+            AccessAnswer::Refused("Computer use cannot see windows here".into()),
+            "app_refused",
+        ),
+        (AccessAnswer::Denied, "app_denied"),
+        (AccessAnswer::Pending, "approval_pending"),
+    ] {
+        let backend = Fake::new();
+        *backend.answer.borrow_mut() = answer;
+        let mut state = State::default();
+        let reply = run(
+            &backend,
+            &mut state,
+            json!({"action": "capture", "app": "gnome-calculator"}),
+        );
+        assert_eq!(text(&reply)["code"], code);
+        let record = backend.last_record();
+        assert_eq!(record["verdict"], "denied", "{code}");
+        assert_eq!(record["app"], "gnome-calculator", "{code}: {record}");
+        assert_eq!(record["grant"], Value::Null, "{code}: no grant ran");
+    }
+}

@@ -1071,7 +1071,15 @@ fn resolve_target(
         ));
     }
     let wanted_grant = match app {
-        Some(app) => Some(ensure_grant(backend, chat, app, action)?),
+        // A refusal still names the app it was for in `cu.action` (box test
+        // w5 retest 2, BW5R2-3: a refused capture of gnome-calculator was
+        // recorded with `app: null`).
+        Some(app) => Some(
+            ensure_grant(backend, chat, app, action).map_err(|mut refused| {
+                refused.app.get_or_insert_with(|| app.to_string());
+                refused
+            })?,
+        ),
         None => None,
     };
     let grants = backend.grants(chat);

@@ -84,7 +84,7 @@ jobs:
           stage="$RUNNER_TEMP/$name"
           mkdir -p "$stage"
           install -m 0755 target/$TARGET/release/derm target/$TARGET/release/derm-daemon target/$TARGET/release/derm-audit-feed "$stage/"
-          install -m 0644 LICENSE NOTICE README.md crates/derm-daemon/units/derm-daemon.service "$stage/"
+          install -m 0644 LICENSE NOTICE README.md crates/derm-daemon/units/derm-daemon.service crates/derm-audit-linux/units/derm-audit-feed.service "$stage/"
           tar -C "$RUNNER_TEMP" --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
           # cargo-deb 3.8.0 writes target/debian/ even with --target (run 2 Nov).
           cp target/debian/*.deb dist/

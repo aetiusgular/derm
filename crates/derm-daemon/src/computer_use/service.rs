@@ -388,6 +388,38 @@ impl Host for DaemonHost {
 
 static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
 
+/// Why `start` did not start the service when the setting was on.
+static START_ERROR: OnceLock<String> = OnceLock::new();
+
+/// Why computer use is not running in this daemon, in the words `derm cu
+/// status` prints. Box test w5 retest 2, BW5R2-1: the answer said "macOS
+/// only" on Linux, where lane U runs it too, with the setting merely off.
+pub fn not_running_reason() -> String {
+    let on = settings_path().map(|settings| {
+        super::settings::computer_use_on(&settings, derm_core::platform::real_user())
+    });
+    not_running_reason_for(super::SUPPORTED, on, START_ERROR.get().map(String::as_str))
+}
+
+/// `not_running_reason` from its three inputs: whether this system runs
+/// computer use, the setting as read now (`None` with no usable HOME), and
+/// the error `start` met, if it met one.
+pub(crate) fn not_running_reason_for(
+    supported: bool,
+    on: Option<bool>,
+    start_error: Option<&str>,
+) -> String {
+    if !supported {
+        return "computer use is not built for this system (macOS and Linux only)".into();
+    }
+    match (on, start_error) {
+        (None, _) => "computer use is off: there is no ~/.derm/settings.json to read (HOME is not an absolute path)".into(),
+        (Some(false), _) => "computer use is off: computerUse.on is not set in ~/.derm/settings.json (derm setup asks; the daemon reads it when it starts, so restart derm-daemon after)".into(),
+        (Some(true), Some(e)) => format!("computer use is on in ~/.derm/settings.json but did not start: {e}"),
+        (Some(true), None) => "computer use is on in ~/.derm/settings.json but was off when this daemon started: restart derm-daemon to start it".into(),
+    }
+}
+
 /// The running service, once `start` ran on macOS.
 pub fn running() -> Option<&'static Arc<Service>> {
     SERVICE.get()
@@ -425,6 +457,7 @@ pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) 
         Err(e) => {
             clear_endpoint(paths.runtime_dir());
             eprintln!("derm-daemon: computer use did not start: {e}");
+            let _ = START_ERROR.set(e);
         }
     }
 }
@@ -1060,5 +1093,40 @@ mod daemon_tests {
         assert!(!dir.join(super::super::ENDPOINT_FILE).exists());
         clear_endpoint(&dir); // already gone: no error
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Box test w5 retest 2, BW5R2-1: with the setting off on Linux, `derm
+    /// cu status` said "macOS only". Each state now says what it is and
+    /// what turns it on, and none claims another system.
+    #[test]
+    fn bw5r2_1_a_service_that_is_not_running_says_why() {
+        let off = not_running_reason_for(true, Some(false), None);
+        assert!(
+            off.contains("is off") && off.contains("computerUse.on"),
+            "{off}"
+        );
+        assert!(off.contains("restart derm-daemon"), "{off}");
+        let failed = not_running_reason_for(true, Some(true), Some("bridge: refused"));
+        assert!(
+            failed.contains("did not start: bridge: refused"),
+            "{failed}"
+        );
+        let late = not_running_reason_for(true, Some(true), None);
+        assert!(late.contains("restart derm-daemon"), "{late}");
+        let no_home = not_running_reason_for(true, None, None);
+        assert!(no_home.contains("is off"), "{no_home}");
+        let other = not_running_reason_for(false, Some(true), None);
+        assert!(other.contains("macOS and Linux only"), "{other}");
+        for text in [&off, &failed, &late, &no_home] {
+            assert!(!text.contains("macOS only"), "{text}");
+        }
+        // The daemon's own answer is one of these, on this system.
+        let here = not_running_reason();
+        assert!(
+            [&off, &failed, &late, &no_home, &other]
+                .iter()
+                .any(|t| t.split(':').next() == here.split(':').next()),
+            "{here}"
+        );
     }
 }

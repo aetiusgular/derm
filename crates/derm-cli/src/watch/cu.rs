@@ -101,7 +101,10 @@ pub fn main(args: &[String]) -> u8 {
     if reply["ok"] != true {
         eprintln!(
             "derm cu: {}",
-            clean(reply["error"].as_str().unwrap_or("the daemon refused"), 300)
+            clean(
+                reply["error"].as_str().unwrap_or("the daemon refused"),
+                VALUE_MAX
+            )
         );
         return 1;
     }
@@ -113,6 +116,12 @@ pub fn main(args: &[String]) -> u8 {
     }
     0
 }
+
+/// The longest value `derm cu` prints on one line, in characters. The
+/// daemon's own reasons run to about 400 (`computer_use/desktop.rs`); at 300
+/// the way out was cut off (box test w5 retest 2, BW5R2-2). Still a bound,
+/// since a value can hold a chat's words.
+const VALUE_MAX: usize = 1000;
 
 /// The report for a terminal: one `path: value` line per field, nested
 /// fields by their path (`runningChats[0].chat`), an empty list as
@@ -148,7 +157,7 @@ pub fn render(report: &Value) -> String {
             }
             Value::String(s) => {
                 *budget -= 1;
-                out.push_str(&format!("{path}: {}\n", clean(s, 300)));
+                out.push_str(&format!("{path}: {}\n", clean(s, VALUE_MAX)));
             }
             other => {
                 *budget -= 1;
@@ -237,6 +246,26 @@ mod tests {
         );
         let note = lines.iter().find(|l| l.starts_with("note: ")).unwrap();
         assert!(!note.contains('\x1b') && note.contains("\\u{A}"), "{note}");
+    }
+
+    #[test]
+    fn bw5r2_2_the_desktop_line_is_printed_whole() {
+        // Box test w5 retest 2, BW5R2-2: GNOME 50's reason (about 400
+        // characters) was cut at 300, before "a cua-driver whose helper
+        // lists GNOME Shell 50".
+        let reason = format!(
+            "Computer use cannot see windows here: {} No card is shown; use an X11 session, or a cua-driver whose helper lists GNOME Shell 50.",
+            "x".repeat(330)
+        );
+        let text = render(&json!({ "desktop": reason }));
+        assert_eq!(text, format!("desktop: {reason}\n"));
+        // Still bounded.
+        let long = render(&json!({ "note": "y".repeat(5000) }));
+        assert!(
+            long.trim_end().ends_with('…') && long.len() < 1100,
+            "{}",
+            long.len()
+        );
     }
 
     #[test]

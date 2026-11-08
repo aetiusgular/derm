@@ -1392,8 +1392,12 @@ fn fresh_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    // The parent (`<runtime>/derm/otel-helper`) holds every chat's folder:
+    // made 0700 with each folder on the way, and refused when it is a link
+    // or another user's (box test w5 retest 2, BW5R2-4: `create_dir_all`
+    // left it 0755 under umask 022, BW5R-8's class).
     if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent)?;
+        derm_core::platform::private_dir(parent)?;
     }
     std::fs::DirBuilder::new().mode(0o700).create(dir)
 }

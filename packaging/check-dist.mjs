@@ -4,9 +4,10 @@
 //   node packaging/check-dist.mjs <dist>
 //
 // The tarball holds the three binaries (mode 0755), LICENSE, NOTICE, README.md
-// and the user unit, under one top folder. The .deb holds the binaries in
-// /usr/bin, the user unit in /usr/lib/systemd/user/ starting /usr/bin/
-// derm-daemon, and no maintainer script: nothing runs or is enabled on
+// and the two user units, under one top folder. The .deb holds the binaries in
+// /usr/bin, the user units in /usr/lib/systemd/user/ starting /usr/bin/
+// derm-daemon and /usr/bin/derm-audit-feed, the feed's wanted by the daemon's
+// (box test w5 retest 2, BW5R2-5), and no maintainer script: nothing runs or is enabled on
 // install (plans/parallel_build_tk.md, section 7b, release step 3).
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -14,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const BINARIES = ["derm", "derm-daemon", "derm-audit-feed"];
-const DOCS = ["LICENSE", "NOTICE", "README.md", "derm-daemon.service"];
+const DOCS = ["LICENSE", "NOTICE", "README.md", "derm-daemon.service", "derm-audit-feed.service"];
 
 function fail(why) {
   console.error(`check-dist: ${why}`);
@@ -57,6 +58,7 @@ try {
   const contents = execFileSync("dpkg-deb", ["-c", deb], { encoding: "utf8" });
   for (const b of BINARIES) if (!new RegExp(`^-rwxr-xr-x .* \\./usr/bin/${b}$`, "m").test(contents)) fail(`${debs[0]}: /usr/bin/${b} missing or not 0755`);
   if (!/ \.\/usr\/lib\/systemd\/user\/derm-daemon\.service$/m.test(contents)) fail(`${debs[0]}: the user unit is missing`);
+  if (!/ \.\/usr\/lib\/systemd\/user\/derm-audit-feed\.service$/m.test(contents)) fail(`${debs[0]}: the feed's user unit is missing`);
   if (/ \.\/(etc|lib\/systemd\/system|usr\/lib\/systemd\/system)\//m.test(contents)) fail(`${debs[0]}: installs into /etc or a system unit folder`);
   // Extracted to a folder: the binaries are megabytes, past a pipe buffer.
   const x = mkdtempSync(join(tmpdir(), "derm-deb-x-"));
@@ -64,6 +66,9 @@ try {
     execFileSync("dpkg-deb", ["-x", deb, x]);
     const text = readFileSync(join(x, "usr/lib/systemd/user/derm-daemon.service"), "utf8");
     if (!/^ExecStart=\/usr\/bin\/derm-daemon --foreground$/m.test(text)) fail(`${debs[0]}: the unit does not start /usr/bin/derm-daemon`);
+    const feed = readFileSync(join(x, "usr/lib/systemd/user/derm-audit-feed.service"), "utf8");
+    if (!/^ExecStart=\/usr\/bin\/derm-audit-feed run$/m.test(feed)) fail(`${debs[0]}: the feed's unit does not start /usr/bin/derm-audit-feed`);
+    if (!/^WantedBy=derm-daemon\.service$/m.test(feed)) fail(`${debs[0]}: the feed's unit is not wanted by derm-daemon.service`);
   } finally {
     rmSync(x, { recursive: true, force: true });
   }

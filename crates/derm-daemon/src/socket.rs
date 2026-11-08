@@ -135,8 +135,11 @@ fn read_loop(stream: &UnixStream, daemon: &Arc<Daemon>, out: &Outbox) -> std::io
     // The first line: `hello`, or one error and the connection closes.
     let who = match read_line(&mut reader) {
         Ok(Line::Text(text)) => match serde_json::from_str::<Request>(&text) {
-            Ok(Request::Hello { token, .. }) => match daemon.hello(&token) {
-                Some(who) => who,
+            Ok(Request::Hello { token, client }) => match daemon.hello(&token) {
+                Some(who) => {
+                    daemon.note_client(out.conn, &who, &client);
+                    who
+                }
                 None => {
                     out.send(&error("bad token"));
                     return Ok(());

@@ -804,7 +804,24 @@ pub struct Daemon {
     /// one never counted a line as read, so a flood of OS records ended it
     /// and no later chat reached the collector until a restart.
     run_watchers: Mutex<Vec<Sender<Event>>>,
+    /// The Linux OS feed's tail connections (box test w5 retest 2, BW5R2-5).
+    os_feed: Mutex<OsFeed>,
     pub counters: Counters,
+}
+
+/// The client name `derm-audit-feed run` gives its tail connection
+/// (`derm-audit-linux/src/bin/derm-audit-feed.rs`). The feed holds that
+/// connection for its whole run and exits when it closes.
+pub const AUDIT_FEED_TAIL: &str = "derm-audit-feed tail";
+
+/// Whether the Linux feed is attached. A status, not a guard: any process
+/// that can read `daemon.token` can name itself the feed (S2), and one that
+/// can do that can also stop the real one.
+#[derive(Default)]
+struct OsFeed {
+    conns: HashSet<u64>,
+    seen: bool,
+    lost_at: Option<i64>,
 }
 
 /// How many call ids `Decided` keeps per chat, and how many chats.
@@ -1063,6 +1080,7 @@ impl Daemon {
             installs: Mutex::new(crate::installs::ingest::InstallRecords::new()),
             purger: Mutex::new(crate::content::Purger::new(data_dir)),
             run_watchers: Mutex::new(Vec::new()),
+            os_feed: Mutex::new(OsFeed::default()),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -1288,6 +1306,43 @@ impl Daemon {
     /// The collector registration's state for `report` (MW5-18): `running`,
     /// `stopped` (no new chat reaches the collector until a restart), or
     /// null where none was started (Linux, tests).
+    /// Notes a connection whose `hello` named it the Linux feed's tail, with
+    /// the daemon's own token (BW5R2-5). A chat token never counts.
+    pub fn note_client(&self, conn: u64, who: &Who, client: &str) {
+        if *who != Who::Daemon || client != AUDIT_FEED_TAIL {
+            return;
+        }
+        if let Ok(mut feed) = self.os_feed.lock() {
+            feed.conns.insert(conn);
+            feed.seen = true;
+            feed.lost_at = None;
+        }
+    }
+
+    /// The Linux feed as `report` names it (BW5R2-5): `attached`; `stopped`
+    /// with when, once it was attached and every connection of it closed;
+    /// `none` when none attached since this daemon started. Null elsewhere:
+    /// the Mac's collector has its own fields.
+    pub fn os_feed_state(&self) -> Value {
+        if !cfg!(target_os = "linux") {
+            return Value::Null;
+        }
+        self.os_feed_state_here()
+    }
+
+    fn os_feed_state_here(&self) -> Value {
+        let Ok(feed) = self.os_feed.lock() else {
+            return Value::Null;
+        };
+        if !feed.conns.is_empty() {
+            json!({"state": "attached"})
+        } else if feed.seen {
+            json!({"state": "stopped", "since": feed.lost_at})
+        } else {
+            json!({"state": "none"})
+        }
+    }
+
     pub fn registration_state(&self) -> Value {
         if !self.counters.registration_started.load(Ordering::SeqCst) {
             return Value::Null;
@@ -2081,6 +2136,8 @@ impl Daemon {
             // MW5-18: whether new chats still reach the collector, and how
             // many tails the daemon dropped for falling behind.
             "osRegistration": self.registration_state(),
+            // BW5R2-5: whether derm-audit-feed is attached (Linux only).
+            "osFeed": self.os_feed_state(),
             // MW5-19: eslogger lines the Mac collector dropped because it
             // read them slower than they came (its own count, since it
             // started); null where there is no collector.
@@ -2230,6 +2287,11 @@ impl Daemon {
         if let Ok(mut a) = self.approvers.lock() {
             a.retain(|o| o.conn != conn);
         }
+        if let Ok(mut feed) = self.os_feed.lock() {
+            if feed.conns.remove(&conn) && feed.conns.is_empty() {
+                feed.lost_at = Some(now_ms());
+            }
+        }
         if let Ok(mut t) = self.tails.lock() {
             t.retain(|s| s.out.conn != conn);
         }
@@ -2246,8 +2308,8 @@ impl Daemon {
 
 /// `cu` (lane K's request 3): computer use's controls, daemon scope only.
 /// A chat token may not stop, read or revoke computer use: it is the
-/// agent's (case 66). Where computer use does not run (not macOS, or the
-/// feature off) the answer says so.
+/// agent's (case 66). Where computer use does not run (another system, the
+/// setting off, or a start that failed) the answer says which (BW5R2-1).
 fn op_cu(who: &Who, action: CuAction, chat: Option<&str>, app: Option<&str>) -> Reply {
     if *who != Who::Daemon {
         return error("cu needs daemon scope");
@@ -2260,7 +2322,7 @@ fn op_cu(who: &Who, action: CuAction, chat: Option<&str>, app: Option<&str>) -> 
     #[cfg(feature = "computer-use")]
     {
         let Some(service) = crate::computer_use::service::running() else {
-            return error("computer use is not running here (macOS only, started by the daemon)");
+            return error(crate::computer_use::service::not_running_reason());
         };
         let report = match action {
             CuAction::Status => serde_json::to_value(service.status()).ok(),

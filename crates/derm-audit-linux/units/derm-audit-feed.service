@@ -1,0 +1,32 @@
+# systemd user unit for derm-audit-feed (Linux), for the static tarball. The
+# .deb installs its own copy in /usr/lib/systemd/user/. It needs auditd and
+# the rules `derm-audit-feed rules` prints, installed by root first
+# (README.md, "The audit feed"). Then:
+#
+#   install -D -m 0644 derm-audit-feed.service ~/.config/systemd/user/derm-audit-feed.service
+#   install -D -m 0755 derm-audit-feed ~/.local/bin/derm-audit-feed
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now derm-audit-feed.service
+#
+# Enabling links it into derm-daemon.service.wants/, so every start of the
+# daemon starts the feed too; PartOf= stops and restarts it with the daemon.
+# The feed reads the daemon's token once and exits when the daemon goes, so
+# it lives and dies with the daemon's unit. `derm watch report` names a feed
+# that is not attached.
+
+[Unit]
+Description=derm audit feed: auditd records of derm run chats into derm-daemon
+After=derm-daemon.service
+Wants=derm-daemon.service
+PartOf=derm-daemon.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/derm-audit-feed run
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=derm-daemon.service

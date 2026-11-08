@@ -168,6 +168,25 @@ pub fn render(r: &Value) -> String {
             "OS REGISTRATION STOPPED: chats started from now on are not followed by the OS feed until derm-daemon restarts\n",
         );
     }
+    // Box test w5 retest 2, BW5R2-5: on Linux the OS feed is a process of
+    // its own, and a stop of the daemon's unit took it down for good while
+    // the report said only "os collector: unknown".
+    match r.get("osFeed").and_then(|f| f.get("state")).and_then(Value::as_str) {
+        Some("stopped") => {
+            let since = r["osFeed"]
+                .get("since")
+                .and_then(Value::as_i64)
+                .map(|ms| format!(" at {}", date_time(ms)))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "OS FEED STOPPED{since}: derm-audit-feed is not attached, so chats since then have no OS records (systemctl --user start derm-audit-feed)\n"
+            ));
+        }
+        Some("none") => out.push_str(
+            "os feed: derm-audit-feed has not attached since derm-daemon started; the OS layer records nothing until it does (docs/install/linux.md)\n",
+        ),
+        _ => {}
+    }
     if let Some(n) = r
         .get("collectorDropped")
         .and_then(Value::as_u64)
@@ -403,6 +422,32 @@ mod tests {
                 "expected": [], "suppressed": {"harnessStartup": 5}
             }
         })
+    }
+
+    #[test]
+    fn bw5r2_5_a_linux_feed_that_is_not_attached_is_named() {
+        // Box test w5 retest 2, BW5R2-5.
+        let stopped = render(
+            &json!({"events": 1, "osFeed": {"state": "stopped", "since": 1792204000000i64}}),
+        );
+        assert!(stopped.contains("OS FEED STOPPED at "), "{stopped}");
+        assert!(
+            stopped.contains("systemctl --user start derm-audit-feed"),
+            "{stopped}"
+        );
+        let none = render(&json!({"events": 1, "osFeed": {"state": "none"}}));
+        assert!(
+            none.contains("os feed: derm-audit-feed has not attached"),
+            "{none}"
+        );
+        for quiet in [
+            json!({"events": 1, "osFeed": {"state": "attached"}}),
+            json!({"events": 1, "osFeed": null}),
+            json!({"events": 1}),
+        ] {
+            let t = render(&quiet);
+            assert!(!t.contains("derm-audit-feed"), "{t}");
+        }
     }
 
     #[test]
