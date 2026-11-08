@@ -80,6 +80,20 @@ pub trait HelperLauncher: Send + Sync {
     fn unusable(&self) -> Option<String> {
         None
     }
+    /// This user's running processes of the app bundle at `app` (BW5-19's
+    /// Mac half, fix pass 11). Some: the daemon asks the helper for a
+    /// pid-less listing one pid at a time, since the helper's driver reads
+    /// one with no pid as a whole-display observation and refuses it. None:
+    /// the helper answers such a listing itself (Linux, `direct.rs`).
+    fn app_pids(&self, _app: &Path) -> Option<Vec<u64>> {
+        None
+    }
+    /// Whether [`HelperLauncher::app_pids`] answers on this launcher, asked
+    /// before any grant is looked at, so a launcher that lists by itself
+    /// gets every listing as it was sent.
+    fn lists_by_app(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -163,6 +177,10 @@ struct Inner {
     /// app), per chat: `None` while the card is open, then the answer. Ended
     /// with the chat's grants.
     scopes: HashMap<(String, String), Option<bool>>,
+    /// The app bundle each grant's card showed, by chat and lowercase
+    /// bundle id (fix pass 11, BW5-19's Mac half): a listing with no pid is
+    /// asked per process of these. Kept only while the grant is active.
+    app_paths: HashMap<(String, String), PathBuf>,
 }
 
 impl Inner {
@@ -338,6 +356,89 @@ impl Core {
 
     // --- Grants, from the user's clicks ---
 
+    /// BW5-19's Mac half (fix pass 11). A `list_windows` or `list_apps`
+    /// with no `pid` and no `window_id` is a whole-display observation to
+    /// the helper's driver, which derm's manifest refuses (Mac test w5,
+    /// retest 4). Where the launcher can list an app's processes (macOS),
+    /// `list_apps` is answered from the processes of the apps this chat
+    /// holds, and `list_windows` is asked once per such process, with its
+    /// pid, keeping only that pid's windows, as `direct.rs` does on Linux.
+    /// None: not such a listing, or the launcher answers it itself.
+    fn listing_by_app(&self, chat: &str, name: &str, arguments: &Value) -> Option<CallOutcome> {
+        if !matches!(name, "list_windows" | "list_apps")
+            || arguments.get("pid").is_some_and(|v| !v.is_null())
+            || arguments.get("window_id").is_some_and(|v| !v.is_null())
+        {
+            return None;
+        }
+        if !self.launcher.lists_by_app() {
+            return None;
+        }
+        let held: Vec<(Grant, Option<PathBuf>)> = {
+            let inner = self.lock();
+            inner
+                .grants
+                .active(chat, now_ms())
+                .into_iter()
+                .map(|g| {
+                    let path = inner
+                        .app_paths
+                        .get(&(chat.to_string(), g.bundle_id.to_ascii_lowercase()))
+                        .cloned();
+                    (g, path)
+                })
+                .collect()
+        };
+        let mut procs: Vec<(u64, Grant)> = Vec::new();
+        for (grant, path) in held {
+            // A grant without a path (made by bundle id with no card path)
+            // has no processes derm can name: its listing stays empty,
+            // never a display observation.
+            let Some(path) = path else { continue };
+            let pids = self.launcher.app_pids(&path).unwrap_or_default();
+            procs.extend(pids.into_iter().map(|pid| (pid, grant.clone())));
+        }
+        if name == "list_apps" {
+            let apps: Vec<Value> = procs
+                .iter()
+                .map(|(pid, g)| json!({"name": g.app_name.clone().unwrap_or_else(|| g.bundle_id.clone()), "pid": pid, "bundleId": g.bundle_id}))
+                .collect();
+            return Some(CallOutcome::Done(json!({
+                "content": [{"type": "text", "text": format!("{} running app(s) this chat holds", apps.len())}],
+                "structuredContent": {"apps": apps},
+            })));
+        }
+        let mut windows: Vec<Value> = Vec::new();
+        for (pid, _) in &procs {
+            let mut args = json!({"pid": pid});
+            if let Some(v) = arguments.get("on_screen_only") {
+                args["on_screen_only"] = v.clone();
+            }
+            match Backend::call(self, chat, "list_windows", args) {
+                CallOutcome::Done(result) => {
+                    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                        return Some(CallOutcome::Done(result));
+                    }
+                    let list = result
+                        .pointer("/structuredContent/windows")
+                        .or_else(|| result.pointer("/windows"))
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    windows.extend(
+                        list.into_iter()
+                            .filter(|w| w.get("pid").and_then(Value::as_u64) == Some(*pid)),
+                    );
+                }
+                other => return Some(other),
+            }
+        }
+        Some(CallOutcome::Done(json!({
+            "content": [{"type": "text", "text": format!("{} window(s) of the apps this chat holds", windows.len())}],
+            "structuredContent": {"windows": windows},
+        })))
+    }
+
     pub fn grants(&self, chat: &str) -> Vec<Grant> {
         self.lock().grants.active(chat, now_ms())
     }
@@ -363,10 +464,24 @@ impl Core {
             inner
                 .harness
                 .insert(chat.to_string(), harness_name(harness));
-            inner
+            let made = inner
                 .grants
                 .grant(chat, bundle_id, app_name, now, new_id())
-                .map_err(|e| e.message())?
+                .map_err(|e| e.message())?;
+            if let Some(path) = app_path.filter(|p| p.starts_with('/')) {
+                inner.app_paths.insert(
+                    (chat.to_string(), made.0.bundle_id.to_ascii_lowercase()),
+                    PathBuf::from(path),
+                );
+            }
+            let active: std::collections::HashSet<(String, String)> = inner
+                .grants
+                .all_active(now)
+                .into_iter()
+                .map(|g| (g.chat_id, g.bundle_id.to_ascii_lowercase()))
+                .collect();
+            inner.app_paths.retain(|k, _| active.contains(k));
+            made
         };
         if grant.granted_at == now {
             self.log_approval(&grant, true, None);
@@ -1223,6 +1338,9 @@ impl Backend for Core {
     }
 
     fn call(&self, chat: &str, name: &str, arguments: Value) -> CallOutcome {
+        if let Some(outcome) = self.listing_by_app(chat, name, &arguments) {
+            return outcome;
+        }
         if !look_only(name) && self.lock().card_open() {
             return CallOutcome::Failed(
                 "An approval card is open for the user. Input waits until the user answers it."
@@ -1359,6 +1477,9 @@ pub mod tests {
         pub working: bool,
         /// How long the fake helper takes to answer `start`.
         pub start_delay: Duration,
+        /// The processes `app_pids` names for any app (None: the launcher
+        /// answers pid-less listings itself, as Linux's does).
+        pub app_pids: Option<Vec<u64>>,
     }
 
     impl FakeLauncher {
@@ -1368,6 +1489,7 @@ pub mod tests {
                 launches: Arc::default(),
                 working: true,
                 start_delay: Duration::ZERO,
+                app_pids: None,
             }
         }
     }
@@ -1397,6 +1519,17 @@ pub mod tests {
                             json!({"id": id, "ok": true, "pid": pid})
                         }
                         "tools" => json!({"id": id, "ok": true, "tools": [{"name": "click"}]}),
+                        "call"
+                            if request["name"] == "list_windows"
+                                && request["arguments"]["pid"].is_u64() =>
+                        {
+                            // The asked pid's window, and another app's.
+                            let pid = request["arguments"]["pid"].clone();
+                            json!({"id": id, "ok": true, "result": {"structuredContent": {"windows": [
+                                {"pid": pid, "window_id": 7, "app_name": "Calculator", "title": "Calculator"},
+                                {"pid": 999, "window_id": 8, "app_name": "Other", "title": "Other"}
+                            ]}}})
+                        }
                         "call" => {
                             json!({"id": id, "ok": true, "result": {"content": [{"type": "text", "text": "done"}]}})
                         }
@@ -1421,6 +1554,12 @@ pub mod tests {
         }
         fn location(&self) -> Option<String> {
             Some("/fake/MonoCode Computer Use.app".into())
+        }
+        fn app_pids(&self, _app: &Path) -> Option<Vec<u64>> {
+            self.app_pids.clone()
+        }
+        fn lists_by_app(&self) -> bool {
+            self.app_pids.is_some()
         }
         fn installed(&self) -> bool {
             self.working
@@ -1585,6 +1724,115 @@ pub mod tests {
         assert_eq!(core.mint_token("c9"), core.token("c9"));
         assert!(!core.is_on("c9"));
         assert_eq!(core.mint_token("c1").unwrap(), t3);
+    }
+
+    fn calls(log: &Log) -> Vec<Value> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["op"] == "call")
+            .cloned()
+            .collect()
+    }
+
+    const CALC: &str = "/System/Applications/Calculator.app";
+
+    /// BW5-19's Mac half (fix pass 11): a pid-less `list_windows` went to the
+    /// helper as is, and its driver refused it as a whole-display
+    /// observation. Now it is asked once per process of the app the chat
+    /// holds, with that pid, and only that pid's windows come back.
+    #[test]
+    fn bw5_19_mac_a_listing_with_no_pid_is_asked_per_process_of_the_app() {
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242, 4343]);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant(
+            "c1",
+            "claude",
+            "com.apple.calculator",
+            Some("Calculator"),
+            Some(CALC),
+        )
+        .unwrap();
+        let result = core
+            .runtime_call("c1", "list_windows", json!({"on_screen_only": true}))
+            .unwrap();
+        let asked = calls(&log);
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        for (call, pid) in asked.iter().zip([4242, 4343]) {
+            assert_eq!(call["name"], "list_windows");
+            assert_eq!(call["arguments"]["pid"], pid);
+            assert_eq!(call["arguments"]["on_screen_only"], true);
+        }
+        let windows = result["structuredContent"]["windows"].as_array().unwrap();
+        let pids: Vec<u64> = windows.iter().map(|w| w["pid"].as_u64().unwrap()).collect();
+        assert_eq!(
+            pids,
+            vec![4242, 4343],
+            "another app's window never reaches the chat"
+        );
+    }
+
+    #[test]
+    fn bw5_19_mac_list_apps_is_answered_from_the_apps_processes() {
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242]);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant(
+            "c1",
+            "claude",
+            "com.apple.calculator",
+            Some("Calculator"),
+            Some(CALC),
+        )
+        .unwrap();
+        let result = core.runtime_call("c1", "list_apps", json!({})).unwrap();
+        assert!(calls(&log).is_empty(), "the helper is not asked");
+        assert_eq!(
+            result["structuredContent"]["apps"],
+            json!([{"name": "Calculator", "pid": 4242, "bundleId": "com.apple.calculator"}])
+        );
+    }
+
+    /// A grant with no app path names no process: the listing is empty, and
+    /// nothing pid-less reaches the helper.
+    #[test]
+    fn bw5_19_mac_a_grant_without_a_path_sends_no_display_observation() {
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242]);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
+            .unwrap();
+        let result = core.runtime_call("c1", "list_windows", json!({})).unwrap();
+        assert!(calls(&log).is_empty());
+        assert_eq!(result["structuredContent"]["windows"], json!([]));
+    }
+
+    /// Where the launcher answers pid-less listings itself (Linux's
+    /// `direct.rs`), the call passes through unchanged; a call with a pid
+    /// always does.
+    #[test]
+    fn bw5_19_mac_a_launcher_that_lists_itself_gets_the_call_as_is() {
+        let (core, log, _) = core_with(FakeLauncher::new());
+        core.set_chat("c1", true);
+        core.grant("c1", "claude", "com.apple.calculator", None, Some(CALC))
+            .unwrap();
+        core.runtime_call("c1", "list_windows", json!({})).unwrap();
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242]);
+        let (core2, log2, _) = core_with(launcher);
+        core2.set_chat("c1", true);
+        core2
+            .grant("c1", "claude", "com.apple.calculator", None, Some(CALC))
+            .unwrap();
+        core2
+            .runtime_call("c1", "list_windows", json!({"pid": 77}))
+            .unwrap();
+        assert_eq!(calls(&log)[0]["arguments"], json!({}));
+        assert_eq!(calls(&log2)[0]["arguments"], json!({"pid": 77}));
     }
 
     #[test]

@@ -24,6 +24,8 @@
 //!   item, and the spawn-argument scan that gave MonoCode's harness children
 //!   their token (`configure_child`); its tests went with it.
 
+#[path = "app_pids.rs"]
+mod app_pids;
 #[path = "apps.rs"]
 mod apps;
 #[path = "bridge.rs"]
@@ -138,6 +140,14 @@ impl HelperLauncher for SystemLauncher {
     /// `<daemon data>/computer-use/recordings/<runtime>/`.
     fn recordings_root(&self) -> Option<PathBuf> {
         Some(self.data.as_ref()?.join("computer-use").join("recordings"))
+    }
+    /// BW5-19's Mac half: this user's processes of the approved app, read
+    /// with libproc, so a listing reaches the helper with a pid.
+    fn app_pids(&self, app: &std::path::Path) -> Option<Vec<u64>> {
+        app_pids::pids_in_app(app)
+    }
+    fn lists_by_app(&self) -> bool {
+        cfg!(target_os = "macos")
     }
 
     #[cfg(not(target_os = "macos"))]

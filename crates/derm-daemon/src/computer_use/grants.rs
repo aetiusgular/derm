@@ -162,6 +162,16 @@ impl GrantTable {
             .unwrap_or_default()
     }
 
+    /// Every chat's grants that hold now.
+    pub fn all_active(&self, now: i64) -> Vec<Grant> {
+        self.chats
+            .values()
+            .flatten()
+            .filter(|grant| grant.holds_at(now))
+            .cloned()
+            .collect()
+    }
+
     /// Every grant kept for a chat, ended ones included.
     #[cfg(test)]
     pub fn history(&self, chat_id: &str) -> Vec<Grant> {
