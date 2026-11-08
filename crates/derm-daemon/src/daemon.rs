@@ -664,11 +664,24 @@ impl Outbox {
     pub fn pending(&self) -> usize {
         self.pending.load(Ordering::SeqCst)
     }
+
+    /// Asks the connection's writer to shut the socket once what is queued
+    /// is written (an empty line, which `send` never makes).
+    pub fn close(&self) {
+        self.send_line(String::new());
+    }
 }
 
 struct TailSub {
     chat: Option<String>,
+    /// `run` records only (`tail` with `runs`).
+    runs: bool,
     out: Outbox,
+    /// Lines that may wait in its queue before it is dropped: the live
+    /// headroom plus the backlog it was sent, so a backlog over the
+    /// headroom is not dropped by the first live event (fp13's review,
+    /// FP13R-11).
+    room: usize,
 }
 
 struct Pending {
@@ -1466,11 +1479,18 @@ impl Daemon {
         if let (Some(line), Ok(mut tails)) = (line, self.tails.lock()) {
             let before = tails.len();
             tails.retain(|sub| {
-                if sub.chat.as_deref().is_some_and(|c| c != event.chat_id) {
+                if sub.chat.as_deref().is_some_and(|c| c != event.chat_id)
+                    || (sub.runs && event.source != Source::Run)
+                {
                     return true;
                 }
-                if sub.out.pending() >= MAX_PENDING_LINES || !sub.out.send_line(line.clone()) {
+                if sub.out.pending() >= sub.room || !sub.out.send_line(line.clone()) {
                     self.counters.tails_dropped.fetch_add(1, Ordering::Relaxed);
+                    // Closed, not only forgotten: the client sees the end
+                    // and can start again (a feed under systemd restarts),
+                    // where a held connection left it waiting for good
+                    // (fp13's review, FP13R-11).
+                    sub.out.close();
                     return false;
                 }
                 true
@@ -1575,7 +1595,9 @@ impl Daemon {
             Request::Event { event } => {
                 out.send(&self.op_event(who, event));
             }
-            Request::Tail { since, chat } => self.op_tail(who, since, chat, out),
+            Request::Tail { since, chat, runs } => {
+                self.op_tail(who, since, chat, runs.unwrap_or(false), out)
+            }
             Request::Report { chat, since, until } => {
                 out.send(&self.op_report(who, chat, since, until));
             }
@@ -2028,6 +2050,7 @@ impl Daemon {
         who: &Who,
         since: Option<i64>,
         chat: Option<String>,
+        runs: bool,
         out: &Outbox,
     ) {
         let chat = match (who, chat) {
@@ -2048,9 +2071,20 @@ impl Daemon {
         // a client does after it reads `ok` can be ingested before the
         // subscription exists (lane K's request 5: the old order sent `ok`
         // first, and an event ingested in between was never pushed).
+        // The newest records, not the first ones read: after a restart the
+        // ring is empty and the disk is the whole backlog (fp13's review,
+        // FP13R-1; the contract has said "newest" since BW5-12).
+        let only_runs = |e: &Event| !runs || e.source == Source::Run;
         let (mut backlog, mut cut): (Vec<Event>, bool) = match since {
             Some(since) => {
-                let r = store::read(&self.log_dir, since, i64::MAX, chat.as_deref(), MAX_BACKLOG);
+                let r = store::read_newest(
+                    &self.log_dir,
+                    since,
+                    i64::MAX,
+                    chat.as_deref(),
+                    MAX_BACKLOG,
+                    &only_runs,
+                );
                 (r.events, r.truncated)
             }
             None => (Vec::new(), false),
@@ -2060,7 +2094,12 @@ impl Daemon {
             return;
         };
         if let Some(since) = since {
-            let merged = merge_backlog(backlog, ring.iter(), since, chat.as_deref());
+            let merged = merge_backlog(
+                backlog,
+                ring.iter().filter(|e| only_runs(e)),
+                since,
+                chat.as_deref(),
+            );
             cut |= merged.1;
             backlog = merged.0;
         }
@@ -2082,12 +2121,15 @@ impl Daemon {
             reply.report = Some(json!({"backlogSent": backlog.len()}));
         }
         out.send(&reply);
+        let room = MAX_PENDING_LINES + backlog.len();
         for event in backlog {
             out.send(&Push::Event(event));
         }
         tails.push(TailSub {
             chat,
+            runs,
             out: out.clone(),
+            room,
         });
         self.feed_refresh(&tails);
         drop(tails);
@@ -3053,7 +3095,7 @@ mod tests {
             hooked.ingest(event("right-after-ok"));
         }));
         let (out, rx, _) = Outbox::new(d.next_conn());
-        d.op_tail(&Who::Daemon, None, None, &out);
+        d.op_tail(&Who::Daemon, None, None, false, &out);
         *AFTER_OK.lock().unwrap() = None;
         let first: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
         assert_eq!(first["ok"], true, "{first}");

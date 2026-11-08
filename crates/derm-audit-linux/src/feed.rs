@@ -20,10 +20,11 @@ pub struct Feed {
     checker: Checker,
     /// Lines that were not audit records.
     pub skipped_lines: u64,
-    refused: u64,
-    /// Audit events stamped at or before this were read in an earlier run
-    /// (BW5R4-1: a restart that reads the log again from its beginning).
-    floor_ms: i64,
+    /// Audit events before this `(time, serial)` were posted by an earlier
+    /// run (BW5R4-1: a restart that reads the log again from its beginning).
+    floor: Option<(i64, u64)>,
+    /// The `(time, serial)` of the last line read that was an audit record.
+    last_key: Option<(i64, u64)>,
 }
 
 impl Feed {
@@ -37,16 +38,39 @@ impl Feed {
             tracker: Tracker::new(),
             checker: Checker::new(),
             skipped_lines: 0,
-            refused: 0,
-            floor_ms: i64::MIN,
+            floor: None,
+            last_key: None,
         }
     }
 
-    /// Skips audit events stamped at or before `ms`: an earlier run of the
-    /// feed read and posted them, and posting them again would join them
-    /// again (BW5R4-1).
-    pub fn skip_through(&mut self, ms: i64) {
-        self.floor_ms = ms;
+    /// Skips audit events whose `(time, serial)` comes before `key`: an
+    /// earlier run of the feed posted them (BW5R4-1). The serial is the
+    /// kernel's one counter, so a second event in the same millisecond is
+    /// told apart (fp13's FP13-1); a key stamped ahead of the feed's clock
+    /// (a planted or stepped place) skips nothing, since a duplicate costs
+    /// less than a loss (fp13's review, FP13R-13).
+    pub fn skip_before(&mut self, key: (i64, u64)) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.floor = (key.0 <= now.saturating_add(crate::tree::STOP_SLACK_MS)).then_some(key);
+    }
+
+    /// The `(time, serial)` of the last audit record read.
+    pub fn last_key(&self) -> Option<(i64, u64)> {
+        self.last_key
+    }
+
+    /// Every event read and not yet posted: open in the assembler, or
+    /// waiting in the tracker for its chat's `run.start`. A place kept for a
+    /// restart must not pass the first line of any of them (fp13's review,
+    /// FP13R-3, FP13R-12).
+    pub fn unposted(&self) -> std::collections::HashSet<(i64, u64)> {
+        self.assembler
+            .open_keys()
+            .chain(self.tracker.pending_keys())
+            .collect()
     }
 
     pub fn tracker(&self) -> &Tracker {
@@ -72,6 +96,7 @@ impl Feed {
             }
             return Vec::new();
         };
+        self.last_key = Some(record.event_key());
         let done = self.assembler.push(record);
         self.handle(done)
     }
@@ -85,7 +110,7 @@ impl Feed {
     fn handle(&mut self, done: Vec<AuditEvent>) -> Vec<Event> {
         let mut out = Vec::new();
         for ev in done {
-            if ev.ts_ms <= self.floor_ms {
+            if self.floor.is_some_and(|f| (ev.ts_ms, ev.serial) < f) {
                 continue;
             }
             let Some(a) = action::read(&ev) else { continue };
@@ -137,12 +162,16 @@ impl Feed {
     /// `pid` registers a root; `run.stop` drops it. Anything else is
     /// ignored. Returns the events that were waiting for a new root.
     ///
-    /// `alive(pid)` says whether a process still runs. A `run.stop` for a
-    /// root that is still alive is ignored, and a `run.start` for a pid that
-    /// another live chat already holds is refused: a chat token can post
-    /// `run` records into its own chat (`contracts/daemon-protocol.md`
-    /// rule 2 only rewrites the chat), and must not be able to switch the
-    /// feed off for itself or take another chat's processes.
+    /// `alive(pid)` says whether a process still runs: members alive at a
+    /// stop stay the chat's. Every `run` record is taken as it comes: only
+    /// the daemon scope posts them (`contracts/daemon-protocol.md` rule 2;
+    /// `op_event` refuses them from a chat token), so a `run.stop` is
+    /// `derm run`'s own, after its harness exited, and a later `run.start`
+    /// on the same pid is a reused pid. Until fp13's review the feed refused
+    /// a stop whose root pid was alive and a start on a pid a live chat
+    /// held; with the pid reused (a backlog replayed at the feed's start),
+    /// that kept the old chat on the pid and credited the live chat's
+    /// processes to it (FP13R-6).
     pub fn on_daemon_event(&mut self, e: &Event, alive: &dyn Fn(u32) -> bool) -> Vec<Event> {
         if e.source != Source::Run || e.chat_id.is_empty() {
             return Vec::new();
@@ -150,12 +179,6 @@ impl Feed {
         match e.kind.as_str() {
             "run.start" => {
                 let Some(pid) = e.pid else { return Vec::new() };
-                if let Some(held) = self.tracker.root(pid) {
-                    if held.chat != e.chat_id && alive(pid) {
-                        self.refused += 1;
-                        return Vec::new();
-                    }
-                }
                 let strings = |key: &str| -> Vec<String> {
                     e.detail
                         .get(key)
@@ -180,27 +203,13 @@ impl Feed {
                 })
             }
             "run.stop" => {
-                let live = self
-                    .tracker
-                    .roots()
-                    .filter(|r| r.chat == e.chat_id && !r.stopped)
-                    .any(|r| alive(r.pid));
-                if live {
-                    self.refused += 1;
-                } else {
-                    // The stop's own time: lines stamped before it are still
-                    // the chat's when the feed reads them later (BW5R4-2).
-                    self.tracker.stop(&e.chat_id, e.at, alive);
-                    self.forget_gone();
-                }
+                // The stop's own time: lines stamped before it are still the
+                // chat's when the feed reads them later (BW5R4-2).
+                self.tracker.stop(&e.chat_id, e.at, alive);
+                self.forget_gone();
                 Vec::new()
             }
             _ => Vec::new(),
         }
-    }
-
-    /// `run` records refused by the checks in `on_daemon_event`.
-    pub fn refused(&self) -> u64 {
-        self.refused
     }
 }

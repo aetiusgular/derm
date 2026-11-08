@@ -228,6 +228,56 @@ pub fn read(
     read_where(dir, since_ms, until_ms, chat_id, limit, &|_| true)
 }
 
+/// Reads the records between two times that `keep` wants, the newest
+/// `limit` of them when there are more (`truncated` then says so). `read`
+/// keeps the first `limit` it reads, which for a backlog is the oldest: a
+/// restarted daemon's tail then left out the newest chats (fp13's review,
+/// FP13R-1). A first pass finds the time of the `limit`-th newest record
+/// with a heap of `limit` times; the second reads from there.
+pub fn read_newest(
+    dir: &Path,
+    since_ms: i64,
+    until_ms: i64,
+    chat_id: Option<&str>,
+    limit: usize,
+    keep: &dyn Fn(&ActivityEvent) -> bool,
+) -> ReadBack {
+    let first = read_where(dir, since_ms, until_ms, chat_id, limit, keep);
+    if !first.truncated || limit == 0 {
+        return first;
+    }
+    let heap =
+        std::cell::RefCell::new(std::collections::BinaryHeap::<std::cmp::Reverse<i64>>::new());
+    let count = |e: &ActivityEvent| {
+        if keep(e) {
+            let mut h = heap.borrow_mut();
+            h.push(std::cmp::Reverse(e.at));
+            if h.len() > limit {
+                h.pop();
+            }
+        }
+        false
+    };
+    let _ = read_where(dir, since_ms, until_ms, chat_id, usize::MAX, &count);
+    let cutoff = heap
+        .into_inner()
+        .peek()
+        .map_or(since_ms, |r| r.0)
+        .max(since_ms);
+    // Records stamped at the cutoff itself may be more than one; the caller
+    // keeps the newest `limit` (`merge_backlog`).
+    let mut back = read_where(
+        dir,
+        cutoff,
+        until_ms,
+        chat_id,
+        limit.saturating_add(limit),
+        keep,
+    );
+    back.truncated = true;
+    back
+}
+
 /// Whether a record written later under an event's id may take its place.
 /// Only telemetry replaces telemetry, and a source replaces its own: a
 /// webview write can never wipe a computer-use or collector record by

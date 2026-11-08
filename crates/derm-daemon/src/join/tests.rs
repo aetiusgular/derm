@@ -3306,3 +3306,38 @@ fn fp11_s4_control_without_the_future_stamp() {
     late.id = "au-behind".into();
     assert_eq!(j.observe(&late).len(), 1);
 }
+
+/// FP13R-5 (fp13 review): the Linux feed posts `feed.gap` (source auditd,
+/// no `auditAt`) when it starts and is about to read a log it is behind on.
+/// `feed_progress` takes the daemon's own `at` for it, so the join takes the
+/// feed as past every stop and lets kept chats go; the resumed lines then
+/// count as done after the stop instead of being joined.
+#[test]
+fn fp13r_5_a_feed_gap_does_not_tell_the_join_the_feed_is_current() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_G", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6301}));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    let mut gap = ev(
+        Source::Auditd,
+        "feed.gap",
+        2_500 + 40_000,
+        None,
+        json!({"fromMs": 1_000, "toMs": 2_500 + 40_000, "reason": "rotated"}),
+    );
+    gap.chat_id = String::new();
+    gap.id = "auditd-gap-42500".into();
+    j.observe(&gap);
+    // The feed reads on: the shell's exec, stamped 1,150, arrives now.
+    let mut late = ev(
+        Source::Auditd,
+        "exec",
+        2_500 + 40_001,
+        Some(6301),
+        json!({"ppid": ROOT, "auditAt": 1_150, "exe": "/bin/sh"}),
+    );
+    late.id = "auditd-1150-1".into();
+    let r = j.observe(&late);
+    assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
+}

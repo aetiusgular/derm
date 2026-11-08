@@ -24,6 +24,10 @@ pub enum Request {
         since: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chat: Option<String>,
+        /// `run` records only, backlog and live (the Linux feed; fp13's
+        /// review, FP13R-1, FP13R-11).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<bool>,
     },
     /// One JSON report over a window.
     Report {

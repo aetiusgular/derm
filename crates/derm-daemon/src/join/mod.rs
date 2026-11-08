@@ -144,7 +144,14 @@ pub fn os_feed_time(e: &Event) -> Option<i64> {
 /// FP11-S4: one event stamped in the future, a clock step, moved the
 /// running maximum for good and turned MW5-34's wait off for every later
 /// chat). OS feeds run on the daemon's host, so their clocks are one.
+///
+/// A feed's own `feed.gap` is no OS event: it carries no OS time, and its
+/// `at` is when it was posted, before the feed reads what it fell behind on
+/// (fp13's review, FP13R-5).
 pub fn feed_progress(e: &Event) -> Option<i64> {
+    if e.kind == "feed.gap" {
+        return None;
+    }
     os_feed_time(e).filter(|t| *t <= e.at + SLACK_AFTER_MS)
 }
 /// How far before a call's recorded start an effect may fall (the OS feed

@@ -307,21 +307,41 @@ impl Client {
     /// `tail`: after the reply, the connection streams `{"event": ...}`
     /// lines. The read timeout is lifted (a quiet daemon is not an error on
     /// a tail); the caller reads with `next_event`.
-    pub fn tail(mut self, since: Option<i64>) -> Result<Tail, ClientError> {
+    pub fn tail(self, since: Option<i64>) -> Result<Tail, ClientError> {
+        self.tail_with(since, false)
+    }
+
+    /// `tail` of `run` records only (`runs: true`), the backlog the newest
+    /// of them: what the Linux feed needs to know every chat, without the
+    /// rest of the log crowding it out of the backlog (fp13's review,
+    /// FP13R-1) or filling its queue (FP13R-11).
+    pub fn tail_runs(self, since: Option<i64>) -> Result<Tail, ClientError> {
+        self.tail_with(since, true)
+    }
+
+    fn tail_with(mut self, since: Option<i64>, runs: bool) -> Result<Tail, ClientError> {
         let mut req = json!({"op": "tail"});
         if let Some(s) = since {
             req["since"] = json!(s);
         }
+        if runs {
+            req["runs"] = json!(true);
+        }
         let reply = self.request(&req)?;
         self.writer.set_read_timeout(None)?;
-        let backlog = reply
-            .get("report")
+        let report = reply.get("report");
+        let backlog = report
             .and_then(|r| r.get("backlogSent"))
             .and_then(Value::as_u64)
             .map(|n| n as usize);
+        let cut = report
+            .and_then(|r| r.get("backlogCut"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         Ok(Tail {
             client: self,
             backlog,
+            cut,
         })
     }
 }
@@ -329,6 +349,7 @@ impl Client {
 pub struct Tail {
     client: Client,
     backlog: Option<usize>,
+    cut: bool,
 }
 
 impl Tail {
@@ -337,6 +358,12 @@ impl Tail {
     /// the backlog was cut).
     pub fn backlog(&self) -> Option<usize> {
         self.backlog
+    }
+
+    /// The daemon cut the backlog to its newest records: older ones since
+    /// `since` were not sent.
+    pub fn cut(&self) -> bool {
+        self.cut
     }
 
     /// The next streamed event. Lines that are not `{"event": ...}` are

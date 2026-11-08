@@ -982,6 +982,7 @@ mod daemon_tests {
             Request::Tail {
                 since: None,
                 chat: Some("chat-5".into()),
+                runs: None,
             },
             &tail,
         );

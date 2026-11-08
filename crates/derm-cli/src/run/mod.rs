@@ -461,7 +461,7 @@ fn regular_private_file(path: &Path) -> bool {
 /// (`derm_daemon::daemon::default_data_dir`), so a content file `derm run`
 /// writes is where the daemon's purge looks. A daemon started with
 /// `--data-dir` (tests) does not purge it.
-fn content_root(home: &str) -> PathBuf {
+pub(crate) fn content_root(home: &str) -> PathBuf {
     if cfg!(target_os = "macos") {
         return Path::new(home).join("Library/Application Support/derm");
     }

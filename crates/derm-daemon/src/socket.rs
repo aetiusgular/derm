@@ -110,6 +110,13 @@ pub fn serve_one(stream: UnixStream, daemon: &Arc<Daemon>) -> std::io::Result<()
         .name("derm-daemon-write".into())
         .spawn(move || {
             for mut line in rx {
+                if line.is_empty() {
+                    // `Outbox::close`: the daemon dropped this connection's
+                    // tail (fp13's review, FP13R-11).
+                    pending.fetch_sub(1, Ordering::SeqCst);
+                    let _ = writer.shutdown(std::net::Shutdown::Both);
+                    break;
+                }
                 line.push('\n');
                 let failed = writer.write_all(line.as_bytes()).is_err();
                 pending.fetch_sub(1, Ordering::SeqCst);

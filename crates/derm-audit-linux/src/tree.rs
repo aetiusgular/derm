@@ -117,6 +117,10 @@ impl Tracker {
     pub fn register(&mut self, root: Root) -> Vec<(Action, Placement)> {
         let pid = root.pid;
         self.unregister_pid(pid);
+        // The pid may have been a dead member of a chat still kept after its
+        // stop: its cut-off was that process's, not this root's (fp13's
+        // review, FP13R-2).
+        self.late.remove(&pid);
         self.members.insert(pid, pid);
         self.roots.insert(pid, root);
         let waiting: Vec<Action> = self.pending.drain(..).collect();
@@ -227,7 +231,14 @@ impl Tracker {
 
     /// Places one action, or keeps it waiting. Fork actions update the tree.
     pub fn place(&mut self, action: &Action) -> Option<Placement> {
-        self.log_ms = self.log_ms.max(action.ts_ms);
+        // The kernel stamps with the coarse realtime clock (linux
+        // `kernel/auditsc.c`, `ktime_get_coarse_real_ts64`), which a clock
+        // step moves: a stamp ahead of the feed's own clock is not progress,
+        // or one record would end every stop's keep (fp13's review, FP13R-8;
+        // the join's FP11-S4).
+        if action.ts_ms <= self.now().saturating_add(STOP_SLACK_MS) {
+            self.log_ms = self.log_ms.max(action.ts_ms);
+        }
         let placed = self.place_inner(action);
         if placed.is_none() {
             self.wait(action.clone());
@@ -276,6 +287,7 @@ impl Tracker {
         if let What::Fork { child } = action.what {
             if self.members.get(&child).is_some_and(|r| *r != child) {
                 self.members.remove(&child);
+                self.late.remove(&child);
             }
         }
         let newest = action.ts_ms;
@@ -293,6 +305,11 @@ impl Tracker {
 
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// The `(time, serial)` of each action waiting for its root.
+    pub fn pending_keys(&self) -> impl Iterator<Item = (i64, u64)> + '_ {
+        self.pending.iter().map(|a| (a.ts_ms, a.serial))
     }
 }
 
@@ -466,5 +483,59 @@ mod tests {
         t.stop("c1", 5_000, &|pid| pid == 11);
         let later = 5_000 + STOP_SLACK_MS + 60_000;
         assert_eq!(t.place(&act(later, 11, 1, exec())).unwrap().chat, "c1");
+    }
+
+    /// FP13R-2 (fp13 review): a new chat's root whose pid was a dead member
+    /// of a chat still kept after its stop inherits that member's `late`
+    /// deadline; every action of the new root after it is refused.
+    #[test]
+    fn fp13r_2_a_new_root_on_a_kept_chats_dead_members_pid_is_placed() {
+        let mut t = Tracker::new();
+        t.register(root(10));
+        t.place(&act(1_000, 10, 1, What::Fork { child: 11 }));
+        // c1 stops at 5_000; 10 and 11 have exited. The log is not past it.
+        t.stop("c1", 5_000, &|_| false);
+        // pid 11 is reused for the next chat's root (pid_max is 32768 on
+        // this box, /proc/sys/kernel/pid_max).
+        let mut r2 = root(11);
+        r2.chat = "c2".into();
+        t.register(r2);
+        let p = t.place(&act(9_000, 11, 1, exec()));
+        assert_eq!(p.map(|p| p.chat).as_deref(), Some("c2"));
+    }
+
+    /// FP13R-2b: the same with the reused pid first seen as a fork child
+    /// of the new chat (not the root): `late` is removed only on a fork from
+    /// a non-late parent, which holds; this one is the root case alone.
+    #[test]
+    fn fp13r_2b_a_stopped_chat_is_not_held_open_by_a_quiet_log_forever() {
+        let mut t = Tracker::new();
+        t.set_clock(|| 1_000_000);
+        t.register(root(10));
+        t.place(&act(1_000, 10, 1, What::Fork { child: 11 }));
+        t.stop("c1", 5_000, &|_| false);
+        // An OS event stamped after the stop is read (another user's noise
+        // is not in the rules; any line of this user's): it waits unplaced.
+        t.place(&act(5_000 + STOP_SLACK_MS + 1, 77, 1, exec()));
+        t.prune(&|_| false);
+        assert!(t.root(10).is_none(), "the log passed the stop");
+    }
+
+    /// FP13R-8 (fp13's review): `log_ms` was the running maximum of the
+    /// kernel's realtime stamps, so one record stamped ahead (a clock step)
+    /// ended every stopped chat's keep at once. A stamp ahead of the feed's
+    /// own clock by more than the slack is not progress.
+    #[test]
+    fn fp13r_8_a_stamp_ahead_of_the_clock_does_not_end_a_keep() {
+        let mut t = Tracker::new();
+        t.set_clock(|| 10_000);
+        t.register(root(10));
+        t.place(&act(1_000, 10, 1, What::Fork { child: 11 }));
+        t.stop("c1", 5_000, &|_| false);
+        // An unrelated record stamped an hour ahead.
+        t.place(&act(10_000 + 3_600_000, 77, 1, exec()));
+        t.prune(&|_| false);
+        assert!(t.root(10).is_some(), "the log has not passed the stop");
+        assert!(t.log_ms() < 5_000 + STOP_SLACK_MS);
     }
 }

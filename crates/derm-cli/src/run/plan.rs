@@ -1114,6 +1114,15 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             deny_write.extend(i.gate_paths.iter().filter(|p| p.starts_with('/')).cloned());
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
+            // The daemon's data folder: its activity log, content files and
+            // the Linux feed's kept place (`audit-feed.pos`), which a chat
+            // whose folder holds it could rewrite to skip its own records
+            // across the feed's next start (fix pass 13's review, FP13R-10).
+            // On macOS it is also the folder of the daemon's socket, which
+            // srt opens by path (case 174); not changed there (not run).
+            if !cfg!(target_os = "macos") {
+                deny_write.push(super::content_root(&i.home).to_string_lossy().into_owned());
+            }
             // MW5-26: never a plaintext copy of a keychain sign-in; FP5R-5:
             // nor of a Codex keyring one.
             deny_write.extend(keychain.map(under_home));
@@ -1679,6 +1688,28 @@ mod tests {
         assert_eq!(
             s["filesystem"]["allowWrite"],
             json!(["/home/u/proj dir", "/home/u/.pi/agent", "/tmp"])
+        );
+    }
+
+    /// FP13R-10 (fp13 review): fp13's security note says srt does not let a
+    /// chat write the daemon's data folder (where `audit-feed.pos` lives).
+    /// With the chat's folder the home, `allowWrite` holds the home and no
+    /// deny holds `~/.local/share/derm`.
+    #[test]
+    fn fp13r_10_the_daemons_data_folder_is_denied_under_srt_with_the_home_as_cwd() {
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let p = build(&Inputs {
+            cwd: "/home/u".into(),
+            ..inputs(&args)
+        })
+        .unwrap();
+        let v = srt_of(&p);
+        let allow = v["filesystem"]["allowWrite"].to_string();
+        let deny = v["filesystem"]["denyWrite"].to_string();
+        assert!(allow.contains("\"/home/u\""), "{allow}");
+        assert!(
+            deny.contains("/home/u/.local/share/derm"),
+            "allowWrite {allow}\ndenyWrite {deny}"
         );
     }
 
