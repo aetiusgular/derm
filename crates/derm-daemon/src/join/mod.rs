@@ -122,6 +122,9 @@ struct Call {
     code: bool,
     /// The tap's result ended the call (`end` is the tap's).
     tap_ended: bool,
+    /// When the tap's result came, apart from `end`, which a gate record a
+    /// chat token posts can move earlier (review FP9-S3).
+    tap_end: Option<i64>,
     /// A gate's `allow` was seen.
     allowed: bool,
     /// The tap recorded the call, so its result will end it.
@@ -179,11 +182,11 @@ impl Call {
 
     /// Whether a process the harness starts at `t` may be placed on this
     /// call: while it runs, but not after the tap's result beyond
-    /// `TAP_END_SLACK_MS` (BW5R-7). A code call whose cell may still run is
+    /// `TAP_END_SLACK_MS` (BW5R-7), by the tap's own time, never an end a
+    /// gate record set (FP9-S3). A code call whose cell may still run is
     /// still an owner after its result (`ChatState::code_owners`).
     fn places_at(&self, t: i64) -> bool {
-        self.running_at(t)
-            && !(self.tap_ended && self.end.is_some_and(|e| t > e + TAP_END_SLACK_MS))
+        self.running_at(t) && !self.tap_end.is_some_and(|e| t > e + TAP_END_SLACK_MS)
     }
 }
 
@@ -288,12 +291,12 @@ struct ChatState {
     owned_at: HashMap<u32, i64>,
     /// Processes the harness itself started (its fork or exec names the root,
     /// the harness found under the wrappers, or the launched harness as the
-    /// parent), at most `MAX_PIDS`: a write one makes is the harness's own
-    /// shell's, such as Claude Code's shell snapshot (BW5R-2), never an
-    /// install script's, which runs further down a call's tree. When full,
-    /// none is added (its writes then read as anyone's: more flags, not
-    /// fewer).
-    direct: std::collections::HashSet<u32>,
+    /// parent), at most `MAX_PIDS`, with whether its one exec so far was a
+    /// shell: a write such a shell makes may be the harness's own, such as
+    /// Claude Code's shell snapshot (BW5R-2), or the call's command line's
+    /// own redirection, so it is marked, never trusted (review FP9-S1). When
+    /// full, none is added.
+    direct: HashMap<u32, bool>,
 }
 
 impl ChatState {
@@ -563,13 +566,30 @@ impl ChatState {
         });
         let by_line = !by_root && parent.is_some_and(|p| line_place(self, p));
         // The harness's own child, or no longer one (a fork or an exec under
-        // another parent is another process's): BW5R-2.
-        if by_root {
-            if self.direct.len() < MAX_PIDS {
-                self.direct.insert(child);
+        // another parent, or with none named, is another process's): BW5R-2.
+        // Only a child whose one exec is a shell keeps the mark: bash runs a
+        // lone command in its own pid (`bash -lc "pip install x"` execs pip
+        // there, run with bash 5.2), so a second exec, or a first one that is
+        // no shell, is a command the call ran (review FP9-S1, FP9-S8).
+        match (by_root, kind) {
+            (true, "fork") => {
+                if self.direct.len() < MAX_PIDS {
+                    self.direct.insert(child, false);
+                }
             }
-        } else if parent.is_some() {
-            self.direct.remove(&child);
+            (true, "exec")
+                if self.direct.get(&child) != Some(&true)
+                    && program.is_some_and(|p| {
+                        shell_program(p) && !p.ends_with("/codex-linux-sandbox")
+                    }) =>
+            {
+                if self.direct.len() < MAX_PIDS || self.direct.contains_key(&child) {
+                    self.direct.insert(child, true);
+                }
+            }
+            _ => {
+                self.direct.remove(&child);
+            }
         }
         // What a child of the harness's own binary run again inherits is no
         // decision: only a sandbox wrapper at its exec is (`Spawned`).
@@ -964,6 +984,7 @@ impl Join {
                 if has_result {
                     c.end = Some(c.end.map_or(e.at, |x| x.min(e.at)));
                     c.tap_ended = true;
+                    c.tap_end = Some(c.tap_end.map_or(e.at, |x| x.min(e.at)));
                 }
                 Vec::new()
             }
@@ -1245,7 +1266,7 @@ impl Join {
         });
         // The harness's own child wrote (BW5R-2): its own shell, not a
         // process a call's command started.
-        if pid.is_some_and(|p| st.direct.contains(&p)) {
+        if pid.is_some_and(|p| st.direct.get(&p) == Some(&true)) {
             detail["harnessChild"] = json!(true);
         }
         // Under a boundary with the harness not found by its executable:

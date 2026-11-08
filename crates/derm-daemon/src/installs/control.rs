@@ -68,15 +68,36 @@ const INSTALL_CONTROL: &[&str] = &[
     ".cargo/config",
 ];
 
-/// A harness's own per-shell snapshot, written by a shell the harness starts
-/// itself before a command runs: Claude Code's (`~/.claude/shell-snapshots/
-/// snapshot-<shell>-*.sh`, its binary at 2.1.311: "Creating snapshot at",
-/// `SNAPSHOT_FILE`) and Codex's (`~/.codex/shell_snapshots/`). A write there
-/// by the harness's own child (`join.candidates`' `harnessChild`) is the
-/// harness's, not the install's (box test w5 retest, BW5R-2); by anything
-/// else, such as an install script, it is flagged: each later command
-/// sources the file.
-const HARNESS_SNAPSHOTS: &[&str] = &["/.claude/shell-snapshots/", "/.codex/shell_snapshots/"];
+/// Whether `path` is a harness's own per-shell snapshot file, spelled
+/// plainly: Claude Code's (`.claude/shell-snapshots/snapshot-<shell>-*.sh`,
+/// its binary at 2.1.311: "Creating snapshot at", `SNAPSHOT_FILE`) or
+/// Codex's (`.codex/shell_snapshots/<name>.sh`). An absolute path with no
+/// empty, `.` or `..` part, the file directly in the folder: auditd keeps a
+/// name as the process gave it, so `shell-snapshots/../settings.json` is
+/// not one (review FP9-S2). A write there by the harness's own shell
+/// (`harnessChild`) is still flagged, only named as the harness's snapshot
+/// (box test w5 retest, BW5R-2): the join cannot tell the harness's
+/// snapshot shell from the call's own command shell, and every later
+/// command sources the file (review FP9-S1).
+fn harness_snapshot(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('/') else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    if parts
+        .iter()
+        .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
+        return false;
+    }
+    match parts.as_slice() {
+        [.., ".claude", "shell-snapshots", name] => {
+            name.starts_with("snapshot-") && name.ends_with(".sh")
+        }
+        [.., ".codex", "shell_snapshots", name] => name.len() > 3 && name.ends_with(".sh"),
+        _ => false,
+    }
+}
 
 /// Folders whose files are a package's own (a write there is unpacking).
 const STORES: &[&str] = &[
@@ -338,6 +359,8 @@ impl ControlFlags {
             },
         };
         let own_child = e.detail.get("harnessChild") == Some(&Value::Bool(true));
+        // A rename or a link is never a snapshot's own write (FP9-S2).
+        let writes = matches!(str_at(&e.detail, "effectKind"), Some("write" | "create"));
         let mut out = Vec::new();
         let paths = paths.clone();
         let exe = exe.clone();
@@ -347,12 +370,7 @@ impl ControlFlags {
             let Some(marker) = control_path(path) else {
                 continue;
             };
-            if own_child && {
-                let p = path.to_lowercase();
-                HARNESS_SNAPSHOTS.iter().any(|d| p.contains(d))
-            } {
-                continue;
-            }
+            let snapshot = own_child && writes && harness_snapshot(path);
             let key = (call.clone(), path.clone());
             if !chat.flagged.insert(key.clone()) {
                 continue;
@@ -370,14 +388,26 @@ impl ControlFlags {
                 harness: e.harness.clone(),
                 source: Source::Derm,
                 kind: "install.control".into(),
-                summary: format!("install wrote {marker}{one_of}"),
-                detail: json!({
-                    "trust": "daemon",
-                    "call": call,
-                    "path": path.chars().take(4096).collect::<String>(),
-                    "exe": exe.chars().take(4096).collect::<String>(),
-                    "effect": effect,
-                }),
+                summary: if snapshot {
+                    format!(
+                        "install wrote {marker}{one_of}: the harness's shell snapshot, by a shell the harness started (Claude Code and Codex write one per shell; later commands source it)"
+                    )
+                } else {
+                    format!("install wrote {marker}{one_of}")
+                },
+                detail: {
+                    let mut d = json!({
+                        "trust": "daemon",
+                        "call": call,
+                        "path": path.chars().take(4096).collect::<String>(),
+                        "exe": exe.chars().take(4096).collect::<String>(),
+                        "effect": effect,
+                    });
+                    if snapshot {
+                        d["harnessSnapshot"] = json!(true);
+                    }
+                    d
+                },
                 pid,
                 approval_id: None,
             });
@@ -944,29 +974,32 @@ mod tests {
     /// call was an install, Claude Code's own shell snapshot
     /// (`~/.claude/shell-snapshots/snapshot-bash-*.sh`, written by a shell
     /// the harness started itself) was flagged as "install wrote .claude/".
-    /// A write the join marks as the harness's own child's (`harnessChild`)
-    /// to the harness's snapshot folder is not the install's; the same path
-    /// written by a process under the call's shell (an install script) is.
+    /// A write the join marks as the harness's own shell's (`harnessChild`)
+    /// to the harness's snapshot file is still flagged, named as the
+    /// harness's snapshot (review FP9-S1: the call's own command shell is
+    /// marked too, so hiding it would hide a tampered snapshot); the same
+    /// path written by a process under the call's shell is the install's.
     #[test]
     fn bw5r_2_the_harnesss_own_shell_snapshot_is_not_the_installs() {
         let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1793-abc.sh";
-        let mut f = ControlFlags::new();
-        f.observe(&ev(
-            "claude-code-toolu_I9-install",
-            "install.call",
-            Source::Adapter,
-            json!({"toolUseId": "toolu_I9"}),
-        ));
-        f.observe(&ev(
-            "gate-9",
-            "approval",
-            Source::Adapter,
-            json!({"toolUseId": "toolu_I9"}),
-        ));
         for (id, extra) in [
             ("auditd-own", json!({"harnessChild": true})),
             ("auditd-deep", json!({})),
         ] {
+            // One install call per case: a path is flagged once per call.
+            let mut f = ControlFlags::new();
+            f.observe(&ev(
+                "claude-code-toolu_I9-install",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "toolu_I9"}),
+            ));
+            f.observe(&ev(
+                "gate-9",
+                "approval",
+                Source::Adapter,
+                json!({"toolUseId": "toolu_I9"}),
+            ));
             f.observe(&ev(
                 id,
                 "write",
@@ -985,11 +1018,14 @@ mod tests {
                 Source::Derm,
                 d,
             ));
-            if id == "auditd-own" {
-                assert!(out.is_empty(), "Claude Code's own snapshot: {out:?}");
-            } else {
-                assert_eq!(out.len(), 1, "an install script's write: {out:?}");
-            }
+            assert_eq!(out.len(), 1, "{id}: {out:?}");
+            let named = out[0].detail.get("harnessSnapshot") == Some(&json!(true));
+            assert_eq!(named, id == "auditd-own", "{id}: {out:?}");
+            assert_eq!(
+                out[0].summary.contains("the harness's shell snapshot"),
+                id == "auditd-own",
+                "{out:?}"
+            );
         }
         // The harness's own child writing elsewhere is still flagged.
         let mut g = ControlFlags::new();
@@ -1018,5 +1054,65 @@ mod tests {
             json!({"trust": "daemon", "effect": "w", "effectKind": "write", "candidates": [{"call": "gate-t", "by": "tree", "why": "x"}], "chosen": "gate-t", "harnessChild": true}),
         ));
         assert_eq!(out.len(), 1, "{out:?}");
+    }
+
+    /// Review FP9-S2 (its probe, which passed on `c491b97`, inverted): a
+    /// path that only passes through a snapshot folder (`..`, as auditd
+    /// keeps it) was hidden as the harness's snapshot. Each is flagged, and
+    /// none is named a snapshot; neither is a rename into the folder.
+    #[test]
+    fn fp9_s2_a_path_through_a_snapshot_folder_is_flagged_as_itself() {
+        for (path, kind) in [
+            ("/home/u/.claude/shell-snapshots/../settings.json", "write"),
+            (
+                "/tmp/a/.claude/shell-snapshots/../../../home/u/.bashrc",
+                "write",
+            ),
+            (
+                "/home/u/.claude/shell-snapshots/./snapshot-bash-1.sh",
+                "write",
+            ),
+            (
+                "/home/u/.claude/shell-snapshots/snapshot-bash-1.sh",
+                "rename",
+            ),
+            (
+                "/home/u/.claude/shell-snapshots/sub/snapshot-bash-1.sh",
+                "write",
+            ),
+        ] {
+            let mut f = ControlFlags::new();
+            f.observe(&ev(
+                "i",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "t"}),
+            ));
+            f.observe(&ev(
+                "gate-t",
+                "approval",
+                Source::Adapter,
+                json!({"toolUseId": "t"}),
+            ));
+            f.observe(&ev(
+                "w",
+                kind,
+                Source::Auditd,
+                json!({"path": path, "exe": "/usr/bin/bash"}),
+            ));
+            let d = json!({"trust": "daemon", "effect": "w", "effectKind": kind, "candidates": [{"call": "gate-t", "by": "tree", "why": "x"}], "chosen": "gate-t", "harnessChild": true});
+            let out = f.observe(&ev("join-w", "join.candidates", Source::Derm, d));
+            assert_eq!(out.len(), 1, "{path} {kind}: {out:?}");
+            assert!(
+                out[0].detail.get("harnessSnapshot").is_none(),
+                "{path} {kind}: {out:?}"
+            );
+        }
+        assert!(harness_snapshot(
+            "/home/u/.codex/shell_snapshots/0199-abc.sh"
+        ));
+        assert!(!harness_snapshot(
+            "/home/u/.codex/shell_snapshots/../config.toml"
+        ));
     }
 }

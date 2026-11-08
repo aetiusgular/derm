@@ -314,13 +314,19 @@ pub fn run(ctx: &mut Ctx) -> u8 {
             },
         }
     }
-    if write_shims {
-        // `~/.derm` is held 0700 whatever is written into it, the shims
-        // alone included (box test w5 retest, BW5R-8).
-        if let Err(e) = files::own_folder(&ctx.home.join(".derm")) {
-            problems += 1;
-            ctx.ask.say(&format!("Shims not written: {e}"));
-        }
+    // `~/.derm` is held 0700 whatever is written into it, the shims alone
+    // included (box test w5 retest, BW5R-8); a folder it refuses gets no
+    // shims either (review FP9-S7).
+    let derm_folder = if write_shims {
+        files::own_folder(&ctx.home.join(".derm"))
+    } else {
+        Ok(())
+    };
+    if let (true, Err(e)) = (write_shims, &derm_folder) {
+        problems += 1;
+        ctx.ask.say(&format!("Shims not written: {e}"));
+    }
+    if write_shims && derm_folder.is_ok() {
         let dir = shims::folder(&ctx.home);
         let mut wrote = Vec::new();
         for (exe, id) in &shim_plan {

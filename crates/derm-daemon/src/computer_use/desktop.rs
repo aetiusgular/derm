@@ -145,9 +145,17 @@ pub fn helper_paths(env: &[(String, String)], home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// A small regular file's text. Opened without blocking, then checked by
+/// the open handle: a FIFO at the path would hold `open(2)` with no limit
+/// (review FP9-S6).
 fn read_small(path: &Path) -> Option<String> {
     use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
     if !file.metadata().ok()?.is_file() {
         return None;
     }
@@ -345,5 +353,32 @@ mod tests {
             None
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Review FP9-S6 (its probe, which blocked on `c491b97`, inverted): a
+    /// FIFO at the helper's `metadata.json` held `read_small` in open(2).
+    #[test]
+    fn fp9_s6_a_fifo_metadata_does_not_block() {
+        let root = std::env::temp_dir().join(format!("derm-fp9-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fifo = root.join("metadata.json");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_small(&p));
+        });
+        let got = rx.recv_timeout(Duration::from_secs(2));
+        // Unblock a reader still waiting before cleaning up.
+        if got.is_err() {
+            let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got, Ok(None), "read_small blocked on a FIFO, or read it");
     }
 }

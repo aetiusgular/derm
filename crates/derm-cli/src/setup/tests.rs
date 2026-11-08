@@ -698,3 +698,26 @@ fn bw5r_8_a_shim_only_setup_keeps_the_derm_folder_private() {
         assert_eq!(mode, 0o700, "{d} {mode:o}: {}", script.said);
     }
 }
+
+/// Review FP9-S7: with `~/.derm` refused (here a link to another folder),
+/// setup said "Shims not written" and wrote them anyway, through the link.
+#[test]
+fn fp9_s7_a_refused_derm_folder_gets_no_shims() {
+    let home = scratch("shimlink");
+    let elsewhere = home.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, home.join(".derm")).unwrap();
+    let (_code, script, _) = setup(
+        &home,
+        &["workspace-write", "", "", "", "", "", "", "", "yes"],
+        ok_matcher,
+        None,
+        false,
+    );
+    assert!(script.said.contains("Shims not written"), "{}", script.said);
+    assert!(
+        !elsewhere.join("bin/claude").exists(),
+        "a shim went through the refused link: {}",
+        script.said
+    );
+}

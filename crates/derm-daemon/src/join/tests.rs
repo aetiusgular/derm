@@ -2869,3 +2869,116 @@ fn bw5r_6_codex_0_166s_spawn_helper_chain_places_the_command() {
     let r = effect(&mut j, "write", 1_110, 9004, 9003, json!({"path": "/w/x"}));
     assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_W1", "{r:?}");
 }
+
+/// Review FP9-S1 (its probe, which passed on `c491b97`, inverted): bash runs
+/// a lone command in its own pid (`bash -lc "pip install x"` execs pip there;
+/// run with bash 5.2), so the install program kept the harness's-child mark
+/// and its writes read as the harness's own shell's. A second exec, or a
+/// first exec that is no shell, drops the mark; an exec record that names
+/// no parent drops it too (FP9-S8).
+#[test]
+fn fp9_s1_a_command_bash_runs_in_its_own_pid_is_not_the_harnesss_shell() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "claude-code", "toolu_P1", "bash", 1_000, 9_000);
+    let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh";
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 8001}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        8001,
+        ROOT,
+        json!({"exe": "/usr/bin/bash"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        8001,
+        ROOT,
+        json!({"exe": "/usr/bin/python3"}),
+    );
+    let r = effect(&mut j, "write", 1_200, 8001, ROOT, json!({"path": snap}));
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_P1", "{r:?}");
+    assert!(r[0].detail.get("harnessChild").is_none(), "{r:?}");
+    // A first exec that is no shell.
+    effect(&mut j, "fork", 1_300, ROOT, 1, json!({"child": 8002}));
+    effect(
+        &mut j,
+        "exec",
+        1_305,
+        8002,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    let r = effect(&mut j, "write", 1_310, 8002, ROOT, json!({"path": snap}));
+    assert!(r[0].detail.get("harnessChild").is_none(), "{r:?}");
+    // The harness's shell, one exec: still marked, never more than marked.
+    effect(&mut j, "fork", 1_400, ROOT, 1, json!({"child": 8003}));
+    effect(
+        &mut j,
+        "exec",
+        1_405,
+        8003,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    let r = effect(&mut j, "write", 1_410, 8003, ROOT, json!({"path": snap}));
+    assert_eq!(r[0].detail["harnessChild"], true, "{r:?}");
+}
+
+/// Review FP9-S3 (its probe, which passed on `c491b97`, inverted): BW5R-7's
+/// cut-off read `Call::end`, which a chat token's `tool.call` can move
+/// earlier, so with the OS feed behind the tap (MW5-17) a shell started
+/// 400 ms after a posted end, and 3.6 s before the tap's own result, was no
+/// longer placed on the install. The cut-off is the tap's own result time.
+#[test]
+fn fp9_s3_a_posted_end_does_not_move_the_taps_cut_off() {
+    let run = |forge: bool| {
+        let mut j = Join::new();
+        start(&mut j);
+        let mut e = ev(
+            Source::Tap,
+            "tap.call",
+            1_000,
+            None,
+            json!({"callId": "toolu_F1", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        e.id = format!("tap-{CHAT}-toolu_F1");
+        j.observe(&e);
+        j.observe(&ev(
+            Source::Adapter,
+            "approval",
+            1_010,
+            None,
+            json!({"toolUseId": "toolu_F1", "decision": "allow"}),
+        ));
+        if forge {
+            j.observe(&ev(
+                Source::Adapter,
+                "tool.call",
+                1_020,
+                None,
+                json!({"toolUseId": "toolu_F1"}),
+            ));
+        }
+        let mut r = ev(
+            Source::Tap,
+            "tap.call",
+            5_000,
+            None,
+            json!({"callId": "toolu_F1", "toolNormalized": "bash", "paths": [], "resultSha256": "ab"}),
+        );
+        r.id = format!("tap-{CHAT}-toolu_F1");
+        j.observe(&r);
+        shell_writes(&mut j, 1_400, 7701, "/home/u/p/.git/hooks/pre-commit")
+    };
+    for forge in [false, true] {
+        let out = run(forge);
+        assert_eq!(
+            out[0].detail["chosen"], "tap-chat-j-toolu_F1",
+            "forge={forge}: {out:?}"
+        );
+    }
+}

@@ -555,6 +555,33 @@ fn words_at(args: &[String], rest: &[String]) -> Option<usize> {
 /// the script (re-review R1: Codex, Gemini CLI and Pi from npm are
 /// `#!/usr/bin/env node` scripts). None when it cannot be found.
 fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
+    harness_exe_with(program, path, pi_agent_dir().as_deref())
+}
+
+/// Pi's agent folder as Pi finds it: `PI_CODING_AGENT_DIR` (a leading `~`
+/// read as the home), else `~/.pi/agent` (Pi 1.4.0 `packages/coding-agent/
+/// src/config.ts:584-611`, `getAgentDir`).
+fn pi_agent_dir() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    match std::env::var("PI_CODING_AGENT_DIR") {
+        Ok(d) if !d.is_empty() => {
+            if d == "~" {
+                home
+            } else if let Some(rest) = d.strip_prefix("~/") {
+                home.map(|h| h.join(rest))
+            } else {
+                Some(std::path::PathBuf::from(d))
+            }
+        }
+        _ => home.map(|h| h.join(".pi").join("agent")),
+    }
+}
+
+fn harness_exe_with(
+    program: &str,
+    path: Option<&str>,
+    pi_agent: Option<&std::path::Path>,
+) -> Option<String> {
     fn resolve(program: &str, path: Option<&str>) -> Option<std::path::PathBuf> {
         let found = if program.contains('/') {
             std::path::PathBuf::from(program)
@@ -567,7 +594,13 @@ fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
     let mut real = resolve(program, path)?;
     // Pi's own installer puts a `/bin/sh` launcher in front of the release
     // it execs (box test w5 retest, BW5R-5): name what that release runs.
-    if let Some(release) = pi_managed_release(&real) {
+    // Only Pi's own launcher, in Pi's own agent folder (review FP9-S5: a
+    // `bin/pi` elsewhere with an `install` folder an agent made beside it
+    // could name any program as the harness).
+    let own = pi_agent
+        .and_then(|a| std::fs::canonicalize(a.join("bin").join("pi")).ok())
+        .is_some_and(|l| l == real);
+    if let Some(release) = own.then(|| pi_managed_release(&real)).flatten() {
         real = release;
     }
     // At most two `#!` hops (a script run by another script), as the
@@ -2196,14 +2229,25 @@ mod end_to_end {
             .unwrap()
             .to_string_lossy()
             .into_owned();
-        assert_eq!(harness_exe("pi", Some(&path)), Some(want.clone()));
+        let exe = |p: &str| harness_exe_with("pi", Some(p), Some(&agent));
+        assert_eq!(exe(&path), Some(want.clone()));
+        // Review FP9-S5: the same layout outside Pi's agent folder (a
+        // `~/.local/bin/pi` with an `install` beside it) names no release.
+        assert_ne!(
+            harness_exe_with("pi", Some(&path), Some(&dir.join("elsewhere"))),
+            Some(want.clone())
+        );
+        assert_ne!(
+            harness_exe_with("pi", Some(&path), None),
+            Some(want.clone())
+        );
         // No marker, or a version that is not one: the launcher's own shell,
         // as before (which the join takes as naming no harness).
         std::fs::write(agent.join("install/current-version"), "../../x\n").unwrap();
-        assert_ne!(harness_exe("pi", Some(&path)), Some(want.clone()));
+        assert_ne!(exe(&path), Some(want.clone()));
         std::fs::write(agent.join("install/current-version"), "1.4.0\n").unwrap();
         std::fs::write(agent.join("install/managed-install.json"), "{}").unwrap();
-        assert_ne!(harness_exe("pi", Some(&path)), Some(want));
+        assert_ne!(exe(&path), Some(want));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

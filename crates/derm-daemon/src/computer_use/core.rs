@@ -806,6 +806,13 @@ impl Core {
         } else {
             "missing"
         };
+        // Before the lock: the probe reads files and runs gnome-shell for up
+        // to 3 s, and nothing else should wait on it (review FP9-S6).
+        let desktop = if self.supported {
+            self.launcher.unusable()
+        } else {
+            None
+        };
         let mut inner = self.lock();
         Self::open_cards(&mut inner);
         let mut pending: Vec<PendingView> = inner
@@ -817,11 +824,6 @@ impl Core {
         pending.sort_by_key(|p| p.asked_at);
         let mut running_chats: Vec<String> = inner.runtimes.keys().cloned().collect();
         running_chats.sort();
-        let desktop = if self.supported {
-            self.launcher.unusable()
-        } else {
-            None
-        };
         Status {
             helper,
             helper_path: self.launcher.location(),
