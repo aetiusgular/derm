@@ -178,6 +178,17 @@ pub fn render(report: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// BW5R3-2: with computer use not running, status prints the state and
+    /// why, as a report, not an error.
+    #[test]
+    fn bw5r3_2_status_when_not_running_reads_as_a_state() {
+        let report = serde_json::json!({"running": false, "reason": "computer use is off: computerUse.on is not set"});
+        let text = super::render(&report);
+        assert!(text.contains("running: false"), "{text}");
+        assert!(text.contains("reason: computer use is off"), "{text}");
+        assert!(!text.contains("refused"), "{text}");
+    }
+
     use super::*;
 
     fn parse(v: &[&str]) -> Result<Value, String> {

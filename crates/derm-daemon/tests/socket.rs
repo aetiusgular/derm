@@ -1021,11 +1021,19 @@ fn cu_is_daemon_scope_and_says_when_computer_use_is_not_running() {
             "{line}"
         );
         let r = d.ask(line.clone());
-        assert_eq!(r["ok"], false, "{line}: {r}");
+        // BW5R3-2: a status query is answered, with the state as the
+        // reason; the controls are refused with it.
+        let e = if line["action"] == "status" {
+            assert_eq!(r["ok"], true, "{line}: {r}");
+            assert_eq!(r["report"]["running"], false, "{line}: {r}");
+            r["report"]["reason"].as_str().unwrap().to_string()
+        } else {
+            assert_eq!(r["ok"], false, "{line}: {r}");
+            r["error"].as_str().unwrap().to_string()
+        };
         // BW5R2-1: the answer names the state (off, not built here, a
         // failed start, or turned on after the daemon started), never
         // "macOS only".
-        let e = r["error"].as_str().unwrap();
         assert!(
             e.starts_with("computer use is ")
                 && ["is off", "not built", "did not start", "was off when"]

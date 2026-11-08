@@ -153,7 +153,15 @@ pub fn render(r: &Value) -> String {
         ));
     }
     let check = r.get("check").cloned().unwrap_or(Value::Null);
-    if let Some(reach) = check.get("collectorReachable").and_then(Value::as_str) {
+    // Box test w5 retest 3, BW5R3-1: the collector is the Mac's; on Linux,
+    // where the daemon reports `osFeed`, its "unknown" read as if the OS
+    // layer's state were unknown beside the feed's own line.
+    let linux_feed = r.get("osFeed").is_some_and(Value::is_object);
+    if let Some(reach) = check
+        .get("collectorReachable")
+        .and_then(Value::as_str)
+        .filter(|_| !linux_feed)
+    {
         let why = check
             .get("collectorReason")
             .and_then(Value::as_str)
@@ -484,6 +492,19 @@ mod tests {
         assert!(t.contains("/etc/hosts (x2)"), "{t}");
         assert!(t.contains("os collector: no (not running)"), "{t}");
         assert!(t.contains("expected and hidden: 5"), "{t}");
+    }
+
+    #[test]
+    fn bw5r3_1_the_macs_collector_line_is_left_out_on_linux() {
+        let check = json!({"collectorReachable": "unknown"});
+        let linux = json!({"events": 1, "check": check, "osFeed": {"state": "attached"}});
+        assert!(
+            !render(&linux).contains("os collector"),
+            "{}",
+            render(&linux)
+        );
+        let mac = json!({"events": 1, "check": {"collectorReachable": "yes"}, "osFeed": null});
+        assert!(render(&mac).contains("os collector: yes"));
     }
 
     #[test]

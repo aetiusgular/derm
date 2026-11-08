@@ -2353,7 +2353,17 @@ fn op_cu(who: &Who, action: CuAction, chat: Option<&str>, app: Option<&str>) -> 
     #[cfg(feature = "computer-use")]
     {
         let Some(service) = crate::computer_use::service::running() else {
-            return error(crate::computer_use::service::not_running_reason());
+            // Box test w5 retest 3, BW5R3-2: a status query is answered, not
+            // refused: computer use not running is a state, said with why.
+            // Stop and revoke have nothing to act on and still refuse.
+            let why = crate::computer_use::service::not_running_reason();
+            if matches!(action, CuAction::Status) {
+                return Reply {
+                    report: Some(json!({"running": false, "reason": why})),
+                    ..ok()
+                };
+            }
+            return error(why);
         };
         let report = match action {
             CuAction::Status => serde_json::to_value(service.status()).ok(),
