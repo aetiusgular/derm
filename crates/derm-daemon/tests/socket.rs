@@ -1022,11 +1022,16 @@ fn cu_is_daemon_scope_and_says_when_computer_use_is_not_running() {
         );
         let r = d.ask(line.clone());
         assert_eq!(r["ok"], false, "{line}: {r}");
+        // BW5R2-1: the answer names the state (off, not built here, a
+        // failed start, or turned on after the daemon started), never
+        // "macOS only".
+        let e = r["error"].as_str().unwrap();
         assert!(
-            r["error"]
-                .as_str()
-                .unwrap()
-                .starts_with("computer use is not"),
+            e.starts_with("computer use is ")
+                && ["is off", "not built", "did not start", "was off when"]
+                    .iter()
+                    .any(|s| e.contains(s))
+                && !e.contains("macOS only"),
             "{line}: {r}"
         );
     }
