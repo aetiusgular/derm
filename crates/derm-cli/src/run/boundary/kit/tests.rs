@@ -54,24 +54,26 @@ fn claude_code_gets_a_private_kit_with_its_policy_and_the_hook() {
     );
     let files = files_under(&root);
     for want in [
-        "spec.yaml",
-        "files/home/.derm-kit/install.sh",
-        "files/home/.derm-kit/register-hooks.mjs",
-        "files/home/.derm-kit/policy.json",
-        "files/home/.derm-kit/plugin/bin/derm-hook.mjs",
-        "files/home/.derm-kit/plugin/src/hook.ts",
-        "files/home/.derm-kit/plugin/src/core/gate.ts",
-        "files/home/.derm-kit/plugin/package.json",
+        "derm-gate-claude.yaml",
+        "derm-gate-claude.dockerfile",
+        "derm-context.md",
+        "derm-kit/install.sh",
+        "derm-kit/register-hooks.mjs",
+        "derm-kit/policy.json",
+        "derm-kit/plugin/bin/derm-hook.mjs",
+        "derm-kit/plugin/src/hook.ts",
+        "derm-kit/plugin/src/core/gate.ts",
+        "derm-kit/plugin/package.json",
     ] {
         assert!(files.contains(want), "{want} missing from {files:?}");
     }
-    assert_eq!(files.len(), 4 + PLUGIN.len(), "{files:?}");
+    assert_eq!(files.len(), 6 + PLUGIN.len(), "{files:?}");
     assert_eq!(
-        std::fs::read_to_string(root.join("files/home/.derm-kit/policy.json")).unwrap(),
+        std::fs::read_to_string(root.join("derm-kit/policy.json")).unwrap(),
         POLICY,
         "the policy as it is at the start"
     );
-    let staged = root.join("files/home/.derm-kit/policy.json");
+    let staged = root.join("derm-kit/policy.json");
     assert_eq!(
         std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
         0o600
@@ -185,16 +187,37 @@ fn the_kit_carries_the_hooks_whole_import_closure() {
     assert!(launcher.contains(r#"new URL("../src/hook.ts", import.meta.url)"#));
 }
 
-/// The spec and the install script agree on where things go, and the spec
-/// carries what the gate needs in the VM.
+/// Fix pass 11, MW5-7: sbx 0.51.0 refuses a v2 mixin beside its v3 claude
+/// kit, so the kit is v3 (SPEC-v3 at 6838e3e): schema "3", a mixin that
+/// requires claude, the full-access hint exported by an arg's `env`, and a
+/// root install hook at the path the Dockerfile copies the kit to. The
+/// Dockerfile pins its Node by digest and copies `derm-kit/` where the
+/// install script reads it.
 #[test]
-fn the_spec_and_the_install_script_agree() {
-    assert!(SPEC.contains("schemaVersion: \"2\""));
-    assert!(SPEC.contains("kind: mixin"));
-    assert!(SPEC.contains("requires:\n  agent: claude"));
-    assert!(SPEC.contains("DERM_FULL_ACCESS: \"1\""));
-    assert!(SPEC.contains("command: \"sh /home/agent/.derm-kit/install.sh\""));
-    assert!(INSTALL.contains("src=/home/agent/.derm-kit"));
+fn the_kit_is_a_v3_mixin_whose_parts_agree() {
+    assert!(DESCRIPTOR.starts_with("# syntax=docker/sandbox-kit:3\n"));
+    assert!(DESCRIPTOR.contains("\nschemaVersion: \"3\"\n"));
+    assert!(DESCRIPTOR.contains("\nkind: mixin\n"));
+    assert!(!DESCRIPTOR.contains("schemaVersion: \"2\""));
+    assert!(DESCRIPTOR.contains("requires: [\"claude\"]"));
+    assert!(DESCRIPTOR.contains("env: DERM_FULL_ACCESS"));
+    assert!(DESCRIPTOR.contains("enum: [\"1\"]"));
+    assert!(DESCRIPTOR.contains("type: com.docker.sandbox/lifecycle@1"));
+    assert!(
+        DESCRIPTOR.contains("command: \"sh /opt/derm-kit-src/install.sh\"\n          user: \"0\"")
+    );
+    assert!(DESCRIPTOR.contains("contentFile: ./derm-context.md"));
+    let from = DOCKERFILE
+        .lines()
+        .find(|l| l.starts_with("FROM docker.io/library/node:"))
+        .expect("the kit's Node comes from the official image");
+    let digest = from.split("@sha256:").nth(1).expect("pinned by digest");
+    assert!(digest.starts_with("0820eaa85e07"), "{from}");
+    assert_eq!(digest.split_whitespace().next().unwrap().len(), 64);
+    assert!(DOCKERFILE.contains("COPY --from=node /usr/local/bin/node /opt/derm-kit-src/node"));
+    assert!(DOCKERFILE.contains("COPY derm-kit/ /opt/derm-kit-src/"));
+    assert!(INSTALL.contains("src=/opt/derm-kit-src"));
+    assert!(INSTALL.contains("node_bin=\"$src/node\""));
     assert!(INSTALL.contains("$src/register-hooks.mjs"));
     assert!(INSTALL.contains("$src/policy.json"));
     assert!(INSTALL.contains("/home/agent/.derm/policy.json"));
@@ -202,6 +225,15 @@ fn the_spec_and_the_install_script_agree() {
     assert!(INSTALL.contains("\"$dest/bin/derm-hook.mjs\""));
     assert!(INSTALL.starts_with("#!/bin/sh\n"));
     assert!(INSTALL.contains("set -eu"));
+    // The hooks run the kit's own Node from root's folder, never one found
+    // on PATH, which the agent can change.
+    let copied = INSTALL.find("cp \"$node_bin\" \"$dest/node\"").unwrap();
+    let repointed = INSTALL.find("node_bin=\"$dest/node\"").unwrap();
+    let registered = INSTALL
+        .find("register-hooks.mjs\" \"$settings\" \"$node_bin\"")
+        .unwrap();
+    assert!(copied < repointed && repointed < registered);
+    assert!(!INSTALL.contains("command -v node"));
 }
 
 /// Security finding W5C-S2 (integration w5 continue): the install writes the

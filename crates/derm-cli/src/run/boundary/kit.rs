@@ -8,8 +8,14 @@
 //! in the VM is the one this derm was built with, not whatever a plugin
 //! cache or a download holds. Each chat gets its own copy in a private
 //! folder, with the person's policy as it is at the start, and the folder
-//! is removed once sbx has read it at the create (SPEC-v2 5.8: "copied
-//! into the container at create time").
+//! is removed once sbx has built it at the create.
+//!
+//! The kit is a v3 mixin (docker/sandbox-kit-spec SPEC-v3 at 6838e3e): a
+//! descriptor, a Dockerfile whose overlay carries the hook, its own Node and
+//! the install script, and the context the model reads. sbx 0.51.0 ships its
+//! `claude` workload as a v3 kit and refuses a v1 or v2 mixin beside it
+//! ("compositions are single-format"; Mac test w5, MW5-7), so the v2 form
+//! this file wrote until fix pass 11 never went on a create there.
 //!
 //! Only Claude Code has a kit yet. Codex's gate lets a call through when it
 //! fails (`coverage.failMode: open`) and Pi's kit runs Pi 1.5.0 past the
@@ -18,14 +24,22 @@
 //! What the kit holds against: a model's mistakes inside the VM, the gap
 //! sbx's own docs leave (the read-write mount, allowed hosts). What it does
 //! not: an agent that sets out to remove it, since the agent has
-//! passwordless sudo in the VM (sbx-kits-contrib SPEC-v2 9.1; Docker's
+//! passwordless sudo in the VM (the claude image's agent is in group sudo,
+//! seen in the VM at fix pass 11; Docker's
 //! security page). Lane T's status doc, P4-O1.
 
 use std::path::{Path, PathBuf};
 
-/// The kit's own files, from `packaging/sbx-kit/`.
+/// The kit's own files, from `packaging/sbx-kit/`. The descriptor and its
+/// Dockerfile pair by file stem (SPEC-v3 3.1, the companion pair).
 #[cfg_attr(not(unix), allow(dead_code))]
-const SPEC: &str = include_str!("../../../../../packaging/sbx-kit/claude/spec.yaml");
+const DESCRIPTOR: &str =
+    include_str!("../../../../../packaging/sbx-kit/claude/derm-gate-claude.yaml");
+#[cfg_attr(not(unix), allow(dead_code))]
+const DOCKERFILE: &str =
+    include_str!("../../../../../packaging/sbx-kit/claude/derm-gate-claude.dockerfile");
+#[cfg_attr(not(unix), allow(dead_code))]
+const CONTEXT: &str = include_str!("../../../../../packaging/sbx-kit/claude/derm-context.md");
 #[cfg_attr(not(unix), allow(dead_code))]
 const INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/claude/install.sh");
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -236,11 +250,14 @@ fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
 }
 
 #[cfg(unix)]
-/// The kit's layout (SPEC-v2 5.8): `spec.yaml` at the top, and under
-/// `files/home/` what lands in `/home/agent/`.
+/// The kit's layout (SPEC-v3 3.1): the descriptor and its Dockerfile at the
+/// top, the context the descriptor names beside them, and under `derm-kit/`
+/// what the Dockerfile copies into `/opt/derm-kit-src` in the VM.
 fn write_kit(dir: &Path, policy: &str) -> std::io::Result<()> {
-    let stage = dir.join("files/home/.derm-kit");
-    write(&dir.join("spec.yaml"), SPEC)?;
+    let stage = dir.join("derm-kit");
+    write(&dir.join("derm-gate-claude.yaml"), DESCRIPTOR)?;
+    write(&dir.join("derm-gate-claude.dockerfile"), DOCKERFILE)?;
+    write(&dir.join("derm-context.md"), CONTEXT)?;
     write(&stage.join("install.sh"), INSTALL)?;
     write(&stage.join("register-hooks.mjs"), REGISTER)?;
     write(&stage.join("policy.json"), policy)?;
