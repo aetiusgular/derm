@@ -33,6 +33,8 @@ pub mod bridge_cli;
 #[path = "core.rs"]
 mod core;
 #[cfg(target_os = "linux")]
+mod desktop;
+#[cfg(target_os = "linux")]
 #[path = "direct.rs"]
 mod direct;
 #[path = "facade.rs"]
@@ -86,6 +88,7 @@ fn system_launcher(data: Option<PathBuf>) -> Box<dyn HelperLauncher> {
             env: std::env::vars().collect(),
             home,
             proc_root: PathBuf::from("/proc"),
+            gnome_shell: PathBuf::from(desktop::GNOME_SHELL),
         })
     }
     #[cfg(not(target_os = "linux"))]

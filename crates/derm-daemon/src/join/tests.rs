@@ -2695,3 +2695,177 @@ fn fp7_s5_a_wrapped_childs_late_fork_keeps_the_exec_placement() {
         r[0].detail
     );
 }
+
+/// Box test w5 retest, BW5R-7: Codex's Stop hook shell started 1.5 s after
+/// the tap's result for the `exec` call (its cell ended) was chosen for that
+/// call by tree, with no call running: the shell was inside the window's
+/// 2 s slack. A tool's result reaches the tap only after its command ended,
+/// so a shell the harness starts after a tapped call's result is not that
+/// call's (beyond a small clock slack); its writes fit no call by tree.
+#[test]
+fn bw5r_7_a_shell_started_after_a_tapped_results_end_is_not_that_calls() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_code(
+        &mut j,
+        "call_S1",
+        "exec",
+        1_000,
+        37_000,
+        Some("1"),
+        Some("ended"),
+    );
+    let r = shell_writes(&mut j, 38_500, 7101, "/w/hook");
+    assert!(
+        r.iter().all(|e| e.detail["chosen"].is_null()),
+        "the Stop hook's shell is no call's: {r:?}"
+    );
+    // A shell call ended by the tap: a shell after its result is not its,
+    // one before it is, and one inside the clock slack still is.
+    tap_only(&mut j, "claude-code", "toolu_S2", "bash", 50_000, 52_000);
+    let before = shell_writes(&mut j, 51_000, 7201, "/w/a");
+    assert_eq!(
+        before[0].detail["chosen"], "tap-chat-j-toolu_S2",
+        "{before:?}"
+    );
+    let skew = shell_writes(&mut j, 52_100, 7301, "/w/b");
+    assert_eq!(skew[0].detail["chosen"], "tap-chat-j-toolu_S2", "{skew:?}");
+    let after = shell_writes(&mut j, 53_000, 7401, "/w/c");
+    assert!(
+        after.iter().all(|e| e.detail["chosen"].is_null()),
+        "{after:?}"
+    );
+    // A yielded cell still owns its later shells (fix pass 6, FP5R-1).
+    tap_code(
+        &mut j,
+        "call_S3",
+        "exec",
+        60_000,
+        61_000,
+        Some("2"),
+        Some("running"),
+    );
+    let cell = shell_writes(&mut j, 63_000, 7501, "/w/d");
+    assert_eq!(cell[0].detail["chosen"], "tap-chat-j-call_S3", "{cell:?}");
+}
+
+/// Box test w5 retest, BW5R-2: Claude Code writes its shell snapshot
+/// (`~/.claude/shell-snapshots/snapshot-bash-*.sh`) from a shell it starts
+/// itself, a direct child of the harness, at its first Bash call. The join
+/// says so (`harnessChild`), so the install flagger can tell it from a write
+/// an install's script makes further down the call's tree.
+#[test]
+fn bw5r_2_a_write_by_the_harnesss_own_child_is_marked() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "claude-code", "toolu_I1", "bash", 1_000, 9_000);
+    let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh";
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 8001}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        8001,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    let own = effect(&mut j, "write", 1_110, 8001, ROOT, json!({"path": snap}));
+    assert_eq!(own[0].detail["chosen"], "tap-chat-j-toolu_I1", "{own:?}");
+    assert_eq!(own[0].detail["harnessChild"], true, "{own:?}");
+    // The install's script, a grandchild of the call's shell: not marked.
+    let deep = shell_writes(&mut j, 1_200, 8101, snap);
+    assert_eq!(deep[0].detail["chosen"], "tap-chat-j-toolu_I1", "{deep:?}");
+    assert!(deep[0].detail.get("harnessChild").is_none(), "{deep:?}");
+    // A reused pid is a new process: no longer the harness's child.
+    effect(&mut j, "fork", 1_300, 8101, ROOT, json!({"child": 8001}));
+    effect(&mut j, "exec", 1_305, 8001, 8101, json!({"exe": "/bin/sh"}));
+    let reused = effect(&mut j, "write", 1_310, 8001, 8101, json!({"path": snap}));
+    assert!(reused[0].detail.get("harnessChild").is_none(), "{reused:?}");
+}
+
+/// Box test w5 retest, BW5R-6: Codex 0.166.0 starts every child through its
+/// own binary first (`/proc/self/exe --codex-run-as-process-setup ...`, which
+/// execs the target in the same pid: `utils/pty/src/spawn_helper.rs:31-35,
+/// 74-140` at `rust-v0.166.0`), so the sandboxed chain is: that helper, then
+/// `codex-linux-sandbox` (Codex's binary again, by its arg0 link), which
+/// starts `bwrap`, whose pid 1 starts the inner stage, which runs the shell.
+/// The command's shell is chosen for its call; the stages' own exec records
+/// are window candidates, as `sandbox-exec`'s are on macOS. A helper that
+/// starts an MCP server while no call runs leaves it the session's.
+#[test]
+fn bw5r_6_codex_0_166s_spawn_helper_chain_places_the_command() {
+    let mut j = Join::new();
+    start_under(&mut j, "none", Some(CODEX_NATIVE));
+    // An MCP server through the helper, at the session's start.
+    effect(&mut j, "fork", 100, ROOT, 1, json!({"child": 9900}));
+    effect(
+        &mut j,
+        "exec",
+        101,
+        9900,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        102,
+        9900,
+        ROOT,
+        json!({"exe": "/usr/bin/node"}),
+    );
+    call(&mut j, "toolu_W1", "exec_command", &[], 1_000, Some(9_000));
+    let mcp = effect(&mut j, "write", 1_050, 9900, ROOT, json!({"path": "/w/m"}));
+    assert!(
+        mcp.is_empty() || mcp[0].detail["chosen"].is_null(),
+        "{mcp:?}"
+    );
+    // The command: helper, then the sandbox launcher, bwrap, its pid 1, the
+    // inner stage, the shell.
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 9001}));
+    effect(
+        &mut j,
+        "exec",
+        1_101,
+        9001,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_102,
+        9001,
+        ROOT,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(&mut j, "fork", 1_103, 9001, ROOT, json!({"child": 9002}));
+    effect(
+        &mut j,
+        "exec",
+        1_104,
+        9002,
+        9001,
+        json!({"exe": "/usr/bin/bwrap"}),
+    );
+    effect(&mut j, "fork", 1_105, 9002, 9001, json!({"child": 9003}));
+    effect(
+        &mut j,
+        "exec",
+        1_106,
+        9003,
+        9002,
+        json!({"exe": CODEX_NATIVE}),
+    );
+    effect(&mut j, "fork", 1_107, 9003, 9002, json!({"child": 9004}));
+    effect(
+        &mut j,
+        "exec",
+        1_108,
+        9004,
+        9003,
+        json!({"exe": "/bin/bash"}),
+    );
+    let r = effect(&mut j, "write", 1_110, 9004, 9003, json!({"path": "/w/x"}));
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_W1", "{r:?}");
+}

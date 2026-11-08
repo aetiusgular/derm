@@ -36,7 +36,7 @@
 #[cfg_attr(not(test), allow(dead_code))]
 mod io_uring;
 mod kit;
-mod probe;
+pub(crate) mod probe;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sbx;
 mod settings;

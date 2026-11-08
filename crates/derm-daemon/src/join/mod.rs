@@ -90,6 +90,12 @@ pub const STOPPED_KEEP_MS: i64 = 30_000;
 pub const SLACK_BEFORE_MS: i64 = 500;
 /// How far after a call's recorded end.
 pub const SLACK_AFTER_MS: i64 = 2_000;
+/// How far after the tap's result a new process may still be placed on a
+/// call (box test w5 retest, BW5R-7). The result reaches the tap only after
+/// the call's command ended, so a shell the harness starts later is a hook's
+/// or a helper's, not the call's; this covers the two clocks only (the tap
+/// stamps with the daemon's, the OS feed with the kernel's, on one host).
+pub const TAP_END_SLACK_MS: i64 = 250;
 
 /// Effect kinds that get a join record.
 const EFFECTS: &[&str] = &[
@@ -169,6 +175,15 @@ impl Call {
 
     fn running_at(&self, t: i64) -> bool {
         self.window().is_some_and(|(a, b)| a <= t && t <= b)
+    }
+
+    /// Whether a process the harness starts at `t` may be placed on this
+    /// call: while it runs, but not after the tap's result beyond
+    /// `TAP_END_SLACK_MS` (BW5R-7). A code call whose cell may still run is
+    /// still an owner after its result (`ChatState::code_owners`).
+    fn places_at(&self, t: i64) -> bool {
+        self.running_at(t)
+            && !(self.tap_ended && self.end.is_some_and(|e| t > e + TAP_END_SLACK_MS))
     }
 }
 
@@ -271,6 +286,14 @@ struct ChatState {
     /// earlier process held (T1), not its own child's exec that the feed
     /// delivered first.
     owned_at: HashMap<u32, i64>,
+    /// Processes the harness itself started (its fork or exec names the root,
+    /// the harness found under the wrappers, or the launched harness as the
+    /// parent), at most `MAX_PIDS`: a write one makes is the harness's own
+    /// shell's, such as Claude Code's shell snapshot (BW5R-2), never an
+    /// install script's, which runs further down a call's tree. When full,
+    /// none is added (its writes then read as anyone's: more flags, not
+    /// fewer).
+    direct: std::collections::HashSet<u32>,
 }
 
 impl ChatState {
@@ -308,7 +331,21 @@ impl ChatState {
             self.owned_at.remove(&pid);
             self.owner_order.retain(|p| *p != pid);
             self.line.remove(&pid);
+            self.direct.remove(&pid);
         }
+    }
+
+    /// The calls a process the harness starts at `t` may be placed on
+    /// (`Call::places_at`).
+    fn placing(&self, t: i64) -> Vec<(&String, &Call)> {
+        let mut v: Vec<(&String, &Call)> = self
+            .order
+            .iter()
+            .filter_map(|id| self.calls.get(id).map(|c| (id, c)))
+            .filter(|(_, c)| c.places_at(t))
+            .collect();
+        v.truncate(MAX_CANDIDATES);
+        v
     }
 
     fn running(&self, t: i64) -> Vec<(&String, &Call)> {
@@ -350,7 +387,7 @@ impl ChatState {
                     ends.entry(cell.as_str()).or_default().push((s, e));
                 }
             }
-            if c.running_at(t) {
+            if c.places_at(t) {
                 live.push((id, c, true));
                 continue;
             }
@@ -401,7 +438,7 @@ impl ChatState {
         let chosen = one_cell.then(|| {
             let running: Vec<&String> = live
                 .iter()
-                .filter(|(_, c)| c.running_at(t))
+                .filter(|(_, c)| c.places_at(t))
                 .map(|(id, _)| *id)
                 .collect();
             match running.as_slice() {
@@ -442,6 +479,7 @@ impl ChatState {
         self.owned_at.remove(&pid);
         self.owner_order.retain(|p| *p != pid);
         self.line.remove(&pid);
+        self.direct.remove(&pid);
     }
 
     /// Whether `child`, exec'ing `program` at `t`, is the program a launcher
@@ -468,7 +506,7 @@ impl ChatState {
         });
         let started_idle = match self.owners.get(&child) {
             Some(Owner::Session) => true,
-            None => self.running(t).is_empty() && self.code_owners(t).0.is_empty(),
+            None => self.placing(t).is_empty() && self.code_owners(t).0.is_empty(),
             _ => false,
         };
         if !(placer && started_idle) {
@@ -524,6 +562,15 @@ impl ChatState {
             Some(p) == self.root_pid || Some(p) == self.harness || Some(p) == self.launched
         });
         let by_line = !by_root && parent.is_some_and(|p| line_place(self, p));
+        // The harness's own child, or no longer one (a fork or an exec under
+        // another parent is another process's): BW5R-2.
+        if by_root {
+            if self.direct.len() < MAX_PIDS {
+                self.direct.insert(child);
+            }
+        } else if parent.is_some() {
+            self.direct.remove(&child);
+        }
         // What a child of the harness's own binary run again inherits is no
         // decision: only a sandbox wrapper at its exec is (`Spawned`).
         let inherited = if by_root || by_line {
@@ -579,7 +626,7 @@ impl ChatState {
         } else {
             (Vec::new(), None)
         };
-        let idle = self.running(at).is_empty() && cells.is_empty();
+        let idle = self.placing(at).is_empty() && cells.is_empty();
         if places
             && wrapped.is_none()
             && self.line_on
@@ -608,7 +655,7 @@ impl ChatState {
                 // running after its result (FP5R-1, FP5R-2): a nested call
                 // the gate reports as a shell call is the more precise of the
                 // two.
-                let running = self.running(at);
+                let running = self.placing(at);
                 let shells: Vec<String> = running
                     .iter()
                     .filter(|(_, c)| c.shell())
@@ -1196,6 +1243,11 @@ impl Join {
                 .collect::<Vec<_>>(),
             "chosen": chosen,
         });
+        // The harness's own child wrote (BW5R-2): its own shell, not a
+        // process a call's command started.
+        if pid.is_some_and(|p| st.direct.contains(&p)) {
+            detail["harnessChild"] = json!(true);
+        }
         // Under a boundary with the harness not found by its executable:
         // the tree candidates are every shell call running then.
         if matches!(owner, Some(Owner::Unplaced(_))) {

@@ -76,7 +76,12 @@ for (const d of [HOME, RUN, DATA, WORK]) mkdirSync(d, { recursive: true, mode: 0
 chmodSync(RUN, 0o700);
 const SOCK_DIR = join(RUN, "derm");
 const SOCK = join(SOCK_DIR, "daemon.sock");
-const baseEnv = { PATH: process.env.PATH, HOME, XDG_RUNTIME_DIR: RUN, XDG_DATA_HOME: DATA, LANG: "C.UTF-8" };
+// These checks start chats as the caller with no boundary. On a host where
+// lane V's agents' user is set up (`/etc/derm/agent-users.json`), `derm run`
+// would start them as that user, who cannot reach this script's folders, so
+// they say the chat runs as you (box test w5 retest, BW5R-3).
+const RUN_AS = existsSync("/etc/derm/agent-users.json") ? { DERM_RUN_AS: "you" } : {};
+const baseEnv = { PATH: process.env.PATH, HOME, XDG_RUNTIME_DIR: RUN, XDG_DATA_HOME: DATA, LANG: "C.UTF-8", ...RUN_AS };
 
 const daemon = spawn(DAEMON, ["--foreground"], { env: baseEnv, stdio: ["ignore", "ignore", "pipe"] });
 let daemonErr = "";

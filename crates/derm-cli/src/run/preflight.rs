@@ -40,6 +40,43 @@ pub fn srt(
     writable: &[String],
     cwd: &str,
 ) -> Result<(Vec<String>, Option<Tools>), String> {
+    srt_with(path_var, linux, userns_sysctl, false, writable, cwd)
+}
+
+/// What derm says when AppArmor may stop srt on Linux, one text for
+/// `derm run`'s start note and for the boundary probe's reason (box test w5
+/// retest, BW5R-4: the start note still offered the sysctl, which did not
+/// fix Ubuntu 26.04 on 5 Nov, and did not name Ubuntu's bubblewrap profile,
+/// while `derm setup sandbox` did). `bwrap_profile`: Ubuntu's
+/// `/etc/apparmor.d/bwrap-userns-restrict` is installed.
+pub fn apparmor_note(
+    linux: bool,
+    bwrap_profile: bool,
+    userns_sysctl: Option<&str>,
+) -> Option<String> {
+    if !linux {
+        return None;
+    }
+    if bwrap_profile {
+        return Some(format!(
+            "Ubuntu's AppArmor profile {} confines bubblewrap and takes the capabilities from what it starts, which srt's seccomp step needs, whatever kernel.apparmor_restrict_unprivileged_userns says (on Ubuntu 26.04 the sysctl at 0 did not help). The fix is root's: an AppArmor profile that allows userns for the bubblewrap srt runs without that child profile (srt README, Ubuntu 24.04+ note), or use sbx",
+            crate::run::boundary::probe::UBUNTU_BWRAP_PROFILE
+        ));
+    }
+    (userns_sysctl.map(str::trim) == Some("1")).then(|| {
+        "kernel.apparmor_restrict_unprivileged_userns is 1, which takes the capabilities srt's bubblewrap and seccomp layer need (srt README, Ubuntu 24.04+ note); unless an AppArmor profile grants `userns` to srt's binaries, srt will fail with \"Permission denied\" on /proc/self/setgroups. The fix is root's: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or such a profile".to_string()
+    })
+}
+
+/// `srt` with whether Ubuntu's bubblewrap profile is installed, for the note.
+pub fn srt_with(
+    path_var: &str,
+    linux: bool,
+    userns_sysctl: Option<&str>,
+    bwrap_profile: bool,
+    writable: &[String],
+    cwd: &str,
+) -> Result<(Vec<String>, Option<Tools>), String> {
     let needed: &[(&str, &str)] = if linux {
         &[
             ("bwrap", "bubblewrap"),
@@ -84,11 +121,8 @@ pub fn srt(
         ));
     }
     let mut notes = Vec::new();
-    if linux && userns_sysctl.map(str::trim) == Some("1") {
-        notes.push(
-            "derm run: kernel.apparmor_restrict_unprivileged_userns is 1, which takes the capabilities srt's bubblewrap and seccomp layer need (srt README, Ubuntu 24.04+ note); unless an AppArmor profile grants `userns` to srt's binaries, srt will fail with \"Permission denied\" on /proc/self/setgroups. The fix is root's: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or such a profile."
-                .to_string(),
-        );
+    if let Some(n) = apparmor_note(linux, bwrap_profile, userns_sysctl) {
+        notes.push(format!("derm run: {n}."));
     }
     let tools = linux.then(|| Tools {
         bwrap: found[0].clone(),
@@ -544,5 +578,25 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Box test w5 retest, BW5R-4: with Ubuntu's bubblewrap profile in
+    /// place the start note names it and no longer offers the sysctl, as the
+    /// boundary probe and `derm setup sandbox` say.
+    #[cfg(unix)]
+    #[test]
+    fn bw5r_4_the_start_note_names_ubuntus_bubblewrap_profile() {
+        let d = dir_with("bw5r4", &["bwrap", "socat", "rg"]);
+        let n = srt_with(&d, true, Some("1\n"), true, &[], "/").unwrap().0;
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert!(n[0].contains("bwrap-userns-restrict"), "{n:?}");
+        assert!(!n[0].contains("sysctl -w"), "{n:?}");
+        // Whatever the sysctl says.
+        let n = srt_with(&d, true, Some("0"), true, &[], "/").unwrap().0;
+        assert!(n[0].contains("bwrap-userns-restrict"), "{n:?}");
+        // Without the profile, the sysctl's note as before; on macOS none.
+        let n = srt_with(&d, true, Some("1"), false, &[], "/").unwrap().0;
+        assert!(n[0].contains("sysctl -w"), "{n:?}");
+        assert_eq!(apparmor_note(false, true, Some("1")), None);
     }
 }

@@ -96,6 +96,7 @@ fn launcher(root: &Path, proc_root: PathBuf, env: Vec<(String, String)>) -> Dire
         env,
         home: root.to_path_buf(),
         proc_root,
+        gnome_shell: PathBuf::from("/nonexistent/gnome-shell"),
     }
 }
 
@@ -413,5 +414,69 @@ fn a_manifest_names_only_programs_this_side_resolved() {
         .rewrite(&format!("{manifest}    - executable: \"/bin/sh\"\n"))
         .is_err());
     assert!(server.rewrite("version: 3\n").is_err(), "no app");
+    let _ = fs::remove_dir_all(base);
+}
+
+/// Box test w5 retest, BW5R-1: on GNOME Shell 50 under Wayland, cua-driver
+/// 0.38.0's GNOME Shell helper (`winrects@cua`, shell-version 45 to 49) is
+/// refused, so no window can be listed or captured. The card is never
+/// opened, nothing is launched, and `derm cu status` says why.
+#[test]
+fn bw5r_1_on_gnome_50_no_card_opens_and_status_says_why() {
+    use crate::computer_use::facade::{AccessAnswer, AccessRequest};
+    let base = root("gnome50");
+    let ext = base.join("share/gnome-shell/extensions/winrects@cua");
+    fs::create_dir_all(&ext).unwrap();
+    fs::write(
+        ext.join("metadata.json"),
+        r#"{"uuid": "winrects@cua", "shell-version": ["45", "46", "47", "48", "49"], "version": 10}"#,
+    )
+    .unwrap();
+    let shell = base.join("gnome-shell");
+    executable(&shell, "#!/bin/sh\necho 'GNOME Shell 50.1'\n");
+    let app = base.join("apps").join("gnome-calculator");
+    fs::create_dir_all(app.parent().unwrap()).unwrap();
+    executable(&app, "#!/bin/sh\n");
+    let proc_root = proc_with(&base, 301, &app, "gnome-calculato");
+    let env: Vec<(String, String)> = [
+        ("XDG_CURRENT_DESKTOP", "ubuntu:GNOME"),
+        ("XDG_SESSION_TYPE", "wayland"),
+        ("WAYLAND_DISPLAY", "wayland-0"),
+        ("XDG_DATA_HOME", base.join("share").to_str().unwrap()),
+    ]
+    .iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    let mut l = launcher(&base, proc_root, env);
+    l.gnome_shell = shell;
+    let core = Core::new(Box::new(l), Box::new(|_| {}), true);
+    core.set_chat("c1", true);
+    let answer = Backend::request_access(
+        &*core,
+        "c1",
+        AccessRequest {
+            app: "gnome-calculator".into(),
+            reason: "capture".into(),
+        },
+        std::time::Duration::from_millis(200),
+    );
+    match answer {
+        AccessAnswer::Refused(why) => assert!(why.contains("GNOME Shell 50"), "{why}"),
+        other => panic!("expected a refusal before any card, got {other:?}"),
+    }
+    let status = core.status();
+    assert!(status.pending.is_empty(), "no card");
+    assert!(
+        status
+            .desktop
+            .as_deref()
+            .is_some_and(|d| d.contains("45 to 49")),
+        "{:?}",
+        status.desktop
+    );
+    assert!(
+        !base.join("bin").join("driver.log").exists(),
+        "the driver never started"
+    );
     let _ = fs::remove_dir_all(base);
 }

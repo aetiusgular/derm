@@ -124,6 +124,8 @@ struct RunEnv {
     /// `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` (BX3), when
     /// it exists.
     userns: Option<String>,
+    /// Ubuntu's AppArmor profile for bubblewrap is installed (BW5R-4).
+    bwrap_profile: bool,
     /// `GOOSE_MODE` as inherited, when set and not empty (T2.9).
     goose_mode: Option<String>,
     /// Lane P's Cline approval responder, by absolute path, when one is on
@@ -145,6 +147,7 @@ impl RunEnv {
                 "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
             )
             .ok(),
+            bwrap_profile: std::path::Path::new(boundary::probe::UBUNTU_BWRAP_PROFILE).exists(),
             goose_mode: std::env::var("GOOSE_MODE").ok().filter(|v| !v.is_empty()),
             cline_responder: crate::watch::status::find_on_path(
                 CLINE_RESPONDER,
@@ -562,6 +565,11 @@ fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
         real.is_absolute().then_some(real)
     }
     let mut real = resolve(program, path)?;
+    // Pi's own installer puts a `/bin/sh` launcher in front of the release
+    // it execs (box test w5 retest, BW5R-5): name what that release runs.
+    if let Some(release) = pi_managed_release(&real) {
+        real = release;
+    }
     // At most two `#!` hops (a script run by another script), as the
     // kernel's own limit is a few; each line read capped at 256 bytes.
     for _ in 0..2 {
@@ -590,6 +598,93 @@ fn harness_exe(program: &str, path: Option<&str>) -> Option<String> {
         real = resolve(&interp, path)?;
     }
     Some(real.to_string_lossy().into_owned())
+}
+
+/// The release a Pi managed-install launcher execs, by its real path (box
+/// test w5 retest, BW5R-5). Pi's installer writes the launcher at
+/// `<agent dir>/bin/pi` and the managed root at `<agent dir>/install`, whose
+/// `managed-install.json` says `{"kind": "pi-managed-install",
+/// "schemaVersion": 1, "layout": "releases-v1"}`, whose `current-version`
+/// names the active release, and whose `releases/<version>/node_modules/
+/// .bin/pi` is that release's program (Pi 1.4.0 `packages/coding-agent/src/
+/// package-manager-cli.ts:50-80, 123-133, 192-220`; the launcher's place and
+/// its exec, the PiDeck project's install notes and puppyone's Pi locator,
+/// which find `bin` beside the managed root). The launcher's own text is not
+/// read: derm takes the release only when the launcher is a `#!` shell
+/// script named `pi` in a folder `bin`, the marker is Pi's, the version is
+/// a plain version, and the program's real path stays under the root's
+/// `releases`. Whether the launcher puts a Node of its own first on `PATH`
+/// was not found; derm resolves the release's `#!/usr/bin/env node` on the
+/// `PATH` it runs with, as for an npm install (inferred).
+fn pi_managed_release(launcher: &std::path::Path) -> Option<std::path::PathBuf> {
+    use std::io::Read;
+    if launcher.file_name()? != "pi" {
+        return None;
+    }
+    let bin = launcher.parent()?;
+    if bin.file_name()? != "bin" {
+        return None;
+    }
+    let mut head = [0u8; 64];
+    let n = std::fs::File::open(launcher)
+        .and_then(|mut f| f.read(&mut head))
+        .ok()?;
+    let line = head[..n].strip_prefix(b"#!")?;
+    let interp = String::from_utf8_lossy(line.split(|b| *b == b'\n').next()?).into_owned();
+    let mut words = interp.split_whitespace();
+    let first = words.next()?;
+    let shell = match std::path::Path::new(first).file_name()?.to_str()? {
+        "env" => words.next().unwrap_or(""),
+        other => other,
+    }
+    .to_string();
+    if !matches!(shell.as_str(), "sh" | "bash" | "dash") {
+        return None;
+    }
+    let root = bin.parent()?.join("install");
+    let small = |name: &str| -> Option<String> {
+        let mut text = String::new();
+        std::fs::File::open(root.join(name))
+            .ok()?
+            .take(4096)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    };
+    let marker: serde_json::Value = serde_json::from_str(&small("managed-install.json")?).ok()?;
+    if marker.get("kind").and_then(serde_json::Value::as_str) != Some("pi-managed-install")
+        || marker
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != Some(1)
+        || marker.get("layout").and_then(serde_json::Value::as_str) != Some("releases-v1")
+    {
+        return None;
+    }
+    let version = small("current-version")?.trim().to_string();
+    // Pi's own check (`MANAGED_RELEASE_VERSION_RE`): digits and dots, then
+    // an optional `-` or `+` tag of letters, digits, dots and dashes.
+    let core: Vec<&str> = version.split(['-', '+']).next()?.split('.').collect();
+    let plain = core.len() == 3
+        && core
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
+    if !plain {
+        return None;
+    }
+    let releases = std::fs::canonicalize(root.join("releases")).ok()?;
+    let program = std::fs::canonicalize(
+        releases
+            .join(&version)
+            .join("node_modules")
+            .join(".bin")
+            .join("pi"),
+    )
+    .ok()?;
+    program.starts_with(&releases).then_some(program)
 }
 
 /// Codex's target triple and platform package name for this machine, as its
@@ -1231,10 +1326,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         let mut writable: Vec<String> = p.folders.clone();
         writable.extend(p.state_dirs.iter().cloned());
         writable.push(plan::srt_temp_root(cfg!(target_os = "macos")).into());
-        match preflight::srt(
+        match preflight::srt_with(
             &env.path,
             cfg!(target_os = "linux"),
             env.userns.as_deref(),
+            env.bwrap_profile,
             &writable,
             &cwd,
         ) {
@@ -1941,6 +2037,7 @@ mod end_to_end {
             policy: None,
             path: deps.join("bin").to_string_lossy().into_owned(),
             userns: None,
+            bwrap_profile: false,
             goose_mode: None,
             cline_responder: None,
         };
@@ -2043,6 +2140,70 @@ mod end_to_end {
             harness_exe(&direct.to_string_lossy(), Some(&path)),
             Some(want_node)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Box test w5 retest, BW5R-5: Pi from its own installer runs as a
+    /// `/bin/sh` launcher, `<agent dir>/bin/pi`, which reads
+    /// `<agent dir>/install/current-version` and execs that release's
+    /// `node_modules/.bin/pi`, a `#!/usr/bin/env node` script (Pi 1.4.0
+    /// `package-manager-cli.ts:50-80, 123-133, 192-220`: the managed root's
+    /// `managed-install.json`, `current-version` and `releases/<version>`;
+    /// the launcher's path and its exec, PiDeck's notes). `harnessExe` was
+    /// `/usr/bin/dash`, a shell, so under a boundary the join never found Pi.
+    #[cfg(unix)]
+    #[test]
+    fn bw5r_5_pis_managed_launcher_is_named_by_the_node_it_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("derm-pilaunch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let agent = dir.join(".pi/agent");
+        let rel = agent.join("install/releases/1.4.0/node_modules");
+        let cli = rel.join("@earendil-works/pi-coding-agent/dist/cli.js");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(rel.join(".bin")).unwrap();
+        std::fs::create_dir_all(agent.join("bin")).unwrap();
+        std::fs::create_dir_all(dir.join("sys")).unwrap();
+        let node = dir.join("sys/node");
+        std::fs::write(&node, [0x7f, b'E', b'L', b'F']).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(&cli, "#!/usr/bin/env node\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(
+            "../@earendil-works/pi-coding-agent/dist/cli.js",
+            rel.join(".bin/pi"),
+        )
+        .unwrap();
+        let launcher = agent.join("bin/pi");
+        std::fs::write(
+            &launcher,
+            "#!/bin/sh\nexec \"$root/releases/$v/node_modules/.bin/pi\" \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            agent.join("install/managed-install.json"),
+            r#"{"kind": "pi-managed-install", "schemaVersion": 1, "layout": "releases-v1"}"#,
+        )
+        .unwrap();
+        std::fs::write(agent.join("install/current-version"), "1.4.0\n").unwrap();
+        let path = format!(
+            "{}:{}",
+            agent.join("bin").display(),
+            dir.join("sys").display()
+        );
+        let want = std::fs::canonicalize(&node)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(harness_exe("pi", Some(&path)), Some(want.clone()));
+        // No marker, or a version that is not one: the launcher's own shell,
+        // as before (which the join takes as naming no harness).
+        std::fs::write(agent.join("install/current-version"), "../../x\n").unwrap();
+        assert_ne!(harness_exe("pi", Some(&path)), Some(want.clone()));
+        std::fs::write(agent.join("install/current-version"), "1.4.0\n").unwrap();
+        std::fs::write(agent.join("install/managed-install.json"), "{}").unwrap();
+        assert_ne!(harness_exe("pi", Some(&path)), Some(want));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2795,6 +2956,7 @@ mod end_to_end {
             policy: None,
             path: String::new(),
             userns: None,
+            bwrap_profile: false,
             goose_mode: None,
             cline_responder: None,
         };
@@ -3216,6 +3378,7 @@ mod end_to_end {
             policy: e.policy.clone(),
             path: e.path.clone(),
             userns: e.userns.clone(),
+            bwrap_profile: false,
             goose_mode: e.goose_mode.clone(),
             cline_responder: e.cline_responder.clone(),
         }
@@ -3233,6 +3396,7 @@ mod end_to_end {
             policy: None,
             path: String::new(),
             userns: None,
+            bwrap_profile: false,
             goose_mode: None,
             cline_responder: None,
         };

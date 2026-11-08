@@ -663,3 +663,38 @@ fn every_executable_row_names_an_agent_and_a_plain_program() {
         assert!(t["leftOut"][id].is_string());
     }
 }
+
+/// Box test w5 retest, BW5R-8: a setup run that writes only shims (the
+/// policy kept, the settings unchanged) left `~/.derm` at 0755, while one
+/// that writes the policy or the settings made it 0700.
+#[test]
+fn bw5r_8_a_shim_only_setup_keeps_the_derm_folder_private() {
+    let home = scratch("shimonly");
+    let (code, script, _) = setup(
+        &home,
+        &["workspace-write", "", "", "", "", "", "", "", "no"],
+        ok_matcher,
+        None,
+        false,
+    );
+    assert_eq!(code, 0, "{}", script.said);
+    assert!(home.join(".derm/settings.json").exists());
+    std::fs::set_permissions(home.join(".derm"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (code, script, _) = setup(
+        &home,
+        &["keep", "", "", "", "", "", "", "", "yes"],
+        ok_matcher,
+        None,
+        false,
+    );
+    assert_eq!(code, 0, "{}", script.said);
+    assert!(home.join(".derm/bin/claude").exists(), "{}", script.said);
+    for d in [".derm", ".derm/bin"] {
+        let mode = std::fs::metadata(home.join(d))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o700, "{d} {mode:o}: {}", script.said);
+    }
+}

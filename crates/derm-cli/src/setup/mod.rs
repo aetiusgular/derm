@@ -315,6 +315,12 @@ pub fn run(ctx: &mut Ctx) -> u8 {
         }
     }
     if write_shims {
+        // `~/.derm` is held 0700 whatever is written into it, the shims
+        // alone included (box test w5 retest, BW5R-8).
+        if let Err(e) = files::own_folder(&ctx.home.join(".derm")) {
+            problems += 1;
+            ctx.ask.say(&format!("Shims not written: {e}"));
+        }
         let dir = shims::folder(&ctx.home);
         let mut wrote = Vec::new();
         for (exe, id) in &shim_plan {
@@ -546,7 +552,7 @@ fn ask_settings(ctx: &mut Ctx, doc: &mut serde_json::Map<String, Value>) {
     // Computer use (lane U's R6).
     let cu = get(doc, "computerUse", "on").as_bool().unwrap_or(false);
     ctx.ask.say(&format!(
-        "\nComputer use lets an agent see and drive apps on this machine through derm's computer_use tool, each app approved on a card. Off by default; until the second-user box test passes, keep it off on any machine an agent can reach as you. Now: {}.",
+        "\nComputer use lets an agent see and drive apps on this machine through derm's computer_use tool, each app approved on a card. Off by default; until the second-user box test passes, keep it off on any machine an agent can reach as you. On GNOME under Wayland, cua-driver sees windows only through its GNOME Shell helper, which cua-driver 0.38.0 builds for GNOME Shell 45 to 49 (it refuses 50 and newer for now); derm cu status says when computer use cannot see windows here, and no card opens then. Now: {}.",
         if cu { "on" } else { "off" }
     ));
     let a = ctx.ask.choose(

@@ -44,7 +44,16 @@ pub fn owned_private_dir(dir: &Path, user: &UserId) -> bool {
 
 /// From `derm-daemon/src/socket.rs` (`private_dir`).
 pub fn private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    // The folders made on the way are 0700 too (box test w5 retest, BW5R-8:
+    // `~/.derm/run` was made 0755 for the socket's `~/.derm/run/derm`).
+    // One that already exists is left as it is.
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
     let meta = std::fs::symlink_metadata(dir)?;
     if !meta.file_type().is_dir() {
         return Err(std::io::Error::other(format!(
@@ -318,5 +327,24 @@ mod tests {
     #[test]
     fn the_host_has_a_name() {
         assert!(!host_name().is_empty());
+    }
+
+    /// Box test w5 retest, BW5R-8: the socket's folder `~/.derm/run/derm`
+    /// was made 0700 and `~/.derm/run` above it 0755.
+    #[test]
+    fn bw5r_8_folders_made_on_the_way_to_a_private_one_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "derm-privdir-{}-{}",
+            std::process::id(),
+            &crate::token::mint().unwrap()[..8]
+        ));
+        let dir = root.join("run").join("derm");
+        super::private_dir(&dir).unwrap();
+        for d in [&root, &root.join("run"), &dir] {
+            let mode = std::fs::metadata(d).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{} {mode:o}", d.display());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

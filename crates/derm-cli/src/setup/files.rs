@@ -5,7 +5,7 @@
 //! through a link, with the old file kept in `~/.derm/backups/` first.
 
 use std::io::{Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// The file's text, `Ok(None)` when there is none.
@@ -49,7 +49,13 @@ pub fn read_private(path: &Path, max: u64) -> Result<Option<String>, String> {
 pub fn own_folder(dir: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            // Every folder made on the way is 0700 too (BW5R-8: `~/.derm`
+            // was made 0755 for `~/.derm/bin`).
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
             std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
                 .map_err(|e| format!("{}: {e}", dir.display()))
         }

@@ -74,6 +74,12 @@ pub trait HelperLauncher: Send + Sync {
     fn recordings_root(&self) -> Option<PathBuf> {
         None
     }
+    /// Why the helper, though installed, cannot see windows on this desktop
+    /// (box test w5 retest, BW5R-1: cua-driver on GNOME Shell 50), asked
+    /// before any card. None: nothing known against it.
+    fn unusable(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -191,6 +197,9 @@ pub struct Status {
     pub helper: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helper_path: Option<String>,
+    /// Why computer use cannot see windows here (BW5R-1), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<String>,
     pub running_chats: Vec<String>,
     pub pending: Vec<PendingView>,
 }
@@ -541,6 +550,12 @@ impl Core {
 
     /// What the model named, as an app the card can show.
     fn resolve_request(&self, app: &str) -> (Option<AppInfo>, Option<String>) {
+        // A desktop the driver cannot see windows on refuses before any
+        // card, so the person is never asked to grant an app that computer
+        // use cannot capture or click (BW5R-1).
+        if let Some(why) = self.launcher.unusable() {
+            return (None, Some(why));
+        }
         // Lane U: a helper (or, on Linux, a driver) that cannot start says
         // so, rather than "no app named".
         if let Err(why) = self.helper_or_launch() {
@@ -802,9 +817,15 @@ impl Core {
         pending.sort_by_key(|p| p.asked_at);
         let mut running_chats: Vec<String> = inner.runtimes.keys().cloned().collect();
         running_chats.sort();
+        let desktop = if self.supported {
+            self.launcher.unusable()
+        } else {
+            None
+        };
         Status {
             helper,
             helper_path: self.launcher.location(),
+            desktop,
             running_chats,
             pending,
         }

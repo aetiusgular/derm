@@ -137,10 +137,16 @@ pub struct DirectLauncher {
     pub home: PathBuf,
     /// Where `/proc` is (a fixture in tests).
     pub proc_root: PathBuf,
+    /// GNOME Shell, asked for its version on a GNOME Wayland session
+    /// (`desktop.rs`; a stand-in in tests).
+    pub gnome_shell: PathBuf,
 }
 
 impl HelperLauncher for DirectLauncher {
     fn launch(&self, events: EventSink) -> Result<HelperClient, String> {
+        if let Some(why) = self.unusable() {
+            return Err(why);
+        }
         let driver = self
             .driver
             .clone()
@@ -189,6 +195,10 @@ impl HelperLauncher for DirectLauncher {
 
     fn installed(&self) -> bool {
         self.driver.is_some()
+    }
+
+    fn unusable(&self) -> Option<String> {
+        super::desktop::probe_with(&self.env, &self.home, &self.gnome_shell)
     }
 }
 

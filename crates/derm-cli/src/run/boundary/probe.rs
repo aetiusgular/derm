@@ -326,19 +326,9 @@ pub(crate) fn srt_probe(
         Ok(r) if r.ok => Ok(()),
         Ok(r) => {
             let mut why = format!("srt could not start a program here: {}", r.line);
-            if linux && bwrap_profile {
-                // Box test w5, BW5-10: on Ubuntu 26.04 the sysctl at 0 did
-                // not help. Ubuntu's profile confines /usr/bin/bwrap and runs
-                // what it starts under a child profile that denies every
-                // capability, which srt's seccomp step needs.
-                why.push_str(&format!(
-                    "; Ubuntu's AppArmor profile {UBUNTU_BWRAP_PROFILE} confines bubblewrap and takes the capabilities from what it starts, which srt's seccomp step needs, whatever kernel.apparmor_restrict_unprivileged_userns says. \
-                     The fix is root's: an AppArmor profile that allows userns for the bubblewrap srt runs without that child profile (srt README, Ubuntu 24.04+ note), or use sbx"
-                ));
-            } else if linux && userns.map(str::trim) == Some("1") {
-                why.push_str(
-                    "; kernel.apparmor_restrict_unprivileged_userns is 1, which srt's README says to set to 0 or answer with an AppArmor profile that allows userns for bwrap",
-                );
+            if let Some(n) = preflight::apparmor_note(linux, bwrap_profile, userns) {
+                why.push_str("; ");
+                why.push_str(&n);
             }
             Err(reason(why, None))
         }

@@ -68,6 +68,16 @@ const INSTALL_CONTROL: &[&str] = &[
     ".cargo/config",
 ];
 
+/// A harness's own per-shell snapshot, written by a shell the harness starts
+/// itself before a command runs: Claude Code's (`~/.claude/shell-snapshots/
+/// snapshot-<shell>-*.sh`, its binary at 2.1.311: "Creating snapshot at",
+/// `SNAPSHOT_FILE`) and Codex's (`~/.codex/shell_snapshots/`). A write there
+/// by the harness's own child (`join.candidates`' `harnessChild`) is the
+/// harness's, not the install's (box test w5 retest, BW5R-2); by anything
+/// else, such as an install script, it is flagged: each later command
+/// sources the file.
+const HARNESS_SNAPSHOTS: &[&str] = &["/.claude/shell-snapshots/", "/.codex/shell_snapshots/"];
+
 /// Folders whose files are a package's own (a write there is unpacking).
 const STORES: &[&str] = &[
     "/node_modules/",
@@ -327,6 +337,7 @@ impl ControlFlags {
                 _ => return Vec::new(),
             },
         };
+        let own_child = e.detail.get("harnessChild") == Some(&Value::Bool(true));
         let mut out = Vec::new();
         let paths = paths.clone();
         let exe = exe.clone();
@@ -336,6 +347,12 @@ impl ControlFlags {
             let Some(marker) = control_path(path) else {
                 continue;
             };
+            if own_child && {
+                let p = path.to_lowercase();
+                HARNESS_SNAPSHOTS.iter().any(|d| p.contains(d))
+            } {
+                continue;
+            }
             let key = (call.clone(), path.clone());
             if !chat.flagged.insert(key.clone()) {
                 continue;
@@ -922,5 +939,84 @@ mod tests {
             1,
             "the forged stop dropped the install's flag: {flags:?}"
         );
+    }
+    /// Box test w5 retest, BW5R-2: in a Claude Code chat whose first Bash
+    /// call was an install, Claude Code's own shell snapshot
+    /// (`~/.claude/shell-snapshots/snapshot-bash-*.sh`, written by a shell
+    /// the harness started itself) was flagged as "install wrote .claude/".
+    /// A write the join marks as the harness's own child's (`harnessChild`)
+    /// to the harness's snapshot folder is not the install's; the same path
+    /// written by a process under the call's shell (an install script) is.
+    #[test]
+    fn bw5r_2_the_harnesss_own_shell_snapshot_is_not_the_installs() {
+        let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1793-abc.sh";
+        let mut f = ControlFlags::new();
+        f.observe(&ev(
+            "claude-code-toolu_I9-install",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I9"}),
+        ));
+        f.observe(&ev(
+            "gate-9",
+            "approval",
+            Source::Adapter,
+            json!({"toolUseId": "toolu_I9"}),
+        ));
+        for (id, extra) in [
+            ("auditd-own", json!({"harnessChild": true})),
+            ("auditd-deep", json!({})),
+        ] {
+            f.observe(&ev(
+                id,
+                "write",
+                Source::Auditd,
+                json!({"path": snap, "exe": "/usr/bin/bash"}),
+            ));
+            let mut d = json!({"trust": "daemon", "effect": id, "effectKind": "write", "candidates": [{"call": "gate-9", "by": "tree", "why": "a process this call started"}], "chosen": "gate-9"});
+            if let Value::Object(m) = extra {
+                for (k, v) in m {
+                    d[k] = v;
+                }
+            }
+            let out = f.observe(&ev(
+                &format!("join-{id}"),
+                "join.candidates",
+                Source::Derm,
+                d,
+            ));
+            if id == "auditd-own" {
+                assert!(out.is_empty(), "Claude Code's own snapshot: {out:?}");
+            } else {
+                assert_eq!(out.len(), 1, "an install script's write: {out:?}");
+            }
+        }
+        // The harness's own child writing elsewhere is still flagged.
+        let mut g = ControlFlags::new();
+        g.observe(&ev(
+            "i",
+            "install.call",
+            Source::Adapter,
+            json!({"toolUseId": "t"}),
+        ));
+        g.observe(&ev(
+            "gate-t",
+            "approval",
+            Source::Adapter,
+            json!({"toolUseId": "t"}),
+        ));
+        g.observe(&ev(
+            "w",
+            "write",
+            Source::Auditd,
+            json!({"path": "/home/u/p/.git/hooks/pre-commit", "exe": "/usr/bin/bash"}),
+        ));
+        let out = g.observe(&ev(
+            "join-w",
+            "join.candidates",
+            Source::Derm,
+            json!({"trust": "daemon", "effect": "w", "effectKind": "write", "candidates": [{"call": "gate-t", "by": "tree", "why": "x"}], "chosen": "gate-t", "harnessChild": true}),
+        ));
+        assert_eq!(out.len(), 1, "{out:?}");
     }
 }
