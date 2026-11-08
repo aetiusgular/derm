@@ -482,7 +482,7 @@ fn ask_settings(ctx: &mut Ctx, doc: &mut serde_json::Map<String, Value>) {
     // The tap.
     let on = get(doc, "tap", "on").as_bool().unwrap_or(true);
     ctx.ask.say(&format!(
-        "\nThe model tap sits between each agent and its model on this machine and records every tool call the model asks for (names, hashes, sizes, paths), never your keys. Now: {}.",
+        "\nThe model tap sits between each agent and its model on this machine and records every tool call the model asks for (names, hashes, sizes, paths), never your keys. Under sbx it stays off: sbx's proxy adds the agent's credential only for the provider's own host. Now: {}.",
         if on { "on" } else { "off" }
     ));
     let first = if on { "on" } else { "off" };

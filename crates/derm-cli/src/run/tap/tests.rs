@@ -336,6 +336,59 @@ fn mw5_37_under_sbx_the_tap_stands_down_and_sets_no_base_url() {
     let _ = std::fs::remove_dir_all(d.root);
 }
 
+/// Fix pass 12's review, finding 1: under sbx the chat's folder is mounted
+/// into the VM, so a base URL a project file sets still reaches Claude Code
+/// there and still refuses the start (case 113). What the host's own
+/// environment and home files set does not reach the VM (sbx passes only
+/// the variables `derm run` names, `plan.rs` `OWNED_VARS`), so it does not.
+#[test]
+fn fp12_r1_under_sbx_a_project_files_base_url_still_refuses_the_start() {
+    let d = dirs("sbx-r1", Some("http://127.0.0.1:45003"));
+    let sbx_plan = |args: &[&str]| {
+        let mut p = plan("sbx", args, true);
+        p.sandbox_name = Some("derm-c".into());
+        p
+    };
+    let mut i = inputs(&d);
+    i.inherited = vec![("ANTHROPIC_BASE_URL".into(), "http://my-gateway:8080".into())];
+    let home = d.home.join(".claude");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("settings.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://h"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        environment_with("claude-code", &mut sbx_plan(&["run", "claude"]), &i).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "sbx-credential"})),
+        "the host's own variable and home file stay on the host"
+    );
+    let proj = d.work.join(".claude");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("settings.local.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://planted"}}"#,
+    )
+    .unwrap();
+    let why = environment_with("claude-code", &mut sbx_plan(&["run", "claude"]), &i)
+        .unwrap_err()
+        .1;
+    assert!(
+        why.contains("settings.local.json sets ANTHROPIC_BASE_URL"),
+        "{why}"
+    );
+    std::fs::remove_file(proj.join("settings.local.json")).unwrap();
+    let why = environment_with(
+        "codex",
+        &mut sbx_plan(&["run", "codex", "--", "-c", "model_provider=\"x\""]),
+        &i,
+    )
+    .unwrap_err()
+    .1;
+    assert!(why.contains("model_provider"), "{why}");
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
 #[test]
 fn the_tap_table_merges_into_the_presets_and_every_row_follows_the_schema() {
     let table: Value = serde_json::from_str(crate::connect::presets::table_json()).unwrap();

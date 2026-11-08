@@ -144,6 +144,27 @@ pub(crate) fn environment_with(
         return Ok(off(Some("no-base-url")));
     }
     if plan.sandbox_name.is_some() {
+        // Case 113 still holds for what reaches the VM: the chat's folder is
+        // mounted there and the harness's own words are passed on, so a base
+        // URL a project file or the command line sets would send the chat
+        // elsewhere. The host's environment, home and managed files stay on
+        // the host (sbx passes only the variables derm names, plan.rs
+        // OWNED_VARS) and are not read here (fix pass 12's review, finding 1).
+        let in_vm = Inputs {
+            daemon_dir: None,
+            home: None,
+            cwd: i.cwd.clone(),
+            inherited: Vec::new(),
+            claude_managed: PathBuf::new(),
+        };
+        if let Some(why) = base_url_already_set(harness, plan, &in_vm) {
+            return Err((
+                1,
+                format!(
+                    "derm run: {why}, and the sbx VM would read it; remove it, or run this chat under another boundary"
+                ),
+            ));
+        }
         // MW5-37: sbx's host proxy adds the harness's credential only to
         // requests for the provider's own host (`credential@1`'s `inject`
         // domains and `resourceHosts`, docker/sandbox-kit-spec `6838e3e`;
