@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use derm_daemon::activity::store::ActivityLog;
-use derm_daemon::daemon::{Daemon, AUDIT_FEED_TAIL};
+use derm_daemon::daemon::{Daemon, AUDIT_FEED_TAIL, MAX_PENDING_LINES};
 use serde_json::{json, Value};
 
 const DAEMON_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -20,7 +20,7 @@ const DAEMON_TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123
 struct Fixture {
     root: PathBuf,
     socket: PathBuf,
-    _daemon: Arc<Daemon>,
+    daemon: Arc<Daemon>,
 }
 
 impl Drop for Fixture {
@@ -46,7 +46,7 @@ fn fixture() -> Fixture {
     Fixture {
         root,
         socket,
-        _daemon: daemon,
+        daemon,
     }
 }
 
@@ -119,6 +119,56 @@ fn bw5r2_5_the_report_says_whether_the_linux_feed_is_attached() {
     let stopped = wait_for(&f, "stopped");
     assert!(stopped["since"].as_i64().unwrap_or(0) > 0, "{stopped}");
     // And back.
-    let _again = Client::hello(&f, DAEMON_TOKEN, AUDIT_FEED_TAIL);
+    // And back, once its tail is live again (FP10-S2).
+    let mut again = Client::hello(&f, DAEMON_TOKEN, AUDIT_FEED_TAIL);
+    assert_eq!(
+        feed(&f)["state"],
+        "stopped",
+        "a hello alone is not attached"
+    );
+    assert_eq!(again.ask(json!({"op": "tail"}))["ok"], true);
     wait_for(&f, "attached");
+}
+
+/// Fix pass 10's review, FP10-S2 (both probes failed on `12ec6eb`): a hello
+/// with no tail, and a tail the daemon dropped for falling behind, deliver
+/// no `run.start`, so neither is an attached feed.
+#[test]
+fn fp10_s2_a_hello_without_a_tail_is_not_an_attached_feed() {
+    let f = fixture();
+    let _idle = Client::hello(&f, DAEMON_TOKEN, AUDIT_FEED_TAIL);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_ne!(feed(&f)["state"], "attached", "no tail is streaming");
+}
+
+#[test]
+fn fp10_s2_a_dropped_feed_tail_is_not_attached() {
+    let f = fixture();
+    let mut tail = Client::hello(&f, DAEMON_TOKEN, AUDIT_FEED_TAIL);
+    assert_eq!(tail.ask(json!({"op": "tail"}))["ok"], true);
+    wait_for(&f, "attached");
+    // The feed's tail is never read, so the daemon drops it.
+    let detail = json!({"pad": "x".repeat(8 * 1024)});
+    for i in 0..(MAX_PENDING_LINES + 400) {
+        f.daemon.ingest(
+            serde_json::from_value(json!({
+                "id": format!("e{i}"), "at": 0, "chatId": "c", "harness": "pi",
+                "source": "adapter", "kind": "tool.call", "summary": "", "detail": detail
+            }))
+            .unwrap(),
+        );
+    }
+    assert!(
+        f.daemon
+            .counters
+            .tails_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= 1
+    );
+    let stopped = feed(&f);
+    assert_eq!(
+        stopped["state"], "stopped",
+        "the feed's tail was dropped: {stopped}"
+    );
+    drop(tail);
 }

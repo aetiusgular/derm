@@ -49,7 +49,40 @@ pub fn hidden(c: char) -> bool {
                 | 0x2066..=0x2069 // isolates
                 | 0xFEFF // BOM, zero-width no-break space
                 | 0xFFF9..=0xFFFB // interlinear annotation
+                // Default_Ignorable_Code_Point characters a terminal draws as
+                // nothing (fix pass 10's review, FP10-S5): the soft hyphen,
+                // the grapheme joiner, Hangul fillers, Khmer inherent vowels,
+                // variation selectors and tag characters ("ASCII smuggling").
+                | 0x00AD
+                | 0x034F
+                | 0x115F..=0x1160
+                | 0x17B4..=0x17B5
+                | 0x3164
+                | 0xFFA0
+                | 0xFE00..=0xFE0F
+                | 0xE0000..=0xE007F
+                | 0xE0100..=0xE01EF
         )
+}
+
+#[cfg(test)]
+mod fp10_probes {
+    use super::*;
+
+    /// Fix pass 10's review, FP10-S5 (failed on `12ec6eb`).
+    #[test]
+    fn fp10_s5_invisible_tag_characters_are_made_visible() {
+        for hidden_text in [
+            "a\u{E0068}\u{E0069}b",
+            "a\u{AD}b",
+            "a\u{FE0F}b",
+            "a\u{E0001}b",
+            "a\u{3164}b",
+        ] {
+            let c = clean(hidden_text, 1000);
+            assert!(c.contains("\\u{"), "{:?} printed as {:?}", hidden_text, c);
+        }
+    }
 }
 
 /// `HH:MM:SS` in local time for an epoch-milliseconds stamp.

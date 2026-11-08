@@ -814,12 +814,17 @@ pub struct Daemon {
 /// connection for its whole run and exits when it closes.
 pub const AUDIT_FEED_TAIL: &str = "derm-audit-feed tail";
 
-/// Whether the Linux feed is attached. A status, not a guard: any process
-/// that can read `daemon.token` can name itself the feed (S2), and one that
-/// can do that can also stop the real one.
+/// Whether the Linux feed is attached: a connection whose `hello` named it
+/// the feed, with a live `tail` (fix pass 10's review, FP10-S2: a hello
+/// alone, or a tail the daemon dropped for falling behind, delivers no
+/// `run.start`). A status, not a guard: any process that can read
+/// `daemon.token` can name itself the feed (S2), and one that can do that
+/// can also stop the real one.
 #[derive(Default)]
 struct OsFeed {
-    conns: HashSet<u64>,
+    /// Connections whose `hello` named them the feed's tail.
+    named: HashSet<u64>,
+    attached: bool,
     seen: bool,
     lost_at: Option<i64>,
 }
@@ -1303,20 +1308,33 @@ impl Daemon {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// The collector registration's state for `report` (MW5-18): `running`,
-    /// `stopped` (no new chat reaches the collector until a restart), or
-    /// null where none was started (Linux, tests).
     /// Notes a connection whose `hello` named it the Linux feed's tail, with
-    /// the daemon's own token (BW5R2-5). A chat token never counts.
+    /// the daemon's own token (BW5R2-5). A chat token never counts. It is
+    /// attached once its `tail` is live (FP10-S2).
     pub fn note_client(&self, conn: u64, who: &Who, client: &str) {
         if *who != Who::Daemon || client != AUDIT_FEED_TAIL {
             return;
         }
         if let Ok(mut feed) = self.os_feed.lock() {
-            feed.conns.insert(conn);
+            feed.named.insert(conn);
+        }
+    }
+
+    /// Whether a named feed connection has a live tail, after a tail was
+    /// added or dropped. Called with the tails lock held (tails, then the
+    /// feed: the one order).
+    fn feed_refresh(&self, tails: &[TailSub]) {
+        let Ok(mut feed) = self.os_feed.lock() else {
+            return;
+        };
+        let attached = tails.iter().any(|t| feed.named.contains(&t.out.conn));
+        if attached {
             feed.seen = true;
             feed.lost_at = None;
+        } else if feed.attached {
+            feed.lost_at = Some(now_ms());
         }
+        feed.attached = attached;
     }
 
     /// The Linux feed as `report` names it (BW5R2-5): `attached`; `stopped`
@@ -1334,7 +1352,7 @@ impl Daemon {
         let Ok(feed) = self.os_feed.lock() else {
             return Value::Null;
         };
-        if !feed.conns.is_empty() {
+        if feed.attached {
             json!({"state": "attached"})
         } else if feed.seen {
             json!({"state": "stopped", "since": feed.lost_at})
@@ -1343,6 +1361,9 @@ impl Daemon {
         }
     }
 
+    /// The collector registration's state for `report` (MW5-18): `running`,
+    /// `stopped` (no new chat reaches the collector until a restart), or
+    /// null where none was started (Linux, tests).
     pub fn registration_state(&self) -> Value {
         if !self.counters.registration_started.load(Ordering::SeqCst) {
             return Value::Null;
@@ -1405,6 +1426,7 @@ impl Daemon {
             ring.pop_front();
         }
         if let (Some(line), Ok(mut tails)) = (line, self.tails.lock()) {
+            let before = tails.len();
             tails.retain(|sub| {
                 if sub.chat.as_deref().is_some_and(|c| c != event.chat_id) {
                     return true;
@@ -1415,6 +1437,9 @@ impl Daemon {
                 }
                 true
             });
+            if tails.len() != before {
+                self.feed_refresh(&tails);
+            }
         }
         drop(ring);
         // `derm run`'s own records to the in-process watchers (MW5-18). Only
@@ -2014,6 +2039,7 @@ impl Daemon {
             chat,
             out: out.clone(),
         });
+        self.feed_refresh(&tails);
         drop(tails);
         drop(ring);
         #[cfg(test)]
@@ -2287,13 +2313,12 @@ impl Daemon {
         if let Ok(mut a) = self.approvers.lock() {
             a.retain(|o| o.conn != conn);
         }
-        if let Ok(mut feed) = self.os_feed.lock() {
-            if feed.conns.remove(&conn) && feed.conns.is_empty() {
-                feed.lost_at = Some(now_ms());
-            }
-        }
         if let Ok(mut t) = self.tails.lock() {
             t.retain(|s| s.out.conn != conn);
+            if let Ok(mut feed) = self.os_feed.lock() {
+                feed.named.remove(&conn);
+            }
+            self.feed_refresh(&t);
         }
     }
 

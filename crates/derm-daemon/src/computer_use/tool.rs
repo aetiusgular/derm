@@ -194,6 +194,9 @@ struct Answer {
     result: Value,
     verdict: Verdict,
     app: Option<String>,
+    /// The app a refused grant was for, as its SHA-256 and length: the name
+    /// is the model's text, which a record never keeps (FP10-S1).
+    app_asked: Option<Box<(String, usize)>>,
     grant: Option<String>,
     effect: Option<bool>,
     verified: Option<bool>,
@@ -206,6 +209,7 @@ impl Answer {
             result,
             verdict,
             app: None,
+            app_asked: None,
             grant: None,
             effect: None,
             verified: None,
@@ -1071,12 +1075,19 @@ fn resolve_target(
         ));
     }
     let wanted_grant = match app {
-        // A refusal still names the app it was for in `cu.action` (box test
-        // w5 retest 2, BW5R2-3: a refused capture of gnome-calculator was
-        // recorded with `app: null`).
+        // A refusal still says which app it was for in `cu.action` (box test
+        // w5 retest 2, BW5R2-3: a refused capture was recorded with only
+        // `app: null`), by the name's SHA-256 and length: the name is the
+        // model's text, and a record keeps no content (FP10-S1).
         Some(app) => Some(
             ensure_grant(backend, chat, app, action).map_err(|mut refused| {
-                refused.app.get_or_insert_with(|| app.to_string());
+                refused.app_asked.get_or_insert_with(|| {
+                    let hash = Sha256::digest(app.as_bytes())
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    Box::new((hash, app.chars().count()))
+                });
                 refused
             })?,
         ),
@@ -1775,6 +1786,8 @@ fn record(
         "trust": "daemon",
         "action": action,
         "app": answer.app.as_deref().map(|a| truncate(a, 4096)),
+        "appAskedSha256": answer.app_asked.as_ref().map(|a| &a.0),
+        "appAskedChars": answer.app_asked.as_ref().map(|a| a.1),
         "delivery": delivery,
         "verdict": answer.verdict.as_str(),
         "effect": answer.effect,

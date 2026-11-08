@@ -179,7 +179,7 @@ pub fn render(r: &Value) -> String {
                 .map(|ms| format!(" at {}", date_time(ms)))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "OS FEED STOPPED{since}: derm-audit-feed is not attached, so chats since then have no OS records (systemctl --user start derm-audit-feed)\n"
+                "OS FEED STOPPED{since}: derm-audit-feed is not attached (its connection closed, or the daemon dropped its tail for falling behind), so chats since then have no OS records (systemctl --user restart derm-audit-feed)\n"
             ));
         }
         Some("none") => out.push_str(
@@ -432,7 +432,7 @@ mod tests {
         );
         assert!(stopped.contains("OS FEED STOPPED at "), "{stopped}");
         assert!(
-            stopped.contains("systemctl --user start derm-audit-feed"),
+            stopped.contains("systemctl --user restart derm-audit-feed"),
             "{stopped}"
         );
         let none = render(&json!({"events": 1, "osFeed": {"state": "none"}}));

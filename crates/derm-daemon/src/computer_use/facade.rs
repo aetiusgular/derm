@@ -264,7 +264,21 @@ pub fn printable(text: &str, max: usize) -> String {
 fn is_invisible(c: char) -> bool {
     matches!(
         c,
-        '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}'
+        '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{FEFF}'
+            // FP10-S5: other Default_Ignorable_Code_Point characters a
+            // card would draw as nothing.
+            | '\u{00AD}'
+            | '\u{034F}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{3164}'
+            | '\u{FFA0}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{E0000}'..='\u{E007F}'
+            | '\u{E0100}'..='\u{E01EF}'
     )
 }
 
@@ -272,6 +286,14 @@ fn is_invisible(c: char) -> bool {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    /// FP10-S5: tag characters and other ignorables are dropped from text a
+    /// card or a record shows.
+    #[test]
+    fn fp10_s5_printable_drops_default_ignorables() {
+        let shown = printable("cal\u{E0068}\u{E0069}c\u{AD}\u{FE0F}\u{3164}", 80);
+        assert_eq!(shown, "calc");
+    }
 
     struct Fake {
         grants: RefCell<Vec<Grant>>,
