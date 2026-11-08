@@ -68,7 +68,14 @@ while IFS= read -r line; do
         say "call list_windows pid=$pid"
         printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"1"}],"structuredContent":{"windows":[{"app_name":"calc","pid":%s,"window_id":7,"z_index":1,"title":"calc"}]}}}\\n' "$id" "$pid"
       fi ;;
-    *'"get_window_state"'*) say "call get_window_state"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"calc"},{"type":"image","data":"${PNG}","mimeType":"image/png"}],"structuredContent":{"window_title":"calc","elements":[{"element_index":1,"role":"button","label":"seven","frame":{"x":1,"y":1,"w":9,"h":9},"element_token":"s9:1"}]}}}\\n' "$id" ;;
+    # cua-driver-rs 0.38.0 (fix pass 12, MW5-38): get_window_state returns
+    # \`elements\` only when tree_format asks for them (markdown is the default,
+    # cua-driver-core/src/window_state_view.rs:155-163, 546-558), and its input
+    # tools take an element by element_token only, with additionalProperties
+    # false (platform-macos/src/tools/click.rs:332-371).
+    *'"tree_format":"elements"'*'"get_window_state"'*|*'"get_window_state"'*'"tree_format":"elements"'*) say "call get_window_state elements"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"calc"},{"type":"image","data":"${PNG}","mimeType":"image/png"}],"structuredContent":{"window_title":"calc","tree_format":"elements","elements":[{"element_index":1,"role":"button","label":"seven","frame":{"x":1,"y":1,"w":9,"h":9},"element_token":"s9:1"}]}}}\\n' "$id" ;;
+    *'"get_window_state"'*) say "call get_window_state markdown"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"calc"},{"type":"image","data":"${PNG}","mimeType":"image/png"}],"structuredContent":{"window_title":"calc","tree_format":"markdown","tree_markdown":"[1] button seven"}}}\\n' "$id" ;;
+    *'"element_index"'*'"click"'*|*'"click"'*'"element_index"'*) say "call $line"; printf '{"jsonrpc":"2.0","id":%s,"result":{"isError":true,"content":[{"type":"text","text":"click: unknown argument element_index"}]}}\\n' "$id" ;;
     *'"click"'*) say "call $line"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"clicked"}],"structuredContent":{"effect":"confirmed"}}}\\n' "$id" ;;
     *) say "call other"; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}\\n' "$id" ;;
   esac
@@ -263,7 +270,8 @@ async function claudeToolCheck({ claudePath }) {
     const log = existsSync(path.join(BIN, "driver.log")) ? readFileSync(path.join(BIN, "driver.log"), "utf8") : "";
     if (/bad args|not bounded|bypass|not approved/.test(log)) problems.push(`driver: ${log.slice(0, 300)}`);
     const click = log.split("\n").find((l) => l.includes('"click"'));
-    if (!click || !click.includes('"element_index":1') || !click.includes('"element_token":"s9:1"') || !click.includes('"window_id":7')) problems.push(`click sent: ${click ?? "none"}`);
+    if (!log.includes("call get_window_state elements")) problems.push("derm did not ask the driver for its elements (tree_format)");
+    if (!click || click.includes('"element_index"') || !click.includes('"element_token":"s9:1"') || !click.includes('"window_id":7')) problems.push(`click sent: ${click ?? "none"}`);
     if (log.includes(TYPED)) problems.push("the blocked text reached the driver");
     const second = fake.turnRequests().map((r) => toolResults(r.body)).find((t) => t.length >= 1);
     const captureResult = second?.[0];
