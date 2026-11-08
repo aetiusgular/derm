@@ -525,8 +525,35 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
                 Ok(0) => break,
                 Ok(n) => {
                     let bytes = &buf[..n];
-                    if let Some(p) = parser.as_mut() {
-                        p.feed(bytes);
+                    if let (Some(p), Some(a)) = (parser.as_mut(), api) {
+                        p.feed_at(bytes, now_ms());
+                        // Each call whose item ended in these bytes is
+                        // posted now: the harness may run it before the
+                        // reply ends, and its shell must find the call open
+                        // (MW5-33). The record after the reply replaces this
+                        // one under the same id (case 35).
+                        let done = p.take_done();
+                        if !done.is_empty() {
+                            let model = p.model_so_far().unwrap_or(&rec.model).to_string();
+                            let early: Vec<_> = done
+                                .iter()
+                                .map(|call| {
+                                    let c = CallRecord::new(
+                                        a,
+                                        &model,
+                                        Some(request_id.clone()),
+                                        &chat.harness,
+                                        call,
+                                    );
+                                    c.event(
+                                        &chat.id,
+                                        &chat.harness,
+                                        call.done_at.unwrap_or_else(now_ms),
+                                    )
+                                })
+                                .collect();
+                            (inner.sink)(early);
+                        }
                     }
                     if let Some(f) = resp_file.as_mut() {
                         f.append(bytes);
@@ -586,7 +613,12 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
                     call,
                 );
                 c.content_kept = content_kept;
-                events.push(c.event(&chat.id, &chat.harness, at));
+                // Stamped when its item ended in the stream, not when the
+                // whole reply had been read: Codex runs a call while the
+                // rest of the reply still streams, and a shell it forks
+                // before the reply's end found no call open (MW5-33).
+                let when = call.done_at.filter(|t| *t > 0 && *t <= at).unwrap_or(at);
+                events.push(c.event(&chat.id, &chat.harness, when));
                 calls.keep(c);
             }
         }

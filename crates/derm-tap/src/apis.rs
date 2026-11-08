@@ -314,6 +314,12 @@ struct Pending {
     args: String,
     json_args: Option<Value>,
     done: bool,
+    /// When the stream finished this call's item, by the clock the tap
+    /// feeds with (MW5-33): a harness may run the call from then on, before
+    /// the rest of the reply arrives.
+    done_at: Option<i64>,
+    /// Handed out by `take_done` already.
+    reported: bool,
     freeform: bool,
 }
 
@@ -343,6 +349,8 @@ pub struct ResponseParser {
     info: ResponseInfo,
     gemini_seq: u64,
     gemini_prefix: String,
+    /// The time `feed_at` was last given; 0 through `feed`.
+    now: i64,
 }
 
 impl ResponseParser {
@@ -369,7 +377,15 @@ impl ResponseParser {
             info: ResponseInfo::default(),
             gemini_seq: 0,
             gemini_prefix: gemini_prefix.to_string(),
+            now: 0,
         }
+    }
+
+    /// `feed`, with the time these bytes arrived: a call whose item ends in
+    /// them is stamped with it (MW5-33).
+    pub fn feed_at(&mut self, bytes: &[u8], now: i64) {
+        self.now = now;
+        self.feed(bytes);
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
@@ -432,6 +448,42 @@ impl ResponseParser {
                 self.on_event(&e.event, &v);
             }
         }
+        if self.now > 0 {
+            for p in self.calls.values_mut() {
+                if p.done && p.done_at.is_none() {
+                    p.done_at = Some(self.now);
+                }
+            }
+        }
+    }
+
+    /// The calls whose items ended since the last time this was asked, with
+    /// the arguments as they stand, so the tap can post each call before the
+    /// rest of the reply arrives (MW5-33). `finish` still gives every call.
+    pub fn take_done(&mut self) -> Vec<Call> {
+        let mut out = Vec::new();
+        for p in self.calls.values_mut() {
+            if !p.done || p.reported || p.id.is_empty() {
+                continue;
+            }
+            p.reported = true;
+            out.push(Call {
+                call_id: p.id.clone(),
+                tool: p.name.clone(),
+                args: match &p.json_args {
+                    Some(v) => ArgsText::Json(v.clone()),
+                    None => ArgsText::Text(p.args.clone()),
+                },
+                incomplete: false,
+                done_at: p.done_at,
+            });
+        }
+        out
+    }
+
+    /// The model the reply has named so far.
+    pub fn model_so_far(&self) -> Option<&str> {
+        self.info.model.as_deref()
     }
 
     /// How the body is being read: `None` until its first meaningful bytes
@@ -490,6 +542,7 @@ impl ResponseParser {
                 tool: p.name,
                 args,
                 incomplete: !(p.done || complete),
+                done_at: p.done_at,
             });
         }
         self.info.calls.retain(|c| !c.call_id.is_empty());

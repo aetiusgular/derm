@@ -72,6 +72,11 @@ fn fake_upstream(replies: Vec<Reply>) -> Upstream_ {
                         .collect();
                     http::write_head(&mut w, reply.status, &headers, true, false).unwrap();
                     for p in &reply.pieces {
+                        // A stand-in for a model still writing: a pause.
+                        if p.as_slice() == PAUSE {
+                            std::thread::sleep(Duration::from_millis(1_500));
+                            continue;
+                        }
                         http::write_chunk(&mut w, p).unwrap();
                         std::thread::sleep(Duration::from_millis(5));
                     }
@@ -86,6 +91,9 @@ fn fake_upstream(replies: Vec<Reply>) -> Upstream_ {
     });
     Upstream_ { base, seen }
 }
+
+/// A reply piece that sends nothing and waits 1.5 s (MW5-33's test).
+const PAUSE: &[u8] = b"\0pause";
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -262,6 +270,18 @@ fn wait_events(rig: &Rig, n: usize) -> Vec<Event> {
     rig.events.lock().unwrap().clone()
 }
 
+/// The records as a reader takes them (case 35): the last copy per id, in
+/// the order of those last copies. A streamed call's record is posted when
+/// its item ends and again with the reply's record (MW5-33).
+fn last_per_id(ev: &[Event]) -> Vec<Event> {
+    let mut out: Vec<Event> = Vec::new();
+    for e in ev {
+        out.retain(|o| o.id != e.id);
+        out.push(e.clone());
+    }
+    out
+}
+
 #[test]
 fn a_stream_passes_through_unchanged_and_its_call_is_recorded_then_joined_to_its_result() {
     let pieces = anthropic_tool_stream();
@@ -320,7 +340,13 @@ fn a_stream_passes_through_unchanged_and_its_call_is_recorded_then_joined_to_its
         "a hosted upstream gets the body as sent"
     );
 
-    let ev = wait_events(&rig, 2);
+    let raw = wait_events(&rig, 3);
+    // MW5-33: the call's record came first, when its block ended, under the
+    // id the full record has.
+    assert_eq!(raw[0].kind, "tap.call");
+    assert_eq!(raw[0].id, "tap-chat-t-toolu_1");
+    let ev = last_per_id(&raw);
+    assert_eq!(ev.len(), 2, "{ev:?}");
     assert_eq!(ev[0].kind, "tap.request");
     assert_eq!(ev[0].detail["toolsOffered"], 2);
     assert_eq!(ev[0].detail["toolCalls"], 1);
@@ -478,7 +504,7 @@ fn the_header_form_of_the_route_works_and_is_not_forwarded() {
         .headers
         .iter()
         .any(|(n, _)| n.eq_ignore_ascii_case(route::HEADER)));
-    let ev = wait_events(&rig, 2);
+    let ev = last_per_id(&wait_events(&rig, 3));
     assert_eq!(ev[1].detail["api"], "openai-responses");
     assert_eq!(ev[1].detail["callId"], "call_1");
 }
@@ -628,7 +654,7 @@ fn content_on_keeps_the_bodies_in_private_files_and_never_a_header() {
         &[("authorization", "Bearer SECRET-TOKEN")],
         body,
     );
-    let ev = wait_events(&rig, 2);
+    let ev = last_per_id(&wait_events(&rig, 3));
     assert_eq!(ev[0].detail["contentKept"], true);
     assert_eq!(ev[1].detail["contentKept"], true);
     let dir = root.join("content/chat-t");
@@ -947,4 +973,54 @@ fn fp6_the_tap_records_a_code_mode_cell_and_whether_it_runs() {
             e.detail
         );
     }
+}
+
+/// Mac test w5 retest 9, MW5-33: Codex runs a call as soon as its item is
+/// done in the stream, while the reply keeps streaming, and the tap stamped
+/// `tap.call` only once the whole reply had been read, so a shell Codex
+/// forked before then found no call open. The call is stamped when its item
+/// ends; the request record keeps the reply's end.
+#[test]
+fn mw5_33_a_call_is_stamped_when_its_item_ends_not_when_the_reply_does() {
+    let mut body = sse(&[
+        json!({"type":"response.created","response":{"model":"gpt-x"}}),
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_early","name":"shell","arguments":""}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"call_early","name":"shell","arguments":"{\"command\":[\"sleep\",\"20\"]}"}}),
+    ]);
+    body.push(PAUSE.to_vec());
+    body.extend(sse(&[
+        json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","call_id":"call_late","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}),
+        json!({"type":"response.completed","response":{"model":"gpt-x","usage":{"input_tokens":3,"output_tokens":4}}}),
+    ]));
+    let rig = rig(vec![sse_reply(body, false)], false, None);
+    let (status, _, _, _) = send(
+        rig.tap.port(),
+        "POST",
+        &format!("/r/{}/openai/responses", rig.route),
+        &[],
+        br#"{"model":"gpt-x","stream":true,"input":"hi"}"#,
+    );
+    assert_eq!(status, 200);
+    let ev = wait_events(&rig, 3);
+    let at = |id: &str| {
+        ev.iter()
+            .find(|e| e.detail["callId"] == id)
+            .unwrap_or_else(|| panic!("no record for {id}: {ev:?}"))
+            .at
+    };
+    let request = ev
+        .iter()
+        .find(|e| e.detail.get("callId").is_none())
+        .expect("the request's record")
+        .at;
+    let (early, late) = (at("call_early"), at("call_late"));
+    assert!(
+        request - early >= 1_000,
+        "the early call is stamped before the pause: call {early}, reply end {request}"
+    );
+    assert!(
+        late >= early + 1_000,
+        "the late call after it: {early} {late}"
+    );
+    assert!(late <= request);
 }

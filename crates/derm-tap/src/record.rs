@@ -198,6 +198,9 @@ pub struct Call {
     pub args: ArgsText,
     /// The stream ended before this call's arguments did.
     pub incomplete: bool,
+    /// When a streamed reply finished this call's item (MW5-33), if the
+    /// tap read it as it came; the record is stamped with it.
+    pub done_at: Option<i64>,
 }
 
 /// What the tap knows of a call when it writes its record.
@@ -481,6 +484,7 @@ mod tests {
             tool: "wait".into(),
             args: ArgsText::Json(json!({"cell_id": " 3"})),
             incomplete: false,
+            done_at: None,
         };
         let rec = CallRecord::new(Api::OpenAiResponses, "m", None, "codex", &call);
         assert_ne!(rec.cell_id.as_deref(), Some("3"), "{:?}", rec.cell_id);
@@ -535,6 +539,7 @@ mod tests {
             tool: block["name"].as_str().unwrap().into(),
             args: ArgsText::Json(block["input"].clone()),
             incomplete: false,
+            done_at: None,
         };
         let mut rec = CallRecord::new(
             Api::AnthropicMessages,
@@ -557,6 +562,7 @@ mod tests {
             tool: item["name"].as_str().unwrap().into(),
             args: ArgsText::Text(item["arguments"].as_str().unwrap().into()),
             incomplete: false,
+            done_at: None,
         };
         let mut rec = CallRecord::new(Api::OpenAiResponses, "gpt-fixture", None, "codex", &call);
         let next = read("openai-responses.next-request.json");
@@ -573,6 +579,7 @@ mod tests {
             tool: "Bash".into(),
             args: ArgsText::Json(json!({"command": "echo SECRET-ARG-VALUE"})),
             incomplete: false,
+            done_at: None,
         };
         let mut rec = CallRecord::new(Api::AnthropicMessages, "m", None, "claude-code", &call);
         rec.result = Some((digest_result(&json!("SECRET-RESULT-VALUE")), Some(false)));
