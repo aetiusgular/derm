@@ -227,9 +227,10 @@ fn a_chat_cannot_stop_its_own_feed_while_its_root_runs() {
     steal.pid = Some(1031);
     f.on_daemon_event(&steal, &|pid| pid == 1031);
     assert_eq!(f.tracker().root(1031).unwrap().chat, "chat-1");
-    // Once the root has exited, the stop takes.
+    // Once the root has exited, the stop takes. The chat is kept until the
+    // log the feed reads passes the stop (BW5R4-2): nothing is read here.
     f.on_daemon_event(&stop, &|_| false);
-    assert!(f.tracker().root(1031).is_none());
+    assert!(f.tracker().root(1031).is_some_and(|r| r.stopped));
 }
 
 #[test]
@@ -241,4 +242,63 @@ fn a_cut_log_never_panics() {
         text.push_str("\ntype=SYSCALL msg=audit(1793114339.775:");
         let _ = parse_for_root(&text, root(), HOME);
     }
+}
+
+/// BW5R4-1: a feed that reads the log again from its beginning after a gap
+/// skips what an earlier run read (up to the kept place's time), so nothing
+/// is posted twice, and posts what came after.
+#[test]
+fn bw5r4_1_a_reread_skips_what_the_last_run_posted() {
+    let all = parse_for_root(ENRICHED, root(), HOME);
+    // The last run had read through the first create (stamped ...339775).
+    let mut f = Feed::new(HOME, None);
+    f.skip_through(1_793_114_339_775);
+    let mut out = f.register(root());
+    for line in ENRICHED.split('\n') {
+        out.extend(f.push_line(line));
+    }
+    out.extend(f.flush());
+    let later: Vec<Event> = all
+        .into_iter()
+        .filter(|e| e.at > 1_793_114_339_775)
+        .collect();
+    assert!(!later.is_empty());
+    assert_eq!(out, later);
+}
+
+/// BW5R4-2 (box test w5, retest 4, on `8caaf00`): with the feed behind (paused
+/// 40 s on the box), it read the daemon's `run.start` and `run.stop` before
+/// the chat's audit lines, the stop dropped the chat (its processes had
+/// exited), and every line after went unplaced: 0 OS records for the chat.
+/// The lines stamped before the stop are still the chat's.
+#[test]
+fn bw5r4_2_lines_read_after_the_chats_stop_are_still_placed() {
+    let early = parse_for_root(ENRICHED, root(), HOME);
+    let mut f = Feed::new(HOME, None);
+    let start = Event {
+        id: "run-1".into(),
+        at: 1_793_114_339_700,
+        chat_id: "chat-1".into(),
+        harness: "pi".into(),
+        source: Source::Run,
+        kind: "run.start".into(),
+        summary: "pi under none".into(),
+        detail: serde_json::json!({"folders": ["/home/ubuntu/proj"], "stateDirs": ["/home/ubuntu/.pi/agent"]}),
+        pid: Some(1031),
+        approval_id: None,
+    };
+    let mut stop = start.clone();
+    stop.id = "run-2".into();
+    stop.kind = "run.stop".into();
+    // The last line of the log is stamped 1793114340.851.
+    stop.at = 1_793_114_340_900;
+    stop.detail = Value::Null;
+    stop.pid = None;
+    let mut late = f.on_daemon_event(&start, &|_| false);
+    late.extend(f.on_daemon_event(&stop, &|_| false));
+    for line in ENRICHED.split('\n') {
+        late.extend(f.push_line(line));
+    }
+    late.extend(f.flush());
+    assert_eq!(late, early);
 }

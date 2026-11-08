@@ -21,6 +21,9 @@ pub struct Feed {
     /// Lines that were not audit records.
     pub skipped_lines: u64,
     refused: u64,
+    /// Audit events stamped at or before this were read in an earlier run
+    /// (BW5R4-1: a restart that reads the log again from its beginning).
+    floor_ms: i64,
 }
 
 impl Feed {
@@ -35,11 +38,30 @@ impl Feed {
             checker: Checker::new(),
             skipped_lines: 0,
             refused: 0,
+            floor_ms: i64::MIN,
         }
+    }
+
+    /// Skips audit events stamped at or before `ms`: an earlier run of the
+    /// feed read and posted them, and posting them again would join them
+    /// again (BW5R4-1).
+    pub fn skip_through(&mut self, ms: i64) {
+        self.floor_ms = ms;
     }
 
     pub fn tracker(&self) -> &Tracker {
         &self.tracker
+    }
+
+    /// Audit events begun and not yet ended: while any is open, the lines
+    /// read so far are not all posted (BW5R4-1).
+    pub fn open_events(&self) -> usize {
+        self.assembler.open_count()
+    }
+
+    /// The newest audit time read.
+    pub fn log_ms(&self) -> i64 {
+        self.tracker.log_ms()
     }
 
     /// One line of the audit log.
@@ -63,6 +85,9 @@ impl Feed {
     fn handle(&mut self, done: Vec<AuditEvent>) -> Vec<Event> {
         let mut out = Vec::new();
         for ev in done {
+            if ev.ts_ms <= self.floor_ms {
+                continue;
+            }
             let Some(a) = action::read(&ev) else { continue };
             if let Some(p) = self.tracker.place(&a) {
                 out.push(self.emit(&a, &p));
@@ -163,7 +188,9 @@ impl Feed {
                 if live {
                     self.refused += 1;
                 } else {
-                    self.tracker.stop(&e.chat_id, alive);
+                    // The stop's own time: lines stamped before it are still
+                    // the chat's when the feed reads them later (BW5R4-2).
+                    self.tracker.stop(&e.chat_id, e.at, alive);
                     self.forget_gone();
                 }
                 Vec::new()

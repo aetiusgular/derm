@@ -259,6 +259,24 @@ pub fn render(r: &Value) -> String {
             count(n)
         ));
     }
+    // BW5R4-1: the Linux feed could not read a stretch of the audit log.
+    if let Some(gaps) = r.get("chatOsFeedGaps").and_then(Value::as_array) {
+        for g in gaps {
+            out.push_str(&format!(
+                "CHAT NOT FULLY WATCHED: the OS feed could not read the audit log {} ({}); this chat's OS records, joins and control flags may be missing\n",
+                gap_span(g),
+                clean(g.get("reason").and_then(Value::as_str).unwrap_or(""), 120)
+            ));
+        }
+    } else if let Some(gaps) = r.get("osFeedGaps").and_then(Value::as_array) {
+        for g in gaps {
+            out.push_str(&format!(
+                "OS FEED GAP: derm-audit-feed could not read the audit log {} ({}); chats that ran then may be missing OS records\n",
+                gap_span(g),
+                clean(g.get("reason").and_then(Value::as_str).unwrap_or(""), 120)
+            ));
+        }
+    }
     if let Some(n) = r
         .get("chatOsAfter")
         .and_then(Value::as_u64)
@@ -431,6 +449,17 @@ fn tally(v: Option<&Value>) -> Option<String> {
         parts.push(format!("{more} more"));
     }
     Some(parts.join(", "))
+}
+
+/// `from <time> to <time>` for a `feed.gap` row; a gap with no known start
+/// is "up to <time>".
+fn gap_span(g: &Value) -> String {
+    let t = |k: &str| g.get(k).and_then(Value::as_i64).map(date_time);
+    match (t("fromMs"), t("toMs")) {
+        (Some(a), Some(b)) => format!("from {a} to {b}"),
+        (None, Some(b)) => format!("up to {b}"),
+        _ => "for a while".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -675,5 +704,30 @@ mod tests {
         }
         let t = tally(Some(&Value::Object(m))).unwrap();
         assert!(t.ends_with("4 more"), "{t}");
+    }
+
+    /// BW5R4-1: a stretch of the audit log the Linux feed could not read is
+    /// named for a chat that ran in it, and for the window.
+    #[test]
+    fn bw5r4_1_a_feed_gap_is_named() {
+        let gap = json!({"fromMs": 1792204000000i64, "toMs": 1792204040000i64, "reason": "the audit log rotated past the feed's place while it was down"});
+        let chat = render(
+            &json!({"events": 1, "chatOsFeedGaps": [gap.clone()], "osFeedGaps": [gap.clone()]}),
+        );
+        assert!(
+            chat.contains("CHAT NOT FULLY WATCHED: the OS feed could not read the audit log from "),
+            "{chat}"
+        );
+        assert!(!chat.contains("OS FEED GAP"), "{chat}");
+        let window = render(&json!({"events": 1, "osFeedGaps": [gap]}));
+        assert!(
+            window.contains("OS FEED GAP: derm-audit-feed could not read"),
+            "{window}"
+        );
+        let quiet = render(&json!({"events": 1, "chatOsFeedGaps": null, "osFeedGaps": null}));
+        assert!(
+            !quiet.contains("FEED GAP") && !quiet.contains("NOT FULLY"),
+            "{quiet}"
+        );
     }
 }

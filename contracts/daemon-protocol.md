@@ -24,7 +24,7 @@ UTF-8 JSON, one object per line, `\n`-terminated, at most 1 MiB per line (longer
 |---|---|---|---|---|
 | `hello` | first line | `token`, `client` (free text, for the log) | `scope` (`daemon` or `chat`), `chat` when chat scope, `daemon {version, pid, protocol}` | |
 | `event` | any scope | `event` (section 3) | `id` | |
-| `tail` | daemon scope; a chat scope must name its own chat | `since?` (ms), `chat?` | `ok`; when the backlog since `since` was cut to its newest 5,000 records, `report: {backlogCut: true, backlogSent, backlogMax}` (box test w5, BW5-12) | `{"event": {...}}` per event, backlog first |
+| `tail` | daemon scope; a chat scope must name its own chat | `since?` (ms), `chat?` | `ok`; with `since`, `report: {backlogSent}`, the number of backlog events before the live ones (box test w5 retest 4, BW5R4-1); when the backlog since `since` was cut to its newest 5,000 records, `report: {backlogCut: true, backlogSent, backlogMax}` (box test w5, BW5-12) | `{"event": {...}}` per event, backlog first |
 | `report` | daemon scope | `chat?`, `since`, `until` | `report` (below) | |
 | `approve` | any scope | `request {id, chat, harness, tool, summary, timeoutSeconds}` | `answer` (`yes`/`no`), `by` (`approver`, `timeout`, `none`) | |
 | `approver` | daemon scope, and a peer that passes the check in rule 3 | none | `ok`, or `approver refused: <why>` | `{"approve": {...}}` per request |

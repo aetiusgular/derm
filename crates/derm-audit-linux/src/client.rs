@@ -312,17 +312,33 @@ impl Client {
         if let Some(s) = since {
             req["since"] = json!(s);
         }
-        self.request(&req)?;
+        let reply = self.request(&req)?;
         self.writer.set_read_timeout(None)?;
-        Ok(Tail { client: self })
+        let backlog = reply
+            .get("report")
+            .and_then(|r| r.get("backlogSent"))
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
+        Ok(Tail {
+            client: self,
+            backlog,
+        })
     }
 }
 
 pub struct Tail {
     client: Client,
+    backlog: Option<usize>,
 }
 
 impl Tail {
+    /// How many backlog events the daemon sends before the live ones, when
+    /// it says (a `since` tail; daemons before BW5R4-1's fix say only when
+    /// the backlog was cut).
+    pub fn backlog(&self) -> Option<usize> {
+        self.backlog
+    }
+
     /// The next streamed event. Lines that are not `{"event": ...}` are
     /// skipped; a line whose event does not parse is an error.
     pub fn next_event(&mut self) -> Result<Event, ClientError> {

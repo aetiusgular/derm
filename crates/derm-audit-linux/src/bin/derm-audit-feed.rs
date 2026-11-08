@@ -25,9 +25,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use derm_audit_linux::client::{self, Client};
 use derm_audit_linux::feed::Feed;
+use derm_audit_linux::resume::{self, Gap, Pos, Start};
 use derm_audit_linux::rules::{plain_path, render, RulesInput};
 use derm_audit_linux::tree::Root;
-use derm_core::event::Event;
+use derm_core::event::{Event, Source};
 
 const DEFAULT_LOG: &str = "/var/log/audit/audit.log";
 /// Records already in the daemon's log are read again from this far back,
@@ -204,7 +205,11 @@ fn cmd_parse(args: &[String]) -> u8 {
 }
 
 enum Msg {
-    Line(String),
+    /// A line, its file's inode and the offset after it.
+    Line(String, u64, u64),
+    /// The daemon's backlog is in: every chat it knows is registered, so the
+    /// log can be read (BW5R4-1).
+    Caught,
     Idle,
     Daemon(Event),
     Gone(String),
@@ -215,6 +220,37 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// The daemon's data folder, as `derm-daemon` finds it on Linux
+/// (`daemon::default_data_dir`): `$XDG_DATA_HOME/derm`, else
+/// `~/.local/share/derm`.
+fn data_dir(home: &str) -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| Some(Path::new(home).join(".local/share")))
+        .map(|d| d.join("derm"))
+}
+
+/// A stretch of the audit log the feed could not read (BW5R4-1): the
+/// daemon names it in the report of every chat whose run it overlaps.
+fn gap_event(gap: &Gap, now: i64) -> Event {
+    Event {
+        id: format!("auditd-gap-{now}"),
+        at: now,
+        chat_id: String::new(),
+        harness: String::new(),
+        source: Source::Auditd,
+        kind: "feed.gap".into(),
+        summary: format!(
+            "derm-audit-feed could not read the audit log: {}",
+            gap.reason
+        ),
+        detail: serde_json::json!({"fromMs": gap.from_ms, "toMs": now, "reason": gap.reason}),
+        pid: None,
+        approval_id: None,
+    }
 }
 
 fn alive(pid: u32) -> bool {
@@ -284,11 +320,25 @@ fn cmd_run(args: &[String]) -> u8 {
     {
         let tx = tx.clone();
         let mut tail = tail;
+        // BW5R4-1: the log is read only once the backlog's `run` records are
+        // in. Read together, a resumed log's lines came before the backlog's
+        // `run.start`, waited, and aged out of the pending buffer (by their
+        // own time, 15 s) while the backlog streamed: 0 records on the box.
+        let mut left = tail.backlog().unwrap_or(0);
+        if left == 0 {
+            let _ = tx.send(Msg::Caught);
+        }
         std::thread::spawn(move || loop {
             match tail.next_event() {
                 Ok(e) => {
                     if tx.send(Msg::Daemon(e)).is_err() {
                         return;
+                    }
+                    if left > 0 {
+                        left -= 1;
+                        if left == 0 && tx.send(Msg::Caught).is_err() {
+                            return;
+                        }
                     }
                 }
                 Err(e) => {
@@ -298,31 +348,79 @@ fn cmd_run(args: &[String]) -> u8 {
             }
         });
     }
-    {
-        let tx = tx.clone();
-        let log = log.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = follow(&log, from_start, &tx) {
-                let _ = tx.send(Msg::Gone(format!("{}: {e}", log.display())));
-            }
-        });
+    // BW5R4-1: start where the last run stopped reading, not at the end.
+    let pos_path = data_dir(&home).map(|d| d.join(resume::POS_FILE));
+    let saved = pos_path.as_deref().and_then(resume::load);
+    let stat = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.ino(), m.len()));
+    let Some(cur) = stat(&log) else {
+        eprintln!("derm-audit-feed run: cannot read {}", log.display());
+        return 1;
+    };
+    let (start, gap) = resume::decide(
+        saved.as_ref(),
+        &log,
+        cur,
+        stat(&resume::rotated_path(&log)),
+        from_start,
+    );
+    eprintln!("derm-audit-feed: starting at {start:?}");
+    let floor = gap.as_ref().and_then(|g| g.from_ms);
+    if let Some(gap) = gap {
+        eprintln!("derm-audit-feed: {}", gap.reason);
+        if let Err(e) = poster.post(&gap_event(&gap, now_ms())) {
+            eprintln!("derm-audit-feed: could not post the gap: {e}");
+        }
     }
-    drop(tx);
+    // The log's reader starts on `Caught`.
+    let mut follower = Some((tx, log.clone(), start));
     // SAFETY: getuid has no preconditions and cannot fail.
     let runtime_dir = runtime_dir_for(unsafe { libc::getuid() });
     let mut feed = Feed::new(&home, runtime_dir.as_deref());
+    if let Some(ms) = floor {
+        // Read again from the log's beginning: what the last run read is
+        // not posted twice.
+        feed.skip_through(ms);
+    }
     let mut last_prune = Instant::now();
     let mut failed_posts: u64 = 0;
+    // The place after the last line whose events are all posted, and when
+    // it was last kept.
+    let mut place: Option<(u64, u64)> = None;
+    let mut kept: Option<(u64, u64)> = None;
+    let mut last_read: Option<(u64, u64)> = None;
+    let mut last_keep = Instant::now();
     eprintln!(
         "derm-audit-feed: reading {} for {}",
         log.display(),
         socket.display()
     );
     for msg in rx {
+        let mut at = None;
+        let idle = matches!(msg, Msg::Idle);
         let events = match msg {
-            Msg::Line(l) => feed.push_line(&l),
-            Msg::Idle => feed.flush(),
+            Msg::Line(l, ino, end) => {
+                at = Some((ino, end));
+                last_read = at;
+                feed.push_line(&l)
+            }
+            Msg::Idle => {
+                // A quiet log: let go of stopped chats it has passed
+                // (BW5R4-2), not only once a minute.
+                let out = feed.flush();
+                feed.prune(&alive);
+                out
+            }
             Msg::Daemon(e) => feed.on_daemon_event(&e, &alive),
+            Msg::Caught => {
+                if let Some((tx, log, start)) = follower.take() {
+                    std::thread::spawn(move || {
+                        if let Err(e) = follow(&log, start, &tx) {
+                            let _ = tx.send(Msg::Gone(format!("{}: {e}", log.display())));
+                        }
+                    });
+                }
+                Vec::new()
+            }
             Msg::Gone(why) => {
                 eprintln!("derm-audit-feed: stopping: {why}");
                 return 1;
@@ -341,6 +439,32 @@ fn cmd_run(args: &[String]) -> u8 {
                 }
             }
         }
+        // With no event open, every line read so far has been posted: that
+        // is a place to start from again (BW5R4-1). Kept at most once a
+        // second, and whenever the log goes quiet.
+        if let Some(a) = at {
+            if feed.open_events() == 0 {
+                place = Some(a);
+            }
+        } else if idle {
+            // `Idle` flushed every open event: all that was read is posted.
+            place = last_read;
+        }
+        if place != kept && (idle || last_keep.elapsed() > Duration::from_secs(1)) {
+            if let (Some(path), Some((inode, offset))) = (pos_path.as_deref(), place) {
+                let p = Pos {
+                    log: log.to_string_lossy().into_owned(),
+                    inode,
+                    offset,
+                    log_ms: feed.log_ms(),
+                };
+                match resume::save(path, &p) {
+                    Ok(()) => kept = place,
+                    Err(e) => eprintln!("derm-audit-feed: could not keep its place: {e}"),
+                }
+            }
+            last_keep = Instant::now();
+        }
         if last_prune.elapsed() > Duration::from_secs(60) {
             feed.prune(&alive);
             last_prune = Instant::now();
@@ -349,15 +473,34 @@ fn cmd_run(args: &[String]) -> u8 {
     0
 }
 
-/// Follows the log like `tail -F`: from the end (or the start), across
-/// rotation (a new inode or a file that shrank). Sends `Idle` after a quiet
-/// half second so open events are flushed.
+/// Follows the log like `tail -F`, from where `start` says (BW5R4-1:
+/// `resume::decide`), across rotation (a new inode or a file that shrank).
+/// Each line goes with its file's inode and the offset after it, so the
+/// loop can keep its place. Sends `Idle` after a quiet half second so open
+/// events are flushed. At a rotation the old file is read to its end
+/// before the new one, so lines auditd wrote just before it are not lost.
 #[cfg(unix)]
-fn follow(path: &Path, from_start: bool, tx: &mpsc::Sender<Msg>) -> std::io::Result<()> {
+fn follow(path: &Path, start: Start, tx: &mpsc::Sender<Msg>) -> std::io::Result<()> {
+    if let Start::Rotated { prev, offset } = &start {
+        // The place is in the rotated file: read it on to its end first.
+        let mut f = File::open(prev)?;
+        let ino = f.metadata()?.ino();
+        f.seek(SeekFrom::Start(*offset))?;
+        let mut r = BufReader::new(f);
+        if !drain(&mut r, ino, *offset, tx)? {
+            return Ok(());
+        }
+    }
     let mut file = File::open(path)?;
     let mut inode = file.metadata()?.ino();
-    if !from_start {
-        file.seek(SeekFrom::End(0))?;
+    match start {
+        Start::End => {
+            file.seek(SeekFrom::End(0))?;
+        }
+        Start::At(offset) => {
+            file.seek(SeekFrom::Start(offset))?;
+        }
+        Start::Beginning | Start::Rotated { .. } => {}
     }
     let mut reader = BufReader::new(file);
     let mut pos = reader.stream_position()?;
@@ -370,7 +513,11 @@ fn follow(path: &Path, from_start: bool, tx: &mpsc::Sender<Msg>) -> std::io::Res
         if n > 0 && line.ends_with(b"\n") {
             pos += n as u64;
             if tx
-                .send(Msg::Line(String::from_utf8_lossy(&line).into_owned()))
+                .send(Msg::Line(
+                    String::from_utf8_lossy(&line).into_owned(),
+                    inode,
+                    pos,
+                ))
                 .is_err()
             {
                 return Ok(());
@@ -392,11 +539,50 @@ fn follow(path: &Path, from_start: bool, tx: &mpsc::Sender<Msg>) -> std::io::Res
         std::thread::sleep(Duration::from_millis(100));
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.ino() != inode || meta.len() < pos {
+                if meta.ino() != inode {
+                    // Rotated: what auditd wrote to the old file since the
+                    // last read is still in it (the open file survives the
+                    // rename).
+                    reader.seek(SeekFrom::Start(pos))?;
+                    if !drain(&mut reader, inode, pos, tx)? {
+                        return Ok(());
+                    }
+                }
                 let f = File::open(path)?;
                 inode = f.metadata()?.ino();
                 reader = BufReader::new(f);
                 pos = 0;
             }
+        }
+    }
+}
+
+/// Sends every whole line left in `reader` (at `pos` in file `inode`).
+/// False when the loop has gone.
+#[cfg(unix)]
+fn drain(
+    reader: &mut BufReader<File>,
+    inode: u64,
+    mut pos: u64,
+    tx: &mpsc::Sender<Msg>,
+) -> std::io::Result<bool> {
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let n = reader.take(64 * 1024).read_until(b'\n', &mut line)?;
+        if n == 0 || !line.ends_with(b"\n") {
+            return Ok(true);
+        }
+        pos += n as u64;
+        if tx
+            .send(Msg::Line(
+                String::from_utf8_lossy(&line).into_owned(),
+                inode,
+                pos,
+            ))
+            .is_err()
+        {
+            return Ok(false);
         }
     }
 }
@@ -407,6 +593,70 @@ use std::io::Read as _;
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    fn next_line(rx: &mpsc::Receiver<Msg>) -> (String, u64, u64) {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(5)).expect("a line") {
+                Msg::Line(l, ino, end) => return (l, ino, end),
+                Msg::Idle => continue,
+                _ => panic!("not a line"),
+            }
+        }
+    }
+
+    /// BW5R4-1: the feed reads on from its kept place, not the log's end,
+    /// and at a rotation reads the old file to its end before the new one.
+    #[test]
+    fn bw5r4_1_follow_reads_on_from_its_place_and_across_a_rotation() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!("derm-follow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("audit.log");
+        std::fs::write(&log, "one\ntwo\nthree\n").unwrap();
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let path = log.clone();
+        std::thread::spawn(move || follow(&path, Start::At(4), &tx));
+        let (l, ino, end) = next_line(&rx);
+        assert_eq!((l.as_str(), end), ("two\n", 8));
+        assert_eq!(next_line(&rx).0, "three\n");
+        // auditd writes once more, then rotates: the old file's last line
+        // comes before the new file's first.
+        let mut old = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::fs::rename(&log, dir.join("audit.log.1")).unwrap();
+        old.write_all(b"four\n").unwrap();
+        drop(old);
+        std::fs::write(&log, "five\n").unwrap();
+        let (l, ino4, _) = next_line(&rx);
+        assert_eq!((l.as_str(), ino4), ("four\n", ino));
+        let (l, ino5, end) = next_line(&rx);
+        assert_eq!((l.as_str(), end), ("five\n", 5));
+        assert_ne!(ino5, ino);
+        drop(rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A place in the rotated file: read on there, then the new log.
+    #[test]
+    fn bw5r4_1_follow_reads_on_in_the_rotated_file_first() {
+        let dir = std::env::temp_dir().join(format!("derm-follow-r-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("audit.log");
+        std::fs::write(dir.join("audit.log.1"), "a\nb\n").unwrap();
+        std::fs::write(&log, "c\n").unwrap();
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let path = log.clone();
+        let start = Start::Rotated {
+            prev: dir.join("audit.log.1"),
+            offset: 2,
+        };
+        std::thread::spawn(move || follow(&path, start, &tx));
+        assert_eq!(next_line(&rx).0, "b\n");
+        assert_eq!(next_line(&rx).0, "c\n");
+        drop(rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Fix pass review F2: `rules --uid N` run by root (or by `sudo -E`)
     /// carries the caller's `XDG_RUNTIME_DIR`, which is not N's folder; the

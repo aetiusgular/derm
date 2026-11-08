@@ -806,8 +806,14 @@ pub struct Daemon {
     run_watchers: Mutex<Vec<Sender<Event>>>,
     /// The Linux OS feed's tail connections (box test w5 retest 2, BW5R2-5).
     os_feed: Mutex<OsFeed>,
+    /// Stretches of the audit log the Linux feed said it could not read
+    /// (`feed.gap`, BW5R4-1), newest last, at most `FEED_GAPS_MAX`.
+    feed_gaps: Mutex<VecDeque<(Option<i64>, i64, String)>>,
     pub counters: Counters,
 }
+
+/// How many `feed.gap` stretches the daemon keeps for its reports.
+const FEED_GAPS_MAX: usize = 64;
 
 /// The client name `derm-audit-feed run` gives its tail connection
 /// (`derm-audit-linux/src/bin/derm-audit-feed.rs`). The feed holds that
@@ -1086,6 +1092,7 @@ impl Daemon {
             purger: Mutex::new(crate::content::Purger::new(data_dir)),
             run_watchers: Mutex::new(Vec::new()),
             os_feed: Mutex::new(OsFeed::default()),
+            feed_gaps: Mutex::new(VecDeque::new()),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -1335,6 +1342,37 @@ impl Daemon {
             feed.lost_at = Some(now_ms());
         }
         feed.attached = attached;
+    }
+
+    fn note_feed_gap(&self, e: &Event) {
+        let to = e.detail.get("toMs").and_then(Value::as_i64).unwrap_or(e.at);
+        let from = e.detail.get("fromMs").and_then(Value::as_i64);
+        let why = e
+            .detail
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        if let Ok(mut gaps) = self.feed_gaps.lock() {
+            gaps.push_back((from, to, why));
+            while gaps.len() > FEED_GAPS_MAX {
+                gaps.pop_front();
+            }
+        }
+    }
+
+    /// The `feed.gap` stretches that overlap `[a, b]`, as report rows. A
+    /// stretch with no known start reaches back to any time.
+    fn feed_gaps_in(&self, a: i64, b: i64) -> Vec<Value> {
+        let Ok(gaps) = self.feed_gaps.lock() else {
+            return Vec::new();
+        };
+        gaps.iter()
+            .filter(|(from, to, _)| from.unwrap_or(i64::MIN) <= b && *to >= a)
+            .map(|(from, to, why)| json!({"fromMs": from, "toMs": to, "reason": why}))
+            .collect()
     }
 
     /// The Linux feed as `report` names it (BW5R2-5): `attached`; `stopped`
@@ -1722,6 +1760,13 @@ impl Daemon {
                     self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
                     return error("tap and derm events are written by the daemon");
                 }
+                // BW5R4-1: the Linux feed could not read a stretch of the
+                // audit log; reports name it for the chats it overlaps. Only
+                // the daemon scope posts `auditd` records (a chat token is
+                // refused above).
+                if event.source == Source::Auditd && event.kind == "feed.gap" {
+                    self.note_feed_gap(&event);
+                }
                 if event.source == Source::Run && event.kind == "run.start" {
                     self.set_chat_from_run(&event);
                     if let (Some(pid), Ok(mut runs)) = (event.pid, self.runs.lock()) {
@@ -2030,6 +2075,11 @@ impl Daemon {
             reply.report = Some(
                 json!({"backlogCut": true, "backlogSent": backlog.len(), "backlogMax": MAX_BACKLOG}),
             );
+        } else if since.is_some() {
+            // How many backlog events come before the live ones, so a reader
+            // that must know every chat first (the Linux feed, BW5R4-1) can
+            // tell when it has them.
+            reply.report = Some(json!({"backlogSent": backlog.len()}));
         }
         out.send(&reply);
         for event in backlog {
@@ -2191,6 +2241,18 @@ impl Daemon {
             "chatOsAfter": chat
                 .and_then(|c| self.join.lock().ok().and_then(|j| j.after_for(c)))
                 .filter(|n| *n > 0),
+            // BW5R4-1: stretches of the audit log the Linux feed could not
+            // read, in the window, and for a chat, during its run (to its
+            // stop and the join's keep).
+            "osFeedGaps": Some(self.feed_gaps_in(since, until)).filter(|g| !g.is_empty()),
+            "chatOsFeedGaps": run
+                .map(|(start, stop)| {
+                    let end = stop.map_or(i64::MAX, |s| {
+                        s.saturating_add(crate::join::STOPPED_KEEP_MS)
+                    });
+                    self.feed_gaps_in(start, end)
+                })
+                .filter(|g| !g.is_empty()),
         })
     }
 

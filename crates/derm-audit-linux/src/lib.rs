@@ -25,6 +25,7 @@ pub mod feed;
 pub mod map;
 pub mod record;
 pub mod redact;
+pub mod resume;
 pub mod rules;
 pub mod sensitive;
 pub mod syscalls;

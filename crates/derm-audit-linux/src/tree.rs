@@ -21,6 +21,16 @@ use crate::action::{Action, What};
 pub const PENDING_MS: i64 = 15_000;
 /// At most this many unplaced actions wait.
 pub const PENDING_MAX: usize = 20_000;
+/// How far past a chat's `run.stop` (by the stop's own time) a process that
+/// had exited by then still places what the log says it did. The audit
+/// stamps are the kernel's realtime clock and `run.stop`'s `at` the same
+/// host's, so this covers the stop being written a moment after the last
+/// exit (BW5R4-2).
+pub const STOP_SLACK_MS: i64 = 2_000;
+/// A stopped chat is kept for a feed that is behind until the log it reads
+/// passes the stop, and at most this long by the feed's own clock after the
+/// stop reached it (the daemon's join keeps its chats as long, MW5-34).
+pub const STOP_KEEP_MAX_MS: i64 = 10 * 60 * 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Root {
@@ -52,11 +62,40 @@ pub struct Tracker {
     members: HashMap<u32, u32>,
     pending: VecDeque<Action>,
     dropped: u64,
+    /// For a stopped root: the stop's own time and when the stop reached
+    /// the feed (by `now`).
+    stops: HashMap<u32, (i64, i64)>,
+    /// Members that had exited at their chat's stop: the last log time at
+    /// which an action of theirs is still the chat's (BW5R4-2).
+    late: HashMap<u32, i64>,
+    /// The newest audit time placed or waited on: how far the log is read.
+    log_ms: i64,
+    clock: Option<fn() -> i64>,
 }
 
 impl Tracker {
     pub fn new() -> Tracker {
         Tracker::default()
+    }
+
+    /// The feed's own clock, for `STOP_KEEP_MAX_MS` (tests set it).
+    pub fn set_clock(&mut self, clock: fn() -> i64) {
+        self.clock = Some(clock);
+    }
+
+    fn now(&self) -> i64 {
+        match self.clock {
+            Some(c) => c(),
+            None => std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// The newest audit time the feed has read.
+    pub fn log_ms(&self) -> i64 {
+        self.log_ms
     }
 
     pub fn root(&self, root_pid: u32) -> Option<&Root> {
@@ -91,35 +130,71 @@ impl Tracker {
         placed
     }
 
-    /// A chat's root process ended. Members still alive stay placed, so a
-    /// process the harness left running (a daemon it started) is still the
-    /// chat's; dead members are dropped, and the root goes when none is left.
-    pub fn stop(&mut self, chat: &str, alive: &dyn Fn(u32) -> bool) {
-        for r in self.roots.values_mut().filter(|r| r.chat == chat) {
-            r.stopped = true;
+    /// A chat's root process ended (`run.stop`, stamped `at`). Members still
+    /// alive stay placed, so a process the harness left running (a daemon it
+    /// started) is still the chat's. A member that had exited, the root
+    /// included, places what the log says it did up to `at` and
+    /// `STOP_SLACK_MS`, and nothing after: a feed that is behind reads the
+    /// stop before the chat's last lines (BW5R4-2). The chat is kept until
+    /// the log passes that time, at most `STOP_KEEP_MAX_MS`; then dead
+    /// members are dropped and the root goes when none is left.
+    pub fn stop(&mut self, chat: &str, at: i64, alive: &dyn Fn(u32) -> bool) {
+        let now = self.now();
+        let deadline = at.saturating_add(STOP_SLACK_MS);
+        let pids: Vec<u32> = self
+            .roots
+            .values()
+            .filter(|r| r.chat == chat && !r.stopped)
+            .map(|r| r.pid)
+            .collect();
+        for pid in &pids {
+            if let Some(r) = self.roots.get_mut(pid) {
+                r.stopped = true;
+            }
+            self.stops.insert(*pid, (at, now));
+        }
+        for (member, root) in &self.members {
+            if pids.contains(root) && (*member == *root || !alive(*member)) {
+                self.late.insert(*member, deadline);
+            }
         }
         self.prune(alive);
     }
 
+    /// Whether a stopped root is still kept for a feed that is behind.
+    fn kept(&self, root: u32, now: i64) -> bool {
+        self.stops.get(&root).is_some_and(|(at, seen)| {
+            self.log_ms <= at.saturating_add(STOP_SLACK_MS)
+                && now.saturating_sub(*seen) < STOP_KEEP_MAX_MS
+        })
+    }
+
     /// Drops members that no longer run, and stopped roots with no member
-    /// left. The feed calls it after a stop and once a minute.
+    /// left, once the log has passed their stop (`stop`). The feed calls it
+    /// after a stop, when the log goes quiet, and once a minute.
     pub fn prune(&mut self, alive: &dyn Fn(u32) -> bool) {
-        let stopped: Vec<u32> = self
+        let now = self.now();
+        let stopped: Vec<(u32, bool)> = self
             .roots
             .values()
             .filter(|r| r.stopped)
-            .map(|r| r.pid)
+            .map(|r| (r.pid, self.kept(r.pid, now)))
             .collect();
-        self.members.retain(|pid, root| {
-            if stopped.contains(root) {
-                // The root process itself has ended; its pid may be reused.
-                *pid != *root && alive(*pid)
-            } else {
-                *pid == *root || alive(*pid)
-            }
-        });
+        let late = &self.late;
+        self.members
+            .retain(|pid, root| match stopped.iter().find(|(r, _)| r == root) {
+                Some((_, true)) => true,
+                // The root process itself has ended; its pid may be reused. So
+                // may a member's that had exited at the stop.
+                Some((_, false)) => *pid != *root && !late.contains_key(pid) && alive(*pid),
+                None => *pid == *root || alive(*pid),
+            });
         let held: std::collections::HashSet<u32> = self.members.values().copied().collect();
         self.roots.retain(|pid, r| !r.stopped || held.contains(pid));
+        let roots = &self.roots;
+        self.stops.retain(|pid, _| roots.contains_key(pid));
+        let members = &self.members;
+        self.late.retain(|pid, _| members.contains_key(pid));
     }
 
     /// Drops a chat's root and every member under it.
@@ -138,11 +213,21 @@ impl Tracker {
     fn unregister_pid(&mut self, root_pid: u32) {
         if self.roots.remove(&root_pid).is_some() {
             self.members.retain(|_, r| *r != root_pid);
+            self.stops.remove(&root_pid);
+            let members = &self.members;
+            self.late.retain(|pid, _| members.contains_key(pid));
         }
+    }
+
+    /// A member that had exited at its chat's stop, acting after the stop's
+    /// time: its pid was reused, and the action is not the chat's.
+    fn too_late(&self, pid: u32, ts: i64) -> bool {
+        self.late.get(&pid).is_some_and(|d| ts > *d)
     }
 
     /// Places one action, or keeps it waiting. Fork actions update the tree.
     pub fn place(&mut self, action: &Action) -> Option<Placement> {
+        self.log_ms = self.log_ms.max(action.ts_ms);
         let placed = self.place_inner(action);
         if placed.is_none() {
             self.wait(action.clone());
@@ -152,15 +237,29 @@ impl Tracker {
 
     fn place_inner(&mut self, action: &Action) -> Option<Placement> {
         let root_pid = match self.members.get(&action.pid) {
-            Some(r) => *r,
+            Some(r) if !self.too_late(action.pid, action.ts_ms) => *r,
+            Some(_) => return None,
             None => {
+                if self.too_late(action.ppid, action.ts_ms) {
+                    return None;
+                }
                 let r = *self.members.get(&action.ppid)?;
                 self.members.insert(action.pid, r);
+                // A child of a member that had exited at the stop was made
+                // before the stop: it is held to the same time.
+                if let Some(d) = self.late.get(&action.ppid).copied() {
+                    self.late.insert(action.pid, d);
+                }
                 r
             }
         };
         if let What::Fork { child } = action.what {
             self.members.insert(child, root_pid);
+            if let Some(d) = self.late.get(&action.pid).copied() {
+                self.late.insert(child, d);
+            } else {
+                self.late.remove(&child);
+            }
         }
         let root = self.roots.get(&root_pid)?;
         Some(Placement {
@@ -286,13 +385,15 @@ mod tests {
         t.place(&act(1, 10, 1, What::Fork { child: 11 }));
         t.place(&act(1, 10, 1, What::Fork { child: 12 }));
         // The root (10) and 12 have exited; 11 is a daemon the harness left.
-        t.stop("c1", &|pid| pid == 11);
-        assert_eq!(t.place(&act(2, 11, 1, exec())).unwrap().chat, "c1");
-        assert!(t.place(&act(2, 12, 1, exec())).is_none());
+        // The stop is at 2; the log is read past it below (BW5R4-2).
+        t.stop("c1", 2, &|pid| pid == 11);
+        let after = 2 + STOP_SLACK_MS + 1;
+        assert_eq!(t.place(&act(after, 11, 1, exec())).unwrap().chat, "c1");
+        assert!(t.place(&act(after, 12, 1, exec())).is_none());
         // Once 11 is gone too, the root goes.
         t.prune(&|_| false);
         assert!(t.root(10).is_none());
-        assert!(t.place(&act(3, 11, 1, exec())).is_none());
+        assert!(t.place(&act(after + 1, 11, 1, exec())).is_none());
     }
 
     #[test]
@@ -310,5 +411,60 @@ mod tests {
         let mut t = Tracker::new();
         t.register(root(10));
         assert!(t.place(&act(1, 77, 1, exec())).is_none());
+    }
+
+    /// BW5R4-2 (box test w5, retest 4): a feed that is behind reads the
+    /// daemon's `run.stop` before the audit lines of the chat's last seconds.
+    /// Those lines are still the chat's: a process that had exited at the
+    /// stop places what it did up to the stop (and the slack), nothing after.
+    #[test]
+    fn bw5r4_2_lines_read_after_the_stop_are_still_the_chats() {
+        let mut t = Tracker::new();
+        t.register(root(10));
+        t.place(&act(1_000, 10, 1, What::Fork { child: 11 }));
+        // run.stop at 5_000; every process has exited.
+        t.stop("c1", 5_000, &|_| false);
+        // Lines stamped before the stop, read after it.
+        let p = t.place(&act(4_000, 11, 10, What::Fork { child: 12 }));
+        assert_eq!(p.map(|p| p.chat).as_deref(), Some("c1"));
+        assert_eq!(t.place(&act(4_500, 12, 11, exec())).unwrap().chat, "c1");
+        // Past the stop and its slack, a dead member's pid is not the chat's,
+        // nor a child it forks then.
+        let after = 5_000 + STOP_SLACK_MS + 1;
+        assert!(t.place(&act(after, 12, 11, exec())).is_none());
+        assert!(t
+            .place(&act(after, 11, 10, What::Fork { child: 13 }))
+            .is_none());
+        // Once the log has passed the stop, the chat goes.
+        t.prune(&|_| false);
+        assert!(t.root(10).is_none());
+    }
+
+    /// A stopped chat kept for a feed that is behind is let go after
+    /// `STOP_KEEP_MAX_MS` of the feed's own clock, whatever the log says.
+    #[test]
+    fn bw5r4_2_a_kept_chat_is_let_go_after_the_cap() {
+        let mut t = Tracker::new();
+        t.set_clock(|| 1_000_000);
+        t.register(root(10));
+        t.place(&act(1_000, 10, 1, What::Fork { child: 11 }));
+        t.stop("c1", 5_000, &|_| false);
+        t.prune(&|_| false);
+        assert!(t.root(10).is_some(), "the log has not passed the stop yet");
+        t.set_clock(|| 1_000_000 + STOP_KEEP_MAX_MS + 1);
+        t.prune(&|_| false);
+        assert!(t.root(10).is_none());
+    }
+
+    /// A process alive at the stop (a daemon the harness left) is not held
+    /// to the stop's time.
+    #[test]
+    fn bw5r4_2_a_member_alive_at_the_stop_keeps_its_place() {
+        let mut t = Tracker::new();
+        t.register(root(10));
+        t.place(&act(1_000, 10, 1, What::Fork { child: 11 }));
+        t.stop("c1", 5_000, &|pid| pid == 11);
+        let later = 5_000 + STOP_SLACK_MS + 60_000;
+        assert_eq!(t.place(&act(later, 11, 1, exec())).unwrap().chat, "c1");
     }
 }

@@ -625,3 +625,81 @@ fn a_flood_of_real_always_listed_writes_still_names_each_path() {
     );
     assert!(check["alwaysListedOmittedTotal"].as_u64().unwrap_or(0) > 0);
 }
+
+/// BW5R4-1 (box test w5, retest 4): a chat that ran while the Linux feed
+/// could not read the audit log got a clean report. The feed now posts the
+/// stretch it could not read (`feed.gap`), and the report of every chat
+/// whose run overlaps it says so; a chat that ran after it does not.
+#[test]
+fn bw5r4_1_a_chat_that_ran_in_a_feed_gap_is_named_not_fully_watched() {
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    };
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let gap_from = now() - 5_000;
+    for (id, kind) in [("run-g1", "run.start"), ("run-g2", "run.stop")] {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": id, "at": 0, "chatId": "chat-g", "harness": "pi", "source": "run",
+            "kind": kind, "summary": "pi",
+            "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+        }}));
+        assert_eq!(r["ok"], true);
+    }
+    let gap_to = now();
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": format!("auditd-gap-{gap_to}"), "at": gap_to, "chatId": "", "harness": "",
+        "source": "auditd", "kind": "feed.gap", "summary": "gap",
+        "detail": {"fromMs": gap_from, "toMs": gap_to, "reason": "the audit log rotated past the feed's place while it was down"}
+    }}));
+    assert_eq!(r["ok"], true);
+    std::thread::sleep(Duration::from_millis(50));
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-h1", "at": 0, "chatId": "chat-h", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let mut g = Value::Null;
+    for _ in 0..100 {
+        g = d.ask(json!({"op": "report", "chat": "chat-g", "since": 0, "until": i64::MAX}));
+        if g["report"]["chatOsFeedGaps"].is_array() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let gaps = g["report"]["chatOsFeedGaps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(gaps.len(), 1, "{}", g["report"]);
+    assert_eq!(gaps[0]["fromMs"], gap_from);
+    let h = d.ask(json!({"op": "report", "chat": "chat-h", "since": 0, "until": i64::MAX}));
+    assert!(h["report"]["chatOsFeedGaps"].is_null(), "{}", h["report"]);
+    // The window's report names the gap too.
+    let w = d.ask(json!({"op": "report", "since": 0, "until": i64::MAX}));
+    assert_eq!(w["report"]["osFeedGaps"].as_array().map(Vec::len), Some(1));
+}
+
+/// BW5R4-1: a `since` tail says how many backlog events come before the
+/// live ones, so the Linux feed reads the audit log only once it knows
+/// every chat.
+#[test]
+fn bw5r4_1_a_since_tail_says_how_long_its_backlog_is() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    for i in 0..3 {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": format!("b-{i}"), "at": 0, "chatId": "chat-b", "harness": "pi",
+            "source": "adapter", "kind": "tool.call", "summary": "", "detail": {}
+        }}));
+        assert_eq!(r["ok"], true);
+    }
+    let (mut t, _) = Client::hello(&f, DAEMON_TOKEN);
+    let r = t.ask(json!({"op": "tail", "since": 0}));
+    assert_eq!(r["ok"], true);
+    assert_eq!(r["report"]["backlogSent"], 3, "{r}");
+}
