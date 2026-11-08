@@ -166,7 +166,7 @@ pub(crate) fn environment_with(
             return Err((
                 1,
                 format!(
-                    "derm run: {why}, and the sbx VM would read it and send the chat's model requests there; remove it"
+                    "{why}, and the sbx VM would read it and send the chat's model requests there; remove it"
                 ),
             ));
         }
@@ -193,7 +193,7 @@ pub(crate) fn environment_with(
         return Err((
             1,
             format!(
-                "derm run: {why}, so {harness} would not reach the model tap. Remove it, or turn the tap off \
+                "{why}, so {harness} would not reach the model tap. Remove it, or turn the tap off \
                  (\"tap\": {{\"on\": false}} in ~/.derm/settings.json) to run this chat untapped"
             ),
         ));

@@ -672,3 +672,34 @@ fn codex_pairs_sit_on_one_side_of_a_session_subcommand() {
     }
     let _ = std::fs::remove_dir_all(d.root);
 }
+
+/// MW5-40 (Mac test w5, retest 12): `derm run`'s `main` prints every error
+/// as `derm run: {msg}` (`run/mod.rs`, `main`), and the tap's two refusals
+/// carried the prefix themselves, so the line read "derm run: derm run: ...".
+/// Neither refusal starts with it now, on the host and under sbx.
+#[test]
+fn mw5_40_a_tap_refusal_carries_no_prefix_of_its_own() {
+    let d = dirs("mw5-40", Some("http://127.0.0.1:45004"));
+    let mut i = inputs(&d);
+    i.inherited = vec![("ANTHROPIC_BASE_URL".into(), "http://my-gateway:8080".into())];
+    let host = environment_with("claude-code", &mut plan("claude", &[], true), &i)
+        .unwrap_err()
+        .1;
+    assert!(host.contains("ANTHROPIC_BASE_URL"), "{host}");
+    assert!(!host.starts_with("derm run:"), "{host}");
+    let proj = d.work.join(".claude");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("settings.local.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://planted"}}"#,
+    )
+    .unwrap();
+    let mut p = plan("sbx", &["run", "claude"], true);
+    p.sandbox_name = Some("derm-c".into());
+    let vm = environment_with("claude-code", &mut p, &inputs(&d))
+        .unwrap_err()
+        .1;
+    assert!(vm.contains("sbx VM would read it"), "{vm}");
+    assert!(!vm.starts_with("derm run:"), "{vm}");
+    let _ = std::fs::remove_dir_all(d.root);
+}

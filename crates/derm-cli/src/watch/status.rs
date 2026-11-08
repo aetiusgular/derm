@@ -849,7 +849,12 @@ fn render_daemon(d: &Value) -> String {
                 let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
                 let alive = match c.get("alive").and_then(Value::as_bool) {
                     Some(true) => "running",
-                    Some(false) => "gone, no run.stop",
+                    // MW5-39: the daemon checks the harness's pid; `derm run`
+                    // posts `run.stop` only after it removed an sbx sandbox,
+                    // stopped its companion and gave its filter 500 ms.
+                    Some(false) => {
+                        "harness exited, no run.stop yet (derm run may still be removing its sandbox, or was killed)"
+                    }
                     None => "pid unknown",
                 };
                 // Case 83: the words, so you see which agent's approvals
@@ -1136,6 +1141,28 @@ mod tests {
         );
         assert!(t.contains("os feed: off"), "{t}");
         assert!(t.contains("no chats started by derm run are open"), "{t}");
+    }
+
+    /// MW5-39 (Mac test w5, retest 12): the daemon's `alive` is the
+    /// harness's pid, and `derm run` removes an sbx sandbox, stops its
+    /// companion and waits up to 500 ms for its filter after the harness
+    /// exits and before it posts `run.stop` (`run/mod.rs`), so a running
+    /// sbx chat was shown as "gone, no run.stop" in that window. The line
+    /// says what is known: the harness exited and no `run.stop` came yet.
+    #[test]
+    fn mw5_39_a_harness_gone_before_run_stop_is_not_called_gone() {
+        let t = render_daemon(
+            &json!({"running": true, "daemon": {"version": "0.0.0", "protocol": 1},
+            "lastHour": {"events": 3, "flags": 0, "bySource": {"adapter": 3}, "chainOk": true, "collectorReachable": "unknown"},
+            "chats": [{"chat": "r12-sbx2", "harness": "claude-code", "boundary": "sbx", "since": 0, "alive": false}]}),
+        );
+        assert!(!t.contains("gone, no run.stop"), "{t}");
+        assert!(
+            t.contains("harness exited, no run.stop yet")
+                && t.contains("removing its sandbox")
+                && t.contains("killed"),
+            "{t}"
+        );
     }
 
     #[cfg(unix)]
