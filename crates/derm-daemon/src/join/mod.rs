@@ -85,6 +85,32 @@ const ALLOW_LEAVES_PROMPT: &[&str] = &["codex", "gemini", "qwen-code", "grok"];
 /// events arrived 2 to 8 s late, 7 to 17 s after a burst), by the daemon's
 /// own clock (`Event::at` of what arrives).
 pub const STOPPED_KEEP_MS: i64 = 30_000;
+
+/// The longest a stopped chat waits for an OS feed that is behind (Mac test
+/// w5 retest 9, MW5-34): past `STOPPED_KEEP_MS` a stopped chat is kept until
+/// the feed has delivered an event the OS stamped after the chat's stop, or
+/// this long after the stop, whichever comes first. What still comes after
+/// that is counted and named (`late_for`).
+pub const STOPPED_FEED_CAP_MS: i64 = 600_000;
+
+/// How many dropped chats' late counts are kept.
+const MAX_LATE: usize = 256;
+
+/// Whether a chat stopped at `stopped` (daemon time) is still kept at `now`
+/// (daemon time), when the OS feeds have delivered events stamped up to
+/// `os_seen` (the OS's time). MW5-34: a 30 s keep by the daemon's clock lost
+/// the effects of a chat whose feed was 40 s behind.
+pub fn keep_stopped(stopped: i64, now: i64, os_seen: i64) -> bool {
+    let waited = now - stopped;
+    waited <= STOPPED_KEEP_MS
+        || (waited <= STOPPED_FEED_CAP_MS && os_seen <= stopped + SLACK_AFTER_MS)
+}
+
+/// The OS's own time of an OS feed's event, for the feed's progress; None
+/// for any other source.
+pub fn os_feed_time(e: &Event) -> Option<i64> {
+    matches!(e.source, Source::Auditd | Source::Eslogger).then(|| effect_time(e))
+}
 /// How far before a call's recorded start an effect may fall (the OS feed
 /// and the hook each stamp with some delay).
 pub const SLACK_BEFORE_MS: i64 = 500;
@@ -770,6 +796,11 @@ impl ChatState {
 #[derive(Default)]
 pub struct Join {
     chats: HashMap<String, ChatState>,
+    /// The latest OS time an OS feed's event carried (MW5-34).
+    os_seen: i64,
+    /// Chats dropped after their stop, and how many OS events of theirs
+    /// came after that, at most `MAX_LATE` chats, oldest first out.
+    late: VecDeque<(String, u64)>,
 }
 
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -864,10 +895,33 @@ impl Join {
         self.chats.remove(chat);
     }
 
-    /// Drops the chats stopped longer than `STOPPED_KEEP_MS` before `now`.
+    /// Drops the stopped chats `keep_stopped` no longer keeps at `now`, and
+    /// remembers them, so their later OS events are counted.
     fn sweep(&mut self, now: i64) {
-        self.chats
-            .retain(|_, st| st.stopped_at.is_none_or(|s| now - s <= STOPPED_KEEP_MS));
+        let os_seen = self.os_seen;
+        let gone: Vec<String> = self
+            .chats
+            .iter()
+            .filter(|(_, st)| {
+                st.stopped_at
+                    .is_some_and(|s| !keep_stopped(s, now, os_seen))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in gone {
+            self.chats.remove(&k);
+            self.late.retain(|(c, _)| *c != k);
+            self.late.push_back((k, 0));
+            while self.late.len() > MAX_LATE {
+                self.late.pop_front();
+            }
+        }
+    }
+
+    /// How many OS events of `chat` came after the join had let it go
+    /// (MW5-34); None when it was not let go.
+    pub fn late_for(&self, chat: &str) -> Option<u64> {
+        self.late.iter().find(|(c, _)| c == chat).map(|(_, n)| *n)
     }
 
     fn chat(&mut self, chat: &str) -> &mut ChatState {
@@ -889,10 +943,20 @@ impl Join {
     /// Reads one ingested event; returns the join records it makes (source
     /// `derm`, for the daemon to ingest; they are not read back).
     pub fn observe(&mut self, e: &Event) -> Vec<Event> {
+        if let Some(t) = os_feed_time(e) {
+            self.os_seen = self.os_seen.max(t);
+        }
         if e.chat_id.is_empty() {
             return Vec::new();
         }
         self.sweep(e.at);
+        // An OS event of a chat already let go: counted, never a new chat.
+        if os_feed_time(e).is_some() && !self.chats.contains_key(&e.chat_id) {
+            if let Some((_, n)) = self.late.iter_mut().find(|(c, _)| *c == e.chat_id) {
+                *n += 1;
+                return Vec::new();
+            }
+        }
         match (&e.source, e.kind.as_str()) {
             (Source::Run, "run.start") => {
                 // A chat id started again begins afresh.

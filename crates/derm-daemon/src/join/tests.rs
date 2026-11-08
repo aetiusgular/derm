@@ -291,14 +291,16 @@ fn records_follow_the_wave5_schema_shape_and_other_chats_never_mix() {
         vec!["candidates", "chosen", "effect", "effectKind", "trust"]
     );
     // After the stop and past the keep for late effects (MW5-17; before,
-    // the chat was dropped at the stop itself), the chat records nothing.
+    // the chat was dropped at the stop itself), the chat records nothing,
+    // once the feed has passed the stop (MW5-34: the OS stamped this write
+    // after it).
     j.observe(&ev(Source::Run, "run.stop", 99_000, Some(ROOT), json!({})));
     let mut late = ev(
         Source::Auditd,
         "write",
         99_000 + STOPPED_KEEP_MS + 1,
         Some(ROOT),
-        json!({"ppid": 1, "auditAt": 2_000, "path": "/w/x"}),
+        json!({"ppid": 1, "auditAt": 99_000 + SLACK_AFTER_MS + 1, "path": "/w/x"}),
     );
     late.id = "late".into();
     assert!(j.observe(&late).is_empty());
@@ -1154,11 +1156,24 @@ fn effects_that_arrive_after_the_stop_are_still_joined_for_a_while() {
     let r = j.observe(&late);
     assert_eq!(r.len(), 1, "{r:?}");
     assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_L");
-    // Past the keep, the chat is gone.
+    // Past the keep, once the feed has delivered an event the OS stamped
+    // after the stop, the chat is gone, and its later events are counted
+    // (MW5-34; before it, the keep went by the daemon's clock alone).
+    let mut passed = ev(
+        Source::Eslogger,
+        "exec",
+        2_500 + STOPPED_KEEP_MS + 1,
+        Some(9_999),
+        json!({"osAt": 2_500 + SLACK_AFTER_MS + 1, "exe": "/bin/ls"}),
+    );
+    passed.chat_id = String::new();
+    passed.id = "es-other".into();
+    j.observe(&passed);
     let mut later = late.clone();
     later.id = "es-late-2".into();
-    later.at = 2_500 + STOPPED_KEEP_MS + 1;
+    later.at = 2_500 + STOPPED_KEEP_MS + 2;
     assert!(j.observe(&later).is_empty());
+    assert_eq!(j.late_for(CHAT), Some(1));
     // A chat id started again begins afresh: an old call does not carry over.
     start(&mut j);
     assert!(effect(&mut j, "write", 1_300, 6002, 6001, json!({"path": "/w/x"})).is_empty());
@@ -3072,4 +3087,66 @@ fn fp9r_3_a_fork_delivered_after_its_exec_drops_the_mark() {
     effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 8301}));
     let r = effect(&mut j, "write", 1_200, 8301, ROOT, json!({"path": snap}));
     assert_eq!(r[0].detail["harnessChild"], true, "{r:?}");
+}
+
+/// Mac test w5 retest 9, MW5-34: on a loaded Mac the OS feed fell 40 s
+/// behind, and a chat's effects reached the daemon after the join's 30 s
+/// keep, so they were never joined and nothing said so. A stopped chat is
+/// kept while the feed has not delivered an event the OS stamped after the
+/// stop.
+#[test]
+fn mw5_34_a_chat_is_kept_while_the_feed_is_behind_its_stop() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_K", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6101}));
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        6101,
+        ROOT,
+        json!({"exe": "/bin/zsh"}),
+    );
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    // The feed is 40 s behind: the `ls` the shell ran at 1,200 arrives now.
+    effect(&mut j, "fork", 1_150, 6101, ROOT, json!({"child": 6102}));
+    let mut late = ev(
+        Source::Eslogger,
+        "exec",
+        2_500 + 40_000,
+        Some(6102),
+        json!({"ppid": 6101, "osAt": 1_200, "exe": "/bin/ls"}),
+    );
+    late.id = "es-behind-1".into();
+    let r = j.observe(&late);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(r[0].detail["chosen"], "tap-chat-j-toolu_K");
+    assert_eq!(j.late_for(CHAT), None, "nothing came too late");
+}
+
+/// MW5-34: the wait for a feed that is behind has a cap; what comes after it
+/// is counted, never joined, and never makes the chat again.
+#[test]
+fn mw5_34_past_the_cap_a_chats_effects_are_counted_as_late() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_C", "bash", &[], 1_000, Some(2_000));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    let mut late = ev(
+        Source::Eslogger,
+        "write",
+        2_500 + STOPPED_FEED_CAP_MS + 1,
+        Some(6201),
+        json!({"osAt": 1_300, "path": "/w/.github/workflows/x.yml"}),
+    );
+    late.id = "es-cap-1".into();
+    assert!(j.observe(&late).is_empty());
+    late.id = "es-cap-2".into();
+    assert!(j.observe(&late).is_empty());
+    assert_eq!(j.late_for(CHAT), Some(2));
+    assert!(keep_stopped(0, STOPPED_KEEP_MS, i64::MAX));
+    assert!(keep_stopped(0, STOPPED_FEED_CAP_MS, SLACK_AFTER_MS));
+    assert!(!keep_stopped(0, STOPPED_FEED_CAP_MS + 1, 0));
+    assert!(!keep_stopped(0, STOPPED_KEEP_MS + 1, SLACK_AFTER_MS + 1));
 }

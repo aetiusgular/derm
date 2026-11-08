@@ -187,6 +187,8 @@ struct Chat {
 pub struct ControlFlags {
     chats: HashMap<String, Chat>,
     chat_order: VecDeque<String>,
+    /// The latest OS time an OS feed's event carried (MW5-34).
+    os_seen: i64,
 }
 
 fn str_at<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
@@ -218,17 +220,23 @@ impl ControlFlags {
     /// Reads one ingested event; returns the `install.control` records it
     /// gives (none for most).
     pub fn observe(&mut self, e: &Event) -> Vec<Event> {
+        // The feed's progress counts every OS event, a chat's or not.
+        if let Some(t) = crate::join::os_feed_time(e) {
+            self.os_seen = self.os_seen.max(t);
+        }
         if e.chat_id.is_empty() {
             return Vec::new();
         }
-        // Chats stopped longer ago than the join keeps them go (MW5-17).
+        // Chats the join no longer keeps go too (MW5-17; MW5-34: kept until
+        // the OS feed has passed the stop).
         let now = e.at;
+        let os_seen = self.os_seen;
         let gone: Vec<String> = self
             .chats
             .iter()
             .filter(|(_, c)| {
                 c.stopped_at
-                    .is_some_and(|s| now - s > crate::join::STOPPED_KEEP_MS)
+                    .is_some_and(|s| !crate::join::keep_stopped(s, now, os_seen))
             })
             .map(|(k, _)| k.clone())
             .collect();
@@ -785,8 +793,20 @@ mod tests {
         assert!(f.chats.contains_key("chat-fixture"));
         // Kept after the stop for late join records (MW5-17), gone past the
         // join's keep (before, gone at the stop itself).
-        f.observe(&ev("s", "run.stop", Source::Run, json!({})));
+        let stop = ev("s", "run.stop", Source::Run, json!({}));
+        let stopped = stop.at;
+        f.observe(&stop);
         assert!(f.chats.contains_key("chat-fixture"));
+        // MW5-34: gone only once the OS feed has passed the stop, here by
+        // an event of no chat that the OS stamped after it.
+        let mut passed = ev(
+            "os",
+            "exec",
+            Source::Eslogger,
+            json!({"osAt": stopped + crate::join::SLACK_AFTER_MS + 1}),
+        );
+        passed.chat_id = String::new();
+        f.observe(&passed);
         let mut later = ev("x", "tool.call", Source::Adapter, json!({}));
         later.chat_id = "other".into();
         later.at += crate::join::STOPPED_KEEP_MS + 1;
@@ -801,6 +821,59 @@ mod tests {
             ));
         }
         assert_eq!(f.chats["chat-fixture"].effects.len(), MAX_EFFECTS);
+    }
+
+    /// Mac test w5 retest 9, MW5-34: a gated install's `.github/workflows`
+    /// write reached the daemon 40 s after the chat's stop on a loaded Mac
+    /// and gave no `install.control`. While the feed has not passed the stop
+    /// the chat is kept, and the write is flagged.
+    #[test]
+    fn mw5_34_an_installs_write_that_arrives_late_behind_the_feed_is_flagged() {
+        let at = |mut e: Event, t: i64| {
+            e.at = t;
+            e
+        };
+        let mut f = ControlFlags::new();
+        f.observe(&at(
+            ev(
+                "inst",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "toolu_W"}),
+            ),
+            1_000,
+        ));
+        f.observe(&at(
+            ev(
+                "gate",
+                "approval",
+                Source::Adapter,
+                json!({"toolUseId": "toolu_W"}),
+            ),
+            1_010,
+        ));
+        f.observe(&at(ev("stop", "run.stop", Source::Run, json!({})), 1_020));
+        let t = 1_020 + 40_000;
+        f.observe(&at(
+            ev(
+                "es-w",
+                "write",
+                Source::Eslogger,
+                json!({"osAt": 1_015, "path": "/p/.github/workflows/x.yml"}),
+            ),
+            t,
+        ));
+        let flags = f.observe(&at(
+            ev(
+                "join-es-w",
+                "join.candidates",
+                Source::Derm,
+                json!({"effect": "es-w", "candidates": [{"call": "gate", "by": "tree"}], "chosen": "gate"}),
+            ),
+            t,
+        ));
+        assert_eq!(flags.len(), 1, "{flags:?}");
+        assert_eq!(flags[0].kind, "install.control");
     }
 
     /// W5C-S8: a flood of install calls evicts the oldest, never every one.

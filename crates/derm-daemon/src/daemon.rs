@@ -2180,6 +2180,12 @@ impl Daemon {
             // R5: the window's count is a bound when a gap in it is merged.
             "osKernelDropsUpTo": window_up_to,
             "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
+            // MW5-34: for a chat, how many of its OS events reached the
+            // daemon after the join stopped waiting for a feed that was
+            // behind (null when none did, or with no chat).
+            "chatOsLate": chat
+                .and_then(|c| self.join.lock().ok().and_then(|j| j.late_for(c)))
+                .filter(|n| *n > 0),
         })
     }
 

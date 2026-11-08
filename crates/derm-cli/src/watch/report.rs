@@ -240,6 +240,18 @@ pub fn render(r: &Value) -> String {
         ));
     }
     if let Some(n) = r
+        .get("chatOsLate")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        // MW5-34: effects that came after derm stopped waiting for a feed
+        // that was behind are in the log, never joined or flagged.
+        out.push_str(&format!(
+            "CHAT NOT FULLY WATCHED: {} of its OS events reached derm more than 10 min after it stopped, while the OS feed was behind; they are in the log with no join records or control flags\n",
+            count(n)
+        ));
+    }
+    if let Some(n) = r
         .get("tailsDropped")
         .and_then(Value::as_u64)
         .filter(|n| *n > 0)
@@ -472,6 +484,15 @@ mod tests {
         assert!(t.contains("/etc/hosts (x2)"), "{t}");
         assert!(t.contains("os collector: no (not running)"), "{t}");
         assert!(t.contains("expected and hidden: 5"), "{t}");
+    }
+
+    #[test]
+    fn mw5_34_a_chats_late_os_events_are_named() {
+        let r = json!({"events": 1, "chatOsLate": 3});
+        assert!(render(&r).contains(
+            "CHAT NOT FULLY WATCHED: 3 of its OS events reached derm more than 10 min after it stopped"
+        ));
+        assert!(!render(&json!({"events": 1, "chatOsLate": null})).contains("NOT FULLY WATCHED"));
     }
 
     #[test]
