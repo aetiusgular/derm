@@ -832,7 +832,7 @@ mod tests {
                    for a in \"$@\"; do\n\
                      if [ \"$prev\" = --kit ]; then\n\
                        (cd \"$a\" && find . -type f | sort) > {seen}\n\
-                       cat \"$a/files/home/.derm-kit/policy.json\" >> {seen}\n\
+                       cat \"$a/derm-kit/policy.json\" >> {seen}\n\
                      fi\n\
                      prev=$a\n\
                    done\n\
@@ -893,9 +893,13 @@ mod tests {
             "the kit is a mixin; the agent stays the workload"
         );
         let seen = std::fs::read_to_string(d.join("kit-seen")).unwrap();
-        assert!(seen.contains("./spec.yaml"), "{seen}");
+        // The v3 layout (fix pass 11, MW5-7): descriptor and Dockerfile at
+        // the top, the gate under derm-kit/.
+        assert!(seen.contains("./derm-gate-claude.yaml"), "{seen}");
+        assert!(seen.contains("./derm-gate-claude.dockerfile"), "{seen}");
+        assert!(!seen.contains("./spec.yaml"), "{seen}");
         assert!(
-            seen.contains("./files/home/.derm-kit/plugin/bin/derm-hook.mjs"),
+            seen.contains("./derm-kit/plugin/bin/derm-hook.mjs"),
             "{seen}"
         );
         assert!(seen.trim_end().ends_with(r#"{"version":1}"#), "{seen}");
