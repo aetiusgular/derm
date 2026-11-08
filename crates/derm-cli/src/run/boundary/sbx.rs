@@ -12,7 +12,7 @@
 //! - SB3: the sandbox outlives `derm run`, its read-write mount of the
 //!   project still up, with no chat to credit a write to.
 //! - Case 117: the VM reaches derm's ports on the host (the OTLP receiver,
-//!   the model tap, the gateway) only with a `localhost:<port>` rule, which
+//!   the gateway) only with a `localhost:<port>` rule, which
 //!   the smoke test proved works scoped to one sandbox
 //!   (`sbx policy allow network --sandbox <name> localhost:<port>`). A rule
 //!   needs the sandbox to exist first (I: the reference does not say), and
@@ -213,8 +213,8 @@ pub(crate) fn describe_steps(args: &[String], env_set: &[(String, String)]) -> O
 }
 
 /// The host ports the plan points the VM at: every variable whose value is
-/// an http or https URL on `host.docker.internal` (plan.rs and the tap
-/// rewrite loopback to that name under sbx).
+/// an http or https URL on `host.docker.internal` (plan.rs rewrites
+/// loopback to that name under sbx).
 fn ports(env_set: &[(String, String)]) -> Vec<u16> {
     let mut out: Vec<u16> = env_set
         .iter()
@@ -356,14 +356,14 @@ pub(crate) fn start_with(
         super::kit::Kit::Built(_) => eprintln!(
             "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
              The agent runs in full access there, so what your policy would ask is denied. The agent has sudo in the VM and could remove the gate; \
-             the VM stays the boundary, and sbx's policy log, the model tap and the host's OS feed record the chat. \
+             the VM stays the boundary, and sbx's policy log and the host's OS feed record the chat (the model tap is off under sbx: MW5-37). \
              The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
             st.workload,
             super::kit::SWITCH
         ),
         super::kit::Kit::Without(why) => eprintln!(
             "derm run: inside the sbx VM {} runs without derm's gate ({why}): your host's hooks, plugins and extensions are not in the VM. \
-             The VM is the boundary; sbx's policy log, the model tap and the host's OS feed record the chat.",
+             The VM is the boundary; sbx's policy log and the host's OS feed record the chat (the model tap is off under sbx: MW5-37).",
             st.workload
         ),
     }

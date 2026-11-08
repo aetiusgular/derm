@@ -290,38 +290,49 @@ fn case_113_a_base_url_set_elsewhere_refuses_the_start_and_names_where() {
     let _ = std::fs::remove_dir_all(d.root);
 }
 
+/// MW5-37: sbx's host proxy adds a harness's credential only to requests for
+/// the provider's own host (`credential@1`'s `inject` domains and
+/// `resourceHosts`; Docker's sandbox credentials page, read 8 Nov 2026), and
+/// a second kit cannot add a host to the workload's credential (one owner
+/// per service and phase; `docker/sandbox-kit-spec` at `6838e3e`,
+/// `credential@1.md`, "Composition"). A base URL pointing the VM at the
+/// host's tap sends the sandbox's sentinel instead (retest 11: every request
+/// 401). So under sbx the tap stands down for every harness, says why, and
+/// opens no port for itself.
 #[test]
-fn under_sbx_the_tap_is_the_hosts_and_each_variable_is_named_to_sbx() {
+fn mw5_37_under_sbx_the_tap_stands_down_and_sets_no_base_url() {
     let d = dirs("sbx", Some("http://127.0.0.1:45003"));
-    let mut p = plan(
-        "sbx",
-        &["run", "--name", "derm-c", "-e", "DERM_CHAT_ID", "claude"],
-        true,
-    );
-    p.sandbox_name = Some("derm-c".into());
-    let rec = environment_with("claude-code", &mut p, &inputs(&d))
-        .unwrap()
-        .unwrap();
-    assert_eq!(rec["on"], true);
-    assert!(env(&p, "ANTHROPIC_BASE_URL")
-        .unwrap()
-        .starts_with("http://host.docker.internal:45003/r/"));
-    assert_eq!(
-        &p.args[..5],
-        &["run", "--name", "derm-c", "-e", "ANTHROPIC_BASE_URL"]
-    );
-    assert!(p
-        .notes
-        .iter()
-        .any(|n| n.contains("sbx policy allow network --sandbox <its name> localhost:45003")));
-    // Codex's flags under sbx wait for lane T: untapped, said.
-    let mut p = plan("sbx", &["run", "--name", "derm-c", "codex"], true);
-    p.sandbox_name = Some("derm-c".into());
-    assert_eq!(
-        environment_with("codex", &mut p, &inputs(&d)).unwrap(),
-        Some(json!({"on": false, "via": "none"}))
-    );
-    assert_eq!(p.args, vec!["run", "--name", "derm-c", "codex"]);
+    for (harness, workload) in [
+        ("claude-code", "claude"),
+        ("gemini", "gemini"),
+        ("codex", "codex"),
+    ] {
+        let argv = ["run", "--name", "derm-c", "-e", "DERM_CHAT_ID", workload];
+        let mut p = plan("sbx", &argv, true);
+        p.sandbox_name = Some("derm-c".into());
+        let rec = environment_with(harness, &mut p, &inputs(&d)).unwrap();
+        assert_eq!(
+            rec,
+            Some(json!({"on": false, "via": "none", "reason": "sbx-credential"})),
+            "{harness}"
+        );
+        for var in [
+            "ANTHROPIC_BASE_URL",
+            "GOOGLE_GEMINI_BASE_URL",
+            "DERM_TAP_ROUTE",
+        ] {
+            assert!(env(&p, var).is_none(), "{harness} {var}");
+        }
+        assert_eq!(
+            p.args,
+            argv.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            "{harness}"
+        );
+        assert!(
+            !p.notes.iter().any(|n| n.contains("45003")),
+            "{harness}: no rule for the tap's port"
+        );
+    }
     let _ = std::fs::remove_dir_all(d.root);
 }
 

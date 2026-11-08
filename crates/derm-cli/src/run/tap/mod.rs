@@ -143,6 +143,20 @@ pub(crate) fn environment_with(
     if row.get("via").and_then(Value::as_str).unwrap_or("none") == "none" {
         return Ok(off(Some("no-base-url")));
     }
+    if plan.sandbox_name.is_some() {
+        // MW5-37: sbx's host proxy adds the harness's credential only to
+        // requests for the provider's own host (`credential@1`'s `inject`
+        // domains and `resourceHosts`, docker/sandbox-kit-spec `6838e3e`;
+        // Docker's sandbox credentials page), and no second kit can add a
+        // host to it (one owner per service and phase). Through the tap the
+        // request leaves the VM with the sandbox's sentinel and gets 401.
+        eprintln!(
+            "derm run: under sbx the model tap is off for this chat: sbx's proxy adds {harness}'s credential only to requests \
+             for its provider's own host, so a request through the tap would carry none. sbx's policy log, derm's gate in the VM \
+             (where derm's kit runs) and the host's OS feed record the chat"
+        );
+        return Ok(off(Some("sbx-credential")));
+    }
     let Some(endpoint) = i.daemon_dir.as_deref().and_then(read_endpoint) else {
         eprintln!(
             "derm run: the daemon published no model tap (tap.endpoint); this chat runs untapped"
@@ -158,31 +172,11 @@ pub(crate) fn environment_with(
             ),
         ));
     }
-    let sbx = plan.sandbox_name.is_some();
-    let reach = if sbx {
-        let (scheme, _, port, _) =
-            split_url(&endpoint).ok_or((1, "bad tap endpoint".to_string()))?;
-        plan.notes.push(format!(
-            "derm run: the sandbox reaches the model tap on the host's port {port} through a rule derm adds for this sandbox alone \
-             (sbx policy allow network --sandbox <its name> localhost:{port}), gone with the sandbox"
-        ));
-        format!("{scheme}://host.docker.internal:{port}")
-    } else {
-        endpoint.clone()
-    };
     let route_text = route::of_token(&token);
-    let l = match launch::launch(&row, &reach, &route_text) {
+    let l = match launch::launch(&row, &endpoint, &route_text) {
         Ok(l) => l,
         Err(launch::Off::NoBaseUrl) => return Ok(off(Some("no-base-url"))),
     };
-    if sbx && !l.args.is_empty() {
-        // Where an agent's own flags sit in an sbx argv is lane T's to
-        // settle (SB1, SB6); until then a Codex chat under sbx runs untapped.
-        eprintln!(
-            "derm run: under sbx the tap does not reach {harness} yet; this chat runs untapped"
-        );
-        return Ok(off(None));
-    }
     for (k, v) in &l.env {
         plan.env_set.retain(|(n, _)| n != k);
         plan.env_remove.retain(|n| n != k);
@@ -193,21 +187,6 @@ pub(crate) fn environment_with(
         let mut args = plan.args.clone();
         args.splice(at..at, l.args.iter().cloned());
         plan.args = args;
-    }
-    if sbx {
-        // `sbx run --name <n>` first; the variables are named after it and
-        // copied by sbx from the child's environment, as plan.rs does.
-        let at = plan
-            .args
-            .iter()
-            .position(|a| a == "--name")
-            .map_or(1, |p| p + 2)
-            .min(plan.args.len());
-        let mut names: Vec<String> = Vec::new();
-        for (k, _) in &l.env {
-            names.extend(["-e".to_string(), k.clone()]);
-        }
-        plan.args.splice(at..at, names);
     }
     if let Some(text) = plan.srt_settings.as_deref() {
         let mut v: Value = serde_json::from_str(text).map_err(|e| (1, e.to_string()))?;
