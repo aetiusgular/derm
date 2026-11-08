@@ -296,7 +296,20 @@ struct ChatState {
     /// Claude Code's shell snapshot (BW5R-2), or the call's command line's
     /// own redirection, so it is marked, never trusted (review FP9-S1). When
     /// full, none is added.
-    direct: HashMap<u32, bool>,
+    direct: HashMap<u32, (Direct, i64)>,
+}
+
+/// A process the harness itself started, by what it has run (BW5R-2,
+/// reviews FP9-S1 and FP9R-1), with the OS time that was set at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direct {
+    /// Forked, nothing run yet.
+    Forked,
+    /// Its one exec so far is a shell.
+    Shell,
+    /// It ran something else, or a second program: a command, until a new
+    /// fork from the harness starts the pid over.
+    Spent,
 }
 
 impl ChatState {
@@ -573,18 +586,26 @@ impl ChatState {
         // no shell, is a command the call ran (review FP9-S1, FP9-S8).
         match (by_root, kind) {
             (true, "fork") => {
-                if self.direct.len() < MAX_PIDS {
-                    self.direct.insert(child, false);
+                // A fork delivered after its child's exec keeps what that exec
+                // set (T1; review FP9R-3).
+                let later_exec = self
+                    .direct
+                    .get(&child)
+                    .is_some_and(|(d, at)| *d != Direct::Forked && *at >= t);
+                if !later_exec && (self.direct.len() < MAX_PIDS || self.direct.contains_key(&child))
+                {
+                    self.direct.insert(child, (Direct::Forked, t));
                 }
             }
-            (true, "exec")
-                if self.direct.get(&child) != Some(&true)
-                    && program.is_some_and(|p| {
-                        shell_program(p) && !p.ends_with("/codex-linux-sandbox")
-                    }) =>
-            {
+            (true, "exec") => {
+                let shell = program
+                    .is_some_and(|p| shell_program(p) && !p.ends_with("/codex-linux-sandbox"));
+                let next = match self.direct.get(&child).map(|(d, _)| *d) {
+                    None | Some(Direct::Forked) if shell => Direct::Shell,
+                    _ => Direct::Spent,
+                };
                 if self.direct.len() < MAX_PIDS || self.direct.contains_key(&child) {
-                    self.direct.insert(child, true);
+                    self.direct.insert(child, (next, t));
                 }
             }
             _ => {
@@ -1266,7 +1287,15 @@ impl Join {
         });
         // The harness's own child wrote (BW5R-2): its own shell, not a
         // process a call's command started.
-        if pid.is_some_and(|p| st.direct.get(&p) == Some(&true)) {
+        // The write's own record names the harness as the parent too, so a
+        // reused pid whose fork record is still to come is not taken for
+        // the old shell (review FP9R-2).
+        let parent_is_harness = ppid.is_some_and(|p| {
+            Some(p) == st.root_pid || Some(p) == st.harness || Some(p) == st.launched
+        });
+        if parent_is_harness
+            && pid.is_some_and(|p| st.direct.get(&p).is_some_and(|(d, _)| *d == Direct::Shell))
+        {
             detail["harnessChild"] = json!(true);
         }
         // Under a boundary with the harness not found by its executable:

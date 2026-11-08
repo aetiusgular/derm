@@ -2982,3 +2982,94 @@ fn fp9_s3_a_posted_end_does_not_move_the_taps_cut_off() {
         );
     }
 }
+
+// Re-review of fix pass 9 (FP9R-1 to FP9R-3): its probes, each failing on `6a9e0be`.
+
+/// FP9R-1: the "one exec" rule drops the mark on the second exec, but a
+/// third exec of a shell in the same pid gets it back: the guard only asks
+/// that the pid is not already marked. `bash -lc "python setup.py"` where
+/// setup.py does `os.execv("/bin/sh", ...)`, or `bash -c "exec sh -c 'exec
+/// sh -c ...'"`.
+#[test]
+fn fp9r_1_a_shell_after_a_non_shell_exec_regains_the_mark() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "claude-code", "toolu_R1", "bash", 1_000, 9_000);
+    let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh";
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 8101}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        8101,
+        ROOT,
+        json!({"exe": "/usr/bin/bash"}),
+    );
+    effect(
+        &mut j,
+        "exec",
+        1_110,
+        8101,
+        ROOT,
+        json!({"exe": "/usr/bin/python3"}),
+    );
+    effect(&mut j, "exec", 1_120, 8101, ROOT, json!({"exe": "/bin/sh"}));
+    let r = effect(&mut j, "write", 1_200, 8101, ROOT, json!({"path": snap}));
+    assert!(
+        r[0].detail.get("harnessChild").is_none(),
+        "an install program's own exec of sh is marked the harness's shell: {r:?}"
+    );
+}
+
+/// FP9R-2: `direct` is never cleared when a marked shell exits, and the
+/// write record's own `ppid` is not checked. A process the install's tree
+/// forks that gets the pid again writes before the feed delivers its fork
+/// record (T1: the parent's clone record comes at its syscall exit) and is
+/// marked as the harness's own shell.
+#[test]
+fn fp9r_2_a_reused_pid_writing_before_its_fork_record_keeps_the_mark() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "claude-code", "toolu_R2", "bash", 1_000, 9_000);
+    let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh";
+    // The harness's shell, one exec: marked.
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 8201}));
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        8201,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    // It exits (no record); the install's process 7300 (not the harness)
+    // forks a subshell that gets pid 8201 and writes before its fork record.
+    let r = effect(&mut j, "write", 2_000, 8201, 7300, json!({"path": snap}));
+    assert!(
+        r.first()
+            .is_none_or(|x| x.detail.get("harnessChild").is_none()),
+        "a write whose ppid is not the harness is marked the harness's shell: {r:?}"
+    );
+}
+
+/// FP9R-3 (info, safe direction): an exec delivered before its fork (T1)
+/// sets the mark, then the late fork resets it to "no exec yet", so the
+/// harness's real snapshot shell loses the label (flagged plain).
+#[test]
+fn fp9r_3_a_fork_delivered_after_its_exec_drops_the_mark() {
+    let mut j = Join::new();
+    start(&mut j);
+    tap_only(&mut j, "claude-code", "toolu_R3", "bash", 1_000, 9_000);
+    let snap = "/home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh";
+    effect(
+        &mut j,
+        "exec",
+        1_105,
+        8301,
+        ROOT,
+        json!({"exe": "/bin/bash"}),
+    );
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 8301}));
+    let r = effect(&mut j, "write", 1_200, 8301, ROOT, json!({"path": snap}));
+    assert_eq!(r[0].detail["harnessChild"], true, "{r:?}");
+}

@@ -390,7 +390,7 @@ impl ControlFlags {
                 kind: "install.control".into(),
                 summary: if snapshot {
                     format!(
-                        "install wrote {marker}{one_of}: the harness's shell snapshot, by a shell the harness started (Claude Code and Codex write one per shell; later commands source it)"
+                        "install wrote {marker}{one_of}: a shell the harness started wrote its shell-snapshot file, which may be the harness's own snapshot or the call's command (derm cannot tell them apart; later commands source it)"
                     )
                 } else {
                     format!("install wrote {marker}{one_of}")
@@ -1022,7 +1022,7 @@ mod tests {
             let named = out[0].detail.get("harnessSnapshot") == Some(&json!(true));
             assert_eq!(named, id == "auditd-own", "{id}: {out:?}");
             assert_eq!(
-                out[0].summary.contains("the harness's shell snapshot"),
+                out[0].summary.contains("shell-snapshot file"),
                 id == "auditd-own",
                 "{out:?}"
             );
