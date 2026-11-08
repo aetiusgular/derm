@@ -386,6 +386,37 @@ fn fp12_r1_under_sbx_a_project_files_base_url_still_refuses_the_start() {
     .unwrap_err()
     .1;
     assert!(why.contains("model_provider"), "{why}");
+    // The re-review's R1: Gemini CLI 0.66.0 loads `<cwd>/.gemini/.env` or
+    // `<cwd>/.env` in a trusted folder and sets each variable not already set
+    // (bundle `chunk-OYJ7VIJ6.js:16575-16690`); under sbx derm sets no base
+    // URL, so a planted one would hold.
+    for (file, line) in [
+        (
+            d.work.join(".env"),
+            "GOOGLE_GEMINI_BASE_URL=http://planted\n",
+        ),
+        (
+            d.work.join(".gemini/.env"),
+            "export GOOGLE_VERTEX_BASE_URL = \"http://p\"\n",
+        ),
+    ] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, line).unwrap();
+        let why = environment_with("gemini", &mut sbx_plan(&["run", "gemini"]), &i)
+            .unwrap_err()
+            .1;
+        assert!(why.contains("BASE_URL"), "{why}");
+        std::fs::remove_file(&file).unwrap();
+    }
+    std::fs::write(
+        d.work.join(".env"),
+        "GEMINI_API_KEY=x\nGOOGLE_GEMINI_BASE_URL=\n",
+    )
+    .unwrap();
+    assert_eq!(
+        environment_with("gemini", &mut sbx_plan(&["run", "gemini"]), &i).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "sbx-credential"}))
+    );
     let _ = std::fs::remove_dir_all(d.root);
 }
 

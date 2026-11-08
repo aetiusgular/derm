@@ -157,11 +157,16 @@ pub(crate) fn environment_with(
             inherited: Vec::new(),
             claude_managed: PathBuf::new(),
         };
-        if let Some(why) = base_url_already_set(harness, plan, &in_vm) {
+        let why = base_url_already_set(harness, plan, &in_vm).or_else(|| {
+            (harness == "gemini")
+                .then(|| i.cwd.as_deref().and_then(gemini_env_route))
+                .flatten()
+        });
+        if let Some(why) = why {
             return Err((
                 1,
                 format!(
-                    "derm run: {why}, and the sbx VM would read it; remove it, or run this chat under another boundary"
+                    "derm run: {why}, and the sbx VM would read it and send the chat's model requests there; remove it"
                 ),
             ));
         }
@@ -388,6 +393,42 @@ pub(crate) fn base_url_already_set(harness: &str, plan: &Plan, i: &Inputs) -> Op
             .then(|| "GOOGLE_GEMINI_BASE_URL is set in derm run's environment".into()),
         _ => None,
     }
+}
+
+/// A base URL a project's `.env` sets for Gemini CLI, in words. Gemini CLI
+/// 0.66.0 loads `<cwd>/.gemini/.env`, else `<cwd>/.env`, in a trusted folder
+/// and sets each variable not already set (bundle `chunk-OYJ7VIJ6.js:
+/// 16575-16690`, dotenv's `KEY=value`, `export KEY=value` and `KEY: value`
+/// forms); under sbx derm sets no base URL, so a planted one would hold
+/// (fix pass 12's re-review, R1). Only the chat's folder is read: it is what
+/// sbx mounts into the VM.
+fn gemini_env_route(cwd: &str) -> Option<String> {
+    let names = ["GOOGLE_GEMINI_BASE_URL", "GOOGLE_VERTEX_BASE_URL"];
+    for file in [
+        Path::new(cwd).join(".gemini/.env"),
+        Path::new(cwd).join(".env"),
+    ] {
+        let Ok(meta) = std::fs::metadata(&file) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() > 1024 * 1024 {
+            continue;
+        }
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        for line in text.lines() {
+            let line = line.trim_start();
+            let line = line.strip_prefix("export ").unwrap_or(line).trim_start();
+            let Some(at) = line.find(['=', ':']) else {
+                continue;
+            };
+            let (key, value) = (line[..at].trim(), line[at + 1..].trim());
+            let value = value.trim_matches(['"', '\'', '`']).trim();
+            if names.contains(&key) && !value.is_empty() && !value.starts_with('#') {
+                return Some(format!("{} sets {key}", file.display()));
+            }
+        }
+    }
+    None
 }
 
 /// The routing variable a Claude Code settings file's `env` sets, if any.
