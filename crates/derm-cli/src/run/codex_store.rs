@@ -260,9 +260,10 @@ fn profiles_in(codex_home: &Path) -> Vec<String> {
             (name.len() > ".config.toml".len() && name.ends_with(".config.toml"))
                 .then(|| codex_home.join(&name).to_string_lossy().into_owned())
         })
-        .take(256)
         .collect();
+    // Re-review FP8R-4: the same 256 whatever order the folder lists them in.
     out.sort();
+    out.truncate(256);
     out
 }
 

@@ -231,14 +231,25 @@ pub const HARNESSES: &[Harness] = &[
         // filtered). FP8-S7: `tmp/` holds each live session's helper links
         // (`codex-linux-sandbox`, `apply_patch`; `arg0/src/lib.rs:339-405`),
         // which another session runs; Codex starts without them when it
-        // cannot write there (`:157-165`).
+        // cannot write there (`:157-165`). Re-review FP8R-1: `packages/`
+        // holds Codex itself when its own installer put it there
+        // (`scripts/install/install.sh:16-25`), with the `rg` and `bwrap` its
+        // sandbox runs; FP8R-2: `shell_snapshots/` holds each live session's
+        // snapshot, sourced before each of its commands, its unsandboxed `!`
+        // commands too (`core/src/tasks/user_shell.rs:159-180`; a session that
+        // cannot write one runs without, `core/src/shell_snapshot.rs:152-180`);
+        // FP8R-3: `AGENTS.md` and `prompts/`, instructions later sessions load.
         control: &[
             ".codex/.env",
+            ".codex/AGENTS.md",
             ".codex/config.toml",
             ".codex/hooks.json",
+            ".codex/packages",
             ".codex/plugins",
+            ".codex/prompts",
             ".codex/requirements.toml",
             ".codex/rules",
+            ".codex/shell_snapshots",
             ".codex/tmp",
         ],
         launch: Launch::None,

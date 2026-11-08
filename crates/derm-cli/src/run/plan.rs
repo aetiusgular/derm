@@ -197,12 +197,13 @@ pub struct Inputs<'a> {
     /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
     /// read-only wherever they sit (re-review FP5-R2).
     pub gate_paths: Vec<String>,
-    /// Each submodule's git folder in the chat's folder, `.git/modules/**`,
-    /// by absolute path (`run/mod.rs` lists them). srt holds only the
-    /// folder's own `.git/hooks` and `.git/config` (its mandatory denies), so
-    /// a submodule's `config` and `hooks` stay read-only under srt too, since
-    /// git runs what they name in that submodule later (FP8-S2).
-    pub git_modules: Vec<String>,
+    /// The git files in the chat's folder that srt's own denies (the
+    /// folder's `.git/hooks` and `.git/config`) leave out, by absolute path
+    /// (`run/mod.rs` lists them): each submodule's `config` and `hooks` under
+    /// `.git/modules/**` (FP8-S2) and each `config.worktree` (re-review
+    /// FP8R-5). git reads and runs what they name later, so srt keeps them
+    /// read-only, for every harness.
+    pub git_controls: Vec<String>,
     /// The computer-use bridge's address (`127.0.0.1:<port>` or
     /// `[::1]:<port>`) from the daemon's `cu.endpoint`, when computer use is
     /// on (Mac test w5 retest 3, MW5-22). Under srt the endpoint file is
@@ -427,7 +428,14 @@ pub const ABSENT_FOLDER_MARK: &str = ".derm-absent";
 /// Other harnesses' control folders are not read for this yet.
 fn control_folders(harness: &str) -> &'static [&'static str] {
     match harness {
-        "codex" => &[".codex/plugins", ".codex/rules", ".codex/tmp"],
+        "codex" => &[
+            ".codex/packages",
+            ".codex/plugins",
+            ".codex/prompts",
+            ".codex/rules",
+            ".codex/shell_snapshots",
+            ".codex/tmp",
+        ],
         _ => &[],
     }
 }
@@ -1061,12 +1069,13 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             } else {
                 deny_write.extend(h.control.iter().map(|c| format!("{cwd}/{c}")));
             }
-            // FP8-S2: each submodule's git config and hooks.
-            for m in i.git_modules.iter().filter(|m| m.starts_with('/')) {
-                let m = m.trim_end_matches('/');
-                deny_write.push(format!("{m}/config"));
-                deny_write.push(format!("{m}/hooks"));
-            }
+            // FP8-S2, FP8R-5: the git files srt's own denies leave out.
+            deny_write.extend(
+                i.git_controls
+                    .iter()
+                    .filter(|m| m.starts_with('/'))
+                    .cloned(),
+            );
             // FP8-S1: Codex's profile layers in its home.
             if h.id == "codex" {
                 deny_write.extend(
@@ -1188,7 +1197,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                         .cloned(),
                 );
                 notes.push(format!(
-                    "derm run: Codex's own sandbox (Seatbelt on macOS, bubblewrap on Linux) cannot start inside srt's, so derm starts codex with -c {CODEX_SANDBOX_OFF} and srt is its sandbox: its commands may write this folder, srt's temp folder and Codex's home, but not .git/hooks, .git/config, a submodule's git config or hooks, this folder's .codex, or Codex's config, .env, profiles, hooks, rules, plugins and tmp; Codex's own hold on all of .git, .agents and .aws is off; they reach only the hosts srt lists, whatever sandbox_mode or default_permissions Codex's config sets, and Codex no longer asks to leave a sandbox. Its approvals are unchanged. To keep Codex's own sandbox, run with --boundary none"
+                    "derm run: Codex's own sandbox (Seatbelt on macOS, bubblewrap on Linux) cannot start inside srt's, so derm starts codex with -c {CODEX_SANDBOX_OFF} and srt is its sandbox: its commands may write this folder, srt's temp folder and Codex's home, but not .git/hooks, .git/config, a submodule's git config or hooks, a config.worktree, this folder's .codex, or Codex's config, .env, profiles, AGENTS.md, prompts, hooks, rules, plugins, packages, shell_snapshots and tmp (its skills, memories, sessions and logs stay writable); Codex's own hold on all of .git, .agents and .aws is off; they reach only the hosts srt lists, whatever sandbox_mode or default_permissions Codex's config sets, and Codex no longer asks to leave a sandbox. Its approvals are unchanged. To keep Codex's own sandbox, run with --boundary none"
                 ));
                 if lead.is_some_and(|w| w == "app-server") {
                     notes.push(
@@ -1441,7 +1450,7 @@ mod tests {
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
             gate_paths: Vec::new(),
-            git_modules: Vec::new(),
+            git_controls: Vec::new(),
             cu_endpoint: None,
             macos: false,
             terminal: false,
@@ -3239,7 +3248,11 @@ mod tests {
                 ],
                 ..CodexStoreFiles::default()
             },
-            git_modules: vec!["/home/u/proj dir/.git/modules/sub".into(), "rel".into()],
+            git_controls: vec![
+                "/home/u/proj dir/.git/modules/sub/config".into(),
+                "/home/u/proj dir/.git/modules/sub/hooks".into(),
+                "rel".into(),
+            ],
             ..inputs(&args)
         })
         .unwrap();
@@ -3253,6 +3266,10 @@ mod tests {
         for want in [
             "/home/u/.codex/.env",
             "/home/u/.codex/tmp",
+            "/home/u/.codex/packages",
+            "/home/u/.codex/shell_snapshots",
+            "/home/u/.codex/AGENTS.md",
+            "/home/u/.codex/prompts",
             "/home/u/.codex/work.config.toml",
             "/home/u/proj dir/.git/modules/sub/config",
             "/home/u/proj dir/.git/modules/sub/hooks",
@@ -3272,7 +3289,7 @@ mod tests {
         // Another harness gets the submodule denies too, and no Codex ones.
         let args = a(&["claude-code", "--boundary", "srt"]);
         let p = build(&Inputs {
-            git_modules: vec!["/home/u/proj dir/.git/modules/sub".into()],
+            git_controls: vec!["/home/u/proj dir/.git/modules/sub/hooks".into()],
             ..inputs(&args)
         })
         .unwrap();

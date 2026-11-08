@@ -317,6 +317,40 @@ fn read_cu_endpoint(dir: &Path) -> Option<String> {
     plan::cu_endpoint_ok(text).then(|| text.to_string())
 }
 
+/// The git files in the chat's folder srt's own denies leave out (FP8-S2,
+/// re-review FP8R-5): each submodule's `config` and `hooks`, every
+/// `config.worktree` git reads with `extensions.worktreeConfig` (the folder's
+/// own, a submodule's, and each `.git/worktrees/<name>/`'s), by absolute path.
+fn git_controls(cwd: &Path) -> Vec<String> {
+    let git = cwd.join(".git");
+    let mut out = Vec::new();
+    let is_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    if !is_dir(&git) {
+        return out;
+    }
+    let mut push = |p: PathBuf| {
+        if let Some(s) = p.to_str() {
+            out.push(s.to_string());
+        }
+    };
+    push(git.join("config.worktree"));
+    for m in git_module_dirs(cwd) {
+        let m = PathBuf::from(m);
+        push(m.join("config"));
+        push(m.join("config.worktree"));
+        push(m.join("hooks"));
+    }
+    if let Ok(rd) = std::fs::read_dir(git.join("worktrees")) {
+        for e in rd.flatten().take(256) {
+            if is_dir(&e.path()) {
+                push(e.path().join("config.worktree"));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Each submodule's git folder under the chat's `.git/modules` (FP8-S2),
 /// nested ones too (`modules/a/modules/b`), by absolute path: a folder there
 /// holding a `config` or a `HEAD` is one. No link is followed, at most 8
@@ -1077,10 +1111,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
-        // FP8-S2: each submodule's git folder, whose config and hooks srt
-        // keeps read-only.
-        git_modules: if a.boundary == Boundary::Srt {
-            git_module_dirs(Path::new(&cwd))
+        // FP8-S2, FP8R-5: the git files srt's own denies leave out.
+        git_controls: if a.boundary == Boundary::Srt {
+            git_controls(Path::new(&cwd))
         } else {
             Vec::new()
         },
@@ -1694,6 +1727,23 @@ mod tests {
             .collect();
         assert_eq!(got, want);
         assert!(git_module_dirs(&elsewhere).is_empty());
+        // FP8R-5: the worktree configs too, and each module's three files.
+        std::fs::create_dir_all(d.join(".git/worktrees/w1")).unwrap();
+        let c = git_controls(&d);
+        for want in [
+            d.join(".git/config.worktree"),
+            d.join(".git/worktrees/w1/config.worktree"),
+            m.join("sub/config"),
+            m.join("sub/hooks"),
+            m.join("sub/config.worktree"),
+            m.join("a/b/hooks"),
+        ] {
+            assert!(
+                c.contains(&want.to_string_lossy().into_owned()),
+                "{want:?} {c:?}"
+            );
+        }
+        assert!(git_controls(&elsewhere).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 
