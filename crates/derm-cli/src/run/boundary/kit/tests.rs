@@ -236,6 +236,10 @@ fn the_kit_is_a_v3_mixin_whose_parts_agree() {
     assert!(!INSTALL.contains("command -v node"));
     // FP11-S6: the staging folder goes on every exit, a failure's too.
     assert!(INSTALL.contains("trap 'rm -rf \"$src\"' EXIT"));
+    // FP11R-5: dash runs no EXIT trap on a signal; each one exits instead.
+    for sig in ["HUP", "INT", "TERM"] {
+        assert!(INSTALL.contains(&format!("' {sig}\n")), "a trap for {sig}");
+    }
 }
 
 /// Security finding W5C-S2 (integration w5 continue): the install writes the

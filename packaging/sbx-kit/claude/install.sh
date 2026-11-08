@@ -28,8 +28,12 @@ fail() {
 }
 
 # The staging folder, with the policy in it, goes however the script ends
-# (fix pass 11's review, FP11-S6: a failed install left it in the VM).
+# (fix pass 11's review, FP11-S6: a failed install left it in the VM). dash
+# runs no EXIT trap on a signal, so a signal exits, which runs it (FP11R-5).
 trap 'rm -rf "$src"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [ -d "$src/plugin" ] || fail "$src/plugin is missing; the kit was not built by derm run"
 [ -f "$src/policy.json" ] || fail "$src/policy.json is missing; derm run adds the kit only with a policy"

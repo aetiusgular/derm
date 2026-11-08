@@ -252,13 +252,17 @@ impl ControlFlags {
                 self.gone.pop_front();
             }
         }
-        // FP11-S1: a chat let go comes back only with its run's next start.
-        if let Some(i) = self.gone.iter().position(|c| *c == e.chat_id) {
-            if e.source == Source::Run && e.kind == "run.start" {
-                self.gone.remove(i);
-            } else if !self.chats.contains_key(&e.chat_id) {
-                return Vec::new();
-            }
+        // The run's own start begins the chat afresh, as the join does: an id
+        // run again (`derm run --chat`) must not keep the old run's stop, or
+        // the live run is let go at the old keep's end (FP11R-1). FP11-S1: a
+        // chat let go comes back only with this start.
+        if e.source == Source::Run && e.kind == "run.start" {
+            self.forget(&e.chat_id);
+            self.gone.retain(|c| *c != e.chat_id);
+            return Vec::new();
+        }
+        if self.gone.contains(&e.chat_id) && !self.chats.contains_key(&e.chat_id) {
+            return Vec::new();
         }
         // Only the run's own stop: a chat token posts adapter records of
         // any kind, and a forged `run.stop` must not drop the chat's
@@ -1262,5 +1266,87 @@ mod tests {
         assert!(!harness_snapshot(
             "/home/u/.codex/shell_snapshots/../config.toml"
         ));
+    }
+
+    /// FP11R-1: a chat id run again (`derm run --chat ID`) while the old
+    /// run's stop is still kept. Before, the flagger kept the old stop, let
+    /// the live chat go, and with FP11-S1's `gone` dropped every later record.
+    #[test]
+    fn fp11r_1_a_chat_id_run_again_keeps_flagging() {
+        let at = |mut e: Event, t: i64| {
+            e.at = t;
+            e
+        };
+        let mut f = ControlFlags::new();
+        let t0 = 1_000_000;
+        f.observe(&at(ev("start1", "run.start", Source::Run, json!({})), t0));
+        f.observe(&at(
+            ev(
+                "inst1",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "a"}),
+            ),
+            t0 + 10,
+        ));
+        f.observe(&at(
+            ev("stop1", "run.stop", Source::Run, json!({})),
+            t0 + 20,
+        ));
+        // The same chat id, run again a second later.
+        f.observe(&at(
+            ev("start2", "run.start", Source::Run, json!({})),
+            t0 + 1_000,
+        ));
+        // The OS feed is current: an event of another chat past the stop.
+        let mut os = at(
+            ev(
+                "es-other",
+                "write",
+                Source::Eslogger,
+                json!({"path": "/tmp/x"}),
+            ),
+            t0 + 40_000,
+        );
+        os.chat_id = "other".into();
+        f.observe(&os);
+        let t = t0 + 40_001;
+        f.observe(&at(
+            ev(
+                "inst2",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "b"}),
+            ),
+            t,
+        ));
+        f.observe(&at(
+            ev(
+                "gate2",
+                "approval",
+                Source::Adapter,
+                json!({"toolUseId": "b"}),
+            ),
+            t + 1,
+        ));
+        f.observe(&at(
+            ev(
+                "es-9",
+                "write",
+                Source::Eslogger,
+                json!({"path": "/p/.git/hooks/pre-commit"}),
+            ),
+            t + 2,
+        ));
+        let flags = f.observe(&at(
+            ev(
+                "join-es-9",
+                "join.candidates",
+                Source::Derm,
+                json!({"effect": "es-9", "candidates": [{"call": "gate2", "by": "tree"}], "chosen": "gate2"}),
+            ),
+            t + 3,
+        ));
+        assert_eq!(flags.len(), 1, "the live run's install write is flagged");
     }
 }

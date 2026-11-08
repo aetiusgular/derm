@@ -571,7 +571,7 @@ impl ResponseParser {
             if old.done && !old.id.is_empty() && old.id != id {
                 let moved = self.calls.remove(&key).unwrap_or_default();
                 self.order += 1;
-                self.calls.insert((1u64 << 62) + self.order, moved);
+                self.calls.insert(MOVED_KEYS + self.order, moved);
             }
         }
         self.slot(key)
@@ -695,7 +695,7 @@ impl ResponseParser {
             "content_block_start" => {
                 let b = v.get("content_block");
                 if b.and_then(|b| b.get("type")).and_then(Value::as_str) == Some("tool_use") {
-                    let idx = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
+                    let idx = wire_index(v, "index").unwrap_or(u64::MAX);
                     let id = str_of(b.and_then(|b| b.get("id")));
                     let p = self.start_slot(idx, &id);
                     p.id = id;
@@ -710,7 +710,7 @@ impl ResponseParser {
                 }
             }
             "content_block_delta" => {
-                let idx = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
+                let idx = wire_index(v, "index").unwrap_or(u64::MAX);
                 if let Some(part) = v.pointer("/delta/partial_json").and_then(Value::as_str) {
                     if let Some(p) = self.calls.get_mut(&idx) {
                         p.json_args = None;
@@ -719,7 +719,7 @@ impl ResponseParser {
                 }
             }
             "content_block_stop" => {
-                let idx = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
+                let idx = wire_index(v, "index").unwrap_or(u64::MAX);
                 if let Some(p) = self.calls.get_mut(&idx) {
                     if p.args.is_empty() && p.json_args.is_none() {
                         p.json_args = Some(Value::Object(Default::default()));
@@ -801,7 +801,7 @@ impl ResponseParser {
     }
 
     fn responses_event(&mut self, kind: &str, v: &Value) {
-        let mut key = v.get("output_index").and_then(Value::as_u64).map(|i| i + 1);
+        let mut key = wire_index(v, "output_index").map(|i| i + 1);
         if key.is_none() {
             key = match kind {
                 "response.output_item.added" | "response.output_item.done" => {
@@ -865,7 +865,7 @@ impl ResponseParser {
                 .into_iter()
                 .flatten()
             {
-                let idx = tc.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let idx = wire_index(tc, "index").unwrap_or(0);
                 let p = self.slot(idx);
                 if let Some(id) = tc
                     .get("id")
@@ -941,6 +941,18 @@ impl ResponseParser {
             }
         }
     }
+}
+
+/// Keys from here up hold calls moved out of a reused slot (FP11-S5).
+const MOVED_KEYS: u64 = 1 << 62;
+
+/// A stream's own index or output index, refused at or past [`MOVED_KEYS`]
+/// so an upstream cannot name a moved call's slot (FP11R-2) and `+ 1` cannot
+/// overflow. A refused index is read as none.
+fn wire_index(v: &Value, field: &str) -> Option<u64> {
+    v.get(field)
+        .and_then(Value::as_u64)
+        .filter(|i| *i < MOVED_KEYS)
 }
 
 fn str_of(v: Option<&Value>) -> String {
