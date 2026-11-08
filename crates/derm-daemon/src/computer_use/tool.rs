@@ -1495,11 +1495,19 @@ fn input_args(
     tokens: &HashMap<i64, String>,
 ) -> Result<(&'static str, Value), String> {
     let mut out = json!({"pid": target.pid, "window_id": target.window_id});
-    let element = |out: &mut Value, key: &str, index: i64| {
-        out[key] = json!(index);
-        if let Some(token) = tokens.get(&index) {
-            out["element_token"] = json!(token);
-        }
+    // MW5-38: cua-driver-rs 0.38.0's input tools take an element by
+    // `element_token` only, and refuse `element_index` (their schemas set
+    // `additionalProperties: false`; `platform-macos/src/tools/click.rs:
+    // 332-371`, `platform-linux/src/tools/impl_.rs:6536-6555`). An element
+    // the last capture gave no token is refused here.
+    let element = |out: &mut Value, index: i64| -> Result<(), String> {
+        let Some(token) = tokens.get(&index) else {
+            return Err(format!(
+                "Element {index} is not in the last capture of this window; capture again and use an index from it."
+            ));
+        };
+        out["element_token"] = json!(token);
+        Ok(())
     };
     if foreground(args) {
         out["delivery_mode"] = json!("foreground");
@@ -1523,7 +1531,7 @@ fn input_args(
             };
             out["button"] = json!(button);
             if let Some(index) = int_arg(args, "element") {
-                element(&mut out, "element_index", index);
+                element(&mut out, index)?;
             } else if let Some((x, y)) = pair_arg(args, "coordinate") {
                 out["x"] = json!(x);
                 out["y"] = json!(y);
@@ -1567,7 +1575,7 @@ fn input_args(
             out["direction"] = json!(str_arg(args, "direction").unwrap_or("down"));
             out["amount"] = json!(int_arg(args, "amount").unwrap_or(3).clamp(1, MAX_SCROLL));
             if let Some(index) = int_arg(args, "element") {
-                element(&mut out, "element_index", index);
+                element(&mut out, index)?;
             } else if let Some((x, y)) = pair_arg(args, "coordinate") {
                 out["x"] = json!(x);
                 out["y"] = json!(y);
@@ -1614,7 +1622,7 @@ fn input_args(
             let Some(value) = args.get("value").and_then(Value::as_str) else {
                 return Err("set_value needs `value`.".into());
             };
-            element(&mut out, "element_index", index);
+            element(&mut out, index)?;
             out["value"] = json!(value);
             "set_value"
         }

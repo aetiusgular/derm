@@ -549,7 +549,7 @@ fn mw5_38_a_capture_asks_cua_driver_for_its_elements_and_clicks_by_them() {
     );
     assert!(reply.get("isError").is_none(), "{reply}");
     let click = backend.last_args("click");
-    assert_eq!(click["element_index"], 0);
+    assert!(click.get("element_index").is_none(), "{click}");
     assert_eq!(click["element_token"], "s5:0");
     // A vision capture reads no tree and asks for none.
     run(
@@ -604,7 +604,7 @@ fn each_action_becomes_the_cua_tool_hermes_calls() {
         (
             json!({"action": "click", "element": 1}),
             "click",
-            json!({"pid": 41, "window_id": 7, "button": "left", "element_index": 1, "element_token": "s1:1"}),
+            json!({"pid": 41, "window_id": 7, "button": "left", "element_token": "s1:1"}),
         ),
         (
             json!({"action": "right_click", "coordinate": [5, 6]}),
@@ -612,14 +612,14 @@ fn each_action_becomes_the_cua_tool_hermes_calls() {
             json!({"pid": 41, "window_id": 7, "button": "right", "x": 5, "y": 6}),
         ),
         (
-            json!({"action": "middle_click", "element": 2}),
+            json!({"action": "middle_click", "element": 1}),
             "click",
-            json!({"pid": 41, "window_id": 7, "button": "middle", "element_index": 2}),
+            json!({"pid": 41, "window_id": 7, "button": "middle", "element_token": "s1:1"}),
         ),
         (
             json!({"action": "double_click", "element": 1, "modifiers": ["shift"]}),
             "double_click",
-            json!({"pid": 41, "window_id": 7, "button": "left", "element_index": 1, "element_token": "s1:1", "modifier": ["shift"]}),
+            json!({"pid": 41, "window_id": 7, "button": "left", "element_token": "s1:1", "modifier": ["shift"]}),
         ),
         (
             json!({"action": "key", "keys": "cmd+s"}),
@@ -642,9 +642,9 @@ fn each_action_becomes_the_cua_tool_hermes_calls() {
             json!({"pid": 41, "window_id": 7, "from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4}),
         ),
         (
-            json!({"action": "set_value", "element": 2, "value": "Blue"}),
+            json!({"action": "set_value", "element": 1, "value": "Blue"}),
             "set_value",
-            json!({"pid": 41, "window_id": 7, "element_index": 2, "value": "Blue"}),
+            json!({"pid": 41, "window_id": 7, "element_token": "s1:1", "value": "Blue"}),
         ),
     ];
     for (args, tool, want) in cases {
@@ -655,6 +655,82 @@ fn each_action_becomes_the_cua_tool_hermes_calls() {
         assert_eq!(backend.last_args(tool), want, "{args}");
         assert_eq!(backend.last_record()["delivery"], "background");
     }
+}
+
+/// The reply cua-driver-rs 0.38.0 gave on the Mac (fix pass 12, recorded;
+/// the file's `$source` says how), with a 1x1 image in place of the capture.
+fn recorded_mac_window_state(_args: &Value) -> Value {
+    let rec: Value =
+        serde_json::from_str(include_str!("fixtures/gws-macos-calculator-0.38.0.json")).unwrap();
+    json!({"content": [{"type": "text", "text": "window_id=37516 pid=70480 elements=33"},
+                       {"type": "image", "data": PNG, "mimeType": "image/png"}],
+           "structuredContent": rec["structuredContent"]})
+}
+
+#[test]
+fn mw5_38_the_recorded_mac_reply_lists_calculators_keys_and_clicks_by_token() {
+    let backend = Fake::new();
+    backend.grant("com.apple.calculator", "Calculator");
+    *backend.window_state_of.borrow_mut() = Some(recorded_mac_window_state);
+    let mut state = State::with_screen(Arc::new(Screen::new()), Duration::from_millis(50));
+    let reply = run(
+        &backend,
+        &mut state,
+        json!({"action": "capture", "app": "Calculator", "mode": "som"}),
+    );
+    let t = text(&reply);
+    assert_eq!(t["total_elements"], 8, "{t}");
+    assert_eq!(t["elements"][5]["label"], "7");
+    assert_eq!(t["elements"][5]["bounds"], json!([385, 808, 48, 48]));
+    let reply = run(
+        &backend,
+        &mut state,
+        json!({"action": "click", "element": 5}),
+    );
+    assert!(reply.get("isError").is_none(), "{reply}");
+    let click = backend.last_args("click");
+    assert_eq!(click["element_token"], "s00000002:5");
+    assert!(click.get("element_index").is_none());
+}
+
+/// MW5-38's second half: cua-driver-rs 0.38.0's input tools take an element
+/// by `element_token` only; `element_index` is not in their schemas, which
+/// set `additionalProperties: false` (`platform-macos/src/tools/click.rs:
+/// 332-371` and the six beside it, `platform-linux/src/tools/impl_.rs:
+/// 6536-6555`), and the Mac refused it (fix pass 12's run: "click: unknown
+/// argument element_index"). An element the last capture gave no token is
+/// refused before anything runs.
+#[test]
+fn mw5_38_an_element_goes_by_its_token_and_one_without_a_token_is_refused() {
+    let (backend, mut state) = captured();
+    for args in [
+        json!({"action": "click", "element": 2}),
+        json!({"action": "scroll", "element": 2}),
+        json!({"action": "set_value", "element": 2, "value": "x"}),
+        json!({"action": "click", "element": 9}),
+    ] {
+        backend.calls.borrow_mut().clear();
+        let reply = run(&backend, &mut state, args.clone());
+        assert_eq!(reply["isError"], true, "{args}: {reply}");
+        assert!(
+            text(&reply)["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("capture"),
+            "{args}: {reply}"
+        );
+        assert!(backend.calls.borrow().is_empty(), "{args}");
+    }
+    let reply = run(
+        &backend,
+        &mut state,
+        json!({"action": "scroll", "element": 1}),
+    );
+    assert!(reply.get("isError").is_none(), "{reply}");
+    assert_eq!(
+        backend.last_args("scroll"),
+        json!({"pid": 41, "window_id": 7, "direction": "down", "amount": 3, "element_token": "s1:1"})
+    );
 }
 
 #[test]
