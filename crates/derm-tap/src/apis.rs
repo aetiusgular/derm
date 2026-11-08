@@ -561,6 +561,22 @@ impl ResponseParser {
         self.calls.entry(key).or_default()
     }
 
+    /// The slot a new call starts in (fix pass 11's review, FP11-S5): an
+    /// upstream that reuses an index for a second call after the first one's
+    /// item ended would otherwise give the second the first's `done` and
+    /// `done_at`, and it would never be posted early. The finished call moves
+    /// to a key of its own, past every index a stream names.
+    fn start_slot(&mut self, key: u64, id: &str) -> &mut Pending {
+        if let Some(old) = self.calls.get(&key) {
+            if old.done && !old.id.is_empty() && old.id != id {
+                let moved = self.calls.remove(&key).unwrap_or_default();
+                self.order += 1;
+                self.calls.insert((1u64 << 62) + self.order, moved);
+            }
+        }
+        self.slot(key)
+    }
+
     fn next_key(&mut self) -> u64 {
         self.order += 1;
         self.order
@@ -680,8 +696,9 @@ impl ResponseParser {
                 let b = v.get("content_block");
                 if b.and_then(|b| b.get("type")).and_then(Value::as_str) == Some("tool_use") {
                     let idx = v.get("index").and_then(Value::as_u64).unwrap_or(u64::MAX);
-                    let p = self.slot(idx);
-                    p.id = str_of(b.and_then(|b| b.get("id")));
+                    let id = str_of(b.and_then(|b| b.get("id")));
+                    let p = self.start_slot(idx, &id);
+                    p.id = id;
                     p.name = str_of(b.and_then(|b| b.get("name")));
                     // An input given whole at the start (rare); deltas replace it.
                     if let Some(i) = b
@@ -718,7 +735,8 @@ impl ResponseParser {
 
     fn responses_item(&mut self, key: u64, item: &Value, done: bool) {
         let kind = item.get("type").and_then(Value::as_str).unwrap_or("");
-        let p = self.slot(key);
+        let new_id = str_of(item.get("call_id").or_else(|| item.get("id")));
+        let p = self.start_slot(key, &new_id);
         match kind {
             "function_call" => {
                 p.id = str_of(item.get("call_id"));

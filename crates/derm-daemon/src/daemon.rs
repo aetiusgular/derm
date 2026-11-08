@@ -2186,6 +2186,11 @@ impl Daemon {
             "chatOsLate": chat
                 .and_then(|c| self.join.lock().ok().and_then(|j| j.late_for(c)))
                 .filter(|n| *n > 0),
+            // FP11-S2: OS events that came after derm let the chat go with
+            // the feed past its stop, so done after the run stopped.
+            "chatOsAfter": chat
+                .and_then(|c| self.join.lock().ok().and_then(|j| j.after_for(c)))
+                .filter(|n| *n > 0),
         })
     }
 

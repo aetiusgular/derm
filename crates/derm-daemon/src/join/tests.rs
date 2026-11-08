@@ -1173,7 +1173,9 @@ fn effects_that_arrive_after_the_stop_are_still_joined_for_a_while() {
     later.id = "es-late-2".into();
     later.at = 2_500 + STOPPED_KEEP_MS + 2;
     assert!(j.observe(&later).is_empty());
-    assert_eq!(j.late_for(CHAT), Some(1));
+    // Counted as done after the stop, not as feed lag (FP11-S2).
+    assert_eq!(j.after_for(CHAT), Some(1));
+    assert_eq!(j.late_for(CHAT), None);
     // A chat id started again begins afresh: an old call does not carry over.
     start(&mut j);
     assert!(effect(&mut j, "write", 1_300, 6002, 6001, json!({"path": "/w/x"})).is_empty());
@@ -3149,4 +3151,158 @@ fn mw5_34_past_the_cap_a_chats_effects_are_counted_as_late() {
     assert!(keep_stopped(0, STOPPED_FEED_CAP_MS, SLACK_AFTER_MS));
     assert!(!keep_stopped(0, STOPPED_FEED_CAP_MS + 1, 0));
     assert!(!keep_stopped(0, STOPPED_KEEP_MS + 1, SLACK_AFTER_MS + 1));
+}
+
+// ---- Fix pass 11's review, FP11-S1 to S4: its probes, which failed on
+// f95d8fd (FP11-S1's and the helper's count read `after_for` since FP11-S2
+// split the two kinds of late) ----
+
+fn fp11_dropped_chat(j: &mut Join) {
+    start(j);
+    call(j, "toolu_P", "bash", &[], 1_000, Some(2_000));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    // The feed passes the stop (an event of no chat stamped after it).
+    let mut passed = ev(
+        Source::Eslogger,
+        "exec",
+        2_500 + STOPPED_KEEP_MS + 1,
+        Some(9_999),
+        json!({"osAt": 2_500 + SLACK_AFTER_MS + 1, "exe": "/bin/ls"}),
+    );
+    passed.chat_id = String::new();
+    passed.id = "es-pass".into();
+    j.observe(&passed);
+    // A chat event after the keep sweeps the chat.
+    let mut w = ev(
+        Source::Eslogger,
+        "write",
+        2_500 + STOPPED_KEEP_MS + 2,
+        Some(6301),
+        json!({"osAt": 2_500 + SLACK_AFTER_MS + 2, "path": "/w/.github/workflows/a.yml"}),
+    );
+    w.id = "es-late-a".into();
+    j.observe(&w);
+    assert_eq!(j.after_for(CHAT), Some(1));
+}
+
+/// FP11-S1: an adapter record the agent posts after the chat was let go
+/// (a greeted socket keeps chat scope past run.stop, daemon.rs:1741-1743)
+/// makes the chat again with no stop; its later OS events are then neither
+/// joined nor counted late, and the chat is never swept.
+#[test]
+fn fp11_s1_an_adapter_record_after_the_drop_hides_late_os_events() {
+    let mut j = Join::new();
+    fp11_dropped_chat(&mut j);
+    j.observe(&ev(
+        Source::Adapter,
+        "tool.call",
+        2_500 + STOPPED_KEEP_MS + 3,
+        None,
+        json!({"toolUseId": "toolu_forged"}),
+    ));
+    let mut w = ev(
+        Source::Eslogger,
+        "write",
+        2_500 + STOPPED_KEEP_MS + 4,
+        Some(6301),
+        json!({"osAt": 2_500 + SLACK_AFTER_MS + 4, "path": "/w/.github/workflows/b.yml"}),
+    );
+    w.id = "es-late-b".into();
+    let r = j.observe(&w);
+    assert!(r.is_empty(), "{r:?}");
+    let far = 2_500 + STOPPED_FEED_CAP_MS * 10;
+    let mut w2 = w.clone();
+    w2.id = "es-late-c".into();
+    w2.at = far;
+    j.observe(&w2);
+    assert_eq!(
+        j.after_for(CHAT),
+        Some(3),
+        "late OS events of the stopped chat are counted"
+    );
+    assert!(
+        !j.chats.contains_key(CHAT),
+        "the stopped chat is never kept forever"
+    );
+    // Its run's next start makes it again, with nothing late (FP11-S3).
+    start(&mut j);
+    assert!(j.chats.contains_key(CHAT));
+    assert_eq!(j.after_for(CHAT), None);
+}
+
+/// FP11-S3: a chat id started again keeps the late count of its last run.
+#[test]
+fn fp11_s3_a_restarted_chat_reports_the_old_runs_late_count() {
+    let mut j = Join::new();
+    fp11_dropped_chat(&mut j);
+    start(&mut j);
+    assert_eq!(j.late_for(CHAT), None, "a new run starts with nothing late");
+}
+
+/// FP11-S2: the report says late events came "more than 10 min after it
+/// stopped, while the OS feed was behind"; here one 30 s after the stop with
+/// the feed not behind is counted.
+#[test]
+fn fp11_s2_late_count_only_past_the_cap() {
+    let mut j = Join::new();
+    fp11_dropped_chat(&mut j);
+    // fp11_dropped_chat already asserted Some(1) at stop + 30 s; the probe
+    // states the report's claim.
+    assert!(
+        j.late_for(CHAT).is_none(),
+        "counted late only past STOPPED_FEED_CAP_MS"
+    );
+}
+
+/// FP11-S4: one OS event stamped in the future (a clock step) moves
+/// os_seen for good, so the MW5-34 wait is off for every later chat.
+#[test]
+fn fp11_s4_a_future_os_stamp_disables_the_wait_for_later_chats() {
+    let mut j = Join::new();
+    let mut fut = ev(
+        Source::Auditd,
+        "exec",
+        10,
+        Some(1),
+        json!({"auditAt": i64::MAX / 2, "exe": "/bin/true"}),
+    );
+    fut.chat_id = String::new();
+    j.observe(&fut);
+    start(&mut j);
+    call(&mut j, "toolu_F", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6401}));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    // The feed is 40 s behind: an effect stamped before the stop arrives.
+    let mut late = ev(
+        Source::Auditd,
+        "write",
+        2_500 + 40_000,
+        Some(6401),
+        json!({"ppid": ROOT, "auditAt": 1_200, "path": "/w/x"}),
+    );
+    late.id = "au-behind".into();
+    let r = j.observe(&late);
+    assert_eq!(
+        r.len(),
+        1,
+        "the chat is still kept while the feed is behind: {r:?}"
+    );
+}
+
+#[test]
+fn fp11_s4_control_without_the_future_stamp() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_F", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6401}));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    let mut late = ev(
+        Source::Auditd,
+        "write",
+        2_500 + 40_000,
+        Some(6401),
+        json!({"ppid": ROOT, "auditAt": 1_200, "path": "/w/x"}),
+    );
+    late.id = "au-behind".into();
+    assert_eq!(j.observe(&late).len(), 1);
 }

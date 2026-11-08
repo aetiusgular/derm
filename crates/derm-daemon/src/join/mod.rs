@@ -96,20 +96,56 @@ pub const STOPPED_FEED_CAP_MS: i64 = 600_000;
 /// How many dropped chats' late counts are kept.
 const MAX_LATE: usize = 256;
 
+/// Why the join let a stopped chat go (fix pass 11's review, FP11-S2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LetGo {
+    /// The OS feed had passed the stop: what still comes was done after it.
+    FeedPassed,
+    /// The wait for a feed that was behind ran out (`STOPPED_FEED_CAP_MS`).
+    Capped,
+}
+
+/// A chat the join let go, why, and how many of its OS events came after.
+#[derive(Clone, Debug)]
+struct Gone {
+    chat: String,
+    why: LetGo,
+    late: u64,
+}
+
 /// Whether a chat stopped at `stopped` (daemon time) is still kept at `now`
 /// (daemon time), when the OS feeds have delivered events stamped up to
 /// `os_seen` (the OS's time). MW5-34: a 30 s keep by the daemon's clock lost
 /// the effects of a chat whose feed was 40 s behind.
 pub fn keep_stopped(stopped: i64, now: i64, os_seen: i64) -> bool {
+    keep_why(stopped, now, os_seen).is_none()
+}
+
+/// None while a stopped chat is kept; else why it is let go.
+pub fn keep_why(stopped: i64, now: i64, os_seen: i64) -> Option<LetGo> {
     let waited = now - stopped;
-    waited <= STOPPED_KEEP_MS
-        || (waited <= STOPPED_FEED_CAP_MS && os_seen <= stopped + SLACK_AFTER_MS)
+    if waited <= STOPPED_KEEP_MS {
+        return None;
+    }
+    if os_seen > stopped + SLACK_AFTER_MS {
+        return Some(LetGo::FeedPassed);
+    }
+    (waited > STOPPED_FEED_CAP_MS).then_some(LetGo::Capped)
 }
 
 /// The OS's own time of an OS feed's event, for the feed's progress; None
 /// for any other source.
 pub fn os_feed_time(e: &Event) -> Option<i64> {
     matches!(e.source, Source::Auditd | Source::Eslogger).then(|| effect_time(e))
+}
+
+/// The feed's progress from one event: its OS time, unless it is ahead of
+/// the daemon's clock by more than the slack (fix pass 11's review,
+/// FP11-S4: one event stamped in the future, a clock step, moved the
+/// running maximum for good and turned MW5-34's wait off for every later
+/// chat). OS feeds run on the daemon's host, so their clocks are one.
+pub fn feed_progress(e: &Event) -> Option<i64> {
+    os_feed_time(e).filter(|t| *t <= e.at + SLACK_AFTER_MS)
 }
 /// How far before a call's recorded start an effect may fall (the OS feed
 /// and the hook each stamp with some delay).
@@ -796,11 +832,12 @@ impl ChatState {
 #[derive(Default)]
 pub struct Join {
     chats: HashMap<String, ChatState>,
-    /// The latest OS time an OS feed's event carried (MW5-34).
+    /// The latest OS time an OS feed's event carried (MW5-34), never ahead
+    /// of the daemon's clock (`feed_progress`).
     os_seen: i64,
-    /// Chats dropped after their stop, and how many OS events of theirs
+    /// Chats let go after their stop, why, and how many OS events of theirs
     /// came after that, at most `MAX_LATE` chats, oldest first out.
-    late: VecDeque<(String, u64)>,
+    late: VecDeque<Gone>,
 }
 
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -895,33 +932,49 @@ impl Join {
         self.chats.remove(chat);
     }
 
-    /// Drops the stopped chats `keep_stopped` no longer keeps at `now`, and
-    /// remembers them, so their later OS events are counted.
+    /// Drops the stopped chats `keep_why` lets go at `now`, and remembers
+    /// them, so their later records are counted, not made a chat again.
     fn sweep(&mut self, now: i64) {
         let os_seen = self.os_seen;
-        let gone: Vec<String> = self
+        let gone: Vec<(String, LetGo)> = self
             .chats
             .iter()
-            .filter(|(_, st)| {
-                st.stopped_at
-                    .is_some_and(|s| !keep_stopped(s, now, os_seen))
+            .filter_map(|(k, st)| {
+                let why = keep_why(st.stopped_at?, now, os_seen)?;
+                Some((k.clone(), why))
             })
-            .map(|(k, _)| k.clone())
             .collect();
-        for k in gone {
+        for (k, why) in gone {
             self.chats.remove(&k);
-            self.late.retain(|(c, _)| *c != k);
-            self.late.push_back((k, 0));
+            self.late.retain(|g| g.chat != k);
+            self.late.push_back(Gone {
+                chat: k,
+                why,
+                late: 0,
+            });
             while self.late.len() > MAX_LATE {
                 self.late.pop_front();
             }
         }
     }
 
-    /// How many OS events of `chat` came after the join had let it go
-    /// (MW5-34); None when it was not let go.
+    /// How many OS events of `chat` came after the join stopped waiting for
+    /// a feed that was behind (MW5-34; `STOPPED_FEED_CAP_MS`); None when it
+    /// was not let go that way.
     pub fn late_for(&self, chat: &str) -> Option<u64> {
-        self.late.iter().find(|(c, _)| c == chat).map(|(_, n)| *n)
+        self.late
+            .iter()
+            .find(|g| g.chat == chat && g.why == LetGo::Capped)
+            .map(|g| g.late)
+    }
+
+    /// How many OS events of `chat` came after the join let it go with the
+    /// feed past its stop: work done after the run stopped (FP11-S2).
+    pub fn after_for(&self, chat: &str) -> Option<u64> {
+        self.late
+            .iter()
+            .find(|g| g.chat == chat && g.why == LetGo::FeedPassed)
+            .map(|g| g.late)
     }
 
     fn chat(&mut self, chat: &str) -> &mut ChatState {
@@ -943,18 +996,30 @@ impl Join {
     /// Reads one ingested event; returns the join records it makes (source
     /// `derm`, for the daemon to ingest; they are not read back).
     pub fn observe(&mut self, e: &Event) -> Vec<Event> {
-        if let Some(t) = os_feed_time(e) {
+        if let Some(t) = feed_progress(e) {
             self.os_seen = self.os_seen.max(t);
         }
         if e.chat_id.is_empty() {
             return Vec::new();
         }
         self.sweep(e.at);
-        // An OS event of a chat already let go: counted, never a new chat.
-        if os_feed_time(e).is_some() && !self.chats.contains_key(&e.chat_id) {
-            if let Some((_, n)) = self.late.iter_mut().find(|(c, _)| *c == e.chat_id) {
-                *n += 1;
-                return Vec::new();
+        // A chat already let go is never made again by a later record: an
+        // OS event of it is counted, and any other record but its own run's
+        // next start is dropped here (FP11-S1: a chat token's socket can
+        // still post after run.stop, and a record of it made the chat again
+        // with no stop, so its later OS events were neither joined nor
+        // counted, and it was never swept). A new run starts afresh, its
+        // old count gone (FP11-S3).
+        if !self.chats.contains_key(&e.chat_id) {
+            if let Some(i) = self.late.iter().position(|g| g.chat == e.chat_id) {
+                if e.source == Source::Run && e.kind == "run.start" {
+                    self.late.remove(i);
+                } else {
+                    if os_feed_time(e).is_some() {
+                        self.late[i].late += 1;
+                    }
+                    return Vec::new();
+                }
             }
         }
         match (&e.source, e.kind.as_str()) {

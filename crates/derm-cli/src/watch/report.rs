@@ -255,7 +255,19 @@ pub fn render(r: &Value) -> String {
         // MW5-34: effects that came after derm stopped waiting for a feed
         // that was behind are in the log, never joined or flagged.
         out.push_str(&format!(
-            "CHAT NOT FULLY WATCHED: {} of its OS events reached derm more than 10 min after it stopped, while the OS feed was behind; they are in the log with no join records or control flags\n",
+            "CHAT NOT FULLY WATCHED: {} of its OS events reached derm after it had waited 10 min for the OS feed, which was behind; they are in the log with no join records or control flags\n",
+            count(n)
+        ));
+    }
+    if let Some(n) = r
+        .get("chatOsAfter")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        // FP11-S2: the feed had passed the stop, so these were done after
+        // the run stopped, by a process it left running.
+        out.push_str(&format!(
+            "AFTER THE CHAT STOPPED: {} OS events of this chat's processes came after derm stopped keeping it (the OS feed was current); a process it started kept running; they are in the log with no join records or control flags\n",
             count(n)
         ));
     }
@@ -511,8 +523,11 @@ mod tests {
     fn mw5_34_a_chats_late_os_events_are_named() {
         let r = json!({"events": 1, "chatOsLate": 3});
         assert!(render(&r).contains(
-            "CHAT NOT FULLY WATCHED: 3 of its OS events reached derm more than 10 min after it stopped"
+            "CHAT NOT FULLY WATCHED: 3 of its OS events reached derm after it had waited 10 min for the OS feed"
         ));
+        let after = json!({"events": 1, "chatOsAfter": 2});
+        assert!(render(&after).contains("AFTER THE CHAT STOPPED: 2 OS events"));
+        assert!(!render(&after).contains("NOT FULLY WATCHED"));
         assert!(!render(&json!({"events": 1, "chatOsLate": null})).contains("NOT FULLY WATCHED"));
     }
 

@@ -27,6 +27,10 @@ fail() {
   exit 1
 }
 
+# The staging folder, with the policy in it, goes however the script ends
+# (fix pass 11's review, FP11-S6: a failed install left it in the VM).
+trap 'rm -rf "$src"' EXIT
+
 [ -d "$src/plugin" ] || fail "$src/plugin is missing; the kit was not built by derm run"
 [ -f "$src/policy.json" ] || fail "$src/policy.json is missing; derm run adds the kit only with a policy"
 

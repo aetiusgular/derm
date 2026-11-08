@@ -570,13 +570,12 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
                 }
             }
         }
-        if !cut && !client_gone && http::end_chunks(w).is_err() {
-            client_gone = true;
-        }
     }
-    if cut || client_gone {
-        inner.counters.cut.fetch_add(1, Ordering::Relaxed);
-    }
+    // The reply's last chunk goes after its records (fix pass 11): the
+    // client's next request can carry this reply's results, and they find
+    // their call only once its record is kept. With the end sent first, a
+    // fast client's results came before the call and were left unmatched.
+    let end_after_records = has_body && !cut && !client_gone;
 
     // Records.
     if let (Some(api), Some(parser)) = (api, parser) {
@@ -623,6 +622,12 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
             }
         }
         (inner.sink)(events);
+    }
+    if end_after_records && http::end_chunks(w).is_err() {
+        client_gone = true;
+    }
+    if cut || client_gone {
+        inner.counters.cut.fetch_add(1, Ordering::Relaxed);
     }
     !(cut || client_gone)
 }

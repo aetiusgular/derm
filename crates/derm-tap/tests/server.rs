@@ -738,7 +738,10 @@ fn gemini_results_under_an_id_the_cli_made_up_join_by_name_and_order() {
         &[],
         next.to_string().as_bytes(),
     );
-    let ev = wait_events(&rig, 4);
+    // The call is posted when its part ends and again with the reply
+    // (MW5-33), then with its result: five records, read as the last copy
+    // per id (case 35).
+    let ev = last_per_id(&wait_events(&rig, 5));
     let joined: Vec<&Event> = ev
         .iter()
         .filter(|e| e.kind == "tap.call" && e.detail["resultSha256"] != Value::Null)

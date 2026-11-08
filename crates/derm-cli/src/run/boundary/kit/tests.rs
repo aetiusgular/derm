@@ -234,6 +234,8 @@ fn the_kit_is_a_v3_mixin_whose_parts_agree() {
         .unwrap();
     assert!(copied < repointed && repointed < registered);
     assert!(!INSTALL.contains("command -v node"));
+    // FP11-S6: the staging folder goes on every exit, a failure's too.
+    assert!(INSTALL.contains("trap 'rm -rf \"$src\"' EXIT"));
 }
 
 /// Security finding W5C-S2 (integration w5 continue): the install writes the

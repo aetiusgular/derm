@@ -187,8 +187,12 @@ struct Chat {
 pub struct ControlFlags {
     chats: HashMap<String, Chat>,
     chat_order: VecDeque<String>,
-    /// The latest OS time an OS feed's event carried (MW5-34).
+    /// The latest OS time an OS feed's event carried (MW5-34), never ahead
+    /// of the daemon's clock (FP11-S4).
     os_seen: i64,
+    /// Chats let go after their stop, so a later record does not make them
+    /// again (FP11-S1), oldest first out.
+    gone: VecDeque<String>,
 }
 
 fn str_at<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
@@ -221,7 +225,7 @@ impl ControlFlags {
     /// gives (none for most).
     pub fn observe(&mut self, e: &Event) -> Vec<Event> {
         // The feed's progress counts every OS event, a chat's or not.
-        if let Some(t) = crate::join::os_feed_time(e) {
+        if let Some(t) = crate::join::feed_progress(e) {
             self.os_seen = self.os_seen.max(t);
         }
         if e.chat_id.is_empty() {
@@ -242,6 +246,19 @@ impl ControlFlags {
             .collect();
         for k in gone {
             self.forget(&k);
+            self.gone.retain(|c| *c != k);
+            self.gone.push_back(k);
+            while self.gone.len() > MAX_CHATS {
+                self.gone.pop_front();
+            }
+        }
+        // FP11-S1: a chat let go comes back only with its run's next start.
+        if let Some(i) = self.gone.iter().position(|c| *c == e.chat_id) {
+            if e.source == Source::Run && e.kind == "run.start" {
+                self.gone.remove(i);
+            } else if !self.chats.contains_key(&e.chat_id) {
+                return Vec::new();
+            }
         }
         // Only the run's own stop: a chat token posts adapter records of
         // any kind, and a forged `run.stop` must not drop the chat's
@@ -806,12 +823,17 @@ mod tests {
             json!({"osAt": stopped + crate::join::SLACK_AFTER_MS + 1}),
         );
         passed.chat_id = String::new();
+        // It reaches the daemon after the keep; an OS time ahead of its own
+        // arrival would be a clock error, and is not read (FP11-S4).
+        passed.at = stopped + crate::join::STOPPED_KEEP_MS + 1;
         f.observe(&passed);
         let mut later = ev("x", "tool.call", Source::Adapter, json!({}));
         later.chat_id = "other".into();
         later.at += crate::join::STOPPED_KEEP_MS + 1;
         f.observe(&later);
         assert!(!f.chats.contains_key("chat-fixture"));
+        // A chat let go comes back only with its run's next start (FP11-S1).
+        f.observe(&ev("s2", "run.start", Source::Run, json!({})));
         for i in 0..(MAX_EFFECTS + 50) {
             f.observe(&ev(
                 &format!("w{i}"),
@@ -874,6 +896,59 @@ mod tests {
         ));
         assert_eq!(flags.len(), 1, "{flags:?}");
         assert_eq!(flags[0].kind, "install.control");
+    }
+
+    /// Fix pass 11's review, FP11-S1: once the flagger has let a stopped chat
+    /// go, a record the chat's token posts later does not make it again, so
+    /// a late write is not flagged against a chat with no stop; its run's
+    /// next start does.
+    #[test]
+    fn fp11_s1_a_chat_let_go_is_not_made_again_by_a_later_record() {
+        let at = |mut e: Event, t: i64| {
+            e.at = t;
+            e
+        };
+        let mut f = ControlFlags::new();
+        f.observe(&at(
+            ev(
+                "inst",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "t"}),
+            ),
+            1_000,
+        ));
+        f.observe(&at(ev("stop", "run.stop", Source::Run, json!({})), 1_020));
+        let t = 1_020 + crate::join::STOPPED_FEED_CAP_MS + 1;
+        f.observe(&at(ev("x", "tool.call", Source::Adapter, json!({})), t));
+        assert!(!f.chats.contains_key("chat-fixture"), "let go");
+        f.observe(&at(
+            ev(
+                "i2",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "t2"}),
+            ),
+            t + 1,
+        ));
+        assert!(
+            !f.chats.contains_key("chat-fixture"),
+            "not made again by a chat record"
+        );
+        f.observe(&at(ev("start", "run.start", Source::Run, json!({})), t + 2));
+        f.observe(&at(
+            ev(
+                "i3",
+                "install.call",
+                Source::Adapter,
+                json!({"toolUseId": "t3"}),
+            ),
+            t + 3,
+        ));
+        assert!(
+            f.chats.contains_key("chat-fixture"),
+            "its next run starts afresh"
+        );
     }
 
     /// W5C-S8: a flood of install calls evicts the oldest, never every one.
