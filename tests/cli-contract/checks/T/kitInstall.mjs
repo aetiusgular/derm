@@ -5,9 +5,11 @@
 //     1. `derm run claude-code --boundary sbx` with a fake sbx: derm builds
 //        the kit and passes it to `sbx create` with --kit; the fake keeps a
 //        copy (derm removes its own right after the create).
-//     2. The kit's files/home/ is laid into /home/agent, as sbx does
-//        (SPEC-v2 5.8), and its setup.install runs as root, as sbx runs it
-//        (SPEC-v2 5.6): `sh /home/agent/.derm-kit/install.sh`.
+//     2. The kit's derm-kit/ and a Node are laid into /opt/derm-kit-src, as
+//        its v3 Dockerfile copies them (fix pass 11, MW5-7), and its install
+//        hook runs as root, as sbx runs it (lifecycle@1):
+//        `sh /opt/derm-kit-src/install.sh`. sbx's own build of the overlay
+//        and the image's Node are what the Mac run showed (fix pass 11).
 //     3. The real Claude Code starts as the `agent` user, in the claude
 //        kit's full access (`--dangerously-skip-permissions`, its
 //        entrypoint) with DERM_FULL_ACCESS=1 (the kit's environment),
@@ -144,7 +146,7 @@ export const checks = [
         // 1. derm builds the kit.
         const k = kitFromDerm(root);
         const create = k.calls.split("\n").find((l) => l.startsWith("create ")) ?? "";
-        if (!/ --kit \S*derm-sbx-kit-\S+ /.test(create) || !existsSync(path.join(k.out, "spec.yaml"))) {
+        if (!/ --kit \S*derm-sbx-kit-\S+ /.test(create) || !existsSync(path.join(k.out, "derm-gate-claude.yaml"))) {
           return { status: "fail", finding: `no kit on the create: ${JSON.stringify(create)}; derm: exit ${k.r.code} ${JSON.stringify(k.r.err.slice(-300))}` };
         }
         if (!/runs with derm's gate/.test(k.r.err)) findings.push("the start line did not say the gate is in the VM");
@@ -162,10 +164,14 @@ export const checks = [
           renameSync("/etc/claude-code", made.etc);
         }
         made.opt = !existsSync("/opt/derm-kit");
-        cpSync(path.join(k.out, "files", "home"), "/home/agent", { recursive: true });
-        sh("/usr/bin/chown", ["-R", `${AGENT}:${AGENT}`, "/home/agent/.derm-kit"]);
-        const PATH = [path.dirname(process.execPath), "/usr/local/bin", "/usr/bin", "/bin"].join(":");
-        const inst = sh("/bin/sh", ["/home/agent/.derm-kit/install.sh"], { env: { PATH, LANG: "C" }, timeout: 60000 });
+        // As the v3 Dockerfile's overlay: derm-kit/ and a Node, root's.
+        cpSync(path.join(k.out, "derm-kit"), "/opt/derm-kit-src", { recursive: true });
+        cpSync(process.execPath, "/opt/derm-kit-src/node");
+        chmodSync("/opt/derm-kit-src/node", 0o755);
+        // The hook's own PATH has no Node in the claude image: the install
+        // must not need one there.
+        const PATH = ["/usr/bin", "/bin"].join(":");
+        const inst = sh("/bin/sh", ["/opt/derm-kit-src/install.sh"], { env: { PATH, LANG: "C" }, timeout: 60000 });
         if (inst.code !== 0) return { status: "fail", finding: `install.sh exit ${inst.code}: ${inst.err.slice(-400)}` };
         const managed = JSON.parse(readFileSync("/etc/claude-code/managed-settings.json", "utf8"));
         const pre = managed.hooks?.PreToolUse?.[0]?.hooks?.[0];
@@ -180,7 +186,8 @@ export const checks = [
         if (marker.uid !== 0 || (marker.mode & 0o022) !== 0) findings.push("the VM marker is not root's alone");
         const held = sh(process.execPath, ["--input-type=module", "-e", 'const m = await import("/opt/derm-kit/src/core/daemon.ts"); process.exit(m.vmMarker() === undefined ? 0 : 1);']);
         if (held.code !== 0) findings.push(`the installed hook does not take the VM marker: ${held.err.slice(-200)}`);
-        if (existsSync("/home/agent/.derm-kit")) findings.push("the install left its staging folder");
+        if (existsSync("/opt/derm-kit-src")) findings.push("the install left its staging folder");
+        if (managed.hooks?.PreToolUse?.[0]?.hooks?.[0]?.command !== "/opt/derm-kit/node") findings.push("the hooks do not run the kit's own Node");
 
         // 3. The real Claude Code, as the agent user, in full access.
         const wrapper = path.join(root, "claude-as-agent");
@@ -240,7 +247,7 @@ export const checks = [
         // (re-review W5R-7): with it, a hook here would take the VM route.
         else rmSync("/opt/derm-kit/sbx-vm", { force: true });
         rmSync("/home/agent/.derm", { recursive: true, force: true });
-        rmSync("/home/agent/.derm-kit", { recursive: true, force: true });
+        rmSync("/opt/derm-kit-src", { recursive: true, force: true });
         if (made.user) sh("/usr/sbin/userdel", ["-r", AGENT]);
         rmSync(root, { recursive: true, force: true });
       }
