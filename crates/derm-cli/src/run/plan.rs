@@ -1707,8 +1707,17 @@ mod tests {
         let allow = v["filesystem"]["allowWrite"].to_string();
         let deny = v["filesystem"]["denyWrite"].to_string();
         assert!(allow.contains("\"/home/u\""), "{allow}");
-        assert!(
-            deny.contains("/home/u/.local/share/derm"),
+        // On Linux the daemon's data folder is denied. On macOS it is the
+        // folder of the daemon's socket too, which srt opens by path (case
+        // 174); a deny there is not run on a Mac yet, so it is not added
+        // (the Mac half stays open; CI's `rust-macos` holds that it is not).
+        assert_eq!(
+            deny.contains(
+                &super::super::content_root("/home/u")
+                    .to_string_lossy()
+                    .into_owned()
+            ),
+            !cfg!(target_os = "macos"),
             "allowWrite {allow}\ndenyWrite {deny}"
         );
     }
