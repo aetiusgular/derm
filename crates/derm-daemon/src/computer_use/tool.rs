@@ -196,7 +196,9 @@ struct Answer {
     app: Option<String>,
     /// The app a refused grant was for, as its SHA-256 and length: the name
     /// is the model's text, which a record never keeps (FP10-S1).
-    app_asked: Option<Box<(String, usize)>>,
+    /// The app name a refused grant asked for, as sent: its SHA-256, its
+    /// length in characters, and how many of those cleaning dropped.
+    app_asked: Option<Box<(String, usize, usize)>>,
     grant: Option<String>,
     effect: Option<bool>,
     verified: Option<bool>,
@@ -1063,7 +1065,10 @@ fn resolve_target(
     args: &Value,
     action: &str,
 ) -> Result<Target, Answer> {
-    let app = str_arg(args, "app").map(|a| printable(a, MAX_APP));
+    // MW5-36: the record describes the name as the model sent it; the
+    // cleaned form is what is looked up and shown.
+    let raw_app = str_arg(args, "app");
+    let app = raw_app.map(|a| printable(a, MAX_APP));
     let app = app.as_deref().map(str::trim).filter(|a| !a.is_empty());
     let pid = int_arg(args, "pid").filter(|p| *p > 0);
     let window_id = int_arg(args, "window_id").filter(|w| *w > 0);
@@ -1082,11 +1087,17 @@ fn resolve_target(
         Some(app) => Some(
             ensure_grant(backend, chat, app, action).map_err(|mut refused| {
                 refused.app_asked.get_or_insert_with(|| {
-                    let hash = Sha256::digest(app.as_bytes())
+                    // As received (Mac test w5 retest 10, MW5-36): hashing
+                    // the cleaned name hid characters `printable` drops, such
+                    // as tag characters, from the record. How many cleaning
+                    // dropped or changed is kept beside it.
+                    let sent = raw_app.unwrap_or(app);
+                    let hash = Sha256::digest(sent.as_bytes())
                         .iter()
                         .map(|b| format!("{b:02x}"))
                         .collect();
-                    Box::new((hash, app.chars().count()))
+                    let chars = sent.chars().count();
+                    Box::new((hash, chars, chars.saturating_sub(app.chars().count())))
                 });
                 refused
             })?,
@@ -1788,6 +1799,7 @@ fn record(
         "app": answer.app.as_deref().map(|a| truncate(a, 4096)),
         "appAskedSha256": answer.app_asked.as_ref().map(|a| &a.0),
         "appAskedChars": answer.app_asked.as_ref().map(|a| a.1),
+        "appAskedDropped": answer.app_asked.as_ref().map(|a| a.2),
         "delivery": delivery,
         "verdict": answer.verdict.as_str(),
         "effect": answer.effect,

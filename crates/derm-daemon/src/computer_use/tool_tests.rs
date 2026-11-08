@@ -795,6 +795,7 @@ fn every_action_leaves_one_record_in_the_contracts_shape() {
         "app",
         "appAskedSha256",
         "appAskedChars",
+        "appAskedDropped",
         "delivery",
         "verdict",
         "effect",
@@ -859,8 +860,35 @@ fn bw5r2_3_a_refused_grant_names_the_app_it_was_for() {
             .collect();
         assert_eq!(record["appAskedSha256"], json!(hash), "{code}: {record}");
         assert_eq!(record["appAskedChars"], 16, "{code}: {record}");
+        assert_eq!(record["appAskedDropped"], 0, "{code}: {record}");
         assert_eq!(record["grant"], Value::Null, "{code}: no grant ran");
     }
+}
+
+/// Mac test w5 retest 10, MW5-36: `Calc`, two tag characters and `x` were
+/// recorded as 5 characters with the SHA-256 of `Calcx`, and nothing said
+/// characters were dropped. The record hashes the name as sent and counts
+/// what cleaning dropped.
+#[test]
+fn mw5_36_a_refused_name_is_hashed_as_sent_with_what_was_dropped() {
+    let backend = Fake::new();
+    *backend.answer.borrow_mut() = AccessAnswer::Refused("No app named that".into());
+    let mut state = State::default();
+    let sent = "Calc\u{E0068}\u{E0069}x";
+    run(
+        &backend,
+        &mut state,
+        json!({"action": "capture", "app": sent}),
+    );
+    let record = backend.last_record();
+    let hash: String = Sha256::digest(sent.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(record["appAskedSha256"], json!(hash), "{record}");
+    assert_eq!(record["appAskedChars"], 7, "{record}");
+    assert_eq!(record["appAskedDropped"], 2, "{record}");
+    assert_eq!(record["app"], Value::Null);
 }
 
 /// Fix pass 10's review, FP10-S1 (failed on `12ec6eb`): the model's text in

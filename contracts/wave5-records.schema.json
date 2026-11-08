@@ -222,6 +222,7 @@
         "app": { "type": ["string", "null"], "maxLength": 4096 },
         "appAskedSha256": { "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
         "appAskedChars": { "type": ["integer", "null"], "minimum": 0 },
+        "appAskedDropped": { "type": ["integer", "null"], "minimum": 0 },
         "delivery": { "enum": ["background", "foreground", null] },
         "verdict": { "enum": ["ok", "denied", "blocked", "timeout_outcome_unknown", "error"] },
         "effect": { "type": ["boolean", "null"] },
