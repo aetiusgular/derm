@@ -317,6 +317,44 @@ fn read_cu_endpoint(dir: &Path) -> Option<String> {
     plan::cu_endpoint_ok(text).then(|| text.to_string())
 }
 
+/// Each submodule's git folder under the chat's `.git/modules` (FP8-S2),
+/// nested ones too (`modules/a/modules/b`), by absolute path: a folder there
+/// holding a `config` or a `HEAD` is one. No link is followed, at most 8
+/// levels and 256 folders; a `.git` that is a file (a worktree) has none here.
+fn git_module_dirs(cwd: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut todo = vec![(cwd.join(".git").join("modules"), 0usize)];
+    let is_dir = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir());
+    while let Some((dir, depth)) = todo.pop() {
+        if depth > 8 || out.len() >= 256 || !is_dir(&dir) {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let d = e.path();
+            if out.len() >= 256 || !is_dir(&d) {
+                continue;
+            }
+            let module = ["config", "HEAD"]
+                .iter()
+                .any(|f| std::fs::symlink_metadata(d.join(f)).is_ok());
+            if module {
+                if let Some(s) = d.to_str() {
+                    out.push(s.to_string());
+                }
+                todo.push((d.join("modules"), depth + 1));
+            } else {
+                // A submodule named `a/b` sits at `modules/a/b`.
+                todo.push((d, depth + 1));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// MW5-32's Linux half (fix pass 8): Codex 0.163.0 reads its config at start
 /// and treats any error but "not found" as fatal
 /// (`config/src/loader/mod.rs:560-575`), and srt 0.0.81 holds a missing
@@ -1039,6 +1077,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        // FP8-S2: each submodule's git folder, whose config and hooks srt
+        // keeps read-only.
+        git_modules: if a.boundary == Boundary::Srt {
+            git_module_dirs(Path::new(&cwd))
+        } else {
+            Vec::new()
+        },
         // MW5-22: the computer-use bridge's address, when the daemon
         // publishes one (computer use on), for srt's settings.
         cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
@@ -1619,6 +1664,36 @@ mod tests {
         symlink(d.join("elsewhere.toml"), d.join(".codex/config.toml")).unwrap();
         assert!(codex_home_for_srt(&d).unwrap().is_empty());
         assert!(!d.join("elsewhere.toml").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// FP8-S2: each submodule's git folder is found, nested and with a
+    /// slashed name, never through a link.
+    #[cfg(unix)]
+    #[test]
+    fn fp8_s2_submodule_git_folders_are_found() {
+        let d = std::env::temp_dir().join(format!("derm-fp8-mods-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let m = d.join(".git/modules");
+        for (dir, file) in [
+            ("sub", "config"),
+            ("sub/modules/inner", "HEAD"),
+            ("a/b", "config"),
+        ] {
+            std::fs::create_dir_all(m.join(dir)).unwrap();
+            std::fs::write(m.join(dir).join(file), "").unwrap();
+        }
+        let elsewhere = d.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("config"), "").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, m.join("linked")).unwrap();
+        let got = git_module_dirs(&d);
+        let want: Vec<String> = ["a/b", "sub", "sub/modules/inner"]
+            .iter()
+            .map(|x| m.join(x).to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(got, want);
+        assert!(git_module_dirs(&elsewhere).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 

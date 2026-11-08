@@ -197,6 +197,12 @@ pub struct Inputs<'a> {
     /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
     /// read-only wherever they sit (re-review FP5-R2).
     pub gate_paths: Vec<String>,
+    /// Each submodule's git folder in the chat's folder, `.git/modules/**`,
+    /// by absolute path (`run/mod.rs` lists them). srt holds only the
+    /// folder's own `.git/hooks` and `.git/config` (its mandatory denies), so
+    /// a submodule's `config` and `hooks` stay read-only under srt too, since
+    /// git runs what they name in that submodule later (FP8-S2).
+    pub git_modules: Vec<String>,
     /// The computer-use bridge's address (`127.0.0.1:<port>` or
     /// `[::1]:<port>`) from the daemon's `cu.endpoint`, when computer use is
     /// on (Mac test w5 retest 3, MW5-22). Under srt the endpoint file is
@@ -227,6 +233,11 @@ pub struct CodexStoreFiles {
     /// a managed `sandbox_mode` or `default_permissions`, which Codex layers
     /// over `-c` (`config/src/loader/mod.rs:420-440` at 0.163.0).
     pub managed_sandbox: Option<String>,
+    /// The profile files in Codex's home (`<name>.config.toml`, a whole user
+    /// config layer for `--profile <name>`, `core/src/config/mod.rs:269,
+    /// 2075-2083`), by absolute path: kept read-only under srt (FP8-S1). srt
+    /// on Linux takes no write patterns, so a profile made later is not held.
+    pub profiles: Vec<String>,
 }
 
 /// The last `cli_auth_credentials_store` the harness's own words set with
@@ -241,7 +252,9 @@ pub fn codex_store_from_args(rest: &[String]) -> Option<String> {
             "-c" | "--config" => it.next().map(String::as_str),
             _ => w
                 .strip_prefix("--config=")
-                .or_else(|| w.strip_prefix("-c").filter(|r| !r.is_empty())),
+                .or_else(|| w.strip_prefix("-c").filter(|r| !r.is_empty()))
+                // FP8-S4: clap reads `-c=k=v` as `-c k=v`.
+                .map(|r| if w.starts_with("-c=") { &r[1..] } else { r }),
         };
         let Some((k, v)) = pair.and_then(|p| p.split_once('=')) else {
             continue;
@@ -359,10 +372,13 @@ pub fn codex_own_sandbox(rest: &[String]) -> CodexOwnSandbox {
                     .strip_prefix("-s")
                     .filter(|v| !v.is_empty() && !w.starts_with("--"))
                 {
+                    // FP8-S4: clap reads `-s=v` as `-s v`.
+                    let v = v.strip_prefix('=').unwrap_or(v);
                     take(w.into(), unquote(v) == "danger-full-access");
                 } else if let Some(pair) = w
                     .strip_prefix("-c")
                     .filter(|v| !v.is_empty() && !w.starts_with("--"))
+                    .map(|v| v.strip_prefix('=').unwrap_or(v))
                 {
                     if let Some(hit) = codex_sandbox_pair(pair, &unquote) {
                         take(w.into(), hit);
@@ -411,7 +427,7 @@ pub const ABSENT_FOLDER_MARK: &str = ".derm-absent";
 /// Other harnesses' control folders are not read for this yet.
 fn control_folders(harness: &str) -> &'static [&'static str] {
     match harness {
-        "codex" => &[".codex/plugins", ".codex/rules"],
+        "codex" => &[".codex/plugins", ".codex/rules", ".codex/tmp"],
         _ => &[],
     }
 }
@@ -446,8 +462,8 @@ pub fn keep_absent_control_folders(
     let Some(list) = v["filesystem"]["denyWrite"].as_array_mut() else {
         return;
     };
-    let mut changed = false;
-    for e in list.iter_mut() {
+    let mut inner = Vec::new();
+    for e in list.iter() {
         let Some(path) = e
             .get("path")
             .and_then(serde_json::Value::as_str)
@@ -457,10 +473,15 @@ pub fn keep_absent_control_folders(
         };
         let folder = folders.iter().any(|f| path.ends_with(&format!("/{f}")));
         if folder && !exists(&path) {
-            e["path"] = json!(format!("{path}/{ABSENT_FOLDER_MARK}"));
-            changed = true;
+            inner.push(json!({"path": format!("{path}/{ABSENT_FOLDER_MARK}"), "literal": true}));
         }
     }
+    // FP8-S5: beside the folder's own deny, never instead of it, so a folder
+    // made between derm's look and srt's start is held too (run with srt
+    // 0.0.81: with both, a missing folder is an empty read-only one and a
+    // present one is read-only).
+    let changed = !inner.is_empty();
+    list.extend(inner);
     if changed {
         if let Ok(t) = serde_json::to_string_pretty(&v) {
             p.srt_settings = Some(t);
@@ -1027,7 +1048,35 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             // `packages/derm-cline/src/control.ts`), so the same paths there
             // are read-only, and Cline's `.clinerules` (re-review W4-R3).
             let cwd = i.cwd.trim_end_matches('/');
-            deny_write.extend(h.control.iter().map(|c| format!("{cwd}/{c}")));
+            if h.id == "codex" && cwd != home.trim_end_matches('/') {
+                // FP8-S3: the whole project `.codex`, as Codex's own sandbox
+                // held it (`protocol/src/permissions.rs:46-50`): one deny per
+                // control file there left a missing `config.toml` held by
+                // `/dev/null` on Linux, which Codex stops on
+                // (`config/src/loader/mod.rs:1779-1796`); a missing folder is
+                // held by `/dev/null`, which Codex skips as no folder
+                // (`:1705-1714`). Not when the chat's folder is the home, whose
+                // `.codex` is Codex's state.
+                deny_write.push(format!("{cwd}/.codex"));
+            } else {
+                deny_write.extend(h.control.iter().map(|c| format!("{cwd}/{c}")));
+            }
+            // FP8-S2: each submodule's git config and hooks.
+            for m in i.git_modules.iter().filter(|m| m.starts_with('/')) {
+                let m = m.trim_end_matches('/');
+                deny_write.push(format!("{m}/config"));
+                deny_write.push(format!("{m}/hooks"));
+            }
+            // FP8-S1: Codex's profile layers in its home.
+            if h.id == "codex" {
+                deny_write.extend(
+                    i.codex_store
+                        .profiles
+                        .iter()
+                        .filter(|p| p.starts_with('/'))
+                        .cloned(),
+                );
+            }
             if h.id == "cline" {
                 deny_write.push(format!("{cwd}/.clinerules"));
             }
@@ -1139,7 +1188,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                         .cloned(),
                 );
                 notes.push(format!(
-                    "derm run: Codex's own sandbox (Seatbelt on macOS, bubblewrap on Linux) cannot start inside srt's, so derm starts codex with -c {CODEX_SANDBOX_OFF} and srt is its sandbox: its commands may write this folder (not .git/hooks, .git/config or Codex's own config) and reach only the hosts srt lists, whatever sandbox_mode or default_permissions Codex's config sets, and Codex no longer asks to leave a sandbox. Its approvals are unchanged. To keep Codex's own sandbox, run with --boundary none"
+                    "derm run: Codex's own sandbox (Seatbelt on macOS, bubblewrap on Linux) cannot start inside srt's, so derm starts codex with -c {CODEX_SANDBOX_OFF} and srt is its sandbox: its commands may write this folder, srt's temp folder and Codex's home, but not .git/hooks, .git/config, a submodule's git config or hooks, this folder's .codex, or Codex's config, .env, profiles, hooks, rules, plugins and tmp; Codex's own hold on all of .git, .agents and .aws is off; they reach only the hosts srt lists, whatever sandbox_mode or default_permissions Codex's config sets, and Codex no longer asks to leave a sandbox. Its approvals are unchanged. To keep Codex's own sandbox, run with --boundary none"
                 ));
                 if lead.is_some_and(|w| w == "app-server") {
                     notes.push(
@@ -1392,6 +1441,7 @@ mod tests {
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
             gate_paths: Vec::new(),
+            git_modules: Vec::new(),
             cu_endpoint: None,
             macos: false,
             terminal: false,
@@ -3068,15 +3118,28 @@ mod tests {
         let v = srt_of(&p);
         let deny = v["filesystem"]["denyWrite"].as_array().unwrap().clone();
         let has = |s: &str| deny.contains(&json!({"path": s, "literal": true}));
-        for base in ["/home/u/.codex", "/home/u/proj dir/.codex"] {
-            assert!(
-                has(&format!("{base}/rules/{ABSENT_FOLDER_MARK}")),
-                "{deny:?}"
-            );
-            assert!(!has(&format!("{base}/rules")), "{deny:?}");
-            assert!(has(&format!("{base}/plugins")), "{deny:?}");
-            assert!(has(&format!("{base}/config.toml")), "{deny:?}");
+        // Fix pass 8's review changed this: the folder's own deny stays beside
+        // the inner one (FP8-S5), and the chat folder's `.codex` is denied
+        // whole (FP8-S3), so nothing there is rewritten.
+        let base = "/home/u/.codex";
+        for f in ["rules", "tmp"] {
+            assert!(has(&format!("{base}/{f}/{ABSENT_FOLDER_MARK}")), "{deny:?}");
+            assert!(has(&format!("{base}/{f}")), "{deny:?}");
         }
+        assert!(
+            !has(&format!("{base}/plugins/{ABSENT_FOLDER_MARK}")),
+            "{deny:?}"
+        );
+        assert!(has(&format!("{base}/plugins")), "{deny:?}");
+        assert!(has(&format!("{base}/config.toml")), "{deny:?}");
+        assert!(has("/home/u/proj dir/.codex"), "{deny:?}");
+        assert!(
+            !deny.iter().any(|e| e["path"]
+                .as_str()
+                .unwrap()
+                .starts_with("/home/u/proj dir/.codex/")),
+            "{deny:?}"
+        );
         for (harness, macos, v) in [
             (
                 "codex",
@@ -3099,5 +3162,165 @@ mod tests {
             keep_absent_control_folders(&mut q, harness, macos, &|_| false);
             assert_eq!(q.srt_settings, before, "{harness} macos {macos}");
         }
+    }
+
+    /// FP8-S4 (security review of fix pass 8): clap reads `-c=k=v` as
+    /// `-c k=v` (run against Codex 0.163.0: `codex exec -c=foo` says
+    /// "Invalid override (missing '='): foo"), so `-c=sandbox_mode=...` keeps
+    /// Codex's own sandbox on and must be refused like `-c sandbox_mode=...`.
+    /// `-s=danger-full-access` is Codex's own word for off and is not a refusal.
+    #[test]
+    fn fp8_s4_dash_c_equals_form_is_read() {
+        for words in [
+            vec!["exec", "-c=sandbox_mode=\"read-only\"", "go"],
+            vec!["-c=default_permissions=\":workspace\""],
+        ] {
+            let mut v = vec!["codex", "--boundary", "srt", "--"];
+            v.extend(words.iter().copied());
+            let args = a(&v);
+            assert!(build(&inputs(&args)).is_err(), "{words:?} was not refused");
+        }
+        let args = a(&["codex", "--boundary", "srt", "--", "-s=danger-full-access"]);
+        assert!(
+            build(&inputs(&args)).is_ok(),
+            "-s=danger-full-access was refused"
+        );
+    }
+
+    /// FP8-S1: with Codex's own sandbox off, its commands write `~/.codex`
+    /// (derm's state folder for it). `~/.codex/.env` is loaded into Codex's
+    /// environment at every start (Codex 0.163.0 `arg0/src/lib.rs:132,
+    /// 274-280`, only `CODEX_*` names filtered), so it must stay read-only as
+    /// `config.toml` does (Gemini's `.gemini/.env` already is).
+    #[test]
+    fn fp8_s1_codex_home_env_is_read_only_under_srt() {
+        let args = a(&["codex", "--boundary", "srt", "--", "exec", "go"]);
+        let p = build(&inputs(&args)).unwrap();
+        let v = srt_of(&p);
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap().clone();
+        assert!(
+            deny.iter().any(|e| e["path"] == "/home/u/.codex/.env"),
+            "{deny:?}"
+        );
+    }
+
+    /// FP8-S5: the rewrite replaces the folder's own deny. A folder that is
+    /// missing when derm looks and present when srt starts (another chat's
+    /// srt mount point, a concurrent Codex writing `default.rules`) is then
+    /// writable (run with srt 0.0.81). Keeping the folder's deny beside the
+    /// inner one holds it either way (run: srt mounts an empty read-only
+    /// folder when it is missing, since a deny path lies beneath it).
+    #[test]
+    fn fp8_s5_the_folders_own_deny_is_kept_beside_the_inner_one() {
+        let args = a(&["codex", "--boundary", "srt", "--", "exec", "go"]);
+        let mut p = build(&inputs(&args)).unwrap();
+        keep_absent_control_folders(&mut p, "codex", false, &|_| false);
+        let v = srt_of(&p);
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap().clone();
+        assert!(
+            deny.contains(&json!({"path": "/home/u/.codex/rules", "literal": true})),
+            "{deny:?}"
+        );
+    }
+
+    /// FP8-S1, S2, S3, S7 (fix pass 8): under srt Codex's commands no longer
+    /// meet Codex's own sandbox, so what it held that srt did not is denied
+    /// by derm: Codex's `.env`, its profiles and its `tmp/` in its home, a
+    /// submodule's git config and hooks, and the whole `.codex` of the chat's
+    /// folder (not when the folder is the home).
+    #[test]
+    fn fp8_what_codexs_own_sandbox_held_stays_read_only_under_srt() {
+        let args = a(&["codex", "--boundary", "srt", "--", "exec", "go"]);
+        let p = build(&Inputs {
+            codex_store: CodexStoreFiles {
+                profiles: vec![
+                    "/home/u/.codex/work.config.toml".into(),
+                    "rel.config.toml".into(),
+                ],
+                ..CodexStoreFiles::default()
+            },
+            git_modules: vec!["/home/u/proj dir/.git/modules/sub".into(), "rel".into()],
+            ..inputs(&args)
+        })
+        .unwrap();
+        let v = srt_of(&p);
+        let deny: Vec<String> = v["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["path"].as_str().unwrap().to_string())
+            .collect();
+        for want in [
+            "/home/u/.codex/.env",
+            "/home/u/.codex/tmp",
+            "/home/u/.codex/work.config.toml",
+            "/home/u/proj dir/.git/modules/sub/config",
+            "/home/u/proj dir/.git/modules/sub/hooks",
+            "/home/u/proj dir/.codex",
+        ] {
+            assert!(deny.iter().any(|d| d == want), "{want} not in {deny:?}");
+        }
+        // Only absolute paths; and the folder's own copies are covered by
+        // its whole `.codex`, not one deny each.
+        assert!(!deny.iter().any(|d| d.starts_with("rel")), "{deny:?}");
+        assert!(
+            !deny
+                .iter()
+                .any(|d| d == "/home/u/proj dir/.codex/config.toml"),
+            "{deny:?}"
+        );
+        // Another harness gets the submodule denies too, and no Codex ones.
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let p = build(&Inputs {
+            git_modules: vec!["/home/u/proj dir/.git/modules/sub".into()],
+            ..inputs(&args)
+        })
+        .unwrap();
+        let deny = srt_of(&p)["filesystem"]["denyWrite"].to_string();
+        assert!(
+            deny.contains("/home/u/proj dir/.git/modules/sub/hooks"),
+            "{deny}"
+        );
+        assert!(!deny.contains("/home/u/proj dir/.codex\""), "{deny}");
+        // The home as the chat's folder: Codex's own state is not denied whole.
+        let args = a(&["codex", "--boundary", "srt", "--", "exec", "go"]);
+        let p = build(&Inputs {
+            cwd: "/home/u".into(),
+            ..inputs(&args)
+        })
+        .unwrap();
+        let deny: Vec<String> = srt_of(&p)["filesystem"]["denyWrite"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["path"].as_str().unwrap().to_string())
+            .collect();
+        assert!(!deny.iter().any(|d| d == "/home/u/.codex"), "{deny:?}");
+        assert!(
+            deny.iter().any(|d| d == "/home/u/.codex/config.toml"),
+            "{deny:?}"
+        );
+    }
+
+    /// FP8-S4: `-c=k=v` names the sign-in store as `-c k=v` does.
+    #[test]
+    fn fp8_s4_dash_c_equals_names_the_store() {
+        let w = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            codex_store_from_args(&w(&["exec", "-c=cli_auth_credentials_store=\"keyring\""])),
+            Some("keyring".into())
+        );
+        assert_eq!(
+            codex_store_from_args(&w(&["-ccli_auth_credentials_store=file"])),
+            Some("file".into())
+        );
+        assert!(matches!(
+            codex_own_sandbox(&w(&["-s=read-only"])),
+            CodexOwnSandbox::On(_)
+        ));
+        assert!(matches!(
+            codex_own_sandbox(&w(&["-c=sandbox_mode=danger-full-access"])),
+            CodexOwnSandbox::Off
+        ));
     }
 }

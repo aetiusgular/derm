@@ -160,6 +160,27 @@ fn sandbox_reason(path: &Path) -> Option<String> {
             "{p} sets allowed_permission_profiles, which derm does not read"
         ));
     }
+    // FP8-S6: a managed `[permissions.filesystem] deny_read` refuses a
+    // full-access profile (`core/src/config/mod.rs:4230-4245`,
+    // `permission_profile_catalog.rs:128-145`), and a `[[remote_sandbox_config]]`
+    // whose host pattern matches replaces `allowed_sandbox_modes`
+    // (`config/src/config_requirements.rs:1494-1508`); derm does not match
+    // host patterns, so any such table counts.
+    let deny_read = doc
+        .get("permissions")
+        .and_then(|t| t.get("filesystem"))
+        .and_then(|t| t.get("deny_read"))
+        .is_some_and(|d| d.as_array().is_none_or(|a| !a.is_empty()));
+    if deny_read {
+        return Some(format!(
+            "{p} sets permissions.filesystem.deny_read, which Codex enforces with its own sandbox"
+        ));
+    }
+    if doc.get("remote_sandbox_config").is_some() {
+        return Some(format!(
+            "{p} sets remote_sandbox_config, which derm does not read"
+        ));
+    }
     None
 }
 
@@ -221,7 +242,28 @@ pub fn read(home: &str, cwd: &str, codex_home_env: Option<&str>, roots: &Roots) 
         auth_file: (codex_home != default_home)
             .then(|| codex_home.join("auth.json").to_string_lossy().into_owned()),
         managed_sandbox: first(managed_sandbox),
+        profiles: profiles_in(&codex_home),
     }
+}
+
+/// The `<name>.config.toml` profile layers in Codex's home (FP8-S1), at most
+/// 256, sorted; `config.toml` itself is a control file already. Only names
+/// are read; a link is listed by its own path.
+fn profiles_in(codex_home: &Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(codex_home) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            (name.len() > ".config.toml".len() && name.ends_with(".config.toml"))
+                .then(|| codex_home.join(&name).to_string_lossy().into_owned())
+        })
+        .take(256)
+        .collect();
+    out.sort();
+    out
 }
 
 #[cfg(test)]
@@ -390,6 +432,58 @@ mod tests {
         std::fs::create_dir_all(d.join("prefs")).unwrap();
         std::fs::write(d.join("prefs").join("com.openai.codex.plist"), "x").unwrap();
         assert!(read_now().managed_sandbox.is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// FP8-S6: two requirements keys that also keep Codex sandboxed under
+    /// srt, read in Codex 0.163.0: a managed `[permissions.filesystem]
+    /// deny_read` refuses `danger-full-access`
+    /// (`core/src/config/permission_profile_catalog.rs:129-145`, validator
+    /// added at `core/src/config/mod.rs:4230-4245`), and a matching
+    /// `[[remote_sandbox_config]]` replaces `allowed_sandbox_modes`
+    /// (`config/src/config_requirements.rs:1495-1509`). Either falls back to
+    /// read-only with a startup warning only (`mod.rs:2300-2330`).
+    #[test]
+    fn fp8_s6_more_managed_sandbox_keys_are_read() {
+        let d = scratch("fp8s6");
+        let home = d.join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::create_dir_all(d.join("etc")).unwrap();
+        let r = roots(&d);
+        let req = d.join("etc").join("requirements.toml");
+        for text in [
+            "[permissions.filesystem]\ndeny_read = [\"/home/u/.ssh\"]\n",
+            "[[remote_sandbox_config]]\nhostname_patterns = [\"*\"]\nallowed_sandbox_modes = [\"read-only\"]\n",
+        ] {
+            std::fs::write(&req, text).unwrap();
+            let f = read(home.to_str().unwrap(), home.to_str().unwrap(), None, &r);
+            assert!(f.managed_sandbox.is_some(), "{text}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// FP8-S1: the profile layers in Codex's home are listed, not its
+    /// `config.toml`, nor a file merely named `.config.toml`.
+    #[test]
+    fn fp8_s1_codexs_profiles_are_listed() {
+        let d = scratch("fp8s1");
+        let home = d.join("home");
+        let ch = home.join(".codex");
+        std::fs::create_dir_all(&ch).unwrap();
+        for f in [
+            "config.toml",
+            "work.config.toml",
+            ".config.toml",
+            "notes.toml",
+        ] {
+            std::fs::write(ch.join(f), "").unwrap();
+        }
+        let r = roots(&d);
+        let f = read(home.to_str().unwrap(), home.to_str().unwrap(), None, &r);
+        assert_eq!(
+            f.profiles,
+            vec![ch.join("work.config.toml").to_string_lossy().into_owned()]
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

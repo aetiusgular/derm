@@ -226,12 +226,20 @@ pub const HARNESSES: &[Harness] = &[
         credential: Some(".codex/auth.json"),
         // `rules/` holds execpolicy `.rules` files, which allow commands
         // without asking (security review L14, from the 0.163.0 binary).
+        // FP8-S1: `.env` is loaded into Codex's environment at every start
+        // (0.163.0 `arg0/src/lib.rs:132, 274-280`, only `CODEX_*` names
+        // filtered). FP8-S7: `tmp/` holds each live session's helper links
+        // (`codex-linux-sandbox`, `apply_patch`; `arg0/src/lib.rs:339-405`),
+        // which another session runs; Codex starts without them when it
+        // cannot write there (`:157-165`).
         control: &[
+            ".codex/.env",
             ".codex/config.toml",
             ".codex/hooks.json",
             ".codex/plugins",
             ".codex/requirements.toml",
             ".codex/rules",
+            ".codex/tmp",
         ],
         launch: Launch::None,
     },
