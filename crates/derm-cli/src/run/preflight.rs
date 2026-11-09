@@ -49,6 +49,34 @@ pub fn srt(
 /// fix Ubuntu 26.04 on 5 Nov, and did not name Ubuntu's bubblewrap profile,
 /// while `derm setup sandbox` did). `bwrap_profile`: Ubuntu's
 /// `/etc/apparmor.d/bwrap-userns-restrict` is installed.
+///
+/// Why srt fails there (BW5-10, each read on 8 Nov at the versions on
+/// Ubuntu 26.04 and in use):
+/// - Ubuntu's profile attaches to `/usr/bin/bwrap` by path, so the sysctl
+///   does not turn it off, and stacks everything bubblewrap starts under
+///   `unpriv_bwrap`, which has `audit deny capability` (apparmor
+///   5.0.2-0ubuntu1~26.04.1, `etc/apparmor.d/bwrap-userns-restrict` lines
+///   15, 50, 59, 77, 79; the same file in 26.04's release pocket). Ubuntu
+///   24.04 ships it unloaded, in apparmor-profiles' extra profiles
+///   (4.0.1really4.0.1-0ubuntu0.24.04.9), which is why srt's own Ubuntu
+///   note (README line 701, sysctl or a profile granting `userns`) is about
+///   24.04 and does not fix 26.04.
+/// - srt 0.0.81's `apply-seccomp` cannot unshare its PID and mount
+///   namespaces inside bubblewrap (bwrap is run with `--cap-drop ALL`,
+///   `src/sandbox/linux-sandbox-utils.ts:797`), so
+///   it makes a user namespace and writes `/proc/self/setgroups`
+///   (`vendor/seccomp-src/apply-seccomp.c:710-778` at `c40cf14`); opening
+///   that file for write needs CAP_SYS_ADMIN in the namespace (Linux 7.0
+///   `fs/proc/base.c:3193-3196`), which `unpriv_bwrap` denies.
+/// - bubblewrap 0.11.1 sets no_new_privs (`bubblewrap.c:2915`), and under
+///   it AppArmor refuses any exec to a profile that is not a subset of the
+///   one held (Linux 7.0 `security/apparmor/domain.c:980-992`), so a
+///   profile for srt's own programs cannot give them back a capability.
+///
+/// So srt runs on such a host only if root keeps srt's bubblewrap out of
+/// that profile, and every way to do that hands any local program a user
+/// namespace with capabilities; `docs/install/linux.md` lists them with
+/// their undo.
 pub fn apparmor_note(
     linux: bool,
     bwrap_profile: bool,
@@ -59,12 +87,12 @@ pub fn apparmor_note(
     }
     if bwrap_profile {
         return Some(format!(
-            "Ubuntu's AppArmor profile {} confines bubblewrap and takes the capabilities from what it starts, which srt's seccomp step needs, whatever kernel.apparmor_restrict_unprivileged_userns says (on Ubuntu 26.04 the sysctl at 0 did not help). The fix is root's: an AppArmor profile that allows userns for the bubblewrap srt runs without that child profile (srt README, Ubuntu 24.04+ note), or use sbx",
+            "Ubuntu's AppArmor profile {} runs everything bubblewrap starts under unpriv_bwrap, which denies every capability, and srt's seccomp step needs CAP_SYS_ADMIN in a user namespace of its own (it fails opening /proc/self/setgroups). kernel.apparmor_restrict_unprivileged_userns does not change that profile, and a profile for srt's own programs cannot lift it, because bubblewrap sets no_new_privs. srt starts here only if root takes srt's bubblewrap out of that profile, which lets any local program make a user namespace with capabilities; derm makes no such change (docs/install/linux.md says how and what it costs). Use --boundary sbx, or none",
             crate::run::boundary::probe::UBUNTU_BWRAP_PROFILE
         ));
     }
     (userns_sysctl.map(str::trim) == Some("1")).then(|| {
-        "kernel.apparmor_restrict_unprivileged_userns is 1, which takes the capabilities srt's bubblewrap and seccomp layer need (srt README, Ubuntu 24.04+ note); unless an AppArmor profile grants `userns` to srt's binaries, srt will fail with \"Permission denied\" on /proc/self/setgroups. The fix is root's: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or such a profile".to_string()
+        "kernel.apparmor_restrict_unprivileged_userns is 1, which takes the capabilities srt's bubblewrap and seccomp layer need (srt README, Ubuntu 24.04+ note); srt will fail with \"Permission denied\" on /proc/self/setgroups. The fix is root's, and either way it lets any local program make a user namespace with capabilities: `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, or an AppArmor profile that allows userns for srt's bubblewrap and leaves what it starts its capabilities, not Ubuntu's own bwrap-userns-restrict, under which srt fails the same way (docs/install/linux.md)".to_string()
     })
 }
 
@@ -598,5 +626,54 @@ mod tests {
         let n = srt_with(&d, true, Some("1"), false, &[], "/").unwrap().0;
         assert!(n[0].contains("sysctl -w"), "{n:?}");
         assert_eq!(apparmor_note(false, true, Some("1")), None);
+    }
+    /// Box test w5, BW5-10, researched on 8 Nov: under Ubuntu 26.04's
+    /// `bwrap-userns-restrict` (apparmor 5.0.2-0ubuntu1~26.04.1, lines 50,
+    /// 77, 79) everything bubblewrap starts runs under `unpriv_bwrap`, which
+    /// denies every capability; srt 0.0.81's `apply-seccomp` makes a user
+    /// namespace and opens `/proc/self/setgroups`, which needs CAP_SYS_ADMIN
+    /// there (Linux 7.0 `fs/proc/base.c:3193-3196`); bubblewrap 0.11.1 sets
+    /// no_new_privs (`bubblewrap.c:2915`), so no profile for srt's own
+    /// programs can widen what they hold (`security/apparmor/domain.c:
+    /// 980-992`). The note says that, says what a root fix costs, and no
+    /// longer sends the reader to srt's README, whose Ubuntu note is about
+    /// 24.04, where that profile is not loaded.
+    #[test]
+    fn bw5_10_the_note_says_why_srt_fails_under_ubuntus_bubblewrap_profile() {
+        let n = apparmor_note(true, true, Some("1")).unwrap();
+        for want in [
+            "bwrap-userns-restrict",
+            "unpriv_bwrap",
+            "denies every capability",
+            "CAP_SYS_ADMIN",
+            "/proc/self/setgroups",
+            "no_new_privs",
+            "any local program",
+            "derm makes no such change",
+            "--boundary sbx",
+            "docs/install/linux.md",
+        ] {
+            assert!(n.contains(want), "{want:?} not in {n}");
+        }
+        assert!(!n.contains("srt README"), "{n}");
+        assert!(!n.contains("allows userns for the bubblewrap"), "{n}");
+        assert_eq!(apparmor_note(true, true, Some("0")), Some(n));
+    }
+
+    /// BW5-10's other half: with only the sysctl (Ubuntu 24.04, where
+    /// `bwrap-userns-restrict` ships in apparmor-profiles' extra profiles,
+    /// not loaded), Ubuntu's own bubblewrap profile is not a fix for srt:
+    /// loaded, it fails srt as on 26.04.
+    #[test]
+    fn bw5_10_the_sysctl_note_does_not_offer_ubuntus_own_profile() {
+        let n = apparmor_note(true, false, Some("1")).unwrap();
+        assert!(
+            n.contains("sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"),
+            "{n}"
+        );
+        assert!(n.contains("not Ubuntu's own bwrap-userns-restrict"), "{n}");
+        assert!(n.contains("any local program"), "{n}");
+        assert!(n.contains("docs/install/linux.md"), "{n}");
+        assert_eq!(apparmor_note(true, false, Some("0")), None);
     }
 }
