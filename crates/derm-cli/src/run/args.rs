@@ -62,8 +62,18 @@ pub fn valid_program(p: &str) -> bool {
     !p.is_empty()
         && !p.starts_with('-')
         && !p.chars().any(char::is_control)
-        && (absolute(p) || !p.chars().any(separator))
+        && (rooted(p) || !p.chars().any(separator))
         && p != "/"
+}
+
+/// Whether a program path starts at a root, not at the folder the chat
+/// starts in: a leading `/` on Unix; on Windows any path with a root
+/// (`C:\x`, `\x`, `/x`, a UNC path), never `sub\x.exe`, `.\x.exe` or
+/// the drive-relative `C:x.exe` (std 1.97.0 `Path::has_root`, `path.rs:2586-2589`). A path rooted
+/// on the current drive names no file in the chat's folder, and was taken
+/// before (three tests on Windows pass `/opt/...` programs).
+fn rooted(p: &str) -> bool {
+    std::path::Path::new(p).has_root()
 }
 
 /// Whether `p` is an absolute path on this OS: a leading `/` on Unix; on
@@ -75,9 +85,10 @@ pub fn absolute(p: &str) -> bool {
     std::path::Path::new(p).is_absolute()
 }
 
-/// A path separator on this OS: `/` everywhere, and `\\` on Windows too.
+/// A path separator on this OS: `/` everywhere; on Windows `\\` too, and
+/// `:`, which makes `C:x.exe` a path relative to the folder of drive C.
 fn separator(c: char) -> bool {
-    c == '/' || (cfg!(windows) && c == '\\')
+    c == '/' || (cfg!(windows) && matches!(c, '\\' | ':'))
 }
 
 /// A chat id: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `-` or `.`.
@@ -387,8 +398,20 @@ mod tests {
         assert!(!valid_program("sub/x"));
         assert!(!valid_program("./x"));
         if cfg!(windows) {
-            assert!(valid_program(r"C:\Program Files\nodejs\node.exe"));
-            for p in [r"sub\x.exe", r".\x.exe", r"..\x.exe", "/usr/bin/node"] {
+            for p in [
+                r"C:\Program Files\nodejs\node.exe",
+                "/opt/agent/bin/aider",
+                r"\\srv\share\x.exe",
+            ] {
+                assert!(valid_program(p), "{p}");
+            }
+            for p in [
+                r"sub\x.exe",
+                r".\x.exe",
+                r"..\x.exe",
+                "C:x.exe",
+                "x.exe:stream",
+            ] {
                 assert!(!valid_program(p), "{p}");
             }
         } else {
