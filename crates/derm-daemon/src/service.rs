@@ -85,6 +85,17 @@ pub fn lock_pid_file(path: &Path) -> std::io::Result<File> {
 /// client that can connect finds the token and the endpoint already there.
 pub fn start(paths: Paths, log_prompts: bool) -> Result<Running, String> {
     let fail = |what: &str, e: std::io::Error| format!("{what}: {e}");
+    // The pid, token and endpoint files sit beside the socket path, which on
+    // Windows is the pointer file to a pipe drawn at random (`pipe.rs`); a
+    // pipe name has no folder for them (WW5-6: `--socket \\.\pipe\x` failed
+    // at "socket folder: Incorrect function").
+    #[cfg(windows)]
+    if derm_core::platform::windows::is_pipe_name(&paths.socket) {
+        return Err(format!(
+            "--socket {}: on Windows the daemon takes the path of its pointer file (a file in a folder of yours, such as %USERPROFILE%\\.derm\\run\\derm\\daemon.sock), never a pipe name: it draws the pipe's name itself each start and keeps its token beside that file",
+            paths.socket.display()
+        ));
+    }
     socket::private_dir(paths.runtime_dir()).map_err(|e| fail("socket folder", e))?;
     socket::private_dir(&paths.data).map_err(|e| fail("data folder", e))?;
     let lock = lock_pid_file(&paths.pid_file()).map_err(|e| fail("pid file", e))?;
@@ -146,4 +157,37 @@ pub fn default_paths() -> Option<Paths> {
         socket: crate::socket_path()?,
         data: crate::daemon::default_data_dir()?,
     })
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// WW5-6 (Windows test w5, 2.2): a pipe name as `--socket` failed late
+    /// and unclearly ("socket folder: Incorrect function"), after the data
+    /// folder step. Fails on `2ce607d`, whose error names no pointer file.
+    #[test]
+    fn ww5_6_a_pipe_name_as_the_socket_is_refused_with_the_reason() {
+        let data = std::env::temp_dir().join(format!("derm-ww56-{}", std::process::id()));
+        for name in [r"\\.\pipe\derm-ww56", r"\\?\pipe\derm-ww56"] {
+            let e = match start(
+                Paths {
+                    socket: std::path::PathBuf::from(name),
+                    data: data.clone(),
+                },
+                false,
+            ) {
+                Err(e) => e,
+                Ok(_) => panic!("a daemon started on {name}"),
+            };
+            assert!(
+                e.contains("pointer file") && e.contains("never a pipe name"),
+                "{e}"
+            );
+        }
+        assert!(
+            !data.exists(),
+            "the data folder was made before the refusal"
+        );
+    }
 }
