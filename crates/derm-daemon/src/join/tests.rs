@@ -3341,3 +3341,49 @@ fn fp13r_5_a_feed_gap_does_not_tell_the_join_the_feed_is_current() {
     let r = j.observe(&late);
     assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
 }
+
+/// Box retest of fix pass 13r, BW5R5-4: a real Claude Code 2.1.319 chat under
+/// srt 0.0.81 on Linux, its records as the daemon logged them on the box
+/// (`fixtures/README.md`). Inside bubblewrap's PID namespace a fork's
+/// `child` is the namespace's pid (`exit=2`, `exit=8`), so `apply-seccomp`'s
+/// inner process (host pid 21759) was never placed and the harness under it
+/// (21760, which execs the binary `harnessExe` names) was never found; the
+/// shell that wrote `a.txt` during the Bash call got no join record. Every
+/// record still names its own host pid and its parent's (`pid=`, `ppid=`;
+/// Linux 7.0 `kernel/auditsc.c:1635-1638`), which places it.
+#[test]
+fn bw5r5_4_under_srt_on_linux_the_harnesss_shell_is_its_calls() {
+    let mut j = Join::new();
+    let text = include_str!("fixtures/srt-linux-claude-2.1.319-auditd.jsonl");
+    let mut events: Vec<Event> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("a recorded event"))
+        .collect();
+    events.sort_by_key(|e| {
+        e.detail
+            .get("auditAt")
+            .and_then(Value::as_i64)
+            .unwrap_or(e.at)
+    });
+    let mut out = Vec::new();
+    for e in &events {
+        out.extend(j.observe(e));
+    }
+    let write = out
+        .iter()
+        .find(|r| {
+            r.detail.get("effect").and_then(Value::as_str) == Some("auditd-1794193636470-27520")
+        })
+        .unwrap_or_else(|| panic!("no join record for the a.txt write: {} records", out.len()));
+    assert_eq!(
+        write.detail["chosen"], "tap-b510bs3-toolu_01FNX7QFrjAdjXwub46HBPA5",
+        "{}",
+        write.detail
+    );
+    assert_eq!(
+        write.detail["candidates"][0]["by"], "tree",
+        "{}",
+        write.detail
+    );
+}

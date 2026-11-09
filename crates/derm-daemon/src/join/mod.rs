@@ -606,6 +606,18 @@ impl ChatState {
 
     /// Places a process a fork or exec names (`child`, started or run by
     /// `parent`), as the module's header says.
+    /// Whether the join has placed this pid in the chat's tree: the root,
+    /// the harness or the launched child, a process between the root and the
+    /// harness, or one the tree gave an owner or marked as the root's child.
+    fn knows(&self, pid: u32) -> bool {
+        Some(pid) == self.root_pid
+            || Some(pid) == self.harness
+            || Some(pid) == self.launched
+            || self.line.contains(&pid)
+            || self.owners.contains_key(&pid)
+            || self.direct.contains_key(&pid)
+    }
+
     fn place_child(
         &mut self,
         kind: &str,
@@ -1244,6 +1256,23 @@ impl Join {
             .get("ppid")
             .and_then(Value::as_u64)
             .map(|p| p as u32);
+        // Box retest of fix pass 13r, BW5R5-4: a process forked inside a PID
+        // namespace (bubblewrap's, under srt or Codex's own sandbox on Linux)
+        // is named in its parent's fork record by the namespace's pid, which
+        // the audit log keeps as the syscall's return (Linux 7.0
+        // `kernel/auditsc.c:1629-1632`; `kernel/fork.c:2666`), so the join
+        // never placed it. Each record names its own process and its parent
+        // by the host's pids (`auditsc.c:1635-1638`): a process the tree has
+        // not placed whose parent it has is placed now, as that parent's
+        // fork would have placed it. An exec places itself by its parent.
+        if kind != "exec" {
+            if let (Some(p), Some(pp)) = (pid, ppid) {
+                let st = self.chat(&e.chat_id);
+                if p != pp && !st.knows(p) && st.knows(pp) {
+                    st.place_child("fork", p, Some(pp), None, t);
+                }
+            }
+        }
         // A new process inherits its parent's owner; a child of the harness
         // itself is placed by what runs now.
         if kind == "fork" || kind == "exec" {
