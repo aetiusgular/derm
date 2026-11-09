@@ -266,18 +266,6 @@ fn line_at(f: &File, start: u64) -> Option<(u64, (i64, u64))> {
     Some((start + nl as u64 + 1, key))
 }
 
-/// Whether the daemon's log holds records of this feed from the last day:
-/// an earlier run, so a missing place is a gap (FP13R-17).
-fn ran_before(socket: &Path, token: &str, now: i64) -> bool {
-    let Ok((mut c, _)) = Client::connect(socket, token, "derm-audit-feed") else {
-        return false;
-    };
-    c.request(&serde_json::json!({"op": "report", "since": now - TAIL_BACKLOG_MS, "until": now}))
-        .ok()
-        .and_then(|r| r.get("report")?.get("bySource")?.get("auditd")?.as_u64())
-        .is_some_and(|n| n > 0)
-}
-
 fn alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -415,7 +403,9 @@ fn cmd_run(args: &[String]) -> u8 {
         return 1;
     };
     let rotated = open(&resume::rotated_path(&log));
-    let ran = matches!(loaded, resume::Loaded::Missing) && ran_before(&socket, &token, now_ms());
+    // FP13RR-4: whether an earlier run started here is the feed's own
+    // marker; made now if this is the first start.
+    let ran = data_dir(&home).is_some_and(|d| resume::started_before(&d));
     let (start, gap) = resume::decide(
         &loaded,
         &log,
@@ -453,10 +443,8 @@ fn cmd_run(args: &[String]) -> u8 {
     // SAFETY: getuid has no preconditions and cannot fail.
     let runtime_dir = runtime_dir_for(unsafe { libc::getuid() });
     let mut feed = Feed::new(&home, runtime_dir.as_deref());
-    if let Some(floor) = gap.as_ref().and_then(|(g, _)| g.floor) {
-        // Read again from a beginning: what the last run posted is skipped.
-        feed.skip_before(floor);
-    }
+    // FP13RR-1: the feed's own records (its place saves are audited too).
+    feed.set_own_pid(std::process::id());
     let mut gap = gap;
     let mut last_prune = Instant::now();
     let mut places = resume::Places::new();
@@ -473,7 +461,7 @@ fn cmd_run(args: &[String]) -> u8 {
             Msg::Line(l, dev, ino, start, end) => {
                 let events = feed.push_line(&l);
                 let key = derm_audit_linux::record::parse_line(&l).map(|r| r.event_key());
-                places.note(dev, ino, start, end, key);
+                places.note(dev, ino, start, end, key, feed.last_line_own());
                 events
             }
             Msg::Idle => {
@@ -490,12 +478,16 @@ fn cmd_run(args: &[String]) -> u8 {
                 let now = now_ms();
                 if let Some((g, first)) = gap.take() {
                     let from = g.from_ms.map(|f| f.min(now));
-                    post_or_stop(
+                    if !post_or_stop(
                         &mut poster,
                         &socket,
                         &token,
                         &gap_event(from, first.unwrap_or(now), &g.reason, now),
-                    );
+                    ) {
+                        // FP13RR-6: no place is kept past an unposted gap;
+                        // the next start finds the same place and posts it.
+                        return 1;
+                    }
                 }
                 if backlog_cut {
                     // FP13R-1: chats whose `run.start` is older than the
@@ -503,12 +495,14 @@ fn cmd_run(args: &[String]) -> u8 {
                     let oldest = oldest_backlog.load(std::sync::atomic::Ordering::Relaxed);
                     let reason = "the daemon's backlog of run records was cut, so chats started before it are not known";
                     eprintln!("derm-audit-feed: {reason}");
-                    post_or_stop(
+                    if !post_or_stop(
                         &mut poster,
                         &socket,
                         &token,
                         &gap_event(Some(since), oldest.min(now), reason, now + 1),
-                    );
+                    ) {
+                        return 1;
+                    }
                 }
                 if let Some((tx, log, file, at, prev)) = follower.take() {
                     std::thread::spawn(move || {

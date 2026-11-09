@@ -759,6 +759,34 @@ struct Quota {
     bytes: usize,
 }
 
+/// How many OS feed records `SeenOs` remembers: more than one rotated
+/// audit log's events (about 20,000 in 8 MB on the box).
+const SEEN_OS_MAX: usize = 65_536;
+
+/// A bounded set of (chat, id) the daemon has passed on.
+#[derive(Default)]
+struct SeenOs {
+    set: std::collections::HashSet<(String, String)>,
+    order: std::collections::VecDeque<(String, String)>,
+}
+
+impl SeenOs {
+    /// True the first time a (chat, id) is seen.
+    fn first(&mut self, chat: &str, id: &str) -> bool {
+        let key = (chat.to_string(), id.to_string());
+        if !self.set.insert(key.clone()) {
+            return false;
+        }
+        self.order.push_back(key);
+        while self.order.len() > SEEN_OS_MAX {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        true
+    }
+}
+
 pub struct Daemon {
     token_hash: String,
     log: &'static ActivityLog,
@@ -807,6 +835,11 @@ pub struct Daemon {
     tap: Option<derm_tap::Tap>,
     /// The join (lane S): intent to effect, fed by every ingested event.
     join: Mutex<crate::join::Join>,
+    /// OS feed records already passed to the join and the install flags,
+    /// by chat and id: a feed that reads its log again after a restart
+    /// posts them twice, and the log keeps one copy while the join and the
+    /// flags counted both (the re-review's FP13RR-7).
+    seen_os: Mutex<SeenOs>,
     /// Install records (lane X): control-path flags and lockfile diffs.
     installs: Mutex<crate::installs::ingest::InstallRecords>,
     /// Content capture's purge (lane S), run by the service's timer.
@@ -1101,6 +1134,7 @@ impl Daemon {
             next_conn: AtomicU64::new(1),
             tap,
             join: Mutex::new(crate::join::Join::new()),
+            seen_os: Mutex::new(SeenOs::default()),
             installs: Mutex::new(crate::installs::ingest::InstallRecords::new()),
             purger: Mutex::new(crate::content::Purger::new(data_dir)),
             run_watchers: Mutex::new(Vec::new()),
@@ -1513,7 +1547,13 @@ impl Daemon {
         // join's candidate sets included, before the join sees it, so a write
         // is held when the join's set for it arrives. The working folder is
         // the chat's from its daemon-scope run.start, never the record's.
-        if event.source != Source::Derm || event.kind == "join.candidates" {
+        let again = matches!(event.source, Source::Auditd | Source::Eslogger)
+            && self
+                .seen_os
+                .lock()
+                .map(|mut s| !s.first(&event.chat_id, &event.id))
+                .unwrap_or(false);
+        if (event.source != Source::Derm || event.kind == "join.candidates") && !again {
             let cwd = |chat: &str| {
                 self.chats
                     .lock()
@@ -1532,7 +1572,7 @@ impl Daemon {
         // The join (lane S) reads every event but its own; what it makes is
         // ingested after its lock is released, and `observe` ignores the
         // `derm` records it gets back, so this never loops.
-        if event.source != Source::Derm {
+        if event.source != Source::Derm && !again {
             let made = self
                 .join
                 .lock()
@@ -3311,6 +3351,57 @@ mod tests {
         assert_eq!(joins[0].source, Source::Derm);
         assert_eq!(joins[0].detail["chosen"], "tap-chat-j-toolu_A");
         assert_eq!(ring.len(), 5, "four events and one join record");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FP13RR-7 (fp13's re-review): a feed that reads its log again after a
+    /// restart posts an OS record twice under the same id. The log keeps one
+    /// copy; the join and the install flags must see it once too.
+    #[test]
+    fn fp13rr_7_an_os_record_posted_twice_reaches_the_join_once() {
+        let (d, root) = daemon();
+        d.ingest(ev_of(
+            "chat-r",
+            Source::Run,
+            "run.start",
+            Some(5252),
+            json!({"cwd": "/w"}),
+        ));
+        let mut call = ev_of(
+            "chat-r",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_R", "toolNormalized": "write", "paths": ["/w/x"], "resultSha256": null}),
+        );
+        call.id = "tap-chat-r-toolu_R".into();
+        d.ingest(call);
+        d.ingest(ev_of(
+            "chat-r",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_R", "decision": "allow"}),
+        ));
+        let mut write = ev_of(
+            "chat-r",
+            Source::Auditd,
+            "write",
+            Some(5300),
+            json!({"ppid": 5252, "auditAt": now_ms(), "path": "/w/x"}),
+        );
+        write.id = "auditd-1-77".into();
+        d.ingest(write.clone());
+        d.ingest(write.clone());
+        // Another chat's record under the same id is its own.
+        write.chat_id = "chat-s".into();
+        d.ingest(write);
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let joins = ring
+            .iter()
+            .filter(|e| e.kind == "join.candidates" && e.chat_id == "chat-r")
+            .count();
+        assert_eq!(joins, 1, "{ring:?}");
         let _ = std::fs::remove_dir_all(root);
     }
 

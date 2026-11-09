@@ -1267,6 +1267,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ..inputs
     };
     let mut p = plan::build(&inputs).map_err(|e| (2, e))?;
+    // The re-review's FP13RR-5: srt 0.0.81 holds a missing `denyWrite` path by
+    // mounting over its first missing part on the host for the chat's life
+    // (`linux-sandbox-utils.js:178-190, 2314-2331`), which would leave an
+    // empty file where the daemon's data folder belongs. The folder is made
+    // first, private, as the daemon makes it.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if p.program == "srt" {
+        use std::os::unix::fs::DirBuilderExt;
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(content_root(&inputs.home));
+    }
     // MW5-32's Linux half: a missing control folder is held as an empty one,
     // not a device (srt mounts over a missing denied path).
     plan::keep_absent_control_folders(&mut p, a.harness.id, inputs.macos, &|s: &str| {

@@ -177,6 +177,7 @@ impl Tracker {
     /// left, once the log has passed their stop (`stop`). The feed calls it
     /// after a stop, when the log goes quiet, and once a minute.
     pub fn prune(&mut self, alive: &dyn Fn(u32) -> bool) {
+        self.age_pending(self.log_ms);
         let now = self.now();
         let stopped: Vec<(u32, bool)> = self
             .roots
@@ -239,6 +240,7 @@ impl Tracker {
         if action.ts_ms <= self.now().saturating_add(STOP_SLACK_MS) {
             self.log_ms = self.log_ms.max(action.ts_ms);
         }
+        self.age_pending(self.log_ms);
         let placed = self.place_inner(action);
         if placed.is_none() {
             self.wait(action.clone());
@@ -290,8 +292,17 @@ impl Tracker {
                 self.late.remove(&child);
             }
         }
-        let newest = action.ts_ms;
+        let newest = action.ts_ms.max(self.log_ms);
         self.pending.push_back(action);
+        self.age_pending(newest);
+    }
+
+    /// Lets go of waiting actions more than `PENDING_MS` older than the log
+    /// the feed has read (its time, never the clock: a feed that is behind
+    /// reads old lines, BW5R4-1). Until the re-review's FP13RR-3 this ran
+    /// only when another action waited, so a stranger's lone action, with
+    /// only placed ones after it, waited for good and held the kept place.
+    fn age_pending(&mut self, newest: i64) {
         while self
             .pending
             .front()
@@ -537,5 +548,20 @@ mod tests {
         t.prune(&|_| false);
         assert!(t.root(10).is_some(), "the log has not passed the stop");
         assert!(t.log_ms() < 5_000 + STOP_SLACK_MS);
+    }
+
+    /// FP13RR-3 (fp13's re-review): a stranger's lone action waited in
+    /// `pending` for good when only placed actions came after it, and held
+    /// the kept place at its line. It ages out by the log's own time.
+    #[test]
+    fn fp13rr_3_a_stranger_does_not_wait_in_pending_for_ever() {
+        let mut t = Tracker::new();
+        t.register(root(10));
+        assert!(t.place(&act(1_000, 77, 1, exec())).is_none());
+        for i in 0..3_600 {
+            let ts = 2_000 + i * 1_000;
+            assert!(t.place(&act(ts, 10, 1, exec())).is_some());
+        }
+        assert_eq!(t.pending_len(), 0);
     }
 }

@@ -202,14 +202,16 @@ fn records_before_run_start_are_replayed_when_it_arrives() {
 }
 
 #[test]
-fn a_run_record_is_taken_as_it_comes_since_only_the_daemon_posts_one() {
+fn a_run_record_is_taken_as_it_comes_since_only_the_daemon_scope_posts_one() {
     // Spec change, fp13's review FP13R-6: until then this test held that a
     // `run.stop` whose root still ran was refused and that another chat could
     // not take a live root's pid, on the reading that a chat token could post
     // `run` records. It cannot: `contracts/daemon-protocol.md` rule 2, and
     // `op_event` refuses them (`derm-daemon/src/daemon.rs`, "a chat token
     // posts only adapter and otel events"). With the pid reused, the refusal
-    // kept a stopped chat on a live chat's pid.
+    // kept a stopped chat on a live chat's pid. Under `--boundary none` the
+    // daemon token is the agent's too (FP13RR-8); the refusal never closed
+    // that.
     let mut f = Feed::new(HOME, None);
     f.register(root());
     let stop = Event {
@@ -250,26 +252,28 @@ fn a_cut_log_never_panics() {
     }
 }
 
-/// BW5R4-1: a feed that reads the log again from its beginning after a gap
-/// skips what an earlier run read (up to the kept place's time), so nothing
-/// is posted twice, and posts what came after.
+/// BW5R4-1, as changed by fp13's re-review (FP13RR-2, spec change): a feed
+/// that reads the log again from its beginning after a gap skips nothing.
+/// Fix pass 13 skipped events stamped before the kept place, and fp13's
+/// review clamped that floor (FP13R-13); but the kernel stamps the time at a
+/// syscall's entry and takes the serial when it writes the record
+/// (`kernel/auditsc.c:2021, 2498`), so a call that blocked is written after
+/// events stamped later, and a floor by stamp dropped it for good (run on
+/// the cloud's auditd: an `open` of a FIFO blocked 3 s was serial 65512
+/// stamped 867.742, after serial 65508 stamped 870.746). What the last run
+/// posted is posted again under the same ids, which the daemon keeps once
+/// and passes to the join once (FP13RR-7).
 #[test]
-fn bw5r4_1_a_reread_skips_what_the_last_run_posted() {
+fn fp13rr_2_a_reread_after_a_gap_skips_nothing_and_reposts_the_same_ids() {
     let all = parse_for_root(ENRICHED, root(), HOME);
-    // The last run had read through the first create (stamped ...339775).
     let mut f = Feed::new(HOME, None);
-    f.skip_before((1_793_114_339_776, 0));
     let mut out = f.register(root());
     for line in ENRICHED.split('\n') {
         out.extend(f.push_line(line));
     }
     out.extend(f.flush());
-    let later: Vec<Event> = all
-        .into_iter()
-        .filter(|e| e.at > 1_793_114_339_775)
-        .collect();
-    assert!(!later.is_empty());
-    assert_eq!(out, later);
+    assert!(!all.is_empty());
+    assert_eq!(out, all);
 }
 
 /// BW5R4-2 (box test w5, retest 4, on `8caaf00`): with the feed behind (paused
@@ -342,7 +346,7 @@ fn fp13r_3_the_place_does_not_pass_events_waiting_for_their_run_start() {
         let end = at + line.len() as u64 + 1;
         out.extend(f.push_line(line));
         let key = derm_audit_linux::record::parse_line(line).map(|r| r.event_key());
-        places.note(1, 7, at, end, key);
+        places.note(1, 7, at, end, key, f.last_line_own());
         at = end;
     }
     // Every event is complete, none is posted: the chat's run.start has not
@@ -422,20 +426,23 @@ fn fp13r_6_a_replayed_stop_with_a_reused_pid_credits_the_live_chat_to_the_old() 
     assert_eq!(chats.into_iter().collect::<Vec<_>>(), vec!["chat-1"]);
 }
 
-/// FP13R-13: a pos file whose inode is not found and whose `logMs` is far
-/// ahead (planted, or a clock step: `log_ms` is an unclamped maximum) makes
-/// `skip_through` drop every event, for good (now `skip_before`, clamped).
+/// FP13RR-1 (fp13's re-review): the derm rules record every process of the
+/// user, so the feed read its own place saves; they waited for a chat, moved
+/// the kept place, and the feed saved again, about once a second (413 KB of
+/// audit log a minute on the cloud's auditd, all the feed's). Its own
+/// records are dropped and marked, so they neither wait nor move the place.
 #[test]
-fn fp13r_13_a_floor_from_the_pos_file_can_skip_everything() {
+fn fp13rr_1_the_feeds_own_records_neither_wait_nor_count() {
+    let save = "type=SYSCALL msg=audit(1793114339.900:777): arch=c000003e syscall=82 success=yes exit=0 a0=1 a1=2 a2=3 a3=4 items=4 ppid=1 pid=4242 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=1 comm=\"derm-audit-feed\" exe=\"/home/ubuntu/.local/bin/derm-audit-feed\" subj=unconfined key=\"derm_write\"\ntype=PATH msg=audit(1793114339.900:777): item=0 name=\"/home/ubuntu/.local/share/derm/audit-feed.pos\" inode=9 dev=fe:00 mode=0100600 ouid=1000 ogid=1000 rdev=00:00 nametype=CREATE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0\ntype=PROCTITLE msg=audit(1793114339.900:777): proctitle=6465726D";
     let mut f = Feed::new(HOME, None);
-    f.skip_before((i64::MAX / 2, 0));
-    let mut out = f.register(root());
-    for line in ENRICHED.split('\n') {
+    f.set_own_pid(4242);
+    let mut out = Vec::new();
+    for line in save.split('\n') {
         out.extend(f.push_line(line));
+        assert!(f.last_line_own(), "{line}");
     }
     out.extend(f.flush());
-    assert!(
-        !out.is_empty(),
-        "every event skipped by a floor read from the pos file"
-    );
+    assert!(out.is_empty());
+    assert_eq!(f.tracker().pending_len(), 0);
+    assert!(f.unposted().is_empty());
 }

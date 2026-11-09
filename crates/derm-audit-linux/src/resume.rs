@@ -14,8 +14,9 @@
 //!   (open in the assembler, or waiting for its chat's `run.start`), or the
 //!   end of what was read when everything read was posted (`Places`). A
 //!   restart reads on from there; what it posts twice has the same id, which
-//!   the daemon's log keeps once per chat and source (`store::may_replace`)
-//!   and the join records under `join-<id>`.
+//!   the daemon's log keeps once per chat and source (`store::may_replace`),
+//!   and which the daemon passes to the join and the install flags once
+//!   (the re-review's FP13RR-7: they counted it twice).
 //! - `check` is one whole line at the place, with its `(time, serial)`. On
 //!   start the line is read again at `check.start`; a different line means
 //!   the file is not the kept one (ext4 hands a freed inode to the next file,
@@ -26,8 +27,16 @@
 //!   looked for in the log and in `<log>.1`. `max_log_file_action = exec`
 //!   leaves naming to a script and is not followed.
 //! - On a gap the feed reads what is still there, `<log>.1` and the log
-//!   from their beginnings, posts `feed.gap`, and skips events before the
-//!   kept one by `(time, serial)` (clamped by `Feed::skip_before`).
+//!   from their beginnings, and posts `feed.gap`. It skips nothing by time
+//!   or serial: the kernel stamps the time at a syscall's entry and takes
+//!   the serial when it writes the record (`kernel/auditsc.c:2021, 2498`), so
+//!   a call that blocked is written after events stamped later, and an
+//!   order-based floor dropped it (the re-review's FP13RR-2; ausearch skips
+//!   by position, `src/ausearch.c:439-452`). What is posted twice is
+//!   deduplicated by id.
+//! - The feed's own records (its place saves are audited too) never move
+//!   the place (FP13RR-1). Whether an earlier run posted anything is a
+//!   marker beside the place (`STARTED_FILE`), not a report (FP13RR-4).
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
@@ -38,6 +47,8 @@ use serde::{Deserialize, Serialize};
 
 /// The pos file's name in the daemon's data folder.
 pub const POS_FILE: &str = "audit-feed.pos";
+/// Made once, on the feed's first start: a missing place after it is a gap.
+pub const STARTED_FILE: &str = "audit-feed.started";
 /// A pos file is a few dozen bytes; anything larger is not ours.
 const POS_MAX_BYTES: u64 = 4096;
 /// At most this many event starts are held for the place (`Places`).
@@ -67,20 +78,6 @@ pub struct Pos {
     pub check: Option<Check>,
     /// The newest audit time read by then (ms), for a gap's start.
     pub log_ms: i64,
-}
-
-impl Pos {
-    /// Events before this `(time, serial)` were posted by the run that
-    /// kept the place.
-    pub fn posted_before(&self) -> Option<(i64, u64)> {
-        self.check.map(|c| {
-            if c.start == self.offset {
-                (c.ts_ms, c.serial)
-            } else {
-                (c.ts_ms, c.serial.saturating_add(1))
-            }
-        })
-    }
 }
 
 /// What `load` found at the pos file's name.
@@ -124,15 +121,13 @@ pub struct Gap {
     /// The newest audit time read before the gap, when known.
     pub from_ms: Option<i64>,
     pub reason: String,
-    /// Events before this were posted by the run that kept the place.
-    pub floor: Option<(i64, u64)>,
 }
 
 /// Where to start. `rotated` is `<log>.1` when there is one; `line_at`
 /// reads the whole line starting at an offset of one of the two files and
 /// returns where it ends and its event's `(time, serial)`. `ran_before`
-/// says an earlier run of the feed posted records (the daemon's log holds
-/// some): a missing place is then a gap, not a first start (FP13R-17).
+/// says an earlier run of the feed started here (`STARTED_FILE`): a missing
+/// place is then a gap, not a first start (FP13R-17, FP13RR-4).
 pub fn decide(
     loaded: &Loaded,
     log: &Path,
@@ -160,7 +155,6 @@ pub fn decide(
                 Some(Gap {
                     from_ms: None,
                     reason: "the feed's kept place is missing (removed, or never written)".into(),
-                    floor: None,
                 }),
             )
         }
@@ -170,7 +164,6 @@ pub fn decide(
                 Some(Gap {
                     from_ms: None,
                     reason: format!("the feed's kept place was refused: {why}"),
-                    floor: None,
                 }),
             )
         }
@@ -211,7 +204,6 @@ pub fn decide(
         Some(Gap {
             from_ms: Some(p.log_ms),
             reason: reason.into(),
-            floor: p.posted_before(),
         }),
     )
 }
@@ -262,6 +254,28 @@ pub fn load(path: &Path) -> Loaded {
     match serde_json::from_str(&text) {
         Ok(p) => Loaded::Kept(p),
         Err(_) => Loaded::Refused("it does not hold a place this version reads"),
+    }
+}
+
+/// Whether an earlier run of the feed started with this data folder: the
+/// marker `STARTED_FILE` is there (whatever it holds; a marker that is not a
+/// private regular file of this user's counts as there, failing safe).
+/// Made, exclusive and 0600, when missing. FP13RR-4: a report of the
+/// daemon's log stood in for this and read false on a timeout, a cut window
+/// or a run that posted nothing.
+pub fn started_before(dir: &Path) -> bool {
+    let path = dir.join(STARTED_FILE);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = derm_core::platform::private_dir(dir);
+            let mut o = OpenOptions::new();
+            o.write(true).create_new(true);
+            derm_core::platform::private_no_follow(&mut o);
+            let _ = o.open(&path);
+            false
+        }
+        Err(_) => true,
     }
 }
 
@@ -322,7 +336,21 @@ impl Places {
 
     /// One line read: `[start, end)` of file `(dev, inode)`, and its
     /// event's key when it is an audit record.
-    pub fn note(&mut self, dev: u64, inode: u64, start: u64, end: u64, key: Option<(i64, u64)>) {
+    /// A line of the feed's own (`own`) moves nothing: the place stays where
+    /// it was, so the feed's own save does not make it save again
+    /// (FP13RR-1); a restart reads those lines again and drops them.
+    pub fn note(
+        &mut self,
+        dev: u64,
+        inode: u64,
+        start: u64,
+        end: u64,
+        key: Option<(i64, u64)>,
+        own: bool,
+    ) {
+        if own {
+            return;
+        }
         self.last_end = Some((dev, inode, end));
         let Some(key) = key else { return };
         let m = Mark {
@@ -465,7 +493,6 @@ mod tests {
         assert_eq!(s, Start::Rotated { offset: 0 });
         let g = g.unwrap();
         assert_eq!(g.from_ms, Some(1_000));
-        assert_eq!(g.floor, Some(K));
         // Cut shorter than the place.
         let (s, g) = decide(
             &Loaded::Kept(pos(7, 500)),
@@ -564,19 +591,6 @@ mod tests {
     }
 
     #[test]
-    fn a_place_after_everything_posted_skips_through_its_check_line() {
-        let mut p = pos(7, 540);
-        p.check = Some(Check {
-            start: 500,
-            end: 540,
-            ts_ms: K.0,
-            serial: K.1,
-        });
-        assert_eq!(p.posted_before(), Some((K.0, K.1 + 1)));
-        assert_eq!(pos(7, 500).posted_before(), Some(K));
-    }
-
-    #[test]
     fn a_place_is_kept_private_and_read_back() {
         let dir = std::env::temp_dir().join(format!("derm-pos-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -607,6 +621,35 @@ mod tests {
         }
         assert_eq!(load(&dir.join("none.pos")), Loaded::Missing);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FP13RR-4: whether the feed ran before is its own marker, not a
+    /// report: the first start makes it, every later one sees it.
+    #[test]
+    fn fp13rr_4_the_first_start_is_known_by_a_marker() {
+        let dir = std::env::temp_dir().join(format!("derm-started-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!started_before(&dir));
+        assert!(started_before(&dir));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = std::fs::metadata(dir.join(STARTED_FILE)).unwrap();
+            assert_eq!(m.permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FP13RR-1: the feed's own lines move no place.
+    #[test]
+    fn fp13rr_1_the_feeds_own_lines_do_not_move_the_place() {
+        let mut p = Places::new();
+        p.note(1, 7, 0, 10, Some((1, 1)), false);
+        let before = p.place(&HashSet::new());
+        p.note(1, 7, 10, 20, Some((2, 2)), true);
+        p.note(1, 7, 20, 30, Some((2, 2)), true);
+        assert_eq!(p.place(&HashSet::new()), before);
+        assert_eq!(before.unwrap().offset, 10);
     }
 
     /// FP13R-7 (fp13 review): a FIFO planted at the pos file's name. `load`
@@ -642,10 +685,10 @@ mod tests {
     #[test]
     fn fp13r_3_the_place_stays_at_the_oldest_unposted_events_first_line() {
         let mut p = Places::new();
-        p.note(1, 7, 0, 10, Some((1, 1)));
-        p.note(1, 7, 10, 20, Some((2, 2)));
-        p.note(1, 7, 20, 30, Some((1, 1))); // a second record of event 1
-        p.note(1, 7, 30, 40, Some((3, 3)));
+        p.note(1, 7, 0, 10, Some((1, 1)), false);
+        p.note(1, 7, 10, 20, Some((2, 2)), false);
+        p.note(1, 7, 20, 30, Some((1, 1)), false); // a second record of event 1
+        p.note(1, 7, 30, 40, Some((3, 3)), false);
         let waiting: HashSet<(i64, u64)> = [(2, 2), (3, 3)].into_iter().collect();
         let at = p.place(&waiting).unwrap();
         assert_eq!(at.offset, 10);

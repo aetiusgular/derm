@@ -20,12 +20,21 @@ pub struct Feed {
     checker: Checker,
     /// Lines that were not audit records.
     pub skipped_lines: u64,
-    /// Audit events before this `(time, serial)` were posted by an earlier
-    /// run (BW5R4-1: a restart that reads the log again from its beginning).
-    floor: Option<(i64, u64)>,
     /// The `(time, serial)` of the last line read that was an audit record.
     last_key: Option<(i64, u64)>,
+    /// The feed's own process: the derm rules record every process of the
+    /// user, the feed's own place saves too, and those must neither wait for
+    /// a chat nor move the place, or each save causes the next (the
+    /// re-review's FP13RR-1: 413 KB of audit log a minute, all the feed's).
+    own_pid: Option<u32>,
+    /// The keys of the feed's own events seen lately (a bounded set).
+    own_keys: std::collections::HashSet<(i64, u64)>,
+    own_order: std::collections::VecDeque<(i64, u64)>,
+    last_own: bool,
 }
+
+/// How many of the feed's own event keys are remembered.
+const OWN_KEYS: usize = 4096;
 
 impl Feed {
     /// `home` is the user's home folder (`$HOME`), `runtime_dir` their
@@ -38,23 +47,23 @@ impl Feed {
             tracker: Tracker::new(),
             checker: Checker::new(),
             skipped_lines: 0,
-            floor: None,
             last_key: None,
+            own_pid: None,
+            own_keys: std::collections::HashSet::new(),
+            own_order: std::collections::VecDeque::new(),
+            last_own: false,
         }
     }
 
-    /// Skips audit events whose `(time, serial)` comes before `key`: an
-    /// earlier run of the feed posted them (BW5R4-1). The serial is the
-    /// kernel's one counter, so a second event in the same millisecond is
-    /// told apart (fp13's FP13-1); a key stamped ahead of the feed's clock
-    /// (a planted or stepped place) skips nothing, since a duplicate costs
-    /// less than a loss (fp13's review, FP13R-13).
-    pub fn skip_before(&mut self, key: (i64, u64)) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        self.floor = (key.0 <= now.saturating_add(crate::tree::STOP_SLACK_MS)).then_some(key);
+    /// The feed's own process id: its records are never a chat's and do
+    /// not move the kept place (FP13RR-1).
+    pub fn set_own_pid(&mut self, pid: u32) {
+        self.own_pid = Some(pid);
+    }
+
+    /// Whether the last line read belongs to one of the feed's own events.
+    pub fn last_line_own(&self) -> bool {
+        self.last_own
     }
 
     /// The `(time, serial)` of the last audit record read.
@@ -96,7 +105,25 @@ impl Feed {
             }
             return Vec::new();
         };
-        self.last_key = Some(record.event_key());
+        let key = record.event_key();
+        self.last_key = Some(key);
+        // An event's SYSCALL record comes first (7,505 of 7,507 multi-record
+        // events in the live log here) and carries the process's tgid
+        // (`pid=`, kernel `auditsc.c` `task_tgid_nr`), so every thread of
+        // the feed is its own pid.
+        if self.own_pid.is_some()
+            && record.kind == "SYSCALL"
+            && record.get_u32("pid") == self.own_pid
+            && self.own_keys.insert(key)
+        {
+            self.own_order.push_back(key);
+            while self.own_order.len() > OWN_KEYS {
+                if let Some(old) = self.own_order.pop_front() {
+                    self.own_keys.remove(&old);
+                }
+            }
+        }
+        self.last_own = self.own_keys.contains(&key);
         let done = self.assembler.push(record);
         self.handle(done)
     }
@@ -110,7 +137,7 @@ impl Feed {
     fn handle(&mut self, done: Vec<AuditEvent>) -> Vec<Event> {
         let mut out = Vec::new();
         for ev in done {
-            if self.floor.is_some_and(|f| (ev.ts_ms, ev.serial) < f) {
+            if self.own_keys.contains(&(ev.ts_ms, ev.serial)) {
                 continue;
             }
             let Some(a) = action::read(&ev) else { continue };
@@ -165,9 +192,12 @@ impl Feed {
     /// `alive(pid)` says whether a process still runs: members alive at a
     /// stop stay the chat's. Every `run` record is taken as it comes: only
     /// the daemon scope posts them (`contracts/daemon-protocol.md` rule 2;
-    /// `op_event` refuses them from a chat token), so a `run.stop` is
-    /// `derm run`'s own, after its harness exited, and a later `run.start`
-    /// on the same pid is a reused pid. Until fp13's review the feed refused
+    /// `op_event` refuses them from a chat token), and a later `run.start`
+    /// on the same pid is a reused pid. That guarantee is the boundary's,
+    /// not the protocol's: under `--boundary none` the agent is the user and
+    /// can read `daemon.token` (case 66's class; the re-review's FP13RR-8),
+    /// and with it could post any record at all, which the refusal below
+    /// never closed. Until fp13's review the feed refused
     /// a stop whose root pid was alive and a start on a pid a live chat
     /// held; with the pid reused (a backlog replayed at the feed's start),
     /// that kept the old chat on the pid and credited the live chat's
