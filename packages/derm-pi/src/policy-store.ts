@@ -93,6 +93,10 @@ export function policyPath(
   return join(home(), ".derm", "policy.json");
 }
 
+/** Why derm-pi reads no policy on Windows (WW5-3). */
+export const WINDOWS_POLICY_PROBLEM =
+  "on Windows derm-pi cannot read who may write the policy file, so it uses none and every call asks";
+
 export class PolicyStore {
   private cached: { key: string; loaded: LoadedPolicy } | undefined;
 
@@ -131,10 +135,13 @@ export class PolicyStore {
       const st = await handle.stat();
       if (!st.isFile()) return { policy: defaultPolicy(), problem: "policy path is not a file" };
       if (st.size > MAX_POLICY_BYTES) return { policy: defaultPolicy(), problem: "policy file larger than 1 MiB" };
-      if (this.posix) {
-        if ((st.mode & 0o022) !== 0) return { policy: defaultPolicy(), problem: "policy file is writable by group or others" };
-        if (this.uid !== undefined && st.uid !== this.uid) return { policy: defaultPolicy(), problem: "policy file is owned by another user" };
-      }
+      // On Windows a file's mode is its read-only attribute alone (libuv
+      // v1.52.1 `src/win/fs.c:1955-1959`) and there is no uid, so who may
+      // write the file cannot be read here: no policy, every call asks
+      // (WW5-3). Before, both checks were skipped and any file loaded.
+      if (!this.posix) return { policy: defaultPolicy(), problem: WINDOWS_POLICY_PROBLEM };
+      if ((st.mode & 0o022) !== 0) return { policy: defaultPolicy(), problem: "policy file is writable by group or others" };
+      if (this.uid !== undefined && st.uid !== this.uid) return { policy: defaultPolicy(), problem: "policy file is owned by another user" };
       const key = `${st.ino}:${st.mtimeMs}:${st.size}`;
       if (this.cached?.key === key) return this.cached.loaded;
       let text: string;

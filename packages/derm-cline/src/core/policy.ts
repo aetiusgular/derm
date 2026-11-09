@@ -177,12 +177,16 @@ export function parsePolicy(value: unknown): PolicyFile | string {
   return { version: 1, askTimeoutSeconds, servers, rules };
 }
 
+/** Why the hook reads no policy on Windows (WW5-3). */
+export const WINDOWS_POLICY_PROBLEM =
+  "on Windows the hook cannot read who may write the policy file, so it uses none and every call asks";
+
 /**
  * Reads the policy file. Called on the first tool call, never at load (case
  * 46). Missing, unreadable, too large, not JSON, or failing the schema: the
  * empty policy, with the problem named (contract, section 1). Nothing fails open.
  */
-export function loadPolicy(file: string = policyPath()): LoadedPolicy {
+export function loadPolicy(file: string = policyPath(), platform: NodeJS.Platform = process.platform): LoadedPolicy {
   // A relative path would resolve inside the project, which an agent can write.
   if (!path.isAbsolute(file)) return { policy: emptyPolicy(), problem: "policy path is not absolute" };
   let fd: number | undefined;
@@ -190,6 +194,14 @@ export function loadPolicy(file: string = policyPath()): LoadedPolicy {
     fd = openSync(file, "r");
     const st = fstatSync(fd);
     if (!st.isFile()) return { policy: emptyPolicy(), problem: "policy file is not a regular file" };
+    // On Windows Node gives a file's mode from its read-only attribute alone
+    // (libuv v1.52.1 `src/win/fs.c:1955-1959`, Node 24's) and has no
+    // `process.getuid`, so neither check below can read who may write the
+    // file: an ordinary file read as "writable by others", and one Everyone
+    // may write passed once marked read-only (WW5-3, Windows test w5). Until
+    // the hook can read the file's access list it uses no policy there, and
+    // every call asks.
+    if (platform === "win32") return { policy: emptyPolicy(), problem: WINDOWS_POLICY_PROBLEM };
     if (!ownedByTrusted(st.uid)) return { policy: emptyPolicy(), problem: "policy file owned by another user" };
     if ((st.mode & 0o022) !== 0) return { policy: emptyPolicy(), problem: "policy file writable by group or others" };
     // A folder others can write (such as /tmp) lets them swap the file.

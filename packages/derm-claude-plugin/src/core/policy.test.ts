@@ -10,6 +10,7 @@ import {
   ENDPOINT_KEYS,
   GIT_CONFIG_KEYS,
   UNREADABLE_SHELL_TOKENS,
+  WINDOWS_POLICY_PROBLEM,
   evaluate,
   isGitContext,
   loadPolicy,
@@ -198,6 +199,19 @@ describe("loadPolicy (contract section 1; case 46 is the caller's)", () => {
     for (const name of ["a.json", "b.json", "c.json", "d.json", "e.json"]) {
       expect(loadPolicy(path.join(dir, name)).policy.rules).toEqual([]);
     }
+  });
+  it("on Windows uses no policy, since who may write the file cannot be read (WW5-3)", () => {
+    // Fails on 2ce607d: the platform was not read and the file loaded.
+    const good = file("win.json", JSON.stringify(policyFixture));
+    chmodSync(good, 0o600);
+    const l = loadPolicy(good, "win32");
+    expect(l.problem).toBe(WINDOWS_POLICY_PROBLEM);
+    expect(l.policy.rules).toEqual([]);
+    expect(evaluate(l, { tool: "Bash", harness: "claude-code", inputText: "ls" }).action).toBe("ask");
+    // A missing file still says so.
+    expect(loadPolicy(path.join(dir, "absent.json"), "win32").problem).toBe("no policy file");
+    // Elsewhere the same file loads.
+    expect(loadPolicy(good, "linux").problem).toBeUndefined();
   });
   it("refuses a relative path and a file others can write", () => {
     expect(loadPolicy("policy.json").problem).toBe("policy path is not absolute");

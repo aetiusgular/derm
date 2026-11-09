@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { createGate } from "../extensions/gate.ts";
+import { PolicyStore, WINDOWS_POLICY_PROBLEM } from "../src/policy-store.ts";
 import type { ToolCallResult } from "../src/pi-api.ts";
 import { FakeRpcClient, fakePi } from "./fake-pi.ts";
 
@@ -24,6 +25,17 @@ function gateWith(policyPath: string) {
 }
 
 describe("the policy file on disk", () => {
+  it("on Windows no policy is read, since who may write it cannot be (WW5-3)", async () => {
+    // Fails on 2ce607d: off POSIX both checks were skipped and the file loaded.
+    const file = path.join(root, "win.json");
+    writeFileSync(file, allowRead, { mode: 0o600 });
+    chmodSync(file, 0o600);
+    const onWindows = await new PolicyStore(file, undefined, undefined, false).get();
+    expect(onWindows.problem).toBe(WINDOWS_POLICY_PROBLEM);
+    expect(onWindows.policy.rules).toEqual([]);
+    expect((await new PolicyStore(file, undefined, undefined, true).get()).problem).toBeUndefined();
+  });
+
   it("a regular private file is read and applied", async () => {
     const file = path.join(root, "policy.json");
     writeFileSync(file, allowRead, { mode: 0o600 });
