@@ -290,6 +290,8 @@ pub(crate) fn srt_probe(
         "network": {"allowedDomains": [], "deniedDomains": []},
         "filesystem": {"denyRead": [], "allowWrite": [], "denyWrite": []},
     });
+    // The bubblewrap srt will run, for the AppArmor note (BW5R5-2).
+    let probe_bwrap = tools.as_ref().map(|t| t.bwrap.clone());
     if let Some(t) = tools {
         settings["bwrapPath"] = serde_json::json!(t.bwrap);
         settings["socatPath"] = serde_json::json!(t.socat);
@@ -326,7 +328,8 @@ pub(crate) fn srt_probe(
         Ok(r) if r.ok => Ok(()),
         Ok(r) => {
             let mut why = format!("srt could not start a program here: {}", r.line);
-            if let Some(n) = preflight::apparmor_note(linux, bwrap_profile, userns) {
+            let bwrap = probe_bwrap.as_deref().unwrap_or(preflight::UBUNTU_BWRAP);
+            if let Some(n) = preflight::apparmor_note_for(linux, bwrap_profile, userns, bwrap) {
                 why.push_str("; ");
                 why.push_str(&n);
             }
@@ -674,12 +677,14 @@ mod tests {
             assert!(r.why.contains("apparmor_restrict_unprivileged_userns"));
         }
         // Box test w5, BW5-10: with Ubuntu's bwrap profile installed the
-        // reason names it, with the sysctl at 0 too, and not the sysctl.
+        // reason names it for the system bubblewrap (preflight's
+        // `bw5_10_*` tests). Since BW5R5-2 a bubblewrap the profile does not
+        // attach to, as the one here, gets no such note: the failure is
+        // srt's own line.
         let r = srt_probe(pi(), &path, None, Some("0\n"), true, &cwd, fail).unwrap_err();
-        if cfg!(target_os = "linux") {
-            assert!(r.why.contains("bwrap-userns-restrict"), "{}", r.why);
-            assert!(!r.why.contains("set to 0"), "{}", r.why);
-        }
+        assert!(r.why.contains("Permission denied"), "{}", r.why);
+        assert!(!r.why.contains("bwrap-userns-restrict"), "{}", r.why);
+        assert!(!r.why.contains("set to 0"), "{}", r.why);
         let ok: Runner = &|_, _, _| {
             Ok(Ran {
                 ok: true,

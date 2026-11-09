@@ -983,6 +983,13 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     }
                 }
             }
+            // The daemon's data folder: every chat's activity log and, with
+            // content on, their prompts and replies (box retest of fix pass
+            // 13r, BW5R5-3: a chat under srt on Linux read the day's log). On
+            // macOS it is the daemon's folder, hidden above (case 174).
+            if !cfg!(target_os = "macos") {
+                deny_read.push(super::content_root(&i.home).to_string_lossy().into_owned());
+            }
             deny_read.sort();
             deny_read.dedup();
             // The gate's policy file, re-opened read-only inside the hidden
@@ -1720,6 +1727,32 @@ mod tests {
             !cfg!(target_os = "macos"),
             "allowWrite {allow}\ndenyWrite {deny}"
         );
+    }
+
+    /// Box retest of fix pass 13r, BW5R5-3, run on the box under srt 0.0.81:
+    /// a chat could read the daemon's data folder, every chat's activity log
+    /// (`wc -l` of the day's file: 751 lines) and, with content on, other
+    /// chats' content files. On macOS that folder is the daemon's folder,
+    /// which is in `denyRead` (case 174); on Linux it was only write-denied.
+    #[test]
+    fn bw5r5_3_the_daemons_data_folder_is_hidden_under_srt_on_linux() {
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let p = build(&Inputs {
+            cwd: "/home/u/proj".into(),
+            ..inputs(&args)
+        })
+        .unwrap();
+        let v = srt_of(&p);
+        let data = super::super::content_root("/home/u")
+            .to_string_lossy()
+            .into_owned();
+        let deny = v["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x.as_str())
+            .any(|x| x == data);
+        assert_eq!(deny, !cfg!(target_os = "macos"), "{}", v["filesystem"]);
     }
 
     fn srt_of(p: &Plan) -> serde_json::Value {

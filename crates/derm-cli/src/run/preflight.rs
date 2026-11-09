@@ -43,6 +43,11 @@ pub fn srt(
     srt_with(path_var, linux, userns_sysctl, false, writable, cwd)
 }
 
+/// The bubblewrap Ubuntu's `bwrap-userns-restrict` attaches to, by path
+/// (`profile bwrap /usr/bin/bwrap`, line 15 of apparmor
+/// 5.0.2-0ubuntu1~26.04.1's file).
+pub const UBUNTU_BWRAP: &str = "/usr/bin/bwrap";
+
 /// What derm says when AppArmor may stop srt on Linux, one text for
 /// `derm run`'s start note and for the boundary probe's reason (box test w5
 /// retest, BW5R-4: the start note still offered the sysctl, which did not
@@ -77,12 +82,22 @@ pub fn srt(
 /// that profile, and every way to do that hands any local program a user
 /// namespace with capabilities; `docs/install/linux.md` lists them with
 /// their undo.
-pub fn apparmor_note(
+///
+/// `bwrap` is the bubblewrap srt will run, by its real path. A bubblewrap
+/// anywhere but [`UBUNTU_BWRAP`] is not under Ubuntu's profile,
+/// so with the profile installed there is nothing to say about it (box
+/// retest of fix pass 13r, BW5R5-2: the copy `docs/install/linux.md`
+/// describes started srt on the box, and the note still said it could not).
+pub fn apparmor_note_for(
     linux: bool,
     bwrap_profile: bool,
     userns_sysctl: Option<&str>,
+    bwrap: &str,
 ) -> Option<String> {
     if !linux {
+        return None;
+    }
+    if bwrap_profile && bwrap != UBUNTU_BWRAP {
         return None;
     }
     if bwrap_profile {
@@ -149,7 +164,8 @@ pub fn srt_with(
         ));
     }
     let mut notes = Vec::new();
-    if let Some(n) = apparmor_note(linux, bwrap_profile, userns_sysctl) {
+    let bwrap = found.first().map(String::as_str).unwrap_or(UBUNTU_BWRAP);
+    if let Some(n) = apparmor_note_for(linux, bwrap_profile, userns_sysctl, bwrap) {
         notes.push(format!("derm run: {n}."));
     }
     let tools = linux.then(|| Tools {
@@ -614,18 +630,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bw5r_4_the_start_note_names_ubuntus_bubblewrap_profile() {
+        // Since BW5R5-2 the note is for the system bubblewrap, the one
+        // Ubuntu's profile attaches to; the temporary one below is not.
         let d = dir_with("bw5r4", &["bwrap", "socat", "rg"]);
-        let n = srt_with(&d, true, Some("1\n"), true, &[], "/").unwrap().0;
-        assert_eq!(n.len(), 1, "{n:?}");
+        let n = vec![apparmor_note_for(true, true, Some("1\n"), UBUNTU_BWRAP).unwrap()];
         assert!(n[0].contains("bwrap-userns-restrict"), "{n:?}");
         assert!(!n[0].contains("sysctl -w"), "{n:?}");
         // Whatever the sysctl says.
-        let n = srt_with(&d, true, Some("0"), true, &[], "/").unwrap().0;
+        let n = vec![apparmor_note_for(true, true, Some("0"), UBUNTU_BWRAP).unwrap()];
         assert!(n[0].contains("bwrap-userns-restrict"), "{n:?}");
         // Without the profile, the sysctl's note as before; on macOS none.
         let n = srt_with(&d, true, Some("1"), false, &[], "/").unwrap().0;
         assert!(n[0].contains("sysctl -w"), "{n:?}");
-        assert_eq!(apparmor_note(false, true, Some("1")), None);
+        assert_eq!(
+            apparmor_note_for(false, true, Some("1"), UBUNTU_BWRAP),
+            None
+        );
     }
     /// Box test w5, BW5-10, researched on 8 Nov: under Ubuntu 26.04's
     /// `bwrap-userns-restrict` (apparmor 5.0.2-0ubuntu1~26.04.1, lines 50,
@@ -640,7 +660,7 @@ mod tests {
     /// 24.04, where that profile is not loaded.
     #[test]
     fn bw5_10_the_note_says_why_srt_fails_under_ubuntus_bubblewrap_profile() {
-        let n = apparmor_note(true, true, Some("1")).unwrap();
+        let n = apparmor_note_for(true, true, Some("1"), UBUNTU_BWRAP).unwrap();
         for want in [
             "bwrap-userns-restrict",
             "unpriv_bwrap",
@@ -657,7 +677,30 @@ mod tests {
         }
         assert!(!n.contains("srt README"), "{n}");
         assert!(!n.contains("allows userns for the bubblewrap"), "{n}");
-        assert_eq!(apparmor_note(true, true, Some("0")), Some(n));
+        assert_eq!(
+            apparmor_note_for(true, true, Some("0"), UBUNTU_BWRAP),
+            Some(n)
+        );
+    }
+
+    /// Box retest of fix pass 13r, BW5R5-2: Ubuntu's profile attaches to
+    /// `/usr/bin/bwrap` by path (its line 15), so a bubblewrap srt runs from
+    /// anywhere else (the copy `docs/install/linux.md` describes, run on the
+    /// box: srt started) is not under it, and the note must not say srt
+    /// cannot start.
+    #[cfg(unix)]
+    #[test]
+    fn bw5r5_2_no_bubblewrap_profile_note_for_a_bwrap_it_does_not_attach_to() {
+        let d = dir_with("bw5r52", &["bwrap", "socat", "rg"]);
+        let n = srt_with(&d, true, Some("1"), true, &[], "/").unwrap().0;
+        assert!(
+            n.iter().all(|x| !x.contains("bwrap-userns-restrict")),
+            "{n:?}"
+        );
+        assert!(apparmor_note_for(true, true, Some("1"), "/usr/bin/bwrap").is_some());
+        assert!(
+            apparmor_note_for(true, true, Some("1"), "/usr/local/libexec/derm-srt/bwrap").is_none()
+        );
     }
 
     /// BW5-10's other half: with only the sysctl (Ubuntu 24.04, where
@@ -666,7 +709,7 @@ mod tests {
     /// loaded, it fails srt as on 26.04.
     #[test]
     fn bw5_10_the_sysctl_note_does_not_offer_ubuntus_own_profile() {
-        let n = apparmor_note(true, false, Some("1")).unwrap();
+        let n = apparmor_note_for(true, false, Some("1"), UBUNTU_BWRAP).unwrap();
         assert!(
             n.contains("sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"),
             "{n}"
@@ -674,6 +717,9 @@ mod tests {
         assert!(n.contains("not Ubuntu's own bwrap-userns-restrict"), "{n}");
         assert!(n.contains("any local program"), "{n}");
         assert!(n.contains("docs/install/linux.md"), "{n}");
-        assert_eq!(apparmor_note(true, false, Some("0")), None);
+        assert_eq!(
+            apparmor_note_for(true, false, Some("0"), UBUNTU_BWRAP),
+            None
+        );
     }
 }
