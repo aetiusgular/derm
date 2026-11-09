@@ -210,8 +210,9 @@ describe("loadPolicy (contract section 1; case 46 is the caller's)", () => {
     expect(evaluate(l, { tool: "Bash", harness: "claude-code", inputText: "ls" }).action).toBe("ask");
     // A missing file still says so.
     expect(loadPolicy(path.join(dir, "absent.json"), "win32").problem).toBe("no policy file");
-    // Elsewhere the same file loads.
-    expect(loadPolicy(good, "linux").problem).toBeUndefined();
+    // On a POSIX host the same file loads (on Windows its mode reads 0o666,
+    // so the POSIX checks refuse it there).
+    if (process.platform !== "win32") expect(loadPolicy(good, "linux").problem).toBeUndefined();
   });
   it("refuses a relative path and a file others can write", () => {
     expect(loadPolicy("policy.json").problem).toBe("policy path is not absolute");
