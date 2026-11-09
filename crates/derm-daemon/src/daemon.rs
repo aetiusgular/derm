@@ -865,6 +865,13 @@ pub struct Daemon {
     pub counters: Counters,
 }
 
+/// How many chats' folders the daemon holds for the check (the cap
+/// `activity_set_chat` has always had), and how far back a restarted daemon
+/// reads their `run.start` records: the log's own retention, 7 days, and a
+/// day of slack (BW5R5-1).
+const CHAT_CONTEXTS_MAX: usize = 2_048;
+const CHAT_CONTEXTS_BACK_MS: i64 = 8 * 24 * 3_600_000;
+
 /// How many `feed.gap` stretches the daemon keeps for its reports.
 const FEED_GAPS_MAX: usize = 64;
 
@@ -1170,6 +1177,15 @@ impl Daemon {
             daemon.restore_state(&saved);
         }
         daemon.save_state();
+        // Off the start path: the socket serves while the log is read.
+        let weak = Arc::downgrade(&daemon);
+        let _ = std::thread::Builder::new()
+            .name("derm-chat-contexts".into())
+            .spawn(move || {
+                if let Some(d) = weak.upgrade() {
+                    d.restore_chat_contexts();
+                }
+            });
         Ok(daemon)
     }
 
@@ -2072,6 +2088,13 @@ impl Daemon {
     /// `writeOutsideFolders`. Only the daemon scope may: a chat could
     /// otherwise widen its own folders.
     fn set_chat_from_run(&self, event: &Event) {
+        self.put_chat_from_run(event, true);
+    }
+
+    /// A chat's context from a `run.start` record. `replace`: a record this
+    /// daemon takes now wins over what it holds; one read back from the log
+    /// at start never replaces a chat already held.
+    fn put_chat_from_run(&self, event: &Event, replace: bool) {
         let mut folders: Vec<String> = event
             .detail
             .get("folders")
@@ -2094,11 +2117,44 @@ impl Daemon {
             return;
         };
         if let Ok(mut chats) = self.chats.lock() {
-            if chats.len() >= 2_048 && !chats.contains_key(&context.chat_id) {
+            let held = chats.contains_key(&context.chat_id);
+            if (held && !replace) || (!held && chats.len() >= CHAT_CONTEXTS_MAX) {
                 return;
             }
             chats.insert(context.chat_id.clone(), context);
         }
+    }
+
+    /// Box retest of fix pass 13r, BW5R5-1: the chats' folders the check
+    /// reads were held only in memory, so after a restart every write of an
+    /// earlier chat, in its own folder too, was flagged as outside it. At
+    /// start the daemon reads back the newest `run.start` records in its
+    /// log (only the daemon scope can post one, as when they were taken),
+    /// newest first, and keeps the first it finds per chat.
+    fn restore_chat_contexts(&self) -> usize {
+        let since = now_ms().saturating_sub(CHAT_CONTEXTS_BACK_MS);
+        let keep = |e: &crate::activity::types::ActivityEvent| {
+            e.source == Source::Run && e.kind == "run.start"
+        };
+        let mut back = store::read_newest(
+            &self.log_dir,
+            since,
+            i64::MAX,
+            None,
+            CHAT_CONTEXTS_MAX,
+            &keep,
+        )
+        .events;
+        back.sort_by_key(|e| std::cmp::Reverse(e.at));
+        let mut n = 0;
+        for e in &back {
+            let before = self.chats.lock().map(|c| c.len()).unwrap_or(0);
+            self.put_chat_from_run(e, false);
+            if self.chats.lock().map(|c| c.len()).unwrap_or(0) > before {
+                n += 1;
+            }
+        }
+        n
     }
 
     fn op_tail(
@@ -3056,6 +3112,74 @@ mod tests {
         let log: &'static ActivityLog =
             Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
         (Daemon::new(TOKEN, log, &data, false).unwrap(), root)
+    }
+
+    /// Box retest of fix pass 13r (BW5R5-1, run on the box 8 Nov): the
+    /// chat-to-folders map the check reads lived only in memory, filled by a
+    /// `run.start` this daemon took, so after any daemon restart every write
+    /// of an earlier chat, its own folder's included, was "outside this
+    /// chat's folders" (chats b510ctl and fp13c: 4 such flags each; b510ctl2,
+    /// run in the same daemon's life: 0). A restarted daemon reads the
+    /// chats' `run.start` records back from its log.
+    #[test]
+    fn bw5r5_1_a_chats_folders_survive_a_daemon_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let first = Daemon::new(TOKEN, log, &data, false).unwrap();
+        let now = now_ms();
+        let mut start = ev_of(
+            "chat-f",
+            Source::Run,
+            "run.start",
+            None,
+            json!({"boundary": "none", "argv": ["pi"], "cwd": "/home/t/proj"}),
+        );
+        start.at = now - 60_000;
+        assert!(first.op_event(&Who::Daemon, start).ok);
+        let mut write = ev_of(
+            "chat-f",
+            Source::Auditd,
+            "create",
+            Some(77),
+            json!({"path": "/home/t/proj/a.txt", "tier": "child"}),
+        );
+        write.id = "auditd-1-1".into();
+        write.at = now - 50_000;
+        assert!(first.op_event(&Who::Daemon, write).ok);
+        let mut held = Value::Null;
+        for _ in 0..100 {
+            held = first.report(Some("chat-f"), 0, i64::MAX);
+            if held["events"] == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(held["events"], 2, "{held}");
+        assert_eq!(held["flags"], 0, "the same daemon knows the folder: {held}");
+        drop(first);
+        let log2: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
+        let mut after = Value::Null;
+        for _ in 0..100 {
+            after = second.report(Some("chat-f"), 0, i64::MAX);
+            if after["events"] == 2 && after["flags"] == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(after["events"], 2, "{after}");
+        assert_eq!(
+            after["flags"], 0,
+            "a write in the chat's own folder after a restart: {after}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn event(id: &str) -> Event {
