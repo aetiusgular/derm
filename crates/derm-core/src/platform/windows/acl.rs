@@ -34,9 +34,10 @@ use windows_sys::Win32::Security::Authorization::{
 };
 use windows_sys::Win32::Security::{
     AclSizeInformation, GetAce, GetAclInformation, GetSecurityDescriptorControl,
-    GetSecurityDescriptorDacl, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION,
-    DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
+    GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+    ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    SE_DACL_PROTECTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileBasicInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
@@ -97,6 +98,17 @@ impl Descriptor {
             return Err(io::Error::other("the descriptor has no DACL"));
         }
         Ok(dacl)
+    }
+
+    fn owner(&self) -> io::Result<PSID> {
+        let mut owner: PSID = std::ptr::null_mut();
+        let mut defaulted = 0;
+        // SAFETY: the descriptor is valid; the out pointers are ours.
+        let ok = unsafe { GetSecurityDescriptorOwner(self.0, &mut owner, &mut defaulted) };
+        if ok == 0 || owner.is_null() {
+            return Err(io::Error::other("the descriptor has no owner"));
+        }
+        Ok(owner)
     }
 }
 
@@ -571,29 +583,117 @@ pub fn owner_of_path(path: &Path) -> io::Result<UserId> {
         .ok_or_else(|| io::Error::other("the owner could not be read"))
 }
 
+/// `WRITE_OWNER`, the standard right to change an object's owner (winnt.h;
+/// Microsoft Learn, "Standard Access Rights").
+const WRITE_OWNER: u32 = 0x0008_0000;
+
 /// The seam's `private_dir`: makes `dir` and its parents, then refuses it
-/// when it is not a plain folder of ours, and sets it private.
+/// when it is not a plain folder of ours, and sets it private and owned by
+/// this user.
+///
+/// Before anything is made, the deepest part of the path that is already
+/// there is checked, read without following, so a junction on the way gets
+/// no folders made at its target (WW5-5, Windows test w5 2.3).
+///
+/// An elevated administrator's token makes `Administrators` the owner of what
+/// it creates (Microsoft Learn, "Owner of a New Object": the creating token's
+/// default owner). A folder an elevated run left is taken back for the user,
+/// and every folder made here is set to the user, so a later run without
+/// elevation does not refuse it as another user's (WW5-2, 2.1). Win32-OpenSSH
+/// trusts an owner of Administrators the same way
+/// (`contrib/win32/win32compat/w32-sshfileperm.c:102-105`).
 pub fn private_dir(dir: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let h = open_plain(dir, READ_CONTROL | WRITE_DAC, true)?;
-    if !path_is_plain(sys::raw(&h), dir)? {
-        return Err(io::Error::other(format!(
+    let link = || {
+        io::Error::other(format!(
             "{} has a link, junction or short name on its path",
             dir.display()
-        )));
+        ))
+    };
+    if std::fs::symlink_metadata(dir).is_err() {
+        if let Some(have) = dir
+            .ancestors()
+            .skip(1)
+            .find(|a| !a.as_os_str().is_empty() && std::fs::symlink_metadata(a).is_ok())
+        {
+            if is_reparse_point(have) {
+                return Err(link());
+            }
+            let h = open_plain(have, READ_CONTROL, true)?;
+            if !path_is_plain(sys::raw(&h), have)? {
+                return Err(link());
+            }
+        }
+    }
+    std::fs::create_dir_all(dir)?;
+    if is_reparse_point(dir) {
+        return Err(link());
+    }
+    let h = open_plain(dir, READ_CONTROL | WRITE_DAC, true)?;
+    if !path_is_plain(sys::raw(&h), dir)? {
+        return Err(link());
     }
     let s = read_security(sys::raw(&h), SE_FILE_OBJECT)?;
-    if !s
-        .owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
-    {
+    let me = ident::effective_user();
+    if !s.owner.as_ref().is_some_and(|o| {
+        ident::acceptable_owners().contains(o) || o.as_str() == ident::ADMINISTRATORS
+    }) {
         return Err(io::Error::other(format!(
             "{} belongs to another user",
             dir.display()
         )));
     }
-    set_user_only(sys::raw(&h), SE_FILE_OBJECT, true)
+    // The user-only DACL first: it gives the user WRITE_OWNER, which the
+    // owner of a folder does not have by ownership alone.
+    set_user_only(sys::raw(&h), SE_FILE_OBJECT, true)?;
+    if s.owner.as_ref() != Some(&me) {
+        let w = open_plain(dir, READ_CONTROL | WRITE_OWNER, true)?;
+        set_owner(sys::raw(&w), SE_FILE_OBJECT, &me)?;
+        let after = read_security(sys::raw(&w), SE_FILE_OBJECT)?;
+        if after.owner.as_ref() != Some(&me) {
+            return Err(io::Error::other(format!(
+                "{} could not be made this user's",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether `p` itself (not what it names) is a reparse point: a junction, a
+/// symbolic link or a mount point.
+fn is_reparse_point(p: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    std::fs::symlink_metadata(p)
+        .is_ok_and(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+}
+
+/// Makes `user` the owner of an object opened with `WRITE_OWNER`. With that
+/// right a process may set a valid user SID as the owner (Microsoft Learn,
+/// "Owner of a New Object"); the user's own SID is always one.
+fn set_owner(h: HANDLE, kind: SE_OBJECT_TYPE, user: &UserId) -> io::Result<()> {
+    if !user.is_known() {
+        return Err(io::Error::other(
+            "cannot set an owner: this process's user could not be read",
+        ));
+    }
+    let sd = Descriptor::from_sddl(&format!("O:{user}"))?;
+    let owner = sd.owner()?;
+    // SAFETY: the handle was opened with WRITE_OWNER; `owner` lives in `sd`.
+    let err = unsafe {
+        SetSecurityInfo(
+            h,
+            kind,
+            OWNER_SECURITY_INFORMATION,
+            owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
+    if err != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(err as i32));
+    }
+    Ok(())
 }
 
 /// The seam's `set_private_dir` and `set_private_file`.
@@ -831,6 +931,66 @@ mod tests {
             "the junction itself"
         );
         assert!(!owned_private_dir(&inside, &ident::effective_user()));
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    /// WW5-5 (Windows test w5, 2.3): with a junction on the way, the daemon
+    /// made `derm`, `run` and `run\derm` at the junction's target before it
+    /// refused the path. Fails on `2ce607d`: the target holds `a`.
+    #[test]
+    fn ww5_5_nothing_is_made_through_a_junction_on_the_way() {
+        let root = temp("ww55");
+        let target = root.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let j = root.join("j");
+        assert!(std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&j)
+            .arg(&target)
+            .status()
+            .unwrap()
+            .success());
+        for dir in [j.join("a").join("b"), j.clone()] {
+            let e = private_dir(&dir).unwrap_err();
+            assert!(e.to_string().contains("link, junction"), "{e}");
+        }
+        assert!(
+            !target.join("a").exists(),
+            "a folder was made at the junction's target"
+        );
+        // A plain path is still made, private and this user's.
+        let plain = root.join("p").join("q");
+        private_dir(&plain).unwrap();
+        assert!(owned_private_dir(&plain, &ident::effective_user()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// WW5-2 (Windows test w5, 2.1): an elevated run left its folders owned by
+    /// Administrators, and a later run without elevation refused them as
+    /// another user's. Every folder `private_dir` makes or takes is the
+    /// user's. Elevated (the SSH route to the box and GitHub's runner both
+    /// are) the folder starts owned by Administrators, so this fails on
+    /// `2ce607d`; not elevated it starts as the user's and checks the end
+    /// state only.
+    #[test]
+    fn ww5_2_a_folder_private_dir_makes_or_takes_is_the_users() {
+        let me = ident::effective_user();
+        let d = temp("ww52").join("made");
+        std::fs::create_dir_all(&d).unwrap();
+        let before = owner_of_path(&d).unwrap();
+        if ident::is_superuser() {
+            assert_eq!(
+                before.as_str(),
+                ident::ADMINISTRATORS,
+                "the elevated default owner"
+            );
+        }
+        private_dir(&d).unwrap();
+        assert_eq!(owner_of_path(&d).unwrap(), me);
+        let fresh = d.join("new");
+        private_dir(&fresh).unwrap();
+        assert_eq!(owner_of_path(&fresh).unwrap(), me);
+        assert!(owned_private_dir(&fresh, &me));
         let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 
