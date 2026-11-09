@@ -15,7 +15,10 @@
 //! closed console, a task manager kill) takes its harness's tree with it.
 //! When the harness exits on its own, the limit is cleared before the job
 //! is closed, so what the harness left running survives it, as on Unix
-//! (case 68). A companion's job is ended with it.
+//! (case 68). A companion's job is ended with it. An exit caused by a closing
+//! console is not "on its own": conhost hands the close to the harness
+//! before `derm run`, so `wait` looks for a close as the harness exits and
+//! for a short while after (WW5-7, `CLOSE_LATE`) before it clears the limit.
 //!
 //! Stops (case 87, proposed case AU-7). A terminal's Ctrl-C and Ctrl-Break
 //! reach every process on the console, the harness included
@@ -41,8 +44,8 @@ use std::time::{Duration, Instant};
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{
-    GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT,
-    CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    GenerateConsoleCtrlEvent, GetConsoleProcessList, SetConsoleCtrlHandler, CTRL_BREAK_EVENT,
+    CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
@@ -69,6 +72,14 @@ static PENDING: AtomicU32 = AtomicU32::new(NONE);
 const CLOSE_HOLD: Duration = Duration::from_millis(4500);
 /// How long the harness is given to end after a close before its job ends.
 const CLOSE_GRACE: Duration = Duration::from_secs(3);
+/// How long `derm run` waits, after its harness exited with no close seen,
+/// for a close still on its way (WW5-7). conhost hands a closing console's
+/// `CTRL_CLOSE_EVENT` to one process at a time, newest first, and waits on
+/// each handler; `derm run` is attached before its harness, so its turn comes
+/// after the harness has exited. Seen on the box (Windows 11 26200.9711,
+/// pseudo console closed from SSH, 8 Nov): the harness exited and `derm
+/// run`'s handler ran about 15 ms later; with no close, nothing comes.
+const CLOSE_LATE: Duration = Duration::from_millis(500);
 
 unsafe extern "system" fn on_console(event: u32) -> BOOL {
     PENDING.store(event, Ordering::SeqCst);
@@ -331,11 +342,17 @@ pub fn wait(child: &mut Child) -> std::io::Result<ExitStatus> {
     let mut closing: Option<Instant> = None;
     loop {
         if let Some(status) = child.try_wait()? {
+            let closed = closing.is_some()
+                || close_came(attached_to_console(), CLOSE_LATE, || {
+                    PENDING.swap(NONE, Ordering::SeqCst)
+                });
             if let Some(job) = take_job(pid) {
-                if closing.is_none() {
+                if !closed {
                     // What the harness left running outlives it, as on Unix.
                     let _ = job.set_kill_on_close(false);
                 }
+                // On a close the job is dropped with kill-on-close still
+                // set, which ends what the harness left in it.
             }
             return Ok(status);
         }
@@ -352,6 +369,42 @@ pub fn wait(child: &mut Child) -> std::io::Result<ExitStatus> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Whether a close, logoff or shutdown reached `derm run` as its harness
+/// exited: one already stored and not yet read (the loop checks the exit
+/// first), or, with a console attached, one that comes within `late`
+/// (WW5-7). Ctrl-C and Ctrl-Break read here are dropped: the harness had
+/// them too. With no console no close can come, so nothing waits.
+fn close_came(attached: bool, late: Duration, mut read: impl FnMut() -> u32) -> bool {
+    let is_close = |e: u32| {
+        matches!(
+            e,
+            CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT | CTRL_SHUTDOWN_EVENT
+        )
+    };
+    if is_close(read()) {
+        return true;
+    }
+    if !attached {
+        return false;
+    }
+    let start = Instant::now();
+    while start.elapsed() < late {
+        std::thread::sleep(Duration::from_millis(10));
+        if is_close(read()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether this process has a console (`GetConsoleProcessList` counts the
+/// processes on it, and gives 0 when there is none).
+fn attached_to_console() -> bool {
+    let mut one = [0u32; 1];
+    // SAFETY: a buffer of one entry, its length passed.
+    unsafe { GetConsoleProcessList(one.as_mut_ptr(), 1) > 0 }
 }
 
 /// STATUS_CONTROL_C_EXIT: how a console program ends after Ctrl-C.
@@ -442,8 +495,148 @@ mod tests {
         assert!(!forward_sigint(-1, true));
     }
 
+    /// `PENDING` is one per process, and every `wait` reads it: tests that
+    /// drive `wait` or set `PENDING` take turns.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The pids of running `name` processes whose parent is `parent`.
+    fn children_named(parent: u32, name: &str) -> Vec<u32> {
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        };
+        // SAFETY: a snapshot handle we then own.
+        let snap = owned(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }).unwrap();
+        // SAFETY: plain data, sized as the API asks.
+        let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut out = Vec::new();
+        // SAFETY: the snapshot is ours; `e` is sized.
+        let mut ok = unsafe { Process32FirstW(snap.as_raw_handle() as HANDLE, &mut e) };
+        while ok != 0 {
+            let len = e
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(e.szExeFile.len());
+            let exe = String::from_utf16_lossy(&e.szExeFile[..len]);
+            if e.th32ParentProcessID == parent && exe.eq_ignore_ascii_case(name) {
+                out.push(e.th32ProcessID);
+            }
+            // SAFETY: as above.
+            ok = unsafe { Process32NextW(snap.as_raw_handle() as HANDLE, &mut e) };
+        }
+        out
+    }
+
+    /// WW5-7 (Windows test w5, 3.3): a console closed during `derm run` left
+    /// the harness's detached child running, because the harness exited on
+    /// the close before `derm run` read it, and the exit cleared
+    /// kill-on-close. Here the close is stored, unread, as the harness exits
+    /// (what the box's trace showed). Fails on `2ce607d`: the `ping` the
+    /// harness left in its job is still running.
+    #[test]
+    fn ww5_7_a_close_that_comes_as_the_harness_exits_ends_what_it_left() {
+        let _turn = serial();
+        let mut c = spawn(
+            &plan(
+                "cmd",
+                &["/C", "start", "", "/B", "ping", "-n", "60", "127.0.0.1"],
+            ),
+            &cwd(),
+            true,
+        )
+        .unwrap();
+        let harness = c.id();
+        // `start /B` returns at once; wait for the ping to exist.
+        let start = Instant::now();
+        while children_named(harness, "PING.EXE").is_empty()
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !children_named(harness, "PING.EXE").is_empty(),
+            "no ping started"
+        );
+        PENDING.store(CTRL_CLOSE_EVENT, Ordering::SeqCst);
+        wait(&mut c).unwrap();
+        PENDING.store(NONE, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        let left = children_named(harness, "PING.EXE");
+        for p in &left {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &p.to_string()])
+                .output();
+        }
+        assert!(
+            left.is_empty(),
+            "the harness's child outlived a closed console: {left:?}"
+        );
+    }
+
+    /// The other side of WW5-7: an exit with no close leaves what the harness
+    /// started running (case 68, lane Z's choice).
+    #[test]
+    fn ww5_7_an_exit_with_no_close_leaves_what_the_harness_started() {
+        let _turn = serial();
+        PENDING.store(NONE, Ordering::SeqCst);
+        let mut c = spawn(
+            &plan(
+                "cmd",
+                &["/C", "start", "", "/B", "ping", "-n", "60", "127.0.0.1"],
+            ),
+            &cwd(),
+            true,
+        )
+        .unwrap();
+        let harness = c.id();
+        let start = Instant::now();
+        while children_named(harness, "PING.EXE").is_empty()
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        wait(&mut c).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let left = children_named(harness, "PING.EXE");
+        for p in &left {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/PID", &p.to_string()])
+                .output();
+        }
+        assert_eq!(left.len(), 1, "{left:?}");
+    }
+
+    #[test]
+    fn ww5_7_close_came_reads_a_stored_close_and_waits_only_with_a_console() {
+        let t = |events: Vec<u32>, attached: bool| {
+            let mut it = events.into_iter();
+            let start = Instant::now();
+            let got = close_came(attached, Duration::from_millis(200), || {
+                it.next().unwrap_or(NONE)
+            });
+            (got, start.elapsed())
+        };
+        // A close already stored: no wait.
+        let (got, took) = t(vec![CTRL_CLOSE_EVENT], true);
+        assert!(got && took < Duration::from_millis(50));
+        // A close that comes a little later, with a console.
+        assert!(t(vec![NONE, NONE, CTRL_LOGOFF_EVENT], true).0);
+        // Ctrl-C is not a close; with no console nothing waits.
+        let (got, took) = t(vec![CTRL_C_EVENT, CTRL_CLOSE_EVENT], false);
+        assert!(!got && took < Duration::from_millis(50));
+        // With a console and no close, it gives up after `late`.
+        let (got, took) = t(vec![], true);
+        assert!(!got && took >= Duration::from_millis(200));
+    }
+
     #[test]
     fn exit_codes_pass_through_and_never_truncate_to_success() {
+        let _turn = serial();
         for (exit, want) in [("exit 7", 7u8), ("exit 256", 1), ("exit -1073741510", 130)] {
             let mut c = spawn(&plan("cmd", &["/C", exit]), &cwd(), false).unwrap();
             assert_eq!(code(&wait(&mut c).unwrap()), (want, None), "{exit}");
@@ -452,6 +645,7 @@ mod tests {
 
     #[test]
     fn the_environment_is_set_and_inherited_tokens_cleared() {
+        let _turn = serial();
         use std::io::Read;
         std::env::set_var("DERM_CHAT_TOKEN", "left-over");
         let mut c = spawn(&plan("cmd", &["/C", "set DERM_"]), &cwd(), true).unwrap();
@@ -478,6 +672,7 @@ mod tests {
 
     #[test]
     fn the_harness_runs_in_a_job_that_its_children_join() {
+        let _turn = serial();
         use windows_sys::Win32::System::JobObjects::IsProcessInJob;
         // `cmd /Q` waits on its stdin.
         let mut c = spawn(&plan("cmd", &["/Q"]), &cwd(), true).unwrap();
