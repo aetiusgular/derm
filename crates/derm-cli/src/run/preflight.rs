@@ -111,6 +111,18 @@ pub fn apparmor_note_for(
     })
 }
 
+/// Why derm does not start srt on Windows (WW5-8, Windows test w5 4.2). srt
+/// 0.0.81 runs the command there as its `srt-sandbox` account, from a fresh
+/// profile environment of that account (its own `USERPROFILE` and `TEMP`),
+/// and passes on only `PATH`, `PATHEXT`, its proxy variables and git's
+/// (`src/sandbox/windows-sandbox-utils.ts:4155-4165, 4236-4262, 4290-4296`,
+/// at `v0.0.81`). derm's srt plan is built for one user and one home: the
+/// chat's variables, the harness's sign-in and its state would not reach the
+/// harness, and the plan's paths are written the Unix way. Until srt on
+/// Windows has a design of its own, `--boundary srt` stops here and the
+/// default choice never picks it.
+pub const SRT_ON_WINDOWS: &str = "derm does not start srt on Windows yet: srt 0.0.81 runs the agent there as its own srt-sandbox account, with that account's profile and none of the chat's variables, so the agent would have neither your sign-in nor derm's gate. Use --boundary sbx, or none";
+
 /// `srt` with whether Ubuntu's bubblewrap profile is installed, for the note.
 pub fn srt_with(
     path_var: &str,
@@ -120,6 +132,11 @@ pub fn srt_with(
     writable: &[String],
     cwd: &str,
 ) -> Result<(Vec<String>, Option<Tools>), String> {
+    if cfg!(windows) {
+        return Err(SRT_ON_WINDOWS.to_string());
+    }
+    // srt 0.0.81 checks rg only on Linux (`sandbox-manager.ts:1641-1649`);
+    // its README still asks for it on macOS (line 732), so macOS keeps it.
     let needed: &[(&str, &str)] = if linux {
         &[
             ("bwrap", "bubblewrap"),
@@ -134,7 +151,7 @@ pub fn srt_with(
     for (bin, pkg) in needed {
         match first_on_path(path_var, bin, cwd) {
             None => missing.push(format!("{bin} (package {pkg})")),
-            Some(p) if !p.starts_with('/') => {
+            Some(p) if !absolute(&p) => {
                 return Err(format!(
                     "srt would run `{p}`, the first {bin} on PATH, from a relative PATH entry and outside the sandbox; take the relative entry out of PATH"
                 ))
@@ -242,19 +259,23 @@ pub fn companion(
 /// `/private/tmp` on macOS), which the sandbox could then fill (Mac test w4,
 /// MW4-1).
 pub fn companion_path(path_var: &str, writable: &[String]) -> String {
-    path_var
-        .split(':')
-        .filter(|d| d.starts_with('/'))
+    // PATH as this OS reads it: `:` on Unix, `;` on Windows (WW5-8: split on
+    // `:`, a Windows PATH broke at every drive letter and lost every entry).
+    let kept: Vec<std::path::PathBuf> = std::env::split_paths(path_var)
+        .filter(|d| d.is_absolute())
         .filter(|d| {
-            let real = match std::fs::canonicalize(d) {
+            let d = d.to_string_lossy();
+            let real = match std::fs::canonicalize(&*d) {
                 Ok(r) => r.to_string_lossy().into_owned(),
                 Err(_) if !writable.is_empty() => return false,
                 Err(_) => d.to_string(),
             };
-            !writable.iter().any(|w| under(&real, w) || under(d, w))
+            !writable.iter().any(|w| under(&real, w) || under(&d, w))
         })
-        .collect::<Vec<_>>()
-        .join(":")
+        .collect();
+    std::env::join_paths(kept)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// One program, found and held to the companion's rule, as an absolute path.
@@ -264,9 +285,9 @@ fn checked(
     writable: &[String],
     cwd: &str,
 ) -> Result<String, String> {
-    let found = if program.starts_with('/') {
+    let found = if absolute(program) {
         Path::new(program).is_file().then(|| program.to_string())
-    } else if program.contains('/') {
+    } else if program.contains('/') || (cfg!(windows) && program.contains('\\')) {
         return Err(format!(
             "{program}: a relative path; give an absolute one or a bare name on PATH"
         ));
@@ -276,7 +297,7 @@ fn checked(
     let Some(p) = found else {
         return Err(format!("{program} not found on PATH; it answers the harness's gated calls, and without it they wait and are denied"));
     };
-    if !p.starts_with('/') {
+    if !absolute(&p) {
         return Err(format!(
             "derm would start `{p}`, the first {program} on PATH, from a relative PATH entry and outside the sandbox; take the relative entry out of PATH"
         ));
@@ -322,6 +343,7 @@ fn first_on_path(path_var: &str, bin: &str, _cwd: &str) -> Option<String> {
 }
 
 /// `path` is `dir` or inside it, both compared canonical where they exist.
+#[cfg(not(windows))]
 fn under(path: &str, dir: &str) -> bool {
     let dir = std::fs::canonicalize(dir)
         .map(|d| d.to_string_lossy().into_owned())
@@ -330,9 +352,59 @@ fn under(path: &str, dir: &str) -> bool {
     path == dir || path.starts_with(&format!("{dir}/"))
 }
 
+/// Windows (WW5-8): `canonicalize` gives `\\?\C:\...`, the plan writes
+/// `C:\...` or `C:/...`, and names compare without case, so both sides are
+/// put in lane Z's one comparable form before the prefix test.
+#[cfg(windows)]
+fn under(path: &str, dir: &str) -> bool {
+    use derm_core::platform::windows::comparable;
+    let dir = std::fs::canonicalize(dir)
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| dir.to_string());
+    let (path, dir) = (comparable(path), comparable(&dir));
+    path == dir || path.starts_with(&format!("{dir}\\"))
+}
+
+fn absolute(p: &str) -> bool {
+    crate::run::args::absolute(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WW5-8 (Windows test w5, 4.2): `--boundary srt` stopped on Windows at
+    /// "srt needs rg", then at "a relative PATH entry" for every Windows
+    /// entry. srt 0.0.81 needs no rg there, but it also runs the agent as
+    /// its own account with none of the chat's variables, so derm refuses
+    /// srt on Windows and says that. Fails on `2ce607d` on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn ww5_8_srt_is_refused_on_windows_for_the_true_reason() {
+        let path = std::env::var("PATH").unwrap_or_default();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        let e = srt_with(&path, false, None, false, &[], &cwd).unwrap_err();
+        assert_eq!(e, SRT_ON_WINDOWS);
+        assert!(!e.contains("ripgrep") && !e.contains("relative"), "{e}");
+    }
+
+    /// WW5-8's PATH half: the companion's PATH was split on `:` and kept only
+    /// entries starting with `/`, so on Windows it was always empty, and a
+    /// writable folder was compared in another spelling than the one
+    /// `canonicalize` gives (`\\?\C:\...`). Fails on `2ce607d` on Windows.
+    #[cfg(windows)]
+    #[test]
+    fn ww5_8_the_companions_path_is_read_the_windows_way() {
+        let sys = std::env::var("SystemRoot").unwrap();
+        let s32 = format!(r"{sys}\System32");
+        let path = format!(r"{s32};relative\bin;;{sys}");
+        assert_eq!(companion_path(&path, &[]), format!("{s32};{sys}"));
+        // Both lie in a writable folder, however the plan spells it.
+        let w = vec![sys.replace('\\', "/").to_lowercase()];
+        assert_eq!(companion_path(&path, &w), "");
+        assert!(under(&format!(r"\\?\{s32}"), &w[0]));
+        assert!(!under(&format!(r"{sys}x"), &w[0]));
+    }
 
     #[cfg(unix)]
     fn dir_with(name: &str, bins: &[&str]) -> String {

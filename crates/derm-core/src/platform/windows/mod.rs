@@ -35,8 +35,8 @@ use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, Get
 use windows_sys::Win32::System::IO::OVERLAPPED;
 
 pub use acl::{
-    is_private_path, only_owner_writes, open_private_file, owned_plain_dir, owner_of_path,
-    set_dacl_sddl,
+    comparable, is_private_path, only_owner_writes, open_private_file, owned_plain_dir,
+    owner_of_path, set_dacl_sddl,
 };
 pub use ident::{acceptable_owners, effective_user, is_superuser, real_user, UserId};
 pub use pipe::{
