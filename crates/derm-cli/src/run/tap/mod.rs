@@ -293,7 +293,7 @@ pub(crate) fn base_url_already_set(harness: &str, plan: &Plan, i: &Inputs) -> Op
             let config_dir = i
                 .inherited
                 .iter()
-                .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && v.starts_with('/'))
+                .find(|(k, v)| k == "CLAUDE_CONFIG_DIR" && crate::run::args::absolute(v))
                 .map(|(_, v)| PathBuf::from(v))
                 .or_else(|| i.home.as_ref().map(|h| Path::new(h).join(".claude")));
             if let Some(d) = config_dir {
@@ -383,7 +383,7 @@ pub(crate) fn base_url_already_set(harness: &str, plan: &Plan, i: &Inputs) -> Op
             let codex_home = i
                 .inherited
                 .iter()
-                .find(|(k, v)| k == "CODEX_HOME" && v.starts_with('/'))
+                .find(|(k, v)| k == "CODEX_HOME" && crate::run::args::absolute(v))
                 .map(|(_, v)| PathBuf::from(v))
                 .or_else(|| i.home.as_ref().map(|h| Path::new(h).join(".codex")))?;
             let file = codex_home.join("config.toml");

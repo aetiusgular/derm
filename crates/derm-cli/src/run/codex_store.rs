@@ -196,7 +196,7 @@ fn first(reasons: impl IntoIterator<Item = Option<String>>) -> Option<String> {
 pub fn read(home: &str, cwd: &str, codex_home_env: Option<&str>, roots: &Roots) -> CodexStoreFiles {
     let default_home = Path::new(home).join(".codex");
     let codex_home = codex_home_env
-        .filter(|h| h.starts_with('/'))
+        .filter(|h| crate::run::args::absolute(h))
         .map(PathBuf::from)
         .unwrap_or_else(|| default_home.clone());
     let managed_files = [

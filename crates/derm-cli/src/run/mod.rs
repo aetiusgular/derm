@@ -1149,11 +1149,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         .to_str()
         .ok_or((2, "the working folder's path is not UTF-8".to_string()))?
         .to_string();
-    let home = env
-        .home
-        .clone()
-        .filter(|h| h.starts_with('/'))
-        .ok_or((2, "HOME is not set to an absolute path".to_string()))?;
+    let home = env.home.clone().filter(|h| args::absolute(h)).ok_or((
+        2,
+        format!(
+            "{} is not set to an absolute path",
+            if cfg!(windows) { "USERPROFILE" } else { "HOME" }
+        ),
+    ))?;
     let chat = a.chat.clone().unwrap_or_else(new_chat_id);
 
     // The daemon, unless the user said to run without it.
@@ -1213,7 +1215,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let policy_path = env
         .policy
         .clone()
-        .filter(|p| p.starts_with('/'))
+        .filter(|p| args::absolute(p))
         .unwrap_or_else(|| format!("{}/.derm/policy.json", home.trim_end_matches('/')));
     let policy_asks = {
         let (policy, problem) = derm_core::policy::load(Path::new(&policy_path));

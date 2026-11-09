@@ -62,8 +62,22 @@ pub fn valid_program(p: &str) -> bool {
     !p.is_empty()
         && !p.starts_with('-')
         && !p.chars().any(char::is_control)
-        && (p.starts_with('/') || !p.contains('/'))
+        && (absolute(p) || !p.chars().any(separator))
         && p != "/"
+}
+
+/// Whether `p` is an absolute path on this OS: a leading `/` on Unix; on
+/// Windows a drive or UNC prefix and a root (`C:\Users\u`), never `\temp`,
+/// `/Users/u` or `C:temp` (std 1.97.0 `library/std/src/path.rs:2539-2540`).
+/// The Windows test w5 found every `derm run` refused there because the home
+/// was held to a leading `/` (WW5-4).
+pub fn absolute(p: &str) -> bool {
+    std::path::Path::new(p).is_absolute()
+}
+
+/// A path separator on this OS: `/` everywhere, and `\\` on Windows too.
+fn separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && c == '\\')
 }
 
 /// A chat id: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `-` or `.`.
@@ -335,6 +349,51 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// WW5-4 (Windows test w5, 3.1): `derm run` held the home, `DERM_POLICY`,
+    /// `CODEX_HOME` and `CLAUDE_CONFIG_DIR` to a leading `/`, so on Windows it
+    /// refused every start ("HOME is not set to an absolute path") and read
+    /// no Codex file. Fails on `2ce607d` on Windows, where `absolute` did not
+    /// exist and the checks were `starts_with('/')`.
+    #[test]
+    fn ww5_4_an_absolute_path_is_one_for_this_os() {
+        if cfg!(windows) {
+            for p in [
+                r"C:\Users\usern",
+                r"C:\",
+                r"\\?\C:\derm",
+                r"\\server\share\x",
+            ] {
+                assert!(absolute(p), "{p}");
+            }
+            for p in ["/Users/usern", r"\temp", "C:temp", "usern", ""] {
+                assert!(!absolute(p), "{p}");
+            }
+        } else {
+            assert!(absolute("/home/u"));
+            for p in [r"C:\Users\u", "home/u", ""] {
+                assert!(!absolute(p), "{p}");
+            }
+        }
+    }
+
+    /// WW5-4's class on case 80's program: on Windows `sub\x.exe` holds no
+    /// `/`, so it passed as a bare name, though it names a file in the chat's
+    /// folder, which the agent writes.
+    #[test]
+    fn ww5_4_a_program_path_relative_on_this_os_is_refused() {
+        assert!(valid_program("node"));
+        assert!(!valid_program("sub/x"));
+        assert!(!valid_program("./x"));
+        if cfg!(windows) {
+            assert!(valid_program(r"C:\Program Files\nodejs\node.exe"));
+            for p in [r"sub\x.exe", r".\x.exe", r"..\x.exe", "/usr/bin/node"] {
+                assert!(!valid_program(p), "{p}");
+            }
+        } else {
+            assert!(valid_program("/usr/bin/node"));
+        }
     }
 
     #[test]
