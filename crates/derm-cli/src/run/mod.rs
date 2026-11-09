@@ -461,6 +461,17 @@ fn regular_private_file(path: &Path) -> bool {
 /// (`derm_daemon::daemon::default_data_dir`), so a content file `derm run`
 /// writes is where the daemon's purge looks. A daemon started with
 /// `--data-dir` (tests) does not purge it.
+/// Makes `path` 0700 if it is missing, its parents as `create_dir_all`
+/// makes them (only the last part is private, as the daemon's own folder).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn make_private_folder(path: &Path) {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(path);
+}
+
 pub(crate) fn content_root(home: &str) -> PathBuf {
     if cfg!(target_os = "macos") {
         return Path::new(home).join("Library/Application Support/derm");
@@ -1272,13 +1283,24 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // (`linux-sandbox-utils.js:178-190, 2314-2331`), which would leave an
     // empty file where the daemon's data folder belongs. The folder is made
     // first, private, as the daemon makes it.
+    // A dry run writes nothing and says what a run would make (fp13's second
+    // re-review, FP13RR2-5); a run makes the folder 0700 and its missing
+    // parents as `create_dir_all` makes them. The deny names the folder
+    // `derm run` finds, which is the daemon's only when both read the same
+    // `XDG_DATA_HOME` (FP13RR2-4, open).
     #[cfg(all(unix, not(target_os = "macos")))]
     if p.program == "srt" {
-        use std::os::unix::fs::DirBuilderExt;
-        let _ = std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(content_root(&inputs.home));
+        let root = content_root(&inputs.home);
+        if a.dry_run {
+            if !root.exists() {
+                p.notes.push(format!(
+                    "derm run: before srt starts, derm makes {} (0700), since srt on Linux would hold a missing denied folder with an empty one",
+                    root.display()
+                ));
+            }
+        } else {
+            make_private_folder(&root);
+        }
     }
     // MW5-32's Linux half: a missing control folder is held as an empty one,
     // not a device (srt mounts over a missing denied path).
@@ -2895,6 +2917,27 @@ mod end_to_end {
         assert!(seen(&st).is_empty(), "the harness never started");
         assert!(!st.fake.dir.join("srt/chat-d.json").exists());
         assert!(events(&st).is_empty(), "nothing recorded");
+    }
+
+    /// fp13's second re-review, FP13RR2-5: a dry run under srt on Linux made
+    /// the daemon's data folder. It writes nothing and says what a run makes.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn fp13rr2_5_a_dry_run_under_srt_makes_no_data_folder() {
+        let st = setup("srt-dry");
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&["pi", "--boundary", "srt", "--dry-run", "--cwd", &cwd]),
+            &st.env,
+        );
+        assert!(code.is_ok(), "{code:?}");
+        if std::env::var_os("XDG_DATA_HOME").is_none() {
+            assert!(
+                !st.fake.dir.join(".local/share/derm").exists(),
+                "a dry run made the data folder"
+            );
+        }
+        assert!(seen(&st).is_empty(), "the harness never started");
     }
 
     /// Mac test w5, MW5-1: help and argument errors are answered before

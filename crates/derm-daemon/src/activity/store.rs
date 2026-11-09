@@ -285,8 +285,13 @@ pub fn read_newest(
 /// one chat's token cannot replace another chat's record by reusing its id
 /// (tk lane B; chat tokens sit in a harness's environment).
 pub fn may_replace(old: &ActivityEvent, new: &ActivityEvent) -> bool {
-    use super::types::ActivitySource::{Adapter, Otel};
+    use super::types::ActivitySource::{Adapter, Auditd, Eslogger, Otel};
+    // A kernel record does not change: an OS feed that reads its log again
+    // (a gap's re-read, fp13's re-review FP13RR-2) posts the same record
+    // later, and the later copy carried the re-post's time (fp13's second
+    // re-review, FP13RR2-1). The first copy is kept.
     old.chat_id == new.chat_id
+        && !matches!(old.source, Auditd | Eslogger)
         && !is_gate_decision(old)
         && (old.source == new.source
             || (matches!(old.source, Adapter | Otel) && matches!(new.source, Adapter | Otel)))
@@ -642,6 +647,31 @@ mod tests {
         let capped = read(&dir, day, day + DAY - 1, None, 2);
         assert_eq!(capped.events.len(), 2);
         assert!(!capped.truncated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// fp13 re-review 2 (FP13RR2-1): a feed that reads its log again after a
+    /// gap posts an OS record again under its id, an hour later. The copy
+    /// read back carries the re-post's time, not the kernel event's.
+    #[test]
+    fn fp13rr2_1_a_reposted_os_record_keeps_its_first_time() {
+        let dir = temp_dir("os-repost");
+        let mut writer = ChainWriter::new(dir.clone());
+        let day = 20_377 * DAY;
+        let mut os = event("auditd-1-77", "c1", day + 5);
+        os.source = ActivitySource::Auditd;
+        os.kind = "write".into();
+        writer.write(&Entry::Event(os.clone()), day + 5).unwrap();
+        let mut again = os.clone();
+        again.at = day + 3_600_000;
+        writer.write(&Entry::Event(again), day + 3_600_000).unwrap();
+        let back = read(&dir, day, day + DAY - 1, None, 100);
+        assert_eq!(back.events.len(), 1);
+        assert_eq!(
+            back.events[0].at,
+            day + 5,
+            "the re-post moved the record an hour later"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

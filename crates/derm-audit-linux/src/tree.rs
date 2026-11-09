@@ -177,7 +177,7 @@ impl Tracker {
     /// left, once the log has passed their stop (`stop`). The feed calls it
     /// after a stop, when the log goes quiet, and once a minute.
     pub fn prune(&mut self, alive: &dyn Fn(u32) -> bool) {
-        self.age_pending(self.log_ms);
+        self.age_pending(self.age_base());
         let now = self.now();
         let stopped: Vec<(u32, bool)> = self
             .roots
@@ -240,7 +240,7 @@ impl Tracker {
         if action.ts_ms <= self.now().saturating_add(STOP_SLACK_MS) {
             self.log_ms = self.log_ms.max(action.ts_ms);
         }
-        self.age_pending(self.log_ms);
+        self.age_pending(self.age_base());
         let placed = self.place_inner(action);
         if placed.is_none() {
             self.wait(action.clone());
@@ -292,9 +292,18 @@ impl Tracker {
                 self.late.remove(&child);
             }
         }
-        let newest = action.ts_ms.max(self.log_ms);
         self.pending.push_back(action);
-        self.age_pending(newest);
+        self.age_pending(self.age_base());
+    }
+
+    /// The time waiting actions age against: the log's, never past the
+    /// feed's own clock by more than the slack. `log_ms` is a running
+    /// maximum, so after the clock stepped back it stays ahead, and every
+    /// action that waited for its chat's `run.start` was dropped at once
+    /// (fp13's second re-review, FP13RR2-2). A feed that is behind has its
+    /// log time under the clock and ages by it, as before (BW5R4-1).
+    fn age_base(&self) -> i64 {
+        self.log_ms.min(self.now().saturating_add(STOP_SLACK_MS))
     }
 
     /// Lets go of waiting actions more than `PENDING_MS` older than the log
@@ -548,6 +557,31 @@ mod tests {
         t.prune(&|_| false);
         assert!(t.root(10).is_some(), "the log has not passed the stop");
         assert!(t.log_ms() < 5_000 + STOP_SLACK_MS);
+    }
+
+    /// fp13 re-review 2 (FP13RR2-2): after the clock steps back more than
+    /// `PENDING_MS`, `log_ms` (a running maximum) stays ahead, and every
+    /// action that must wait for its chat's `run.start` is let go at once,
+    /// so a chat's first records are lost. At `2f6bce5` an action aged only
+    /// against the next waiting action's own stamp.
+    #[test]
+    fn fp13rr2_2_a_clock_step_back_does_not_drop_what_waits_for_run_start() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        static NOW: AtomicI64 = AtomicI64::new(100_000);
+        let mut t = Tracker::new();
+        t.set_clock(|| NOW.load(Ordering::Relaxed));
+        t.register(root(20));
+        assert!(t.place(&act(100_000, 20, 1, exec())).is_some());
+        // The clock (the kernel's stamps and the feed's own alike) stepped
+        // back 60 s; a chat's root acts before its run.start reaches the feed.
+        NOW.store(40_000, Ordering::Relaxed);
+        assert!(t.place(&act(40_000, 10, 5, exec())).is_none());
+        let placed = t.register(root(10));
+        assert_eq!(
+            placed.len(),
+            1,
+            "the root's exec was dropped while it waited"
+        );
     }
 
     /// FP13RR-3 (fp13's re-review): a stranger's lone action waited in

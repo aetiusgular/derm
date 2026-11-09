@@ -103,14 +103,18 @@ impl Feed {
             if !line.trim().is_empty() {
                 self.skipped_lines += 1;
             }
+            self.last_own = false;
             return Vec::new();
         };
         let key = record.event_key();
         self.last_key = Some(key);
-        // An event's SYSCALL record comes first (7,505 of 7,507 multi-record
-        // events in the live log here) and carries the process's tgid
-        // (`pid=`, kernel `auditsc.c` `task_tgid_nr`), so every thread of
-        // the feed is its own pid.
+        // An event's SYSCALL record comes first (0 of 14,969 events with one
+        // had it elsewhere in this workspace's logs, fp13's second re-review)
+        // and its `pid=` is the process id, not the thread's (run there: a
+        // thread with tid 9724 logged `pid=9723`), so every thread of the
+        // feed is its own pid. A record of the same event written before
+        // its SYSCALL (an LSM's) would not be marked own (FP13RR2-7, open,
+        // none seen).
         if self.own_pid.is_some()
             && record.kind == "SYSCALL"
             && record.get_u32("pid") == self.own_pid

@@ -759,22 +759,29 @@ struct Quota {
     bytes: usize,
 }
 
-/// How many OS feed records `SeenOs` remembers: more than one rotated
-/// audit log's events (about 20,000 in 8 MB on the box).
+/// How many OS feed records `SeenOs` remembers: more than the two files a
+/// gap reads again (an 8 MB audit log held about 6,000 events on the box
+/// and in this workspace; fp13's second re-review counted them).
 const SEEN_OS_MAX: usize = 65_536;
 
-/// A bounded set of (chat, id) the daemon has passed on.
+/// A bounded set of (chat, id) the daemon has passed on, kept as a 64-bit
+/// hash of each pair (about 2 MB at the cap; two copies of both strings
+/// were about 20 MB, fp13's second re-review, FP13RR2-3). A collision only
+/// skips one record's repeat check, and only the daemon scope and the
+/// collector post OS records, so no chat can aim one.
 #[derive(Default)]
 struct SeenOs {
-    set: std::collections::HashSet<(String, String)>,
-    order: std::collections::VecDeque<(String, String)>,
+    hasher: std::collections::hash_map::RandomState,
+    set: std::collections::HashSet<u64>,
+    order: std::collections::VecDeque<u64>,
 }
 
 impl SeenOs {
     /// True the first time a (chat, id) is seen.
     fn first(&mut self, chat: &str, id: &str) -> bool {
-        let key = (chat.to_string(), id.to_string());
-        if !self.set.insert(key.clone()) {
+        use std::hash::BuildHasher;
+        let key = self.hasher.hash_one((chat, id));
+        if !self.set.insert(key) {
             return false;
         }
         self.order.push_back(key);
@@ -1487,6 +1494,21 @@ impl Daemon {
         }
         event.at = now_ms();
         let event = store::bound_event(event);
+        // An OS record posted again (a gap's re-read) stops here: the log,
+        // the ring, the tails, the join and the install flags have its first
+        // copy, and a repeat pushed a live chat's gate decisions out of the
+        // ring and printed again in every tail (fp13's second re-review,
+        // FP13RR2-1). Across a daemon restart the store keeps the first copy
+        // (`store::may_replace`).
+        if matches!(event.source, Source::Auditd | Source::Eslogger)
+            && self
+                .seen_os
+                .lock()
+                .map(|mut s| !s.first(&event.chat_id, &event.id))
+                .unwrap_or(false)
+        {
+            return event.id;
+        }
         self.log.submit(Entry::Event(event.clone()));
         self.counters.events.fetch_add(1, Ordering::Relaxed);
         let line = serde_json::to_string(&Push::Event(event.clone())).ok();
@@ -1547,13 +1569,7 @@ impl Daemon {
         // join's candidate sets included, before the join sees it, so a write
         // is held when the join's set for it arrives. The working folder is
         // the chat's from its daemon-scope run.start, never the record's.
-        let again = matches!(event.source, Source::Auditd | Source::Eslogger)
-            && self
-                .seen_os
-                .lock()
-                .map(|mut s| !s.first(&event.chat_id, &event.id))
-                .unwrap_or(false);
-        if (event.source != Source::Derm || event.kind == "join.candidates") && !again {
+        if event.source != Source::Derm || event.kind == "join.candidates" {
             let cwd = |chat: &str| {
                 self.chats
                     .lock()
@@ -1572,7 +1588,7 @@ impl Daemon {
         // The join (lane S) reads every event but its own; what it makes is
         // ingested after its lock is released, and `observe` ignores the
         // `derm` records it gets back, so this never loops.
-        if event.source != Source::Derm && !again {
+        if event.source != Source::Derm {
             let made = self
                 .join
                 .lock()

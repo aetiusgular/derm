@@ -338,7 +338,10 @@ impl Places {
     /// event's key when it is an audit record.
     /// A line of the feed's own (`own`) moves nothing: the place stays where
     /// it was, so the feed's own save does not make it save again
-    /// (FP13RR-1); a restart reads those lines again and drops them.
+    /// (FP13RR-1). A restart has a new pid, so the last run's save lines
+    /// are a stranger's there: they wait, are never posted (the feed is in
+    /// no chat's tree), and age out after `PENDING_MS` of log time (fp13's
+    /// second re-review, FP13RR2-6).
     pub fn note(
         &mut self,
         dev: u64,
