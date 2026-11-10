@@ -46,22 +46,34 @@ pub fn main(args: &[String]) -> u8 {
     crate::run::main_with(args, &filter)
 }
 
-/// What `derm run` hands over once the agent has started.
-fn filter(p: crate::run::Pipes) -> Vec<std::thread::JoinHandle<()>> {
-    let (policy, problem) = derm_core::policy::load(std::path::Path::new(&p.policy));
+/// What `derm acp` decides with, from what `derm run` hands over: the policy
+/// file `derm run` named, unless it refused it (FPW-S2), and the chat.
+pub(crate) fn ctx_from(p: &crate::run::Pipes) -> decide::Ctx {
+    let (policy, problem) = match &p.policy_refused {
+        Some(why) => (derm_core::policy::PolicyFile::default(), Some(why.clone())),
+        None => {
+            let (policy, problem) = derm_core::policy::load(std::path::Path::new(&p.policy));
+            (policy, problem.map(|e| e.to_string()))
+        }
+    };
     if let Some(problem) = problem {
         eprintln!(
             "derm acp: {}: {problem}; every call the agent asks about goes to your client",
             p.policy
         );
     }
-    let ctx = decide::Ctx {
+    decide::Ctx {
         policy,
         harness: p.harness.clone(),
         chat: p.chat.clone(),
         full_access: p.full_access,
         confined: p.confined,
-    };
+    }
+}
+
+/// What `derm run` hands over once the agent has started.
+fn filter(p: crate::run::Pipes) -> Vec<std::thread::JoinHandle<()>> {
+    let ctx = ctx_from(&p);
     let (tx, log) = proxy::log_channel(p.socket.clone(), p.token.clone());
     if log.is_none() {
         eprintln!("derm acp: no daemon token: answers are given, nothing is recorded");
