@@ -450,10 +450,10 @@ fn codex_home_for_srt(home: &Path) -> Result<Vec<String>, String> {
 /// core's rules (`loadPolicyFrom`, `loadPolicy` in
 /// `packages/derm-claude-plugin/src/core/policy.ts`): a `DERM_POLICY` inside
 /// the folder the chat starts in is refused (a project can set it there);
-/// the file is opened once (links followed on Unix, as the hook's `openSync`;
-/// on Windows a folder with a link or junction on its path is refused by
-/// lane Z's check), and that handle is judged and read, so the file checked
-/// is the file applied (review FPWR-6); on Unix it is the user's own
+/// the file is opened once, links followed as the hook's `openSync` follows
+/// them (the folder checks below follow them too, review FPWR2-3), never
+/// blocking on a FIFO (FPWR2-2), and that handle is judged and read, so the
+/// file checked is the file applied; on Unix it is the user's own
 /// with no group or other write bit (stricter than the hook's trusted owners,
 /// which can include the agents' user), on Windows no one but its owner may
 /// write it (lane Z's rule, judged by the handle); and its folder, as written
@@ -482,7 +482,7 @@ pub(crate) fn load_policy_checked(
             );
         }
     }
-    let file = match std::fs::File::open(p) {
+    let file = match open_policy(p) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return empty(derm_core::policy::LoadProblem::Missing.to_string())
@@ -526,9 +526,36 @@ pub(crate) fn load_policy_checked(
     {
         return empty(format!("policy file unreadable: {}", e.kind()));
     }
+    // A file that grew after the size was read (review FPWR2-7).
+    if text.len() as u64 > derm_core::policy::MAX_POLICY_BYTES {
+        return empty("policy file is over 1 MiB; every call asks".into());
+    }
     match derm_core::policy::parse(&text) {
         Ok(policy) => (policy, None),
         Err(problem) => empty(problem.to_string()),
+    }
+}
+
+/// Opens the policy for reading without blocking on what is not a file
+/// (review FPWR2-2): on Unix `O_NONBLOCK`, so a FIFO planted at the path
+/// returns at once and the `is_file` check after refuses it, as derm-pi's
+/// memory record does (`memory.ts`); on Windows only a path that is a
+/// regular file now is opened (a pipe name opens a pipe client).
+fn open_policy(p: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(p)
+    }
+    #[cfg(windows)]
+    {
+        if !std::fs::metadata(p)?.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        std::fs::File::open(p)
     }
 }
 
@@ -1355,11 +1382,16 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         .unwrap_or_else(|| format!("{}/.derm/policy.json", home.trim_end_matches('/')));
     // Loaded once, by the hook core's rules, for goose's ask mode here and
     // for `derm acp`'s answers (FPW-S2, FPWR-4, FPWR-5).
-    let (policy_file, policy_problem) = load_policy_checked(
-        &policy_path,
-        env.policy.as_deref().is_some_and(args::absolute),
-        &cwd,
-    );
+    // A `DERM_POLICY` set but not absolute is refused, as the hook core
+    // refuses it ("policy path is not absolute"), never replaced by the
+    // default file, which the hook would then not read (review FPWR2-5).
+    let (policy_file, policy_problem) = match env.policy.as_deref() {
+        Some(p) if !args::absolute(p) => (
+            derm_core::policy::PolicyFile::default(),
+            Some("DERM_POLICY is not an absolute path; not used, so every call asks".to_string()),
+        ),
+        set => load_policy_checked(&policy_path, set.is_some(), &cwd),
+    };
     let missing = derm_core::policy::LoadProblem::Missing.to_string();
     if let Some(why) = policy_problem.as_ref().filter(|w| **w != missing) {
         eprintln!("derm run: {policy_path}: {why}");
@@ -3598,17 +3630,20 @@ mod end_to_end {
             .any(|l| l["op"] == "hello" && l["token"] == fake::CHAT_TOKEN));
     }
 
+    const DENY_BASH: &str = r#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#;
+
+    /// A scripted ACP agent asks about one bash call; the client answers
+    /// "ok" to any request it is shown. `in_filter` runs once the harness
+    /// started, before `derm acp` builds its context. Returns the option the
+    /// agent got and whether the client was asked.
     #[cfg(unix)]
-    /// FPW-S2 end to end: the same scripted agent, the same deny rule, but in
-    /// a policy file others may write. `derm run` refuses the file, so `derm
-    /// acp` answers from the empty policy: the ask goes to the client, whose
-    /// answer reaches the agent. On `2ce607d` derm applied the file and the
-    /// agent got derm's own reject.
-    #[test]
-    fn fpw_s2_acp_does_not_apply_a_policy_others_may_write() {
+    fn acp_scenario(
+        name: &str,
+        prepare: impl FnOnce(&Setup, &mut RunEnv),
+        in_filter: impl Fn(&Setup),
+    ) -> (String, bool) {
         use std::io::{BufRead, Write};
-        use std::os::unix::fs::PermissionsExt;
-        let st = setup("acp-s2");
+        let st = setup(name);
         let seen = st.fake.dir.join("acp-seen");
         let tool_call = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":"t1","title":"x","kind":"execute","name":"bash","rawInput":{"command":"rm -rf build"}}}}"#;
         let ask = r#"{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1"},"options":[{"optionId":"ok","name":"OK","kind":"allow_once"},{"optionId":"no","name":"No","kind":"reject_once"}]}}"#;
@@ -3620,18 +3655,10 @@ mod end_to_end {
                 seen.display()
             ),
         );
-        let policy = st.fake.dir.join("policy.json");
-        std::fs::write(
-            &policy,
-            r#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o666)).unwrap();
         let mut env = clone_env(&st.env);
-        env.policy = Some(policy.to_string_lossy().into_owned());
+        prepare(&st, &mut env);
         let (client_r, mut client_w) = std::io::pipe().unwrap();
         let (out_r, out_w) = std::io::pipe().unwrap();
-        // The client: answers "ok" to a permission request it is shown.
         let client = std::thread::spawn(move || {
             let mut asked = false;
             for line in std::io::BufReader::new(out_r).lines().map_while(Result::ok) {
@@ -3646,10 +3673,12 @@ mod end_to_end {
         });
         let ends = std::sync::Mutex::new(Some((client_r, out_w)));
         let filter = |p: Pipes| {
+            in_filter(&st);
             let (cr, ow) = ends.lock().unwrap().take().unwrap();
             let (tx, log) = crate::acp::proxy::log_channel(p.socket.clone(), p.token.clone());
-            let st = Arc::new(crate::acp::proxy::State::new(crate::acp::ctx_from(&p), tx));
-            crate::acp::proxy::start(st, Box::new(p.stdin), p.stdout, cr, ow, log)
+            let ctx = crate::acp::ctx_from(&p);
+            let state = Arc::new(crate::acp::proxy::State::new(ctx, tx));
+            crate::acp::proxy::start(state, Box::new(p.stdin), p.stdout, cr, ow, log)
         };
         let cwd = st.work.to_string_lossy().into_owned();
         let code = run_io(
@@ -3657,7 +3686,7 @@ mod end_to_end {
                 "--boundary",
                 "none",
                 "--chat",
-                "chat-s2",
+                name,
                 "--cwd",
                 &cwd,
                 "--",
@@ -3670,11 +3699,83 @@ mod end_to_end {
         assert_eq!(code, 0);
         let got: serde_json::Value =
             serde_json::from_str(std::fs::read_to_string(&seen).unwrap().trim()).unwrap();
-        assert_eq!(
-            got["result"]["outcome"]["optionId"], "ok",
-            "derm applied the policy: {got}"
+        let option = got["result"]["outcome"]["optionId"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        (option, client.join().unwrap())
+    }
+
+    #[cfg(unix)]
+    /// FPW-S2 end to end: a deny rule in a policy file others may write.
+    /// `derm run` refuses the file, so `derm acp` answers from the empty
+    /// policy: the ask goes to the client, whose answer reaches the agent.
+    /// On `2ce607d` derm applied the file and the agent got derm's own reject.
+    #[test]
+    fn fpw_s2_acp_does_not_apply_a_policy_others_may_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let got = acp_scenario(
+            "acp-s2",
+            |st, env| {
+                let policy = st.fake.dir.join("policy.json");
+                std::fs::write(&policy, DENY_BASH).unwrap();
+                std::fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o666)).unwrap();
+                env.policy = Some(policy.to_string_lossy().into_owned());
+            },
+            |_| {},
         );
-        assert!(client.join().unwrap(), "the client was never asked");
+        assert_eq!(got, ("ok".to_string(), true), "derm applied the policy");
+    }
+
+    #[cfg(unix)]
+    /// FPWR-5 and FPWR2-8c: `derm acp` decides with the policy `derm run`
+    /// checked, not with what the path holds later. The file is replaced by
+    /// an allow-all after the harness started; the deny still holds. Fails on
+    /// `39eeed2`, where acp loaded the file again by path.
+    #[test]
+    fn fpwr_5_acp_decides_with_the_policy_derm_run_checked() {
+        let got = acp_scenario(
+            "acp-r5",
+            |st, env| {
+                let policy = st.fake.dir.join("policy.json");
+                std::fs::write(&policy, DENY_BASH).unwrap();
+                env.policy = Some(policy.to_string_lossy().into_owned());
+            },
+            |st| {
+                let swapped = st.fake.dir.join("swap.json");
+                std::fs::write(
+                    &swapped,
+                    r#"{"version":1,"rules":[{"tool":"*","action":"allow"}]}"#,
+                )
+                .unwrap();
+                std::fs::rename(&swapped, st.fake.dir.join("policy.json")).unwrap();
+            },
+        );
+        assert_eq!(got, ("no".to_string(), false), "acp read the swapped file");
+    }
+
+    #[cfg(unix)]
+    /// FPWR2-5: a relative `DERM_POLICY` is refused, as the hook core refuses
+    /// it, never replaced by the default file the hook would not read. Here
+    /// the default file denies bash; with the relative path set, the call
+    /// asks. Fails on `5cbdf05`, which fell back to the default and denied.
+    #[test]
+    fn fpwr2_5_a_relative_derm_policy_is_refused_not_replaced_by_the_default() {
+        let got = acp_scenario(
+            "acp-r25",
+            |_st, env| {
+                let home = std::path::PathBuf::from(env.home.clone().unwrap());
+                std::fs::create_dir_all(home.join(".derm")).unwrap();
+                std::fs::write(home.join(".derm").join("policy.json"), DENY_BASH).unwrap();
+                env.policy = Some("policy.json".into());
+            },
+            |_| {},
+        );
+        assert_eq!(
+            got,
+            ("ok".to_string(), true),
+            "the default policy was applied"
+        );
     }
 
     #[cfg(unix)]
@@ -4106,6 +4207,18 @@ mod policy_load_tests {
         // The default path is never refused for being in the folder (a chat may start in HOME).
         mode(&chat, 0o755);
         assert_eq!(verdict(&inside, false, &chat), "applied");
+        // FPWR2-2: a FIFO at the path returns at once, refused.
+        let fifo = home.join("fifo.json");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a path we own, mode 0600.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (f, ch) = (s(&fifo), s(&chat));
+        std::thread::spawn(move || tx.send(load_policy_checked(&f, false, &ch)).unwrap());
+        let (p, why) = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the load blocked on a FIFO");
+        assert!(p.rules.is_empty() && why.unwrap().contains("not a regular file"));
         // Missing, or not JSON: the empty policy, the problem named.
         assert!(verdict(&home.join("none.json"), false, &chat).contains("no policy file"));
         std::fs::write(&file, "not json").unwrap();
@@ -4139,9 +4252,29 @@ mod policy_load_tests {
         let planted = open.join("p.json");
         std::fs::write(&planted, RULES).unwrap();
         assert_eq!(verdict(&planted, true, &chat), "applied");
-        grant(&open, "*S-1-1-0:(OI)(CI)(M)");
-        // The file now inherits Everyone's write too; both say no.
-        assert_ne!(verdict(&planted, true, &chat), "applied");
+        // FPWR2-8b: a grant on the folder alone, not inherited by the file.
+        grant(&open, "*S-1-1-0:(M)");
+        assert!(verdict(&planted, true, &chat).contains("the policy file's folder"));
+        // FPWR2-1: a file another account owns, whose write right is that
+        // owner's alone, is not applied. Setting another owner needs
+        // elevation (the box's SSH route and GitHub's runner are elevated).
+        if derm_core::platform::windows::is_superuser() {
+            let theirs = home.join("theirs.json");
+            std::fs::write(&theirs, RULES).unwrap();
+            for args in [
+                vec!["/grant", "*S-1-5-19:(W)"],
+                vec!["/setowner", "*S-1-5-19"],
+            ] {
+                assert!(std::process::Command::new("icacls")
+                    .arg(&theirs)
+                    .args(&args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success());
+            }
+            assert!(verdict(&theirs, false, &chat).contains("may write this policy file"));
+        }
         let inside = chat.join("p.json");
         std::fs::write(&inside, RULES).unwrap();
         assert!(verdict(&inside, true, &chat).contains("inside the chat's folder"));

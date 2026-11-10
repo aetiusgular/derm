@@ -501,8 +501,20 @@ pub fn is_private_path(path: &Path) -> bool {
 /// handle already open, so the file read is the file checked (review FPWR-5).
 pub fn only_owner_writes_file(f: &std::fs::File) -> bool {
     use std::os::windows::io::AsRawHandle;
-    read_security(f.as_raw_handle() as HANDLE, SE_FILE_OBJECT)
-        .is_ok_and(|s| only_owner_writes_security(&s, &ident::effective_user()))
+    let h = f.as_raw_handle() as HANDLE;
+    // All of `only_owner_writes`'s rule but the path's links (the handle is
+    // the file already opened): one link, an owner of ours, and no one else
+    // with a write right (review FPWR2-1: `only_owner_writes_security` alone
+    // trusts whoever owns the file).
+    if links(h) != Some(1) {
+        return false;
+    }
+    read_security(h, SE_FILE_OBJECT).is_ok_and(|s| {
+        s.owner
+            .as_ref()
+            .is_some_and(|o| ident::acceptable_owners().contains(o))
+            && only_owner_writes_security(&s, &ident::effective_user())
+    })
 }
 
 /// Whether `path` is a file (one link) or folder of ours, no reparse point
