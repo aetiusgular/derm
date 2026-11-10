@@ -90,7 +90,11 @@ pub fn start(paths: Paths, log_prompts: bool) -> Result<Running, String> {
     // pipe name has no folder for them (WW5-6: `--socket \\.\pipe\x` failed
     // at "socket folder: Incorrect function").
     #[cfg(windows)]
-    if derm_core::platform::windows::is_pipe_name(&paths.socket) {
+    // `//./pipe/x` is the same pipe to Win32, which reads `/` as `\` (review
+    // FPW-S10).
+    if derm_core::platform::windows::is_pipe_name(std::path::Path::new(
+        &paths.socket.to_string_lossy().replace('/', "\\"),
+    )) {
         return Err(format!(
             "--socket {}: on Windows the daemon takes the path of its pointer file (a file in a folder of yours, such as %USERPROFILE%\\.derm\\run\\derm\\daemon.sock), never a pipe name: it draws the pipe's name itself each start and keeps its token beside that file",
             paths.socket.display()
@@ -169,7 +173,11 @@ mod windows_tests {
     #[test]
     fn ww5_6_a_pipe_name_as_the_socket_is_refused_with_the_reason() {
         let data = std::env::temp_dir().join(format!("derm-ww56-{}", std::process::id()));
-        for name in [r"\\.\pipe\derm-ww56", r"\\?\pipe\derm-ww56"] {
+        for name in [
+            r"\\.\pipe\derm-ww56",
+            r"\\?\pipe\derm-ww56",
+            "//./pipe/derm-ww56",
+        ] {
             let e = match start(
                 Paths {
                     socket: std::path::PathBuf::from(name),
