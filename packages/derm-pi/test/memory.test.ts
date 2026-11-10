@@ -651,6 +651,8 @@ describe("the approval record on Windows (review FPW-S6)", () => {
     const file = path.join(dir, "memory-approvals.json");
     writeFileSync(file, "{}", { mode: 0o600 });
     expect((await readState(file, "win32")).trusted).toBe(false);
+    // A missing record too, or a session's yes would be written back (FPWR-8).
+    expect((await readState(path.join(dir, "none.json"), "win32")).trusted).toBe(false);
     if (process.platform !== "win32") expect((await readState(file, "linux")).trusted).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
