@@ -25,6 +25,10 @@ fn main() -> ExitCode {
     derm_core::platform::no_core_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = dispatch(&args);
+    // What an exited harness left running outlives `derm`, as on Unix (case
+    // 68); until here a late console close could still end it (WW5-7).
+    #[cfg(windows)]
+    platform::windows::exec::release_left();
     ExitCode::from(code)
 }
 
