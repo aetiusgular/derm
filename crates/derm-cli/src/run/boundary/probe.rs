@@ -260,6 +260,12 @@ pub(crate) fn srt_probe(
         why,
         install: install.map(str::to_string),
     };
+    // Before the install check: on Windows derm does not start srt at all,
+    // so its install line would point at a boundary derm then refuses
+    // (review FPW-S7).
+    if cfg!(windows) {
+        return Err(reason(preflight::SRT_ON_WINDOWS.into(), None));
+    }
     let Some(srt) = crate::watch::status::find_on_path("srt", path) else {
         return Err(reason(
             "srt is not installed (no srt on PATH)".into(),
@@ -494,8 +500,21 @@ fn clean(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use super::*;
+
+    /// FPW-S7 (the Windows fix pass's review): with no srt on PATH, the
+    /// probe said "srt is not installed" and printed srt's install line on
+    /// Windows, for a boundary derm then refuses there. Fails on `2ce607d`.
+    #[cfg(windows)]
+    #[test]
+    fn fpw_s7_on_windows_the_probe_names_the_refusal_not_an_install() {
+        let h = harness::find("pi").unwrap();
+        let never: Runner = &|_, _, _| panic!("nothing is run on Windows");
+        let r = srt_probe(h, "", None, None, false, r"C:\", never).unwrap_err();
+        assert_eq!(r.why, preflight::SRT_ON_WINDOWS);
+        assert!(r.install.is_none(), "{:?}", r.install);
+    }
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
