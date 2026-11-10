@@ -3,6 +3,7 @@
 //! plain code that builds and is tested on any Unix; the macOS-only caller
 //! check is passed in as a closure (see `main.rs`).
 
+use crate::seq::SeqWatch;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -112,16 +113,26 @@ pub fn next_backoff(current: Duration) -> Duration {
 }
 
 /// Reads eslogger's output into the channel. A full channel or an
-/// over-long line counts as a drop. Returns at end of input.
-pub fn pump<R: BufRead>(mut reader: R, tx: &SyncSender<String>, dropped: &AtomicU64) {
+/// over-long line counts as a drop. Every line is first shown to `seq`,
+/// which counts what the kernel dropped before eslogger printed it (MW5-23),
+/// so the channel's own drops are not taken for the kernel's. Returns at end
+/// of input.
+pub fn pump<R: BufRead>(
+    mut reader: R,
+    tx: &SyncSender<String>,
+    dropped: &AtomicU64,
+    seq: &Mutex<SeqWatch>,
+) {
     let mut buf = Vec::new();
     loop {
         match lines::read_capped(&mut reader, &mut buf, MAX_ESLOGGER_LINE) {
             Ok(Line::Eof) | Err(_) => return,
             Ok(Line::TooLong) => {
+                lock(seq).unreadable();
                 dropped.fetch_add(1, Ordering::Relaxed);
             }
             Ok(Line::Complete | Line::Cut) => {
+                lock(seq).line(&buf);
                 let Ok(text) = std::str::from_utf8(&buf) else {
                     dropped.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -181,6 +192,8 @@ pub struct Shared {
     pub writer: Mutex<LogWriter>,
     pub log_dir: PathBuf,
     pub dropped: AtomicU64,
+    /// What the kernel dropped before eslogger printed it (MW5-23).
+    pub seq: Mutex<SeqWatch>,
     connections: AtomicUsize,
     es: Mutex<EsInfo>,
     /// eslogger's last stderr line, shown while it is not running.
@@ -195,6 +208,7 @@ impl Shared {
             writer: Mutex::new(LogWriter::open(log_dir)?),
             log_dir: log_dir.to_path_buf(),
             dropped: AtomicU64::new(0),
+            seq: Mutex::new(SeqWatch::new()),
             connections: AtomicUsize::new(0),
             es: Mutex::new(EsInfo {
                 state: EsloggerState::Stopped,
@@ -226,6 +240,12 @@ impl Shared {
             EsloggerState::Running => None,
             _ => lock(&self.es_error).clone(),
         };
+        // One lock for both: a guard in the struct below would live to the
+        // end of the statement and the second would wait on it.
+        let (kernel_dropped, kernel_drops) = {
+            let seq = lock(&self.seq);
+            (seq.total, seq.gaps())
+        };
         let log_bytes = log::list_logs(&self.log_dir)
             .map(|files| files.iter().fold(0u64, |a, f| a.saturating_add(f.bytes)))
             .unwrap_or(0);
@@ -238,6 +258,8 @@ impl Shared {
             tracked: tracked as u64,
             grants: grants as u64,
             dropped: self.dropped.load(Ordering::Relaxed),
+            kernel_dropped,
+            kernel_drops,
             log_bytes,
         }
     }
@@ -442,11 +464,17 @@ pub fn check_socket_path(path: &Path) -> io::Result<()> {
 }
 
 /// Binds a socket at `path` (mode 0666; every caller is checked),
-/// replacing only a stale socket, never another kind of file.
+/// replacing only a stale socket, never another kind of file, and never a
+/// socket another process still listens on (case 40: a second collector,
+/// a dev install beside the signed app or the terminal route left behind,
+/// must not take the first one's clients while it keeps running).
 pub fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     check_socket_path(path)?;
     match fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_socket() => fs::remove_file(path)?,
+        Ok(m) if m.file_type().is_socket() => {
+            stale_socket(path)?;
+            fs::remove_file(path)?;
+        }
         Ok(_) => return Err(io::Error::other("socket path is taken")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
@@ -454,6 +482,33 @@ pub fn bind_socket(path: &Path) -> io::Result<UnixListener> {
     let listener = UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o666))?;
     Ok(listener)
+}
+
+/// `Ok` when nothing listens on the socket at `path`: a connect is refused
+/// (`ECONNREFUSED`, a socket file whose listener is gone) or finds nothing.
+/// A connect that succeeds is a live collector, and any other answer cannot
+/// be read as stale, so both keep the file (fail safe).
+fn stale_socket(path: &Path) -> io::Result<()> {
+    match UnixStream::connect(path) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "another collector answers on {}; stop it first (sudo launchctl bootout system/<its label>)",
+                path.display()
+            ),
+        )),
+        Err(e) if matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+        ) =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(io::Error::new(
+            e.kind(),
+            format!("cannot tell whether {} is in use: {e}", path.display()),
+        )),
+    }
 }
 
 /// Runs eslogger forever, restarting it with backoff when it exits.
@@ -500,7 +555,9 @@ pub fn supervise(shared: &Shared, program: &Path, tx: &SyncSender<String>) {
                         scope.spawn(move || keep_last_line(BufReader::new(err), slot));
                     }
                     if let Some(stdout) = child.stdout.take() {
-                        pump(BufReader::new(stdout), tx, &shared.dropped);
+                        // A new eslogger numbers its messages from the start.
+                        lock(&shared.seq).restart();
+                        pump(BufReader::new(stdout), tx, &shared.dropped, &shared.seq);
                     }
                     let _ = child.kill();
                 });
@@ -639,9 +696,49 @@ mod tests {
         let mut input = String::from("a\nb\nc\n");
         input.push_str(&"x".repeat(MAX_ESLOGGER_LINE + 1));
         input.push('\n');
-        pump(Cursor::new(input.into_bytes()), &tx, &dropped);
+        let seq = Mutex::new(SeqWatch::new());
+        pump(Cursor::new(input.into_bytes()), &tx, &dropped, &seq);
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec!["a", "b"]);
         assert_eq!(dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            lock(&seq).total,
+            0,
+            "the channel's drops are not the kernel's"
+        );
+    }
+
+    /// Mac test w5 retest 4, MW5-23: a 1 s chat started during the
+    /// collector's backlog after a burst had no OS record at all, and
+    /// nothing said so: `dropped` counts only this collector's own channel.
+    /// A gap in eslogger's `global_seq_num` is what the kernel dropped for
+    /// it (Apple, es_message_t `global_seq_num`), and the status says so,
+    /// apart from the channel's drops.
+    #[test]
+    fn the_status_counts_what_the_kernel_dropped_apart_from_the_channel() {
+        let dir = temp_dir("daemon-seq");
+        let shared = Shared::open(&dir).unwrap();
+        let (tx, rx) = mpsc::sync_channel(3);
+        let mut input = String::new();
+        for (seq, s) in [(1, 0), (2, 1), (40, 9), (41, 9), (42, 9)] {
+            input.push_str(&format!(
+                "{{\"version\":7,\"event\":{{\"exit\":{{}}}},\"time\":\"2026-11-06T10:00:{s:02}.000Z\",\"global_seq_num\":{seq}}}\n"
+            ));
+        }
+        pump(
+            Cursor::new(input.into_bytes()),
+            &tx,
+            &shared.dropped,
+            &shared.seq,
+        );
+        drop(rx);
+        let status = shared.status();
+        assert_eq!(status.kernel_dropped, 37);
+        assert_eq!(status.dropped, 2, "the channel of three kept three lines");
+        assert_eq!(status.kernel_drops.len(), 1);
+        assert_eq!(status.kernel_drops[0].count, 37);
+        let line = protocol::reply_status(&status);
+        assert!(line.contains("\"kernelDropped\":37"), "{line}");
+        assert!(line.contains("\"kernelDrops\":[{"), "{line}");
     }
 
     fn register_session(shared: &Shared, input: &str) -> String {
@@ -723,6 +820,31 @@ mod tests {
             &mut out,
         );
         assert_eq!(out, b"{\"ok\":false,\"error\":\"unknown op\"}\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_socket_another_collector_still_answers_on_is_never_taken_over() {
+        use std::os::unix::fs::MetadataExt;
+        // Case 40, two builds on one Mac: a second collector (a dev install
+        // beside the signed app, or the terminal route left behind when the
+        // app's SMAppService copy starts) bound the same paths by removing
+        // the first one's live socket. The first kept running eslogger and
+        // logging, and every client silently moved to the second.
+        let dir = socket_dir();
+        ensure_plain_dir(&dir, 0o755).unwrap();
+        let path = dir.join("read.sock");
+        let live = bind_socket(&path).unwrap();
+        let err = bind_socket(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse, "{err}");
+        assert!(err.to_string().contains("another collector"), "{err}");
+        // The first collector's socket is still the one at the path.
+        let ino = fs::symlink_metadata(&path).unwrap().ino();
+        assert!(UnixStream::connect(&path).is_ok());
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), ino);
+        // Once it is gone, its socket file is stale and is replaced.
+        drop(live);
+        assert!(bind_socket(&path).is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }
 

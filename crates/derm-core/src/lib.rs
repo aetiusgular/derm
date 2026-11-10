@@ -8,10 +8,17 @@
 //! (`policy::evaluate`) is a stub that answers `Ask`; lane B fills it against
 //! `contracts/fixtures/policy/cases.json`.
 
+// Wave 5 lane W: command rules (contracts/policy.md section 7).
+pub mod argv;
+pub mod command;
 pub mod event;
 pub mod harness;
+// Wave 5 lane X's seam (the wave 5 base): `policy::evaluate` calls it.
+pub mod installs;
 #[cfg(unix)]
 pub mod peer;
+// Wave 5 lane Z's seam (the wave 5 base): `platform/windows/` is cfg(windows).
+pub mod platform;
 #[rustfmt::skip]
 mod fold_tables;
 pub mod policy;

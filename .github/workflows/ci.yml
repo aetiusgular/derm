@@ -2,7 +2,8 @@ name: ci
 
 on:
   push:
-    branches: [main, "lane/**", "integration/**"]
+    # base/** since the wave 5 base (plans/parallel_build_tk.md section 7c).
+    branches: [main, "base/**", "lane/**", "integration/**"]
   pull_request:
 
 permissions:
@@ -27,6 +28,24 @@ jobs:
             grep -E -A4 "^test .* FAILED|panicked at" test.log | head -60 | sed 's/^/::error::/'
             exit 1
           }
+      # The two macOS workspaces are their own Cargo workspaces, so the steps
+      # above never reach them (lane Y's request 1, integration w5 phase 1).
+      # On Linux their Unix code runs; on macos-26 their Apple-only code
+      # (the collector's caller check and SMAppService calls, the helper)
+      # compiles here before it reaches the Mac.
+      - name: macOS workspaces
+        shell: bash
+        run: |
+          set -o pipefail
+          for w in macos/activity-collector macos/computer-use-helper; do
+            echo "== $w"
+            cargo fmt --manifest-path "$w/Cargo.toml" --all --check
+            cargo clippy --locked --manifest-path "$w/Cargo.toml" --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$w/Cargo.toml" 2>&1 | tee "$w.test.log" || {
+              grep -E -A4 "^test .* FAILED|panicked at" "$w.test.log" | head -60 | sed 's/^/::error::/'
+              exit 1
+            }
+          done
   # The daemon's macOS-only code (activity/collector.rs `sm`, the collector
   # paths) compiles nowhere else: the cloud cannot install the Apple target.
   # Added by integration w1's fix pass after the Mac test found the build
@@ -48,6 +67,24 @@ jobs:
             grep -E -A4 "^test .* FAILED|panicked at" test.log | head -60 | sed 's/^/::error::/'
             exit 1
           }
+      # The two macOS workspaces are their own Cargo workspaces, so the steps
+      # above never reach them (lane Y's request 1, integration w5 phase 1).
+      # On Linux their Unix code runs; on macos-26 their Apple-only code
+      # (the collector's caller check and SMAppService calls, the helper)
+      # compiles here before it reaches the Mac.
+      - name: macOS workspaces
+        shell: bash
+        run: |
+          set -o pipefail
+          for w in macos/activity-collector macos/computer-use-helper; do
+            echo "== $w"
+            cargo fmt --manifest-path "$w/Cargo.toml" --all --check
+            cargo clippy --locked --manifest-path "$w/Cargo.toml" --all-targets -- -D warnings
+            cargo test --locked --manifest-path "$w/Cargo.toml" 2>&1 | tee "$w.test.log" || {
+              grep -E -A4 "^test .* FAILED|panicked at" "$w.test.log" | head -60 | sed 's/^/::error::/'
+              exit 1
+            }
+          done
       # A CLI's whole process group ends with its check (Mac test w2, MW6,
       # seen on macOS only); the macOS runner has Node.
       - run: node tests/cli-contract/lib/procs.selftest.mjs
@@ -80,3 +117,37 @@ jobs:
           else
             echo "claude or codex not installed: cli contract not run"
           fi
+  # Windows (wave 5, lane Z; added by the wave 5 base). Since integration
+  # w5's phase 4 merge the workspace builds and lints here (lane Z's Z-1 to
+  # Z-6); the job stays EXPECTED RED until the Unix-shaped tests lane Z's
+  # request 10 names have Windows inputs; `continue-on-error` keeps a red
+  # run of it from failing the workflow, and its own result stays visible.
+  # `--no-fail-fast` so one failing test binary does not hide the others
+  # (lane Z's request 8). No test is
+  # deleted, skipped or weakened to make it pass. Each step runs even when an
+  # earlier one failed, so the record shows how far Windows gets. windows-2025
+  # is GitHub's Windows Server 2025 image (actions/runner-images,
+  # win25/20260628.181; it also answers to windows-latest).
+  windows:
+    name: windows (expected red until lane Z)
+    runs-on: windows-2025
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: cargo build
+        run: cargo build --workspace
+      - name: cargo test
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --no-fail-fast
+      - name: npm ci
+        if: ${{ !cancelled() }}
+        run: npm ci --ignore-scripts
+      - name: tsc
+        if: ${{ !cancelled() }}
+        run: npx tsc --noEmit
+      - name: vitest
+        if: ${{ !cancelled() }}
+        run: npx vitest run

@@ -80,3 +80,19 @@ describe("goose PreToolUse", () => {
     expect(JSON.stringify(ev)).not.toContain("secret-token-value");
   });
 });
+
+// Lane X's request 7 (integration w5, continue): the gate posts an
+// `install.call` record for an install, beside its decision.
+describe("goose install records", () => {
+  it("posts install.call beside the decision", async () => {
+    const before = f.daemon.events().length;
+    await runPre(goose, stdin("shell", { command: "npm install left-pad@1.3.0" }), f.env());
+    const ev = f.daemon.events().slice(before);
+    const recs = ev.filter((e) => e.kind === "install.call") as { detail: Record<string, unknown>; harness: string }[];
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.harness).toBe("goose");
+    expect(recs[0]?.detail).toMatchObject({ manager: "npm", form: "add", packages: [{ name: "left-pad", version: "1.3.0", ecosystem: "npm" }], trust: "client" });
+    const decision = (ev.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
+    expect(recs[0]?.detail.decision).toBe(decision);
+  });
+});

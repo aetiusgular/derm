@@ -24,6 +24,10 @@ pub enum Request {
         since: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chat: Option<String>,
+        /// `run` records only, backlog and live (the Linux feed; fp13's
+        /// review, FP13R-1, FP13R-11).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runs: Option<bool>,
     },
     /// One JSON report over a window.
     Report {
@@ -47,6 +51,10 @@ pub enum Request {
         answer: Answer,
         #[serde(default)]
         chat: Option<String>,
+        /// The person's proof, sent only after the daemon refused a `yes`
+        /// for want of it (S2 part b, wave 5 lane V). Never logged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proof: Option<Proof>,
     },
     /// Mint a chat token. Needs the daemon scope.
     #[serde(rename = "token.mint")]
@@ -70,6 +78,21 @@ pub enum CuAction {
     Stop,
     StopAll,
     Revoke,
+}
+
+/// What an approver sends to show a person answers (S2 part b): the
+/// daemon's user's login password, checked by the system's own helper.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Proof {
+    pub password: String,
+}
+
+/// Never prints the password.
+impl std::fmt::Debug for Proof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Proof(..)")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

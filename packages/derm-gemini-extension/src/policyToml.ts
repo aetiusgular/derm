@@ -60,8 +60,15 @@ export function policyToToml(loaded: LoadedPolicy): string {
   // must not outrank a deny that reaches the shell, so with one in the policy
   // it keeps its own rank (review W4-S6).
   const applies = (r: (typeof policy.rules)[number]) => r.chat === undefined && (r.harness === undefined || r.harness === HARNESS);
-  const denyReachesShell = policy.rules.some((r) => applies(r) && r.action === "deny" && (r.tool === "run_shell_command" || r.tool === "*"));
+  const denyReachesShell = policy.rules.some((r) => applies(r) && r.command === undefined && r.action === "deny" && (r.tool === "run_shell_command" || r.tool === "*"));
   for (const rule of policy.rules) {
+    // A command rule (contracts/policy.md section 7) names one command, not
+    // run_shell_command: as a Gemini rule it would deny or allow the whole
+    // shell. The hook applies it.
+    if (rule.command !== undefined) {
+      lines.push(`# skipped: bash ${rule.command.join(" ")} ${rule.action} (a command rule; the derm hook applies it)`, "");
+      continue;
+    }
     if (rule.chat !== undefined) {
       lines.push(`# skipped: ${rule.tool} ${rule.action} for one chat (Gemini rules have no chat)`, "");
       continue;

@@ -1,7 +1,8 @@
 # Activity collector protocol
 
 Wave 3, lane B, written for MonoCode (`src-tauri/src/activity/`); since the
-toolkit build the other side is derm-daemon (`crates/derm-daemon/src/activity/`).
+toolkit build the other side is derm-daemon (`crates/derm-daemon/src/activity/`),
+and since wave 5 (lane Y) the collector ships as its own app bundle.
 The contract between it and the collector daemon in this folder. Both sides
 build against this file.
 
@@ -16,8 +17,29 @@ Detection only. Nothing here blocks an action.
 | Sockets | `/var/run/derm-activity/register.sock`, `/var/run/derm-activity/read.sock` | folder root:wheel 0755, sockets 0666 (every caller is checked, see below) |
 | Log | `/Library/Application Support/derm/activity/es-YYYY-MM-DD.jsonl`, rolled to `.jsonl.gz` | folder root:wheel 0700, files 0600 |
 
-When installed through `SMAppService`, the binary and plist live in the app
-bundle and launchd runs them from there; the sockets and log are the same.
+Two install routes put the daemon there (`derm-daemon collector-plan`):
+
+- **The app** (lane Y, wave 5; the release's route). `derm Activity.app`
+  (`packaging/macos/collector/build-app.sh`), bundle id
+  `io.github.aetiusgular.derm.activity-collector`, signed with the Developer
+  ID and notarized, is copied to `/Library/PrivilegedHelperTools/derm
+  Activity.app`, root:wheel and not writable by anyone else, and checked
+  there by hash and signature. Its job plist
+  (`Contents/Library/LaunchDaemons/<label>.plist`, the file in `bundle/`) names
+  `BundleProgram` `Contents/MacOS/derm-activity-collector`. You run
+  `<app>/Contents/MacOS/derm-activity-collector register` as yourself, and
+  macOS asks you to allow it (Login Items); Full Disk Access goes to the app.
+  launchd then runs the collector from inside the app; the sockets and log
+  are the same as below. `unregister` removes the job; `service-status` prints
+  `SMAppService`'s status. Each prints one JSON line,
+  `{"service":"<label>","status":"enabled"|"requiresApproval"|"notRegistered"|"notFound"}`,
+  with an `error` object when macOS refused.
+- **The terminal route**, for a development build: the plist and binary at
+  the paths in the table, with `--dev-peer-path` (below).
+
+The two share the label, so only one can run; the plan for the app stops the
+terminal install first. A collector never takes over a socket another one
+still answers on: it refuses to start, and launchd shows it exiting.
 
 The daemon starts `/usr/bin/eslogger` with an argument list (never a shell
 string) and a fixed event list:
@@ -37,11 +59,15 @@ stands in for writes).
 Both sockets accept a connection only from derm-daemon. On macOS the daemon reads
 the peer's audit token (`LOCAL_PEERTOKEN`) and checks its code signature
 against a requirement built from the daemon's own designated requirement, with
-the identifier swapped for the peer's (`io.github.aetiusgular.derm`, `caller.rs`
-`PEER_ID`). So the peer must
-be signed by the same certificate as the daemon. A daemon whose own
-requirement cannot be read, or does not start with `identifier "<own id>" and `,
-refuses every caller (fail closed).
+the identifier swapped for the peer's. The peer's identifier follows from the
+collector's own (lane Y, case 40): `<app>.activity-collector` accepts `<app>`,
+so the release's `io.github.aetiusgular.derm.activity-collector` accepts
+`io.github.aetiusgular.derm`, the identifier the release signs `derm-daemon`
+with (`packaging/macos/build-zip.sh`), and a `.dev` build its own `.dev` peer
+(`caller.rs` `checker_requirement`). So the peer must be signed by the same
+team as the daemon. A daemon whose own requirement cannot be read, does not
+start with `identifier "<id>" and `, or whose id does not end in
+`.activity-collector`, refuses every signed caller (fail closed).
 
 Development builds are unsigned. Only for them, the plist may carry
 `--dev-peer-path <absolute path>`: a peer whose executable is exactly that path
@@ -132,9 +158,9 @@ Same framing. One request a connection.
   When more events match than the limit, the NEWEST `limit` are sent and
   `truncated` is true.
 - `status` answers with one line:
-  `{"version":"…","eslogger":"running"|"stopped"|"missing","esloggerError":"…","events":[…],"missingEvents":[…],"tracked":<n>,"grants":<n>,"dropped":<n>,"logBytes":<n>}`.
+  `{"version":"…","eslogger":"running"|"stopped"|"missing","esloggerError":"…","events":[…],"missingEvents":[…],"tracked":<n>,"grants":<n>,"dropped":<n>,"kernelDropped":<n>,"kernelDrops":[{"fromMs":<ms>,"toMs":<ms>,"count":<n>,"merged":<n>}],"logBytes":<n>}`.
   `esloggerError` is eslogger's last stderr line (control characters
-  dropped, at most 300 characters), present only while it is not running.
+  dropped, at most 300 characters), present only while it is not running. `dropped` counts eslogger lines this collector dropped itself (its channel full, a line too long). `kernelDropped` counts the events Endpoint Security dropped for eslogger before it printed them, since the collector started: the sum of the gaps in eslogger's top-level `global_seq_num` (Apple: it rises by 1 per message a client receives unless the kernel dropped some; available from message version 5), read on every line before the channel, a line whose number cannot be read counted as read, a falling number taken as a new eslogger. `kernelDrops` holds at most 64 gaps, oldest first, with the event times of the lines around each (fix pass 4, Mac test w5 retest 4, MW5-23). Past 64, the two neighbouring gaps whose joined span is shortest become one, so no count is lost, only how finely it is placed; `merged`, present above 1, says how many gaps one stands for (fix pass 4's review, FP4-S5).
 
 Socket paths must be under 104 bytes, `sun_path` on macOS; the daemon
 refuses a longer one with a clear error.

@@ -39,7 +39,7 @@ const POLL: Duration = Duration::from_millis(750);
 /// daemon's: a live derm chat token (lane K).
 pub type Resolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub fn start(core: Arc<Core>) -> std::io::Result<std::net::SocketAddr> {
     start_with(core, None)
 }
@@ -219,7 +219,9 @@ fn serve(core: &Arc<Core>, resolver: Option<&Resolver>, stream: TcpStream) {
     }
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::core::tests::{core_with, FakeLauncher};
     use super::*;
@@ -255,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_token_reaches_its_chat_and_hears_of_new_grants() {
+    fn a_chat_token_reaches_its_chat_and_its_runtime() {
         let (core, _, _) = core_with(FakeLauncher::new());
         core.set_chat("c1", true);
         let address = start(core.clone()).unwrap();
@@ -274,21 +276,19 @@ mod tests {
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})
         )
         .unwrap();
-        assert_eq!(
-            read(&mut reader)["result"]["tools"]
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
+        // Lane U: one tool, whatever the grants; a grant no longer changes
+        // the list, so no notification follows it.
+        let listed = read(&mut reader);
+        assert_eq!(listed["result"]["tools"][0]["name"], "computer_use");
+        assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 1);
         core.grant("c1", "claude", "com.apple.calculator", None, None)
             .unwrap();
-        assert_eq!(
-            read(&mut reader)["method"],
-            "notifications/tools/list_changed"
-        );
-        writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"click","arguments":{}}})).unwrap();
-        assert_eq!(read(&mut reader)["result"]["content"][0]["text"], "done");
+        writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"computer_use","arguments":{"action":"list_windows"}}})).unwrap();
+        let listed = read(&mut reader);
+        assert_eq!(listed["id"], 3, "{listed}");
+        let text: Value =
+            serde_json::from_str(listed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text["count"], 0, "the fake helper's answer");
         writeln!(stream, "not json").unwrap();
         assert_eq!(read(&mut reader)["error"]["code"], -32700);
     }
@@ -339,7 +339,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            1
         );
         core.set_chat("c1", false);
         let mut rest = String::new();
@@ -365,7 +365,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            1
         );
     }
 
@@ -380,14 +380,14 @@ mod tests {
         core.stop("c1");
         send(
             &mut stream,
-            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"click","arguments":{}}}),
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"computer_use","arguments":{"action":"list_windows"}}}),
         );
         let next = reply(&mut reader);
         assert_eq!(next["result"]["isError"], true);
-        assert_eq!(
-            next["result"]["content"][0]["text"],
-            "No app is approved for this chat. Call request_app_access first."
-        );
+        let text: Value =
+            serde_json::from_str(next["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        // Lane U: the next action finds no app held; naming one asks again.
+        assert_eq!(text["code"], "no_app_granted");
     }
 
     #[test]

@@ -120,7 +120,6 @@ pub fn report_path(home: &Path, agent: &str) -> PathBuf {
 /// Keeps the report as a new 0600 file renamed into place in a 0700
 /// folder; a link in the way is refused, never followed.
 pub fn save(home: &Path, report: &Value) -> std::io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let agent = report["agent"].as_str().unwrap_or("");
     if agent.is_empty()
         || !agent
@@ -144,17 +143,18 @@ pub fn save(home: &Path, report: &Value) -> std::io::Result<()> {
             Ok(_) => {}
             Err(_) => {
                 std::fs::create_dir(&d)?;
-                std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
+                // The seam's `set_private_dir` is `chmod 0700` on Unix.
+                derm_core::platform::set_private_dir(&d)?;
             }
         }
     }
     let tmp = dir.join(format!(".{agent}.{}.tmp", uuid::Uuid::new_v4().simple()));
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&tmp)?;
+    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
+    // on Unix.
+    let mut f = derm_core::platform::private_no_follow(
+        std::fs::OpenOptions::new().write(true).create_new(true),
+    )
+    .open(&tmp)?;
     let text = serde_json::to_string_pretty(report).map_err(std::io::Error::other)?;
     std::io::Write::write_all(&mut f, text.as_bytes())?;
     f.sync_all()?;
@@ -468,7 +468,6 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
 /// down to it owned by you and writable by no one else (security review L9).
 /// The real path comes back.
 fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
-    use std::os::unix::fs::MetadataExt;
     let real = std::fs::canonicalize(hook).map_err(|e| format!("{}: {e}", hook.display()))?;
     let root = std::fs::canonicalize(root).map_err(|e| format!("{}: {e}", root.display()))?;
     let rel = real.strip_prefix(&root).map_err(|_| {
@@ -478,8 +477,7 @@ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
             root.display()
         )
     })?;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let mut at = root.clone();
     let mut parts = vec![at.clone()];
     for c in rel.components() {
@@ -488,7 +486,7 @@ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
     }
     for p in &parts {
         let m = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        if m.uid() != uid || m.mode() & 0o022 != 0 {
+        if !yours_alone(p, &m, uid) {
             return Err(format!(
                 "{} is not yours alone (owner or group/other writable); derm will not run a hook someone else could have written",
                 p.display()
@@ -500,6 +498,20 @@ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
         return Err(format!("{} is not a regular file", real.display()));
     }
     Ok(real)
+}
+
+/// Owned by `uid`, writable by no one else.
+#[cfg(unix)]
+fn yours_alone(_p: &Path, m: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    m.uid() == uid && m.mode() & 0o022 == 0
+}
+
+/// Windows (lane Z): the same, from the owner and DACL.
+#[cfg(windows)]
+fn yours_alone(p: &Path, _m: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
+    uid == derm_core::platform::effective_user()
+        && derm_core::platform::windows::only_owner_writes(p)
 }
 
 /// A folder name read as a version (`0.10.0`), else `None`.
@@ -611,22 +623,20 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
     let scratch =
         std::env::temp_dir().join(format!("derm-doctor-{}", uuid::Uuid::new_v4().simple()));
     let result = (|| -> Result<Value, String> {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let work = scratch.join("work");
         let pol = scratch.join("policy");
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&pol).map_err(|e| e.to_string())?;
         for d in [&scratch, &work, &pol] {
-            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| e.to_string())?;
+            // The seam's `set_private_dir` is `chmod 0700` on Unix.
+            derm_core::platform::set_private_dir(d).map_err(|e| e.to_string())?;
         }
         let policy = pol.join("policy.json");
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&policy)
-            .map_err(|e| e.to_string())?;
+        let mut f = derm_core::platform::private_no_follow(
+            std::fs::OpenOptions::new().write(true).create_new(true),
+        )
+        .open(&policy)
+        .map_err(|e| e.to_string())?;
         std::io::Write::write_all(
             &mut f,
             br#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,

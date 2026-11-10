@@ -18,7 +18,12 @@ ExecStart=/usr/bin/derm-daemon --foreground
 Restart=on-failure
 RestartSec=2
 UMask=0077
-NoNewPrivileges=yes
+# No NoNewPrivileges=, and none of the settings systemd.exec(5) says imply it
+# (SystemCallFilter=, RestrictNamespaces=, PrivateDevices= and the others):
+# the person check runs Linux-PAM's unix_chkpwd, which reads /etc/shadow
+# through its set-group-id bit, and under no_new_privs that bit is ignored,
+# so every password would fail (box test w5, BW5-17). derm-daemon refuses a
+# yes that needs the check, and says why, if no_new_privs is set anyway.
 
 [Install]
 WantedBy=default.target

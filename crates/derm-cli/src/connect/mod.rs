@@ -33,8 +33,10 @@ pub mod gateway;
 
 mod allowlist;
 mod diff;
-mod gate;
-#[cfg(test)]
+pub(crate) mod gate;
+// Shell-script fakes and a live daemon on a Unix socket (lane Z: no
+// Windows twin yet).
+#[cfg(all(test, unix))]
 mod gate_tests;
 mod json;
 mod log;
@@ -102,12 +104,12 @@ impl Env for RealEnv {
 }
 
 pub fn main(args: &[String]) -> u8 {
-    let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+    // HOME on Unix, USERPROFILE on Windows (lane Z's request 1).
+    let Some(home) = derm_core::runtime::home_dir().filter(|h| !h.as_os_str().is_empty()) else {
         eprintln!("derm connect: HOME is not set");
         return 1;
     };
     let mut tty = write::Tty;
-    let home = PathBuf::from(home);
     let cwd = std::env::current_dir().unwrap_or_else(|_| home.clone());
     let mut ctx = Ctx {
         home,

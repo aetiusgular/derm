@@ -4,15 +4,17 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
 use super::apps::{parse_bundle_id, warning_for, AppRefusal, AppWarning};
-use super::facade::{look_only, printable, AccessAnswer, AccessRequest, Backend};
+use super::facade::{
+    look_only, printable, AccessAnswer, AccessRequest, Backend, CallOutcome, OFF_TEXT,
+};
 use super::grants::{Grant, GrantTable};
-use super::helper_client::{EventSink, HelperClient};
+use super::helper_client::{EventSink, HelperClient, HelperError};
 use super::manifest::manifest_yaml;
 use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
 use crate::activity::{ActivityEvent, ApprovalRecord, ProcessKind};
@@ -26,7 +28,11 @@ const MAX_PENDING_PER_CHAT: usize = 4;
 const PENDING_TTL: Duration = Duration::from_secs(15 * 60);
 const START_TIMEOUT: Duration = Duration::from_secs(45);
 const TOOLS_TIMEOUT: Duration = Duration::from_secs(30);
-const CALL_TIMEOUT: Duration = Duration::from_secs(130);
+/// One runtime call. Lane U: under Codex's 60-second default tool timeout,
+/// so a call that hangs comes back to the model as "outcome unknown" from
+/// derm, not as the harness's own timeout (Hermes uses 30 seconds,
+/// `cua_backend_session.py:483`).
+const CALL_TIMEOUT: Duration = Duration::from_secs(40);
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -67,6 +73,26 @@ pub trait HelperLauncher: Send + Sync {
     /// it. None: no screenshot is copied.
     fn recordings_root(&self) -> Option<PathBuf> {
         None
+    }
+    /// Why the helper, though installed, cannot see windows on this desktop
+    /// (box test w5 retest, BW5R-1: cua-driver on GNOME Shell 50), asked
+    /// before any card. None: nothing known against it.
+    fn unusable(&self) -> Option<String> {
+        None
+    }
+    /// This user's running processes of the app bundle at `app` (BW5-19's
+    /// Mac half, fix pass 11). Some: the daemon asks the helper for a
+    /// pid-less listing one pid at a time, since the helper's driver reads
+    /// one with no pid as a whole-display observation and refuses it. None:
+    /// the helper answers such a listing itself (Linux, `direct.rs`).
+    fn app_pids(&self, _app: &Path) -> Option<Vec<u64>> {
+        None
+    }
+    /// Whether [`HelperLauncher::app_pids`] answers on this launcher, asked
+    /// before any grant is looked at, so a launcher that lists by itself
+    /// gets every listing as it was sent.
+    fn lists_by_app(&self) -> bool {
+        false
     }
 }
 
@@ -147,6 +173,14 @@ struct Inner {
     /// Chats whose current turn is a plan turn: only look-only tools run
     /// (rules section 5, item 7; security review S6).
     planning: std::collections::HashSet<String>,
+    /// Lane U: scopes asked beyond an app grant (foreground input in one
+    /// app), per chat: `None` while the card is open, then the answer. Ended
+    /// with the chat's grants.
+    scopes: HashMap<(String, String), Option<bool>>,
+    /// The app bundle each grant's card showed, by chat and lowercase
+    /// bundle id (fix pass 11, BW5-19's Mac half): a listing with no pid is
+    /// asked per process of these. Kept only while the grant is active.
+    app_paths: HashMap<(String, String), PathBuf>,
 }
 
 impl Inner {
@@ -181,12 +215,24 @@ pub struct Status {
     pub helper: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub helper_path: Option<String>,
+    /// Why computer use cannot see windows here (BW5R-1), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<String>,
     pub running_chats: Vec<String>,
     pub pending: Vec<PendingView>,
 }
 
+/// Asks the daemon's approver in a chat's name (chat, card id, summary);
+/// true only on a person's yes.
+pub type Asker = Box<dyn Fn(&str, &str, &str) -> bool + Send + Sync>;
+/// Takes one `cu.action` record's detail for a chat.
+pub type Recorder = Box<dyn Fn(&str, Value) + Send + Sync>;
+
 pub struct Core {
     inner: Mutex<Inner>,
+    /// Lane U: set once by the service (`service.rs`).
+    asker: OnceLock<Asker>,
+    recorder: OnceLock<Recorder>,
     answered: Condvar,
     helper: Mutex<Option<Arc<HelperClient>>>,
     launcher: Box<dyn HelperLauncher>,
@@ -203,6 +249,8 @@ impl Core {
     ) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
             inner: Mutex::new(Inner::default()),
+            asker: OnceLock::new(),
+            recorder: OnceLock::new(),
             answered: Condvar::new(),
             helper: Mutex::new(None),
             launcher,
@@ -210,6 +258,13 @@ impl Core {
             supported,
             me: me.clone(),
         })
+    }
+
+    /// The approver and the log for lane U's scope cards and action
+    /// records. Set once; a second call changes nothing.
+    pub fn set_hooks(&self, asker: Asker, recorder: Recorder) {
+        let _ = self.asker.set(asker);
+        let _ = self.recorder.set(recorder);
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -284,7 +339,7 @@ impl Core {
     }
 
     /// The chat's bridge token, if it has one. Spawns take `mint_token`.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn token(&self, chat: &str) -> Option<String> {
         self.lock().tokens.get(chat).cloned()
     }
@@ -300,6 +355,89 @@ impl Core {
     }
 
     // --- Grants, from the user's clicks ---
+
+    /// BW5-19's Mac half (fix pass 11). A `list_windows` or `list_apps`
+    /// with no `pid` and no `window_id` is a whole-display observation to
+    /// the helper's driver, which derm's manifest refuses (Mac test w5,
+    /// retest 4). Where the launcher can list an app's processes (macOS),
+    /// `list_apps` is answered from the processes of the apps this chat
+    /// holds, and `list_windows` is asked once per such process, with its
+    /// pid, keeping only that pid's windows, as `direct.rs` does on Linux.
+    /// None: not such a listing, or the launcher answers it itself.
+    fn listing_by_app(&self, chat: &str, name: &str, arguments: &Value) -> Option<CallOutcome> {
+        if !matches!(name, "list_windows" | "list_apps")
+            || arguments.get("pid").is_some_and(|v| !v.is_null())
+            || arguments.get("window_id").is_some_and(|v| !v.is_null())
+        {
+            return None;
+        }
+        if !self.launcher.lists_by_app() {
+            return None;
+        }
+        let held: Vec<(Grant, Option<PathBuf>)> = {
+            let inner = self.lock();
+            inner
+                .grants
+                .active(chat, now_ms())
+                .into_iter()
+                .map(|g| {
+                    let path = inner
+                        .app_paths
+                        .get(&(chat.to_string(), g.bundle_id.to_ascii_lowercase()))
+                        .cloned();
+                    (g, path)
+                })
+                .collect()
+        };
+        let mut procs: Vec<(u64, Grant)> = Vec::new();
+        for (grant, path) in held {
+            // A grant without a path (made by bundle id with no card path)
+            // has no processes derm can name: its listing stays empty,
+            // never a display observation.
+            let Some(path) = path else { continue };
+            let pids = self.launcher.app_pids(&path).unwrap_or_default();
+            procs.extend(pids.into_iter().map(|pid| (pid, grant.clone())));
+        }
+        if name == "list_apps" {
+            let apps: Vec<Value> = procs
+                .iter()
+                .map(|(pid, g)| json!({"name": g.app_name.clone().unwrap_or_else(|| g.bundle_id.clone()), "pid": pid, "bundleId": g.bundle_id}))
+                .collect();
+            return Some(CallOutcome::Done(json!({
+                "content": [{"type": "text", "text": format!("{} running app(s) this chat holds", apps.len())}],
+                "structuredContent": {"apps": apps},
+            })));
+        }
+        let mut windows: Vec<Value> = Vec::new();
+        for (pid, _) in &procs {
+            let mut args = json!({"pid": pid});
+            if let Some(v) = arguments.get("on_screen_only") {
+                args["on_screen_only"] = v.clone();
+            }
+            match Backend::call(self, chat, "list_windows", args) {
+                CallOutcome::Done(result) => {
+                    if result.get("isError").and_then(Value::as_bool) == Some(true) {
+                        return Some(CallOutcome::Done(result));
+                    }
+                    let list = result
+                        .pointer("/structuredContent/windows")
+                        .or_else(|| result.pointer("/windows"))
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    windows.extend(
+                        list.into_iter()
+                            .filter(|w| w.get("pid").and_then(Value::as_u64) == Some(*pid)),
+                    );
+                }
+                other => return Some(other),
+            }
+        }
+        Some(CallOutcome::Done(json!({
+            "content": [{"type": "text", "text": format!("{} window(s) of the apps this chat holds", windows.len())}],
+            "structuredContent": {"windows": windows},
+        })))
+    }
 
     pub fn grants(&self, chat: &str) -> Vec<Grant> {
         self.lock().grants.active(chat, now_ms())
@@ -326,10 +464,24 @@ impl Core {
             inner
                 .harness
                 .insert(chat.to_string(), harness_name(harness));
-            inner
+            let made = inner
                 .grants
                 .grant(chat, bundle_id, app_name, now, new_id())
-                .map_err(|e| e.message())?
+                .map_err(|e| e.message())?;
+            if let Some(path) = app_path.filter(|p| p.starts_with('/')) {
+                inner.app_paths.insert(
+                    (chat.to_string(), made.0.bundle_id.to_ascii_lowercase()),
+                    PathBuf::from(path),
+                );
+            }
+            let active: std::collections::HashSet<(String, String)> = inner
+                .grants
+                .all_active(now)
+                .into_iter()
+                .map(|g| (g.chat_id, g.bundle_id.to_ascii_lowercase()))
+                .collect();
+            inner.app_paths.retain(|k, _| active.contains(k));
+            made
         };
         if grant.granted_at == now {
             self.log_approval(&grant, true, None);
@@ -376,6 +528,7 @@ impl Core {
                 pending.answer.get_or_insert(AccessAnswer::Denied);
             }
             inner.pending.retain(|_, p| p.view.chat_id != chat);
+            inner.scopes.retain(|(c, _), _| c != chat);
             (ended, inner.runtimes.remove(chat))
         };
         self.answered.notify_all();
@@ -512,6 +665,17 @@ impl Core {
 
     /// What the model named, as an app the card can show.
     fn resolve_request(&self, app: &str) -> (Option<AppInfo>, Option<String>) {
+        // A desktop the driver cannot see windows on refuses before any
+        // card, so the person is never asked to grant an app that computer
+        // use cannot capture or click (BW5R-1).
+        if let Some(why) = self.launcher.unusable() {
+            return (None, Some(why));
+        }
+        // Lane U: a helper (or, on Linux, a driver) that cannot start says
+        // so, rather than "no app named".
+        if let Err(why) = self.helper_or_launch() {
+            return (None, Some(why));
+        }
         let looked_up = self.resolve(app);
         match parse_bundle_id(app) {
             Ok(id) => (
@@ -757,6 +921,13 @@ impl Core {
         } else {
             "missing"
         };
+        // Before the lock: the probe reads files and runs gnome-shell for up
+        // to 3 s, and nothing else should wait on it (review FP9-S6).
+        let desktop = if self.supported {
+            self.launcher.unusable()
+        } else {
+            None
+        };
         let mut inner = self.lock();
         Self::open_cards(&mut inner);
         let mut pending: Vec<PendingView> = inner
@@ -771,6 +942,7 @@ impl Core {
         Status {
             helper,
             helper_path: self.launcher.location(),
+            desktop,
             running_chats,
             pending,
         }
@@ -1158,20 +1330,34 @@ impl Backend for Core {
     }
 
     fn runtime_call(&self, chat: &str, name: &str, arguments: Value) -> Result<Value, String> {
+        match Backend::call(self, chat, name, arguments) {
+            CallOutcome::Done(result) => Ok(result),
+            CallOutcome::TimedOut => Err("The computer-use helper did not answer in time.".into()),
+            CallOutcome::Lost(message) | CallOutcome::Failed(message) => Err(message),
+        }
+    }
+
+    fn call(&self, chat: &str, name: &str, arguments: Value) -> CallOutcome {
+        if let Some(outcome) = self.listing_by_app(chat, name, &arguments) {
+            return outcome;
+        }
         if !look_only(name) && self.lock().card_open() {
-            return Err(
+            return CallOutcome::Failed(
                 "An approval card is open for the user. Input waits until the user answers it."
                     .into(),
             );
         }
-        let (helper, id) = self.ensure_runtime(chat)?;
-        let reply = helper.request(
+        let (helper, id) = match self.ensure_runtime(chat) {
+            Ok(pair) => pair,
+            Err(message) => return CallOutcome::Failed(message),
+        };
+        let reply = helper.request_typed(
             "call",
             json!({"runtime": id, "name": name, "arguments": arguments}),
             CALL_TIMEOUT,
         );
         match reply {
-            Ok(reply) => Ok(reply.get("result").cloned().unwrap_or(Value::Null)),
+            Ok(reply) => CallOutcome::Done(reply.get("result").cloned().unwrap_or(Value::Null)),
             Err(error) => {
                 // A runtime that failed mid-call is started fresh next time.
                 if !helper.is_open() {
@@ -1180,13 +1366,103 @@ impl Backend for Core {
                         note_runtime_end(chat, entry);
                     }
                 }
-                Err(error)
+                match error {
+                    HelperError::Timeout(_) => CallOutcome::TimedOut,
+                    HelperError::Closed(message) => CallOutcome::Lost(message),
+                    HelperError::Refused(message) => CallOutcome::Failed(message),
+                }
             }
+        }
+    }
+
+    fn reset_runtime(&self, chat: &str) {
+        self.end_runtime(chat);
+    }
+
+    fn ask_scope(&self, chat: &str, scope: &str, summary: &str, wait: Duration) -> AccessAnswer {
+        if self.asker.get().is_none() {
+            return AccessAnswer::Refused("No approver is wired for computer use.".into());
+        }
+        if !self.is_on(chat) {
+            return AccessAnswer::Refused(OFF_TEXT.into());
+        }
+        let key = (chat.to_string(), scope.to_string());
+        let start = {
+            let mut inner = self.lock();
+            match inner.scopes.get(&key) {
+                Some(Some(true)) => {
+                    return AccessAnswer::Granted {
+                        bundle_id: scope.into(),
+                    }
+                }
+                Some(Some(false)) => return AccessAnswer::Denied,
+                Some(None) => false,
+                None => {
+                    if inner.scopes.keys().filter(|(c, _)| c == chat).count()
+                        >= MAX_PENDING_PER_CHAT * 4
+                    {
+                        return AccessAnswer::Refused("Too many cards for this chat.".into());
+                    }
+                    inner.scopes.insert(key.clone(), None);
+                    true
+                }
+            }
+        };
+        if start {
+            let me = self.me.clone();
+            let (chat_s, id, summary) = (chat.to_string(), new_id(), summary.to_string());
+            let key2 = key.clone();
+            // The person's answer can take minutes: off this thread. A stop
+            // in the meantime drops the entry, so a late yes grants nothing.
+            std::thread::spawn(move || {
+                let Some(core) = me.upgrade() else { return };
+                let yes = core
+                    .asker
+                    .get()
+                    .is_some_and(|ask| ask(&chat_s, &id, &summary));
+                {
+                    let mut inner = core.lock();
+                    if let Some(slot) = inner.scopes.get_mut(&key2) {
+                        *slot = Some(yes);
+                    }
+                }
+                core.answered.notify_all();
+            });
+        }
+        let deadline = Instant::now() + wait;
+        let mut inner = self.lock();
+        loop {
+            match inner.scopes.get(&key) {
+                None => return AccessAnswer::Denied,
+                Some(Some(true)) => {
+                    return AccessAnswer::Granted {
+                        bundle_id: scope.into(),
+                    }
+                }
+                Some(Some(false)) => return AccessAnswer::Denied,
+                Some(None) => {}
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return AccessAnswer::Pending;
+            }
+            inner = match self.answered.wait_timeout(inner, left) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+
+    fn record(&self, chat: &str, detail: Value) {
+        if let Some(record) = self.recorder.get() {
+            record(chat, detail);
         }
     }
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 pub mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
@@ -1201,6 +1477,9 @@ pub mod tests {
         pub working: bool,
         /// How long the fake helper takes to answer `start`.
         pub start_delay: Duration,
+        /// The processes `app_pids` names for any app (None: the launcher
+        /// answers pid-less listings itself, as Linux's does).
+        pub app_pids: Option<Vec<u64>>,
     }
 
     impl FakeLauncher {
@@ -1210,6 +1489,7 @@ pub mod tests {
                 launches: Arc::default(),
                 working: true,
                 start_delay: Duration::ZERO,
+                app_pids: None,
             }
         }
     }
@@ -1239,6 +1519,17 @@ pub mod tests {
                             json!({"id": id, "ok": true, "pid": pid})
                         }
                         "tools" => json!({"id": id, "ok": true, "tools": [{"name": "click"}]}),
+                        "call"
+                            if request["name"] == "list_windows"
+                                && request["arguments"]["pid"].is_u64() =>
+                        {
+                            // The asked pid's window, and another app's.
+                            let pid = request["arguments"]["pid"].clone();
+                            json!({"id": id, "ok": true, "result": {"structuredContent": {"windows": [
+                                {"pid": pid, "window_id": 7, "app_name": "Calculator", "title": "Calculator"},
+                                {"pid": 999, "window_id": 8, "app_name": "Other", "title": "Other"}
+                            ]}}})
+                        }
                         "call" => {
                             json!({"id": id, "ok": true, "result": {"content": [{"type": "text", "text": "done"}]}})
                         }
@@ -1263,6 +1554,12 @@ pub mod tests {
         }
         fn location(&self) -> Option<String> {
             Some("/fake/MonoCode Computer Use.app".into())
+        }
+        fn app_pids(&self, _app: &Path) -> Option<Vec<u64>> {
+            self.app_pids.clone()
+        }
+        fn lists_by_app(&self) -> bool {
+            self.app_pids.is_some()
         }
         fn installed(&self) -> bool {
             self.working
@@ -1427,6 +1724,115 @@ pub mod tests {
         assert_eq!(core.mint_token("c9"), core.token("c9"));
         assert!(!core.is_on("c9"));
         assert_eq!(core.mint_token("c1").unwrap(), t3);
+    }
+
+    fn calls(log: &Log) -> Vec<Value> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["op"] == "call")
+            .cloned()
+            .collect()
+    }
+
+    const CALC: &str = "/System/Applications/Calculator.app";
+
+    /// BW5-19's Mac half (fix pass 11): a pid-less `list_windows` went to the
+    /// helper as is, and its driver refused it as a whole-display
+    /// observation. Now it is asked once per process of the app the chat
+    /// holds, with that pid, and only that pid's windows come back.
+    #[test]
+    fn bw5_19_mac_a_listing_with_no_pid_is_asked_per_process_of_the_app() {
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242, 4343]);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant(
+            "c1",
+            "claude",
+            "com.apple.calculator",
+            Some("Calculator"),
+            Some(CALC),
+        )
+        .unwrap();
+        let result = core
+            .runtime_call("c1", "list_windows", json!({"on_screen_only": true}))
+            .unwrap();
+        let asked = calls(&log);
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        for (call, pid) in asked.iter().zip([4242, 4343]) {
+            assert_eq!(call["name"], "list_windows");
+            assert_eq!(call["arguments"]["pid"], pid);
+            assert_eq!(call["arguments"]["on_screen_only"], true);
+        }
+        let windows = result["structuredContent"]["windows"].as_array().unwrap();
+        let pids: Vec<u64> = windows.iter().map(|w| w["pid"].as_u64().unwrap()).collect();
+        assert_eq!(
+            pids,
+            vec![4242, 4343],
+            "another app's window never reaches the chat"
+        );
+    }
+
+    #[test]
+    fn bw5_19_mac_list_apps_is_answered_from_the_apps_processes() {
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242]);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant(
+            "c1",
+            "claude",
+            "com.apple.calculator",
+            Some("Calculator"),
+            Some(CALC),
+        )
+        .unwrap();
+        let result = core.runtime_call("c1", "list_apps", json!({})).unwrap();
+        assert!(calls(&log).is_empty(), "the helper is not asked");
+        assert_eq!(
+            result["structuredContent"]["apps"],
+            json!([{"name": "Calculator", "pid": 4242, "bundleId": "com.apple.calculator"}])
+        );
+    }
+
+    /// A grant with no app path names no process: the listing is empty, and
+    /// nothing pid-less reaches the helper.
+    #[test]
+    fn bw5_19_mac_a_grant_without_a_path_sends_no_display_observation() {
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242]);
+        let (core, log, _) = core_with(launcher);
+        core.set_chat("c1", true);
+        core.grant("c1", "claude", "com.apple.calculator", None, None)
+            .unwrap();
+        let result = core.runtime_call("c1", "list_windows", json!({})).unwrap();
+        assert!(calls(&log).is_empty());
+        assert_eq!(result["structuredContent"]["windows"], json!([]));
+    }
+
+    /// Where the launcher answers pid-less listings itself (Linux's
+    /// `direct.rs`), the call passes through unchanged; a call with a pid
+    /// always does.
+    #[test]
+    fn bw5_19_mac_a_launcher_that_lists_itself_gets_the_call_as_is() {
+        let (core, log, _) = core_with(FakeLauncher::new());
+        core.set_chat("c1", true);
+        core.grant("c1", "claude", "com.apple.calculator", None, Some(CALC))
+            .unwrap();
+        core.runtime_call("c1", "list_windows", json!({})).unwrap();
+        let mut launcher = FakeLauncher::new();
+        launcher.app_pids = Some(vec![4242]);
+        let (core2, log2, _) = core_with(launcher);
+        core2.set_chat("c1", true);
+        core2
+            .grant("c1", "claude", "com.apple.calculator", None, Some(CALC))
+            .unwrap();
+        core2
+            .runtime_call("c1", "list_windows", json!({"pid": 77}))
+            .unwrap();
+        assert_eq!(calls(&log)[0]["arguments"], json!({}));
+        assert_eq!(calls(&log2)[0]["arguments"], json!({"pid": 77}));
     }
 
     #[test]

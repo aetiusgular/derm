@@ -391,8 +391,15 @@ function cleanState(raw: unknown): Record<string, Record<string, Approved>> {
   return out;
 }
 
-async function readState(file: string | undefined): Promise<StateRead> {
+/** Exported for tests (`platform` too); the extension passes neither. */
+export async function readState(file: string | undefined, platform: NodeJS.Platform = process.platform): Promise<StateRead> {
   if (file === undefined) return { trusted: false, projects: {} };
+  // On Windows Node gives a file's mode from its read-only attribute alone
+  // and no owner id (libuv v1.52.1 `src/win/fs.c:1956-1960, 2005-2006`), so
+  // who may write the record cannot be read: it is never trusted, a missing
+  // one included, every index asks and nothing approved is written back
+  // (reviews FPW-S6, FPWR-8; the class of WW5-3).
+  if (platform === "win32") return { trusted: false, projects: {} };
   let handle: FileHandle | undefined;
   try {
     handle = await fsp.open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -403,10 +410,8 @@ async function readState(file: string | undefined): Promise<StateRead> {
   try {
     const st = await handle.stat();
     if (!st.isFile() || st.size > MAX_STATE_BYTES) return { trusted: false, projects: {} };
-    if (process.platform !== "win32") {
-      if ((st.mode & 0o022) !== 0) return { trusted: false, projects: {} };
-      if (typeof process.getuid === "function" && st.uid !== process.getuid()) return { trusted: false, projects: {} };
-    }
+    if ((st.mode & 0o022) !== 0) return { trusted: false, projects: {} };
+    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return { trusted: false, projects: {} };
     const text = await handle.readFile({ encoding: "utf8" });
     return { trusted: true, projects: cleanState(JSON.parse(text)) };
   } catch {

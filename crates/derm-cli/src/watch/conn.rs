@@ -5,8 +5,8 @@
 //! keeps its own, and shares the socket path and the token checks with
 //! `derm run`.
 
+use derm_core::platform::Stream as UnixStream;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -48,7 +48,7 @@ impl Conn {
     }
 
     pub fn open_with(socket: &Path, token: &str, client: &str) -> Result<Conn, String> {
-        let stream = UnixStream::connect(socket).map_err(|e| {
+        let stream = derm_core::platform::connect(socket).map_err(|e| {
             format!(
                 "the daemon is not running ({}: {e}); start it with `derm-daemon` or its user unit",
                 socket.display()
@@ -132,7 +132,7 @@ pub fn read_line(r: &mut impl BufRead) -> Result<Value, String> {
         .by_ref()
         .take(MAX_LINE as u64 + 1)
         .read_until(b'\n', &mut buf)
-        .map_err(|e| format!("daemon socket: {e}"))?;
+        .map_err(|e| read_error(&e))?;
     if n == 0 {
         return Err("the daemon closed the connection".into());
     }
@@ -140,6 +140,20 @@ pub fn read_line(r: &mut impl BufRead) -> Result<Value, String> {
         return Err("the daemon sent a line over 1 MiB".into());
     }
     serde_json::from_slice(&buf).map_err(|e| format!("daemon protocol: {e}"))
+}
+
+/// A read error in words. A read timeout is `EAGAIN` on macOS and Linux
+/// (`SO_RCVTIMEO`; Rust's `WouldBlock` or `TimedOut`), which printed as
+/// "Resource temporarily unavailable (os error 35)" under load (Mac test
+/// w5 retest 9, MW5-35): it says what happened instead.
+fn read_error(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => format!(
+            "the daemon did not answer within {} s (it may be busy; try again, or narrow a report with --since or --chat)",
+            TIMEOUT.as_secs()
+        ),
+        _ => format!("daemon socket: {e}"),
+    }
 }
 
 /// A reply line: `ok: true` passes, `ok: false` is the daemon's reason.
@@ -187,6 +201,23 @@ pub fn classify(line: Value) -> Incoming {
 
 #[cfg(test)]
 mod tests {
+    /// MW5-35: a read that times out says so, not the errno's text.
+    #[test]
+    #[cfg(unix)]
+    fn mw5_35_a_read_timeout_says_the_daemon_did_not_answer() {
+        use std::os::unix::net::UnixStream;
+        let (a, _b) = UnixStream::pair().unwrap();
+        a.set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        let mut r = std::io::BufReader::new(a);
+        let err = super::read_line(&mut r).unwrap_err();
+        assert!(
+            err.starts_with("the daemon did not answer within 10 s"),
+            "{err}"
+        );
+        assert!(!err.contains("os error"), "{err}");
+    }
+
     use super::*;
 
     #[test]

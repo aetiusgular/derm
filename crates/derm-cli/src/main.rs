@@ -2,21 +2,46 @@
 //! in its own folder and is owned by one lane (plans/parallel_build_tk.md,
 //! section 2, point 5): `connect/` lane C, `run/` lane D, `watch/` lane J in
 //! wave 2; in wave 4 `connect/` is lane Q's, `run/`, `watch/`, `acp/` and
-//! `doctor/` lane R's (section 7a). No lane edits this file during a wave; a
-//! new subcommand is a request for integration.
+//! `doctor/` lane R's (section 7a); in wave 5 `cu/` is lane U's, `setup/` lane
+//! W's and `platform/` lane Z's (section 7c). No lane edits this file during
+//! a wave; a new subcommand is a request for integration.
 
 mod acp;
 mod connect;
+// Wave 5 (the wave 5 base): `cu/` lane U, `setup/` lane W, `platform/` lane Z.
+mod cu;
 mod doctor;
+mod platform;
 mod run;
+#[cfg(unix)]
+mod setup;
 mod watch;
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // Case 114: `derm run` holds a chat token and the harness it starts
+    // inherits the limit (P2-4).
+    derm_core::platform::no_core_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // What an exited harness left running outlives `derm`, as on Unix (case
+    // 68); until `derm` returns, or unwinds out of here, a late console close
+    // can still end it (WW5-7, FPWR-3).
+    #[cfg(windows)]
+    let _release = Release;
     let code = dispatch(&args);
     ExitCode::from(code)
+}
+
+/// Releases the jobs of exited harnesses when `main` ends, a panic included.
+#[cfg(windows)]
+struct Release;
+
+#[cfg(windows)]
+impl Drop for Release {
+    fn drop(&mut self) {
+        platform::windows::exec::release_left();
+    }
 }
 
 fn dispatch(args: &[String]) -> u8 {
@@ -24,8 +49,20 @@ fn dispatch(args: &[String]) -> u8 {
         Some("connect") => connect::main(&args[1..]),
         Some("run") => run::main(&args[1..]),
         Some("watch") | Some("status") => watch::main(args),
-        // Computer use's controls (toolkit plan T1.5; integration w2).
-        Some("cu") => watch::cu::main(&args[1..]),
+        // Computer use's controls (toolkit plan T1.5; integration w2), through
+        // lane U's folder since the wave 5 base.
+        Some("cu") => cu::main(&args[1..]),
+        // Wave 5 lane W (the wave 5 base's stub).
+        #[cfg(unix)]
+        Some("setup") => setup::main(&args[1..]),
+        // `derm setup` writes private files with Unix modes; its Windows form
+        // (ACLs through derm_core::platform) is not built (integration w5's
+        // close; docs/install/windows.md says nothing installs on Windows yet).
+        #[cfg(not(unix))]
+        Some("setup") => {
+            eprintln!("derm setup: not built for Windows yet (docs/install/windows.md)");
+            2
+        }
         // Wave 4 lane R (integration w2's scaffold).
         Some("acp") => acp::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
@@ -34,7 +71,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|--version> ...");
             2
         }
     }
@@ -66,7 +103,7 @@ mod tests {
         // wave 2 (exit 0) and reads the machine's daemon socket and agent
         // config files, which a unit test must not (lane J's request 2,
         // integration w2). `watch::status` has its own tests on fixtures.
-        for cmd in ["connect", "run", "watch", "cu", "acp", "doctor"] {
+        for cmd in ["connect", "run", "watch", "cu", "acp", "doctor", "setup"] {
             assert_eq!(dispatch(&s(&[cmd])), 2, "{cmd}");
         }
     }

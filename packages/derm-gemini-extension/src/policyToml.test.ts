@@ -143,3 +143,20 @@ describe("the extension's own policies/derm.toml", () => {
     expect(isSafeRegExp('"x":"(?:[^"\\\\]|\\\\.)*y')).toBe(false);
   });
 });
+
+describe("policyToToml and command rules (wave 5 lane W, contracts/policy.md section 7)", () => {
+  it("leaves a command rule to the hook: never a whole-shell deny or allow", () => {
+    const toml = policyToToml(
+      loaded({
+        version: 1,
+        rules: [
+          { tool: "bash", command: ["gh", "repo", "delete"], action: "deny" },
+          { tool: "bash", command: ["gh", "pr", "view"], action: "allow" },
+        ],
+      }),
+    );
+    expect(toml).not.toContain('toolName = "run_shell_command"');
+    expect(toml).toContain("# skipped: bash gh repo delete deny (a command rule; the derm hook applies it)");
+    expect(toml).toContain("# skipped: bash gh pr view allow (a command rule; the derm hook applies it)");
+  });
+});

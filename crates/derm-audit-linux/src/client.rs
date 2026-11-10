@@ -8,9 +8,8 @@
 //! Every read and write has a timeout: a daemon that does not answer is an
 //! error, never a hang (rules case 9).
 
+use derm_core::platform::Stream as UnixStream;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -59,11 +58,51 @@ pub fn socket_path() -> Option<PathBuf> {
     derm_core::runtime::socket_path()
 }
 
+/// The file's mode for an error message, where the system has one.
+#[cfg(unix)]
+fn mode_text(meta: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(" (mode {:o})", meta.mode() & 0o777)
+}
+
 /// Reads `daemon.token` beside the socket. Refused unless it is a regular
 /// file owned by this user with no group or other bits, holding a
 /// well-formed token: a token another user could have written is not ours.
 pub fn read_daemon_token(dir: &Path) -> Result<String, ClientError> {
     let path = dir.join("daemon.token");
+    #[cfg(windows)]
+    {
+        read_daemon_token_windows(&path)
+    }
+    #[cfg(unix)]
+    {
+        read_daemon_token_unix(&path)
+    }
+}
+
+/// Windows (lane Z): owner and DACL read on the open handle, never through
+/// a reparse point (`open_private_file`); a token another user could read
+/// or write is refused, as a group or other bit is on Unix.
+#[cfg(windows)]
+fn read_daemon_token_windows(path: &Path) -> Result<String, ClientError> {
+    let mut text = String::new();
+    derm_core::platform::windows::open_private_file(path)
+        .map_err(|e| ClientError::Token(e.to_string()))?
+        .take(256)
+        .read_to_string(&mut text)?;
+    let token = text.trim().to_string();
+    if !derm_core::token::well_formed(&token) {
+        return Err(ClientError::Token(format!(
+            "{} does not hold a token",
+            path.display()
+        )));
+    }
+    Ok(token)
+}
+
+#[cfg(unix)]
+fn read_daemon_token_unix(path: &Path) -> Result<String, ClientError> {
+    let path = path.to_path_buf();
     let meta = std::fs::symlink_metadata(&path)
         .map_err(|e| ClientError::Token(format!("{}: {e}", path.display())))?;
     if !meta.file_type().is_file() {
@@ -72,19 +111,18 @@ pub fn read_daemon_token(dir: &Path) -> Result<String, ClientError> {
             path.display()
         )));
     }
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
-    if meta.uid() != me {
+    let me = derm_core::platform::effective_user();
+    if derm_core::platform::owner(&meta) != me {
         return Err(ClientError::Token(format!(
             "{} is not owned by you",
             path.display()
         )));
     }
-    if meta.mode() & 0o077 != 0 {
+    if !derm_core::platform::is_private(&meta) {
         return Err(ClientError::Token(format!(
-            "{} is readable by others (mode {:o})",
+            "{} is readable by others{}",
             path.display(),
-            meta.mode() & 0o777
+            mode_text(&meta)
         )));
     }
     let mut text = String::new();
@@ -167,7 +205,7 @@ impl Client {
         client: &str,
         timeout: Duration,
     ) -> Result<(Client, Hello), ClientError> {
-        let stream = UnixStream::connect(socket)
+        let stream = derm_core::platform::connect(socket)
             .map_err(|e| ClientError::NotRunning(format!("{}: {e}", socket.display())))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
@@ -269,22 +307,65 @@ impl Client {
     /// `tail`: after the reply, the connection streams `{"event": ...}`
     /// lines. The read timeout is lifted (a quiet daemon is not an error on
     /// a tail); the caller reads with `next_event`.
-    pub fn tail(mut self, since: Option<i64>) -> Result<Tail, ClientError> {
+    pub fn tail(self, since: Option<i64>) -> Result<Tail, ClientError> {
+        self.tail_with(since, false)
+    }
+
+    /// `tail` of `run` records only (`runs: true`), the backlog the newest
+    /// of them: what the Linux feed needs to know every chat, without the
+    /// rest of the log crowding it out of the backlog (fp13's review,
+    /// FP13R-1) or filling its queue (FP13R-11).
+    pub fn tail_runs(self, since: Option<i64>) -> Result<Tail, ClientError> {
+        self.tail_with(since, true)
+    }
+
+    fn tail_with(mut self, since: Option<i64>, runs: bool) -> Result<Tail, ClientError> {
         let mut req = json!({"op": "tail"});
         if let Some(s) = since {
             req["since"] = json!(s);
         }
-        self.request(&req)?;
+        if runs {
+            req["runs"] = json!(true);
+        }
+        let reply = self.request(&req)?;
         self.writer.set_read_timeout(None)?;
-        Ok(Tail { client: self })
+        let report = reply.get("report");
+        let backlog = report
+            .and_then(|r| r.get("backlogSent"))
+            .and_then(Value::as_u64)
+            .map(|n| n as usize);
+        let cut = report
+            .and_then(|r| r.get("backlogCut"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok(Tail {
+            client: self,
+            backlog,
+            cut,
+        })
     }
 }
 
 pub struct Tail {
     client: Client,
+    backlog: Option<usize>,
+    cut: bool,
 }
 
 impl Tail {
+    /// How many backlog events the daemon sends before the live ones, when
+    /// it says (a `since` tail; daemons before BW5R4-1's fix say only when
+    /// the backlog was cut).
+    pub fn backlog(&self) -> Option<usize> {
+        self.backlog
+    }
+
+    /// The daemon cut the backlog to its newest records: older ones since
+    /// `since` were not sent.
+    pub fn cut(&self) -> bool {
+        self.cut
+    }
+
     /// The next streamed event. Lines that are not `{"event": ...}` are
     /// skipped; a line whose event does not parse is an error.
     pub fn next_event(&mut self) -> Result<Event, ClientError> {
@@ -332,7 +413,6 @@ mod tests {
 #[doc(hidden)]
 pub mod fake {
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -367,17 +447,18 @@ pub mod fake {
     /// Starts a fake in a fresh 0700 folder under the OS temp folder, with
     /// `daemon.token` (0600) and `otlp.endpoint` beside the socket.
     pub fn start(name: &str, mode: Mode) -> Fake {
-        use std::os::unix::fs::PermissionsExt;
+        // Through the platform seam (lane Z): on Unix the same 0700 folder,
+        // 0600 token and Unix socket as before; on Windows a private folder
+        // and a named pipe behind the socket path's pointer file.
         let dir = std::env::temp_dir().join(format!("derm-fake-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        derm_core::platform::private_dir(&dir).unwrap();
         let tok = dir.join("daemon.token");
         std::fs::write(&tok, format!("{DAEMON_TOKEN}\n")).unwrap();
-        std::fs::set_permissions(&tok, std::fs::Permissions::from_mode(0o600)).unwrap();
+        derm_core::platform::set_private_file(&tok).unwrap();
         std::fs::write(dir.join("otlp.endpoint"), "http://127.0.0.1:4318\n").unwrap();
         let socket = dir.join("daemon.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
+        let listener = derm_core::platform::bind(&socket).unwrap();
         let got = Arc::new(Mutex::new(Vec::new()));
         let g = got.clone();
         let restarted_flag = dir.join("restarted");
@@ -393,7 +474,7 @@ pub mod fake {
     }
 
     fn serve(
-        stream: std::os::unix::net::UnixStream,
+        stream: derm_core::platform::Stream,
         mode: Mode,
         got: Arc<Mutex<Vec<Value>>>,
         restarted: &Path,

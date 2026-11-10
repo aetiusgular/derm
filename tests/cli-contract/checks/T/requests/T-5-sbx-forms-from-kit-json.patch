@@ -1,0 +1,715 @@
+diff --git a/contracts/harness-presets.schema.json b/contracts/harness-presets.schema.json
+index d88458e..4102a9a 100644
+--- a/contracts/harness-presets.schema.json
++++ b/contracts/harness-presets.schema.json
+@@ -35,6 +35,12 @@
+       "properties": {
+         "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+         "from": { "enum": ["sbx", "sbx-kits-contrib"] },
++        "fullAccess": {
++          "description": "The words the kit's own entrypoint or default command adds that turn the agent's approvals off (rules case 83), a flag or a flag and its value, as the kit's spec.yaml gives them. derm run adds them to the chat's full-access record and sets DERM_FULL_ACCESS=1 under sbx. An empty list: none in the entrypoint (settings files the kit writes are not read). Lane T's request T-5.",
++          "type": "array",
++          "items": { "type": "string", "minLength": 1, "maxLength": 100 },
++          "maxItems": 8
++        },
+         "verifiedAt": { "type": "string" },
+         "note": { "type": "string" }
+       },
+diff --git a/crates/derm-cli/src/connect/presets/wave5/kit.json b/crates/derm-cli/src/connect/presets/wave5/kit.json
+index 4b73c4b..cd657d2 100644
+--- a/crates/derm-cli/src/connect/presets/wave5/kit.json
++++ b/crates/derm-cli/src/connect/presets/wave5/kit.json
+@@ -1,52 +1,68 @@
+ {
+-  "$comment": "Wave 5 lane T's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the sbx kit per agent. `name` is sbx's built-in agent (`from: sbx`) or a kit reference from docker/sbx-kits-contrib (`from: sbx-kits-contrib`), which sbx create takes as its first positional argument (sbx 0.51.0 deprecates a sandbox kit passed with --kit; plans/parallel/tk_sbx_smoke.md, SB1). null where neither sbx nor sbx-kits-contrib has a kit for the agent (read 4 Nov 2026 at sbx-kits-contrib 1de3c1e). Every kit read starts its agent in its own full-access mode where the agent has one, and none carries derm's gate: under sbx the VM is the boundary and the in-harness gate is absent (lane T, SB6). presets.rs and contracts/presets.ts merge each value into its row as `kit`. Shape: contracts/harness-presets.schema.json, $defs.kit. run/harness.rs still holds the kits derm run uses today (PI_KIT); reading this table there is lane T's request T-2.",
++  "$comment": "Wave 5 lane T's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the sbx kit per agent. `name` is sbx's built-in agent (`from: sbx`) or a kit reference from docker/sbx-kits-contrib (`from: sbx-kits-contrib`), which sbx create takes as its first positional argument (sbx 0.51.0 deprecates a sandbox kit passed with --kit; plans/parallel/tk_sbx_smoke.md, SB1). null where neither sbx nor sbx-kits-contrib has a kit for the agent (read 4 Nov 2026 at sbx-kits-contrib 1de3c1e). Every kit read starts its agent in its own full-access mode where the agent has one, and none carries derm's gate: under sbx the VM is the boundary and the in-harness gate is absent (lane T, SB6), except where derm adds its own kit (Claude Code, lane T phase 4, crates/derm-cli/src/run/boundary/kit.rs). presets.rs and contracts/presets.ts merge each value into its row as `kit`. Shape: contracts/harness-presets.schema.json, $defs.kit. run/harness.rs reads each harness's sbx form from this table (lane T's request T-5); a row here with no harness in run/harness.rs (mistral-vibe, antigravity) gives `derm run` nothing until it has one. `fullAccess` (lane T phase 4, request T-5): the words the kit's own entrypoint or default command adds that turn the agent's approvals off, read at sbx-kits-contrib 1de3c1e (each kit's spec.yaml, sandbox.entrypoint and sandbox.command.default); derm run adds them to the chat's full-access record and sets DERM_FULL_ACCESS=1 under sbx (case 83). An empty list means no such word in the entrypoint; settings files the kit writes were not read.",
+   "field": "kit",
+   "rows": {
+     "claude-code": {
+       "name": "claude",
+       "from": "sbx",
++      "fullAccess": [
++        "--dangerously-skip-permissions"
++      ],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+-      "note": "The kit starts claude --dangerously-skip-permissions (sbx-kits-contrib 1de3c1e claude/spec.yaml:34, marked extractedFromBuiltin; I that 0.51.0's built-in is the same). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
++      "note": "The kit starts claude --dangerously-skip-permissions (sbx-kits-contrib 1de3c1e claude/spec.yaml:34, marked extractedFromBuiltin; I that 0.51.0's built-in is the same). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/claude, DERM_SBX_KIT=off turns it off)."
+     },
+     "codex": {
+       "name": "codex",
+       "from": "sbx",
++      "fullAccess": [
++        "--dangerously-bypass-approvals-and-sandbox"
++      ],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts codex --dangerously-bypass-approvals-and-sandbox (sbx-kits-contrib 1de3c1e codex/spec.yaml:34, extractedFromBuiltin; I for 0.51.0). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Under sbx the tap does not reach Codex yet (lane S, D11)."
+     },
+     "pi": {
+       "name": "docker.io/sbx/pi-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [],
+       "verifiedAt": "sbx 0.51.0, run on the box and the Mac with --kit (plans/parallel/tk_sbx_smoke.md, 4 Nov 2026); the positional form sbx's warning names: not run",
+       "note": "A sandbox kit, so it is the first positional argument of sbx create, not --kit (SB1; sbx-kits-contrib 1de3c1e README.md:227). Pi 1.5.0 in the VM, past the preset's 1.4.0 (case 81). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are) (SB6)."
+     },
+     "opencode": {
+       "name": "opencode",
+       "from": "sbx",
++      "fullAccess": [],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts opencode with no flag (sbx-kits-contrib 1de3c1e opencode/spec.yaml, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+     },
+     "gemini": {
+       "name": "gemini",
+       "from": "sbx",
++      "fullAccess": [
++        "--yolo"
++      ],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts gemini --yolo (sbx-kits-contrib 1de3c1e gemini/spec.yaml:16, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+     },
+     "cursor": {
+       "name": "cursor",
+       "from": "sbx",
++      "fullAccess": [
++        "--yolo"
++      ],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts cursor-agent --yolo (sbx-kits-contrib 1de3c1e cursor/spec.yaml:41, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+     },
+     "hermes": {
+       "name": "docker.io/sbx/hermes-agent-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, hermes-agent/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "The kit's own start script (hermes-agent/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for hermes until plan.rs reads this table (request T-2)."
+     },
+     "openclaw": {
+       "name": "docker.io/sbx/openclaw-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, openclaw/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "The kit's own start script (openclaw/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for openclaw until plan.rs reads this table (request T-2)."
+     },
+@@ -55,18 +71,27 @@
+     "copilot-cli": {
+       "name": "copilot",
+       "from": "sbx",
++      "fullAccess": [
++        "--yolo"
++      ],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts copilot --yolo (sbx-kits-contrib 1de3c1e copilot/spec.yaml:16; I that the built-in is the same). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+     },
+     "amp": {
+       "name": "docker.io/sbx/amp-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [
++        "--dangerously-allow-all"
++      ],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, amp/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "The kit starts amp --dangerously-allow-all (amp/spec.yaml:10). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for amp until plan.rs reads this table (request T-2)."
+     },
+     "crush": {
+       "name": "docker.io/sbx/crush-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [
++        "--yolo"
++      ],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, crush/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "The kit starts crush --yolo (crush/spec.yaml:19). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for crush until plan.rs reads this table (request T-2)."
+     },
+@@ -78,12 +103,18 @@
+     "grok": {
+       "name": "git+https://github.com/docker/sbx-kits-contrib.git#ref=1de3c1e3313a4cc8f2ac4d93646ab204f2b3b769&dir=grok",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [
++        "--yolo"
++      ],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, grok/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "No published OCI artifact (its README names only the git form), so the reference is pinned to the commit read. The kit starts grok --yolo --no-auto-update (grok/spec.yaml:9). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). derm run has no sbx form for grok until plan.rs reads this table (request T-2)."
+     },
+     "antigravity": {
+       "name": "docker.io/sbx/antigravity-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [
++        "--dangerously-skip-permissions"
++      ],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, antigravity/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "The kit starts agy --dangerously-skip-permissions (antigravity/spec.yaml:14). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Not in derm run's harness table yet."
+     },
+@@ -94,6 +125,7 @@
+     "droid": {
+       "name": "droid",
+       "from": "sbx",
++      "fullAccess": [],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts droid with no flag (sbx-kits-contrib 1de3c1e droid/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+     },
+@@ -101,12 +133,18 @@
+     "kiro": {
+       "name": "kiro",
+       "from": "sbx",
++      "fullAccess": [
++        "--trust-all-tools"
++      ],
+       "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
+       "note": "The kit starts kiro chat --trust-all-tools (sbx-kits-contrib 1de3c1e kiro/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+     },
+     "mistral-vibe": {
+       "name": "docker.io/sbx/vibe-kit:latest",
+       "from": "sbx-kits-contrib",
++      "fullAccess": [
++        "--agent auto-approve"
++      ],
+       "verifiedAt": "sbx-kits-contrib 1de3c1e, vibe/README.md and spec.yaml, read 4 Nov 2026; not run",
+       "note": "The kit starts vibe --trust --agent auto-approve unless --kit-arg agent=ask (vibe/spec.yaml:16-37). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Not in derm run's harness table yet."
+     },
+diff --git a/crates/derm-cli/src/run/boundary/probe.rs b/crates/derm-cli/src/run/boundary/probe.rs
+index 7907017..1be850f 100644
+--- a/crates/derm-cli/src/run/boundary/probe.rs
++++ b/crates/derm-cli/src/run/boundary/probe.rs
+@@ -191,7 +191,7 @@ pub(crate) fn sbx_probe(h: &harness::Harness, path: &str, run: Runner) -> Result
+         why,
+         install: install.map(str::to_string),
+     };
+-    if h.sbx.is_none() {
++    if h.sbx().is_none() {
+         return Err(reason(
+             format!(
+                 "derm knows no sbx kit for {}",
+diff --git a/crates/derm-cli/src/run/harness.rs b/crates/derm-cli/src/run/harness.rs
+index 8264d99..ddab377 100644
+--- a/crates/derm-cli/src/run/harness.rs
++++ b/crates/derm-cli/src/run/harness.rs
+@@ -2,13 +2,14 @@
+ //! runs it, and the folders it keeps its own state in. Ids and commands are
+ //! the preset table (`crates/derm-cli/src/connect/presets/`, `id`, `cli`).
+ //!
+-//! sbx: the built-in agents of `sbx run` are claude, codex, copilot, cursor,
+-//! devin, docker-agent, droid, gemini, kiro, opencode, shell
+-//! (https://docs.docker.com/reference/cli/sbx/run/, read 27 Oct 2026). Pi
+-//! runs from the community kit `docker.io/sbx/pi-kit:latest` as Pi 1.4.0's
+-//! `docs/containerization.md:110` and the kit's README give it:
+-//! `sbx run --kit "docker.io/sbx/pi-kit:latest" pi`. The other harnesses
+-//! have no sbx form here; `--boundary sbx` refuses them rather than guess.
++//! sbx: each harness's form is the preset table's `kit` field
++//! (`connect/presets/wave5/kit.json`, lane T's request T-5): sbx's built-in
++//! agents (claude, codex, copilot, cursor, devin, docker-agent, droid,
++//! gemini, kiro, opencode, shell; https://docs.docker.com/reference/cli/sbx/run/)
++//! and sbx-kits-contrib's kits (Pi's `docker.io/sbx/pi-kit:latest`, Hermes,
++//! OpenClaw, Amp, Crush, Grok), with the words each kit adds that turn the
++//! agent's approvals off. A harness with no kit there has no sbx form, and
++//! `--boundary sbx` refuses it rather than guess.
+ //!
+ //! State folders are where a harness writes its sessions and settings, so
+ //! srt lets it write there and the feed reads those writes as its own. Pi
+@@ -22,7 +23,6 @@ pub struct Harness {
+     pub id: &'static str,
+     /// The command, from the presets' `cli`.
+     pub command: &'static str,
+-    pub sbx: Option<Sbx>,
+     /// Folders and files under the home it writes on its own.
+     pub state: &'static [&'static str],
+     /// Its own credential file under the home, which srt leaves readable
+@@ -41,12 +41,86 @@ pub struct Harness {
+     pub launch: Launch,
+ }
+ 
+-#[derive(Clone, Copy, Debug)]
++/// How sbx runs a harness, from the preset table's `kit` field
++/// (`crates/derm-cli/src/connect/presets/wave5/kit.json`, lane T's request
++/// T-5): one table for `derm run`, the default boundary and `derm status`.
++#[derive(Clone, Debug, PartialEq, Eq)]
+ pub struct Sbx {
+-    /// The AGENT argument of `sbx run`.
+-    pub agent: &'static str,
+-    /// A kit passed with `--kit`, when the agent is not built in.
+-    pub kit: Option<&'static str>,
++    /// The AGENT argument of `sbx run`: sbx's built-in agent, or the
++    /// harness's own command when a kit is the workload.
++    pub agent: String,
++    /// A sandbox kit, when the agent is not built in: the workload, first
++    /// positional on `sbx create` (SB1).
++    pub kit: Option<String>,
++    /// The words the kit adds that turn the agent's approvals off
++    /// (`fullAccess`; rules case 83).
++    pub full_access: Vec<String>,
++}
++
++impl Harness {
++    /// The sbx form for this harness, or `None` when sbx has no agent and
++    /// no kit for it (`--boundary sbx` refuses it rather than guess).
++    pub fn sbx(&self) -> Option<Sbx> {
++        let (from, name, full) = kit_rows().iter().find(|(id, _)| id == self.id)?.1.clone();
++        Some(if from == "sbx" {
++            Sbx {
++                agent: name,
++                kit: None,
++                full_access: full,
++            }
++        } else {
++            Sbx {
++                agent: self.command.to_string(),
++                kit: Some(name),
++                full_access: full,
++            }
++        })
++    }
++}
++
++/// `(id, (from, name, fullAccess))` for every preset row with a kit.
++type KitRow = (String, (String, String, Vec<String>));
++
++fn kit_rows() -> &'static [KitRow] {
++    static ROWS: std::sync::OnceLock<Vec<KitRow>> = std::sync::OnceLock::new();
++    ROWS.get_or_init(|| {
++        let table: serde_json::Value =
++            serde_json::from_str(crate::connect::presets::table_json()).unwrap_or_default();
++        let mut out = Vec::new();
++        for list in ["harnesses", "planned"] {
++            for row in table
++                .get(list)
++                .and_then(serde_json::Value::as_array)
++                .into_iter()
++                .flatten()
++            {
++                let (Some(id), Some(kit)) = (
++                    row.get("id").and_then(serde_json::Value::as_str),
++                    row.get("kit").filter(|k| k.is_object()),
++                ) else {
++                    continue;
++                };
++                let s = |k: &str| kit.get(k).and_then(serde_json::Value::as_str);
++                let (Some(from @ ("sbx" | "sbx-kits-contrib")), Some(name)) =
++                    (s("from"), s("name"))
++                else {
++                    continue;
++                };
++                let full = kit
++                    .get("fullAccess")
++                    .and_then(serde_json::Value::as_array)
++                    .map(|a| {
++                        a.iter()
++                            .filter_map(serde_json::Value::as_str)
++                            .map(str::to_string)
++                            .collect()
++                    })
++                    .unwrap_or_default();
++                out.push((id.to_string(), (from.to_string(), name.to_string(), full)));
++            }
++        }
++        out
++    })
+ }
+ 
+ /// Launch settings some gates need (toolkit plan T2.9; `contracts/hook-dialects.md`
+@@ -63,15 +137,12 @@ pub enum Launch {
+     Goose,
+ }
+ 
+-pub const PI_KIT: &str = "docker.io/sbx/pi-kit:latest";
+-
+ /// The harness `derm run --boundary <b> -- <argv>` starts when the program is
+ /// not one in this table (rules case 80): nothing about it is known, so it
+ /// gets the outside shape only. Its command comes from the argv.
+ pub const OTHER: Harness = Harness {
+     id: "other",
+     command: "",
+-    sbx: None,
+     state: &[],
+     credential: None,
+     control: &[],
+@@ -82,10 +153,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "pi",
+         command: "pi",
+-        sbx: Some(Sbx {
+-            agent: "pi",
+-            kit: Some(PI_KIT),
+-        }),
+         state: &[".pi/agent"],
+         credential: Some(".pi/agent/auth.json"),
+         control: &[
+@@ -98,10 +165,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "claude-code",
+         command: "claude",
+-        sbx: Some(Sbx {
+-            agent: "claude",
+-            kit: None,
+-        }),
+         state: &[".claude", ".claude.json"],
+         credential: Some(".claude/.credentials.json"),
+         // `.claude.json` also holds MCP servers, but Claude Code writes it
+@@ -120,10 +183,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "codex",
+         command: "codex",
+-        sbx: Some(Sbx {
+-            agent: "codex",
+-            kit: None,
+-        }),
+         state: &[".codex"],
+         credential: Some(".codex/auth.json"),
+         // `rules/` holds execpolicy `.rules` files, which allow commands
+@@ -140,10 +199,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "opencode",
+         command: "opencode",
+-        sbx: Some(Sbx {
+-            agent: "opencode",
+-            kit: None,
+-        }),
+         state: &[".local/share/opencode", ".config/opencode"],
+         credential: None,
+         control: &[
+@@ -157,10 +212,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "gemini",
+         command: "gemini",
+-        sbx: Some(Sbx {
+-            agent: "gemini",
+-            kit: None,
+-        }),
+         state: &[".gemini"],
+         credential: Some(".gemini/oauth_creds.json"),
+         // `.env` is loaded into the environment when the folder is trusted;
+@@ -179,10 +230,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "copilot-cli",
+         command: "copilot",
+-        sbx: Some(Sbx {
+-            agent: "copilot",
+-            kit: None,
+-        }),
+         state: &[".copilot"],
+         credential: None,
+         control: &[".copilot/hooks", ".copilot/mcp-config.json"],
+@@ -190,11 +237,11 @@ pub const HARNESSES: &[Harness] = &[
+     },
+     // Hermes: lane C verified the CLI `hermes` and the folder `~/.hermes`
+     // (HERMES_HOME; its preset row). Added by integration
+-    // w1; sbx has no Hermes agent, and its credential file is not read (NF).
++    // w1; sbx has no Hermes agent (its form is sbx-kits-contrib's kit), and
++    // its credential file is not read (NF).
+     Harness {
+         id: "hermes",
+         command: "hermes",
+-        sbx: None,
+         state: &[".hermes"],
+         credential: None,
+         control: &[".hermes/config.yaml", ".hermes/plugins"],
+@@ -203,7 +250,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "openclaw",
+         command: "openclaw",
+-        sbx: None,
+         state: &[".openclaw"],
+         credential: None,
+         // OpenClaw's plugin and config files were not read for this (NF);
+@@ -214,7 +260,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "goose",
+         command: "goose",
+-        sbx: None,
+         state: &[".config/goose", ".local/share/goose"],
+         credential: None,
+         control: &[".config/goose/config.yaml", ".config/goose/permission.yaml"],
+@@ -223,7 +268,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "qwen-code",
+         command: "qwen",
+-        sbx: None,
+         state: &[".qwen"],
+         credential: None,
+         control: &[".qwen/settings.json"],
+@@ -238,7 +282,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "openclaude",
+         command: "openclaude",
+-        sbx: None,
+         state: &[".openclaude", ".openclaude.json"],
+         credential: None,
+         // As Claude Code's row: `settings.local.json` and `plugins` load
+@@ -255,7 +298,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "amp",
+         command: "amp",
+-        sbx: None,
+         state: &[".config/amp", ".local/share/amp"],
+         credential: None,
+         control: &[".config/amp/settings.json", ".config/amp/plugins"],
+@@ -264,7 +306,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "crush",
+         command: "crush",
+-        sbx: None,
+         state: &[".config/crush", ".local/share/crush"],
+         credential: None,
+         control: &[".config/crush/crush.json", ".config/crush/crushrc"],
+@@ -304,10 +345,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "cursor",
+         command: "cursor-agent",
+-        sbx: Some(Sbx {
+-            agent: "cursor",
+-            kit: None,
+-        }),
+         state: &[".cursor"],
+         credential: None,
+         // Re-review FP5-R1: Cursor itself write-protects every
+@@ -338,7 +375,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "grok",
+         command: "grok",
+-        sbx: None,
+         state: &[".grok"],
+         credential: None,
+         control: &[".grok/hooks", ".grok/config.toml"],
+@@ -347,7 +383,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "oh-my-pi",
+         command: "omp",
+-        sbx: None,
+         state: &[".omp/agent"],
+         credential: None,
+         control: &[
+@@ -360,7 +395,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "cline",
+         command: "cline",
+-        sbx: None,
+         state: &[".cline"],
+         credential: None,
+         // `.cline/plugins`: derm's own gate is installed there (the agents
+@@ -371,7 +405,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "command-code",
+         command: "cmd",
+-        sbx: None,
+         state: &[".commandcode"],
+         credential: None,
+         control: &[".commandcode/settings.json", ".commandcode/mcp.json"],
+@@ -380,10 +413,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "droid",
+         command: "droid",
+-        sbx: Some(Sbx {
+-            agent: "droid",
+-            kit: None,
+-        }),
+         state: &[".factory"],
+         credential: None,
+         // `hooks.json` too: Droid's binary merges it over `settings.json`,
+@@ -398,7 +427,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "kilo",
+         command: "kilo",
+-        sbx: None,
+         state: &[".config/kilo", ".local/share/kilo"],
+         credential: None,
+         control: &[".config/kilo/kilo.json", ".config/kilo/plugin"],
+@@ -407,7 +435,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "kimi",
+         command: "kimi",
+-        sbx: None,
+         state: &[".kimi-code"],
+         credential: None,
+         control: &[".kimi-code/config.toml", ".kimi-code/mcp.json"],
+@@ -416,10 +443,6 @@ pub const HARNESSES: &[Harness] = &[
+     Harness {
+         id: "kiro",
+         command: "kiro-cli",
+-        sbx: Some(Sbx {
+-            agent: "kiro",
+-            kit: None,
+-        }),
+         state: &[".kiro"],
+         credential: None,
+         control: &[".kiro/hooks", ".kiro/settings", ".kiro/agents"],
+@@ -548,12 +571,62 @@ mod tests {
+         assert_eq!(by_command("agent").map(|h| h.id), None);
+     }
+ 
++    /// Request T-5: the forms come from the kit table, the nine derm ran
++    /// before are unchanged, and the kits for harnesses that had none now
++    /// give them one.
+     #[test]
+-    fn only_pi_needs_a_kit_and_paths_are_relative_and_inside_the_state() {
++    fn sbx_forms_come_from_the_kit_table() {
++        let f = |id: &str| find(id).unwrap_or_else(|| panic!("{id}")).sbx();
++        assert_eq!(
++            f("pi"),
++            Some(Sbx {
++                agent: "pi".into(),
++                kit: Some("docker.io/sbx/pi-kit:latest".into()),
++                full_access: vec![],
++            })
++        );
++        for (id, agent) in [
++            ("claude-code", "claude"),
++            ("codex", "codex"),
++            ("opencode", "opencode"),
++            ("gemini", "gemini"),
++            ("copilot-cli", "copilot"),
++            ("cursor", "cursor"),
++            ("droid", "droid"),
++            ("kiro", "kiro"),
++        ] {
++            let s = f(id).unwrap();
++            assert_eq!((s.agent.as_str(), s.kit.as_deref()), (agent, None), "{id}");
++        }
++        assert_eq!(
++            f("claude-code").unwrap().full_access,
++            vec!["--dangerously-skip-permissions".to_string()]
++        );
++        assert_eq!(
++            f("kiro").unwrap().full_access,
++            vec!["--trust-all-tools".to_string()]
++        );
++        for id in ["hermes", "openclaw", "amp", "crush", "grok"] {
++            let s = f(id).unwrap();
++            assert!(s.kit.is_some(), "{id}");
++            assert_eq!(s.agent, find(id).unwrap().command, "{id}");
++        }
++        for id in [
++            "goose",
++            "qwen-code",
++            "openclaude",
++            "cline",
++            "command-code",
++            "oh-my-pi",
++        ] {
++            assert_eq!(f(id), None, "{id}");
++        }
++        assert_eq!(OTHER.sbx(), None);
++    }
++
++    #[test]
++    fn paths_are_relative_and_inside_the_state() {
+         for h in HARNESSES {
+-            if let Some(s) = h.sbx {
+-                assert_eq!(s.kit.is_some(), h.id == "pi", "{}", h.id);
+-            }
+             for p in h.state.iter().chain(h.credential.iter()).chain(h.control) {
+                 assert!(!p.starts_with('/') && !p.contains(".."), "{p}");
+             }
+diff --git a/crates/derm-cli/src/run/plan.rs b/crates/derm-cli/src/run/plan.rs
+index 444dd38..f0be65c 100644
+--- a/crates/derm-cli/src/run/plan.rs
++++ b/crates/derm-cli/src/run/plan.rs
+@@ -328,7 +328,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
+         ));
+     }
+     // Case 83: flags that turn the agent's own approvals off.
+-    let full = full_access(&i.args.rest, h.id, i.goose_mode.as_deref());
++    let mut full = full_access(&i.args.rest, h.id, i.goose_mode.as_deref());
+     // Launch settings (T2.9), before the boundary wraps the command.
+     let mut launch_args: Vec<String> = Vec::new();
+     let mut companion = None;
+@@ -387,7 +387,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
+             ));
+         }
+         Boundary::Sbx => {
+-            let sbx = h.sbx.ok_or_else(|| {
++            let sbx = h.sbx().ok_or_else(|| {
+                 format!(
+                     "{} has no sbx form here (no built-in agent, no kit known); use srt or none",
+                     h.id
+@@ -403,6 +403,18 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
+                     ));
+                 }
+             }
++            // Case 83 under sbx (request T-5): the kit starts the agent with
++            // its own approvals off (`fullAccess`, read in each kit's
++            // spec.yaml), whatever the command line says, so the gate gets
++            // the hint and the record says so. A kit named with --kit is the
++            // user's, and its words are not known.
++            if i.args.kit.is_none() {
++                for w in &sbx.full_access {
++                    if !full.contains(w) {
++                        full.push(w.clone());
++                    }
++                }
++            }
+             program = "sbx".into();
+             // The chat id already starts with `derm-` (SB2: not `derm-derm-`),
+             // and sbx refuses an underscore a `--chat` id may hold (lane T).
+@@ -425,12 +437,12 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
+             for n in names {
+                 args.extend(["-e".to_string(), n.to_string()]);
+             }
+-            let k = i.args.kit.clone().or(sbx.kit.map(str::to_string));
++            let k = i.args.kit.clone().or(sbx.kit.clone());
+             if let Some(k) = &k {
+                 args.extend(["--kit".to_string(), k.clone()]);
+             }
+             kit = k;
+-            args.push(sbx.agent.into());
++            args.push(sbx.agent.clone());
+             args.push(i.cwd.clone());
+             if !i.args.rest.is_empty() || !launch_args.is_empty() {
+                 args.push("--".into());
+@@ -1155,11 +1167,60 @@ mod tests {
+         let args = a(&["codex", "--boundary", "sbx", "--", "--yolo"]);
+         let p = build(&inputs(&args)).unwrap();
+         assert!(p.args.windows(2).any(|w| w == ["-e", "DERM_FULL_ACCESS"]));
+-        let args = a(&["codex", "--boundary", "sbx"]);
++        // OpenCode's kit adds no such word (request T-5: the codex kit
++        // itself starts Codex in full access, so it is no longer the case
++        // to check this with).
++        let args = a(&["opencode", "--boundary", "sbx"]);
+         let p = build(&inputs(&args)).unwrap();
+         assert!(!p.args.iter().any(|x| x == "DERM_FULL_ACCESS"));
+     }
+ 
++    /// Request T-5, case 83 under sbx: the kit's own full-access words are
++    /// the chat's too, whatever the command line says, so the gate gets the
++    /// hint and the record names them. Under srt and none they are not the
++    /// kit's to add, and a kit named with --kit is the user's.
++    #[test]
++    fn a_kits_own_full_access_words_set_the_hint_under_sbx() {
++        for (harness, words) in [
++            ("claude-code", vec!["--dangerously-skip-permissions"]),
++            ("codex", vec!["--dangerously-bypass-approvals-and-sandbox"]),
++            ("gemini", vec!["--yolo"]),
++            ("kiro", vec!["--trust-all-tools"]),
++            ("amp", vec!["--dangerously-allow-all"]),
++        ] {
++            let args = a(&[harness, "--boundary", "sbx"]);
++            let p = build(&inputs(&args)).unwrap();
++            assert_eq!(p.full_access, words, "{harness}");
++            assert_eq!(env(&p, "DERM_FULL_ACCESS"), Some("1"), "{harness}");
++            assert!(
++                p.args.windows(2).any(|w| w == ["-e", "DERM_FULL_ACCESS"]),
++                "{harness}"
++            );
++            // The same word on the command line is not counted twice.
++            let args = a(&[harness, "--boundary", "sbx", "--", words[0]]);
++            assert_eq!(
++                build(&inputs(&args)).unwrap().full_access,
++                words,
++                "{harness}"
++            );
++            for b in ["srt", "none"] {
++                let args = a(&[harness, "--boundary", b]);
++                let p = build(&inputs(&args)).unwrap();
++                assert!(p.full_access.is_empty(), "{harness} {b}");
++                assert_eq!(env(&p, "DERM_FULL_ACCESS"), None, "{harness} {b}");
++            }
++        }
++        for harness in ["pi", "opencode", "droid"] {
++            let args = a(&[harness, "--boundary", "sbx"]);
++            assert!(
++                build(&inputs(&args)).unwrap().full_access.is_empty(),
++                "{harness}"
++            );
++        }
++        let args = a(&["claude-code", "--boundary", "sbx", "--kit", "./my-kit"]);
++        assert!(build(&inputs(&args)).unwrap().full_access.is_empty());
++    }
++
+     #[test]
+     fn goose_inherits_auto_as_full_access_and_gets_approve_when_the_policy_asks() {
+         let args = a(&["goose", "--boundary", "none", "--", "run", "-t", "x"]);

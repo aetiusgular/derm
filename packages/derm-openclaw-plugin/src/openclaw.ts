@@ -23,7 +23,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { redactValue } from "./core/redact.ts";
 import { narrowForControl } from "./control.ts";
@@ -119,6 +119,7 @@ export async function beforeToolCall(event: BeforeEvent, ctx: BeforeCtx, deps: D
       summary: `${answer.normalizedTool} ${action === "approval" ? "ask" : action}`,
       detail: { tool: answer.normalizedTool, decision: action === "approval" ? "ask" : action, policyAction: answer.action, reason, redacted: answer.redacted, ...(id ? { toolUseId: id } : {}) },
     });
+    for (const e of installEvents(call, answer, action === "approval" ? "ask" : action, chat ?? "")) await deps.postEvent(e);
     if (action === "deny") return block(reason);
     if (action === "approval") {
       return {

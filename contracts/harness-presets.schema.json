@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/aetiusgular/derm/contracts/harness-presets.schema.json",
   "title": "derm harness presets",
-  "description": "The preset table, assembled from one file per agent in crates/derm-cli/src/connect/presets/ (index.json names the lists and their order; integration w2). `harnesses` are the rows derm connect writes for (lane C's fields, not all listed here); `planned` are agents derm does not cover yet. Every row carries `coverage` (integration w1, note AQ section 4).",
+  "description": "The preset table, assembled from one file per agent in crates/derm-cli/src/connect/presets/ (index.json names the lists and their order; integration w2). `harnesses` are the rows derm connect writes for (lane C's fields, not all listed here); `planned` are agents derm does not cover yet. Every row carries `coverage` (integration w1, note AQ section 4). Wave 5 (the wave 5 base): `tap`, `kit` and `executables` are merged into rows from the sibling tables in presets/wave5/, one lane's each (S, T, W).",
   "type": "object",
   "required": ["version", "harnesses", "planned"],
   "properties": {
@@ -14,6 +14,44 @@
   "additionalProperties": false,
   "$defs": {
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "tap": {
+      "description": "How derm run points the agent at the model tap, in its launch environment only (wave 5 lane S; rules cases 113, 116, 127). `via`: `env` sets the variable `name`; `codex-provider` passes a `-c model_providers...` override with `requires_openai_auth = true`; `none` when the agent takes no model base URL, so `intent` says where intent comes from (hooks for Cursor, note AS). null until verified.",
+      "type": ["object", "null"],
+      "required": ["via", "api", "verifiedAt"],
+      "properties": {
+        "via": { "enum": ["env", "codex-provider", "none"] },
+        "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
+        "api": { "type": "array", "items": { "enum": ["anthropic-messages", "openai-responses", "openai-responses-ws", "openai-chat", "gemini"] } },
+        "intent": { "enum": ["tap", "hooks", "none"] },
+        "verifiedAt": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "kit": {
+      "description": "The sbx kit derm run --boundary sbx passes for the agent (wave 5 lane T; note AM section B.3), as the sbx smoke test found it accepted. `from`: `sbx` for sbx's own kits, `sbx-kits-contrib` for the contributed ones. null where sbx has no kit for the agent.",
+      "type": ["object", "null"],
+      "required": ["name", "from", "verifiedAt"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "from": { "enum": ["sbx", "sbx-kits-contrib"] },
+        "fullAccess": {
+          "description": "The words the kit's own entrypoint or default command adds that turn the agent's approvals off (rules case 83), a flag or a flag and its value, as the kit's spec.yaml gives them. derm run adds them to the chat's full-access record and sets DERM_FULL_ACCESS=1 under sbx. An empty list: none in the entrypoint (settings files the kit writes are not read). Lane T's request T-5.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "maxItems": 8
+        },
+        "verifiedAt": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "executables": {
+      "description": "The agent's executable names (bare names, no path), for the unregistered-agent flag (rules case 122) and the PATH shims derm setup writes (wave 5 lane W).",
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$" },
+      "uniqueItems": true
+    },
     "harness": {
       "type": "object",
       "required": ["id", "name", "cli", "configFiles", "format", "write", "verified", "sources", "coverage"],
@@ -26,6 +64,9 @@
         "write": { "enum": ["write", "print"] },
         "verified": { "type": "string", "pattern": "^2026-" },
         "sources": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "tap": { "$ref": "#/$defs/tap" },
+        "kit": { "$ref": "#/$defs/kit" },
+        "executables": { "$ref": "#/$defs/executables" },
         "coverage": { "$ref": "#/$defs/coverage" }
       }
     },
@@ -39,6 +80,9 @@
         "mcpFile": { "type": "string" },
         "toolNameForm": { "type": "string" },
         "verified": { "const": "TODO" },
+        "tap": { "$ref": "#/$defs/tap" },
+        "kit": { "$ref": "#/$defs/kit" },
+        "executables": { "$ref": "#/$defs/executables" },
         "coverage": { "$ref": "#/$defs/coverage" }
       },
       "additionalProperties": false

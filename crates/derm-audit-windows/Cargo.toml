@@ -1,0 +1,23 @@
+# Wave 5 lane Z's crate (scaffolded by the wave 5 base,
+# plans/parallel_build_tk.md section 7c): the Windows effect feed. Lane Z
+# owns this whole folder, its manifest included, and pins every dependency to
+# an exact version with a reason in its status doc.
+
+[package]
+name = "derm-audit-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Windows OS feed: process, file and network events to daemon events (lane Z)"
+
+[dependencies]
+derm-core = { path = "../derm-core" }
+# The daemon's event shape (`derm_core::event::Event`) carries `detail` as JSON.
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The event log reader (`reader.rs`): EvtQuery, EvtNext, EvtRender. The same
+# windows-sys as derm-core (=0.61.2, already in Cargo.lock).
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_EventLog"] }

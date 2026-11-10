@@ -18,6 +18,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -78,7 +79,7 @@ pub fn read_current(path: &Path) -> Result<Current, String> {
             Ok(Current {
                 sha256: sha256_hex(&bytes),
                 bytes: Some(bytes),
-                mode: meta.mode() & 0o777,
+                mode: mode_of(&meta),
             })
         }
     }
@@ -124,6 +125,7 @@ fn now_ms() -> u128 {
         .map_or(0, |d| d.as_millis())
 }
 
+#[cfg(unix)]
 fn make_private_dir(dir: &Path) -> Result<(), String> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -132,17 +134,41 @@ fn make_private_dir(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
+/// Windows (lane Z): the folder is made, its DACL inherited (a harness's
+/// own config folder is not narrowed under it).
+#[cfg(windows)]
+fn make_private_dir(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
+}
+
+/// A file's Unix mode, kept across a rewrite.
+#[cfg(unix)]
+fn mode_of(meta: &fs::Metadata) -> u32 {
+    meta.mode() & 0o777
+}
+
+/// Windows has no mode: the new file takes its folder's inherited DACL
+/// (lane Z; the old file's own DACL is not carried over).
+#[cfg(windows)]
+fn mode_of(_meta: &fs::Metadata) -> u32 {
+    0o600
+}
+
 /// Copies the old bytes to `backups/<harness>-<ms>-<file name>`, mode 0600.
 fn backup(backups: &Path, harness: &str, path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     make_private_dir(backups)?;
+    // Windows (lane Z): derm's own backups folder, user-only.
+    #[cfg(windows)]
+    derm_core::platform::private_dir(backups).map_err(|e| format!("{}: {e}", backups.display()))?;
     let base = path
         .file_name()
         .map_or("config".into(), |n| n.to_string_lossy().into_owned());
     let dest = backups.join(format!("{harness}-{}-{base}", now_ms()));
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut f = options
         .open(&dest)
         .map_err(|e| format!("backup {}: {e}", dest.display()))?;
     f.write_all(bytes)
@@ -204,13 +230,15 @@ pub fn commit(
         .into_owned();
     let tmp = parent.join(format!(".{name}.derm-{}.tmp", std::process::id()));
     let result = (|| -> Result<(), String> {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(now.mode)
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(now.mode);
+        let mut f = options
             .open(&tmp)
             .map_err(|e| format!("{}: {e}", tmp.display()))?;
         // `mode` is filtered by the umask; set it exactly.
+        #[cfg(unix)]
         f.set_permissions(fs::Permissions::from_mode(now.mode))
             .map_err(|e| e.to_string())?;
         f.write_all(new_text.as_bytes())
@@ -266,6 +294,7 @@ pub(crate) mod tests {
         assert_eq!(c.text().unwrap(), "");
     }
 
+    #[cfg(unix)]
     #[test]
     fn writes_after_yes_keeps_the_mode_and_backs_up() {
         let d = scratch("write");
@@ -295,6 +324,7 @@ pub(crate) mod tests {
         assert_eq!(fs::read_dir(&d).unwrap().count(), 2);
     }
 
+    #[cfg(unix)]
     #[test]
     fn new_file_and_folders_are_private() {
         let d = scratch("new");
@@ -358,6 +388,7 @@ pub(crate) mod tests {
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"other\": 1}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_and_folders_are_refused() {
         let d = scratch("link");

@@ -202,7 +202,16 @@ fn records_before_run_start_are_replayed_when_it_arrives() {
 }
 
 #[test]
-fn a_chat_cannot_stop_its_own_feed_while_its_root_runs() {
+fn a_run_record_is_taken_as_it_comes_since_only_the_daemon_scope_posts_one() {
+    // Spec change, fp13's review FP13R-6: until then this test held that a
+    // `run.stop` whose root still ran was refused and that another chat could
+    // not take a live root's pid, on the reading that a chat token could post
+    // `run` records. It cannot: `contracts/daemon-protocol.md` rule 2, and
+    // `op_event` refuses them (`derm-daemon/src/daemon.rs`, "a chat token
+    // posts only adapter and otel events"). With the pid reused, the refusal
+    // kept a stopped chat on a live chat's pid. Under `--boundary none` the
+    // daemon token is the agent's too (FP13RR-8); the refusal never closed
+    // that.
     let mut f = Feed::new(HOME, None);
     f.register(root());
     let stop = Event {
@@ -217,19 +226,19 @@ fn a_chat_cannot_stop_its_own_feed_while_its_root_runs() {
         pid: None,
         approval_id: None,
     };
+    // The stop takes even while the pid answers (a reused pid looks alive).
+    // The chat is kept until the log the feed reads passes the stop
+    // (BW5R4-2): nothing is read here.
     f.on_daemon_event(&stop, &|pid| pid == 1031);
-    assert_eq!(f.refused(), 1);
-    assert!(f.tracker().root(1031).is_some());
-    // Another chat cannot take the root's pid while it runs.
-    let mut steal = stop.clone();
-    steal.chat_id = "chat-2".into();
-    steal.kind = "run.start".into();
-    steal.pid = Some(1031);
-    f.on_daemon_event(&steal, &|pid| pid == 1031);
-    assert_eq!(f.tracker().root(1031).unwrap().chat, "chat-1");
-    // Once the root has exited, the stop takes.
-    f.on_daemon_event(&stop, &|_| false);
-    assert!(f.tracker().root(1031).is_none());
+    assert!(f.tracker().root(1031).is_some_and(|r| r.stopped));
+    // A later start on the same pid is the next chat's.
+    let mut next = stop.clone();
+    next.chat_id = "chat-2".into();
+    next.kind = "run.start".into();
+    next.pid = Some(1031);
+    f.on_daemon_event(&next, &|pid| pid == 1031);
+    let r = f.tracker().root(1031).unwrap();
+    assert_eq!((r.chat.as_str(), r.stopped), ("chat-2", false));
 }
 
 #[test]
@@ -241,4 +250,199 @@ fn a_cut_log_never_panics() {
         text.push_str("\ntype=SYSCALL msg=audit(1793114339.775:");
         let _ = parse_for_root(&text, root(), HOME);
     }
+}
+
+/// BW5R4-1, as changed by fp13's re-review (FP13RR-2, spec change): a feed
+/// that reads the log again from its beginning after a gap skips nothing.
+/// Fix pass 13 skipped events stamped before the kept place, and fp13's
+/// review clamped that floor (FP13R-13); but the kernel stamps the time at a
+/// syscall's entry and takes the serial when it writes the record
+/// (`kernel/auditsc.c:2021, 2498`), so a call that blocked is written after
+/// events stamped later, and a floor by stamp dropped it for good (run on
+/// the cloud's auditd: an `open` of a FIFO blocked 3 s was serial 65512
+/// stamped 867.742, after serial 65508 stamped 870.746). What the last run
+/// posted is posted again under the same ids, which the daemon keeps once
+/// and passes to the join once (FP13RR-7).
+#[test]
+fn fp13rr_2_a_reread_after_a_gap_skips_nothing_and_reposts_the_same_ids() {
+    let all = parse_for_root(ENRICHED, root(), HOME);
+    let mut f = Feed::new(HOME, None);
+    let mut out = f.register(root());
+    for line in ENRICHED.split('\n') {
+        out.extend(f.push_line(line));
+    }
+    out.extend(f.flush());
+    assert!(!all.is_empty());
+    assert_eq!(out, all);
+}
+
+/// BW5R4-2 (box test w5, retest 4, on `8caaf00`): with the feed behind (paused
+/// 40 s on the box), it read the daemon's `run.start` and `run.stop` before
+/// the chat's audit lines, the stop dropped the chat (its processes had
+/// exited), and every line after went unplaced: 0 OS records for the chat.
+/// The lines stamped before the stop are still the chat's.
+#[test]
+fn bw5r4_2_lines_read_after_the_chats_stop_are_still_placed() {
+    let early = parse_for_root(ENRICHED, root(), HOME);
+    let mut f = Feed::new(HOME, None);
+    let start = Event {
+        id: "run-1".into(),
+        at: 1_793_114_339_700,
+        chat_id: "chat-1".into(),
+        harness: "pi".into(),
+        source: Source::Run,
+        kind: "run.start".into(),
+        summary: "pi under none".into(),
+        detail: serde_json::json!({"folders": ["/home/ubuntu/proj"], "stateDirs": ["/home/ubuntu/.pi/agent"]}),
+        pid: Some(1031),
+        approval_id: None,
+    };
+    let mut stop = start.clone();
+    stop.id = "run-2".into();
+    stop.kind = "run.stop".into();
+    // The last line of the log is stamped 1793114340.851.
+    stop.at = 1_793_114_340_900;
+    stop.detail = Value::Null;
+    stop.pid = None;
+    let mut late = f.on_daemon_event(&start, &|_| false);
+    late.extend(f.on_daemon_event(&stop, &|_| false));
+    for line in ENRICHED.split('\n') {
+        late.extend(f.push_line(line));
+    }
+    late.extend(f.flush());
+    assert_eq!(late, early);
+}
+
+// ---- fp13 security review probes ----
+
+fn run_ev(id: &str, kind: &str, chat: &str, pid: Option<u32>, at: i64) -> Event {
+    Event {
+        id: id.into(),
+        at,
+        chat_id: chat.into(),
+        harness: "pi".into(),
+        source: Source::Run,
+        kind: kind.into(),
+        summary: String::new(),
+        detail: serde_json::json!({"folders": ["/home/ubuntu/proj"]}),
+        pid,
+        approval_id: None,
+    }
+}
+
+/// FP13R-3 (fp13's review): the binary kept its place whenever no event was
+/// open, while the events read before the chat's `run.start` reached the
+/// feed waited unposted in the tracker: a restart then never read them. The
+/// place now stays at the first line of the oldest unposted event, and
+/// moves past them once they are posted.
+#[test]
+fn fp13r_3_the_place_does_not_pass_events_waiting_for_their_run_start() {
+    use derm_audit_linux::resume::Places;
+    let mut f = Feed::new(HOME, None);
+    let mut places = Places::new();
+    let mut out = Vec::new();
+    let mut at = 0u64;
+    for line in ENRICHED.split('\n') {
+        let end = at + line.len() as u64 + 1;
+        out.extend(f.push_line(line));
+        let key = derm_audit_linux::record::parse_line(line).map(|r| r.event_key());
+        places.note(1, 7, at, end, key, f.last_line_own());
+        at = end;
+    }
+    // Every event is complete, none is posted: the chat's run.start has not
+    // reached the feed.
+    assert!(out.is_empty());
+    assert!(f.tracker().pending_len() > 0);
+    let place = places.place(&f.unposted()).unwrap();
+    assert!(
+        place.offset < at,
+        "the place passed {} unposted actions",
+        f.tracker().pending_len()
+    );
+    // The first waiting event's first line is the place.
+    let first = ENRICHED
+        .split('\n')
+        .scan(0u64, |o, l| {
+            let s = *o;
+            *o += l.len() as u64 + 1;
+            Some((s, l))
+        })
+        .find(|(_, l)| {
+            derm_audit_linux::record::parse_line(l)
+                .is_some_and(|r| f.unposted().contains(&r.event_key()))
+        })
+        .map(|(s, _)| s);
+    assert_eq!(Some(place.offset), first);
+    // Once the chat starts, what waited is posted and the place moves on.
+    out.extend(f.register(root()));
+    out.extend(f.flush());
+    assert!(!out.is_empty());
+    let unplaced: std::collections::HashSet<(i64, u64)> = f.unposted();
+    let place = places.place(&unplaced).unwrap();
+    assert!(place.offset > first.unwrap());
+}
+
+/// FP13R-12: a single-record event (no PROCTITLE, no EOE in the ENRICHED
+/// log: USER_ACCT, CRED_ACQ, SERVICE_START...) stays open until 16 more
+/// events open or the log is quiet half a second, so on a busy log the
+/// place is never kept (ausearch(8) 4.1.2 counts a single-record event as
+/// complete at once).
+#[test]
+fn fp13r_12_a_single_record_event_keeps_the_place_from_moving() {
+    let mut f = Feed::new(HOME, None);
+    f.push_line("type=USER_ACCT msg=audit(1793114339.000:900): pid=1 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:accounting acct=\"root\" exe=\"/usr/sbin/cron\" hostname=? addr=? terminal=cron res=success'");
+    for line in ENRICHED.split('\n') {
+        f.push_line(line);
+    }
+    assert_eq!(
+        f.open_events(),
+        0,
+        "the USER_ACCT event is still open after a whole log of syscall events"
+    );
+}
+
+/// FP13R-6: a feed restart replays the 24 h backlog. A stopped chat's
+/// `run.stop` is refused when its root pid is alive again (reused), so the
+/// old chat holds the pid for good, and the live chat that now has that pid
+/// is refused at its `run.start`: its processes are credited to the old one.
+#[test]
+fn fp13r_6_a_replayed_stop_with_a_reused_pid_credits_the_live_chat_to_the_old() {
+    let mut f = Feed::new(HOME, None);
+    // pid 1031 is alive now: the new chat's root.
+    let alive = |pid: u32| pid == 1031;
+    f.on_daemon_event(
+        &run_ev("r1", "run.start", "chat-old", Some(1031), 1),
+        &alive,
+    );
+    f.on_daemon_event(&run_ev("r2", "run.stop", "chat-old", None, 2), &alive);
+    f.on_daemon_event(&run_ev("r3", "run.start", "chat-1", Some(1031), 3), &alive);
+    let mut out = Vec::new();
+    for line in ENRICHED.split('\n') {
+        out.extend(f.push_line(line));
+    }
+    out.extend(f.flush());
+    assert!(!out.is_empty());
+    let chats: std::collections::BTreeSet<&str> = out.iter().map(|e| e.chat_id.as_str()).collect();
+    assert_eq!(chats.into_iter().collect::<Vec<_>>(), vec!["chat-1"]);
+}
+
+/// FP13RR-1 (fp13's re-review): the derm rules record every process of the
+/// user, so the feed read its own place saves; they waited for a chat, moved
+/// the kept place, and the feed saved again, about once a second (413 KB of
+/// audit log a minute on the cloud's auditd, all the feed's). Its own
+/// records are dropped and marked, so they neither wait nor move the place.
+#[test]
+fn fp13rr_1_the_feeds_own_records_neither_wait_nor_count() {
+    let save = "type=SYSCALL msg=audit(1793114339.900:777): arch=c000003e syscall=82 success=yes exit=0 a0=1 a1=2 a2=3 a3=4 items=4 ppid=1 pid=4242 auid=1000 uid=1000 gid=1000 euid=1000 suid=1000 fsuid=1000 egid=1000 sgid=1000 fsgid=1000 tty=(none) ses=1 comm=\"derm-audit-feed\" exe=\"/home/ubuntu/.local/bin/derm-audit-feed\" subj=unconfined key=\"derm_write\"\ntype=PATH msg=audit(1793114339.900:777): item=0 name=\"/home/ubuntu/.local/share/derm/audit-feed.pos\" inode=9 dev=fe:00 mode=0100600 ouid=1000 ogid=1000 rdev=00:00 nametype=CREATE cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0\ntype=PROCTITLE msg=audit(1793114339.900:777): proctitle=6465726D";
+    let mut f = Feed::new(HOME, None);
+    f.set_own_pid(4242);
+    let mut out = Vec::new();
+    for line in save.split('\n') {
+        out.extend(f.push_line(line));
+        assert!(f.last_line_own(), "{line}");
+    }
+    out.extend(f.flush());
+    assert!(out.is_empty());
+    assert_eq!(f.tracker().pending_len(), 0);
+    assert!(f.unposted().is_empty());
 }

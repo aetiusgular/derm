@@ -14,7 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
+import { decideCall, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { redactValue } from "./core/redact.ts";
 
@@ -99,6 +99,7 @@ export async function handlePre(input: Record<string, unknown>, deps: Deps): Pro
       ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
     },
   });
+  for (const e of installEvents(call, answer, final.decision, chat ?? "")) await deps.postEvent(e);
   const updated = final.decision === "deny" ? undefined : answer.updatedInput;
   return preOutput(final.decision, final.reason, updated);
 }

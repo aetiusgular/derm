@@ -31,12 +31,24 @@ const targets = [
 ].map((p) => path.join(here, "..", "..", p, "src", "core"));
 const check = process.argv.includes("--check");
 
-// Tests stay with the canonical copy.
-const files = readdirSync(source).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).sort();
+// Tests stay with the canonical copy. Subfolders the core holds whole are
+// listed here: `installs/` is wave 5 lane X's seam (the wave 5 base), copied
+// like the core's own files.
+const SUBFOLDERS = ["installs"];
+const tsIn = (dir) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".ts")) : []);
+const files = [
+  ...tsIn(source),
+  ...SUBFOLDERS.flatMap((d) => tsIn(path.join(source, d)).map((f) => path.join(d, f))),
+]
+  .filter((f) => !f.endsWith(".test.ts"))
+  .sort();
 let differences = 0;
 for (const target of targets) {
-  if (!check) mkdirSync(target, { recursive: true });
-  const present = existsSync(target) ? readdirSync(target).filter((f) => f.endsWith(".ts")) : [];
+  if (!check) {
+    mkdirSync(target, { recursive: true });
+    for (const d of SUBFOLDERS) mkdirSync(path.join(target, d), { recursive: true });
+  }
+  const present = [...tsIn(target), ...SUBFOLDERS.flatMap((d) => tsIn(path.join(target, d)).map((f) => path.join(d, f)))];
   for (const extra of present.filter((f) => !files.includes(f))) {
     differences++;
     if (check) console.error(`extra: ${path.join(target, extra)}`);

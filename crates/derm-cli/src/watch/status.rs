@@ -85,7 +85,7 @@ impl Env {
             "OPENCODE_CONFIG_DIR",
         ];
         Env {
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            home: derm_core::runtime::home_dir(),
             path: std::env::var("PATH").unwrap_or_default(),
             vars: keep
                 .iter()
@@ -191,6 +191,7 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
 /// The last `derm doctor` report for an agent, as `derm status` shows it:
 /// when, which versions, and how many things it found to look at. Read only
 /// from a regular file of yours under 64 KiB; anything else is not shown.
+#[cfg(unix)]
 fn last_doctor(path: &Path) -> Option<Value> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -203,8 +204,7 @@ fn last_doctor(path: &Path) -> Option<Value> {
         .open(path)
         .ok()?;
     let m = f.metadata().ok()?;
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     if !m.file_type().is_file() || m.len() > 64 * 1024 || m.uid() != uid {
         return None;
     }
@@ -226,6 +226,19 @@ fn last_doctor(path: &Path) -> Option<Value> {
     }))
 }
 
+/// Windows (lane Z): a private file of yours, checked on the open handle.
+#[cfg(windows)]
+fn last_doctor(path: &Path) -> Option<Value> {
+    use std::io::Read;
+    let f = derm_core::platform::windows::open_private_file(path).ok()?;
+    if f.metadata().ok()?.len() > 64 * 1024 {
+        return None;
+    }
+    let mut text = String::new();
+    f.take(64 * 1024).read_to_string(&mut text).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 /// A program name with no folder part: what a row's `cli` must be.
 fn plain_name(c: &str) -> bool {
     !c.contains('/') && !c.starts_with('-') && c.bytes().all(|b| b.is_ascii_graphic())
@@ -234,6 +247,7 @@ fn plain_name(c: &str) -> bool {
 /// The first `<dir>/<name>` on PATH that is a regular file with an execute
 /// bit, in an absolute folder. A relative PATH entry (`.`, empty) is
 /// skipped: it names whatever folder `derm status` runs in.
+#[cfg(unix)]
 pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     for dir in path.split(':') {
@@ -248,6 +262,17 @@ pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Windows (lane Z): absolute PATH entries split on `;`, the name tried with
+/// Windows' program extensions.
+#[cfg(windows)]
+pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
+    let absolute: Vec<&str> = path
+        .split(';')
+        .filter(|d| !d.is_empty() && Path::new(d).is_absolute())
+        .collect();
+    crate::platform::windows::shim::find_program(name, Some(&absolute.join(";")), &|p| p.is_file())
 }
 
 /// `<program> --version`, argv only, stdin closed, a clean environment but
@@ -400,13 +425,16 @@ pub fn daemon_state(socket: &Path) -> Value {
         .and_then(|r| r.get("report").cloned());
     // The daemon's own list of running chats (box test w2, BW3), else, from
     // a daemon before it, the tail's backlog.
-    let chats = match report
+    let (chats, chats_from) = match report
         .as_ref()
         .and_then(|r| r.get("running"))
         .and_then(Value::as_array)
     {
-        Some(rows) => Value::Array(rows.iter().map(running_row).collect()),
-        None => running_chats(socket, now),
+        Some(rows) => (
+            Value::Array(rows.iter().map(running_row).collect()),
+            "report",
+        ),
+        None => (running_chats(socket, now), "tail"),
     };
     json!({
         "running": true,
@@ -421,6 +449,39 @@ pub fn daemon_state(socket: &Path) -> Value {
             "collectorReachable": r.get("check").and_then(|c| c.get("collectorReachable")),
         })),
         "chats": chats,
+        // Where the list came from: the daemon's own list, or, when its
+        // report did not answer, the tail's backlog (box test w5, BW5-16).
+        "chatsFrom": chats_from,
+    })
+}
+
+/// One running chat from its `run.start` in the tail's backlog, with what
+/// the daemon's own list would keep (box test w5, BW5-16).
+fn tail_row(e: &Value) -> Value {
+    let pid = e.get("pid").and_then(Value::as_u64).map(|p| p as u32);
+    let d = e.get("detail").cloned().unwrap_or(Value::Null);
+    // What the chat's run.start said, as the daemon's list keeps it
+    // (box test w5, BW5-16: a chat as the agents' user read as
+    // "runs as you" when this fallback dropped it).
+    let user = d
+        .get("agentUser")
+        .and_then(|u| u.get("user"))
+        .and_then(Value::as_str)
+        .map(|u| u.chars().take(32).collect::<String>());
+    json!({
+        "chat": e.get("chatId"),
+        "harness": e.get("harness"),
+        "boundary": d.get("boundary"),
+        "since": e.get("at"),
+        "pid": pid,
+        "alive": pid.map(alive),
+        "fullAccessFlags": d.get("dangerousFlags"),
+        "agentUser": user,
+        "boundaryChoice": d.get("boundaryChoice"),
+        "ioUring": d.get("ioUring"),
+        "sbxKit": d.get("sbxKit"),
+        "tap": d.get("tap"),
+        "content": d.get("content"),
     })
 }
 
@@ -435,7 +496,76 @@ fn running_row(r: &Value) -> Value {
         "pid": r.get("pid"),
         "alive": r.get("alive"),
         "fullAccessFlags": r.get("fullAccessFlags"),
+        // Wave 5 (integration w5's close): what the chat's run.start said.
+        "agentUser": r.get("agentUser"),
+        "boundaryChoice": r.get("boundaryChoice"),
+        "ioUring": r.get("ioUring"),
+        "sbxKit": r.get("sbxKit"),
+        "tap": r.get("tap"),
+        "content": r.get("content"),
     })
+}
+
+/// How a running chat runs, in a few words each (integration w5's close:
+/// lane T's T-7, lane V's V-4, lane S's request 7, lane T's P4-R4): who it
+/// runs as, the sbx VM's gate, io_uring (case 128), the tap (case 127),
+/// content capture, and how the boundary was chosen (case 129).
+fn chat_marks(c: &Value) -> Vec<String> {
+    fn s(v: Option<&Value>) -> &str {
+        v.and_then(Value::as_str).unwrap_or("")
+    }
+    let mut out = Vec::new();
+    let boundary = s(c.get("boundary"));
+    let user = s(c.get("agentUser"));
+    if !user.is_empty() {
+        out.push(format!("as the agents' user {}", clean(user, 32)));
+    } else if boundary == "none" {
+        out.push("runs as you".into());
+    }
+    if boundary == "sbx" {
+        // Only Claude Code has derm's kit (P4-R3: run.start does not yet say
+        // whether the kit went on; the start line does).
+        let added = c
+            .get("sbxKit")
+            .and_then(|k| k.get("added"))
+            .and_then(Value::as_bool);
+        out.push(match added {
+            Some(true) => "derm's gate in the VM through its kit".into(),
+            Some(false) => "no derm gate in the VM".into(),
+            // A daemon or a derm run from before P4-R3: only Claude Code
+            // gets the kit, and the start line said whether it did.
+            None if s(c.get("harness")) == "claude-code" => {
+                "derm's gate in the VM through its kit, unless the start line said otherwise".into()
+            }
+            None => "no derm gate in the VM".into(),
+        });
+    }
+    if s(c.get("ioUring")) == "not-audited" {
+        out.push("io_uring not audited".into());
+    }
+    if let Some(tap) = c.get("tap").filter(|t| t.is_object()) {
+        if tap.get("on").and_then(Value::as_bool) == Some(false) {
+            let why = s(tap.get("reason"));
+            out.push(if why.is_empty() {
+                "untapped".into()
+            } else {
+                format!("untapped ({})", clean(why, 32))
+            });
+        }
+    }
+    if let Some(ct) = c.get("content").filter(|t| t.is_object()) {
+        if ct.get("on").and_then(Value::as_bool) == Some(true) {
+            let days = ct.get("retentionDays").and_then(Value::as_u64).unwrap_or(0);
+            out.push(format!("content kept {days} days"));
+        }
+    }
+    let choice = c.get("boundaryChoice");
+    match s(choice.and_then(|b| b.get("answeredBy"))) {
+        "terminal" if boundary == "none" => out.push("no boundary, chosen at a terminal".into()),
+        "pre-answer" => out.push("started by your pre-answer".into()),
+        _ => {}
+    }
+    out
 }
 
 /// For a daemon without `report.running`: chats with a `run.start` in the
@@ -477,30 +607,25 @@ pub fn running_chats(socket: &Path, now: i64) -> Value {
             let c = e.get("chatId").and_then(Value::as_str).unwrap_or("");
             !stopped.iter().any(|s| s == c)
         })
-        .map(|e| {
-            let pid = e.get("pid").and_then(Value::as_u64).map(|p| p as u32);
-            let d = e.get("detail").cloned().unwrap_or(Value::Null);
-            json!({
-                "chat": e.get("chatId"),
-                "harness": e.get("harness"),
-                "boundary": d.get("boundary"),
-                "since": e.get("at"),
-                "pid": pid,
-                "alive": pid.map(alive),
-                "fullAccessFlags": d.get("dangerousFlags"),
-            })
-        })
+        .map(|e| tail_row(&e))
         .collect();
     Value::Array(rows)
 }
 
 /// Whether `pid` still runs. A pid can be reused after an exit, so this
 /// is a hint, said as one.
+#[cfg(unix)]
 fn alive(pid: u32) -> bool {
     // SAFETY: kill with signal 0 only checks that the process exists and
     // that we may signal it.
     let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Windows (lane Z): the process can be opened and has not ended.
+#[cfg(windows)]
+fn alive(pid: u32) -> bool {
+    derm_core::platform::peer::start_time(pid).is_some()
 }
 
 pub fn render(rows: &[Value], daemon: &Value) -> String {
@@ -717,11 +842,19 @@ fn render_daemon(d: &Value) -> String {
     match d.get("chats").and_then(Value::as_array) {
         Some(chats) if !chats.is_empty() => {
             out.push_str("  chats started by derm run and not stopped:\n");
+            if d.get("chatsFrom").and_then(Value::as_str) == Some("tail") {
+                out.push_str("    (read from the event log's tail: the daemon's report did not answer; older chats may be missing)\n");
+            }
             for c in chats {
                 let s = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
                 let alive = match c.get("alive").and_then(Value::as_bool) {
                     Some(true) => "running",
-                    Some(false) => "gone, no run.stop",
+                    // MW5-39: the daemon checks the harness's pid; `derm run`
+                    // posts `run.stop` only after it removed an sbx sandbox,
+                    // stopped its companion and gave its filter 500 ms.
+                    Some(false) => {
+                        "harness exited, no run.stop yet (derm run may still be removing its sandbox, or was killed)"
+                    }
                     None => "pid unknown",
                 };
                 // Case 83: the words, so you see which agent's approvals
@@ -748,14 +881,21 @@ fn render_daemon(d: &Value) -> String {
                     )
                 };
                 let full = full_text.as_str();
+                let marks = chat_marks(c);
+                let marks = if marks.is_empty() {
+                    String::new()
+                } else {
+                    format!("; {}", marks.join(", "))
+                };
                 out.push_str(&format!(
-                    "    {}  {:<12} boundary {:<5} since {}  {}{}\n",
+                    "    {}  {:<12} boundary {:<5} since {}  {}{}{}\n",
                     clean(s("chat"), 24),
                     clean(s("harness"), 12),
                     clean(s("boundary"), 5),
                     clock(c.get("since").and_then(Value::as_i64).unwrap_or(0)),
                     alive,
-                    full
+                    full,
+                    marks
                 ));
             }
         }
@@ -799,11 +939,84 @@ mod tests {
         assert!(!out.contains('\u{1b}'), "{out}");
     }
 
+    /// Integration w5's close (T-7, V-4, request S-7, P4-R4): each running
+    /// chat says how it runs: as you with no boundary, as the agents' user,
+    /// with no derm gate in an sbx VM, io_uring not audited, untapped, and
+    /// content kept, from the daemon's `report.running` (cases 127 to 129).
+    /// Box test w5, BW5-16: from the tail's backlog (the daemon's report
+    /// did not answer), a chat as the agents' user read "runs as you". The
+    /// row keeps what run.start said, and the list says where it came from.
+    #[test]
+    fn a_chat_read_from_the_tail_keeps_its_agents_user_and_marks() {
+        let ev = serde_json::json!({"chatId": "vb3b", "harness": "pi", "at": 1_700_000_000_000i64,
+            "pid": 1, "source": "run", "kind": "run.start",
+            "detail": {"boundary": "none", "runsAs": "derm-agent",
+                "agentUser": {"how": "sudo", "uid": 997, "user": "derm-agent"},
+                "ioUring": "not-audited", "tap": {"on": false, "reason": "no-base-url"}}});
+        let row = tail_row(&ev);
+        assert_eq!(row["agentUser"], "derm-agent", "{row}");
+        let t = render_daemon(&serde_json::json!({"running": true,
+            "daemon": {"version": "0.1.3", "protocol": 1}, "chats": [row], "chatsFrom": "tail"}));
+        assert!(t.contains("as the agents' user derm-agent"), "{t}");
+        assert!(!t.contains("runs as you"), "{t}");
+        assert!(t.contains("io_uring not audited"), "{t}");
+        assert!(t.contains("read from the event log's tail"), "{t}");
+    }
+
+    #[test]
+    fn status_marks_each_running_chat_with_its_wave_5_state() {
+        let row = |extra: serde_json::Value| {
+            let mut r = serde_json::json!({"chat": "c1", "harness": "pi", "boundary": "none",
+                "since": 1_700_000_000_000i64, "pid": 1, "alive": true, "fullAccessFlags": []});
+            for (k, v) in extra.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            running_row(&r)
+        };
+        let render = |c: serde_json::Value| {
+            render_daemon(&serde_json::json!({"running": true,
+                "daemon": {"version": "0.1.3", "protocol": 1}, "chats": [c]}))
+        };
+        let t = render(row(serde_json::json!({"ioUring": "not-audited",
+            "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal"},
+            "tap": {"on": false, "reason": "no-tap-flag"},
+            "content": {"on": true, "retentionDays": 3}})));
+        assert!(t.contains("runs as you"), "{t}");
+        assert!(t.contains("io_uring not audited"), "{t}");
+        assert!(t.contains("untapped (no-tap-flag)"), "{t}");
+        assert!(t.contains("content kept 3 days"), "{t}");
+        assert!(t.contains("no boundary, chosen at a terminal"), "{t}");
+        let t = render(row(serde_json::json!({"agentUser": "derm-agent"})));
+        assert!(t.contains("as the agents' user derm-agent"), "{t}");
+        assert!(!t.contains("runs as you"), "{t}");
+        let t = render(row(
+            serde_json::json!({"boundary": "sbx", "harness": "codex",
+            "ioUring": "own-kernel", "tap": {"on": true}}),
+        ));
+        assert!(t.contains("no derm gate in the VM"), "{t}");
+        assert!(!t.contains("untapped") && !t.contains("io_uring"), "{t}");
+        let t = render(row(
+            serde_json::json!({"boundary": "sbx", "harness": "claude-code",
+            "sbxKit": {"added": true}}),
+        ));
+        assert!(t.contains("derm's gate in the VM through its kit"), "{t}");
+        let t = render(row(
+            serde_json::json!({"boundary": "sbx", "harness": "claude-code",
+            "sbxKit": {"added": false}}),
+        ));
+        assert!(t.contains("no derm gate in the VM"), "{t}");
+        let t = render(row(serde_json::json!({"boundary": "srt",
+            "boundaryChoice": {"chosen": "srt", "named": false, "answeredBy": "pre-answer"}})));
+        assert!(t.contains("started by your pre-answer"), "{t}");
+    }
+
+    #[cfg(unix)]
     /// Lane R (T2.9): a probed version other than the row's says
     /// "unverified at" (case 81); the last `derm doctor` report is shown; a
     /// running chat in full access names its flags (case 83).
     #[test]
     fn status_shows_unverified_versions_doctor_reports_and_full_access() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-status-r-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -930,8 +1143,32 @@ mod tests {
         assert!(t.contains("no chats started by derm run are open"), "{t}");
     }
 
+    /// MW5-39 (Mac test w5, retest 12): the daemon's `alive` is the
+    /// harness's pid, and `derm run` removes an sbx sandbox, stops its
+    /// companion and waits up to 500 ms for its filter after the harness
+    /// exits and before it posts `run.stop` (`run/mod.rs`), so a running
+    /// sbx chat was shown as "gone, no run.stop" in that window. The line
+    /// says what is known: the harness exited and no `run.stop` came yet.
+    #[test]
+    fn mw5_39_a_harness_gone_before_run_stop_is_not_called_gone() {
+        let t = render_daemon(
+            &json!({"running": true, "daemon": {"version": "0.0.0", "protocol": 1},
+            "lastHour": {"events": 3, "flags": 0, "bySource": {"adapter": 3}, "chainOk": true, "collectorReachable": "unknown"},
+            "chats": [{"chat": "r12-sbx2", "harness": "claude-code", "boundary": "sbx", "since": 0, "alive": false}]}),
+        );
+        assert!(!t.contains("gone, no run.stop"), "{t}");
+        assert!(
+            t.contains("harness exited, no run.stop yet")
+                && t.contains("removing its sandbox")
+                && t.contains("killed"),
+            "{t}"
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn path_lookup_skips_relative_entries_and_non_executables() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -948,8 +1185,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_that_hangs_is_killed() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-hang-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -963,11 +1202,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_that_exits_non_zero_is_not_an_install() {
         // Box test w2, BW4: /usr/bin/copilot is VS Code's shim, which says
         // "GitHub Copilot CLI was not found" and exits 127; `derm status` showed
         // it "on PATH" and the probe as "printed nothing".
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-shim-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -994,11 +1235,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_returns_when_the_program_exits_even_if_its_child_holds_the_pipes() {
         // Fix pass 1's review, FP1-S5: `sleep 1d & exit 1` on PATH kept
         // `derm status --probe` waiting for a day, reading to the end of a pipe
         // the left-behind sleep still held.
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-hold-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1029,8 +1272,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_probe_printing_escapes_is_cleaned() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("derm-esc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

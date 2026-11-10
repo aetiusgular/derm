@@ -19,10 +19,19 @@
 //!   process can only post into the chat whose token it holds.
 //! - Requests whose `Host` is not this listener are refused (DNS rebinding),
 //!   and a browser's preflight gets no CORS answer.
-//! - Bounded: 16 connections, a 16 KiB head, a 4 MiB body, deadlines re-armed
+//! - Bounded: 64 connections (16 before a token, W5R-2), a 16 KiB head, a 4 MiB body, deadlines re-armed
 //!   before every read, a request rate cap, 2,000 records per request.
 //! - Off in Settings means no harness is pointed here and anything still
 //!   arriving is dropped.
+//! - Two more routes, for a gate inside an sbx VM, which cannot see the
+//!   daemon's socket (lane T's P4-R1, integration w5 continue):
+//!   `POST /derm/v1/event` and `POST /derm/v1/approve`, a JSON body holding
+//!   the socket op's one field (`event` or `request`), the same chat token,
+//!   and the socket's chat-scope rules, applied by the daemon (`ops`). A
+//!   reply is the socket's reply line as the body. sbx's proxy turns
+//!   `host.docker.internal` into `localhost` (Docker's "Develop and test
+//!   locally" page), and these routes also take `Host: host.docker.internal:
+//!   <port>`, which a client that bypasses the forward proxy may send.
 
 #[path = "decode.rs"]
 pub mod decode;
@@ -46,17 +55,51 @@ use crate::activity::types::ActivityEvent;
 
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
-const MAX_CONNECTIONS: usize = 16;
-const HEAD_DEADLINE: Duration = Duration::from_secs(10);
+/// Connections open at once, before a token is known. A chat's own share of
+/// them is [`MAX_OPEN_PER_CHAT`] (security finding W5C-S4, integration w5
+/// continue: 16 slow bodies from one chat's token held them all).
+const MAX_CONNECTIONS: usize = 64;
+/// Requests one chat's token may have open at once, counted from its head.
+const MAX_OPEN_PER_CHAT: usize = 8;
+/// How long a connection has to send its head (re-review W5R-2: 10 s let
+/// idle connections from any local process hold every slot that long). A
+/// hook, a harness's exporter and the kit's route send theirs at once.
+const HEAD_DEADLINE: Duration = Duration::from_secs(2);
+/// Connections that have not shown a token yet, at most, out of
+/// `MAX_CONNECTIONS`: idle ones cannot take the slots a chat's requests need
+/// (W5R-2). A request leaves this pool once its token is known.
+const MAX_HEADS: usize = 16;
 const BODY_DEADLINE: Duration = Duration::from_secs(30);
 /// Chats with a token. The oldest gives way; its harness's next start gets a
 /// new one.
 const MAX_TOKENS: usize = 512;
 /// Chats the window may name in one configure call.
 const MAX_CHATS: usize = 5000;
+/// A derm route's body: the socket's line cap (`daemon-protocol.md`, 2).
+pub const MAX_DERM_BODY_BYTES: usize = 1024 * 1024;
+/// `approve` requests waiting at once over HTTP; each holds a connection
+/// until it is answered, so they may not take every slot.
+const MAX_APPROVING: usize = 16;
+/// Of those, one chat's (W5C-S3, integration w5 continue: one chat held all
+/// four the cap allowed before, and every other chat's ask got 503).
+const MAX_APPROVING_PER_CHAT: usize = 2;
+/// How often a waiting approve looks whether its client has hung up; one
+/// that has lets go of its slot (W5C-S3). The daemon's wait uses it.
+pub(crate) const GONE_CHECK: Duration = Duration::from_millis(250);
 /// Requests per second over all chats, with this many in a burst.
 const RATE_PER_SEC: f64 = 40.0;
 const RATE_BURST: f64 = 200.0;
+/// One chat's own bucket inside that (W5C-S4): a chat spends at most this,
+/// so it cannot spend every other chat's share.
+const RATE_PER_CHAT_SEC: f64 = 10.0;
+const RATE_BURST_PER_CHAT: f64 = 50.0;
+/// Content bytes one chat writes in a day, at most (W5C-S6). Counted in
+/// memory: a daemon restart starts the count again.
+const MAX_CONTENT_BYTES_PER_CHAT_DAY: u64 = 256 * 1024 * 1024;
+/// Requests that write content for one chat in a day, at most: each writes
+/// at most two files, so the bytes' allowance cannot be spent as millions of
+/// small files (re-review W5R-9).
+const MAX_CONTENT_WRITES_PER_CHAT_DAY: u64 = 20_000;
 
 /// What the window set: the switch, the prompt text switch, and which
 /// session ids are chats (helpers and probes are not).
@@ -76,6 +119,67 @@ struct Holder {
 /// Where each request's batch of normalized events goes.
 pub type Sink = Arc<dyn Fn(Vec<ActivityEvent>) + Send + Sync>;
 
+/// A chat's socket op, arrived over HTTP (P4-R1): the one field of the
+/// socket's line, not yet checked.
+pub enum ChatOp {
+    Event(serde_json::Value),
+    Approve(serde_json::Value),
+}
+
+/// The daemon's answer to a `ChatOp` for the token's chat and harness: the
+/// socket's reply line, as JSON. The last argument says whether the client
+/// has hung up; a waiting approve asks it now and then and stops waiting
+/// when it has (W5C-S3).
+pub type Ops =
+    Arc<dyn Fn(&str, &'static str, ChatOp, &dyn Fn() -> bool) -> serde_json::Value + Send + Sync>;
+
+/// Per chat: its open requests, its waiting approves, its rate bucket and
+/// its content bytes today.
+#[derive(Default)]
+struct PerChat {
+    open: HashMap<String, usize>,
+    approving: HashMap<String, usize>,
+    rate: HashMap<String, (f64, Instant)>,
+    /// Content bytes written since the day's start (ms), per chat.
+    content: HashMap<String, (i64, u64, u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum Count {
+    Open,
+    Approving,
+}
+
+/// A chat's place in one of its counts, given back when dropped.
+struct Held<'a> {
+    receiver: &'a Receiver,
+    chat: String,
+    count: Count,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut per) = self.receiver.per_chat.lock() {
+            let map = match self.count {
+                Count::Open => &mut per.open,
+                Count::Approving => &mut per.approving,
+            };
+            if let Some(n) = map.get_mut(&self.chat) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    map.remove(&self.chat);
+                }
+            }
+        }
+    }
+}
+
+/// Where a chat's prompt and reply text goes while the content switch is on
+/// (`contracts/events.md` section 5, case 85 as changed): the daemon reads
+/// `~/.derm/settings.json` per request, as the tap does. `None`: content is
+/// off, and the text is dropped.
+pub type ContentFor = Arc<dyn Fn(&str) -> Option<derm_tap::content::Target> + Send + Sync>;
+
 /// One receiver: its port, its tokens, its counters.
 pub struct Receiver {
     port: u16,
@@ -87,7 +191,19 @@ pub struct Receiver {
     settings: Arc<Mutex<Settings>>,
     sink: Sink,
     open: AtomicUsize,
+    /// Of `open`, those that have not shown a token yet (W5R-2).
+    heads: AtomicUsize,
     rate: Mutex<(f64, Instant)>,
+    /// The daemon's ops for the derm routes; until set, they answer 503.
+    ops: OnceLock<Ops>,
+    /// Content capture for prompt and reply text; unset, it is dropped.
+    content: OnceLock<ContentFor>,
+    approving: AtomicUsize,
+    per_chat: Mutex<PerChat>,
+    /// Content bytes one chat may write a day (W5C-S6); a field so a test
+    /// can lower it.
+    content_allowance: Mutex<u64>,
+    content_writes_allowance: Mutex<u64>,
     pub counters: Counters,
 }
 
@@ -150,7 +266,14 @@ impl Receiver {
             settings,
             sink,
             open: AtomicUsize::new(0),
+            heads: AtomicUsize::new(0),
             rate: Mutex::new((RATE_BURST, Instant::now())),
+            ops: OnceLock::new(),
+            content: OnceLock::new(),
+            approving: AtomicUsize::new(0),
+            per_chat: Mutex::new(PerChat::default()),
+            content_allowance: Mutex::new(MAX_CONTENT_BYTES_PER_CHAT_DAY),
+            content_writes_allowance: Mutex::new(MAX_CONTENT_WRITES_PER_CHAT_DAY),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -280,25 +403,113 @@ impl Receiver {
         hash(token)
     }
 
+    /// The daemon's ops for the derm routes (P4-R1). Set once.
+    pub fn set_ops(&self, ops: Ops) {
+        let _ = self.ops.set(ops);
+    }
+
+    /// Content capture for prompt and reply text (lane S's request 3's
+    /// rest). Set once.
+    pub fn set_content(&self, content: ContentFor) {
+        let _ = self.content.set(content);
+    }
+
     /// The chat and harness a token was minted for, by its hash.
     pub fn holder_of(&self, token: &str) -> Option<(String, &'static str)> {
         self.holder(token).map(|h| (h.chat_id, h.harness))
     }
 
-    fn take_rate(&self) -> bool {
-        let Ok(mut rate) = self.rate.lock() else {
+    /// One request from `chat`: its own bucket first, then everyone's. A
+    /// request the chat's bucket refuses spends nothing of everyone's
+    /// (W5C-S4).
+    fn take_rate(&self, chat: &str) -> bool {
+        let now = Instant::now();
+        let fill = |b: &mut (f64, Instant), per_sec: f64, burst: f64| {
+            let refill = now.saturating_duration_since(b.1).as_secs_f64() * per_sec;
+            b.0 = (b.0 + refill).min(burst);
+            b.1 = now;
+        };
+        let Ok(mut per) = self.per_chat.lock() else {
             return false;
         };
-        let now = Instant::now();
-        let refill = now.saturating_duration_since(rate.1).as_secs_f64() * RATE_PER_SEC;
-        rate.0 = (rate.0 + refill).min(RATE_BURST);
-        rate.1 = now;
-        if rate.0 >= 1.0 {
-            rate.0 -= 1.0;
-            true
-        } else {
-            false
+        if !per.rate.contains_key(chat) && per.rate.len() >= MAX_TOKENS {
+            // Buckets that are full again say nothing; drop them first.
+            per.rate.retain(|_, b| {
+                let refill = now.saturating_duration_since(b.1).as_secs_f64() * RATE_PER_CHAT_SEC;
+                b.0 + refill < RATE_BURST_PER_CHAT
+            });
+            if per.rate.len() >= MAX_TOKENS {
+                return false;
+            }
         }
+        let mine = per
+            .rate
+            .entry(chat.to_string())
+            .or_insert((RATE_BURST_PER_CHAT, now));
+        fill(mine, RATE_PER_CHAT_SEC, RATE_BURST_PER_CHAT);
+        if mine.0 < 1.0 {
+            return false;
+        }
+        let Ok(mut all) = self.rate.lock() else {
+            return false;
+        };
+        fill(&mut all, RATE_PER_SEC, RATE_BURST);
+        if all.0 < 1.0 {
+            return false;
+        }
+        all.0 -= 1.0;
+        mine.0 -= 1.0;
+        true
+    }
+
+    /// Takes `bytes` of content from `chat`'s allowance for the day that
+    /// started at its first write, or refuses (W5C-S6).
+    fn allow_content(&self, chat: &str, bytes: u64, now: i64) -> bool {
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        let cap = self.content_allowance.lock().map_or(0, |c| *c);
+        let writes = self.content_writes_allowance.lock().map_or(0, |c| *c);
+        let Ok(mut per) = self.per_chat.lock() else {
+            return false;
+        };
+        if !per.content.contains_key(chat) && per.content.len() >= MAX_TOKENS {
+            per.content
+                .retain(|_, (start, _, _)| now.saturating_sub(*start) < DAY_MS);
+            if per.content.len() >= MAX_TOKENS {
+                return false;
+            }
+        }
+        let day = per.content.entry(chat.to_string()).or_insert((now, 0, 0));
+        if now.saturating_sub(day.0) >= DAY_MS {
+            *day = (now, 0, 0);
+        }
+        if day.1.saturating_add(bytes) > cap || day.2 >= writes {
+            return false;
+        }
+        day.1 += bytes;
+        day.2 += 1;
+        true
+    }
+
+    /// A place in one of `chat`'s counts, or none when it holds `cap`.
+    fn hold(&self, chat: &str, count: Count, cap: usize) -> Option<Held<'_>> {
+        let mut per = self.per_chat.lock().ok()?;
+        let map = match count {
+            Count::Open => &mut per.open,
+            Count::Approving => &mut per.approving,
+        };
+        let n = map.entry(chat.to_string()).or_insert(0);
+        if *n >= cap {
+            if *n == 0 {
+                map.remove(chat);
+            }
+            return None;
+        }
+        *n += 1;
+        Some(Held {
+            receiver: self,
+            chat: chat.to_string(),
+            count,
+        })
     }
 
     fn serve(self: Arc<Self>, listener: TcpListener) {
@@ -315,16 +526,26 @@ impl Receiver {
                 close_without_waiting(&stream);
                 continue;
             }
+            if self.heads.fetch_add(1, Ordering::SeqCst) >= MAX_HEADS {
+                self.heads.fetch_sub(1, Ordering::SeqCst);
+                self.open.fetch_sub(1, Ordering::SeqCst);
+                let mut stream = stream;
+                let _ = respond(&mut stream, 503, None);
+                close_without_waiting(&stream);
+                continue;
+            }
             let slot = OpenSlot(self.clone());
+            let mut head_slot = Some(HeadSlot(self.clone()));
             let receiver = self.clone();
             let _ = std::thread::Builder::new()
                 .name("otel-receiver-conn".into())
                 .spawn(move || {
                     let _slot = slot;
                     let mut stream = stream;
-                    let status = receiver.handle(&stream);
+                    let status = receiver.handle(&stream, &mut head_slot);
+                    drop(head_slot);
                     let (code, kind) = match status {
-                        Ok(kind) => (200, Some(kind)),
+                        Ok(answer) => (200, Some(answer)),
                         Err(code) => {
                             if code == 401 {
                                 receiver
@@ -348,14 +569,26 @@ impl Receiver {
         }
     }
 
-    /// One request. `Ok` holds the body kind to answer with.
-    fn handle(&self, stream: &TcpStream) -> Result<BodyKind, u16> {
+    /// One request. `Ok` holds what to answer with.
+    fn handle(&self, stream: &TcpStream, head_slot: &mut Option<HeadSlot>) -> Result<Answer, u16> {
         self.counters.requests.fetch_add(1, Ordering::Relaxed);
         let mut reader = BufReader::new(Armed::new(stream, Instant::now() + HEAD_DEADLINE));
         let head = read_head(&mut reader)?;
+        let path = head.target.split('?').next().unwrap_or("");
+        let signal = match path {
+            "/v1/logs" => Signal::Logs,
+            "/v1/metrics" | "/v1/traces" => Signal::Other,
+            "/derm/v1/event" => Signal::DermEvent,
+            "/derm/v1/approve" => Signal::DermApprove,
+            _ => Signal::Unknown,
+        };
+        let derm = matches!(signal, Signal::DermEvent | Signal::DermApprove);
         let host_ok = head.header("host").is_some_and(|host| {
             host == format!("127.0.0.1:{}", self.port)
                 || host.eq_ignore_ascii_case(&format!("localhost:{}", self.port))
+                || mapped_loopback_host(host, self.port)
+                || (derm
+                    && host.eq_ignore_ascii_case(&format!("host.docker.internal:{}", self.port)))
         });
         if !host_ok {
             return Err(403);
@@ -363,17 +596,20 @@ impl Receiver {
         if head.method != "POST" {
             return Err(405);
         }
-        let path = head.target.split('?').next().unwrap_or("");
-        let signal = match path {
-            "/v1/logs" => Signal::Logs,
-            "/v1/metrics" | "/v1/traces" => Signal::Other,
-            _ => return Err(404),
-        };
+        if signal == Signal::Unknown {
+            return Err(404);
+        }
         // The token, before any of the body is read.
         let holder = token_from(&head)
             .and_then(|t| self.holder(&t))
             .ok_or(401u16)?;
-        if !self.take_rate() {
+        // A token is known: the connection leaves the pool of heads.
+        head_slot.take();
+        // The chat's share of the open requests (W5C-S4), held to the end.
+        let _open = self
+            .hold(&holder.chat_id, Count::Open, MAX_OPEN_PER_CHAT)
+            .ok_or(503u16)?;
+        if !self.take_rate(&holder.chat_id) {
             return Err(429);
         }
         if head
@@ -395,9 +631,28 @@ impl Receiver {
             }
             _ => return Err(415),
         };
-        let body = read_body(&mut reader, &head, Instant::now() + BODY_DEADLINE)?;
+        if derm {
+            if kind != BodyKind::Json {
+                return Err(415);
+            }
+            let body = read_body(
+                &mut reader,
+                &head,
+                Instant::now() + BODY_DEADLINE,
+                MAX_DERM_BODY_BYTES,
+            )?;
+            return self
+                .derm_op(signal, &body, &holder, &|| peer_gone(stream))
+                .map(Answer::Json);
+        }
+        let body = read_body(
+            &mut reader,
+            &head,
+            Instant::now() + BODY_DEADLINE,
+            MAX_BODY_BYTES,
+        )?;
         if signal == Signal::Other {
-            return Ok(kind);
+            return Ok(Answer::Otlp(kind));
         }
         let (enabled, log_prompts) = match self.settings.lock() {
             Ok(s) => (s.enabled, s.log_prompts),
@@ -412,23 +667,209 @@ impl Receiver {
             .dropped_records
             .fetch_add(decoded.dropped as u64, Ordering::Relaxed);
         if !enabled {
-            return Ok(kind);
+            return Ok(Answer::Otlp(kind));
         }
         let received = now_ms();
-        let events: Vec<ActivityEvent> = decoded
+        // The content switch decides once per request, as the tap's does.
+        let target = self.content.get().and_then(|c| c(&holder.chat_id));
+        let mut items: Vec<(&decode::OtelLog, ActivityEvent)> = decoded
             .logs
             .iter()
             .filter_map(|log| {
                 normalize::to_activity(log, &holder.chat_id, holder.harness, log_prompts, received)
+                    .map(|event| (log, event))
             })
             .collect();
+        if let Some(t) = &target {
+            keep_content(t, &holder.chat_id, &mut items, received, &|bytes| {
+                self.allow_content(&holder.chat_id, bytes, received)
+            });
+        }
+        let events: Vec<ActivityEvent> = items.into_iter().map(|(_, e)| e).collect();
         if !events.is_empty() {
             self.counters
                 .events
                 .fetch_add(events.len() as u64, Ordering::Relaxed);
             (self.sink)(events);
         }
-        Ok(kind)
+        Ok(Answer::Otlp(kind))
+    }
+
+    /// A derm route's body, `{"event": {...}}` or `{"request": {...}}` and
+    /// nothing else (the socket refuses unknown fields too), handed to the
+    /// daemon's ops for the token's chat. The reply line is the body; a
+    /// refusal by the daemon is still a 200 with `ok: false`, as on the
+    /// socket.
+    fn derm_op(
+        &self,
+        signal: Signal,
+        body: &[u8],
+        holder: &Holder,
+        gone: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, u16> {
+        let ops = self.ops.get().ok_or(503u16)?;
+        let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| 400u16)?;
+        let serde_json::Value::Object(mut map) = value else {
+            return Err(400);
+        };
+        let field = if signal == Signal::DermEvent {
+            "event"
+        } else {
+            "request"
+        };
+        if map.len() != 1 {
+            return Err(400);
+        }
+        let inner = map.remove(field).ok_or(400u16)?;
+        let reply = if signal == Signal::DermEvent {
+            ops(
+                &holder.chat_id,
+                holder.harness,
+                ChatOp::Event(inner),
+                &|| false,
+            )
+        } else {
+            let _mine = self
+                .hold(&holder.chat_id, Count::Approving, MAX_APPROVING_PER_CHAT)
+                .ok_or(503u16)?;
+            if self.approving.fetch_add(1, Ordering::SeqCst) >= MAX_APPROVING {
+                self.approving.fetch_sub(1, Ordering::SeqCst);
+                return Err(503);
+            }
+            struct Done<'a>(&'a AtomicUsize);
+            impl Drop for Done<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+            let _done = Done(&self.approving);
+            ops(
+                &holder.chat_id,
+                holder.harness,
+                ChatOp::Approve(inner),
+                gone,
+            )
+        };
+        serde_json::to_vec(&reply).map_err(|_| 500u16)
+    }
+}
+
+/// Whether the client of a request still being answered has hung up: a
+/// peek that reads the end of the stream. Bytes waiting (a pipelined
+/// request) or nothing yet both mean it is still there. Only the thread
+/// answering the request calls it, so switching the stream to non-blocking
+/// for the peek races nothing.
+fn peer_gone(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut byte = [0u8; 1];
+    let gone = match stream.peek(&mut byte) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(
+            e.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        ),
+    };
+    let _ = stream.set_nonblocking(false);
+    gone
+}
+
+/// A redaction mark a harness sends in place of text (`normalize`'s note).
+fn is_mark(v: &serde_json::Value) -> bool {
+    v.as_str()
+        .is_some_and(|t| matches!(t.trim(), "<REDACTED>" | "[REDACTED]" | ""))
+}
+
+/// Writes one request's prompt and reply text to content files, as the tap
+/// keeps bodies: at most one file per part for the whole request (`request`
+/// for prompts and a call's arguments, `response` for replies and a call's
+/// output), one line `{"record": <id>, "fields": {...}}` per record, so a
+/// request of 2,000 records makes two files, not 2,000 (security finding
+/// W5C-S6). Each record that had text says `contentKept: true` and names its
+/// files. `allow` takes the bytes from the chat's allowance before anything
+/// is written; refused, nothing is written and the records say
+/// `contentCapped: true`. Text a record already holds (only in tests,
+/// `log_prompts`) stays as it is. A file that cannot be written keeps
+/// nothing and its records say `contentFailed`.
+pub(crate) fn keep_content(
+    target: &derm_tap::content::Target,
+    chat: &str,
+    items: &mut [(&decode::OtelLog, ActivityEvent)],
+    at: i64,
+    allow: &dyn Fn(u64) -> bool,
+) {
+    const PARTS: [&str; 2] = ["request", "response"];
+    let mut text: [String; 2] = [String::new(), String::new()];
+    // Which parts each record has a line in.
+    let mut has: Vec<[bool; 2]> = Vec::with_capacity(items.len());
+    for (log, event) in items.iter() {
+        let mut fields: [serde_json::Map<String, serde_json::Value>; 2] =
+            [serde_json::Map::new(), serde_json::Map::new()];
+        for (key, value) in &log.attributes {
+            if !normalize::is_prompt_text(key) || is_mark(value) {
+                continue;
+            }
+            let i = usize::from(normalize::is_reply_text(key));
+            fields[i].insert(key.clone(), value.clone());
+        }
+        let mut mine = [false; 2];
+        for (i, f) in fields.into_iter().enumerate() {
+            if f.is_empty() {
+                continue;
+            }
+            let line = serde_json::json!({ "record": event.id, "fields": f });
+            text[i].push_str(&line.to_string());
+            text[i].push('\n');
+            mine[i] = true;
+        }
+        has.push(mine);
+    }
+    let total = (text[0].len() + text[1].len()) as u64;
+    if total == 0 {
+        return;
+    }
+    let mark =
+        |items: &mut [(&decode::OtelLog, ActivityEvent)], key: &str, which: Option<usize>| {
+            for ((_, event), mine) in items.iter_mut().zip(&has) {
+                let hit = which.map_or(mine[0] || mine[1], |i| mine[i]);
+                if let (true, serde_json::Value::Object(detail)) = (hit, &mut event.detail) {
+                    detail.insert(key.into(), serde_json::Value::Bool(true));
+                }
+            }
+        };
+    if !allow(total) {
+        mark(items, "contentCapped", None);
+        return;
+    }
+    let id = format!("otel_{}", uuid::Uuid::new_v4().simple());
+    let mut names: [Option<String>; 2] = [None, None];
+    for (i, part) in PARTS.iter().enumerate() {
+        if text[i].is_empty() {
+            continue;
+        }
+        match derm_tap::content::open(target, chat, at, &id, part) {
+            Ok(mut f) => {
+                f.append(text[i].as_bytes());
+                if f.failed {
+                    mark(items, "contentFailed", Some(i));
+                } else {
+                    names[i] = f.path.file_name().map(|n| n.to_string_lossy().into_owned());
+                }
+            }
+            Err(_) => mark(items, "contentFailed", Some(i)),
+        }
+    }
+    for ((_, event), mine) in items.iter_mut().zip(&has) {
+        let kept: Vec<serde_json::Value> = (0..2)
+            .filter(|i| mine[*i])
+            .filter_map(|i| names[i].clone().map(serde_json::Value::String))
+            .collect();
+        if let (false, serde_json::Value::Object(detail)) = (kept.is_empty(), &mut event.detail) {
+            detail.insert("contentKept".into(), serde_json::Value::Bool(true));
+            detail.insert("contentFiles".into(), serde_json::Value::Array(kept));
+        }
     }
 }
 
@@ -436,6 +877,16 @@ impl Receiver {
 enum Signal {
     Logs,
     Other,
+    DermEvent,
+    DermApprove,
+    Unknown,
+}
+
+/// What a request is answered with: an OTLP reply of its kind, or a derm
+/// route's JSON body.
+enum Answer {
+    Otlp(BodyKind),
+    Json(Vec<u8>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -445,6 +896,15 @@ enum BodyKind {
 }
 
 struct OpenSlot(Arc<Receiver>);
+
+/// A place in the pool of connections with no token yet (W5R-2).
+struct HeadSlot(Arc<Receiver>);
+
+impl Drop for HeadSlot {
+    fn drop(&mut self) {
+        self.0.heads.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 impl Drop for OpenSlot {
     fn drop(&mut self) {
@@ -467,9 +927,14 @@ fn token_from(head: &Head) -> Option<String> {
 /// The whole reply in one buffer and one `write_all`: written in pieces,
 /// a close right after can leave the client holding only the first of them
 /// (Mac test 0.5).
-fn respond<W: Write>(stream: &mut W, status: u16, kind: Option<BodyKind>) -> std::io::Result<()> {
-    let (content_type, body): (&str, &[u8]) = match kind {
-        Some(BodyKind::Protobuf) => ("application/x-protobuf", b""),
+fn respond<W: Write>(stream: &mut W, status: u16, answer: Option<Answer>) -> std::io::Result<()> {
+    let json;
+    let (content_type, body): (&str, &[u8]) = match answer {
+        Some(Answer::Otlp(BodyKind::Protobuf)) => ("application/x-protobuf", b""),
+        Some(Answer::Json(bytes)) => {
+            json = bytes;
+            ("application/json", json.as_slice())
+        }
         _ => ("application/json", b"{}"),
     };
     let mut reply = format!(
@@ -538,6 +1003,7 @@ fn reason(status: u16) -> &'static str {
         413 => "Payload Too Large",
         415 => "Unsupported Media Type",
         429 => "Too Many Requests",
+        500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "Status",
     }
@@ -642,7 +1108,12 @@ fn read_head(reader: &mut Reader) -> Result<Head, u16> {
     })
 }
 
-fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<u8>, u16> {
+fn read_body(
+    reader: &mut Reader,
+    head: &Head,
+    deadline: Instant,
+    max: usize,
+) -> Result<Vec<u8>, u16> {
     reader.get_ref().deadline.set(deadline);
     let chunked = head
         .header("transfer-encoding")
@@ -659,7 +1130,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             let size = usize::from_str_radix(size_line.trim().split(';').next().unwrap_or(""), 16)
                 .map_err(|_| 400u16)?;
             let total = body.len().checked_add(size).ok_or(413u16)?;
-            if total > MAX_BODY_BYTES {
+            if total > max {
                 return Err(413);
             }
             let mut chunk = vec![0; size.checked_add(2).ok_or(413u16)?];
@@ -677,7 +1148,7 @@ fn read_body(reader: &mut Reader, head: &Head, deadline: Instant) -> Result<Vec<
             .ok_or(411u16)?
             .parse()
             .map_err(|_| 400u16)?;
-        if length > MAX_BODY_BYTES {
+        if length > max {
             return Err(413);
         }
         reader
@@ -757,6 +1228,25 @@ pub enum Applied {
     /// Nothing changed, and why: the user already exports OTel, the endpoint
     /// is not loopback, or the harness has no OTel export here.
     StoodDown(&'static str),
+}
+
+/// `[::ffff:127.0.0.1]:<port>` in either spelling of the IPv4-mapped
+/// address (MW5-15: the name derm gives Claude Code's exporter under srt, so
+/// it takes srt's proxy). A literal address, never a name: DNS rebinding
+/// cannot produce it (the reason the host is checked at all).
+fn mapped_loopback_host(host: &str, port: u16) -> bool {
+    let Some((addr, p)) = host.rsplit_once("]:") else {
+        return false;
+    };
+    let Some(addr) = addr.strip_prefix('[') else {
+        return false;
+    };
+    p == port.to_string()
+        && addr
+            .parse::<std::net::Ipv6Addr>()
+            .ok()
+            .and_then(|a| a.to_ipv4_mapped())
+            .is_some_and(|v4| v4 == std::net::Ipv4Addr::LOCALHOST)
 }
 
 /// True for `http://127.0.0.1:<port>` and nothing else: the receiver binds
@@ -902,8 +1392,12 @@ fn fresh_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
+    // The parent (`<runtime>/derm/otel-helper`) holds every chat's folder:
+    // made 0700 with each folder on the way, and refused when it is a link
+    // or another user's (box test w5 retest 2, BW5R2-4: `create_dir_all`
+    // left it 0755 under umask 022, BW5R-8's class).
     if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent)?;
+        derm_core::platform::private_dir(parent)?;
     }
     std::fs::DirBuilder::new().mode(0o700).create(dir)
 }
@@ -930,8 +1424,9 @@ fn write_helper(dir: &std::path::Path, token: &str) -> std::io::Result<std::path
 }
 
 /// The switch, the prompt text switch, and which sessions are chats. The
-/// daemon turns the receiver on at start; `log_prompts` follows
-/// `DERM_LOG_CONTENT=1` in the daemon's environment.
+/// daemon turns the receiver on at start with `log_prompts` false: records
+/// never keep prompt text; the content switch sends it to files instead
+/// (`keep_content`).
 pub fn harness_telemetry_configure(
     enabled: bool,
     log_prompts: bool,

@@ -1,0 +1,85 @@
+{
+  "$comment": "Wave 5 lane S's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the model tap: how `derm run` points each agent at the tap in its launch environment only (`via`: `env` with `name` the variable, `codex-provider` for a `-c model_providers...` override, or `none` when the agent takes no base URL), and which API the tap speaks for it (rules cases 113, 116; note AR section 2.2). Never a settings file (case 56). One value per preset id under `rows`. presets.rs and contracts/presets.ts merge it into each row as the `tap` field, and refuse an id the index does not name, a row file that already sets `tap`, and a table whose `field` is not its file name. Shape: contracts/harness-presets.schema.json, $defs.tap. Each value records the version it was read at (`verifiedAt`). Filled by lane S on 4 Nov 2026 (plans/parallel/tk_lane_S.md, Research); an agent with no row here is not tapped yet.",
+  "field": "tap",
+  "rows": {
+    "claude-code": {
+      "via": "env",
+      "name": "ANTHROPIC_BASE_URL",
+      "api": ["anthropic-messages"],
+      "intent": "tap",
+      "verifiedAt": "2.1.311",
+      "note": "https://code.claude.com/docs/en/llm-gateway-protocol (read 4 Nov 2026); the route is in the URL's path; contract check tap-claude"
+    },
+    "codex": {
+      "via": "codex-provider",
+      "api": ["openai-responses"],
+      "intent": "tap",
+      "verifiedAt": "0.163.0",
+      "note": "a custom provider with requires_openai_auth and supports_websockets false (model-provider-info/src/lib.rs:140-205 at rust-v0.163.0); the route in a header from DERM_TAP_ROUTE; contract check tap-codex"
+    },
+    "gemini": {
+      "via": "env",
+      "name": "GOOGLE_GEMINI_BASE_URL",
+      "api": ["gemini"],
+      "intent": "tap",
+      "verifiedAt": "0.66.0",
+      "note": "the variable lane I's checks point Gemini CLI at their fake API with; contract check tap-gemini"
+    },
+    "pi": {
+      "via": "none",
+      "api": ["anthropic-messages", "openai-responses", "openai-chat", "gemini"],
+      "intent": "hooks",
+      "verifiedAt": "1.4.0",
+      "note": "Pi reads no base-URL variable for its built-in providers (docs/environment-variables.md); the redirect is pi.registerProvider in derm-pi (docs/custom-provider.md:33-49), a request for integration from lane S"
+    },
+    "cursor": {
+      "via": "none",
+      "api": [],
+      "intent": "hooks",
+      "verifiedAt": "2026.10.22",
+      "note": "no model base URL; intent from its hooks (note AS)"
+    },
+    "amp": {
+      "via": "none",
+      "api": [],
+      "intent": "hooks",
+      "verifiedAt": "2026-11-04",
+      "note": "no model base URL (note AR section 2.2, toolkit plan R12); not run"
+    },
+    "auggie": {
+      "via": "none",
+      "api": [],
+      "intent": "hooks",
+      "verifiedAt": "2026-11-04",
+      "note": "no model base URL (note AR section 2.2, toolkit plan R12); not run"
+    },
+    "droid": {
+      "via": "none",
+      "api": [],
+      "intent": "hooks",
+      "verifiedAt": "2026-11-04",
+      "note": "no model base URL (note AR section 2.2, toolkit plan R12); not run"
+    },
+    "kiro": {
+      "via": "none",
+      "api": [],
+      "intent": "hooks",
+      "verifiedAt": "2026-11-04",
+      "note": "no model base URL (note AR section 2.2, toolkit plan R12); not run"
+    },
+    "rovo-dev": {
+      "via": "none",
+      "api": [],
+      "intent": "none",
+      "verifiedAt": "2026-11-04",
+      "note": "no model base URL and no pre-tool hook (note AQ section 1); the OS feed only"
+    },
+    "codebuff": {
+      "via": "none",
+      "api": [],
+      "intent": "none",
+      "verifiedAt": "2026-11-04",
+      "note": "no model base URL and no hook (note AQ section 1); the OS feed only"
+    }
+  }
+}

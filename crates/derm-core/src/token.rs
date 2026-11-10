@@ -5,6 +5,7 @@
 //! 1; the fork's `harness_env.rs:1-15`).
 
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::io::Read;
 
 pub const TOKEN_LEN: usize = 64;
@@ -13,7 +14,12 @@ pub const TOKEN_LEN: usize = 64;
 /// weak token when the source cannot be read.
 pub fn mint() -> std::io::Result<String> {
     let mut bytes = [0u8; 32];
+    #[cfg(unix)]
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    // Windows has no `/dev/urandom` (lane Z's request; the Windows CI run of
+    // 5 Nov failed here with os error 3): BCryptGenRandom, through the seam.
+    #[cfg(windows)]
+    bytes.copy_from_slice(&crate::platform::windows::random_bytes(32)?);
     Ok(hex(&bytes))
 }
 

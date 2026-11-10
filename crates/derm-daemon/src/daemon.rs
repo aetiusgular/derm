@@ -8,7 +8,11 @@
 //! - Nothing here blocks on a slow client. A `tail` that falls more than
 //!   `MAX_PENDING_LINES` behind is dropped; an approver that has gone is
 //!   skipped (rules, section 4, case 9).
-//! - No outbound connection of any kind (rules, section 5, item 8).
+//! - One outbound path only: the model tap (`derm_tap`, wave 5 lane S),
+//!   which forwards a harness's model requests to the four hosts in
+//!   `derm_tap::upstream::builtin()` and nowhere else (rules, section 5,
+//!   item 8, as changed by integration w5's phase 2). Nothing else here
+//!   connects out.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -30,6 +34,10 @@ use crate::protocol::{
     PROTOCOL_VERSION,
 };
 
+// The approver (wave 5 lane V's folder; moved unchanged by the wave 5 base).
+#[path = "approver/mod.rs"]
+mod approver;
+
 /// Events kept in memory for `tail`'s backlog, beside the log on disk. At
 /// least the log's queue, so an event not yet written is still here.
 pub const RING_CAPACITY: usize = 4_096;
@@ -39,6 +47,475 @@ pub const MAX_PENDING_LINES: usize = 4_096;
 pub const MAX_BACKLOG: usize = 5_000;
 /// Events one `report` reads.
 pub const REPORT_READ_LIMIT: usize = 20_000;
+
+/// The most a report reply holds, in bytes: every client reads at most 1 MiB
+/// a line (`socket::MAX_LINE_BYTES`, `derm_audit_linux::client::MAX_LINE`),
+/// and a busy window's flags with the events they name passed that (Mac
+/// test w5 retest 4, MW5-25).
+pub const REPORT_BUDGET: usize = 896 * 1024;
+
+/// How many entries a count map (`byKind`, `bySource`, `approvals`) keeps
+/// in a report cut to fit: the largest counts. A chat token can post kinds
+/// of its own, each a new key (fix pass 4's review, FP4-S3).
+pub const REPORT_MAP_KEEP: usize = 256;
+
+/// How much of a named event's text a report cut to fit keeps.
+const CUT_TEXT: usize = 300;
+
+/// A flag's weight when a report is cut, by its reason.
+fn flag_rank(f: &Value) -> u8 {
+    match f.get("reason").and_then(Value::as_str).unwrap_or("") {
+        "sensitivePath" => 0,
+        "appNotGranted" => 1,
+        "recordingOff" => 2,
+        "newHost" => 3,
+        "leftRunning" => 4,
+        _ => 5,
+    }
+}
+
+/// What a cut report knows about a flag: whether a chat token could have
+/// posted its event (an `adapter` or `otel` record), and whether it touched
+/// a path that is always listed (derm's guarded folders, and the places a
+/// process persists itself: `ALWAYS_LISTED`).
+pub struct FlagSource<'a> {
+    pub chat_postable: &'a dyn Fn(&Value) -> bool,
+    pub always_listed: &'a dyn Fn(&Value) -> bool,
+}
+
+/// Paths a cut report lists first, after derm's guarded folders: what a
+/// process writes to keep itself or reach the user's sign-ins (the
+/// re-review's R2-1). Each is a prefix: under the daemon's own home for the
+/// relative ones, from the root for the absolute ones, so an agent cannot
+/// earn the first bucket with a `.ssh` folder of its own under `/tmp`.
+pub const ALWAYS_LISTED: &[&str] = &[
+    ".ssh/",
+    ".gnupg/",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".config/fish/config.fish",
+    "Library/LaunchAgents/",
+    ".config/systemd/user/",
+    ".config/autostart/",
+    ".aws/",
+    ".kube/",
+    ".docker/config.json",
+    "/Library/LaunchAgents/",
+    "/Library/LaunchDaemons/",
+    "/etc/",
+    "/var/spool/cron",
+];
+
+/// How many distinct always-listed paths a cut report names when it cut
+/// their rows.
+pub const ALWAYS_LISTED_KEEP: usize = 200;
+
+/// Whether `path` is under one of `ALWAYS_LISTED`, with `home` the
+/// daemon's own home folder.
+pub fn always_listed_path(path: &str, home: Option<&str>) -> bool {
+    ALWAYS_LISTED.iter().any(|entry| {
+        if entry.starts_with('/') {
+            path.starts_with(entry)
+        } else {
+            home.is_some_and(|h| {
+                let h = h.trim_end_matches('/');
+                !h.is_empty()
+                    && path
+                        .strip_prefix(h)
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .is_some_and(|rest| rest.starts_with(entry))
+            })
+        }
+    })
+}
+
+#[cfg(test)]
+mod always_listed_tests {
+    use super::always_listed_path;
+
+    #[test]
+    fn only_the_homes_own_places_and_system_ones_are_always_listed() {
+        let home = Some("/home/t");
+        assert!(always_listed_path("/home/t/.ssh/authorized_keys", home));
+        assert!(always_listed_path("/home/t/.zshrc", home));
+        assert!(always_listed_path("/etc/cron.d/x", home));
+        assert!(!always_listed_path("/tmp/x/.ssh/authorized_keys", home));
+        assert!(!always_listed_path("/home/t/proj/.ssh/x", home));
+        assert!(!always_listed_path("/home/tony/.ssh/x", home));
+        assert!(!always_listed_path("/home/t/.ssh/x", None));
+    }
+}
+
+/// The order a cut report keeps flags in (fix pass 4's review, FP4-S2 and
+/// its re-reviews' R2, R2-1 to R2-3). Each chat's flags fall into buckets: a
+/// flag on an OS feed's or the daemon's event that touched a guarded or
+/// always-listed path first (`ALWAYS_LISTED`), then by whether a chat token
+/// could have posted the event (records it cannot post first), then by
+/// reason. A chat's
+/// list takes one flag from each bucket in turn, so no burst in one bucket,
+/// such as new hosts a chat token names in bulk, pushes out a lone flag of
+/// another; inside a bucket it takes the newest, then the oldest, then the
+/// next of each. The chats are taken one at a time in turn. Ties in time go
+/// to the later row.
+pub fn flag_keep_order(flags: &[Value], src: &FlagSource) -> Vec<usize> {
+    use std::collections::{BTreeMap, VecDeque};
+    let at = |i: usize| {
+        let f = &flags[i];
+        f.get("lastAt")
+            .and_then(Value::as_i64)
+            .filter(|t| *t > 0)
+            .or_else(|| f.get("at").and_then(Value::as_i64))
+            .unwrap_or(0)
+    };
+    let bucket = |i: usize| {
+        let f = &flags[i];
+        (
+            !(src.always_listed)(f),
+            (src.chat_postable)(f),
+            flag_rank(f),
+        )
+    };
+    // A bucket: not always listed, a chat token could post it, its rank.
+    type Buckets = BTreeMap<(bool, bool, u8), Vec<usize>>;
+    let mut by_chat: BTreeMap<&str, Buckets> = BTreeMap::new();
+    for (i, f) in flags.iter().enumerate() {
+        let chat = f.get("chatId").and_then(Value::as_str).unwrap_or("");
+        by_chat
+            .entry(chat)
+            .or_default()
+            .entry(bucket(i))
+            .or_default()
+            .push(i);
+    }
+    let mut chats: Vec<VecDeque<usize>> = Vec::new();
+    for buckets in by_chat.into_values() {
+        // Newest, oldest, next newest, next oldest, ... in each bucket.
+        let mut queues: Vec<VecDeque<usize>> = buckets
+            .into_values()
+            .map(|mut v| {
+                v.sort_by_key(|&i| (at(i), i));
+                let mut out = Vec::with_capacity(v.len());
+                let (mut lo, mut hi) = (0usize, v.len());
+                while lo < hi {
+                    hi -= 1;
+                    out.push(v[hi]);
+                    if lo < hi {
+                        out.push(v[lo]);
+                        lo += 1;
+                    }
+                }
+                out.into()
+            })
+            .collect();
+        let mut chat = VecDeque::new();
+        while queues.iter().any(|q| !q.is_empty()) {
+            for q in queues.iter_mut() {
+                if let Some(i) = q.pop_front() {
+                    chat.push_back(i);
+                }
+            }
+        }
+        chats.push(chat);
+    }
+    let mut order = Vec::with_capacity(flags.len());
+    while order.len() < flags.len() {
+        for q in chats.iter_mut() {
+            if let Some(i) = q.pop_front() {
+                order.push(i);
+            }
+        }
+    }
+    order
+}
+
+/// A named event as a cut report keeps it: what it is and where, without
+/// its detail (FP4-S2: a context event's 16 KiB detail made every kept
+/// flag cost more).
+fn slim_event(e: &Value) -> Value {
+    let clip = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .map(|t| Value::String(t.chars().take(CUT_TEXT).collect()))
+    };
+    let mut out = Map::new();
+    for k in ["id", "at", "chatId", "harness", "source", "kind", "pid"] {
+        if let Some(v) = e.get(k) {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    if let Some(v) = clip(e.get("summary")) {
+        out.insert("summary".into(), v);
+    }
+    let mut detail = Map::new();
+    for k in ["path", "host", "tier"] {
+        if let Some(v) = clip(e.get("detail").and_then(|d| d.get(k))) {
+            detail.insert(k.into(), v);
+        }
+    }
+    out.insert("detail".into(), Value::Object(detail));
+    out.insert("cut".into(), json!(true));
+    Value::Object(out)
+}
+
+/// Keeps the `keep` largest counts of a count map and returns how many it
+/// left out.
+fn bound_counts(m: &mut Map<String, Value>, keep: usize) -> usize {
+    if m.len() <= keep {
+        return 0;
+    }
+    let mut all: Vec<(String, Value)> = std::mem::take(m).into_iter().collect();
+    all.sort_by(|a, b| {
+        let n = |v: &Value| v.as_u64().unwrap_or(0);
+        n(&b.1).cmp(&n(&a.1)).then_with(|| a.0.cmp(&b.0))
+    });
+    let left = all.len() - keep;
+    m.extend(all.into_iter().take(keep));
+    left
+}
+
+/// Keeps a report under `budget` bytes once serialized, and never returns
+/// one over it (FP4-S3). Past the budget, in order:
+/// 1. the count maps keep their `REPORT_MAP_KEEP` largest entries
+///    (`byKindOmitted`, `bySourceOmitted`, `approvalsOmitted` say how many
+///    keys went), and the events the check names keep only what they are and
+///    where (`cut: true` on each);
+/// 2. the check's hidden rows go, then its flags are cut to the ones that
+///    fit, chosen by `flag_keep_order` (rank, newest, each chat in turn) and
+///    listed in the check's own order; only the events the kept rows name
+///    stay; `check.flagsOmitted` and `check.expectedOmitted` say how many
+///    rows were left out;
+/// 3. if even no rows do not fit, the check keeps its counts only, then the
+///    count maps go, then the report keeps its totals only, each with
+///    `reportCut: true`.
+///
+/// The totals (`flags`, `events`) stay whole.
+pub fn fit_report(report: &mut Value, budget: usize) {
+    fit_report_with(report, budget, None)
+}
+
+/// `fit_report`, with `data_dir` naming derm's guarded folders for the
+/// flag order (`check::guarded_path`).
+pub fn fit_report_with(report: &mut Value, budget: usize, data_dir: Option<&str>) {
+    let size = |r: &Value| serde_json::to_vec(r).map_or(usize::MAX, |v| v.len());
+    if size(report) <= budget {
+        return;
+    }
+    let Some(top) = report.as_object_mut() else {
+        return;
+    };
+    for (k, omitted) in [
+        ("byKind", "byKindOmitted"),
+        ("bySource", "bySourceOmitted"),
+        ("approvals", "approvalsOmitted"),
+    ] {
+        if let Some(Value::Object(m)) = top.get_mut(k) {
+            let left = bound_counts(m, REPORT_MAP_KEEP);
+            top.insert(omitted.into(), json!(left));
+        }
+    }
+    let take = |k: &str, c: &mut Map<String, Value>| match c.remove(k) {
+        Some(Value::Array(a)) => a,
+        _ => Vec::new(),
+    };
+    let (flags, expected, events) = match top.get_mut("check").and_then(Value::as_object_mut) {
+        Some(check) => (
+            take("flags", check),
+            take("expected", check),
+            take("events", check),
+        ),
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+    let full_events = events;
+    let events: Vec<Value> = full_events.iter().map(slim_event).collect();
+    let has_check = top.get("check").is_some_and(Value::is_object);
+    // What each named event is, read before the events are slimmed. The flag
+    // carries its own `guarded` and `chatPostable` (R2-2, R2-3); the event,
+    // always in the flag's own context now, adds its source and paths.
+    let mut postable_ids = std::collections::HashSet::new();
+    let mut listed_ids = std::collections::HashSet::new();
+    // The always-listed path each such event named, for the list of paths a
+    // cut left out (the third re-review's R3-1).
+    let mut listed_paths: std::collections::HashMap<String, String> = Default::default();
+    let home = derm_core::runtime::home_dir().map(|h| h.to_string_lossy().into_owned());
+    for e in &full_events {
+        let Some(id) = e.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let source = e.get("source").and_then(Value::as_str).unwrap_or("");
+        if matches!(source, "adapter" | "otel") {
+            postable_ids.insert(id.to_string());
+        }
+        let detail = e.get("detail");
+        let listed = ["path", "dest", "target", "source"].iter().find_map(|k| {
+            detail
+                .and_then(|d| d.get(*k))
+                .and_then(Value::as_str)
+                .filter(|p| {
+                    crate::activity::check::guarded_path(p, data_dir)
+                        || always_listed_path(p, home.as_deref())
+                })
+        });
+        if let Some(p) = listed {
+            listed_ids.insert(id.to_string());
+            listed_paths.insert(id.to_string(), p.chars().take(CUT_TEXT).collect());
+        }
+    }
+    let event_of = |f: &Value| {
+        f.get("eventId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    let flag_true = |f: &Value, k: &str| f.get(k).and_then(Value::as_bool) == Some(true);
+    let postable = |f: &Value| flag_true(f, "chatPostable") || postable_ids.contains(&event_of(f));
+    // A chat token's own record never earns the first bucket by naming a
+    // path there: only a flag on an OS feed's or the daemon's event does.
+    let listed =
+        |f: &Value| !postable(f) && (flag_true(f, "guarded") || listed_ids.contains(&event_of(f)));
+    let order = flag_keep_order(
+        &flags,
+        &FlagSource {
+            chat_postable: &postable,
+            always_listed: &listed,
+        },
+    );
+    let mut keep_flags = flags.len();
+    let mut keep_expected = expected.len();
+    if has_check {
+        loop {
+            let chosen: std::collections::HashSet<usize> =
+                order[..keep_flags].iter().copied().collect();
+            let kept: Vec<Value> = flags
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| chosen.contains(i))
+                .map(|(_, f)| f.clone())
+                .collect();
+            let named: std::collections::HashSet<String> = kept
+                .iter()
+                .chain(&expected[..keep_expected])
+                .flat_map(|r| {
+                    r.get("eventId")
+                        .and_then(Value::as_str)
+                        .into_iter()
+                        .chain(
+                            r.get("context")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str),
+                        )
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let kept_events: Vec<Value> = events
+                .iter()
+                .filter(|e| {
+                    e.get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|i| named.contains(i))
+                })
+                .cloned()
+                .collect();
+            let check = report
+                .get_mut("check")
+                .and_then(Value::as_object_mut)
+                .expect("check is an object");
+            check.insert("flags".into(), Value::Array(kept));
+            check.insert(
+                "expected".into(),
+                Value::Array(expected[..keep_expected].to_vec()),
+            );
+            check.insert("events".into(), Value::Array(kept_events));
+            check.insert("flagsOmitted".into(), json!(flags.len() - keep_flags));
+            // Every always-listed path a cut row named, once, so a real
+            // persistence target is named even when its row is cut (R3-1).
+            let mut left: std::collections::BTreeSet<&str> = Default::default();
+            for (i, f) in flags.iter().enumerate() {
+                if chosen.contains(&i) || !listed(f) {
+                    continue;
+                }
+                if let Some(p) = listed_paths.get(&event_of(f)) {
+                    left.insert(p.as_str());
+                }
+            }
+            if !left.is_empty() {
+                let total = left.len();
+                let named: Vec<&str> = left.into_iter().take(ALWAYS_LISTED_KEEP).collect();
+                check.insert("alwaysListedOmitted".into(), json!(named));
+                check.insert("alwaysListedOmittedTotal".into(), json!(total));
+            } else {
+                check.remove("alwaysListedOmitted");
+                check.remove("alwaysListedOmittedTotal");
+            }
+            check.insert(
+                "expectedOmitted".into(),
+                json!(expected.len() - keep_expected),
+            );
+            if size(report) <= budget || (keep_flags == 0 && keep_expected == 0) {
+                break;
+            }
+            if keep_expected > 0 {
+                keep_expected = 0;
+            } else {
+                keep_flags /= 2;
+            }
+        }
+    }
+    if size(report) <= budget {
+        return;
+    }
+    // Even no rows do not fit: the check keeps its counts, then the maps go,
+    // then only the totals are left (FP4-S3).
+    if let Some(check) = report.get_mut("check").and_then(Value::as_object_mut) {
+        // The hidden rows' counts by reason become one sum (the re-review's R3).
+        let suppressed: u64 = check
+            .get("suppressed")
+            .and_then(Value::as_object)
+            .map(|m| m.values().filter_map(Value::as_u64).sum())
+            .unwrap_or(0);
+        check.retain(|_, v| !(v.is_array() || v.is_object()));
+        check.insert("suppressedTotal".into(), json!(suppressed));
+        check.insert("reportCut".into(), json!(true));
+    }
+    if size(report) <= budget {
+        return;
+    }
+    if let Some(top) = report.as_object_mut() {
+        for k in ["byKind", "bySource", "approvals"] {
+            if let Some(Value::Object(m)) = top.get_mut(k) {
+                let left = m.len();
+                m.clear();
+                let omitted = format!("{k}Omitted");
+                let before = top.get(&omitted).and_then(Value::as_u64).unwrap_or(0);
+                top.insert(omitted, json!(before + left as u64));
+            }
+        }
+        top.insert("reportCut".into(), json!(true));
+    }
+    if size(report) <= budget {
+        return;
+    }
+    let keep: Map<String, Value> = report
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter(|(_, v)| match v {
+                    Value::Array(_) | Value::Object(_) => false,
+                    Value::String(t) => t.len() <= 200,
+                    _ => true,
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    *report = Value::Object(keep);
+    report["reportCut"] = json!(true);
+}
 /// Approval waits are held to this range, in seconds.
 pub const MIN_APPROVE_SECONDS: u32 = 1;
 pub const MAX_APPROVE_SECONDS: u32 = 3_600;
@@ -60,14 +537,17 @@ impl RunPid {
     fn of(pid: u32) -> Self {
         RunPid {
             pid,
-            start_time: derm_core::peer::start_time(pid),
+            start_time: derm_core::platform::peer::start_time(pid),
         }
     }
 
     /// Still the same process: it runs, and its start time matches when one
     /// was recorded.
     fn alive(&self) -> bool {
-        match (self.start_time, derm_core::peer::start_time(self.pid)) {
+        match (
+            self.start_time,
+            derm_core::platform::peer::start_time(self.pid),
+        ) {
             (Some(was), Some(now)) => was == now,
             (None, Some(_)) => true,
             (_, None) => false,
@@ -106,24 +586,24 @@ pub struct Outbox {
 #[derive(Debug, Default)]
 pub struct ConnPeer {
     /// `SO_PEERCRED` / `LOCAL_PEERCRED`; `None` when the OS call failed.
-    pub cred: Option<derm_core::peer::Peer>,
+    pub cred: Option<derm_core::platform::peer::Peer>,
     /// The connecting process itself, on Linux 6.5 and later.
-    pub pidfd: Option<std::os::fd::OwnedFd>,
+    pub pidfd: Option<derm_core::platform::Pidfd>,
     pub program: Option<String>,
     pub start_time: Option<u64>,
 }
 
 impl ConnPeer {
     /// Reads the peer of an accepted connection.
-    pub fn of(stream: &std::os::unix::net::UnixStream) -> Self {
-        let cred = derm_core::peer::of(stream);
+    pub fn of(stream: &derm_core::platform::Stream) -> Self {
+        let cred = derm_core::platform::peer::of(stream);
         let pid = cred.as_ref().and_then(|c| c.pid);
         ConnPeer {
-            pidfd: derm_core::peer::pidfd_of(stream),
+            pidfd: derm_core::platform::peer::pidfd_of(stream),
             program: pid
-                .and_then(derm_core::peer::program)
+                .and_then(derm_core::platform::peer::program)
                 .map(|p| p.to_string_lossy().into_owned()),
-            start_time: pid.and_then(derm_core::peer::start_time),
+            start_time: pid.and_then(derm_core::platform::peer::start_time),
             cred,
         }
     }
@@ -132,7 +612,7 @@ impl ConnPeer {
     pub fn record(&self) -> Value {
         json!({
             "pid": self.cred.as_ref().and_then(|c| c.pid),
-            "uid": self.cred.as_ref().map(|c| c.uid),
+            "uid": self.cred.as_ref().map(|c| &c.uid),
             "program": self.program.as_deref().map(|p| clip(p, 300)),
             "startTime": self.start_time,
             "pidfd": self.pidfd.is_some(),
@@ -184,11 +664,24 @@ impl Outbox {
     pub fn pending(&self) -> usize {
         self.pending.load(Ordering::SeqCst)
     }
+
+    /// Asks the connection's writer to shut the socket once what is queued
+    /// is written (an empty line, which `send` never makes).
+    pub fn close(&self) {
+        self.send_line(String::new());
+    }
 }
 
 struct TailSub {
     chat: Option<String>,
+    /// `run` records only (`tail` with `runs`).
+    runs: bool,
     out: Outbox,
+    /// Lines that may wait in its queue before it is dropped: the live
+    /// headroom plus the backlog it was sent, so a backlog over the
+    /// headroom is not dropped by the first live event (fp13's review,
+    /// FP13R-11).
+    room: usize,
 }
 
 struct Pending {
@@ -220,6 +713,11 @@ impl Paths {
     pub fn endpoint_file(&self) -> PathBuf {
         self.runtime_dir().join("otlp.endpoint")
     }
+
+    /// The model tap's endpoint (wave 5 lane S), read by `derm run`.
+    pub fn tap_endpoint_file(&self) -> PathBuf {
+        self.runtime_dir().join("tap.endpoint")
+    }
     /// Running chats kept across a restart (BX8; integration w2).
     pub fn state_file(&self) -> PathBuf {
         self.runtime_dir().join("chats.json")
@@ -234,7 +732,7 @@ impl Paths {
 /// `~/.local/share/derm`. The socket folder on Linux is `$XDG_RUNTIME_DIR`,
 /// which is emptied at logout, so the log never lives there.
 pub fn default_data_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = derm_core::runtime::home_dir();
     if cfg!(target_os = "macos") {
         return home.map(|h| h.join("Library/Application Support/derm"));
     }
@@ -243,6 +741,57 @@ pub fn default_data_dir() -> Option<PathBuf> {
         .filter(|p| p.is_absolute())
         .or_else(|| home.map(|h| h.join(".local/share")))
         .map(|d| d.join("derm"))
+}
+
+/// A chat token's records a second over the socket, and its burst
+/// (re-review W5R-3). A hook posts a few records per tool call.
+pub const SOCKET_RATE_PER_CHAT_SEC: f64 = 50.0;
+pub const SOCKET_BURST_PER_CHAT: f64 = 500.0;
+/// A chat token's bytes of records a day over the socket (W5R-3).
+pub const SOCKET_BYTES_PER_CHAT_DAY: usize = 128 * 1024 * 1024;
+/// Chats with a quota at once.
+const MAX_QUOTA_CHATS: usize = 2_048;
+
+struct Quota {
+    tokens: f64,
+    at: std::time::Instant,
+    day: i64,
+    bytes: usize,
+}
+
+/// How many OS feed records `SeenOs` remembers: more than the two files a
+/// gap reads again (an 8 MB audit log held about 6,000 events on the box
+/// and in this workspace; fp13's second re-review counted them).
+const SEEN_OS_MAX: usize = 65_536;
+
+/// A bounded set of (chat, id) the daemon has passed on, kept as a 64-bit
+/// hash of each pair (about 2 MB at the cap; two copies of both strings
+/// were about 20 MB, fp13's second re-review, FP13RR2-3). A collision only
+/// skips one record's repeat check, and only the daemon scope and the
+/// collector post OS records, so no chat can aim one.
+#[derive(Default)]
+struct SeenOs {
+    hasher: std::collections::hash_map::RandomState,
+    set: std::collections::HashSet<u64>,
+    order: std::collections::VecDeque<u64>,
+}
+
+impl SeenOs {
+    /// True the first time a (chat, id) is seen.
+    fn first(&mut self, chat: &str, id: &str) -> bool {
+        use std::hash::BuildHasher;
+        let key = self.hasher.hash_one((chat, id));
+        if !self.set.insert(key) {
+            return false;
+        }
+        self.order.push_back(key);
+        while self.order.len() > SEEN_OS_MAX {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        true
+    }
 }
 
 pub struct Daemon {
@@ -254,6 +803,12 @@ pub struct Daemon {
     /// Serializes ingest's ring and broadcast with a tail's backlog, so a
     /// tail neither misses nor repeats an event.
     order: Mutex<VecDeque<Event>>,
+    /// The call ids each chat's gate decisions named, kept apart from the
+    /// ring (which every chat and the OS feeds share), so a decision that
+    /// left the ring still counts for `early_tool_call` (re-review of fix
+    /// pass 6, FP6R-3). Bounded: `DECIDED_PER_CHAT` ids a chat, oldest out,
+    /// and `DECIDED_CHATS` chats, the oldest chat out.
+    decided: Mutex<Decided>,
     tails: Mutex<Vec<TailSub>>,
     approvers: Mutex<Vec<Outbox>>,
     /// Waiting approvals by (chat, request id): two chats may wait on the
@@ -264,6 +819,13 @@ pub struct Daemon {
     /// until its `run.stop` (S2: an approver may not be one of them or run
     /// under one).
     runs: Mutex<HashMap<String, RunPid>>,
+    /// A chat that runs as the person with no boundary has started since the
+    /// daemon did: what it left running may hold `daemon.token`, so every
+    /// `yes` needs the person check from then on (S2 part b, lane V).
+    ran_as_you: std::sync::atomic::AtomicBool,
+    /// Each chat token's share of the socket (re-review W5R-3): its records
+    /// a second and its bytes a day.
+    chat_quota: Mutex<HashMap<String, Quota>>,
     /// What `derm status` shows for each running chat, from its `run.start`:
     /// harness, boundary, when, full-access flags (box test w2, BW3: the
     /// tail's backlog lost a chat behind a flood of newer events).
@@ -275,7 +837,150 @@ pub struct Daemon {
     /// restart (BX8); `None` in tests that build a daemon by hand.
     state_file: Option<PathBuf>,
     next_conn: AtomicU64,
+    /// The model tap (wave 5 lane S), `None` when it could not bind: chats
+    /// then run untapped and say so (`derm run` finds no `tap.endpoint`).
+    tap: Option<derm_tap::Tap>,
+    /// The join (lane S): intent to effect, fed by every ingested event.
+    join: Mutex<crate::join::Join>,
+    /// OS feed records already passed to the join and the install flags,
+    /// by chat and id: a feed that reads its log again after a restart
+    /// posts them twice, and the log keeps one copy while the join and the
+    /// flags counted both (the re-review's FP13RR-7).
+    seen_os: Mutex<SeenOs>,
+    /// Install records (lane X): control-path flags and lockfile diffs.
+    installs: Mutex<crate::installs::ingest::InstallRecords>,
+    /// Content capture's purge (lane S), run by the service's timer.
+    purger: Mutex<crate::content::Purger>,
+    /// In-process watchers of `derm run`'s own records (`run.start`,
+    /// `run.stop`): the collector's registration (Mac test w5, MW5-18). Not a
+    /// `tail`: a tail is dropped when it falls behind, and the in-process
+    /// one never counted a line as read, so a flood of OS records ended it
+    /// and no later chat reached the collector until a restart.
+    run_watchers: Mutex<Vec<Sender<Event>>>,
+    /// The Linux OS feed's tail connections (box test w5 retest 2, BW5R2-5).
+    os_feed: Mutex<OsFeed>,
+    /// Stretches of the audit log the Linux feed said it could not read
+    /// (`feed.gap`, BW5R4-1), newest last, at most `FEED_GAPS_MAX`.
+    feed_gaps: Mutex<VecDeque<(Option<i64>, i64, String)>>,
     pub counters: Counters,
+}
+
+/// How many chats' folders the daemon holds for the check (the cap
+/// `activity_set_chat` has always had), and how far back a restarted daemon
+/// reads their `run.start` records: the log's own retention, 7 days, and a
+/// day of slack (BW5R5-1).
+const CHAT_CONTEXTS_MAX: usize = 2_048;
+const CHAT_CONTEXTS_BACK_MS: i64 = 8 * 24 * 3_600_000;
+
+/// How many `feed.gap` stretches the daemon keeps for its reports.
+const FEED_GAPS_MAX: usize = 64;
+
+/// The client name `derm-audit-feed run` gives its tail connection
+/// (`derm-audit-linux/src/bin/derm-audit-feed.rs`). The feed holds that
+/// connection for its whole run and exits when it closes.
+pub const AUDIT_FEED_TAIL: &str = "derm-audit-feed tail";
+
+/// Whether the Linux feed is attached: a connection whose `hello` named it
+/// the feed, with a live `tail` (fix pass 10's review, FP10-S2: a hello
+/// alone, or a tail the daemon dropped for falling behind, delivers no
+/// `run.start`). A status, not a guard: any process that can read
+/// `daemon.token` can name itself the feed (S2), and one that can do that
+/// can also stop the real one.
+#[derive(Default)]
+struct OsFeed {
+    /// Connections whose `hello` named them the feed's tail.
+    named: HashSet<u64>,
+    attached: bool,
+    seen: bool,
+    lost_at: Option<i64>,
+}
+
+/// How many call ids `Decided` keeps per chat, and how many chats.
+const DECIDED_PER_CHAT: usize = 4_096;
+const DECIDED_CHATS: usize = 64;
+
+/// The call ids each chat's gate decisions named (FP6R-3).
+#[derive(Default)]
+struct Decided {
+    chats: HashMap<String, (HashSet<String>, VecDeque<String>)>,
+    order: VecDeque<String>,
+}
+
+impl Decided {
+    fn note(&mut self, chat: &str, call: &str) {
+        // An id past the hook's own 128 bytes names no call (W5R-10).
+        if call.len() > 128 {
+            return;
+        }
+        // The chat noted last moves to the back, so a running chat is not
+        // the one evicted (FP6R2-2).
+        if self.chats.contains_key(chat) {
+            if self.order.back().map(String::as_str) != Some(chat) {
+                self.order.retain(|c| c != chat);
+                self.order.push_back(chat.to_string());
+            }
+        } else {
+            self.order.push_back(chat.to_string());
+            while self.order.len() > DECIDED_CHATS {
+                if let Some(old) = self.order.pop_front() {
+                    self.chats.remove(&old);
+                }
+            }
+        }
+        let (set, ids) = self.chats.entry(chat.to_string()).or_default();
+        if set.insert(call.to_string()) {
+            ids.push_back(call.to_string());
+            while ids.len() > DECIDED_PER_CHAT {
+                if let Some(old) = ids.pop_front() {
+                    set.remove(&old);
+                }
+            }
+        }
+    }
+
+    /// A chat's ids go at its `run.stop`: its token dies there, so no later
+    /// record of its names a call (FP6R2-2).
+    fn forget(&mut self, chat: &str) {
+        if self.chats.remove(chat).is_some() {
+            self.order.retain(|c| c != chat);
+        }
+    }
+
+    fn has(&self, chat: &str, call: &str) -> bool {
+        self.chats
+            .get(chat)
+            .is_some_and(|(set, _)| set.contains(call))
+    }
+}
+
+/// The chat a tap route belongs to: the running chat whose token hashes to
+/// it (`derm_tap::route::of_token_hash`). Read from the receiver's own token
+/// table, so a revoked token's route dies with it and a token restored after
+/// a restart (BX8) brings its route back, with no second table to keep in
+/// step (integration w5, phase 2; lane S's request 1 proposed a route map).
+pub fn chat_for_route(receiver: &Receiver, route: &str) -> Option<derm_tap::Chat> {
+    if !derm_tap::route::well_formed(route) {
+        return None;
+    }
+    receiver
+        .holders_snapshot()
+        .into_iter()
+        .find(|(hash, _, _)| derm_tap::route::of_token_hash(&hex(hash)) == route)
+        .map(|(_, chat, harness)| derm_tap::Chat {
+            id: chat,
+            harness: harness.to_string(),
+        })
+}
+
+/// Content capture's target for a chat, from `~/.derm/settings.json` read
+/// at each request (lane S): `None` while content is off.
+fn content_target(home: Option<&str>, data: &Path) -> Option<derm_tap::content::Target> {
+    let home = home?;
+    let (prefs, _) = derm_tap::settings::load(&derm_tap::settings::path_for(home));
+    prefs.content_days.map(|days| derm_tap::content::Target {
+        root: data.to_path_buf(),
+        retention_days: days,
+    })
 }
 
 #[derive(Default)]
@@ -284,7 +989,18 @@ pub struct Counters {
     pub refused_events: AtomicU64,
     pub tails_dropped: AtomicU64,
     pub approvals: AtomicU64,
+    /// Whether the collector's registration follower runs (MW5-18): set by
+    /// the follower itself, shown by `report`. Off where there is none.
+    pub registration_running: std::sync::atomic::AtomicBool,
+    /// Set once a registration follower has run, so `report` can tell
+    /// "stopped" from "none on this system".
+    pub registration_started: std::sync::atomic::AtomicBool,
 }
+
+/// The id prefixes the OS feeds write under: the Mac collector's
+/// (`es-<day>-<seq>`), the Linux feed's (`auditd-<ms>-<serial>`), the
+/// Windows feed's (`sysmon-...`). No chat token posts under them (FP2-S1).
+const OS_FEED_ID_PREFIXES: &[&str] = &["es-", "auditd-", "sysmon-"];
 
 fn now_ms() -> i64 {
     store::now_ms()
@@ -378,7 +1094,39 @@ impl Daemon {
                 }
             }
         });
+        let tap_port = saved
+            .as_ref()
+            .and_then(|v| v.get("tapPort"))
+            .and_then(Value::as_u64)
+            .and_then(|p| u16::try_from(p).ok());
+        let tap_sink: derm_tap::Sink = sink.clone();
         let receiver = Receiver::start_on(settings, sink, preferred)?;
+        // Prompt and reply text from a harness's OTel goes to content files
+        // while the content switch is on, never into a record (lane S's
+        // request 3's rest: the switch replaces DERM_LOG_CONTENT).
+        {
+            let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'));
+            let data = data_dir.to_path_buf();
+            receiver.set_content(Arc::new(move |_| content_target(home.as_deref(), &data)));
+        }
+        let tap = {
+            let routes = receiver.clone();
+            let resolve: derm_tap::Resolver = Arc::new(move |route| chat_for_route(&routes, route));
+            let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'));
+            let data = data_dir.to_path_buf();
+            let content: derm_tap::ContentPolicy =
+                Arc::new(move |_| content_target(home.as_deref(), &data));
+            let mut config = derm_tap::Config::new(resolve, tap_sink);
+            config.preferred_port = tap_port;
+            config.content = content;
+            match derm_tap::Tap::start(config) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("derm-daemon: the model tap did not start ({e}); chats run untapped");
+                    None
+                }
+            }
+        };
         let daemon = Arc::new(Daemon {
             token_hash: derm_core::token::hash(token),
             log,
@@ -386,24 +1134,58 @@ impl Daemon {
             data_dir: data_dir.to_string_lossy().into_owned(),
             receiver,
             order: Mutex::new(VecDeque::new()),
+            decided: Mutex::new(Decided::default()),
             tails: Mutex::new(Vec::new()),
             approvers: Mutex::new(Vec::new()),
             pending: Mutex::new(HashMap::new()),
             chats: Mutex::new(HashMap::new()),
             runs: Mutex::new(HashMap::new()),
+            ran_as_you: std::sync::atomic::AtomicBool::new(false),
+            chat_quota: Mutex::new(HashMap::new()),
             run_info: Mutex::new(HashMap::new()),
             minted_at: Mutex::new(HashMap::new()),
             state_file,
             next_conn: AtomicU64::new(1),
+            tap,
+            join: Mutex::new(crate::join::Join::new()),
+            seen_os: Mutex::new(SeenOs::default()),
+            installs: Mutex::new(crate::installs::ingest::InstallRecords::new()),
+            purger: Mutex::new(crate::content::Purger::new(data_dir)),
+            run_watchers: Mutex::new(Vec::new()),
+            os_feed: Mutex::new(OsFeed::default()),
+            feed_gaps: Mutex::new(VecDeque::new()),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
             *c = Some(Arc::downgrade(&daemon));
         }
+        // Lane T's P4-R1 (integration w5, continue): a chat's `event` and
+        // `approve` over the receiver's HTTP port, for a gate inside an sbx
+        // VM. The body is parsed as the socket's line is, and answered under
+        // the chat scope the same token gets on the socket (rule 2).
+        let weak = Arc::downgrade(&daemon);
+        daemon
+            .receiver
+            .set_ops(Arc::new(move |chat, harness, op, gone| {
+                let reply = match weak.upgrade() {
+                    Some(d) => d.http_op(chat, harness, op, gone),
+                    None => error("the daemon is stopping"),
+                };
+                serde_json::to_value(reply).unwrap_or(Value::Null)
+            }));
         if let Some(saved) = saved {
             daemon.restore_state(&saved);
         }
         daemon.save_state();
+        // Off the start path: the socket serves while the log is read.
+        let weak = Arc::downgrade(&daemon);
+        let _ = std::thread::Builder::new()
+            .name("derm-chat-contexts".into())
+            .spawn(move || {
+                if let Some(d) = weak.upgrade() {
+                    d.restore_chat_contexts();
+                }
+            });
         Ok(daemon)
     }
 
@@ -562,9 +1344,11 @@ impl Daemon {
             .rsplit(':')
             .next()
             .and_then(|p| p.parse::<u16>().ok());
+        let tap_port = self.tap.as_ref().map(derm_tap::Tap::port);
         let text = json!({
             "version": 1,
             "otlpPort": port,
+            "tapPort": tap_port,
             "tokens": tokens,
             "runs": runs,
         })
@@ -576,13 +1360,149 @@ impl Daemon {
         self.receiver.endpoint()
     }
 
+    /// The model tap's loopback URL, which the service publishes as
+    /// `tap.endpoint`; `None` when the tap did not start.
+    pub fn tap_endpoint(&self) -> Option<String> {
+        self.tap.as_ref().map(derm_tap::Tap::endpoint)
+    }
+
+    /// One pass of content capture's purge (lane S, case 126): the files past
+    /// their retention go, and each chat's `content.purge` is recorded.
+    pub fn content_pass(&self, now: i64) -> usize {
+        let made = self
+            .purger
+            .lock()
+            .map(|mut p| p.pass(now))
+            .unwrap_or_default();
+        let n = made.len();
+        for e in made {
+            self.ingest(e);
+        }
+        n
+    }
+
     pub fn next_conn(&self) -> u64 {
         self.next_conn.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Notes a connection whose `hello` named it the Linux feed's tail, with
+    /// the daemon's own token (BW5R2-5). A chat token never counts. It is
+    /// attached once its `tail` is live (FP10-S2).
+    pub fn note_client(&self, conn: u64, who: &Who, client: &str) {
+        if *who != Who::Daemon || client != AUDIT_FEED_TAIL {
+            return;
+        }
+        if let Ok(mut feed) = self.os_feed.lock() {
+            feed.named.insert(conn);
+        }
+    }
+
+    /// Whether a named feed connection has a live tail, after a tail was
+    /// added or dropped. Called with the tails lock held (tails, then the
+    /// feed: the one order).
+    fn feed_refresh(&self, tails: &[TailSub]) {
+        let Ok(mut feed) = self.os_feed.lock() else {
+            return;
+        };
+        let attached = tails.iter().any(|t| feed.named.contains(&t.out.conn));
+        if attached {
+            feed.seen = true;
+            feed.lost_at = None;
+        } else if feed.attached {
+            feed.lost_at = Some(now_ms());
+        }
+        feed.attached = attached;
+    }
+
+    fn note_feed_gap(&self, e: &Event) {
+        let to = e.detail.get("toMs").and_then(Value::as_i64).unwrap_or(e.at);
+        let from = e.detail.get("fromMs").and_then(Value::as_i64);
+        let why = e
+            .detail
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .take(200)
+            .collect::<String>();
+        if let Ok(mut gaps) = self.feed_gaps.lock() {
+            gaps.push_back((from, to, why));
+            while gaps.len() > FEED_GAPS_MAX {
+                gaps.pop_front();
+            }
+        }
+    }
+
+    /// The `feed.gap` stretches that overlap `[a, b]`, as report rows. A
+    /// stretch with no known start reaches back to any time.
+    fn feed_gaps_in(&self, a: i64, b: i64) -> Vec<Value> {
+        let Ok(gaps) = self.feed_gaps.lock() else {
+            return Vec::new();
+        };
+        gaps.iter()
+            .filter(|(from, to, _)| from.unwrap_or(i64::MIN) <= b && *to >= a)
+            .map(|(from, to, why)| json!({"fromMs": from, "toMs": to, "reason": why}))
+            .collect()
+    }
+
+    /// The Linux feed as `report` names it (BW5R2-5): `attached`; `stopped`
+    /// with when, once it was attached and every connection of it closed;
+    /// `none` when none attached since this daemon started. Null elsewhere:
+    /// the Mac's collector has its own fields.
+    pub fn os_feed_state(&self) -> Value {
+        if !cfg!(target_os = "linux") {
+            return Value::Null;
+        }
+        self.os_feed_state_here()
+    }
+
+    fn os_feed_state_here(&self) -> Value {
+        let Ok(feed) = self.os_feed.lock() else {
+            return Value::Null;
+        };
+        if feed.attached {
+            json!({"state": "attached"})
+        } else if feed.seen {
+            json!({"state": "stopped", "since": feed.lost_at})
+        } else {
+            json!({"state": "none"})
+        }
+    }
+
+    /// The collector registration's state for `report` (MW5-18): `running`,
+    /// `stopped` (no new chat reaches the collector until a restart), or
+    /// null where none was started (Linux, tests).
+    pub fn registration_state(&self) -> Value {
+        if !self.counters.registration_started.load(Ordering::SeqCst) {
+            return Value::Null;
+        }
+        if self.counters.registration_running.load(Ordering::SeqCst) {
+            json!("running")
+        } else {
+            json!("stopped")
+        }
+    }
+
+    /// Every `derm run` record (`Source::Run`) the daemon takes from now on,
+    /// in order, for an in-process watcher that must not miss one (MW5-18).
+    /// Dropping the receiver ends the watch.
+    pub fn watch_runs(&self) -> Rx<Event> {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut watchers) = self.run_watchers.lock() {
+            watchers.push(tx);
+        }
+        rx
     }
 
     /// Stores one event and streams it. The daemon stamps `at` (case 35);
     /// a client's own time moves to `detail.harnessAt`. Returns the id kept.
     pub fn ingest(&self, mut event: Event) -> String {
+        // The OS feeds' exec records keep the argv's shape only, whatever the
+        // content switch (box test w5, BW5-12; case 85): a harness's prompt
+        // and an agent's commands were in the log as typed.
+        if event.kind == "exec" && matches!(event.source, Source::Auditd | Source::Eslogger) {
+            shape_exec(&mut event);
+        }
         if event.at > 0 {
             if let Value::Object(map) = &mut event.detail {
                 map.entry("harnessAt").or_insert(Value::from(event.at));
@@ -590,29 +1510,110 @@ impl Daemon {
         }
         event.at = now_ms();
         let event = store::bound_event(event);
+        // An OS record posted again (a gap's re-read) stops here: the log,
+        // the ring, the tails, the join and the install flags have its first
+        // copy, and a repeat pushed a live chat's gate decisions out of the
+        // ring and printed again in every tail (fp13's second re-review,
+        // FP13RR2-1). Across a daemon restart the store keeps the first copy
+        // (`store::may_replace`).
+        if matches!(event.source, Source::Auditd | Source::Eslogger)
+            && self
+                .seen_os
+                .lock()
+                .map(|mut s| !s.first(&event.chat_id, &event.id))
+                .unwrap_or(false)
+        {
+            return event.id;
+        }
         self.log.submit(Entry::Event(event.clone()));
         self.counters.events.fetch_add(1, Ordering::Relaxed);
         let line = serde_json::to_string(&Push::Event(event.clone())).ok();
         let Ok(mut ring) = self.order.lock() else {
             return event.id;
         };
+        if event.source == Source::Run && event.kind == "run.stop" {
+            if let Ok(mut decided) = self.decided.lock() {
+                decided.forget(&event.chat_id);
+            }
+        }
+        if store::is_gate_decision(&event) {
+            if let (Some(call), Ok(mut decided)) = (
+                event.detail.get("toolUseId").and_then(Value::as_str),
+                self.decided.lock(),
+            ) {
+                decided.note(&event.chat_id, call);
+            }
+        }
         ring.push_back(event.clone());
         while ring.len() > RING_CAPACITY {
             ring.pop_front();
         }
         if let (Some(line), Ok(mut tails)) = (line, self.tails.lock()) {
+            let before = tails.len();
             tails.retain(|sub| {
-                if sub.chat.as_deref().is_some_and(|c| c != event.chat_id) {
+                if sub.chat.as_deref().is_some_and(|c| c != event.chat_id)
+                    || (sub.runs && event.source != Source::Run)
+                {
                     return true;
                 }
-                if sub.out.pending() >= MAX_PENDING_LINES || !sub.out.send_line(line.clone()) {
+                if sub.out.pending() >= sub.room || !sub.out.send_line(line.clone()) {
                     self.counters.tails_dropped.fetch_add(1, Ordering::Relaxed);
+                    // Closed, not only forgotten: the client sees the end
+                    // and can start again (a feed under systemd restarts),
+                    // where a held connection left it waiting for good
+                    // (fp13's review, FP13R-11).
+                    sub.out.close();
                     return false;
                 }
                 true
             });
+            if tails.len() != before {
+                self.feed_refresh(&tails);
+            }
         }
         drop(ring);
+        // `derm run`'s own records to the in-process watchers (MW5-18). Only
+        // the daemon scope posts `run` records (`op_event` refuses them from a
+        // chat token), so this stays small (review FP3-S6).
+        if event.source == Source::Run {
+            if let Ok(mut watchers) = self.run_watchers.lock() {
+                watchers.retain(|w| w.send(event.clone()).is_ok());
+            }
+        }
+        // Install records (lane X's request 4, integration w5 continue): the
+        // control-path flags and the lockfile diffs read every event, the
+        // join's candidate sets included, before the join sees it, so a write
+        // is held when the join's set for it arrives. The working folder is
+        // the chat's from its daemon-scope run.start, never the record's.
+        if event.source != Source::Derm || event.kind == "join.candidates" {
+            let cwd = |chat: &str| {
+                self.chats
+                    .lock()
+                    .ok()
+                    .and_then(|c| c.get(chat).and_then(|x| x.folders.first().cloned()))
+            };
+            let made = self
+                .installs
+                .lock()
+                .map(|mut r| r.observe(&event, cwd, event.at))
+                .unwrap_or_default();
+            for e in made {
+                self.ingest(e);
+            }
+        }
+        // The join (lane S) reads every event but its own; what it makes is
+        // ingested after its lock is released, and `observe` ignores the
+        // `derm` records it gets back, so this never loops.
+        if event.source != Source::Derm {
+            let made = self
+                .join
+                .lock()
+                .map(|mut j| j.observe(&event))
+                .unwrap_or_default();
+            for e in made {
+                self.ingest(e);
+            }
+        }
         event.id
     }
 
@@ -666,7 +1667,9 @@ impl Daemon {
             Request::Event { event } => {
                 out.send(&self.op_event(who, event));
             }
-            Request::Tail { since, chat } => self.op_tail(who, since, chat, out),
+            Request::Tail { since, chat, runs } => {
+                self.op_tail(who, since, chat, runs.unwrap_or(false), out)
+            }
             Request::Report { chat, since, until } => {
                 out.send(&self.op_report(who, chat, since, until));
             }
@@ -688,8 +1691,24 @@ impl Daemon {
                     out.send(&ok());
                 }
             }
-            Request::Answer { id, answer, chat } => {
-                out.send(&self.op_answer(out.conn, &id, chat.as_deref(), answer));
+            Request::Answer {
+                id,
+                answer,
+                chat,
+                proof,
+            } => {
+                // S2 part b (lane V): a yes an agent could forge needs the
+                // person's password; the bytes are wiped once checked.
+                let mut password = proof.map(|p| p.password.into_bytes());
+                let ran_as_you = self.ran_as_you.load(Ordering::SeqCst);
+                out.send(&self.op_answer_proved(
+                    out.conn,
+                    &id,
+                    chat.as_deref(),
+                    answer,
+                    password.as_mut(),
+                    ran_as_you,
+                ));
             }
             Request::TokenMint { chat, harness } => {
                 out.send(&self.op_mint(who, &chat, &harness));
@@ -701,7 +1720,90 @@ impl Daemon {
         After::Continue
     }
 
+    /// A chat's op over HTTP (P4-R1): the field is read as the socket reads
+    /// its line, with `deny_unknown_fields`, then answered as the socket's
+    /// chat scope answers it.
+    fn http_op(
+        &self,
+        chat: &str,
+        harness: &str,
+        op: otel_receiver::ChatOp,
+        gone: &dyn Fn() -> bool,
+    ) -> Reply {
+        let who = Who::Chat {
+            chat: chat.to_string(),
+            harness: harness.to_string(),
+        };
+        let line = match op {
+            otel_receiver::ChatOp::Event(event) => json!({"op": "event", "event": event}),
+            otel_receiver::ChatOp::Approve(request) => {
+                json!({"op": "approve", "request": request})
+            }
+        };
+        match serde_json::from_value::<Request>(line) {
+            Ok(Request::Event { event }) => self.op_event(&who, event),
+            Ok(Request::Approve { request }) => self.op_approve_until(&who, request, gone),
+            Ok(_) => error("not an op this route takes"),
+            Err(e) => error(format!("bad request: {e}")),
+        }
+    }
+
+    /// Takes one record of `bytes` from a chat's share of the socket.
+    fn take_chat_quota(
+        &self,
+        chat: &str,
+        bytes: usize,
+        now_ms: i64,
+        now: std::time::Instant,
+    ) -> Result<(), &'static str> {
+        let Ok(mut all) = self.chat_quota.lock() else {
+            return Err("busy");
+        };
+        if !all.contains_key(chat) && all.len() >= MAX_QUOTA_CHATS {
+            // A chat at rest gives way first; else the one with the least
+            // spent today.
+            if let Some(k) = all
+                .iter()
+                .min_by_key(|(_, q)| q.bytes)
+                .map(|(k, _)| k.clone())
+            {
+                all.remove(&k);
+            }
+        }
+        let day = now_ms.div_euclid(86_400_000);
+        let q = all.entry(chat.to_string()).or_insert(Quota {
+            tokens: SOCKET_BURST_PER_CHAT,
+            at: now,
+            day,
+            bytes: 0,
+        });
+        q.tokens = (q.tokens
+            + now.saturating_duration_since(q.at).as_secs_f64() * SOCKET_RATE_PER_CHAT_SEC)
+            .min(SOCKET_BURST_PER_CHAT);
+        q.at = now;
+        if q.day != day {
+            q.day = day;
+            q.bytes = 0;
+        }
+        if q.tokens < 1.0 {
+            return Err("this chat posts too fast; record dropped");
+        }
+        if q.bytes.saturating_add(bytes) > SOCKET_BYTES_PER_CHAT_DAY {
+            return Err("this chat has posted its day's share of records; record dropped");
+        }
+        q.tokens -= 1.0;
+        q.bytes += bytes;
+        Ok(())
+    }
+
     fn op_event(&self, who: &Who, mut event: Event) -> Reply {
+        // A computer-use action record is the daemon's own (lane U's request
+        // R1; `trust: daemon` in `contracts/wave5-records.schema.json`): no
+        // socket client posts one, under any source, in either scope.
+        if event.kind == "cu.action" {
+            self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+            return error("cu.action events are written by the daemon");
+        }
         match who {
             Who::Chat { chat, harness } => {
                 // A chat token sits in a harness's environment: it may post
@@ -712,8 +1814,32 @@ impl Daemon {
                     self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
                     return error("a chat token posts only adapter and otel events");
                 }
+                // Nor under an OS feed's id (fix pass 2's review, FP2-S1):
+                // those ids are predictable, and the log keeps the first
+                // record under an id, so a record posted first would hide
+                // the kernel's. Checked as the log will write the id.
+                let id = store::bound_event(Event {
+                    detail: Value::Null,
+                    ..event.clone()
+                })
+                .id
+                .to_ascii_lowercase();
+                if OS_FEED_ID_PREFIXES.iter().any(|p| id.starts_with(p)) {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return error("ids starting es-, auditd- or sysmon- are the OS feeds'");
+                }
                 event.chat_id = chat.clone();
                 event.harness = harness.clone();
+                // A chat token is the agent's too (case 66), so its posts are
+                // bounded per chat: the reviewer's agent wrote 1.3 GB in
+                // 22 s over the socket (re-review W5R-3).
+                let bytes = serde_json::to_vec(&event).map(|v| v.len()).unwrap_or(0);
+                if let Err(why) =
+                    self.take_chat_quota(chat, bytes, now_ms(), std::time::Instant::now())
+                {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return error(why);
+                }
             }
             Who::Daemon => {
                 // Approval records are the daemon's own (`approve`).
@@ -721,13 +1847,31 @@ impl Daemon {
                     self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
                     return error("approval events are written by the daemon");
                 }
+                // So are wave 5's tap and derm records (the wave 5 base,
+                // `contracts/events.md` section 5): the tap runs in the
+                // daemon, and the join and the derived records are its own.
+                if matches!(event.source, Source::Tap | Source::Derm) {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return error("tap and derm events are written by the daemon");
+                }
+                // BW5R4-1: the Linux feed could not read a stretch of the
+                // audit log; reports name it for the chats it overlaps. Only
+                // the daemon scope posts `auditd` records (a chat token is
+                // refused above).
+                if event.source == Source::Auditd && event.kind == "feed.gap" {
+                    self.note_feed_gap(&event);
+                }
                 if event.source == Source::Run && event.kind == "run.start" {
                     self.set_chat_from_run(&event);
                     if let (Some(pid), Ok(mut runs)) = (event.pid, self.runs.lock()) {
                         if runs.len() < 2_048 || runs.contains_key(&event.chat_id) {
                             runs.insert(event.chat_id.clone(), RunPid::of(pid));
                             if let Ok(mut info) = self.run_info.lock() {
-                                info.insert(event.chat_id.clone(), run_info_of(&event, now_ms()));
+                                let run = run_info_of(&event, now_ms());
+                                if approver::person::runs_as_person(&run) {
+                                    self.ran_as_you.store(true, Ordering::SeqCst);
+                                }
+                                info.insert(event.chat_id.clone(), run);
                             }
                         }
                     }
@@ -738,6 +1882,9 @@ impl Daemon {
                 // greeted keeps its scope until it closes.
                 if event.source == Source::Run && event.kind == "run.stop" {
                     self.receiver.revoke_chat(&event.chat_id);
+                    if let Some(tap) = &self.tap {
+                        tap.forget_chat(&event.chat_id);
+                    }
                     if let Ok(mut runs) = self.runs.lock() {
                         runs.remove(&event.chat_id);
                     }
@@ -760,6 +1907,29 @@ impl Daemon {
             // copy is never dropped: it is kept under its own id, and the
             // daemon records the conflict, which only it can write.
             return self.keep_conflict(event, held);
+        }
+        if let Some(code) = matches!(who, Who::Chat { .. })
+            .then(|| self.held_code_call(&event))
+            .flatten()
+        {
+            // Fix pass 6 (FP5R-3, FP5R-4): no harness's gate posts for a
+            // code tool call (Codex sends no hook for Code Mode's `exec` or
+            // `wait`), so a chat's record naming one is the agent's. It is
+            // kept as a conflict copy and flagged; the join takes a code
+            // call's times from the tap alone.
+            return self.keep_conflict(event, code);
+        }
+        if let Some(tap) = matches!(who, Who::Chat { .. })
+            .then(|| self.early_tool_call(&event))
+            .flatten()
+        {
+            // Fix pass 6's review, FP6-S2: every derm gate posts its decision
+            // before the harness runs the call, and its `tool.call` after, so
+            // a chat's `tool.call` for a call the tap recorded and no gate has
+            // decided yet is the agent's, posted to end the call before its
+            // shell starts. It is kept as a conflict copy and flagged; the
+            // join re-opens the call at the gate's first allow.
+            return self.keep_conflict(event, tap);
         }
         let id = self.ingest(event);
         Reply {
@@ -850,11 +2020,81 @@ impl Daemon {
             .map(|old| old.id.clone())
     }
 
+    /// The tap's record of a code tool call (`derm_core::policy::CODE_TOOLS`)
+    /// in this event's chat that an adapter `approval` or `tool.call` names
+    /// by `detail.toolUseId`, for a record still in the ring (fix pass 6).
+    fn held_code_call(&self, event: &Event) -> Option<String> {
+        if event.source != Source::Adapter
+            || !matches!(event.kind.as_str(), "approval" | "tool.call")
+        {
+            return None;
+        }
+        let call = event
+            .detail
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())?;
+        let ring = self.order.lock().ok()?;
+        ring.iter()
+            .rev()
+            .find(|old| {
+                old.chat_id == event.chat_id
+                    && old.source == Source::Tap
+                    && old.kind == "tap.call"
+                    && old.detail.get("callId").and_then(Value::as_str) == Some(call)
+                    && old
+                        .detail
+                        .get("toolNormalized")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| derm_core::policy::code_tool(&old.harness, t))
+            })
+            .map(|old| old.id.clone())
+    }
+
+    /// The tap's record of the call an adapter `tool.call` names by
+    /// `detail.toolUseId`, when no gate decision for that call is in the ring
+    /// yet (fix pass 6's review, FP6-S2).
+    fn early_tool_call(&self, event: &Event) -> Option<String> {
+        if event.source != Source::Adapter || event.kind != "tool.call" {
+            return None;
+        }
+        let call = event
+            .detail
+            .get("toolUseId")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && s.len() <= 128)?;
+        if self
+            .decided
+            .lock()
+            .ok()
+            .is_none_or(|d| d.has(&event.chat_id, call))
+        {
+            return None;
+        }
+        let ring = self.order.lock().ok()?;
+        ring.iter()
+            .rev()
+            .find(|old| {
+                old.chat_id == event.chat_id
+                    && old.source == Source::Tap
+                    && old.kind == "tap.call"
+                    && old.detail.get("callId").and_then(Value::as_str) == Some(call)
+            })
+            .map(|old| old.id.clone())
+    }
+
     /// A daemon-scope `run.start` may name the chat's folders
     /// (`detail.folders`, or `detail.cwd`), which the check needs for
     /// `writeOutsideFolders`. Only the daemon scope may: a chat could
     /// otherwise widen its own folders.
     fn set_chat_from_run(&self, event: &Event) {
+        self.put_chat_from_run(event, true);
+    }
+
+    /// A chat's context from a `run.start` record. `replace`: a record this
+    /// daemon takes now wins over what it holds; one read back from the log
+    /// at start never replaces a chat already held.
+    fn put_chat_from_run(&self, event: &Event, replace: bool) {
         let mut folders: Vec<String> = event
             .detail
             .get("folders")
@@ -877,11 +2117,44 @@ impl Daemon {
             return;
         };
         if let Ok(mut chats) = self.chats.lock() {
-            if chats.len() >= 2_048 && !chats.contains_key(&context.chat_id) {
+            let held = chats.contains_key(&context.chat_id);
+            if (held && !replace) || (!held && chats.len() >= CHAT_CONTEXTS_MAX) {
                 return;
             }
             chats.insert(context.chat_id.clone(), context);
         }
+    }
+
+    /// Box retest of fix pass 13r, BW5R5-1: the chats' folders the check
+    /// reads were held only in memory, so after a restart every write of an
+    /// earlier chat, in its own folder too, was flagged as outside it. At
+    /// start the daemon reads back the newest `run.start` records in its
+    /// log (only the daemon scope can post one, as when they were taken),
+    /// newest first, and keeps the first it finds per chat.
+    fn restore_chat_contexts(&self) -> usize {
+        let since = now_ms().saturating_sub(CHAT_CONTEXTS_BACK_MS);
+        let keep = |e: &crate::activity::types::ActivityEvent| {
+            e.source == Source::Run && e.kind == "run.start"
+        };
+        let mut back = store::read_newest(
+            &self.log_dir,
+            since,
+            i64::MAX,
+            None,
+            CHAT_CONTEXTS_MAX,
+            &keep,
+        )
+        .events;
+        back.sort_by_key(|e| std::cmp::Reverse(e.at));
+        let mut n = 0;
+        for e in &back {
+            let before = self.chats.lock().map(|c| c.len()).unwrap_or(0);
+            self.put_chat_from_run(e, false);
+            if self.chats.lock().map(|c| c.len()).unwrap_or(0) > before {
+                n += 1;
+            }
+        }
+        n
     }
 
     fn op_tail(
@@ -889,6 +2162,7 @@ impl Daemon {
         who: &Who,
         since: Option<i64>,
         chat: Option<String>,
+        runs: bool,
         out: &Outbox,
     ) {
         let chat = match (who, chat) {
@@ -909,31 +2183,67 @@ impl Daemon {
         // a client does after it reads `ok` can be ingested before the
         // subscription exists (lane K's request 5: the old order sent `ok`
         // first, and an event ingested in between was never pushed).
-        let mut backlog: Vec<Event> = match since {
+        // The newest records, not the first ones read: after a restart the
+        // ring is empty and the disk is the whole backlog (fp13's review,
+        // FP13R-1; the contract has said "newest" since BW5-12).
+        let only_runs = |e: &Event| !runs || e.source == Source::Run;
+        let (mut backlog, mut cut): (Vec<Event>, bool) = match since {
             Some(since) => {
-                store::read(&self.log_dir, since, i64::MAX, chat.as_deref(), MAX_BACKLOG).events
+                let r = store::read_newest(
+                    &self.log_dir,
+                    since,
+                    i64::MAX,
+                    chat.as_deref(),
+                    MAX_BACKLOG,
+                    &only_runs,
+                );
+                (r.events, r.truncated)
             }
-            None => Vec::new(),
+            None => (Vec::new(), false),
         };
         let Ok(ring) = self.order.lock() else {
             out.send(&error("busy"));
             return;
         };
         if let Some(since) = since {
-            backlog = merge_backlog(backlog, ring.iter(), since, chat.as_deref());
+            let merged = merge_backlog(
+                backlog,
+                ring.iter().filter(|e| only_runs(e)),
+                since,
+                chat.as_deref(),
+            );
+            cut |= merged.1;
+            backlog = merged.0;
         }
         let Ok(mut tails) = self.tails.lock() else {
             out.send(&error("busy"));
             return;
         };
-        out.send(&ok());
+        // A backlog cut to the newest records says so (box test w5, BW5-12:
+        // a busy chat's tail stopped at 5,000 with no notice).
+        let mut reply = ok();
+        if cut {
+            reply.report = Some(
+                json!({"backlogCut": true, "backlogSent": backlog.len(), "backlogMax": MAX_BACKLOG}),
+            );
+        } else if since.is_some() {
+            // How many backlog events come before the live ones, so a reader
+            // that must know every chat first (the Linux feed, BW5R4-1) can
+            // tell when it has them.
+            reply.report = Some(json!({"backlogSent": backlog.len()}));
+        }
+        out.send(&reply);
+        let room = MAX_PENDING_LINES + backlog.len();
         for event in backlog {
             out.send(&Push::Event(event));
         }
         tails.push(TailSub {
             chat,
+            runs,
             out: out.clone(),
+            room,
         });
+        self.feed_refresh(&tails);
         drop(tails);
         drop(ring);
         #[cfg(test)]
@@ -958,6 +2268,7 @@ impl Daemon {
                 .collect();
             m.insert("running".into(), Value::Array(running));
         }
+        fit_report_with(&mut report, REPORT_BUDGET, Some(self.data_dir.as_str()));
         Reply {
             report: Some(report),
             ..ok()
@@ -996,6 +2307,49 @@ impl Daemon {
             now_ms(),
         );
         check.dropped = self.log.dropped();
+        let status = collector_status();
+        // A chat's run, from its own run records (MW5-23), read over the
+        // whole log so a window that misses its start still finds it
+        // (FP4-S5): its last start up to `until`, and the first stop after.
+        // The window's own run records when it holds the start; the whole
+        // log only when it does not (the re-review's R5: that read's cost
+        // grows with the log).
+        let is_run = |e: &crate::activity::types::ActivityEvent| {
+            e.source == Source::Run && (e.kind == "run.start" || e.kind == "run.stop")
+        };
+        let in_window = back
+            .events
+            .iter()
+            .any(|e| e.source == Source::Run && e.kind == "run.start");
+        let run = chat.and_then(|c| {
+            let whole;
+            let runs: Vec<&crate::activity::types::ActivityEvent> = if in_window {
+                back.events.iter().filter(|e| is_run(e)).collect()
+            } else {
+                whole = store::read_runs(&self.log_dir, c, until, 256);
+                whole.events.iter().collect()
+            };
+            let mut runs = runs;
+            runs.sort_by_key(|e| e.at);
+            let start = runs.iter().rposition(|e| e.kind == "run.start")?;
+            let stop = runs[start..]
+                .iter()
+                .find(|e| e.kind == "run.stop")
+                .map(|e| e.at);
+            Some((runs[start].at, stop))
+        });
+        let (kernel_total, kernel_inside, kernel_during) =
+            kernel_drops_for(status.as_ref(), since, until, run);
+        // A bound when a gap in the window is merged or reaches past either
+        // edge (R5, the second re-review's R2-5).
+        let window_up_to = kernel_inside.as_array().map(|gaps| {
+            gaps.iter().any(|g| {
+                let merged = g.get("merged").and_then(Value::as_u64).unwrap_or(1) > 1;
+                let from = g.get("fromMs").and_then(Value::as_i64);
+                let to = g.get("toMs").and_then(Value::as_i64);
+                merged || from.is_none_or(|t| t < since) || to.is_none_or(|t| t > until)
+            })
+        });
         json!({
             "since": since,
             "until": until,
@@ -1009,10 +2363,65 @@ impl Daemon {
             "truncated": back.truncated || check.truncated,
             "dropped": check.dropped,
             "check": check,
+            // MW5-18: whether new chats still reach the collector, and how
+            // many tails the daemon dropped for falling behind.
+            "osRegistration": self.registration_state(),
+            // BW5R2-5: whether derm-audit-feed is attached (Linux only).
+            "osFeed": self.os_feed_state(),
+            // MW5-19: eslogger lines the Mac collector dropped because it
+            // read them slower than they came (its own count, since it
+            // started); null where there is no collector.
+            "collectorDropped": status.as_ref().and_then(|s| s.get("dropped")).and_then(Value::as_u64),
+            // MW5-23: what the kernel dropped for the collector's eslogger
+            // (its total, the gaps in this window, and for a chat, how many
+            // fell during its run, which the OS layer then did not see).
+            "osKernelDropped": kernel_total,
+            "osKernelDrops": kernel_inside,
+            "chatOsMissed": kernel_during,
+            // FP4-S5: the count is a bound, not exact, when a gap it takes
+            // stands for merged gaps or reaches outside the run.
+            "chatOsMissedUpTo": run.map(|r| kernel_drops_up_to(status.as_ref(), r)),
+            // R5: the window's count is a bound when a gap in it is merged.
+            "osKernelDropsUpTo": window_up_to,
+            "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
+            // MW5-34: for a chat, how many of its OS events reached the
+            // daemon after the join stopped waiting for a feed that was
+            // behind (null when none did, or with no chat).
+            "chatOsLate": chat
+                .and_then(|c| self.join.lock().ok().and_then(|j| j.late_for(c)))
+                .filter(|n| *n > 0),
+            // FP11-S2: OS events that came after derm let the chat go with
+            // the feed past its stop, so done after the run stopped.
+            "chatOsAfter": chat
+                .and_then(|c| self.join.lock().ok().and_then(|j| j.after_for(c)))
+                .filter(|n| *n > 0),
+            // BW5R4-1: stretches of the audit log the Linux feed could not
+            // read, in the window, and for a chat, during its run (to its
+            // stop and the join's keep).
+            "osFeedGaps": Some(self.feed_gaps_in(since, until)).filter(|g| !g.is_empty()),
+            "chatOsFeedGaps": run
+                .map(|(start, stop)| {
+                    let end = stop.map_or(i64::MAX, |s| {
+                        s.saturating_add(crate::join::STOPPED_KEEP_MS)
+                    });
+                    self.feed_gaps_in(start, end)
+                })
+                .filter(|g| !g.is_empty()),
         })
     }
 
-    fn op_approve(&self, who: &Who, mut request: ApprovalRequest) -> Reply {
+    fn op_approve(&self, who: &Who, request: ApprovalRequest) -> Reply {
+        self.op_approve_until(who, request, &|| false)
+    }
+
+    /// As `op_approve`, and stops waiting with `no`, by no one, once `gone`
+    /// says the client hung up (an HTTP ask, W5C-S3).
+    fn op_approve_until(
+        &self,
+        who: &Who,
+        mut request: ApprovalRequest,
+        gone: &dyn Fn() -> bool,
+    ) -> Reply {
         if let Who::Chat { chat, harness } = who {
             request.chat = chat.clone();
             request.harness = harness.clone();
@@ -1029,7 +2438,7 @@ impl Daemon {
         self.counters.approvals.fetch_add(1, Ordering::Relaxed);
         let record_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
         self.approval_event(&record_id, &request, None, None, Value::Null);
-        let (answer, by, approver) = self.wait_for_answer(&request);
+        let (answer, by, approver) = self.wait_for_answer(&request, gone);
         self.approval_event(&record_id, &request, Some(answer), Some(by), approver);
         self.record_approval(ApprovalRecord {
             id: record_id,
@@ -1047,81 +2456,6 @@ impl Daemon {
             answer: Some(answer),
             by: Some(by),
             ..ok()
-        }
-    }
-
-    /// Sends the request to every approver; the first answer wins. None
-    /// connected: `no` at once (case 63). None in time: `no` at the timeout.
-    fn wait_for_answer(&self, request: &ApprovalRequest) -> (Answer, AnsweredBy, Value) {
-        let (tx, rx) = mpsc::sync_channel::<(Answer, Value)>(1);
-        {
-            let Ok(mut pending) = self.pending.lock() else {
-                return (Answer::No, AnsweredBy::None, Value::Null);
-            };
-            let key = (request.chat.clone(), request.id.clone());
-            let this_chat = pending.values().filter(|p| p.chat == request.chat).count();
-            if pending.contains_key(&key)
-                || pending.len() >= MAX_PENDING_APPROVALS
-                || this_chat >= MAX_PENDING_PER_CHAT
-            {
-                return (Answer::No, AnsweredBy::None, Value::Null);
-            }
-            pending.insert(
-                key,
-                Pending {
-                    answer: tx,
-                    chat: request.chat.clone(),
-                },
-            );
-        }
-        let line = serde_json::to_string(&Push::Approve(request.clone())).ok();
-        let mut reached = 0;
-        if let (Some(line), Ok(mut approvers)) = (line, self.approvers.lock()) {
-            approvers.retain(|a| a.send_line(line.clone()));
-            reached = approvers.len();
-        }
-        let outcome = if reached == 0 {
-            (Answer::No, AnsweredBy::None, Value::Null)
-        } else {
-            match rx.recv_timeout(Duration::from_secs(u64::from(request.timeout_seconds))) {
-                Ok((answer, approver)) => (answer, AnsweredBy::Approver, approver),
-                Err(_) => (Answer::No, AnsweredBy::Timeout, Value::Null),
-            }
-        };
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(&(request.chat.clone(), request.id.clone()));
-        }
-        outcome
-    }
-
-    fn op_answer(&self, conn: u64, id: &str, chat: Option<&str>, answer: Answer) -> Reply {
-        let approver = self
-            .approvers
-            .lock()
-            .ok()
-            .and_then(|a| a.iter().find(|o| o.conn == conn).cloned());
-        let Some(approver) = approver else {
-            return error("not an approver");
-        };
-        let who = match approver.peer.as_deref() {
-            Some(p) => p.record(),
-            None => json!({ "inProcess": true }),
-        };
-        let Ok(pending) = self.pending.lock() else {
-            return error("busy");
-        };
-        let mut waiting = pending
-            .iter()
-            .filter(|((c, i), _)| i == id && chat.is_none_or(|want| want == c));
-        match (waiting.next(), waiting.next()) {
-            // The channel holds one answer: the first wins, the rest fail
-            // to send and are told nothing more.
-            (Some((_, p)), None) => {
-                let _ = p.answer.try_send((answer, who));
-                ok()
-            }
-            (Some(_), Some(_)) => error("two chats wait on this id: name the chat"),
-            (None, _) => error("no such request, or it was answered or timed out"),
         }
     }
 
@@ -1169,109 +2503,6 @@ impl Daemon {
         });
     }
 
-    /// Why a socket peer may not become an approver, if it may not
-    /// (integration w2, security finding S2; lane J's request 1a). A process
-    /// that is a running chat's harness or descends from one is the agent;
-    /// so is one under a `derm` program (a chat this daemon may not know, from
-    /// before a restart). This does not stop an agent that leaves the tree
-    /// (a double fork, `setsid`, tmux, `systemd-run --user`): S2 stays open
-    /// until the approver proves a person (a PAM check) or agents run as
-    /// another user.
-    fn approver_refusal(&self, peer: &ConnPeer) -> Option<String> {
-        let Some(cred) = peer.cred.as_ref() else {
-            return Some("the daemon cannot read who is asking".into());
-        };
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let me = unsafe { libc::geteuid() };
-        if cred.uid != me {
-            return Some(format!("uid {} is not this daemon's user", cred.uid));
-        }
-        let Some(pid) = cred.pid else {
-            return Some("the OS gave no pid for the peer".into());
-        };
-        // The pid must still be the process read at accept (review W2-S5): a
-        // child that connects and exits leaves a pid with no ancestors, and
-        // without a pidfd (macOS, Linux before 6.5) nothing else catches it.
-        if let Some(why) = Self::peer_moved(pid, peer.start_time) {
-            return Some(why);
-        }
-        let mut line = vec![pid];
-        line.extend(derm_core::peer::ancestors(pid));
-        let runs = self.runs.lock().map(|r| r.clone()).unwrap_or_default();
-        for (chat, run) in &runs {
-            let harness_pid = &run.pid;
-            if line.contains(harness_pid) {
-                return Some(format!(
-                    "it runs inside chat {} (harness pid {harness_pid})",
-                    clip(chat, 128)
-                ));
-            }
-        }
-        if let Some(derm) = derm_core::peer::derm_run_ancestor(pid) {
-            return Some(format!(
-                "it runs under a derm process (pid {derm}), a chat's shell"
-            ));
-        }
-        // Read last, so a pid that was reused while the walk ran is caught.
-        if let Some(fd) = peer.pidfd.as_ref() {
-            if !derm_core::peer::pidfd_alive(fd) {
-                return Some("the process that connected has exited".into());
-            }
-        }
-        Self::peer_moved(pid, peer.start_time)
-    }
-
-    /// Why `pid` is no longer the process whose start time was read when the
-    /// connection was accepted, if it is not.
-    fn peer_moved(pid: u32, at_accept: Option<u64>) -> Option<String> {
-        let Some(at_accept) = at_accept else {
-            return Some("the daemon could not read the process at connect".into());
-        };
-        match derm_core::peer::start_time(pid) {
-            None => Some("the process that connected is gone".into()),
-            Some(now) if now != at_accept => {
-                Some(format!("pid {pid} is not the process that connected"))
-            }
-            Some(_) => None,
-        }
-    }
-
-    /// Records an approver's registration, or its refusal, with who it was.
-    fn approver_event(&self, out: &Outbox, accepted: bool, why: Option<&str>) {
-        let peer = out
-            .peer
-            .as_deref()
-            .map(ConnPeer::record)
-            .unwrap_or(Value::Null);
-        let program = peer
-            .get("program")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown program")
-            .to_string();
-        let pid = peer.get("pid").and_then(Value::as_u64);
-        let summary = match (accepted, why) {
-            (true, _) => format!("approver connected: {program} (pid {})", pid.unwrap_or(0)),
-            (false, why) => format!("approver refused: {}", why.unwrap_or("")),
-        };
-        self.ingest(Event {
-            id: format!("approver-{}", uuid::Uuid::new_v4().simple()),
-            at: 0,
-            chat_id: String::new(),
-            harness: String::new(),
-            source: Source::Approval,
-            kind: "approver".into(),
-            summary: clip(&summary, 200),
-            detail: json!({
-                "accepted": accepted,
-                "reason": why,
-                "peer": peer,
-                "conn": out.conn,
-            }),
-            pid: pid.and_then(|p| u32::try_from(p).ok()),
-            approval_id: None,
-        });
-    }
-
     fn op_mint(&self, who: &Who, chat: &str, harness: &str) -> Reply {
         if *who != Who::Daemon {
             return error("token.mint needs daemon scope");
@@ -1311,6 +2542,10 @@ impl Daemon {
         }
         if let Ok(mut t) = self.tails.lock() {
             t.retain(|s| s.out.conn != conn);
+            if let Ok(mut feed) = self.os_feed.lock() {
+                feed.named.remove(&conn);
+            }
+            self.feed_refresh(&t);
         }
     }
 
@@ -1325,8 +2560,8 @@ impl Daemon {
 
 /// `cu` (lane K's request 3): computer use's controls, daemon scope only.
 /// A chat token may not stop, read or revoke computer use: it is the
-/// agent's (case 66). Where computer use does not run (not macOS, or the
-/// feature off) the answer says so.
+/// agent's (case 66). Where computer use does not run (another system, the
+/// setting off, or a start that failed) the answer says which (BW5R2-1).
 fn op_cu(who: &Who, action: CuAction, chat: Option<&str>, app: Option<&str>) -> Reply {
     if *who != Who::Daemon {
         return error("cu needs daemon scope");
@@ -1339,7 +2574,17 @@ fn op_cu(who: &Who, action: CuAction, chat: Option<&str>, app: Option<&str>) -> 
     #[cfg(feature = "computer-use")]
     {
         let Some(service) = crate::computer_use::service::running() else {
-            return error("computer use is not running here (macOS only, started by the daemon)");
+            // Box test w5 retest 3, BW5R3-2: a status query is answered, not
+            // refused: computer use not running is a state, said with why.
+            // Stop and revoke have nothing to act on and still refuse.
+            let why = crate::computer_use::service::not_running_reason();
+            if matches!(action, CuAction::Status) {
+                return Reply {
+                    report: Some(json!({"running": false, "reason": why})),
+                    ..ok()
+                };
+            }
+            return error(why);
         };
         let report = match action {
             CuAction::Status => serde_json::to_value(service.status()).ok(),
@@ -1383,6 +2628,7 @@ fn parse_sha256(text: &str) -> Option<[u8; 32]> {
 /// The state file when it is safe to read: a regular file (no link) owned
 /// by this user, no group or other bits, at most 1 MiB, JSON with
 /// `version: 1`. Anything else is ignored, and the daemon starts empty.
+#[cfg(unix)]
 fn read_state(path: &Path) -> Option<Value> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -1394,8 +2640,7 @@ fn read_state(path: &Path) -> Option<Value> {
         .open(path)
         .ok()?;
     let meta = file.metadata().ok()?;
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
+    let me = derm_core::platform::effective_user();
     if !meta.file_type().is_file()
         || meta.uid() != me
         || meta.mode() & 0o077 != 0
@@ -1412,11 +2657,54 @@ fn read_state(path: &Path) -> Option<Value> {
     (value.get("version").and_then(Value::as_u64) == Some(1)).then_some(value)
 }
 
+/// Windows (lane Z): the file itself, never a reparse point's target,
+/// checked on the open handle as on Unix (`open_private_file`).
+#[cfg(windows)]
+fn read_state(path: &Path) -> Option<Value> {
+    use std::io::Read;
+    let mut file = derm_core::platform::windows::open_private_file(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file() || meta.len() > STATE_FILE_MAX {
+        return None;
+    }
+    let mut text = String::new();
+    file.by_ref()
+        .take(STATE_FILE_MAX + 1)
+        .read_to_string(&mut text)
+        .ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    (value.get("version").and_then(Value::as_u64) == Some(1)).then_some(value)
+}
+
 /// The disk's records and the ring's, as one backlog: one record per chat
 /// and id, the last copy where it may replace the first (case 35, the
 /// store's `may_replace`), oldest first, at most `MAX_BACKLOG`.
 /// What a `run.start` says that `derm status` shows, each string cut: the
 /// record is the daemon's own (daemon scope), but its words are `derm run`'s.
+/// An exec record's argv as its shape, and a summary built from it.
+fn shape_exec(event: &mut Event) {
+    let Some(argv) = event.detail.get("argv").and_then(Value::as_array) else {
+        // No argv, but the summary may still hold the words.
+        if event.summary.starts_with("exec ") || event.summary.starts_with("ran ") {
+            event.summary = "exec".into();
+        }
+        return;
+    };
+    let words: Vec<String> = argv
+        .iter()
+        .map(|w| w.as_str().unwrap_or("").to_string())
+        .collect();
+    let shaped = derm_core::argv::shape(&words);
+    event.summary = format!("exec {}", shaped.join(" "))
+        .chars()
+        .take(200)
+        .collect();
+    if let Value::Object(m) = &mut event.detail {
+        m.insert("argv".into(), json!(shaped));
+        m.insert("argvShaped".into(), Value::Bool(true));
+    }
+}
+
 fn run_info_of(event: &Event, received: i64) -> Value {
     let cut = |v: Option<&Value>, max: usize| -> Value {
         v.and_then(Value::as_str)
@@ -1429,12 +2717,69 @@ fn run_info_of(event: &Event, received: i64) -> Value {
         .and_then(Value::as_array)
         .map(|a| a.iter().take(16).map(|f| cut(Some(f), 64)).collect())
         .unwrap_or_default();
-    json!({
+    let mut out = json!({
         "harness": Value::String(event.harness.chars().take(64).collect()),
         "boundary": cut(event.detail.get("boundary"), 16),
         "since": received,
         "fullAccessFlags": flags,
-    })
+        // The agents' user the chat runs as (lane V), its name only.
+        "agentUser": cut(event.detail.get("agentUser").and_then(|u| u.get("user")), 32),
+    });
+    if let Value::Object(m) = &mut out {
+        m.extend(wave5_marks(&event.detail));
+    }
+    out
+}
+
+/// The wave 5 marks of a `run.start` (`contracts/events.md` section 5) as the
+/// running list keeps them: the boundary choice without its reasons, the
+/// io_uring mark, whether the tap is on and why not, and content capture.
+/// Each value cut to a fixed size and shape (review W2-S9: `chats.json` is
+/// read, not trusted). Integration w5's close (T-7, V-4, request S-7).
+fn wave5_marks(d: &Value) -> serde_json::Map<String, Value> {
+    let s = |v: Option<&Value>, max: usize| -> Value {
+        v.and_then(Value::as_str)
+            .map(|x| Value::String(x.chars().take(max).collect()))
+            .unwrap_or(Value::Null)
+    };
+    let b = |v: Option<&Value>| v.and_then(Value::as_bool).map_or(Value::Null, Value::Bool);
+    let mut m = serde_json::Map::new();
+    if let Some(c) = d.get("boundaryChoice").filter(|v| v.is_object()) {
+        m.insert(
+            "boundaryChoice".into(),
+            json!({
+                "chosen": s(c.get("chosen"), 8),
+                "named": b(c.get("named")),
+                "answeredBy": s(c.get("answeredBy"), 16),
+            }),
+        );
+    }
+    if let Some(k) = d.get("sbxKit").filter(|v| v.is_object()) {
+        m.insert("sbxKit".into(), json!({"added": b(k.get("added"))}));
+    }
+    if d.get("ioUring").is_some() {
+        m.insert("ioUring".into(), s(d.get("ioUring"), 16));
+    }
+    if let Some(t) = d.get("tap").filter(|v| v.is_object()) {
+        let mut tap = serde_json::Map::new();
+        tap.insert("on".into(), b(t.get("on")));
+        if t.get("reason").is_some() {
+            tap.insert("reason".into(), s(t.get("reason"), 32));
+        }
+        m.insert("tap".into(), Value::Object(tap));
+    }
+    if let Some(c) = d.get("content").filter(|v| v.is_object()) {
+        let days = c
+            .get("retentionDays")
+            .and_then(Value::as_u64)
+            .filter(|n| (1..=7).contains(n))
+            .map_or(Value::Null, Value::from);
+        m.insert(
+            "content".into(),
+            json!({"on": b(c.get("on")), "retentionDays": days}),
+        );
+    }
+    m
 }
 
 /// A run's info as `chats.json` held it: the same fields, re-cut, nothing
@@ -1457,20 +2802,27 @@ fn run_info_restored(v: &Value) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    json!({
+    let mut out = json!({
         "harness": cut("harness", 64),
         "boundary": cut("boundary", 16),
         "since": v.get("since").and_then(Value::as_i64),
         "fullAccessFlags": flags,
-    })
+        "agentUser": cut("agentUser", 32),
+    });
+    if let Value::Object(m) = &mut out {
+        m.extend(wave5_marks(v));
+    }
+    out
 }
 
+/// The backlog, oldest first, at most `MAX_BACKLOG`, and whether older
+/// records were left out.
 pub fn merge_backlog<'a>(
     disk: Vec<Event>,
     ring: impl Iterator<Item = &'a Event>,
     since: i64,
     chat: Option<&str>,
-) -> Vec<Event> {
+) -> (Vec<Event>, bool) {
     let mut out: Vec<Event> = Vec::new();
     let mut slot: HashMap<(String, String), usize> = HashMap::new();
     let ring = ring.filter(|e| e.at >= since && chat.is_none_or(|c| c == e.chat_id));
@@ -1489,10 +2841,11 @@ pub fn merge_backlog<'a>(
         }
     }
     out.sort_by_key(|e| e.at);
-    if out.len() > MAX_BACKLOG {
+    let cut = out.len() > MAX_BACKLOG;
+    if cut {
         out.drain(..out.len() - MAX_BACKLOG);
     }
-    out
+    (out, cut)
 }
 
 fn bump(map: &mut Map<String, Value>, key: &Value) {
@@ -1510,6 +2863,87 @@ pub fn retention_pass(dir: &Path, now: i64) -> usize {
         retention::day_of_ms(now),
         retention::CAP_BYTES,
     ))
+}
+
+/// The Mac collector's own count of eslogger lines it dropped (its status
+/// line's `dropped`), on macOS; `None` elsewhere or when it does not answer.
+/// The Mac collector's status line, as data; `None` off macOS.
+fn collector_status() -> Option<Value> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    crate::activity::collector::fetch_status_detail()
+}
+
+/// What the kernel dropped for the collector's eslogger (MW5-23; Apple,
+/// `es_message_t.global_seq_num`): its total since the collector started,
+/// the gaps that fall inside `[since, until]` (by the event times around
+/// each), and, for a chat whose run is known, how many of those dropped
+/// events fell during its run, kept `join::STOPPED_KEEP_MS` past its stop as
+/// the join keeps it. Nulls when the collector says nothing (off macOS, or a
+/// collector built before the count).
+pub fn kernel_drops_for(
+    status: Option<&Value>,
+    since: i64,
+    until: i64,
+    run: Option<(i64, Option<i64>)>,
+) -> (Value, Value, Value) {
+    let Some(total) = status
+        .and_then(|s| s.get("kernelDropped"))
+        .and_then(Value::as_u64)
+    else {
+        return (Value::Null, Value::Null, Value::Null);
+    };
+    let gaps: Vec<&Value> = status
+        .and_then(|s| s.get("kernelDrops"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().collect())
+        .unwrap_or_default();
+    let span = |g: &Value| {
+        let to = g.get("toMs").and_then(Value::as_i64);
+        let from = g.get("fromMs").and_then(Value::as_i64).or(to);
+        (from, to.or(from))
+    };
+    let overlaps = |g: &Value, a: i64, b: i64| match span(g) {
+        (Some(f), Some(t)) => f <= b && t >= a,
+        _ => false,
+    };
+    let inside: Vec<Value> = gaps
+        .iter()
+        .filter(|g| overlaps(g, since, until))
+        .map(|g| (*g).clone())
+        .collect();
+    let during = run.map(|(start, stop)| {
+        let end = stop.map_or(i64::MAX, |s| s.saturating_add(crate::join::STOPPED_KEEP_MS));
+        gaps.iter()
+            .filter(|g| overlaps(g, start, end))
+            .filter_map(|g| g.get("count").and_then(Value::as_u64))
+            .sum::<u64>()
+    });
+    (json!(total), Value::Array(inside), json!(during))
+}
+
+/// Whether `kernel_drops_for`'s count for a run is a bound rather than
+/// exact: a gap it takes stands for merged gaps, or begins before the run
+/// or ends after it, so some of its events may have fallen outside (FP4-S5).
+pub fn kernel_drops_up_to(status: Option<&Value>, run: (i64, Option<i64>)) -> bool {
+    let (start, stop) = run;
+    let end = stop.map_or(i64::MAX, |s| s.saturating_add(crate::join::STOPPED_KEEP_MS));
+    status
+        .and_then(|s| s.get("kernelDrops"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|g| {
+            let to = g.get("toMs").and_then(Value::as_i64);
+            let from = g.get("fromMs").and_then(Value::as_i64).or(to);
+            let to = to.or(from);
+            let (Some(f), Some(t)) = (from, to) else {
+                return false;
+            };
+            let merged = g.get("merged").and_then(Value::as_u64).unwrap_or(1) > 1;
+            f <= end && t >= start && (merged || f < start || t > end)
+        })
 }
 
 /// The Mac collector's events for a report, as the fork's panel read them;
@@ -1594,6 +3028,63 @@ fn adapter_call(event: &crate::activity::types::ActivityEvent) -> Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MW5-23: the collector's kernel drops reach the report, in the window
+    /// and during a chat's run, and nothing is claimed where the collector
+    /// says nothing.
+    #[test]
+    fn kernel_drops_are_placed_in_the_window_and_the_chats_run() {
+        let status = json!({"dropped": 0, "kernelDropped": 150, "kernelDrops": [
+            {"fromMs": 1_000, "toMs": 2_000, "count": 100},
+            {"fromMs": 50_000, "toMs": 51_000, "count": 40},
+            {"toMs": 90_000, "count": 10}
+        ]});
+        let (total, inside, during) =
+            kernel_drops_for(Some(&status), 0, 60_000, Some((1_500, Some(15_000))));
+        assert_eq!(total, 150);
+        assert_eq!(inside.as_array().unwrap().len(), 2);
+        assert_eq!(during, 100, "the first gap overlaps the run");
+        // Kept 30 s past the stop, as the join keeps a chat.
+        let (_, _, during) =
+            kernel_drops_for(Some(&status), 0, i64::MAX, Some((30_000, Some(25_000))));
+        assert_eq!(during, 40);
+        // A run still going takes every later gap.
+        let (_, _, during) = kernel_drops_for(Some(&status), 0, i64::MAX, Some((60_000, None)));
+        assert_eq!(during, 10);
+        // No chat: no per-chat count. No count from the collector: nulls.
+        assert_eq!(kernel_drops_for(Some(&status), 0, 1, None).2, Value::Null);
+        assert_eq!(
+            kernel_drops_for(Some(&json!({"dropped": 3})), 0, 1, None),
+            (Value::Null, Value::Null, Value::Null)
+        );
+        assert_eq!(
+            kernel_drops_for(None, 0, 1, Some((0, None))),
+            (Value::Null, Value::Null, Value::Null)
+        );
+    }
+
+    /// FP4-S5: a count that takes a merged gap, or one reaching outside the
+    /// run, is a bound and says so.
+    #[test]
+    fn a_chats_missed_count_says_when_it_is_a_bound() {
+        let inside = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 2_000, "toMs": 3_000, "count": 5}
+        ]});
+        assert!(!kernel_drops_up_to(Some(&inside), (1_000, Some(10_000))));
+        let merged = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 2_000, "toMs": 3_000, "count": 5, "merged": 3}
+        ]});
+        assert!(kernel_drops_up_to(Some(&merged), (1_000, Some(10_000))));
+        let reaching = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 500, "toMs": 3_000, "count": 5}
+        ]});
+        assert!(kernel_drops_up_to(Some(&reaching), (1_000, Some(10_000))));
+        // A gap that does not touch the run says nothing about it.
+        let apart = json!({"kernelDropped": 5, "kernelDrops": [
+            {"fromMs": 500_000, "toMs": 600_000, "count": 5, "merged": 9}
+        ]});
+        assert!(!kernel_drops_up_to(Some(&apart), (1_000, Some(10_000))));
+    }
     use crate::activity::types::ActivitySource;
     use std::sync::mpsc::RecvTimeoutError;
 
@@ -1623,6 +3114,74 @@ mod tests {
         (Daemon::new(TOKEN, log, &data, false).unwrap(), root)
     }
 
+    /// Box retest of fix pass 13r (BW5R5-1, run on the box 8 Nov): the
+    /// chat-to-folders map the check reads lived only in memory, filled by a
+    /// `run.start` this daemon took, so after any daemon restart every write
+    /// of an earlier chat, its own folder's included, was "outside this
+    /// chat's folders" (chats b510ctl and fp13c: 4 such flags each; b510ctl2,
+    /// run in the same daemon's life: 0). A restarted daemon reads the
+    /// chats' `run.start` records back from its log.
+    #[test]
+    fn bw5r5_1_a_chats_folders_survive_a_daemon_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let first = Daemon::new(TOKEN, log, &data, false).unwrap();
+        let now = now_ms();
+        let mut start = ev_of(
+            "chat-f",
+            Source::Run,
+            "run.start",
+            None,
+            json!({"boundary": "none", "argv": ["pi"], "cwd": "/home/t/proj"}),
+        );
+        start.at = now - 60_000;
+        assert!(first.op_event(&Who::Daemon, start).ok);
+        let mut write = ev_of(
+            "chat-f",
+            Source::Auditd,
+            "create",
+            Some(77),
+            json!({"path": "/home/t/proj/a.txt", "tier": "child"}),
+        );
+        write.id = "auditd-1-1".into();
+        write.at = now - 50_000;
+        assert!(first.op_event(&Who::Daemon, write).ok);
+        let mut held = Value::Null;
+        for _ in 0..100 {
+            held = first.report(Some("chat-f"), 0, i64::MAX);
+            if held["events"] == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(held["events"], 2, "{held}");
+        assert_eq!(held["flags"], 0, "the same daemon knows the folder: {held}");
+        drop(first);
+        let log2: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
+        let mut after = Value::Null;
+        for _ in 0..100 {
+            after = second.report(Some("chat-f"), 0, i64::MAX);
+            if after["events"] == 2 && after["flags"] == 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(after["events"], 2, "{after}");
+        assert_eq!(
+            after["flags"], 0,
+            "a write in the chat's own folder after a restart: {after}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn event(id: &str) -> Event {
         Event {
             id: id.into(),
@@ -1640,6 +3199,7 @@ mod tests {
 
     /// BX8's state file is taken only when it is this user's own private
     /// regular file: one others can read or write, or a link, is ignored.
+    #[cfg(unix)]
     #[test]
     fn a_state_file_that_is_not_private_is_ignored() {
         use std::os::unix::fs::PermissionsExt;
@@ -1685,7 +3245,7 @@ mod tests {
         // keeps a started chat's token alive for good; neither counts.
         for run in [
             json!({"chat": "chat-x", "pid": std::process::id(), "startTime": null}),
-            json!({"chat": "chat-x", "pid": 1, "startTime": derm_core::peer::start_time(1)}),
+            json!({"chat": "chat-x", "pid": 1, "startTime": derm_core::platform::peer::start_time(1)}),
         ] {
             let planted = json!({
                 "version": 1,
@@ -1715,7 +3275,7 @@ mod tests {
             hooked.ingest(event("right-after-ok"));
         }));
         let (out, rx, _) = Outbox::new(d.next_conn());
-        d.op_tail(&Who::Daemon, None, None, &out);
+        d.op_tail(&Who::Daemon, None, None, false, &out);
         *AFTER_OK.lock().unwrap() = None;
         let first: Value = serde_json::from_str(&rx.recv().unwrap()).unwrap();
         assert_eq!(first["ok"], true, "{first}");
@@ -1735,21 +3295,21 @@ mod tests {
     #[test]
     fn an_approver_whose_process_is_gone_or_reused_is_refused() {
         let (d, root) = daemon();
-        let me = derm_core::peer::Peer {
+        let me = derm_core::platform::peer::Peer {
             pid: None,
-            uid: unsafe { libc::geteuid() },
+            uid: derm_core::platform::effective_user(),
         };
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap();
         let pid = child.id();
-        let started = derm_core::peer::start_time(pid);
+        let started = derm_core::platform::peer::start_time(pid);
         assert!(started.is_some());
         child.kill().unwrap();
         child.wait().unwrap();
         let gone = ConnPeer {
-            cred: Some(derm_core::peer::Peer {
+            cred: Some(derm_core::platform::peer::Peer {
                 pid: Some(pid),
                 ..me.clone()
             }),
@@ -1761,20 +3321,20 @@ mod tests {
         assert!(why.contains("gone"), "{why}");
         let own = std::process::id();
         let reused = ConnPeer {
-            cred: Some(derm_core::peer::Peer {
+            cred: Some(derm_core::platform::peer::Peer {
                 pid: Some(own),
                 ..me.clone()
             }),
             pidfd: None,
             program: None,
-            start_time: derm_core::peer::start_time(own).map(|t| t + 1),
+            start_time: derm_core::platform::peer::start_time(own).map(|t| t + 1),
         };
         let why = d
             .approver_refusal(&reused)
             .expect("another process under the pid is refused");
         assert!(why.contains("not the process"), "{why}");
         let unread = ConnPeer {
-            cred: Some(derm_core::peer::Peer {
+            cred: Some(derm_core::platform::peer::Peer {
                 pid: Some(own),
                 ..me
             }),
@@ -1783,6 +3343,857 @@ mod tests {
             start_time: None,
         };
         assert!(d.approver_refusal(&unread).is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn ev_of(chat: &str, source: Source, kind: &str, pid: Option<u32>, detail: Value) -> Event {
+        Event {
+            id: format!("{kind}-{}", uuid::Uuid::new_v4().simple()),
+            at: 0,
+            chat_id: chat.into(),
+            harness: "claude-code".into(),
+            source,
+            kind: kind.into(),
+            summary: String::new(),
+            detail,
+            pid,
+            approval_id: None,
+        }
+    }
+
+    /// Lane S's request 1 (integration w5, phase 2): a tap route resolves to
+    /// the running chat whose token makes it, read from the receiver's own
+    /// table; the chat's `run.stop` kills the route with the token; a route
+    /// no chat holds, or one not well formed, resolves to nothing.
+    #[test]
+    fn a_tap_route_is_its_chats_until_the_chat_stops() {
+        let (d, root) = daemon();
+        assert!(d.tap_endpoint().is_some(), "the tap started");
+        let reply = d.op_mint(&Who::Daemon, "chat-r", "claude-code");
+        let token = reply.token.expect("minted");
+        let route = derm_tap::route::of_token(&token);
+        assert_eq!(
+            chat_for_route(&d.receiver, &route),
+            Some(derm_tap::Chat {
+                id: "chat-r".into(),
+                harness: "claude-code".into()
+            })
+        );
+        assert_eq!(chat_for_route(&d.receiver, &"0".repeat(32)), None);
+        assert_eq!(chat_for_route(&d.receiver, &route.to_uppercase()), None);
+        assert_eq!(chat_for_route(&d.receiver, "../x"), None);
+        let stop = ev_of("chat-r", Source::Run, "run.stop", None, json!({}));
+        assert!(d.op_event(&Who::Daemon, stop).ok);
+        assert_eq!(
+            chat_for_route(&d.receiver, &route),
+            None,
+            "gone with the token"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A restarted daemon takes back a running chat's token (BX8), so its
+    /// route resolves again and the tap binds its old port (case 86).
+    #[test]
+    fn a_restart_brings_back_a_running_chats_route_and_the_taps_port() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-tapstate-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let state = root.join("chats.json");
+        let start = || {
+            let log: &'static ActivityLog = Box::leak(Box::new(ActivityLog::start(
+                root.join(format!("data-{}", uuid::Uuid::new_v4().simple())),
+            )));
+            Daemon::new_with_state(TOKEN, log, &root, false, Some(state.clone())).unwrap()
+        };
+        let first = start();
+        let port = first.tap.as_ref().map(derm_tap::Tap::port).unwrap();
+        let token = first
+            .op_mint(&Who::Daemon, "chat-k", "claude-code")
+            .token
+            .unwrap();
+        let mut harness = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let begin = ev_of(
+            "chat-k",
+            Source::Run,
+            "run.start",
+            Some(harness.id()),
+            json!({"cwd": "/tmp", "boundary": "srt"}),
+        );
+        assert!(first.op_event(&Who::Daemon, begin).ok);
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(saved["tapPort"], port, "{saved}");
+        drop(first);
+        let second = start();
+        assert_eq!(
+            second.tap.as_ref().map(derm_tap::Tap::port),
+            Some(port),
+            "the old port, free again, is taken back"
+        );
+        let route = derm_tap::route::of_token(&token);
+        assert_eq!(
+            chat_for_route(&second.receiver, &route).map(|c| c.id),
+            Some("chat-k".to_string())
+        );
+        let _ = harness.kill();
+        let _ = harness.wait();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// The join runs on what the daemon ingests: a tap call naming a path,
+    /// then the OS feed's write to it, makes one `join.candidates` record
+    /// (source `derm`) with that call chosen, and nothing loops.
+    #[test]
+    fn the_join_reads_what_the_daemon_ingests() {
+        let (d, root) = daemon();
+        d.ingest(ev_of(
+            "chat-j",
+            Source::Run,
+            "run.start",
+            Some(4242),
+            json!({"cwd": "/w"}),
+        ));
+        let mut call = ev_of(
+            "chat-j",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_A", "toolNormalized": "write", "paths": ["/w/x"], "resultSha256": null}),
+        );
+        call.id = "tap-chat-j-toolu_A".into();
+        d.ingest(call);
+        d.ingest(ev_of(
+            "chat-j",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_A", "decision": "allow"}),
+        ));
+        d.ingest(ev_of(
+            "chat-j",
+            Source::Auditd,
+            "write",
+            Some(4300),
+            json!({"ppid": 4242, "auditAt": now_ms(), "path": "/w/x"}),
+        ));
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let joins: Vec<&Event> = ring
+            .iter()
+            .filter(|e| e.kind == "join.candidates")
+            .collect();
+        assert_eq!(joins.len(), 1, "{ring:?}");
+        assert_eq!(joins[0].source, Source::Derm);
+        assert_eq!(joins[0].detail["chosen"], "tap-chat-j-toolu_A");
+        assert_eq!(ring.len(), 5, "four events and one join record");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FP13RR-7 (fp13's re-review): a feed that reads its log again after a
+    /// restart posts an OS record twice under the same id. The log keeps one
+    /// copy; the join and the install flags must see it once too.
+    #[test]
+    fn fp13rr_7_an_os_record_posted_twice_reaches_the_join_once() {
+        let (d, root) = daemon();
+        d.ingest(ev_of(
+            "chat-r",
+            Source::Run,
+            "run.start",
+            Some(5252),
+            json!({"cwd": "/w"}),
+        ));
+        let mut call = ev_of(
+            "chat-r",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_R", "toolNormalized": "write", "paths": ["/w/x"], "resultSha256": null}),
+        );
+        call.id = "tap-chat-r-toolu_R".into();
+        d.ingest(call);
+        d.ingest(ev_of(
+            "chat-r",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_R", "decision": "allow"}),
+        ));
+        let mut write = ev_of(
+            "chat-r",
+            Source::Auditd,
+            "write",
+            Some(5300),
+            json!({"ppid": 5252, "auditAt": now_ms(), "path": "/w/x"}),
+        );
+        write.id = "auditd-1-77".into();
+        d.ingest(write.clone());
+        d.ingest(write.clone());
+        // Another chat's record under the same id is its own.
+        write.chat_id = "chat-s".into();
+        d.ingest(write);
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let joins = ring
+            .iter()
+            .filter(|e| e.kind == "join.candidates" && e.chat_id == "chat-r")
+            .count();
+        assert_eq!(joins, 1, "{ring:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Fix pass 6 (FP5R-3, FP5R-4): no gate posts for a code tool call, so a
+    /// chat's `approval` or `tool.call` naming the tap's Code Mode call is
+    /// kept as a conflict copy and flagged; one naming another call is not.
+    #[test]
+    fn fp6_a_chat_record_naming_a_tap_code_call_is_flagged() {
+        let (d, root) = daemon();
+        let mut call = ev_of(
+            "chat-c",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "call_E9", "toolNormalized": "exec", "paths": [], "resultSha256": null}),
+        );
+        call.id = "tap-chat-c-call_E9".into();
+        call.harness = "codex".into();
+        d.ingest(call);
+        let who = Who::Chat {
+            chat: "chat-c".into(),
+            harness: "codex".into(),
+        };
+        for (kind, detail) in [
+            (
+                "approval",
+                json!({"toolUseId": "call_E9", "decision": "allow", "tool": "exec"}),
+            ),
+            ("tool.call", json!({"toolUseId": "call_E9"})),
+        ] {
+            let mut e = ev_of("chat-c", Source::Adapter, kind, None, detail);
+            e.harness = "codex".into();
+            let r = d.op_event(&who, e);
+            assert!(r.ok, "{kind}");
+            assert!(
+                r.id.as_deref().is_some_and(|i| i.contains("-conflict-")),
+                "{kind}: {:?}",
+                r.id
+            );
+        }
+        // A record for a call the tap did not mark as code is ingested as is.
+        let mut other = ev_of(
+            "chat-c",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "call_N1", "decision": "allow", "tool": "bash"}),
+        );
+        other.harness = "codex".into();
+        let r = d.op_event(&who, other);
+        assert!(
+            r.id.as_deref().is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            r.id
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let flags: Vec<&Event> = ring.iter().filter(|e| e.kind == "gate.conflict").collect();
+        assert_eq!(flags.len(), 2, "{ring:?}");
+        assert!(
+            flags.iter().all(|f| f.detail["id"] == "tap-chat-c-call_E9"),
+            "{flags:?}"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FP6R2-2: a chat noted again is not the one evicted when more chats
+    /// come, and a chat's ids go at its `run.stop`.
+    #[test]
+    fn fp6r2_2_a_running_chats_decided_calls_outlast_other_chats() {
+        let mut d = Decided::default();
+        d.note("chat-a", "toolu_A");
+        for i in 0..(DECIDED_CHATS * 2) {
+            d.note(&format!("chat-{i}"), "toolu_X");
+            d.note("chat-a", &format!("toolu_A{i}"));
+        }
+        assert!(d.has("chat-a", "toolu_A"));
+        assert!(!d.has("chat-0", "toolu_X"));
+        assert!(d.chats.len() <= DECIDED_CHATS);
+        d.forget("chat-a");
+        assert!(!d.has("chat-a", "toolu_A"));
+        let (daemon, root) = daemon();
+        let mut allow = ev_of(
+            "chat-z",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_Z", "decision": "allow", "tool": "bash"}),
+        );
+        allow.id = "z-decision".into();
+        daemon.ingest(allow);
+        assert!(daemon.decided.lock().unwrap().has("chat-z", "toolu_Z"));
+        daemon.ingest(ev_of("chat-z", Source::Run, "run.stop", None, json!({})));
+        assert!(!daemon.decided.lock().unwrap().has("chat-z", "toolu_Z"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Fix pass 6's review, FP6-S2: a chat's `tool.call` for a call the tap
+    /// recorded, before any gate decision for it, is kept as a conflict copy
+    /// and flagged; the gate's own `tool.call` after its decision is not.
+    #[test]
+    fn fp6r_a_tool_call_before_its_gates_decision_is_flagged() {
+        let (d, root) = daemon();
+        let mut call = ev_of(
+            "chat-s",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_S2", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        call.id = "tap-chat-s-toolu_S2".into();
+        d.ingest(call);
+        let who = Who::Chat {
+            chat: "chat-s".into(),
+            harness: "claude-code".into(),
+        };
+        let post = |kind: &str, detail: Value| {
+            let mut e = ev_of("chat-s", Source::Adapter, kind, None, detail);
+            e.harness = "claude-code".into();
+            d.op_event(&who, e)
+        };
+        let early = post("tool.call", json!({"toolUseId": "toolu_S2"}));
+        assert!(early.ok);
+        assert!(
+            early
+                .id
+                .as_deref()
+                .is_some_and(|i| i.contains("-conflict-")),
+            "{:?}",
+            early.id
+        );
+        let allow = post(
+            "approval",
+            json!({"toolUseId": "toolu_S2", "decision": "allow", "tool": "bash"}),
+        );
+        assert!(
+            allow
+                .id
+                .as_deref()
+                .is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            allow.id
+        );
+        let after = post("tool.call", json!({"toolUseId": "toolu_S2"}));
+        assert!(
+            after
+                .id
+                .as_deref()
+                .is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            after.id
+        );
+        // A call the tap did not record is ingested as is.
+        let untapped = post("tool.call", json!({"toolUseId": "toolu_X"}));
+        assert!(
+            untapped
+                .id
+                .as_deref()
+                .is_some_and(|i| !i.contains("-conflict-")),
+            "{:?}",
+            untapped.id
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let flags: Vec<&Event> = ring.iter().filter(|e| e.kind == "gate.conflict").collect();
+        assert_eq!(flags.len(), 1, "{ring:?}");
+        assert_eq!(flags[0].detail["id"], "tap-chat-s-toolu_S2");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// FP6R-3 probe. The tap writes a call's first `tap.call` only when the
+    /// whole response has streamed (`derm-tap/src/tap.rs:553-594`), so a
+    /// gate's decision can reach the ring before it; a long call then pushes
+    /// the decision out of the ring (`RING_CAPACITY`, shared by every chat and
+    /// the OS feeds) while the later `tap.call` stays, and the gate's own
+    /// honest `tool.call` is flagged as an early one.
+    #[test]
+    fn fp6r_3_an_honest_tool_call_after_its_decision_left_the_ring_is_not_flagged() {
+        let (d, root) = daemon();
+        let who = Who::Chat {
+            chat: "chat-h".into(),
+            harness: "claude-code".into(),
+        };
+        let mut allow = ev_of(
+            "chat-h",
+            Source::Adapter,
+            "approval",
+            None,
+            json!({"toolUseId": "toolu_H1", "decision": "allow", "tool": "bash"}),
+        );
+        allow.id = "claude-code-toolu_H1-decision-0123456789abcdef0123456789abcdef".into();
+        assert!(d.op_event(&who, allow).ok);
+        let mut call = ev_of(
+            "chat-h",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_H1", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        call.id = "tap-chat-h-toolu_H1".into();
+        d.ingest(call);
+        // The call's own OS events (an install), from the daemon scope.
+        for i in 0..RING_CAPACITY {
+            let mut e = ev_of(
+                "chat-h",
+                Source::Auditd,
+                "write",
+                Some(9),
+                json!({"path": format!("/w/n/{i}")}),
+            );
+            e.id = format!("auditd-fill-{i}");
+            d.ingest(e);
+        }
+        // Keep the tap's record in the ring, as a parallel call's would be.
+        let mut again = ev_of(
+            "chat-h",
+            Source::Tap,
+            "tap.call",
+            None,
+            json!({"callId": "toolu_H1", "toolNormalized": "bash", "paths": [], "resultSha256": null}),
+        );
+        again.id = "tap-chat-h-toolu_H1".into();
+        d.ingest(again);
+        let mut done = ev_of(
+            "chat-h",
+            Source::Adapter,
+            "tool.call",
+            None,
+            json!({"toolUseId": "toolu_H1"}),
+        );
+        done.id = "claude-code-toolu_H1".into();
+        let r = d.op_event(&who, done);
+        assert!(
+            r.id.as_deref().is_some_and(|i| !i.contains("-conflict-")),
+            "an honest tool.call was flagged: {:?}",
+            r.id
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn package_lock(dir: &std::path::Path, deps: &[(&str, &str)]) {
+        let mut packages = serde_json::Map::new();
+        packages.insert("".into(), json!({"name": "p", "version": "1.0.0"}));
+        for (n, v) in deps {
+            packages.insert(
+                format!("node_modules/{n}"),
+                json!({"version": v, "resolved": format!("https://registry.npmjs.org/{n}/-/{n}-{v}.tgz")}),
+            );
+        }
+        std::fs::write(
+            dir.join("package-lock.json"),
+            json!({"name": "p", "lockfileVersion": 3, "packages": packages}).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Re-review W5R-3: a chat token had no rate or byte limit on the
+    /// socket. Its posts are bounded per chat, and another chat is not.
+    #[test]
+    fn a_chat_tokens_posts_are_bounded_per_chat() {
+        let (d, root) = daemon();
+        let a = Who::Chat {
+            chat: "chat-qa".into(),
+            harness: "claude-code".into(),
+        };
+        let b = Who::Chat {
+            chat: "chat-qb".into(),
+            harness: "claude-code".into(),
+        };
+        let mut refused = 0;
+        for i in 0..(SOCKET_BURST_PER_CHAT as usize + 200) {
+            let mut e = ev_of("", Source::Adapter, "tool.call", None, json!({"n": i}));
+            e.id = format!("q{i}");
+            if !d.op_event(&a, e).ok {
+                refused += 1;
+            }
+        }
+        assert!(refused > 0, "chat a was never limited");
+        let e = ev_of("", Source::Adapter, "tool.call", None, json!({}));
+        assert!(d.op_event(&b, e).ok, "chat a spent chat b's share");
+        // The day's bytes: one more record past the allowance is refused.
+        let now = std::time::Instant::now();
+        assert!(d
+            .take_chat_quota("chat-qc", SOCKET_BYTES_PER_CHAT_DAY - 10, 0, now)
+            .is_ok());
+        assert!(d.take_chat_quota("chat-qc", 100, 1, now).is_err());
+        // The next day starts again.
+        assert!(d.take_chat_quota("chat-qc", 100, 86_400_000, now).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Box test w5, BW5-12: a tail's backlog past MAX_BACKLOG was cut with
+    /// no word; merge_backlog now says it cut.
+    #[test]
+    fn a_backlog_past_its_cap_says_it_was_cut() {
+        let events: Vec<Event> = (0..MAX_BACKLOG as i64 + 1)
+            .map(|i| {
+                let mut e = ev_of("c", Source::Adapter, "tool.call", None, json!({}));
+                e.id = format!("e{i}");
+                e.at = i + 1;
+                e
+            })
+            .collect();
+        let (out, cut) = merge_backlog(events.clone(), std::iter::empty(), 0, None);
+        assert!(cut);
+        assert_eq!(out.len(), MAX_BACKLOG);
+        assert_eq!(out[0].id, "e1", "the oldest is the one left out");
+        let (out, cut) = merge_backlog(events[1..].to_vec(), std::iter::empty(), 0, None);
+        assert!(!cut);
+        assert_eq!(out.len(), MAX_BACKLOG);
+    }
+
+    /// Box test w5, BW5-12: an OS feed's exec record kept the harness's
+    /// prompt (`claude -p "MARKERZEBRA42 ..."`) in the log with content off
+    /// and on. The record keeps the argv's shape only, in the detail and the
+    /// summary, from auditd and eslogger alike.
+    #[test]
+    fn os_feed_exec_records_keep_only_the_argvs_shape() {
+        let (d, root) = daemon();
+        for (source, summary) in [
+            (Source::Auditd, "exec claude -p MARKERZEBRA42 x"),
+            (Source::Eslogger, "ran claude"),
+        ] {
+            let mut e = ev_of(
+                "chat-a",
+                source,
+                "exec",
+                Some(77),
+                json!({"argv": ["/usr/bin/claude", "-p", "MARKERZEBRA42 do it", "--model=haiku"]}),
+            );
+            e.summary = summary.into();
+            assert!(d.op_event(&Who::Daemon, e).ok);
+        }
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let execs: Vec<&Event> = ring.iter().filter(|e| e.kind == "exec").collect();
+        assert_eq!(execs.len(), 2, "{ring:?}");
+        for e in execs {
+            let all = serde_json::to_string(e).unwrap();
+            assert!(!all.contains("MARKERZEBRA42"), "{all}");
+            assert!(!all.contains("haiku"), "{all}");
+            assert_eq!(
+                e.detail["argv"],
+                json!(["/usr/bin/claude", "-p", "[19 chars]", "--model=[5 chars]"])
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Lane X's request 4 (integration w5, continue): through the daemon's
+    /// own ops, an adapter's install.call and its tool.call give an
+    /// install.lockdiff for the chat's folder from its run.start, and an
+    /// install script's write to .git/hooks that the join credits to the
+    /// call gives install.control (cases 132, 133).
+    #[test]
+    fn install_records_reach_the_lockfile_diff_and_the_control_flags() {
+        let (d, root) = daemon();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        package_lock(&work, &[("left-pad", "1.3.0")]);
+        let chat = Who::Chat {
+            chat: "chat-x".into(),
+            harness: "claude-code".into(),
+        };
+        let mut start = ev_of(
+            "chat-x",
+            Source::Run,
+            "run.start",
+            Some(5151),
+            json!({"cwd": work.to_string_lossy()}),
+        );
+        start.harness = "claude-code".into();
+        assert!(d.op_event(&Who::Daemon, start).ok);
+        let install = json!({"trust": "client", "toolUseId": "toolu_I", "manager": "npm", "form": "add", "packages": [{"name": "is-number", "version": null, "ecosystem": "npm", "inLockfile": null}], "decision": "allow", "check": null});
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of("", Source::Adapter, "install.call", None, install)
+            )
+            .ok
+        );
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "approval",
+                    None,
+                    json!({"toolUseId": "toolu_I", "tool": "bash", "decision": "allow"})
+                )
+            )
+            .ok
+        );
+        // The harness forks a shell for the Bash call; the shell runs npm,
+        // whose install script writes a git hook (the join's tree: box test
+        // w5, BW5-11 and BW5-13 credit only what the call started).
+        for (kind, pid, detail) in [
+            ("fork", 5151, json!({"ppid": 1, "child": 5190})),
+            ("exec", 5190, json!({"ppid": 5151, "exe": "/usr/bin/bash"})),
+            ("fork", 5190, json!({"ppid": 5151, "child": 5200})),
+        ] {
+            let mut d2 = detail;
+            d2["auditAt"] = json!(now_ms());
+            assert!(
+                d.op_event(
+                    &Who::Daemon,
+                    ev_of("chat-x", Source::Auditd, kind, Some(pid), d2)
+                )
+                .ok
+            );
+        }
+        // The install script writes a git hook, a child of the harness.
+        assert!(d
+            .op_event(
+                &Who::Daemon,
+                ev_of(
+                    "chat-x",
+                    Source::Auditd,
+                    "write",
+                    Some(5200),
+                    json!({"ppid": 5151, "auditAt": now_ms(), "path": format!("{}/.git/hooks/pre-commit", work.to_string_lossy()), "exe": "/usr/bin/node"}),
+                )
+            )
+            .ok);
+        package_lock(&work, &[("left-pad", "1.3.0"), ("is-number", "7.0.0")]);
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "tool.call",
+                    None,
+                    json!({"toolUseId": "toolu_I"})
+                )
+            )
+            .ok
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let of = |k: &str| ring.iter().filter(|e| e.kind == k).collect::<Vec<_>>();
+        let diffs = of("install.lockdiff");
+        assert_eq!(diffs.len(), 1, "{ring:?}");
+        assert_eq!(diffs[0].source, Source::Derm);
+        assert_eq!(diffs[0].chat_id, "chat-x");
+        assert_eq!(diffs[0].detail["added"][0]["name"], "is-number");
+        let install_id = of("install.call")[0].id.clone();
+        assert_eq!(diffs[0].detail["call"], install_id.as_str());
+        let flags = of("install.control");
+        assert_eq!(flags.len(), 1, "{ring:?}");
+        assert_eq!(flags[0].detail["call"], install_id.as_str());
+        assert!(
+            flags[0].summary.contains(".git/hooks/"),
+            "{}",
+            flags[0].summary
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Fix pass 2's review, FP2-S1: the OS feeds' ids are predictable
+    /// (`es-<day>-<seq>`, `auditd-<ms>-<serial>`, `sysmon-<record>`), and the
+    /// log keeps the first record under an id, so a chat token that posted
+    /// under one first hid the real kernel record from the log and the
+    /// report. A chat posts under none of them, in any spelling.
+    #[test]
+    fn a_chat_token_cannot_take_an_os_feeds_id() {
+        let (d, root) = daemon();
+        let chat = Who::Chat {
+            chat: "chat-f".into(),
+            harness: "claude-code".into(),
+        };
+        for id in [
+            "es-2026-11-05-5000",
+            "ES-2026-11-05-5001",
+            " es-2026-11-05-5002",
+            "auditd-1793943183583-12",
+            "sysmon-4711",
+            "Sysmon-abc-write",
+        ] {
+            let mut e = ev_of("", Source::Adapter, "write", None, json!({"path": "/x"}));
+            e.id = id.into();
+            assert!(!d.op_event(&chat, e).ok, "{id}");
+        }
+        // Any other id is the chat's to choose, as before.
+        let mut e = ev_of("", Source::Adapter, "tool.call", None, json!({}));
+        e.id = "esx-1".into();
+        assert!(d.op_event(&chat, e).ok);
+        // The daemon scope (derm-audit-feed) still posts the feed's own ids.
+        let mut e = ev_of(
+            "chat-f",
+            Source::Auditd,
+            "write",
+            Some(9),
+            json!({"path": "/x"}),
+        );
+        e.id = "auditd-1793943183583-13".into();
+        assert!(d.op_event(&Who::Daemon, e).ok);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Mac test w5, MW5-14: on macOS the collector's eslogger events were
+    /// read only for `report`, so none reached `ingest`: no join, no
+    /// control-path flag, no argv shape. Through the pump they do, each
+    /// once, with the collector's own time as the effect time.
+    #[test]
+    fn the_mac_collectors_events_reach_ingest_through_the_pump() {
+        use crate::activity::collector::EventsReply;
+        use crate::collector::{pump_once, Pump};
+        let (d, root) = daemon();
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        package_lock(&work, &[("left-pad", "1.3.0")]);
+        let chat = Who::Chat {
+            chat: "chat-m".into(),
+            harness: "claude-code".into(),
+        };
+        let mut start = ev_of(
+            "chat-m",
+            Source::Run,
+            "run.start",
+            Some(6161),
+            json!({"cwd": work.to_string_lossy()}),
+        );
+        start.harness = "claude-code".into();
+        assert!(d.op_event(&Who::Daemon, start).ok);
+        let install = json!({"trust": "client", "toolUseId": "toolu_M", "manager": "npm", "form": "add", "packages": [{"name": "pkghook", "version": null, "ecosystem": "npm", "inLockfile": null}], "decision": "allow", "check": null});
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of("", Source::Adapter, "install.call", None, install)
+            )
+            .ok
+        );
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "approval",
+                    None,
+                    json!({"toolUseId": "toolu_M", "tool": "bash", "decision": "allow"})
+                )
+            )
+            .ok
+        );
+        // What eslogger saw, as the collector gives it: its own `at`, no
+        // auditAt or osAt.
+        let t = now_ms();
+        let mut seq = 0;
+        let mut os = |kind: &str, pid: u32, detail: Value| {
+            seq += 1;
+            let mut e = ev_of("chat-m", Source::Eslogger, kind, Some(pid), detail);
+            e.id = format!("es-{seq}");
+            e.at = t + seq;
+            e
+        };
+        let events = vec![
+            os("fork", 6161, json!({"ppid": 1, "child": 6190})),
+            os(
+                "exec",
+                6190,
+                json!({"ppid": 6161, "exe": "/bin/zsh", "argv": ["/bin/zsh", "-c", "npm install ../pkghook MARKERZEBRA42"]}),
+            ),
+            os("fork", 6190, json!({"ppid": 6161, "child": 6200})),
+            os(
+                "write",
+                6200,
+                json!({"ppid": 6190, "path": format!("{}/.git/hooks/pre-commit", work.to_string_lossy()), "exe": "/usr/local/bin/node"}),
+            ),
+        ];
+        let reply = || EventsReply {
+            events: events.clone(),
+            complete: true,
+            connected: true,
+            chain_ok: true,
+            ..EventsReply::default()
+        };
+        let mut pump = Pump::new(t - 1);
+        assert_eq!(pump_once(&d, &mut pump, t + 100, |_, _| reply()), 4);
+        // The same events again (the overlap): taken once.
+        assert_eq!(pump_once(&d, &mut pump, t + 200, |_, _| reply()), 0);
+        assert!(pump.since() <= t + 4);
+        package_lock(&work, &[("left-pad", "1.3.0"), ("pkghook", "1.0.0")]);
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "tool.call",
+                    None,
+                    json!({"toolUseId": "toolu_M"})
+                )
+            )
+            .ok
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        let of = |k: &str| ring.iter().filter(|e| e.kind == k).collect::<Vec<_>>();
+        let exec = of("exec");
+        assert_eq!(exec.len(), 1, "{ring:?}");
+        assert_eq!(exec[0].detail["argvShaped"], json!(true));
+        assert!(!serde_json::to_string(exec[0])
+            .unwrap()
+            .contains("MARKERZEBRA42"));
+        assert_eq!(exec[0].detail["osAt"], json!(t + 2));
+        assert!(!of("join.candidates").is_empty(), "{ring:?}");
+        let flags = of("install.control");
+        assert_eq!(flags.len(), 1, "{ring:?}");
+        assert_eq!(flags[0].detail["call"], of("install.call")[0].id.as_str());
+        assert_eq!(of("install.lockdiff").len(), 1, "{ring:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A chat token cannot point the diff at another folder: the record's
+    /// own cwd is never read, and a chat with no daemon-scope run.start has
+    /// no folder.
+    #[test]
+    fn an_install_call_reads_only_the_chats_own_folder() {
+        let (d, root) = daemon();
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        package_lock(&elsewhere, &[("left-pad", "1.3.0")]);
+        let chat = Who::Chat {
+            chat: "chat-y".into(),
+            harness: "claude-code".into(),
+        };
+        let install =
+            json!({"toolUseId": "t", "manager": "npm", "cwd": elsewhere.to_string_lossy()});
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of("", Source::Adapter, "install.call", None, install)
+            )
+            .ok
+        );
+        package_lock(&elsewhere, &[("left-pad", "1.2.0")]);
+        assert!(
+            d.op_event(
+                &chat,
+                ev_of(
+                    "",
+                    Source::Adapter,
+                    "tool.call",
+                    None,
+                    json!({"toolUseId": "t"})
+                )
+            )
+            .ok
+        );
+        let ring: Vec<Event> = d.order.lock().unwrap().iter().cloned().collect();
+        assert!(
+            !ring.iter().any(|e| e.kind == "install.lockdiff"),
+            "{ring:?}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

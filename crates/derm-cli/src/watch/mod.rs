@@ -23,7 +23,9 @@ pub(crate) mod status;
 mod tail;
 pub(crate) mod text;
 
-#[cfg(test)]
+// Shell-script fakes and a live daemon on a Unix socket (lane Z: no
+// Windows twin yet).
+#[cfg(all(test, unix))]
 mod live_tests;
 
 pub const USAGE: &str = "usage: derm watch <tail|report|approve> [options]

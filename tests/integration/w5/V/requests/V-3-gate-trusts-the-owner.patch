@@ -1,0 +1,547 @@
+diff --git a/packages/derm-claude-plugin/src/core/daemon.ts b/packages/derm-claude-plugin/src/core/daemon.ts
+index 2b1798c..cff8666 100644
+--- a/packages/derm-claude-plugin/src/core/daemon.ts
++++ b/packages/derm-claude-plugin/src/core/daemon.ts
+@@ -9,6 +9,7 @@ import { constants, lstatSync, readFileSync } from "node:fs";
+ import net from "node:net";
+ import { homedir, platform } from "node:os";
+ import path from "node:path";
++import { ownedByTrusted, trustedOwners } from "./owner.ts";
+ import { insideFolder } from "./policy.ts";
+ 
+ export const CONNECT_TIMEOUT_MS = 800;
+@@ -26,18 +27,19 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
+ /**
+  * The socket is trusted only when it is a socket owned by this user in a
+  * folder owned by this user that no one else can write. Another user could
+- * otherwise plant a socket that answers `yes` to every approval.
++ * otherwise plant a socket that answers `yes` to every approval. Under an
++ * agents' user (owner.ts), "this user" is the person it works for: the
++ * socket is `derm run`'s bridge, and one the agent made is refused.
+  */
+ export function socketLooksOwned(sock: string): string | undefined {
+   if (typeof process.getuid !== "function") return undefined;
+-  const uid = process.getuid();
+   try {
+     const s = lstatSync(sock);
+     if (!s.isSocket()) return "not a socket";
+-    if (s.uid !== uid) return "socket owned by another user";
++    if (!ownedByTrusted(s.uid)) return "socket owned by another user";
+     const d = lstatSync(path.dirname(sock));
+     if (!d.isDirectory()) return "socket folder is not a folder";
+-    if (d.uid !== uid) return "socket folder owned by another user";
++    if (!ownedByTrusted(d.uid)) return "socket folder owned by another user";
+     if ((d.mode & 0o022) !== 0) return "socket folder writable by others";
+     return undefined;
+   } catch {
+@@ -69,8 +71,11 @@ export function chatToken(env: NodeJS.ProcessEnv = process.env, cwd: string = pr
+   try {
+     const st = lstatSync(file);
+     if (!st.isFile() || st.size > 256) return undefined;
+-    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return undefined;
+-    if ((st.mode & 0o077) !== 0) return undefined;
++    if (!ownedByTrusted(st.uid)) return undefined;
++    // Yours alone; under an agents' user, the person's copy in the chat's
++    // bridge, which the agent may read but no one but the person may write.
++    const loose = trustedOwners()?.agent ? (st.mode & 0o022) !== 0 : (st.mode & 0o077) !== 0;
++    if (loose) return undefined;
+     const t = readFileSync(file, { encoding: "utf8", flag: constants.O_RDONLY | constants.O_NOFOLLOW }).trim();
+     return HEX64.test(t) ? t : undefined;
+   } catch {
+diff --git a/packages/derm-claude-plugin/src/core/owner.test.ts b/packages/derm-claude-plugin/src/core/owner.test.ts
+new file mode 100644
+index 0000000..96cdac1
+--- /dev/null
++++ b/packages/derm-claude-plugin/src/core/owner.test.ts
+@@ -0,0 +1,124 @@
++// Whose files the gate trusts (wave 5 lane V, request V-3): the person's own
++// as before, or, under an agents' user, the person it works for and never
++// itself (rules cases 53 and 125).
++
++import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
++import net from "node:net";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import { afterEach, describe, expect, it } from "vitest";
++import { chatToken, socketLooksOwned } from "./daemon.ts";
++import { _setOwnersForTest, ownersFor, readAnchor } from "./owner.ts";
++import { loadPolicy } from "./policy.ts";
++
++const me = typeof process.getuid === "function" ? process.getuid() : 0;
++const entry = (uid: number, ownerUid: number) =>
++  JSON.stringify({ version: 1, agents: [{ user: "derm-agent", uid, owner: "tony", ownerUid, path: "/usr/bin", how: "sudo" }] });
++
++afterEach(() => _setOwnersForTest(undefined));
++
++describe("ownersFor", () => {
++  it("trusts this user when there is no file or no entry for it", () => {
++    expect(ownersFor(1000, undefined)).toEqual({ uids: [1000], agent: false });
++    expect(ownersFor(1000, entry(998, 1001))).toEqual({ uids: [1000], agent: false });
++  });
++  it("trusts only the owner under an agents' user", () => {
++    expect(ownersFor(998, entry(998, 1000))).toEqual({ uids: [1000], agent: true });
++  });
++  it("trusts no one when the file is broken or names nonsense", () => {
++    for (const text of ["{", "[]", '{"version":2,"agents":[]}', '{"version":1,"agents":[{"uid":"998"}]}']) {
++      const o = ownersFor(998, text);
++      expect(o.uids, text).toEqual([]);
++      expect(o.problem, text).toBeTruthy();
++    }
++    expect(ownersFor(998, entry(998, 998)).uids).toEqual([]);
++    expect(ownersFor(998, entry(998, 0)).uids).toEqual([]);
++    const two = JSON.stringify({ version: 1, agents: [JSON.parse(entry(998, 1000)).agents[0], JSON.parse(entry(998, 1001)).agents[0]] });
++    expect(ownersFor(998, two).uids).toEqual([]);
++  });
++});
++
++describe("readAnchor", () => {
++  const tree = () => {
++    const root = mkdtempSync(path.join(tmpdir(), "derm-owner-"));
++    chmodSync(root, 0o755);
++    const dir = path.join(root, "etc", "derm");
++    mkdirSync(dir, { recursive: true, mode: 0o755 });
++    chmodSync(path.join(root, "etc"), 0o755);
++    chmodSync(dir, 0o755);
++    const file = path.join(dir, "agent-users.json");
++    writeFileSync(file, entry(998, 1000), { mode: 0o644 });
++    chmodSync(file, 0o644);
++    return { root, file };
++  };
++  it("reads a file whose whole path the trusted user holds", () => {
++    const { root, file } = tree();
++    expect(readAnchor(file, root, me)).toBe(entry(998, 1000));
++    expect(readAnchor(path.join(root, "none.json"), root, me)).toBeUndefined();
++    rmSync(root, { recursive: true, force: true });
++  });
++  it("refuses one others can write, a link, or one another user owns", () => {
++    let t = tree();
++    chmodSync(t.file, 0o666);
++    expect(readAnchor(t.file, t.root, me)).toEqual({ problem: expect.stringContaining("written by group or others") });
++    rmSync(t.root, { recursive: true, force: true });
++    t = tree();
++    chmodSync(path.dirname(t.file), 0o777);
++    expect(readAnchor(t.file, t.root, me)).toEqual({ problem: expect.stringContaining("written by group or others") });
++    rmSync(t.root, { recursive: true, force: true });
++    t = tree();
++    const real = path.join(t.root, "real.json");
++    writeFileSync(real, entry(998, 1000), { mode: 0o644 });
++    rmSync(t.file);
++    symlinkSync(real, t.file);
++    expect(readAnchor(t.file, t.root, me)).toEqual({ problem: expect.stringContaining("is a link") });
++    rmSync(t.root, { recursive: true, force: true });
++    t = tree();
++    expect(readAnchor(t.file, t.root, me + 1)).toEqual({ problem: expect.stringContaining("not owned by uid") });
++    rmSync(t.root, { recursive: true, force: true });
++  });
++});
++
++describe.skipIf(typeof process.getuid !== "function")("the gate's checks under an agents' user", () => {
++  it("refuses the agent's own policy, socket and token file, and takes the person's", async () => {
++    const dir = mkdtempSync(path.join(tmpdir(), "derm-owner-gate-"));
++    chmodSync(dir, 0o711);
++    const policy = path.join(dir, "policy.json");
++    writeFileSync(policy, JSON.stringify({ version: 1, rules: [] }), { mode: 0o644 });
++    chmodSync(policy, 0o644);
++    const token = path.join(dir, "chat.token");
++    writeFileSync(token, `${"a".repeat(64)}\n`, { mode: 0o644 });
++    chmodSync(token, 0o644);
++    const sock = path.join(dir, "daemon.sock");
++    const server = net.createServer();
++    await new Promise<void>((r) => server.listen(sock, r));
++    const env = { DERM_CHAT_TOKEN_FILE: token };
++    const elsewhere = mkdtempSync(path.join(tmpdir(), "derm-owner-cwd-"));
++
++    // This test's uid as the person, a made-up uid as the agent: the files
++    // are the person's, so they are trusted, the 0644 token included.
++    _setOwnersForTest({ uids: [me], agent: true });
++    expect(loadPolicy(policy).problem).toBeUndefined();
++    expect(socketLooksOwned(sock)).toBeUndefined();
++    expect(chatToken(env, elsewhere)).toBe("a".repeat(64));
++
++    // The same files seen by an agents' user whose owner is someone else:
++    // they are the agent's own, so every one is refused.
++    _setOwnersForTest({ uids: [me + 1], agent: true });
++    expect(loadPolicy(policy).problem).toBe("policy file owned by another user");
++    expect(socketLooksOwned(sock)).toBe("socket owned by another user");
++    expect(chatToken(env, elsewhere)).toBeUndefined();
++
++    // A broken root file trusts no one.
++    _setOwnersForTest({ uids: [], agent: false, problem: "broken" });
++    expect(loadPolicy(policy).problem).toBe("policy file owned by another user");
++
++    // As the person (not an agent), a 0644 token is still too loose.
++    _setOwnersForTest({ uids: [me], agent: false });
++    expect(chatToken(env, elsewhere)).toBeUndefined();
++
++    server.close();
++    rmSync(dir, { recursive: true, force: true });
++    rmSync(elsewhere, { recursive: true, force: true });
++  });
++});
+diff --git a/packages/derm-claude-plugin/src/core/owner.ts b/packages/derm-claude-plugin/src/core/owner.ts
+new file mode 100644
+index 0000000..8bea264
+--- /dev/null
++++ b/packages/derm-claude-plugin/src/core/owner.ts
+@@ -0,0 +1,131 @@
++// Whose files this gate trusts (wave 5 lane V, S2 part c; lane V's request
++// V-3). Canonical copy: packages/derm-claude-plugin/src/core/.
++//
++// A gate trusts its policy, the daemon's socket and its chat token only when
++// they are owned by the right user. Run as the person, that is the person's
++// own uid, as before. Run as an agents' user (`derm run` starts the harness
++// as a second local user, packaging/linux/agent-user/), it is the person
++// that user works for, and never the agents' user itself: anything the agent
++// owns, the agent could have written. Which uid is an agents' user, and for
++// whom, comes from /etc/derm/agent-users.json, trusted only when root owns
++// every part of its path and no one else can write it (the rule
++// crates/derm-cli/src/run/user/anchor.rs applies, and sudoers(5) applies to
++// /etc/sudoers.d). A file there that cannot be trusted or read makes the
++// gate trust no one, so every call asks: a broken root file is never read as
++// "no agents' user".
++
++import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
++import path from "node:path";
++
++export const ANCHOR = "/etc/derm/agent-users.json";
++const MAX_BYTES = 64 * 1024;
++
++export type Owners = {
++  /** The uids whose files this gate trusts; empty trusts no one. */
++  uids: number[];
++  /** True when this process is an agents' user. */
++  agent: boolean;
++  problem?: string;
++};
++
++/** What a `/etc/derm/agent-users.json` says about `uid`. `text` undefined: no file. */
++export function ownersFor(uid: number, text: string | undefined): Owners {
++  if (text === undefined) return { uids: [uid], agent: false };
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(text);
++  } catch {
++    return { uids: [], agent: false, problem: `${ANCHOR} is not JSON` };
++  }
++  const p = parsed as { version?: unknown; agents?: unknown };
++  if (p === null || typeof p !== "object" || p.version !== 1 || !Array.isArray(p.agents)) {
++    return { uids: [], agent: false, problem: `${ANCHOR} is not version 1` };
++  }
++  const mine: number[] = [];
++  for (const e of p.agents as unknown[]) {
++    const a = e as { uid?: unknown; ownerUid?: unknown };
++    if (a === null || typeof a !== "object" || !Number.isInteger(a.uid) || !Number.isInteger(a.ownerUid)) {
++      return { uids: [], agent: false, problem: `${ANCHOR} has an entry without numeric uids` };
++    }
++    if (a.uid === uid) mine.push(a.ownerUid as number);
++  }
++  if (mine.length === 0) return { uids: [uid], agent: false };
++  if (mine.length > 1) return { uids: [], agent: true, problem: `${ANCHOR} names uid ${uid} for more than one owner` };
++  const owner = mine[0] as number;
++  if (owner === uid || owner === 0) return { uids: [], agent: true, problem: `${ANCHOR} names an owner that separates nothing` };
++  return { uids: [owner], agent: true };
++}
++
++/**
++ * The file's text, `undefined` when it is not there, or the reason it cannot
++ * be trusted. `from` and `trusted` are for tests: outside them every part of
++ * the path from `/` must be root's.
++ */
++export function readAnchor(file: string = ANCHOR, from: string = "/", trusted: number = 0): string | undefined | { problem: string } {
++  try {
++    lstatSync(file);
++  } catch (err) {
++    if ((err as { code?: string }).code === "ENOENT" || (err as { code?: string }).code === "ENOTDIR") return undefined;
++    return { problem: `${file} cannot be read` };
++  }
++  const rel = path.relative(from, file);
++  if (rel.startsWith("..") || path.isAbsolute(rel)) return { problem: `${file} is not under ${from}` };
++  const parts = [from];
++  let at = from;
++  for (const c of rel.split(path.sep).filter(Boolean)) {
++    at = path.join(at, c);
++    parts.push(at);
++  }
++  for (const p of parts) {
++    let st;
++    try {
++      st = lstatSync(p);
++    } catch {
++      return { problem: `${p} cannot be read` };
++    }
++    if (st.isSymbolicLink()) return { problem: `${p} is a link` };
++    if (st.uid !== trusted) return { problem: `${p} is not owned by uid ${trusted}` };
++    if ((st.mode & 0o022) !== 0) return { problem: `${p} can be written by group or others` };
++  }
++  let fd: number | undefined;
++  try {
++    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
++    const st = fstatSync(fd);
++    if (!st.isFile() || st.size > MAX_BYTES) return { problem: `${file} is not a small regular file` };
++    const buf = Buffer.alloc(st.size);
++    let read = 0;
++    while (read < st.size) {
++      const n = readSync(fd, buf, read, st.size - read, read);
++      if (n === 0) break;
++      read += n;
++    }
++    return buf.subarray(0, read).toString("utf8");
++  } catch {
++    return { problem: `${file} cannot be read` };
++  } finally {
++    if (fd !== undefined) closeSync(fd);
++  }
++}
++
++let cached: Owners | undefined;
++
++/** This process's trusted owners; read once (a hook lives for one call). */
++export function trustedOwners(): Owners | undefined {
++  if (typeof process.getuid !== "function") return undefined;
++  if (cached) return cached;
++  const uid = process.getuid();
++  const text = readAnchor();
++  cached = typeof text === "object" ? { uids: [], agent: false, problem: text.problem } : ownersFor(uid, text);
++  return cached;
++}
++
++/** For tests only: what `trustedOwners` returns (undefined: read again). */
++export function _setOwnersForTest(o: Owners | undefined): void {
++  cached = o;
++}
++
++/** Whether a file owned by `uid` is trusted (true where uids are not kept). */
++export function ownedByTrusted(uid: number): boolean {
++  const o = trustedOwners();
++  return o === undefined || o.uids.includes(uid);
++}
+diff --git a/packages/derm-claude-plugin/src/core/policy.ts b/packages/derm-claude-plugin/src/core/policy.ts
+index e14d2d7..63c11d5 100644
+--- a/packages/derm-claude-plugin/src/core/policy.ts
++++ b/packages/derm-claude-plugin/src/core/policy.ts
+@@ -3,6 +3,7 @@
+ // contracts/fixtures/policy/. Canonical copy: packages/derm-claude-plugin/src/core/.
+ 
+ import { createHash } from "node:crypto";
++import { ownedByTrusted } from "./owner.ts";
+ import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+ import { homedir } from "node:os";
+ import path from "node:path";
+@@ -176,7 +177,7 @@ export function loadPolicy(file: string = policyPath()): LoadedPolicy {
+     fd = openSync(file, "r");
+     const st = fstatSync(fd);
+     if (!st.isFile()) return { policy: emptyPolicy(), problem: "policy file is not a regular file" };
+-    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return { policy: emptyPolicy(), problem: "policy file owned by another user" };
++    if (!ownedByTrusted(st.uid)) return { policy: emptyPolicy(), problem: "policy file owned by another user" };
+     if ((st.mode & 0o022) !== 0) return { policy: emptyPolicy(), problem: "policy file writable by group or others" };
+     // A folder others can write (such as /tmp) lets them swap the file.
+     const dir = statSync(path.dirname(file));
+diff --git a/packages/derm-pi/src/owner.test.ts b/packages/derm-pi/src/owner.test.ts
+new file mode 100644
+index 0000000..a720793
+--- /dev/null
++++ b/packages/derm-pi/src/owner.test.ts
+@@ -0,0 +1,31 @@
++// derm-pi's port of the core's owner.ts (lane V, request V-3): the same
++// answers, and the policy store trusts the person's file under an agents' user.
++
++import { afterEach, describe, expect, it } from "vitest";
++import { _setOwnersForTest, ownersFor, policyOwnerUid } from "./owner.ts";
++import * as core from "../../derm-claude-plugin/src/core/owner.ts";
++
++const entry = (uid: number, ownerUid: number) =>
++  JSON.stringify({ version: 1, agents: [{ user: "derm-agent", uid, owner: "tony", ownerUid, path: "/usr/bin", how: "sudo" }] });
++
++afterEach(() => _setOwnersForTest(undefined));
++
++describe("owner.ts in derm-pi", () => {
++  it("answers as the core does", () => {
++    for (const [uid, text] of [
++      [1000, undefined],
++      [998, entry(998, 1000)],
++      [1000, entry(998, 1000)],
++      [998, "{"],
++      [998, entry(998, 998)],
++    ] as const) {
++      expect(ownersFor(uid, text), String(text)).toEqual(core.ownersFor(uid, text));
++    }
++  });
++  it.skipIf(typeof process.getuid !== "function")("gives the policy store the person's uid, or one no file has", () => {
++    _setOwnersForTest({ uids: [1000], agent: true });
++    expect(policyOwnerUid()).toBe(1000);
++    _setOwnersForTest({ uids: [], agent: false, problem: "broken" });
++    expect(policyOwnerUid()).toBe(-1);
++  });
++});
+diff --git a/packages/derm-pi/src/owner.ts b/packages/derm-pi/src/owner.ts
+new file mode 100644
+index 0000000..bf98ac5
+--- /dev/null
++++ b/packages/derm-pi/src/owner.ts
+@@ -0,0 +1,143 @@
++// Whose files this gate trusts (wave 5 lane V, S2 part c; lane V's request
++// V-3). A port of packages/derm-claude-plugin/src/core/owner.ts for derm-pi,
++// which keeps its own copies (held equal by owner.test.ts in each).
++//
++// A gate trusts its policy, the daemon's socket and its chat token only when
++// they are owned by the right user. Run as the person, that is the person's
++// own uid, as before. Run as an agents' user (`derm run` starts the harness
++// as a second local user, packaging/linux/agent-user/), it is the person
++// that user works for, and never the agents' user itself: anything the agent
++// owns, the agent could have written. Which uid is an agents' user, and for
++// whom, comes from /etc/derm/agent-users.json, trusted only when root owns
++// every part of its path and no one else can write it (the rule
++// crates/derm-cli/src/run/user/anchor.rs applies, and sudoers(5) applies to
++// /etc/sudoers.d). A file there that cannot be trusted or read makes the
++// gate trust no one, so every call asks: a broken root file is never read as
++// "no agents' user".
++
++import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
++import path from "node:path";
++
++export const ANCHOR = "/etc/derm/agent-users.json";
++const MAX_BYTES = 64 * 1024;
++
++export type Owners = {
++  /** The uids whose files this gate trusts; empty trusts no one. */
++  uids: number[];
++  /** True when this process is an agents' user. */
++  agent: boolean;
++  problem?: string;
++};
++
++/** What a `/etc/derm/agent-users.json` says about `uid`. `text` undefined: no file. */
++export function ownersFor(uid: number, text: string | undefined): Owners {
++  if (text === undefined) return { uids: [uid], agent: false };
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(text);
++  } catch {
++    return { uids: [], agent: false, problem: `${ANCHOR} is not JSON` };
++  }
++  const p = parsed as { version?: unknown; agents?: unknown };
++  if (p === null || typeof p !== "object" || p.version !== 1 || !Array.isArray(p.agents)) {
++    return { uids: [], agent: false, problem: `${ANCHOR} is not version 1` };
++  }
++  const mine: number[] = [];
++  for (const e of p.agents as unknown[]) {
++    const a = e as { uid?: unknown; ownerUid?: unknown };
++    if (a === null || typeof a !== "object" || !Number.isInteger(a.uid) || !Number.isInteger(a.ownerUid)) {
++      return { uids: [], agent: false, problem: `${ANCHOR} has an entry without numeric uids` };
++    }
++    if (a.uid === uid) mine.push(a.ownerUid as number);
++  }
++  if (mine.length === 0) return { uids: [uid], agent: false };
++  if (mine.length > 1) return { uids: [], agent: true, problem: `${ANCHOR} names uid ${uid} for more than one owner` };
++  const owner = mine[0] as number;
++  if (owner === uid || owner === 0) return { uids: [], agent: true, problem: `${ANCHOR} names an owner that separates nothing` };
++  return { uids: [owner], agent: true };
++}
++
++/**
++ * The file's text, `undefined` when it is not there, or the reason it cannot
++ * be trusted. `from` and `trusted` are for tests: outside them every part of
++ * the path from `/` must be root's.
++ */
++export function readAnchor(file: string = ANCHOR, from: string = "/", trusted: number = 0): string | undefined | { problem: string } {
++  try {
++    lstatSync(file);
++  } catch (err) {
++    if ((err as { code?: string }).code === "ENOENT" || (err as { code?: string }).code === "ENOTDIR") return undefined;
++    return { problem: `${file} cannot be read` };
++  }
++  const rel = path.relative(from, file);
++  if (rel.startsWith("..") || path.isAbsolute(rel)) return { problem: `${file} is not under ${from}` };
++  const parts = [from];
++  let at = from;
++  for (const c of rel.split(path.sep).filter(Boolean)) {
++    at = path.join(at, c);
++    parts.push(at);
++  }
++  for (const p of parts) {
++    let st;
++    try {
++      st = lstatSync(p);
++    } catch {
++      return { problem: `${p} cannot be read` };
++    }
++    if (st.isSymbolicLink()) return { problem: `${p} is a link` };
++    if (st.uid !== trusted) return { problem: `${p} is not owned by uid ${trusted}` };
++    if ((st.mode & 0o022) !== 0) return { problem: `${p} can be written by group or others` };
++  }
++  let fd: number | undefined;
++  try {
++    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
++    const st = fstatSync(fd);
++    if (!st.isFile() || st.size > MAX_BYTES) return { problem: `${file} is not a small regular file` };
++    const buf = Buffer.alloc(st.size);
++    let read = 0;
++    while (read < st.size) {
++      const n = readSync(fd, buf, read, st.size - read, read);
++      if (n === 0) break;
++      read += n;
++    }
++    return buf.subarray(0, read).toString("utf8");
++  } catch {
++    return { problem: `${file} cannot be read` };
++  } finally {
++    if (fd !== undefined) closeSync(fd);
++  }
++}
++
++let cached: Owners | undefined;
++
++/** This process's trusted owners; read once (a hook lives for one call). */
++export function trustedOwners(): Owners | undefined {
++  if (typeof process.getuid !== "function") return undefined;
++  if (cached) return cached;
++  const uid = process.getuid();
++  const text = readAnchor();
++  cached = typeof text === "object" ? { uids: [], agent: false, problem: text.problem } : ownersFor(uid, text);
++  return cached;
++}
++
++/** For tests only: what `trustedOwners` returns (undefined: read again). */
++export function _setOwnersForTest(o: Owners | undefined): void {
++  cached = o;
++}
++
++/** Whether a file owned by `uid` is trusted (true where uids are not kept). */
++export function ownedByTrusted(uid: number): boolean {
++  const o = trustedOwners();
++  return o === undefined || o.uids.includes(uid);
++}
++
++/**
++ * The one uid derm-pi's policy store trusts: this user's own, the person's
++ * under an agents' user, or -1 (no file has it) when the root file trusts
++ * no one. `undefined` where uids are not kept.
++ */
++export function policyOwnerUid(): number | undefined {
++  const o = trustedOwners();
++  if (o === undefined) return undefined;
++  return o.uids.length === 1 ? (o.uids[0] as number) : -1;
++}
+diff --git a/packages/derm-pi/src/policy-store.ts b/packages/derm-pi/src/policy-store.ts
+index 8d4d1d9..a598eac 100644
+--- a/packages/derm-pi/src/policy-store.ts
++++ b/packages/derm-pi/src/policy-store.ts
+@@ -16,6 +16,7 @@
+ // the path could be swapped).
+ 
+ import { constants, promises as fsp, realpathSync } from "node:fs";
++import { policyOwnerUid } from "./owner.ts";
+ import { homedir } from "node:os";
+ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+ import { defaultPolicy, parsePolicy, type LoadedPolicy } from "./policy.ts";
+@@ -103,7 +104,9 @@ export class PolicyStore {
+   constructor(
+     path: string | { problem: string },
+     fs: FsLike = realFs,
+-    uid: number | undefined = typeof process.getuid === "function" ? process.getuid() : undefined,
++    // This user's own, or the person's under an agents' user (lane V,
++    // request V-3; owner.ts).
++    uid: number | undefined = policyOwnerUid(),
+     posix: boolean = process.platform !== "win32",
+   ) {
+     this.path = path;

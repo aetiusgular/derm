@@ -1,3 +1,9 @@
+# Shared with lanes X and Z in wave 5 (sections added by the wave 5 base,
+# plans/parallel_build_tk.md section 7c): each edits only the lines under its
+# own `# [lane-<X>]` comment, in any table, and pins every dependency to an
+# exact version. Everything else changes only through integration.
+# scripts/lane-scope.mjs checks this.
+
 [package]
 name = "derm-core"
 version.workspace = true
@@ -16,3 +22,30 @@ sha2.workspace = true
 libc.workspace = true
 # No Unicode crate: fold_text's tables are generated from the TypeScript
 # gate core's sources (gen/gen-fold-tables.mjs; integration w1).
+# [lane-X]
+# [lane-Z]
+
+[dev-dependencies]
+# [lane-X]
+# [lane-Z]
+
+# Wave 5 lane Z's Windows-only dependencies.
+[target.'cfg(windows)'.dependencies]
+# [lane-Z]
+# The platform seam on Windows (note AU): named pipes, tokens and SIDs, DACLs,
+# file reads by handle, process reads, random bytes. Microsoft's raw bindings,
+# MIT or Apache-2.0; 0.61.2 is the version already in Cargo.lock (ureq's tree)
+# and the one Codex 0.163.0 pins, so the lock gains no package.
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

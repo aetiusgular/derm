@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { contentSwitchOn, readSettingsFile } from "../src/content-switch.ts";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -19,7 +22,7 @@ interface Posted {
   body: any;
 }
 
-function setup(env: Record<string, string> = ENV, fetchImpl?: FetchLike) {
+function setup(env: Record<string, string> = ENV, fetchImpl?: FetchLike, settings: () => string | undefined = () => undefined) {
   const posts: Posted[] = [];
   let envReads = 0;
   const fetch: FetchLike =
@@ -38,6 +41,7 @@ function setup(env: Record<string, string> = ENV, fetchImpl?: FetchLike) {
     now: () => t,
     newId: () => "prompt-1",
     intervalMs: 1000,
+    readSettings: () => settings(),
   });
   const pi = fakePi({ sessionId: "sess-9" });
   factory(pi.api);
@@ -163,9 +167,9 @@ describe("records (contracts/events.md section 2)", () => {
     expect(recs[1]?.response).toBeUndefined();
   });
 
-  it("content on (DERM_LOG_CONTENT=1): prompt, response and input are sent, redacted", async () => {
+  it("content on (the content switch): prompt, response and input are sent, redacted", async () => {
     vi.useFakeTimers();
-    const s = setup({ ...ENV, DERM_LOG_CONTENT: "1" });
+    const s = setup({ ...ENV, HOME: "/home/u" }, undefined, () => JSON.stringify({ version: 1, content: { on: true, retentionDays: 3 } }));
     await s.pi.emit("before_agent_start", { type: "before_agent_start", messageType: "user", prompt: "use key sk-ant-abcdefghijklmnopqrstuvwxyz" });
     await s.pi.emit("tool_execution_start", { type: "tool_execution_start", toolCallId: "t", toolName: "write", args: { path: "a", content: "password=hunter22" } });
     await s.pi.emit("tool_execution_end", { type: "tool_execution_end", toolCallId: "t", toolName: "write", result: { content: [] }, isError: true });
@@ -312,5 +316,61 @@ describe("never blocks, never sends anywhere else", () => {
     await sender.flush();
     expect(bodies).toEqual([2, 2, 1]);
     await sender.close(10);
+  });
+});
+
+// Lane S's request 3's rest (integration w5, continue): the content switch in
+// ~/.derm/settings.json replaced DERM_LOG_CONTENT.
+describe("the content switch", () => {
+  it("DERM_LOG_CONTENT=1 alone turns nothing on", async () => {
+    vi.useFakeTimers();
+    const s = setup({ ...ENV, HOME: "/home/u", DERM_LOG_CONTENT: "1" });
+    await s.pi.emit("before_agent_start", { type: "before_agent_start", messageType: "user", prompt: "my private plan" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(JSON.stringify(s.posts)).not.toContain("private plan");
+  });
+
+  it("reads on only from a whole, valid content block", () => {
+    const on = (v: unknown, home = "/home/u") => contentSwitchOn(home, () => (typeof v === "string" ? v : JSON.stringify(v)));
+    expect(on({ version: 1, content: { on: true, retentionDays: 1 } })).toBe(true);
+    expect(on({ version: 1, content: { on: true, retentionDays: 7 } })).toBe(true);
+    for (const bad of [
+      { version: 1, content: { on: false, retentionDays: 3 } },
+      { version: 1, content: { on: true } },
+      { version: 1, content: { on: true, retentionDays: 8 } },
+      { version: 1, content: { on: true, retentionDays: 1.5 } },
+      { version: 1, content: { on: "true", retentionDays: 3 } },
+      { version: 2, content: { on: true, retentionDays: 3 } },
+      { content: { on: true, retentionDays: 3 } },
+      [],
+      "not json",
+    ]) {
+      expect(on(bad), JSON.stringify(bad)).toBe(false);
+    }
+    expect(on({ version: 1, content: { on: true, retentionDays: 3 } }, "relative/home")).toBe(false);
+    expect(contentSwitchOn("/home/u", () => undefined)).toBe(false);
+  });
+
+  // POSIX modes and links: on Windows a file's mode shows group and other
+  // write, so the reader refuses every file and content stays off there (the
+  // safe side) until lane Z gives it an owner and DACL check.
+  it.skipIf(process.platform === "win32")("the file reader refuses a link, a shared file and another user's", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "derm-pi-settings-"));
+    try {
+      const file = path.join(dir, "settings.json");
+      writeFileSync(file, "{}", { mode: 0o600 });
+      expect(readSettingsFile(file)).toBe("{}");
+      chmodSync(file, 0o666);
+      expect(readSettingsFile(file)).toBeUndefined();
+      chmodSync(file, 0o600);
+      const link = path.join(dir, "link.json");
+      symlinkSync(file, link);
+      expect(readSettingsFile(link)).toBeUndefined();
+      linkSync(file, path.join(dir, "hard.json"));
+      expect(readSettingsFile(file)).toBeUndefined();
+      expect(readSettingsFile(path.join(dir, "absent.json"))).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

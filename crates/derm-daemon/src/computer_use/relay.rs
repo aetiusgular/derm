@@ -23,10 +23,12 @@
 //! shell can reach the bridge too, past the harness's own gate, but only as
 //! its chat and only for apps the user granted that chat.
 
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 
 use super::ENDPOINT_FILE;
+use derm_core::platform::UserId;
 
 /// The longest token file and endpoint file read.
 const MAX_FILE: u64 = 256;
@@ -54,9 +56,8 @@ pub fn run() -> i32 {
     }
 }
 
-fn uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
+fn uid() -> UserId {
+    derm_core::platform::real_user()
 }
 
 /// The target from the environment `env` gives, for a process whose session
@@ -64,7 +65,7 @@ fn uid() -> u32 {
 pub fn target(
     env: &dyn Fn(&str) -> Option<String>,
     cwd: &Path,
-    uid: u32,
+    uid: UserId,
 ) -> Result<Target, String> {
     let token = chat_token(env, cwd, uid).ok_or(
         "no chat token: start the harness with derm run (DERM_CHAT_TOKEN or DERM_CHAT_TOKEN_FILE)",
@@ -81,7 +82,7 @@ fn hex64(text: &str) -> bool {
 
 /// `DERM_CHAT_TOKEN`, else the file `DERM_CHAT_TOKEN_FILE` names, by the hooks'
 /// rules (module docs).
-pub fn chat_token(env: &dyn Fn(&str) -> Option<String>, cwd: &Path, uid: u32) -> Option<String> {
+pub fn chat_token(env: &dyn Fn(&str) -> Option<String>, cwd: &Path, uid: UserId) -> Option<String> {
     if let Some(token) = env("DERM_CHAT_TOKEN") {
         let token = token.trim();
         if hex64(token) {
@@ -124,9 +125,8 @@ pub fn socket_path(env: &dyn Fn(&str) -> Option<String>, cwd: &Path) -> Result<P
 
 /// The bridge's address from `<dir>/cu.endpoint`, when the folder is yours
 /// and no one else can write it, and the file is yours and private.
-pub fn endpoint(dir: &Path, uid: u32) -> Result<String, String> {
-    let meta = std::fs::symlink_metadata(dir).map_err(|_| "no daemon folder".to_string())?;
-    if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o022 != 0 {
+pub fn endpoint(dir: &Path, uid: UserId) -> Result<String, String> {
+    if !folder_yours_alone(dir, uid)? {
         return Err("the daemon's folder is not yours alone".into());
     }
     let file = dir.join(ENDPOINT_FILE);
@@ -140,7 +140,40 @@ pub fn endpoint(dir: &Path, uid: u32) -> Result<String, String> {
 
 /// A small regular file you own with no group or other bits, read without
 /// following a link.
-fn read_private(path: &Path, uid: u32) -> Option<String> {
+#[cfg(unix)]
+fn folder_yours_alone(dir: &Path, uid: UserId) -> Result<bool, String> {
+    let meta = std::fs::symlink_metadata(dir).map_err(|_| "no daemon folder".to_string())?;
+    Ok(meta.is_dir() && meta.uid() == uid && meta.mode() & 0o022 == 0)
+}
+
+/// Windows (lane Z): a folder of ours, no reparse point on its path, that no
+/// one else may change.
+#[cfg(windows)]
+fn folder_yours_alone(dir: &Path, uid: UserId) -> Result<bool, String> {
+    let meta = std::fs::symlink_metadata(dir).map_err(|_| "no daemon folder".to_string())?;
+    Ok(meta.is_dir()
+        && uid == derm_core::platform::effective_user()
+        && derm_core::platform::windows::only_owner_writes(dir))
+}
+
+/// Windows (lane Z): the file itself, checked on the open handle.
+#[cfg(windows)]
+fn read_private(path: &Path, uid: UserId) -> Option<String> {
+    use std::io::Read;
+    if uid != derm_core::platform::effective_user() {
+        return None;
+    }
+    let file = derm_core::platform::windows::open_private_file(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_FILE {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MAX_FILE).read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+#[cfg(unix)]
+fn read_private(path: &Path, uid: UserId) -> Option<String> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.file_type().is_file()
         || meta.uid() != uid
@@ -194,7 +227,9 @@ pub fn inside(path: &Path, folder: &Path) -> bool {
     matches!((real_path, real_folder), (Some(p), Some(f)) if p.starts_with(&f))
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::collections::HashMap;

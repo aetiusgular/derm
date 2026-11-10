@@ -4,9 +4,8 @@
 //! `tail` and `approver` never wait on the reader, and a slow client never
 //! holds up the daemon.
 
+use derm_core::platform::{Listener as UnixListener, Stream as UnixStream};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -24,44 +23,15 @@ pub const HELLO_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Binds `path`, replacing a stale socket file, and sets it to 0600. The
 /// parent folder is created 0700 when missing, and refused when it is a link
-/// or belongs to another user.
+/// or belongs to another user (the platform seam's `bind`).
 pub fn bind(path: &Path) -> std::io::Result<UnixListener> {
-    if let Some(parent) = path.parent() {
-        private_dir(parent)?;
-    }
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_dir() => {
-            return Err(std::io::Error::other("socket path is a folder"));
-        }
-        Ok(_) => std::fs::remove_file(path)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
+    derm_core::platform::bind(path)
 }
 
 /// Makes `dir` (and its parents) and holds it to 0700, owned by this user,
-/// not a link.
+/// not a link (the platform seam's `private_dir`).
 pub fn private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let meta = std::fs::symlink_metadata(dir)?;
-    if !meta.file_type().is_dir() {
-        return Err(std::io::Error::other(format!(
-            "{} is not a folder",
-            dir.display()
-        )));
-    }
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    let me = unsafe { libc::geteuid() };
-    if meta.uid() != me {
-        return Err(std::io::Error::other(format!(
-            "{} belongs to another user",
-            dir.display()
-        )));
-    }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    derm_core::platform::private_dir(dir)
 }
 
 /// Accepts connections until the listener fails. Each one runs on its own
@@ -140,6 +110,13 @@ pub fn serve_one(stream: UnixStream, daemon: &Arc<Daemon>) -> std::io::Result<()
         .name("derm-daemon-write".into())
         .spawn(move || {
             for mut line in rx {
+                if line.is_empty() {
+                    // `Outbox::close`: the daemon dropped this connection's
+                    // tail (fp13's review, FP13R-11).
+                    pending.fetch_sub(1, Ordering::SeqCst);
+                    let _ = writer.shutdown(std::net::Shutdown::Both);
+                    break;
+                }
                 line.push('\n');
                 let failed = writer.write_all(line.as_bytes()).is_err();
                 pending.fetch_sub(1, Ordering::SeqCst);
@@ -165,8 +142,11 @@ fn read_loop(stream: &UnixStream, daemon: &Arc<Daemon>, out: &Outbox) -> std::io
     // The first line: `hello`, or one error and the connection closes.
     let who = match read_line(&mut reader) {
         Ok(Line::Text(text)) => match serde_json::from_str::<Request>(&text) {
-            Ok(Request::Hello { token, .. }) => match daemon.hello(&token) {
-                Some(who) => who,
+            Ok(Request::Hello { token, client }) => match daemon.hello(&token) {
+                Some(who) => {
+                    daemon.note_client(out.conn, &who, &client);
+                    who
+                }
                 None => {
                     out.send(&error("bad token"));
                     return Ok(());
@@ -221,6 +201,8 @@ fn read_loop(stream: &UnixStream, daemon: &Arc<Daemon>, out: &Outbox) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn temp_root() -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -230,6 +212,7 @@ mod tests {
         ))
     }
 
+    #[cfg(unix)]
     #[test]
     fn bind_sets_0600_and_a_0700_parent_and_replaces_a_stale_socket() {
         let root = temp_root();
@@ -248,6 +231,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_linked_socket_folder_is_refused() {
         let root = temp_root();

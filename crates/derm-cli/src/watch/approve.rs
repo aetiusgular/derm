@@ -33,8 +33,10 @@ pub const USAGE: &str = "usage: derm watch --approve [--socket <path>]
        derm watch approve [--socket <path>]
 
 Answers the daemon's approval requests from this terminal: y or yes allows
-one call, anything else (Enter too) denies it. Ctrl-C stops; requests then
-get no from the daemon.";
+one call, anything else (Enter too) denies it. When the chat runs as you with
+no boundary, the daemon also asks for your login password before a yes (S2
+part b); it is read with echo off and checked by the system. Ctrl-C stops;
+requests then get no from the daemon.";
 
 /// Typed input this soon after a prompt is shown is dropped: it was typed
 /// for something else (a request that just timed out, or the shell).
@@ -138,7 +140,8 @@ pub fn main(args: &Args) -> u8 {
         }
         first = false;
         let mut flush = || flush_tty_input();
-        match serve(&rx, writer, &mut out, &mut flush) {
+        let mut echo = |on: bool| set_tty_echo(on);
+        match serve_with(&rx, writer, &mut out, &mut flush, &mut echo) {
             Ended::DaemonGone(why) => {
                 let _ = writeln!(
                     out,
@@ -152,7 +155,7 @@ pub fn main(args: &Args) -> u8 {
 
 /// Says `approver`, checks the reply, and starts the reader thread that
 /// feeds the daemon's lines into `tx`. Returns the writing half.
-pub fn register(mut conn: Conn, tx: Sender<In>) -> Result<std::os::unix::net::UnixStream, String> {
+pub fn register(mut conn: Conn, tx: Sender<In>) -> Result<derm_core::platform::Stream, String> {
     conn.send(&json!({"op": "approver"}))?;
     check_ok(conn.line()?)?;
     conn.stream_mode()?;
@@ -184,25 +187,63 @@ struct Waiting {
     deadline: Instant,
 }
 
+/// An answer sent and not yet replied to: its request, kept while the
+/// daemon may still ask for the person's password (S2 part b).
+struct Sent {
+    id: String,
+    word: &'static str,
+    waiting: Option<Waiting>,
+    with_proof: bool,
+}
+
+/// Whether the daemon refused a `yes` for want of the person's password.
+pub fn wants_password(error: &str) -> bool {
+    error.contains("your password is needed")
+}
+
+/// Whether the daemon refused a yes because no person check can run here
+/// (macOS, or a daemon under no_new_privs): no password can pass, so none
+/// is asked for, and the request still waits for a no (MW5-4).
+pub fn cannot_check(error: &str) -> bool {
+    error.contains("needs a person check")
+}
+
 /// The approver's loop: shows one request at a time, sends the answer typed
 /// for it, and keeps the rest in order. `flush` drops typed-ahead input
 /// when a prompt is shown (the real one calls `tcflush` on the terminal).
+/// `serve_with` with no terminal to set (the tests).
+#[cfg(test)]
 pub fn serve(
+    rx: &Receiver<In>,
+    writer: impl Write,
+    out: &mut impl Write,
+    flush: &mut dyn FnMut(),
+) -> Ended {
+    serve_with(rx, writer, out, flush, &mut |_| {})
+}
+
+/// `serve`, with `echo` turning the terminal's echo off while a password is
+/// typed and on again after (the real one calls `tcsetattr`).
+pub fn serve_with(
     rx: &Receiver<In>,
     mut writer: impl Write,
     out: &mut impl Write,
     flush: &mut dyn FnMut(),
+    echo: &mut dyn FnMut(bool),
 ) -> Ended {
     let mut queue: VecDeque<Waiting> = VecDeque::new();
     let mut shown: Option<(Waiting, Instant)> = None;
-    // The ids of answers sent, oldest first, to match the daemon's replies.
-    let mut sent: VecDeque<(String, &'static str)> = VecDeque::new();
+    // Answers sent, oldest first, to match the daemon's replies.
+    let mut sent: VecDeque<Sent> = VecDeque::new();
+    // A request whose yes the daemon refused for want of the password: the
+    // next typed line is the password (S2 part b).
+    let mut password_for: Option<Waiting> = None;
     // When the last answer went out; the next card waits for its reply up to
     // REPLY_WAIT.
     let mut answered: Option<Instant> = None;
     loop {
         let replied = sent.is_empty() || answered.is_none_or(|t| t.elapsed() >= REPLY_WAIT);
-        if shown.is_none() && replied {
+        if shown.is_none() && password_for.is_none() && replied {
             // Skip requests that timed out while another was on screen.
             while let Some(w) = queue.pop_front() {
                 if w.deadline > Instant::now() {
@@ -221,6 +262,10 @@ pub fn serve(
         }
         let wait = match (&shown, answered) {
             (Some((w, _)), _) => w.deadline.saturating_duration_since(Instant::now()),
+            (None, _) if password_for.is_some() => password_for
+                .as_ref()
+                .map(|w| w.deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_default(),
             (None, Some(t)) if !sent.is_empty() && !queue.is_empty() => {
                 REPLY_WAIT.saturating_sub(t.elapsed())
             }
@@ -248,17 +293,92 @@ pub fn serve(
                 }
             }
             Ok(In::Daemon(Incoming::Reply(reply))) => {
-                let (id, word) = sent.pop_front().unwrap_or_default();
-                match check_ok(reply) {
-                    Ok(_) => {
-                        let _ = writeln!(out, "  {word} sent for {}", clean(&id, 64));
+                let Some(answer) = sent.pop_front() else {
+                    continue;
+                };
+                let id = clean(&answer.id, 64);
+                let open = answer
+                    .waiting
+                    .filter(|w| w.deadline > Instant::now() && answer.word == "yes");
+                match (check_ok(reply), open) {
+                    (Ok(_), _) => {
+                        let _ = writeln!(out, "  {} sent for {id}", answer.word);
                     }
-                    Err(e) => {
-                        let _ = writeln!(out, "  too late for {}: {e}", clean(&id, 64));
+                    // The daemon wants the person's password for this yes.
+                    (Err(e), Some(w)) if wants_password(&e) && !answer.with_proof => {
+                        let _ = writeln!(out, "  {e}");
+                        // The password shares the card's time (BW5-18).
+                        let left = w
+                            .deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_secs();
+                        let _ = write!(
+                            out,
+                            "  Your login password for {id} ({left} s left; not shown; Enter answers no): "
+                        );
+                        let _ = out.flush();
+                        flush();
+                        echo(false);
+                        password_for = Some(w);
+                    }
+                    // A wrong password: the card again, so y can be tried
+                    // once more after the daemon's back-off. No check can
+                    // run: the reason and the card, so Enter can answer no.
+                    (Err(e), Some(w)) if answer.with_proof || cannot_check(&e) => {
+                        let _ = writeln!(out, "  not sent for {id}: {e}");
+                        flush();
+                        prompt(out, &w, queue.len());
+                        shown = Some((w, Instant::now()));
+                    }
+                    (Err(e), _) => {
+                        let _ = writeln!(out, "  too late for {id}: {e}");
                     }
                 }
             }
             Ok(In::Daemon(_)) => {}
+            Ok(In::Typed(mut text, _)) if password_for.is_some() => {
+                echo(true);
+                let _ = writeln!(out);
+                let Some(w) = password_for.take() else {
+                    continue;
+                };
+                let id = w
+                    .req
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let chat = w.req.get("chat").and_then(Value::as_str).unwrap_or("");
+                let password = text.trim_end_matches(['\n', '\r']).to_string();
+                let (line, word) = if password.is_empty() {
+                    (
+                        json!({"op": "answer", "id": id, "chat": chat, "answer": "no"}),
+                        "no",
+                    )
+                } else {
+                    (
+                        json!({"op": "answer", "id": id, "chat": chat, "answer": "yes",
+                            "proof": {"password": password}}),
+                        "yes",
+                    )
+                };
+                let mut wire = line.to_string();
+                let failed = writeln!(writer, "{wire}").is_err();
+                wipe(&mut wire);
+                wipe(&mut text);
+                let mut password = password;
+                wipe(&mut password);
+                if failed {
+                    return Ended::DaemonGone("the answer could not be sent".into());
+                }
+                sent.push_back(Sent {
+                    id,
+                    word,
+                    waiting: Some(w),
+                    with_proof: word == "yes",
+                });
+                answered = Some(Instant::now());
+            }
             Ok(In::Typed(text, at)) => {
                 let Some((w, since)) = shown.take() else {
                     let _ = writeln!(out, "  (no request is waiting; that input was ignored)");
@@ -286,12 +406,26 @@ pub fn serve(
                 if writeln!(writer, "{line}").is_err() {
                     return Ended::DaemonGone("the answer could not be sent".into());
                 }
-                sent.push_back((id, word));
+                sent.push_back(Sent {
+                    id,
+                    word,
+                    waiting: yes.then_some(w),
+                    with_proof: false,
+                });
                 answered = Some(Instant::now());
             }
             Ok(In::DaemonGone(why)) => return Ended::DaemonGone(why),
             Ok(In::TtyGone) => return Ended::TtyGone,
             Err(RecvTimeoutError::Timeout) => {
+                if let Some(w) = password_for.take() {
+                    echo(true);
+                    let _ = writeln!(
+                        out,
+                        "\n  {}: timed out; the daemon answers no",
+                        label(&w.req)
+                    );
+                    continue;
+                }
                 if shown.is_none() {
                     // The reply did not come in time: the next card is drawn
                     // at the top of the loop.
@@ -310,7 +444,7 @@ pub fn serve(
 fn drain_typed(
     rx: &Receiver<In>,
     queue: &mut VecDeque<Waiting>,
-    sent: &mut VecDeque<(String, &'static str)>,
+    sent: &mut VecDeque<Sent>,
     out: &mut impl Write,
 ) {
     let mut keep = Vec::new();
@@ -334,10 +468,13 @@ fn drain_typed(
     // queue; it is rare here and handled now.
     for m in keep {
         if let In::Daemon(Incoming::Reply(reply)) = m {
-            let (id, word) = sent.pop_front().unwrap_or_default();
+            let Some(answer) = sent.pop_front() else {
+                continue;
+            };
+            let id = clean(&answer.id, 64);
             let note = match check_ok(reply) {
-                Ok(_) => format!("  {word} sent for {}", clean(&id, 64)),
-                Err(e) => format!("  too late for {}: {e}", clean(&id, 64)),
+                Ok(_) => format!("  {} sent for {id}", answer.word),
+                Err(e) => format!("  not sent for {id}: {e}"),
             };
             let _ = writeln!(out, "{note}");
         }
@@ -379,9 +516,50 @@ fn prompt(out: &mut impl Write, w: &Waiting, more: usize) {
     let _ = out.flush();
 }
 
+/// Overwrites a string that held a password, in a way the compiler keeps.
+fn wipe(s: &mut String) {
+    // SAFETY: zero bytes are valid UTF-8, so the String stays valid.
+    for b in unsafe { s.as_bytes_mut() } {
+        // SAFETY: a valid, aligned, exclusive reference.
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+    s.clear();
+}
+
+/// Turns the controlling terminal's echo off or on (termios(3), `ECHO`).
+#[cfg(unix)]
+fn set_tty_echo(on: bool) {
+    use std::os::fd::AsRawFd;
+    let Ok(t) = std::fs::File::open("/dev/tty") else {
+        return;
+    };
+    let fd = t.as_raw_fd();
+    // SAFETY: termios is plain data; tcgetattr fills it for an open terminal
+    // fd, and tcsetattr is called only when that succeeded.
+    unsafe {
+        let mut tio: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut tio) != 0 {
+            return;
+        }
+        if on {
+            tio.c_lflag |= libc::ECHO;
+        } else {
+            tio.c_lflag &= !libc::ECHO;
+        }
+        libc::tcsetattr(fd, libc::TCSANOW, &tio);
+    }
+}
+
+/// Windows (lane Z): the console's echo.
+#[cfg(windows)]
+fn set_tty_echo(on: bool) {
+    crate::platform::windows::set_console_echo(on);
+}
+
 /// `tcflush(TCIFLUSH)` on the controlling terminal: drops typed-ahead input
 /// the kernel holds, so an answer meant for an earlier prompt cannot land on
 /// this one.
+#[cfg(unix)]
 fn flush_tty_input() {
     use std::os::fd::AsRawFd;
     if let Ok(t) = std::fs::File::open("/dev/tty") {
@@ -390,6 +568,12 @@ fn flush_tty_input() {
             libc::tcflush(t.as_raw_fd(), libc::TCIFLUSH);
         }
     }
+}
+
+/// Windows (lane Z): the console's typed-ahead input.
+#[cfg(windows)]
+fn flush_tty_input() {
+    crate::platform::windows::flush_console_input();
 }
 
 /// Why this process looks like it runs inside a derm chat, if it does: a
@@ -639,6 +823,82 @@ mod tests {
             serve(&rx, Vec::new(), &mut out, &mut flush),
             Ended::DaemonGone(_)
         ));
+    }
+
+    #[test]
+    fn the_password_prompt_says_how_long_is_left() {
+        // Box test w5, BW5-18: the password shares the card's time, and a
+        // late y left too little to type it with no word of how little.
+        let (tx, rx) = mpsc::channel();
+        let wire = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w = Wire(wire.clone());
+        let h = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut flush = || {};
+            serve(&rx, w, &mut out, &mut flush);
+            String::from_utf8(out).unwrap()
+        });
+        tx.send(req("ap-1", 30)).unwrap();
+        std::thread::sleep(SETTLE + Duration::from_millis(100));
+        tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
+        tx.send(In::Daemon(Incoming::Reply(json!({"ok": false, "error":
+            "your password is needed because chat derm-c1 runs as you with no boundary"}))))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        tx.send(In::TtyGone).unwrap();
+        let out = h.join().unwrap();
+        let line = out
+            .lines()
+            .find(|l| l.contains("Your login password for ap-1"))
+            .expect(&out);
+        assert!(line.contains("s left"), "{line}");
+        assert!(
+            line.contains("28 s left") || line.contains("27 s left"),
+            "{line}"
+        );
+        assert!(line.contains("not shown; Enter answers no"), "{line}");
+    }
+
+    #[test]
+    fn a_yes_no_person_check_can_pass_shows_the_reason_and_the_card_again() {
+        // Fix pass 1, after MW5-4: where no check is built (macOS) the
+        // daemon refuses the yes before any password. That refusal is not
+        // a timeout: the approver said "too late" and dropped the card, so
+        // the request could only time out. It says why and shows the card,
+        // and Enter answers no.
+        let (tx, rx) = mpsc::channel();
+        let wire = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let w = Wire(wire.clone());
+        let h = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let mut flush = || {};
+            serve(&rx, w, &mut out, &mut flush);
+            String::from_utf8(out).unwrap()
+        });
+        tx.send(req("ap-1", 30)).unwrap();
+        std::thread::sleep(SETTLE + Duration::from_millis(100));
+        tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
+        tx.send(In::Daemon(Incoming::Reply(json!({"ok": false, "error":
+            "a yes for this chat needs a person check because derm-c1 runs as you, \
+             and no person check is built for this system yet: run the chat under a boundary (srt or sbx)"}))))
+            .unwrap();
+        std::thread::sleep(SETTLE + Duration::from_millis(150));
+        tx.send(In::Typed("\n".into(), Instant::now())).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        tx.send(In::TtyGone).unwrap();
+        let out = h.join().unwrap();
+        assert!(!out.contains("too late"), "{out}");
+        assert!(!out.contains("password"), "{out}");
+        assert!(
+            out.contains(
+                "not sent for ap-1: the daemon refused: a yes for this chat needs a person check"
+            ),
+            "{out}"
+        );
+        assert_eq!(out.matches("Allow this one call?").count(), 2, "{out}");
+        let a = answers(&wire);
+        assert_eq!(a.len(), 2, "{out}");
+        assert_eq!(a[1]["answer"], "no", "{out}");
     }
 
     #[test]

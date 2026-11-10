@@ -1,0 +1,27 @@
+[
+  {
+    "id": "tap-chat-fixture-toolu_01FIXTURE0000000000000001",
+    "at": 1793000000000,
+    "chatId": "chat-fixture",
+    "harness": "claude-code",
+    "source": "tap",
+    "kind": "tap.call",
+    "summary": "Read",
+    "detail": {
+      "trust": "daemon",
+      "api": "anthropic-messages",
+      "model": "claude-fixture",
+      "callId": "toolu_01FIXTURE0000000000000001",
+      "tool": "Read",
+      "toolNormalized": "read",
+      "argsSha256": "d4e43972e97c2dd8a91e88aa993127fe6e1d5c58fb9dc8bda2e8313366da285d",
+      "argsBytes": 41,
+      "paths": [
+        "/home/u/project/README.md"
+      ],
+      "resultSha256": "aef277fb6a70a89681a85e1b6d23f44ee2a6cc58490f9f5c95fc99db6d2d3542",
+      "resultBytes": 10,
+      "incomplete": false
+    }
+  }
+]

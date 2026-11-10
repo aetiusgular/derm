@@ -334,9 +334,195 @@ impl Relay {
     }
 }
 
+/// A loopback HTTP proxy from the environment: the one a sandbox gives its
+/// child (srt sets `HTTPS_PROXY` and kin to `http://<user>:<token>@localhost:
+/// <port>`, `dist/sandbox/sandbox-utils.js:667-760` at 0.0.81).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Proxy {
+    pub addrs: Vec<SocketAddr>,
+    /// `user:password`, decoded, for `Proxy-Authorization: Basic`.
+    pub auth: Option<String>,
+}
+
+/// The first of `HTTPS_PROXY`, `https_proxy`, `HTTP_PROXY`, `http_proxy`,
+/// `ALL_PROXY`, `all_proxy` that is set, if it is a plain `http://` URL on
+/// loopback; anything else is not used (a remote proxy would carry the chat
+/// token off the machine).
+pub fn loopback_proxy(env: &dyn Fn(&str) -> Option<String>) -> Option<Proxy> {
+    let raw = [
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ]
+    .iter()
+    .find_map(|n| env(n).filter(|v| !v.trim().is_empty()))?;
+    let rest = raw.trim().strip_prefix("http://")?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.contains('/') || rest.contains('?') || rest.contains('#') {
+        return None;
+    }
+    let (auth, hostport) = match rest.rsplit_once('@') {
+        Some((a, h)) => (Some(percent_decode(a)?), h),
+        None => (None, rest),
+    };
+    let (host, port) = if let Some(p) = hostport.strip_prefix("[::1]:") {
+        ("[::1]", p)
+    } else {
+        hostport.rsplit_once(':')?
+    };
+    if port.is_empty() || port.len() > 5 || !port.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let port: u16 = port.parse().ok().filter(|p| *p > 0)?;
+    let v4 = SocketAddr::from(([127, 0, 0, 1], port));
+    let v6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
+    let addrs = match host {
+        "localhost" => vec![v4, v6],
+        "127.0.0.1" => vec![v4],
+        "[::1]" => vec![v6],
+        _ => return None,
+    };
+    Some(Proxy { addrs, auth })
+}
+
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let h = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(h, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Opens a tunnel to `target` through `proxy` with HTTP CONNECT and returns
+/// the stream once the proxy answered 200. The response head is read a byte
+/// at a time, so nothing of the tunnel is read past it.
+pub fn through_proxy(proxy: &Proxy, target: SocketAddr) -> std::io::Result<TcpStream> {
+    use base64::Engine as _;
+    let mut last = std::io::Error::other("no proxy address");
+    for addr in &proxy.addrs {
+        let mut stream = match TcpStream::connect_timeout(addr, CONNECT_TIMEOUT) {
+            Ok(s) => s,
+            Err(e) => {
+                last = e;
+                continue;
+            }
+        };
+        stream.set_read_timeout(Some(HELLO_TIMEOUT))?;
+        stream.set_write_timeout(Some(HELLO_TIMEOUT))?;
+        let authority = target.to_string();
+        let mut head = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
+        if let Some(a) = &proxy.auth {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(a.as_bytes());
+            head.push_str(&format!("Proxy-Authorization: Basic {b64}\r\n"));
+        }
+        head.push_str("\r\n");
+        stream.write_all(head.as_bytes())?;
+        // One byte at a time, so nothing of the tunnel is read past the
+        // answer, within one deadline for the whole head: a proxy that
+        // drips a byte a second cannot hold the relay (review FP3-S1).
+        let deadline = std::time::Instant::now() + HELLO_TIMEOUT;
+        let mut got = Vec::new();
+        let mut byte = [0u8; 1];
+        while !got.ends_with(b"\r\n\r\n") {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return Err(std::io::Error::other("the proxy did not answer in time"));
+            }
+            stream.set_read_timeout(Some(left))?;
+            if got.len() >= 8 * 1024 || stream.read(&mut byte)? == 0 {
+                return Err(std::io::Error::other("the proxy did not answer"));
+            }
+            got.push(byte[0]);
+        }
+        stream.set_read_timeout(Some(HELLO_TIMEOUT))?;
+        let status = String::from_utf8_lossy(&got);
+        let first = status.lines().next().unwrap_or("");
+        let mut parts = first.split_whitespace();
+        let ok =
+            parts.next().is_some_and(|v| v.starts_with("HTTP/1.")) && parts.next() == Some("200");
+        if !ok {
+            let shown: String = first
+                .chars()
+                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                .take(80)
+                .collect();
+            return Err(std::io::Error::other(format!(
+                "the proxy refused the tunnel: {shown}"
+            )));
+        }
+        return Ok(stream);
+    }
+    Err(last)
+}
+
+/// The bridge's address, dialled directly, or, when the sandbox itself
+/// refused that, through a loopback proxy the environment names (Mac test
+/// w5 retest 3, MW5-22): inside srt a direct loopback connect fails
+/// (macOS: Seatbelt admits only the proxy's ports; Linux: the sandbox's own
+/// network), and srt's proxy admits the bridge's port, which `derm run`
+/// lists for it. A dial that failed for any other reason (the daemon gone
+/// or restarting, a stale `cu.endpoint`, a slow host) never tries a proxy:
+/// a project's settings can name one, and the chat token goes first on the
+/// connection (review FP3-S1).
+fn dial(address: SocketAddr) -> Option<TcpStream> {
+    let refused = match TcpStream::connect_timeout(&address, CONNECT_TIMEOUT) {
+        Ok(s) => return Some(s),
+        Err(e) => e,
+    };
+    if !sandbox_refused(&refused, &|p| std::fs::read_to_string(p).ok()) {
+        return None;
+    }
+    let proxy = loopback_proxy(&|n| std::env::var(n).ok())?;
+    match through_proxy(&proxy, address) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("derm-daemon cu-mcp: {e}");
+            None
+        }
+    }
+}
+
+/// Whether a failed loopback dial was the sandbox's doing, by what the
+/// sandbox makes true and an environment variable cannot: on macOS Seatbelt
+/// answers a denied connect with EPERM, where a closed port answers
+/// ECONNREFUSED; on Linux srt runs the chat in its own network namespace,
+/// whose only interface is `lo` (run under srt 0.0.81 with bubblewrap: the
+/// host lists its others).
+fn sandbox_refused(err: &std::io::Error, read: &dyn Fn(&str) -> Option<String>) -> bool {
+    if cfg!(target_os = "macos") {
+        err.kind() == std::io::ErrorKind::PermissionDenied
+    } else if cfg!(target_os = "linux") {
+        read("/proc/self/net/dev").is_some_and(|d| only_loopback(&d))
+    } else {
+        false
+    }
+}
+
+/// `/proc/net/dev`'s interfaces are `lo` alone.
+fn only_loopback(dev: &str) -> bool {
+    let names: Vec<&str> = dev
+        .lines()
+        .skip(2)
+        .filter_map(|l| l.split_once(':').map(|(n, _)| n.trim()))
+        .collect();
+    !names.is_empty() && names.iter().all(|n| *n == "lo")
+}
+
 /// Connects, sends the token and reads MonoCode's answer.
 fn connect(address: SocketAddr, token: &str) -> Option<(TcpStream, BufReader<TcpStream>)> {
-    let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).ok()?;
+    let mut stream = dial(address)?;
     let _ = stream.set_nodelay(true);
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
     if !write_value(&mut stream, &json!({"token": token})) {
@@ -400,6 +586,187 @@ fn local_answer(method: &str, id: Value, request: &Value, text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review FP3-S1: outside a sandbox, when the bridge's port does not
+    /// answer (a stale `cu.endpoint`, the daemon restarting), the relay must
+    /// not hand its chat token to a loopback proxy the environment names,
+    /// which a project's settings can set.
+    #[test]
+    fn a_refused_dial_outside_a_sandbox_sends_nothing_to_an_env_proxy() {
+        use std::net::TcpListener;
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = closed.local_addr().unwrap();
+        drop(closed);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        std::env::set_var("HTTPS_PROXY", format!("http://127.0.0.1:{port}"));
+        let token = "ab".repeat(32);
+        let got = connect(target, &token);
+        std::env::remove_var("HTTPS_PROXY");
+        assert!(got.is_none());
+        assert!(
+            listener.accept().is_err(),
+            "the relay connected to the env proxy outside a sandbox"
+        );
+    }
+
+    #[test]
+    fn only_a_sandboxs_own_refusal_lets_the_relay_try_a_proxy() {
+        let dev_host = "Inter-|   Receive\n face |bytes\n    lo: 0 0\n  eth0: 1 2\n";
+        let dev_srt = "Inter-|   Receive\n face |bytes\n    lo: 0 0\n";
+        assert!(!only_loopback(dev_host));
+        assert!(only_loopback(dev_srt));
+        assert!(!only_loopback(""));
+        let refused = std::io::Error::from(std::io::ErrorKind::ConnectionRefused);
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let host = |_: &str| Some(dev_host.to_string());
+        let srt = |_: &str| Some(dev_srt.to_string());
+        if cfg!(target_os = "linux") {
+            assert!(!sandbox_refused(&refused, &host));
+            assert!(sandbox_refused(&refused, &srt));
+            assert!(!sandbox_refused(&refused, &|_| None));
+        }
+        if cfg!(target_os = "macos") {
+            assert!(!sandbox_refused(&refused, &srt));
+            assert!(sandbox_refused(&denied, &host));
+        }
+    }
+
+    /// Review FP3-S1: the answer's head has one deadline, not one a byte.
+    #[test]
+    fn a_proxy_that_drips_its_answer_is_given_up_on_in_time() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            for b in b"HTTP/1.1 200 Connection established" {
+                if s.write_all(&[*b]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        });
+        let proxy = Proxy {
+            addrs: vec![addr],
+            auth: None,
+        };
+        let t0 = std::time::Instant::now();
+        let r = through_proxy(&proxy, "127.0.0.1:9".parse().unwrap());
+        assert!(r.is_err());
+        assert!(
+            t0.elapsed() < HELLO_TIMEOUT + Duration::from_secs(2),
+            "{:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[test]
+    fn only_a_plain_loopback_http_proxy_is_used() {
+        let env = |v: &'static str| move |n: &str| (n == "HTTPS_PROXY").then(|| v.to_string());
+        let p = loopback_proxy(&env("http://srt%2Bx:abc@localhost:41234")).unwrap();
+        assert_eq!(p.auth.as_deref(), Some("srt+x:abc"));
+        assert_eq!(p.addrs.len(), 2);
+        assert_eq!(p.addrs[0], "127.0.0.1:41234".parse().unwrap());
+        assert_eq!(
+            loopback_proxy(&env("http://127.0.0.1:9/")).unwrap().addrs,
+            vec!["127.0.0.1:9".parse().unwrap()]
+        );
+        assert_eq!(
+            loopback_proxy(&env("http://[::1]:9")).unwrap().addrs,
+            vec!["[::1]:9".parse().unwrap()]
+        );
+        for bad in [
+            "https://localhost:9",
+            "http://proxy.example.com:3128",
+            "http://10.0.0.1:3128",
+            "socks5h://localhost:9",
+            "http://localhost",
+            "http://localhost:0",
+            "http://localhost:9/path",
+            "http://localhost:99999",
+            "http://localhost.evil:9",
+        ] {
+            assert_eq!(loopback_proxy(&env(bad)), None, "{bad}");
+        }
+        assert_eq!(loopback_proxy(&|_: &str| None), None);
+    }
+
+    #[test]
+    fn the_relay_tunnels_to_the_bridge_through_a_proxy_that_answers_200() {
+        use std::net::TcpListener;
+        // A stand-in proxy: reads the CONNECT head, checks it, answers, then
+        // acts as the bridge on the tunnel.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut b).unwrap();
+                head.push(b[0]);
+            }
+            s.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut first = String::new();
+            r.read_line(&mut first).unwrap();
+            s.write_all(b"{\"monocode\":\"ok\"}\n").unwrap();
+            (String::from_utf8(head).unwrap(), first)
+        });
+        let proxy = Proxy {
+            addrs: vec![SocketAddr::from(([127, 0, 0, 1], port))],
+            auth: Some("u:t0k".into()),
+        };
+        let target: SocketAddr = "127.0.0.1:53276".parse().unwrap();
+        let mut stream = through_proxy(&proxy, target).unwrap();
+        assert!(write_value(&mut stream, &json!({"token": "x"})));
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut answer = String::new();
+        reader.read_line(&mut answer).unwrap();
+        assert!(answer.contains("monocode"), "{answer}");
+        let (head, first) = seen.join().unwrap();
+        assert!(
+            head.starts_with("CONNECT 127.0.0.1:53276 HTTP/1.1\r\n"),
+            "{head}"
+        );
+        assert!(head.contains("Host: 127.0.0.1:53276\r\n"), "{head}");
+        // base64("u:t0k")
+        assert!(
+            head.contains("Proxy-Authorization: Basic dTp0MGs=\r\n"),
+            "{head}"
+        );
+        assert_eq!(first.trim(), r#"{"token":"x"}"#);
+    }
+
+    #[test]
+    fn a_proxy_that_refuses_the_tunnel_gives_no_stream() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut b = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if s.read(&mut b).unwrap_or(0) == 0 {
+                    return;
+                }
+                head.push(b[0]);
+            }
+            let _ = s.write_all(
+                b"HTTP/1.1 403 Forbidden\r\nX-Proxy-Error: blocked-by-allowlist\r\n\r\n",
+            );
+        });
+        let proxy = Proxy {
+            addrs: vec![SocketAddr::from(([127, 0, 0, 1], port))],
+            auth: None,
+        };
+        let err = through_proxy(&proxy, "127.0.0.1:9".parse().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("403"), "{err}");
+    }
 
     #[test]
     fn takes_only_a_loopback_endpoint() {

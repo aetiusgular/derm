@@ -40,6 +40,35 @@ systemctl --user enable --now derm-daemon
 
 The unit in the tarball starts `~/.local/bin/derm-daemon`; the one in the .deb starts `/usr/bin/derm-daemon`.
 
+## Then
+
+`derm setup` finds your agents and asks, one question each, for a policy, the tap, content capture, computer use, the pre-install check, each agent's gate and a shim that runs it through `derm run` ([derm setup](setup.md)). `derm setup sandbox` says whether sbx and srt can run each agent here.
+
+## srt on Ubuntu 24.04 and later
+
+`derm run --boundary srt` uses Anthropic's sandbox runtime (srt 0.0.81) on bubblewrap. srt also runs a seccomp step inside bubblewrap that makes a user namespace of its own, and that step needs `CAP_SYS_ADMIN` there.
+
+- **Ubuntu 26.04** loads Ubuntu's AppArmor profile `/etc/apparmor.d/bwrap-userns-restrict`. It runs everything bubblewrap starts under its child profile `unpriv_bwrap`, which denies every capability, so srt fails with `apply-seccomp: write /proc/self/setgroups ... Permission denied`. The sysctl `kernel.apparmor_restrict_unprivileged_userns` does not change that profile, and an AppArmor profile for srt's own programs cannot lift it, because bubblewrap sets `no_new_privs`. `derm setup sandbox` and `derm run` say so and name the profile.
+- **Ubuntu 24.04** ships that profile unloaded (in the `apparmor-profiles` package's extra profiles). There the sysctl at 1 stops bubblewrap itself, and srt's own note applies: the sysctl at 0, or a profile that allows user namespaces for srt's bubblewrap. Loading Ubuntu's `bwrap-userns-restrict` there makes srt fail as on 26.04.
+
+derm changes none of this. Without a root change, use `--boundary sbx` (Claude Code keeps derm's gate in the VM through derm's kit) or `--boundary none`. Every root change that lets srt start lets any local program make a user namespace with capabilities, the kernel surface Ubuntu's restriction exists to narrow (Ubuntu: "Understanding AppArmor User Namespace Restriction"). Two, narrowest first; neither is tested on 26.04 yet:
+
+1. A copy of bubblewrap for srt, under a profile shaped like Ubuntu's own `chrome` and `linux-sandbox` profiles (`flags=(unconfined)` and `userns`). The system bubblewrap keeps Ubuntu's profile; the copy does not, and any local user can run it. It does not follow bubblewrap's security updates: copy it again after each one (`cmp /usr/bin/bwrap /usr/local/libexec/derm-srt/bwrap` says whether it differs).
+
+   ```sh
+   sudo install -d -m 0755 /usr/local/libexec/derm-srt
+   sudo install -m 0755 /usr/bin/bwrap /usr/local/libexec/derm-srt/bwrap
+   printf '%s\n' 'abi <abi/5.0>,' 'include <tunables/global>' \
+     'profile derm-srt-bwrap /usr/local/libexec/derm-srt/bwrap flags=(unconfined) {' \
+     '  userns,' '  include if exists <local/derm-srt-bwrap>' '}' \
+     | sudo tee /etc/apparmor.d/derm-srt-bwrap >/dev/null
+   sudo apparmor_parser -r /etc/apparmor.d/derm-srt-bwrap
+   ```
+
+   derm takes the first `bwrap` on `PATH`, so start srt chats with that folder first: `PATH=/usr/local/libexec/derm-srt:$PATH derm run <agent> --boundary srt`. Undo: `sudo apparmor_parser -R /etc/apparmor.d/derm-srt-bwrap && sudo rm /etc/apparmor.d/derm-srt-bwrap && sudo rm -r /usr/local/libexec/derm-srt`.
+
+2. Ubuntu's profile off and the sysctl at 0, for every program on the machine: `sudo ln -s /etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. Undo: `sudo rm /etc/apparmor.d/disable/bwrap-userns-restrict && sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict && sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1`. The sysctl does not survive a reboot unless a file in `/etc/sysctl.d/` sets it.
+
 ## Where derm keeps things
 
 | What | Where |
@@ -55,7 +84,7 @@ The systemd user unit runs with `XDG_RUNTIME_DIR=/run/user/<uid>`. A shell that 
 
 ## The audit feed (optional, root)
 
-`derm-audit-feed` turns auditd records of a `derm run` chat's processes into daemon events. Its rules are installed by root, and derm only prints them: run `derm-audit-feed rules` as the user your agents run as, read what it prints, and install it yourself as `/etc/audit/rules.d/50-derm.rules`, then `augenrules --load`. Then `derm-audit-feed run`, as that user (it refuses root; it needs read access to `/var/log/audit/audit.log`, the `adm` group on Ubuntu). Without it, `derm status` says the OS layer is off and the feed holds the agents' own telemetry and the gate's records.
+`derm-audit-feed` turns auditd records of a `derm run` chat's processes into daemon events. Its rules are installed by root, and derm only prints them: run `derm-audit-feed rules` as the user your agents run as, read what it prints, and install it yourself as `/etc/audit/rules.d/50-derm-<uid>.rules` (one file per user, so rules for a second user, such as the agents' user, never replace yours), then `augenrules --load`. Then run the feed as that user (it refuses root; it needs read access to `/var/log/audit/audit.log`, the `adm` group on Ubuntu): `systemctl --user enable --now derm-audit-feed.service` (the `.deb` installs the unit in `/usr/lib/systemd/user/`; the tarball carries it, to copy into `~/.config/systemd/user/`), or `derm-audit-feed run` by hand. The unit is wanted by `derm-daemon.service`, so every start of the daemon starts it, and `PartOf=` stops and restarts it with the daemon; a feed started by hand exits when the daemon restarts and does not come back. `derm watch report` says when no feed is attached. Without it, `derm status` says the OS layer is off and the feed holds the agents' own telemetry and the gate's records.
 
 ## From a clone
 

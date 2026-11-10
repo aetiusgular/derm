@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aetiusgular/derm/contracts/settings.schema.json",
+  "title": "derm user settings",
+  "description": "~/.derm/settings.json: the user's switches for wave 5 (events.md section 5; the wave 5 base, 4 Nov 2026). derm setup (lane W) writes it, behind one question per switch; derm run, the daemon and the gates read their own key. A missing file or key is the default named here. A file that does not follow this schema is ignored with a warning, and the defaults apply, except `boundary.preAnswer`, which then counts as unset (so a script stops, case 129). User-level only: no project file is read. ~/.derm/ is a control path (policy.md section 4, step 7a).",
+  "type": "object",
+  "required": ["version"],
+  "properties": {
+    "version": { "const": 1 },
+    "boundary": {
+      "description": "Lane T (case 129). `preAnswer` answers the no-boundary question when no one can: unset (null) stops; `run-as-you` runs without a boundary; `stop` stops. Off until set; derm status shows it.",
+      "type": "object",
+      "properties": { "preAnswer": { "enum": ["run-as-you", "stop", null] } },
+      "additionalProperties": false
+    },
+    "tap": {
+      "description": "Lane S. The model tap, on by default (Tony, 4 Nov). `derm run --no-tap` turns it off for one chat (case 127). `upstreams` (lane S's request 6, case 113; decided at the phase 3 merge): model servers you confirmed, by key, that the tap may forward to besides its built-in hosts; `local` is true for a server on this machine or your own box (case 94's fold applies, and only then may `base` be http). derm setup (lane W) writes an entry behind a question; nothing else adds one. A key is never a built-in one.",
+      "type": "object",
+      "properties": {
+        "on": { "type": "boolean", "default": true },
+        "upstreams": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": { "pattern": "^[a-z0-9-]{1,32}$", "not": { "enum": ["anthropic", "openai", "chatgpt", "openai-auto", "gemini"] } },
+          "additionalProperties": {
+            "type": "object",
+            "required": ["base"],
+            "properties": {
+              "base": { "type": "string", "maxLength": 255, "pattern": "^https?://[^/?#@\\s\\\\]+(/[^?#@\\s\\\\]*)?$" },
+              "local": { "type": "boolean", "default": false }
+            },
+            "if": { "properties": { "local": { "const": false } } },
+            "then": { "properties": { "base": { "type": "string", "pattern": "^https://" } } },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "content": {
+      "description": "Lane S (cases 85, 126). Content capture, off by default; when on, kept locally for retentionDays (1 to 7), then deleted.",
+      "type": "object",
+      "properties": {
+        "on": { "type": "boolean", "default": false },
+        "retentionDays": { "type": "integer", "minimum": 1, "maximum": 7 }
+      },
+      "if": { "properties": { "on": { "const": true } }, "required": ["on"] },
+      "then": { "properties": { "retentionDays": true }, "required": ["retentionDays"] },
+      "additionalProperties": false
+    },
+    "installs": {
+      "description": "Lane X (cases 130 to 134). `check`: the pre-install check, off by default (universal plan section 8, call 10); when on, the daemon calls the project's registry and api.osv.dev only. `minAgeHours`: a version younger than this asks (48, Safe Chain's default, note AT).",
+      "type": "object",
+      "properties": {
+        "check": { "type": "boolean", "default": false },
+        "minAgeHours": { "type": "integer", "minimum": 0, "maximum": 8760, "default": 48 }
+      },
+      "additionalProperties": false
+    },
+    "computerUse": {
+      "description": "Lane U. Off by default (Tony, 4 Nov), and off in every release until lane V's box test passes.",
+      "type": "object",
+      "properties": { "on": { "type": "boolean", "default": false } },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

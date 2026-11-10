@@ -32,7 +32,7 @@
 
 import { createHash } from "node:crypto";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { redactText, redactValue } from "./core/redact.ts";
 import { defuseValue, overBudget } from "./budget.ts";
@@ -249,8 +249,15 @@ export async function onToolCall(event: ToolCallEvent, ctx: HandlerContext | und
         ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
       },
     };
+    // The install records follow the decision on the same chain, so on Amp
+    // the lockfile is kept a little after the call starts (not awaited, as
+    // above): a diff can miss what the first moments wrote.
+    const installs = installEvents(call, answer, resolved.action, call.chat ?? "");
     void Promise.resolve()
-      .then(() => deps.postEvent(record))
+      .then(async () => {
+        await deps.postEvent(record);
+        for (const e of installs) await deps.postEvent(e);
+      })
       .catch(() => undefined);
     return result;
   } catch (error) {

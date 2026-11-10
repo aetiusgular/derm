@@ -1,5 +1,5 @@
 //! The caller check (PROTOCOL.md, "Caller check"): both sockets accept a
-//! connection only from MonoCode.
+//! connection only from derm's daemon, signed by the collector's own team.
 //!
 //! The pure part, compiled and tested everywhere: building the peer's code
 //! requirement from the daemon's own designated requirement, and the exact
@@ -8,10 +8,55 @@
 
 use std::path::Path;
 
-/// The daemon's own signing identifier.
+/// The release's signing identifier for the collector. Since lane Y the
+/// check does not read it: the collector takes its own identifier from its
+/// signature (`own_identifier`) and the peer's from that (case 40). Kept as
+/// the release's value for the docs, the bundle and the tests.
 pub const OWN_ID: &str = "io.github.aetiusgular.derm.activity-collector";
-/// The app's signing identifier: the only accepted peer.
+/// The release's peer: `derm-daemon`, signed with this identifier
+/// (`packaging/macos/build-zip.sh`).
 pub const PEER_ID: &str = "io.github.aetiusgular.derm";
+/// What every collector identifier ends with; the peer is what comes before.
+pub const SUFFIX: &str = ".activity-collector";
+
+/// An identifier the collector will use: the characters the daemon's
+/// launchd names take (`activity/collector.rs` `Names::for_identifier`), so
+/// it needs no quoting in a requirement, a label or a path.
+fn plain_identifier(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+        && !id.starts_with('.')
+        && !id.ends_with('.')
+        && !id.contains("..")
+}
+
+/// The identifier a designated requirement starts with
+/// (`identifier "<id>" and `), if it is a plain one.
+pub fn own_identifier(own_designated_requirement: &str) -> Option<&str> {
+    let rest = own_designated_requirement.strip_prefix("identifier \"")?;
+    let (id, _) = rest.split_once("\" and ")?;
+    plain_identifier(id).then_some(id)
+}
+
+/// The peer a collector signed as `own_id` accepts: `own_id` without
+/// `.activity-collector` (`<app>.activity-collector` answers `<app>`, as
+/// the daemon derives its label from the app's identifier).
+pub fn peer_identifier(own_id: &str) -> Option<&str> {
+    let peer = own_id.strip_suffix(SUFFIX)?;
+    (plain_identifier(own_id) && plain_identifier(peer)).then_some(peer)
+}
+
+/// The requirement the caller check builds from the collector's own
+/// designated requirement: its identifier swapped for its peer's, the rest
+/// (anchor, team) unchanged. `None` refuses every signed caller.
+pub fn checker_requirement(own_designated_requirement: &str) -> Option<String> {
+    let own = own_identifier(own_designated_requirement)?;
+    let peer = peer_identifier(own)?;
+    peer_requirement(own_designated_requirement, own, peer)
+}
 
 /// The peer's requirement: the daemon's designated requirement with the
 /// identifier swapped for the peer's. `None` (refuse every caller) unless
@@ -230,7 +275,7 @@ pub mod ffi {
         /// requirement, only the dev path (if given) can pass.
         pub fn new(dev_peer_path: Option<PathBuf>) -> Checker {
             let requirement = own_requirement_text()
-                .and_then(|own| super::peer_requirement(&own, super::OWN_ID, super::PEER_ID))
+                .and_then(|own| super::checker_requirement(&own))
                 .and_then(|text| {
                     let s = cf_string(&text)?;
                     let mut req: SecRequirementRef = std::ptr::null();
@@ -383,6 +428,44 @@ mod tests {
         }
         assert_eq!(peer_requirement(DR, OWN_ID, "a\" or \"b"), None);
         assert_eq!(peer_requirement(DR, "", PEER_ID), None);
+    }
+
+    #[test]
+    fn the_peer_follows_the_collectors_own_signing_identifier() {
+        // Case 40: the release's ids were literals, so a collector signed
+        // under another identity (a `.dev` build beside the release) refused
+        // every caller and could not be told which daemon is its own.
+        let dev = "identifier \"io.github.aetiusgular.derm.dev.activity-collector\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"";
+        assert_eq!(peer_requirement(dev, OWN_ID, PEER_ID), None);
+        assert_eq!(
+            checker_requirement(dev).as_deref(),
+            Some("identifier \"io.github.aetiusgular.derm.dev\" and anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"")
+        );
+        // The release reads the same as before.
+        assert_eq!(
+            checker_requirement(DR),
+            peer_requirement(DR, OWN_ID, PEER_ID)
+        );
+        assert_eq!(own_identifier(DR), Some(OWN_ID));
+        assert_eq!(peer_identifier(OWN_ID), Some(PEER_ID));
+        // Fails closed: no `.activity-collector` suffix, nothing before it,
+        // an id a requirement string cannot hold, a requirement that does
+        // not start with its identifier, and every case `fails_closed` has.
+        for dr in [
+            "identifier \"io.github.aetiusgular.derm\" and anchor apple generic",
+            "identifier \".activity-collector\" and anchor apple generic",
+            "identifier \"activity-collector\" and anchor apple generic",
+            "identifier \"a.b.activity-collector.x\" and anchor apple generic",
+            "identifier \"a\\\"b.activity-collector\" and anchor apple generic",
+            "identifier \"a b.activity-collector\" and anchor apple generic",
+            "anchor apple generic and identifier \"a.activity-collector\"",
+            "",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" and ",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" or anchor apple",
+            "identifier \"io.github.aetiusgular.derm.activity-collector\" and anchor\0apple",
+        ] {
+            assert_eq!(checker_requirement(dr), None, "{dr:?}");
+        }
     }
 
     #[test]

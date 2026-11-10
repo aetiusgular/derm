@@ -11,7 +11,7 @@
 
 import { createHash } from "node:crypto";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { DIALECTS } from "./agents.ts";
 import { narrowForControl } from "./control.ts";
@@ -122,6 +122,10 @@ export async function handlePre(dialect: Dialect, input: Record<string, unknown>
       ...(read.callId ? { toolUseId: read.callId } : { callKey: callKey(dialect, read) }),
     },
   });
+  // With no call id the records join by the call key, so the install record
+  // carries it as its toolUseId.
+  const installCall: GateCall = { harness: dialect.id, tool: read.tool, toolInput: read.toolInput, toolUseId: read.callId ?? callKey(dialect, read) };
+  for (const e of installEvents(installCall, out.answer, out.decision, chat ?? "")) await deps.postEvent(e);
   if (out.decision === "deny") return dialect.reply.deny(out.reason);
   if (out.decision === "ask") {
     // decide() returns "ask" only when the dialect has an ask of its own.

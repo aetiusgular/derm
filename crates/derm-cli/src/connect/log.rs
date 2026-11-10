@@ -6,8 +6,8 @@
 
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -81,7 +81,7 @@ fn to_daemon(socket: &Path, r: &Record) -> Result<(), String> {
         .ok_or_else(|| "the socket has no folder".to_string())?;
     let token = derm_audit_linux::client::read_daemon_token(dir).map_err(|e| e.to_string())?;
     let token = token.as_str();
-    let mut s = UnixStream::connect(socket).map_err(|e| e.to_string())?;
+    let mut s = derm_core::platform::connect(socket).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(DAEMON_TIMEOUT))
         .map_err(|e| e.to_string())?;
     s.set_write_timeout(Some(DAEMON_TIMEOUT))
@@ -112,11 +112,15 @@ fn to_daemon(socket: &Path, r: &Record) -> Result<(), String> {
 
 fn to_file(log: &Path, r: &Record) -> Result<(), String> {
     if let Some(dir) = log.parent() {
+        #[cfg(unix)]
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?;
+        // Windows (lane Z): derm's own folder, made private (user-only DACL).
+        #[cfg(windows)]
+        derm_core::platform::private_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let line = json!({
         "at": now_ms(),
@@ -124,10 +128,11 @@ fn to_file(log: &Path, r: &Record) -> Result<(), String> {
         "kind": "config.write",
         "detail": detail(r),
     });
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut f = options
         .open(log)
         .map_err(|e| format!("{}: {e}", log.display()))?;
     writeln!(f, "{line}").map_err(|e| format!("{}: {e}", log.display()))
@@ -144,10 +149,14 @@ pub fn record(socket: &Path, log_file: &Path, r: &Record) -> Result<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::connect::write::tests::scratch;
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
+    #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
+    #[cfg(unix)]
     fn rec() -> Record {
         Record {
             harness: "pi".into(),
@@ -178,6 +187,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn no_daemon_falls_back_to_a_private_log_file() {
         let d = scratch("log");
@@ -192,6 +202,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_running_daemon_gets_hello_then_one_event() {
         let (d, _gone) = sock_scratch();
@@ -224,17 +235,20 @@ mod tests {
         assert!(!d.join("connect.log").exists());
     }
 
+    #[cfg(unix)]
     /// A folder for a socket test. A Unix socket's path has room for 104
     /// bytes on macOS and 108 on Linux, and macOS's `$TMPDIR` under
     /// `/var/folders/` takes about half, so `scratch`'s long names did not
     /// fit there (Mac test w4, MW4-3). `/tmp` with a short name does, on both.
     struct Gone(std::path::PathBuf);
+    #[cfg(unix)]
     impl Drop for Gone {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
+    #[cfg(unix)]
     fn sock_scratch() -> (std::path::PathBuf, Gone) {
         let base = if Path::new("/tmp").is_dir() {
             std::path::PathBuf::from("/tmp")
@@ -250,18 +264,22 @@ mod tests {
         (d.clone(), Gone(d))
     }
 
+    #[cfg(unix)]
     fn private_token(d: &Path) {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let t = d.join("daemon.token");
         std::fs::write(&t, "1".repeat(64)).unwrap();
         std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
+    #[cfg(unix)]
     /// Fix pass review F7: the token beside the socket is read with
     /// `derm run`'s checks. One another user could write (group or other
     /// bits, or a link) is not ours: no connection, the file gets the record.
     #[test]
     fn a_token_others_could_write_is_not_used() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let (d, _gone) = sock_scratch();
         let sock = d.join("daemon.sock");
@@ -281,6 +299,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_daemon_that_refuses_falls_back_to_the_file() {
         let (d, _gone) = sock_scratch();

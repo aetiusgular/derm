@@ -1,0 +1,117 @@
+{
+  "$comment": "Wave 5 lane W's sibling table (the wave 5 base, plans/parallel_build_tk.md section 7c): the agent's executable names, for the unregistered-agent flag (rules case 122) and the `PATH` shims `derm setup` writes. One value per preset id under `rows`. presets.rs and contracts/presets.ts merge it into each row as the `executables` field, and refuse an id the index does not name, a row file that already sets `executables`, and a table whose `field` is not its file name. Shape: contracts/harness-presets.schema.json, $defs.executables. Filled by lane W on 5 Nov 2026: `sources` says where each value comes from (not merged into the rows); `leftOut` names the agents with no value and why.",
+  "field": "executables",
+  "rows": {
+    "claude-code": [
+      "claude"
+    ],
+    "codex": [
+      "codex"
+    ],
+    "pi": [
+      "pi"
+    ],
+    "opencode": [
+      "opencode"
+    ],
+    "gemini": [
+      "gemini"
+    ],
+    "cursor": [
+      "cursor-agent",
+      "agent"
+    ],
+    "hermes": [
+      "hermes"
+    ],
+    "openclaw": [
+      "openclaw"
+    ],
+    "goose": [
+      "goose"
+    ],
+    "qwen-code": [
+      "qwen"
+    ],
+    "copilot-cli": [
+      "copilot"
+    ],
+    "amp": [
+      "amp"
+    ],
+    "crush": [
+      "crush"
+    ],
+    "kilo": [
+      "kilo"
+    ],
+    "codebuff": [
+      "codebuff"
+    ],
+    "oh-my-pi": [
+      "omp"
+    ],
+    "continue": [
+      "cn"
+    ],
+    "grok": [
+      "grok"
+    ],
+    "openclaude": [
+      "openclaude"
+    ],
+    "cline": [
+      "cline"
+    ],
+    "droid": [
+      "droid"
+    ],
+    "kimi": [
+      "kimi"
+    ],
+    "kiro": [
+      "kiro-cli"
+    ],
+    "mistral-vibe": [
+      "vibe"
+    ],
+    "antigravity": [
+      "agy"
+    ]
+  },
+  "sources": {
+    "claude-code": "the row's `cli` (2.1.311, run)",
+    "codex": "the row's `cli` (0.163.0, run)",
+    "pi": "the row's `cli` (1.4.0, run)",
+    "opencode": "the row's `cli` (1.19.4, source)",
+    "gemini": "the row's `cli` (0.66.0, run)",
+    "cursor": "`cursor-agent` is the row's `cli`; `agent` is the name the Mac test w4 ran Cursor's CLI by (plans/parallel/tk_integration_w4.md, Not verified). A generic name: the flag should credit it to Cursor only beside Cursor's install folder (request W-R1)",
+    "hermes": "the row's `cli` (v0.22.5, source)",
+    "openclaw": "the row's `cli` (2026.10.8, run)",
+    "goose": "the row's `cli` (1.57.0, run)",
+    "qwen-code": "the row's `cli` (0.26.6, run (cloud, fake chat server))",
+    "copilot-cli": "the row's `cli` (1.0.105, run (COPILOT_OFFLINE, fake chat server))",
+    "amp": "the row's `cli` (@ampcode/plugin 0.0.0-20261104001221-gc8c68be, types (not run))",
+    "crush": "the row's `cli` (0.99.0, run)",
+    "zed": "the row's `cli` (NF)",
+    "kilo": "the row's `cli` (7.8.18, run)",
+    "codebuff": "the row's `cli` (1.0.688, source)",
+    "oh-my-pi": "the row's `cli` (18.13.3, run)",
+    "continue": "the row's `cli` (1.5.47, bundle)",
+    "grok": "the row's `cli` (1.0.70, 1.0.71, 1.0.74, run (custom model, fake chat server))",
+    "openclaude": "the row's `cli` (0.34.0, run (cloud, fake Anthropic server))",
+    "cline": "the row's `cli` (3.0.74, run)",
+    "command-code": "the row's `cli` (1.88.2, bundle)",
+    "droid": "the row's `cli` (1.3.0, run (airgap mode, BYOK model, fake chat server))",
+    "kimi": "the row's `cli` (2.4.1, run (cloud, fake chat server))",
+    "kiro": "the row's `cli` (docs (hooks/actions 10 Oct 2026, CLI 2.36.0 and V3), 3 Nov 2026; unverified, not run)",
+    "mistral-vibe": "sbx-kits-contrib 1de3c1e vibe/spec.yaml starts `vibe` (read by lane T, tk_lane_T.md phase 4 research); the row's `cli` is TODO",
+    "antigravity": "sbx-kits-contrib 1de3c1e antigravity/spec.yaml starts `agy` (read by lane T); the row's `cli` is TODO"
+  },
+  "leftOut": {
+    "command-code": "its `cli` is `cmd`, which is Windows' cmd.exe: a flag or a shim by that name would hit every cmd.exe. Left out until the daemon can tell them apart by path",
+    "zed": "`zed` opens the Zed editor; its agent runs inside the editor, not as a CLI derm can launch",
+    "auggie": "the row's `cli` is TODO; `auggie` (npm @augmentcode/auggie) is not read here",
+    "rovo-dev": "the row's `cli` is TODO; Rovo Dev runs as `acli rovodev` (I, not read), a subcommand a PATH shim cannot stand in for"
+  }
+}

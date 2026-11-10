@@ -1,0 +1,397 @@
+{
+ "note": "Lane W: what derm setup's presets answer, run by all three matchers once request W-1 (command rules) is in (request W-2's tests). Each call is evaluated under the named preset's `policy` (crates/derm-cli/src/setup/presets/<preset>.json); reasonPrefix is compared with startsWith.",
+ "cases": [
+  {
+   "id": 1,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "cargo test --all"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "ordinary work in the project runs"
+  },
+  {
+   "id": 2,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git commit -am fix"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "a local commit runs"
+  },
+  {
+   "id": 3,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git push origin main"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash git push"
+   },
+   "note": "a push asks (a deny under the sbx kit's full access)"
+  },
+  {
+   "id": 4,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "docker run --privileged alpine true"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash docker run --privileged"
+   },
+   "note": "a privileged container is denied"
+  },
+  {
+   "id": 5,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "derm setup"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash derm setup"
+   },
+   "note": "an agent never sets its own policy"
+  },
+  {
+   "id": 6,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Write",
+    "harness": "claude-code",
+    "inputText": "src/main.rs fn main() {}"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule write"
+   },
+   "note": "writing a project file runs"
+  },
+  {
+   "id": 7,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Write",
+    "harness": "claude-code",
+    "inputText": ".git/hooks/pre-commit #!/bin/sh"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "input names a control file"
+   },
+   "note": "a control path asks (step 7a)"
+  },
+  {
+   "id": 8,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "npm install left-pad"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "package install"
+   },
+   "note": "a package install asks (section 6)"
+  },
+  {
+   "id": 9,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "WebFetch",
+    "harness": "claude-code",
+    "inputText": "https://example.com/page"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule webfetch"
+   },
+   "note": "a fetch to a host asks"
+  },
+  {
+   "id": 10,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "ls *.md"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "shell text the matcher cannot read"
+   },
+   "note": "a glob asks (step 7b): in the VM the agent spells it plainly"
+  },
+  {
+   "id": 11,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "gh pr create --fill"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash gh pr create"
+   },
+   "note": "a GitHub write asks"
+  },
+  {
+   "id": 12,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "mcp__exa__search",
+    "harness": "claude-code",
+    "inputText": "{}"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "no rule"
+   },
+   "note": "an MCP server has no rule until you add one"
+  },
+  {
+   "id": 13,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "sudo -u me git push"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash git push"
+   },
+   "note": "past a wrapper"
+  },
+  {
+   "id": 14,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git push --force origin main"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash git push --force"
+   },
+   "note": "a force push is denied in strict"
+  },
+  {
+   "id": 15,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "vercel deploy --prod"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash vercel --prod"
+   },
+   "note": "a production deploy is denied in strict"
+  },
+  {
+   "id": 16,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "terraform apply -auto-approve"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash terraform apply"
+   },
+   "note": "terraform apply is denied in strict"
+  },
+  {
+   "id": 17,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git push origin main"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash git push"
+   },
+   "note": "a plain push still asks"
+  },
+  {
+   "id": 18,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "make build"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "ordinary work runs in strict too"
+  },
+  {
+   "id": 19,
+   "preset": "read-only",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git status"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule bash git status"
+   },
+   "note": "a read the preset lists widens bash's ask"
+  },
+  {
+   "id": 20,
+   "preset": "read-only",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "ls -la"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "other shell commands ask"
+  },
+  {
+   "id": 21,
+   "preset": "read-only",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git status && rm -rf build"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "two commands are never widened"
+  },
+  {
+   "id": 22,
+   "preset": "read-only",
+   "call": {
+    "tool": "Edit",
+    "harness": "claude-code",
+    "inputText": "src/main.rs"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule edit"
+   },
+   "note": "an edit asks"
+  },
+  {
+   "id": 23,
+   "preset": "read-only",
+   "call": {
+    "tool": "Read",
+    "harness": "claude-code",
+    "inputText": "src/main.rs"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule read"
+   },
+   "note": "a read runs"
+  },
+  {
+   "id": 24,
+   "preset": "read-only",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "gh repo delete me/x --yes"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "a destructive GitHub command asks, as bash does here (a command ask turns only an allow into an ask)"
+  },
+  {
+   "id": 25,
+   "preset": "read-only",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git log -1 --format=%h --output=docs/cfg"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "review W5-S1: a flag after an allowed command's words asks (git's --output writes a file)"
+  },
+  {
+   "id": 26,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "gh auth status -t"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash gh auth status -t"
+   },
+   "note": "review W5-S2: printing the token is denied where gh auth token is"
+  },
+  {
+   "id": 27,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git reset --ha"
+   },
+   "expect": {
+    "action": "deny",
+    "reasonPrefix": "rule bash git reset --hard"
+   },
+   "note": "review W5-S4: a prefix of --hard meets it"
+  },
+  {
+   "id": 28,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "git remote -v rename origin x"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash git remote rename"
+   },
+   "note": "review W5-S2: renaming a remote asks"
+  }
+ ]
+}

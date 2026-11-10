@@ -1,0 +1,25 @@
+[
+  {
+    "id": "tap-chat-fixture-call_FIXTURE01",
+    "at": 1793000000000,
+    "chatId": "chat-fixture",
+    "harness": "codex",
+    "source": "tap",
+    "kind": "tap.call",
+    "summary": "shell",
+    "detail": {
+      "trust": "daemon",
+      "api": "openai-responses",
+      "model": "gpt-fixture",
+      "callId": "call_FIXTURE01",
+      "tool": "shell",
+      "toolNormalized": "shell",
+      "argsSha256": "91578e5380dc45003672db5c1ab87a1bb4944080fd7b821111fcb6419c1d1177",
+      "argsBytes": 24,
+      "paths": [],
+      "resultSha256": "0a2a0fc92f4ba42a8af15936e679bcd950e481559c88bd3531c097b1051c40a7",
+      "resultBytes": 10,
+      "incomplete": false
+    }
+  }
+]

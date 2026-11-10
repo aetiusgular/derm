@@ -24,6 +24,8 @@
 //!   item, and the spawn-argument scan that gave MonoCode's harness children
 //!   their token (`configure_child`); its tests went with it.
 
+#[path = "app_pids.rs"]
+mod app_pids;
 #[path = "apps.rs"]
 mod apps;
 #[path = "bridge.rs"]
@@ -32,6 +34,11 @@ mod bridge;
 pub mod bridge_cli;
 #[path = "core.rs"]
 mod core;
+#[cfg(target_os = "linux")]
+mod desktop;
+#[cfg(target_os = "linux")]
+#[path = "direct.rs"]
+mod direct;
 #[path = "facade.rs"]
 mod facade;
 #[path = "grants.rs"]
@@ -44,6 +51,10 @@ mod manifest;
 pub mod relay;
 #[path = "service.rs"]
 pub mod service;
+#[path = "settings.rs"]
+pub mod settings;
+#[path = "tool.rs"]
+pub mod tool;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,18 +72,43 @@ pub const ENDPOINT_FILE: &str = "cu.endpoint";
 /// reserves `computer-use` (lane C, wave 1).
 pub const SERVER_NAME: &str = "derm_cu";
 
-/// The helper launcher for this machine.
+/// The helper launcher for this machine: the signed helper app on macOS,
+/// and on Linux the daemon's own thread with a `cua-driver mcp` child per
+/// runtime (`direct.rs`, lane U).
 fn system_launcher(data: Option<PathBuf>) -> Box<dyn HelperLauncher> {
+    #[cfg(target_os = "linux")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let uid = derm_core::platform::real_user();
+        let driver = direct::debug_driver(uid)
+            .or_else(|| direct::find_driver(&direct::driver_candidates(Some(&home)), uid));
+        Box::new(direct::DirectLauncher {
+            driver,
+            data,
+            env: std::env::vars().collect(),
+            home,
+            proc_root: PathBuf::from("/proc"),
+            gnome_shell: PathBuf::from(desktop::GNOME_SHELL),
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
     Box::new(SystemLauncher {
         app: helper_location(),
         data,
     })
 }
 
+/// Where computer use runs: macOS (the helper app) and Linux (`direct.rs`).
+/// Windows is lane Z's.
+pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+
 /// Where the helper is looked for. A debug build also takes `DERM_CU_HELPER`,
 /// for a helper built beside the repository. A release build looks only in
 /// `/Applications`, a folder an installer writes. The daemon is a plain
 /// binary, not a bundle, so the fork's `Contents/Helpers` has no equivalent.
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Linux runs direct.rs"))]
 fn helper_location() -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("DERM_CU_HELPER") {
@@ -81,6 +117,7 @@ fn helper_location() -> Option<PathBuf> {
     Some(PathBuf::from("/Applications").join(HELPER_APP))
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code, reason = "Linux runs direct.rs"))]
 struct SystemLauncher {
     app: Option<PathBuf>,
     data: Option<PathBuf>,
@@ -103,6 +140,14 @@ impl HelperLauncher for SystemLauncher {
     /// `<daemon data>/computer-use/recordings/<runtime>/`.
     fn recordings_root(&self) -> Option<PathBuf> {
         Some(self.data.as_ref()?.join("computer-use").join("recordings"))
+    }
+    /// BW5-19's Mac half: this user's processes of the approved app, read
+    /// with libproc, so a listing reaches the helper with a pid.
+    fn app_pids(&self, app: &std::path::Path) -> Option<Vec<u64>> {
+        app_pids::pids_in_app(app)
+    }
+    fn lists_by_app(&self) -> bool {
+        cfg!(target_os = "macos")
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -187,7 +232,7 @@ pub(crate) fn system_core(
     data: Option<PathBuf>,
     notify: Box<dyn Fn(Notice) + Send + Sync>,
 ) -> Arc<Core> {
-    Core::new(system_launcher(data), notify, cfg!(target_os = "macos"))
+    Core::new(system_launcher(data), notify, SUPPORTED)
 }
 
 #[cfg(test)]
@@ -235,9 +280,12 @@ mod tests {
     }
 
     #[test]
-    fn off_macos_the_launcher_refuses_and_the_engine_says_unsupported() {
+    fn off_macos_and_linux_the_launcher_refuses_and_the_engine_says_unsupported() {
         let core = system_core(None, Box::new(|_| {}));
-        if cfg!(target_os = "macos") {
+        if SUPPORTED {
+            // Lane U: Linux runs `direct.rs`; with no data folder it cannot
+            // start a runtime, and the grant still needs a card.
+            assert_ne!(core.status().helper, "unsupported");
             return;
         }
         assert_eq!(core.status().helper, "unsupported");

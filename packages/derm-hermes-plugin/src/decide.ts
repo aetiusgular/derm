@@ -22,7 +22,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { redactText } from "./core/redact.ts";
 import { narrowForControl } from "./control.ts";
@@ -108,6 +108,7 @@ export async function pre(input: Record<string, unknown>, deps: Deps): Promise<P
     summary: `${answer.normalizedTool} ${decision}`,
     detail: { tool: answer.normalizedTool, decision, policyAction: answer.action, reason, redacted: answer.redacted, ...(id ? { toolUseId: id } : {}) },
   });
+  for (const e of installEvents(call, answer, decision, chat ?? "")) await deps.postEvent(e);
   const out: PreAnswer = { decision, reason };
   if (decision !== "deny" && answer.updatedInput !== undefined) out.args = answer.updatedInput;
   return out;

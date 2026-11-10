@@ -1,0 +1,9 @@
+{
+  "boundaryChoice": { "chosen": "none", "named": false, "reasons": [
+    { "boundary": "sbx", "why": "sbx is not installed", "install": "see https://docs.docker.com/ai/sandboxes/install/" },
+    { "boundary": "srt", "why": "user namespaces are restricted (kernel.apparmor_restrict_unprivileged_userns=1)" }
+  ], "answeredBy": "terminal", "preAnswer": null },
+  "tap": { "on": false, "reason": "no-tap-flag" },
+  "content": { "on": false, "retentionDays": null },
+  "ioUring": "not-audited"
+}

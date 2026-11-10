@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const CHECK = join(dirname(fileURLToPath(import.meta.url)), "check-dist.mjs");
 const UNIT = "[Service]\nExecStart=/usr/bin/derm-daemon --foreground\n";
+const FEED = "[Service]\nExecStart=/usr/bin/derm-audit-feed run\n[Install]\nWantedBy=derm-daemon.service\n";
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -20,7 +21,7 @@ function put(path: string, text: string, mode = 0o644): void {
   chmodSync(path, mode);
 }
 
-function dist(o: { postinst?: boolean; unit?: string; extra?: boolean } = {}): string {
+function dist(o: { postinst?: boolean; unit?: string; feed?: string | null; extra?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "derm-dist-"));
   dirs.push(root);
   const out = join(root, "dist");
@@ -30,6 +31,7 @@ function dist(o: { postinst?: boolean; unit?: string; extra?: boolean } = {}): s
   for (const b of ["derm", "derm-daemon", "derm-audit-feed"]) put(join(stage, b), "#!/bin/sh\n", 0o755);
   for (const d of ["LICENSE", "NOTICE", "README.md"]) put(join(stage, d), d);
   put(join(stage, "derm-daemon.service"), UNIT);
+  put(join(stage, "derm-audit-feed.service"), FEED);
   if (o.extra) put(join(stage, "stray.txt"), "x");
   execFileSync("tar", ["-C", root, "--owner=0", "--group=0", "-czf", join(out, `${name}.tar.gz`), name]);
   const pkg = join(root, "pkg");
@@ -38,6 +40,7 @@ function dist(o: { postinst?: boolean; unit?: string; extra?: boolean } = {}): s
   // derm-daemon is 2 MB in a real build: bigger than a default pipe buffer.
   for (const b of ["derm", "derm-daemon", "derm-audit-feed"]) put(join(pkg, "usr/bin", b), `#!/bin/sh\n#${b === "derm-daemon" ? "x".repeat(2_000_000) : ""}\n`, 0o755);
   put(join(pkg, "usr/lib/systemd/user/derm-daemon.service"), o.unit ?? UNIT);
+  if (o.feed !== null) put(join(pkg, "usr/lib/systemd/user/derm-audit-feed.service"), o.feed ?? FEED);
   execFileSync("dpkg-deb", ["--root-owner-group", "--build", pkg, join(out, "derm_0.1.0_amd64.deb")], { stdio: "ignore" });
   return out;
 }
@@ -65,6 +68,15 @@ describe.skipIf(!hasDpkg)("check-dist", () => {
     const r = check(dist({ unit: "[Service]\nExecStart=%h/.local/bin/derm-daemon --foreground\n" }));
     expect(r.code).toBe(1);
     expect(r.text).toContain("does not start /usr/bin/derm-daemon");
+  });
+
+  it("refuses a .deb without the feed's unit, or one the daemon does not start (BW5R2-5)", () => {
+    const missing = check(dist({ feed: null }));
+    expect(missing.code).toBe(1);
+    expect(missing.text).toContain("the feed's user unit is missing");
+    const alone = check(dist({ feed: "[Service]\nExecStart=/usr/bin/derm-audit-feed run\n[Install]\nWantedBy=default.target\n" }));
+    expect(alone.code).toBe(1);
+    expect(alone.text).toContain("not wanted by derm-daemon.service");
   });
 
   it("refuses an extra file in the tarball", () => {

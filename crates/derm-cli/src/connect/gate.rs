@@ -21,6 +21,7 @@
 //! runs every time the agent calls a tool, so a folder an agent or another
 //! user can write would be a way around it (rules section 5, item 4).
 
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -337,13 +338,26 @@ fn fill_text(
 }
 
 /// Owned by you (or root) and not writable by group or others.
-fn closed(meta: &std::fs::Metadata, uid: u32) -> bool {
+#[cfg(unix)]
+fn closed(_path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
     (meta.uid() == uid || meta.uid() == 0) && meta.mode() & 0o022 == 0
+}
+
+/// Windows (lane Z): owned by you and writable by no one else (SYSTEM and
+/// Administrators aside), read from the owner and DACL.
+#[cfg(windows)]
+fn closed(path: &Path, _meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
+    uid == derm_core::platform::effective_user()
+        && derm_core::platform::windows::only_owner_writes(path)
 }
 
 /// Checks the hook folder and returns the hook file's path if the row names
 /// one.
-pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, String> {
+pub fn check_hook(
+    dir: &str,
+    agent: &Agent,
+    uid: derm_core::platform::UserId,
+) -> Result<Option<String>, String> {
     if !plain_path(dir) {
         return Err(format!(
             "--hook `{dir}` must be an absolute path of letters, digits and ._/@+~ - (no `..`)"
@@ -353,7 +367,7 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, 
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(format!("{dir}: not a folder (a link is refused)"));
     }
-    if !closed(&meta, uid) {
+    if !closed(Path::new(dir), &meta, uid) {
         return Err(format!(
             "{dir}: owned by someone else or writable by others; the gate in it would run on every tool call (chmod go-w)"
         ));
@@ -380,7 +394,7 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, 
     if m.file_type().is_symlink() || !m.is_file() {
         return Err(format!("{file}: not a regular file (a link is refused)"));
     }
-    if !closed(&m, uid) {
+    if !closed(Path::new(&file), &m, uid) {
         return Err(format!(
             "{file}: owned by someone else or writable by others"
         ));
@@ -399,8 +413,7 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, 
 /// do not own, or one that named the folder for another plugin, was printed
 /// as derm's advice). `dir` passed `check_hook`'s plain-path check.
 fn marketplace_above(dir: &str, file: &str) -> Option<String> {
-    // SAFETY: getuid takes no arguments and cannot fail.
-    let uid = unsafe { libc::getuid() };
+    let uid = derm_core::platform::real_user();
     let dir = Path::new(dir);
     let mut at = Some(dir);
     for _ in 0..4 {
@@ -417,12 +430,12 @@ fn marketplace_above(dir: &str, file: &str) -> Option<String> {
     None
 }
 
-fn lists_derm(root: &Path, file: &str, rel: &str, uid: u32) -> bool {
+fn lists_derm(root: &Path, file: &str, rel: &str, uid: derm_core::platform::UserId) -> bool {
     let mf = root.join(file);
     let Ok(m) = std::fs::symlink_metadata(&mf) else {
         return false;
     };
-    if !m.is_file() || m.len() > 1024 * 1024 || !closed(&m, uid) {
+    if !m.is_file() || m.len() > 1024 * 1024 || !closed(&mf, &m, uid) {
         return false;
     }
     let Some(v) = std::fs::read_to_string(&mf)
@@ -463,7 +476,7 @@ fn lists_derm(root: &Path, file: &str, rel: &str, uid: u32) -> bool {
 /// The marketplace file's folders (`.claude-plugin`, `.agents/plugins`) and
 /// every folder from `root` down to `dir`: real folders, yours or root's,
 /// writable by no one else.
-fn folders_closed(root: &Path, dir: &Path, file: &str, uid: u32) -> bool {
+fn folders_closed(root: &Path, dir: &Path, file: &str, uid: derm_core::platform::UserId) -> bool {
     let mut folders: Vec<PathBuf> = Vec::new();
     let mut f = root.join(file);
     while let Some(parent) = f.parent() {
@@ -483,7 +496,7 @@ fn folders_closed(root: &Path, dir: &Path, file: &str, uid: u32) -> bool {
     }
     folders
         .iter()
-        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && closed(&m, uid)))
+        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && closed(p, &m, uid)))
 }
 
 /// The file a place names on this machine.
@@ -1091,7 +1104,9 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             ids.join(", ")
         ));
     };
-    let uid = derm_core::runtime::current_uid();
+    // `runtime::current_uid` is `platform::real_user` on Unix; the seam's
+    // own name works on Windows too (lane Z).
+    let uid = derm_core::platform::real_user();
     let hook_file = match o.hook {
         Some(dir) => check_hook(dir, agent, uid)?,
         None => None,

@@ -23,8 +23,21 @@ pub const RUN_USER: &str = "/run/user";
 /// `<runtime_dir>/derm/daemon.sock`, else `~/.derm/run/derm/daemon.sock`.
 /// Computes the path only.
 pub fn socket_path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = home_dir();
     socket_path_with(home.as_deref(), runtime_dir(), cfg!(target_os = "macos"))
+}
+
+/// The user's home folder: `HOME` on Unix; `USERPROFILE` on Windows, which
+/// sets no `HOME` (lane Z's request; the daemon's
+/// `socket_path_ends_with_derm_daemon_sock` failed on the Windows runner).
+/// On Windows the socket path is `%USERPROFILE%\.derm\run\derm\daemon.sock`,
+/// the pointer file to the daemon's pipe.
+pub fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let key = "USERPROFILE";
+    #[cfg(not(windows))]
+    let key = "HOME";
+    std::env::var_os(key).map(PathBuf::from)
 }
 
 /// `socket_path` from its inputs.
@@ -63,14 +76,10 @@ pub fn runtime_dir_with(xdg: Option<&OsStr>, uid: u32, run_user: &Path) -> Optio
 }
 
 /// Whether `dir` is a folder, not a link, owned by `uid`, with no group or
-/// other bits.
+/// other bits (the platform seam's `owned_private_dir`).
 #[cfg(unix)]
 pub fn owned_private_dir(dir: &Path, uid: u32) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match std::fs::symlink_metadata(dir) {
-        Ok(m) => m.file_type().is_dir() && m.uid() == uid && m.mode() & 0o077 == 0,
-        Err(_) => false,
-    }
+    crate::platform::owned_private_dir(dir, &uid)
 }
 
 #[cfg(not(unix))]
@@ -80,8 +89,7 @@ pub fn owned_private_dir(_dir: &Path, _uid: u32) -> bool {
 
 #[cfg(unix)]
 pub fn current_uid() -> u32 {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    unsafe { libc::getuid() }
+    crate::platform::real_user()
 }
 
 #[cfg(not(unix))]

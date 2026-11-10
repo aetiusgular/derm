@@ -4,7 +4,7 @@
 // cannot carry a control path the command leaves out.
 
 import { describe, expect, it } from "vitest";
-import { decideCall, inputTextFor, resolveAsk, type GateAnswer } from "./gate.ts";
+import { decideCall, inputTextFor, installEvents, MAX_INSTALL_RECORDS, resolveAsk, type GateAnswer } from "./gate.ts";
 import { parsePolicy, type LoadedPolicy, type PolicyFile } from "./policy.ts";
 
 const policy = parsePolicy({ version: 1, rules: [{ tool: "bash", action: "allow" }] }) as PolicyFile;
@@ -80,5 +80,115 @@ describe("full access", () => {
       if (before === undefined) delete process.env.DERM_FULL_ACCESS;
       else process.env.DERM_FULL_ACCESS = before;
     }
+  });
+});
+
+// Lane X's request 7 (integration w5, continue): every gated hook posts an
+// `install.call` record for a shell call the gate read as an install, so the
+// daemon can diff the lockfile and credit an install script's writes
+// (contracts/events.md section 5; cases 132, 133).
+describe("installEvents", () => {
+  const ask = { policy: parsePolicy({ version: 1, rules: [{ tool: "bash", action: "ask" }] }) as PolicyFile };
+  const call = (command: string, toolUseId?: string) => ({
+    harness: "claude-code",
+    tool: "Bash",
+    toolInput: { command },
+    ...(toolUseId !== undefined ? { toolUseId } : {}),
+  });
+
+  it("gives one record per install, whatever the policy said", () => {
+    const c = call("npm install left-pad@1.3.0 && pip install six", "toolu_01");
+    for (const p of [loaded, ask]) {
+      const answer = decideCall(p, c);
+      const events = installEvents(c, answer, answer.action, "chat-1");
+      expect(events.map((e) => e.kind)).toEqual(["install.call", "install.call"]);
+      expect(events.map((e) => e.detail.manager)).toEqual(["npm", "pip"]);
+      expect(events[0]?.detail.packages).toEqual([{ name: "left-pad", version: "1.3.0", ecosystem: "npm", inLockfile: null }]);
+      expect(events[0]?.detail.toolUseId).toBe("toolu_01");
+      expect(events[0]?.detail.decision).toBe(answer.action);
+      expect(events[0]?.chatId).toBe("chat-1");
+      expect(events[0]?.harness).toBe("claude-code");
+    }
+  });
+
+  // Security finding W5C-S9 (integration w5 continue): a package name or
+  // version the redactor flags (a token's shape) never reaches the record;
+  // the record counts what it left out.
+  it("leaves out a package the redactor flags, and counts it", () => {
+    // Fake keys built at run time, so no scanner reads them as live.
+    const token = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH"].join("-");
+    const ant = ["sk", "ant", "api03", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    for (const cmd of [`pip install ${token}`, `npm i left-pad ${ant}`, `npm i left-pad@${token}`]) {
+      const c = call(cmd, "t9");
+      const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+      expect(events.length, cmd).toBe(1);
+      const text = JSON.stringify(events);
+      expect(text, cmd).not.toContain(token);
+      expect(text, cmd).not.toContain(ant);
+      // Since W5R-4 a token in the call's text drops every name in it, so
+      // `left-pad` beside the key goes too (spec change: it was kept).
+      expect(events[0]?.detail.redacted, cmd).toBe(cmd.includes("left-pad ") ? 2 : 1);
+    }
+    const kept = installEvents(call(`npm i left-pad ${ant}`, "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
+    expect(kept[0]?.detail.packages).toEqual([]);
+    expect(kept[0]?.summary).toBe("npm add  ask");
+    // Re-review W5R-4: a name is read folded and normalized (PyPI turns `_`
+    // into `-` and folding lowercases), so a token typed as a package is
+    // looked for in the call's own text too, before either.
+    const gh = ["ghp", "Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Zx9Z"].join("_");
+    for (const cmd of [`pip install ${gh}`, `uv add ${gh}`, `npm i left-pad ${gh}`]) {
+      const c = call(cmd, "t10");
+      const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+      const text = JSON.stringify(events).toLowerCase();
+      expect(text, cmd).not.toContain("zx9zx9zx9");
+      expect(events.every((e) => (e.detail.packages as unknown[]).length === 0), cmd).toBe(true);
+      expect(events.reduce((n, e) => n + Number(e.detail.redacted ?? 0), 0), cmd).toBeGreaterThan(0);
+    }
+    // Re-review W5R2-1: a token split by shell quotes, or written in letters
+    // that fold to it, runs as the token; the folded, unquoted text is read
+    // too, with `-` and `_` alike and any case.
+    const wide = [...gh].map((ch) => String.fromCharCode(ch.charCodeAt(0) + 0xfee0)).join("");
+    for (const cmd of [`pip install ${gh.slice(0, 2)}''${gh.slice(2)}`, `pip install "${gh.slice(0, 4)}"${gh.slice(4)}`, `pip install ${wide}`]) {
+      const c = call(cmd, "t11");
+      const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+      expect(JSON.stringify(events).toLowerCase(), cmd).not.toContain("zx9zx9zx9");
+    }
+    // Nothing flagged: no count.
+    const plain = installEvents(call("npm i left-pad", "t9"), decideCall(loaded, call("npm i x")), "ask", "c");
+    expect(plain[0]?.detail.redacted).toBeUndefined();
+  });
+
+  it("gives none for a call that is not an install, or a tool that is not a shell", () => {
+    const plain = call("npm test");
+    expect(installEvents(plain, decideCall(loaded, plain), "allow", "c")).toEqual([]);
+    const write = { harness: "claude-code", tool: "Write", toolInput: { file_path: "a.txt", content: "npm install left-pad" } };
+    expect(installEvents(write, decideCall(loaded, write), "ask", "c")).toEqual([]);
+  });
+
+  it("names the decision the harness got, not the policy's", () => {
+    const c = call("npx cowsay hi", "t2");
+    const answer = decideCall(loaded, c);
+    expect(answer.action).toBe("ask");
+    expect(installEvents(c, answer, "deny", "c")[0]?.detail.decision).toBe("deny");
+  });
+
+  it("gives each record an id the agent cannot work out first", () => {
+    const c = call("npm i a b", "t3");
+    const a = installEvents(c, decideCall(loaded, c), "ask", "c");
+    const b = installEvents(c, decideCall(loaded, c), "ask", "c");
+    expect(a[0]?.id).toMatch(/^claude-code-t3-install-0-[0-9a-f]{32}$/);
+    expect(a[0]?.id).not.toBe(b[0]?.id);
+  });
+
+  it("reads the folded text, so look-alike letters do not hide an install", () => {
+    const c = call("ｎｐｍ install left-pad");
+    const events = installEvents(c, decideCall(loaded, c), "ask", "c");
+    expect(events.length).toBe(1);
+    expect(events[0]?.detail.toolUseId).toBeNull();
+  });
+
+  it("posts at most eight records for one call", () => {
+    const c = call(Array.from({ length: 12 }, (_, i) => `npm i p${i}`).join(" && "));
+    expect(installEvents(c, decideCall(loaded, c), "ask", "c").length).toBe(MAX_INSTALL_RECORDS);
   });
 });

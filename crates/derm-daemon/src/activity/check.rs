@@ -89,6 +89,15 @@ pub struct Flag {
     /// Where in the chat's process tree it came from (collector events).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// A write to one of derm's guarded folders (the log, the recordings),
+    /// whatever the path field that named it (fix pass 4's re-review, R2-2).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guarded: bool,
+    /// Its event is one a chat token could post (`adapter` or `otel`), so
+    /// a report cut ranks it after what only the daemon and the OS feeds
+    /// write (R2-3).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat_postable: bool,
 }
 
 fn one() -> u32 {
@@ -247,7 +256,7 @@ fn data_noise(path: &str, data_dir: Option<&str>) -> bool {
 /// Everything in MonoCode's data folder but a harness home's session state:
 /// the log, computer use's recordings, the OTel helper script Claude Code
 /// runs, the provider accounts' settings, the database (review X6).
-fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
+pub fn guarded_path(path: &str, data_dir: Option<&str>) -> bool {
     let Some(data) = data_dir.map(|d| d.trim_end_matches('/').to_ascii_lowercase()) else {
         return false;
     };
@@ -996,6 +1005,11 @@ fn dedupe(events: &[ActivityEvent], mut found: Vec<Candidate>) -> Vec<Flag> {
             count: 1,
             last_at: c.event.at,
             tier: c.tier,
+            guarded: c.alone,
+            chat_postable: matches!(
+                c.event.source,
+                ActivitySource::Adapter | ActivitySource::Otel
+            ),
         });
     }
     rows
@@ -1007,7 +1021,10 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
     let mut found: Vec<Candidate> = Vec::new();
     let mut hidden: Vec<Candidate> = Vec::new();
     let mut suppressed: BTreeMap<String, u64> = BTreeMap::new();
-    let mut flagged_hosts: HashSet<(String, String)> = HashSet::new();
+    // Keyed by whether a chat token could have posted the record too, so a
+    // record the agent posts first never takes the row of the kernel's own
+    // connection to that host (fix pass 4's third re-review, R3-2).
+    let mut flagged_hosts: HashSet<(String, String, bool)> = HashSet::new();
     let data_dir = input.data_dir;
 
     let windows = tool_windows(input.events);
@@ -1171,7 +1188,11 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                     event.at,
                     |t| host_matches(t, &lower),
                 );
-                let key = (event.chat_id.clone(), lower.clone());
+                let key = (
+                    event.chat_id.clone(),
+                    lower.clone(),
+                    matches!(event.source, ActivitySource::Adapter | ActivitySource::Otel),
+                );
                 if approved.is_none()
                     && !input.known_hosts.contains(&lower)
                     && !flagged_hosts.contains(&key)
@@ -1372,12 +1393,19 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
 }
 
 fn context_ids(events: &[ActivityEvent], center: &ActivityEvent) -> Vec<String> {
+    // The flagged event is always in its own context, however many events
+    // share its millisecond (fix pass 4's re-review, R2-3).
     let mut near: Vec<&ActivityEvent> = events
         .iter()
-        .filter(|e| e.chat_id == center.chat_id && (e.at - center.at).abs() <= CONTEXT_WINDOW_MS)
+        .filter(|e| {
+            e.chat_id == center.chat_id
+                && e.id != center.id
+                && (e.at - center.at).abs() <= CONTEXT_WINDOW_MS
+        })
         .collect();
     near.sort_by_key(|e| ((e.at - center.at).abs(), e.at));
-    near.truncate(MAX_CONTEXT);
+    near.truncate(MAX_CONTEXT - 1);
+    near.push(center);
     near.sort_by_key(|e| e.at);
     near.into_iter().map(|e| e.id.clone()).collect()
 }

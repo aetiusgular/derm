@@ -122,7 +122,7 @@ An index reaches the model only as you approved it. derm keeps the SHA-256 of ea
 | `DERM_REDACT` | gate | `0` or `off` turns the result redactor off |
 | `DERM_CHAT_TOKEN` | emitter | The chat token for `x-derm-token`; nothing is sent without it |
 | `DERM_OTLP_ENDPOINT` | emitter | The daemon's receiver, `http://127.0.0.1:<port>`; anything not loopback is refused |
-| `DERM_LOG_CONTENT` | emitter | `1` sends prompt, reply and tool input text (redacted, cut to 4 KiB) |
+| (none) | emitter | Prompt, reply and tool input text (redacted, cut to 4 KiB) is sent only when `~/.derm/settings.json` turns content on (`"content": {"on": true, "retentionDays": N}`); `DERM_LOG_CONTENT` is gone |
 | `DERM_MEMORY_STATE` | memory | Absolute path of the approved-index record instead of `~/.derm/memory-index.json` |
 
 ## What it does not do

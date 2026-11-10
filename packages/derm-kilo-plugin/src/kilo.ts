@@ -22,7 +22,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, resolveAsk, type GateCall } from "./core/gate.ts";
+import { decideCall, inputTextFor, installEvents, resolveAsk, type GateCall } from "./core/gate.ts";
 import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
 import { redactText, redactValue } from "./core/redact.ts";
 import { narrowForControl } from "./control.ts";
@@ -115,6 +115,7 @@ export async function before(input: BeforeInput, output: BeforeOutput, deps: Dep
       summary: `${answer.normalizedTool} ${action}`,
       detail: { tool: answer.normalizedTool, decision: action, policyAction: answer.action, reason, redacted: answer.redacted, ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}) },
     });
+    for (const e of installEvents(call, answer, action, chat ?? "")) await deps.postEvent(e);
     if (action === "deny") throw new DermBlocked(reason);
   } catch (error) {
     if (error instanceof DermBlocked) throw error;

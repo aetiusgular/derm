@@ -1,0 +1,139 @@
+diff --git a/crates/derm-cli/src/run/mod.rs b/crates/derm-cli/src/run/mod.rs
+index af6ea0c..88cddb4 100644
+--- a/crates/derm-cli/src/run/mod.rs
++++ b/crates/derm-cli/src/run/mod.rs
+@@ -803,6 +803,18 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
+             }
+         }
+     }
++    // sbx (lane T's request T-2): create the sandbox, let it reach derm's
++    // ports on the host with a rule for it alone (case 117), then attach;
++    // it is removed when the harness ends, or on any way out from here (SB3).
++    let mut sandbox = if p.sandbox_name.is_some() {
++        Some(boundary::sbx::start(
++            env.program("sbx"),
++            &mut launch,
++            filter.is_none() && boundary::sbx::interactive(),
++        )?)
++    } else {
++        None
++    };
+     // The agents' user (lane V's seam), after the companion, which runs as
+     // you whatever the harness runs as.
+     let daemon_dir_text = dir.as_ref().map(|d| d.to_string_lossy().into_owned());
+@@ -947,6 +973,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
+     let (code, signal) = exec::code(&status);
+     // The agents' user's bridge (lane V) ends with the harness.
+     user::finish();
++    // The sandbox goes before `run.stop`, so no VM writes into the project
++    // after its chat has stopped (SB3).
++    let sandbox_removed = sandbox.take().map(|s| match s.remove() {
++        Ok(()) => true,
++        Err(e) => {
++            eprintln!("derm run: {e}");
++            false
++        }
++    });
+     if let Some(c) = cleanup.companion.as_mut() {
+         exec::stop_companion(c, Duration::from_secs(2));
+     }
+@@ -971,6 +1006,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
+         detail["exitCode"] = json!(status.code());
+         detail["signal"] = json!(signal);
+         detail["durationMs"] = json!(started.elapsed().as_millis() as u64);
++        if let Some(removed) = sandbox_removed {
++            detail["sandboxRemoved"] = json!(removed);
++        }
+         let summary = format!(
+             "{} under {} ended, code {code}",
+             a.harness.id,
+@@ -1582,21 +1643,32 @@ mod end_to_end {
+     fn sbx_names_the_variables_and_posts_the_blocks_its_log_shows() {
+         let st = setup("sbx");
+         let n = st.fake.dir.join("polls");
++        let calls = st.fake.dir.join("sbx-calls");
+         // `policy log`: nothing before the start (no sandbox yet), then one
+-        // block. `run`: checks it got the token by name only, waits for a poll.
++        // block. `create` (lane T's request T-2): the token by name only,
++        // its value in the environment. `policy allow`: the rule for this
++        // sandbox. `run` (the attach): checks it got the token by name only,
++        // waits for a poll. `rm`: the sandbox goes at the end (SB3).
+         let sbx = script(
+             &st.fake.dir,
+             "sbx",
+             &format!(
+-                "if [ \"$1\" = policy ]; then echo x >> '{n}'; \
++                "echo \"$*\" >> '{calls}'; \
++                 if [ \"$1 $2\" = 'policy log' ]; then echo x >> '{n}'; \
+                  if [ \"$(wc -l < '{n}')\" -le 1 ]; then echo 'no such sandbox' >&2; exit 1; fi; \
+                  echo '{{\"blocked\":[{{\"Sandbox\":\"derm-chat-x\",\"Host\":\"evil.example:443\",\"Rule\":\"<default policy>\",\"Count\":1}}]}}'; exit 0; fi; \
++                 if [ \"$1 $2\" = 'policy allow' ]; then exit 0; fi; \
++                 if [ \"$1\" = rm ]; then exit 0; fi; \
++                 if [ \"$1\" = create ]; then \
++                   case \"$*\" in *\"{tok}\"*) exit 85;; esac; \
++                   [ \"$DERM_CHAT_TOKEN\" = {tok} ] || exit 86; exit 0; fi; \
+                  [ \"$1\" = run ] || exit 80; \
+                  case \"$*\" in *\"{tok}\"*) exit 81;; esac; \
+                  case \"$*\" in *\"-e DERM_CHAT_TOKEN\"*) ;; *) exit 82;; esac; \
+                  [ \"$DERM_CHAT_TOKEN\" = {tok} ] || exit 83; \
+                  [ \"$DERM_OTLP_ENDPOINT\" = http://host.docker.internal:4318 ] || exit 84; \
+                  sleep 3; exit 0",
++                calls = calls.display(),
+                 n = n.display(),
+                 tok = fake::CHAT_TOKEN
+             ),
+@@ -1639,6 +1711,39 @@ mod end_to_end {
+         );
+         assert_eq!(ev[0]["detail"]["kit"], "docker.io/sbx/pi-kit:latest");
+         assert_eq!(ev[0]["detail"]["sandboxName"], "derm-chat-x");
++        // Lane T's request T-2: create with the kit as the workload (SB1),
++        // a rule for this sandbox alone to the daemon's port (case 117),
++        // the attach, and the removal before `run.stop` (SB3).
++        let calls = std::fs::read_to_string(&calls).unwrap();
++        let steps: Vec<&str> = calls
++            .lines()
++            .filter(|l| !l.starts_with("policy log"))
++            .collect();
++        assert_eq!(steps.len(), 4, "{calls}");
++        assert!(
++            steps[0].starts_with("create --name derm-chat-x -e "),
++            "{}",
++            steps[0]
++        );
++        assert!(
++            steps[0].ends_with(&format!(" docker.io/sbx/pi-kit:latest {cwd}")),
++            "{}",
++            steps[0]
++        );
++        assert!(!steps[0].contains("--kit"), "{}", steps[0]);
++        assert_eq!(
++            steps[1],
++            "policy allow network --sandbox derm-chat-x localhost:4318"
++        );
++        assert!(
++            steps[2].starts_with("run --name derm-chat-x -e "),
++            "{}",
++            steps[2]
++        );
++        assert!(!steps[2].contains("pi-kit"), "{}", steps[2]);
++        assert_eq!(steps[3], "rm --force derm-chat-x");
++        let stop = ev.last().unwrap();
++        assert_eq!(stop["detail"]["sandboxRemoved"], true);
+     }
+ 
+     /// Lane R: Claude Code's own OTel goes to the daemon under `derm run`
+diff --git a/crates/derm-cli/src/run/plan.rs b/crates/derm-cli/src/run/plan.rs
+index e66dbf2..444dd38 100644
+--- a/crates/derm-cli/src/run/plan.rs
++++ b/crates/derm-cli/src/run/plan.rs
+@@ -404,7 +404,9 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
+                 }
+             }
+             program = "sbx".into();
+-            let name = format!("derm-{}", i.chat);
++            // The chat id already starts with `derm-` (SB2: not `derm-derm-`),
++            // and sbx refuses an underscore a `--chat` id may hold (lane T).
++            let name = super::boundary::sbx::sandbox_name(&i.chat);
+             args.extend(["run".to_string(), "--name".into(), name.clone()]);
+             sandbox_name = Some(name);
+             // The variables are named here and copied by sbx from its own

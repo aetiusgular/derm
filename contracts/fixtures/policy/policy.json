@@ -21,6 +21,12 @@
     },
     { "tool": "*", "chat": "chat-locked", "action": "deny" },
     { "tool": "plugin_derm_exa/*", "action": "allow" },
-    { "tool": "bash", "harness": "gemini", "action": "deny" }
+    { "tool": "bash", "harness": "gemini", "action": "deny" },
+    { "tool": "bash", "command": ["git", "push"], "action": "ask" },
+    { "tool": "bash", "command": ["git", "push", "--force"], "action": "deny" },
+    { "tool": "bash", "command": ["gh", "repo", "delete"], "action": "deny" },
+    { "tool": "bash", "command": ["git", "status"], "action": "allow" },
+    { "tool": "bash", "harness": "codex", "command": ["gh", "pr", "view"], "action": "allow" },
+    { "tool": "bash", "command": ["npm", "install"], "action": "allow" }
   ]
 }

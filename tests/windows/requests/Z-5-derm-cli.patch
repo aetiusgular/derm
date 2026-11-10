@@ -1,0 +1,2093 @@
+diff --git a/crates/derm-cli/src/connect/gate.rs b/crates/derm-cli/src/connect/gate.rs
+index 7594c53..7f89cd1 100644
+--- a/crates/derm-cli/src/connect/gate.rs
++++ b/crates/derm-cli/src/connect/gate.rs
+@@ -21,6 +21,7 @@
+ //! runs every time the agent calls a tool, so a folder an agent or another
+ //! user can write would be a way around it (rules section 5, item 4).
+ 
++#[cfg(unix)]
+ use std::os::unix::fs::MetadataExt;
+ use std::path::{Component, Path, PathBuf};
+ 
+@@ -337,13 +338,26 @@ fn fill_text(
+ }
+ 
+ /// Owned by you (or root) and not writable by group or others.
+-fn closed(meta: &std::fs::Metadata, uid: u32) -> bool {
++#[cfg(unix)]
++fn closed(_path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
+     (meta.uid() == uid || meta.uid() == 0) && meta.mode() & 0o022 == 0
+ }
+ 
++/// Windows (lane Z): owned by you and writable by no one else (SYSTEM and
++/// Administrators aside), read from the owner and DACL.
++#[cfg(windows)]
++fn closed(path: &Path, _meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
++    uid == derm_core::platform::effective_user()
++        && derm_core::platform::windows::only_owner_writes(path)
++}
++
+ /// Checks the hook folder and returns the hook file's path if the row names
+ /// one.
+-pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>, String> {
++pub fn check_hook(
++    dir: &str,
++    agent: &Agent,
++    uid: derm_core::platform::UserId,
++) -> Result<Option<String>, String> {
+     if !plain_path(dir) {
+         return Err(format!(
+             "--hook `{dir}` must be an absolute path of letters, digits and ._/@+~ - (no `..`)"
+@@ -353,7 +367,7 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>,
+     if meta.file_type().is_symlink() || !meta.is_dir() {
+         return Err(format!("{dir}: not a folder (a link is refused)"));
+     }
+-    if !closed(&meta, uid) {
++    if !closed(Path::new(dir), &meta, uid) {
+         return Err(format!(
+             "{dir}: owned by someone else or writable by others; the gate in it would run on every tool call (chmod go-w)"
+         ));
+@@ -380,7 +394,7 @@ pub fn check_hook(dir: &str, agent: &Agent, uid: u32) -> Result<Option<String>,
+     if m.file_type().is_symlink() || !m.is_file() {
+         return Err(format!("{file}: not a regular file (a link is refused)"));
+     }
+-    if !closed(&m, uid) {
++    if !closed(Path::new(&file), &m, uid) {
+         return Err(format!(
+             "{file}: owned by someone else or writable by others"
+         ));
+@@ -416,12 +430,12 @@ fn marketplace_above(dir: &str, file: &str) -> Option<String> {
+     None
+ }
+ 
+-fn lists_derm(root: &Path, file: &str, rel: &str, uid: u32) -> bool {
++fn lists_derm(root: &Path, file: &str, rel: &str, uid: derm_core::platform::UserId) -> bool {
+     let mf = root.join(file);
+     let Ok(m) = std::fs::symlink_metadata(&mf) else {
+         return false;
+     };
+-    if !m.is_file() || m.len() > 1024 * 1024 || !closed(&m, uid) {
++    if !m.is_file() || m.len() > 1024 * 1024 || !closed(&mf, &m, uid) {
+         return false;
+     }
+     let Some(v) = std::fs::read_to_string(&mf)
+@@ -462,7 +476,7 @@ fn lists_derm(root: &Path, file: &str, rel: &str, uid: u32) -> bool {
+ /// The marketplace file's folders (`.claude-plugin`, `.agents/plugins`) and
+ /// every folder from `root` down to `dir`: real folders, yours or root's,
+ /// writable by no one else.
+-fn folders_closed(root: &Path, dir: &Path, file: &str, uid: u32) -> bool {
++fn folders_closed(root: &Path, dir: &Path, file: &str, uid: derm_core::platform::UserId) -> bool {
+     let mut folders: Vec<PathBuf> = Vec::new();
+     let mut f = root.join(file);
+     while let Some(parent) = f.parent() {
+@@ -482,7 +496,7 @@ fn folders_closed(root: &Path, dir: &Path, file: &str, uid: u32) -> bool {
+     }
+     folders
+         .iter()
+-        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && closed(&m, uid)))
++        .all(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir() && closed(p, &m, uid)))
+ }
+ 
+ /// The file a place names on this machine.
+@@ -1090,7 +1104,9 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
+             ids.join(", ")
+         ));
+     };
+-    let uid = derm_core::runtime::current_uid();
++    // `runtime::current_uid` is `platform::real_user` on Unix; the seam's
++    // own name works on Windows too (lane Z).
++    let uid = derm_core::platform::real_user();
+     let hook_file = match o.hook {
+         Some(dir) => check_hook(dir, agent, uid)?,
+         None => None,
+diff --git a/crates/derm-cli/src/connect/gate_tests.rs b/crates/derm-cli/src/connect/gate_tests.rs
+index 1245660..801f515 100644
+--- a/crates/derm-cli/src/connect/gate_tests.rs
++++ b/crates/derm-cli/src/connect/gate_tests.rs
+@@ -5,6 +5,7 @@
+ 
+ use std::collections::HashMap;
+ use std::fs;
++#[cfg(unix)]
+ use std::os::unix::fs::PermissionsExt;
+ use std::path::Path;
+ 
+@@ -62,6 +63,7 @@ fn go(home: &Path, args: &[&str]) -> Run {
+     go_with(home, &env(&[]), Answer(true, None), args)
+ }
+ 
++#[cfg(unix)]
+ /// A package folder holding `package.json` with `name` and
+ /// `bin/derm-hook.mjs`, closed to others.
+ fn package(home: &Path, folder: &str, name: &str) -> String {
+@@ -136,6 +138,7 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
+     }
+ }
+ 
++#[cfg(unix)]
+ /// Lane N's `registration/mistral-vibe/hooks.toml` (85592cf), with the
+ /// folder filled: derm writes exactly that table beside the user's own.
+ #[test]
+@@ -191,6 +194,7 @@ fn vibe_gets_lane_ns_table_beside_its_own_and_once() {
+     assert_eq!(read(&cfg).trim_end(), mine.trim_end());
+ }
+ 
++#[cfg(unix)]
+ /// Case 75: the gate goes beside Orca's own entry in a Claude-format list,
+ /// a second run adds nothing, and --ungate takes out derm's alone.
+ #[test]
+@@ -247,6 +251,7 @@ fn claude_format_list_beside_orcas_entry_and_out_again() {
+     assert_eq!(parse(&read(&cfg)), parse(before));
+ }
+ 
++#[cfg(unix)]
+ /// A hook folder moved since the last --gate: derm's entry is replaced,
+ /// never doubled.
+ #[test]
+@@ -277,6 +282,7 @@ fn a_moved_package_replaces_derms_entry() {
+     assert!(json::compact(&list[0]).contains(&two));
+ }
+ 
++#[cfg(unix)]
+ /// Cursor: two lists in one new file that starts with `version: 1`, as lane
+ /// N's `registration/cursor/hooks.json`.
+ #[test]
+@@ -304,6 +310,7 @@ fn cursor_gets_both_events_in_a_new_file() {
+     }
+ }
+ 
++#[cfg(unix)]
+ /// Antigravity: a named bundle beside others; a `derm` member that is not
+ /// derm's is refused.
+ #[test]
+@@ -332,6 +339,7 @@ fn antigravity_named_bundle_and_a_stranger_under_the_name() {
+     assert!(r.err.contains("not derm's entry"), "{}", r.err);
+ }
+ 
++#[cfg(unix)]
+ /// goose: a plugin folder; --ungate never deletes it, it says to.
+ #[test]
+ fn goose_plugin_folder_written_and_left_for_you_to_remove() {
+@@ -371,6 +379,7 @@ fn goose_plugin_folder_written_and_left_for_you_to_remove() {
+     assert!(r.err.contains("is not derm's"), "{}", r.err);
+ }
+ 
++#[cfg(unix)]
+ /// Case 55 across files: Grok's gate is two files; one changes while the
+ /// question is open, and neither is written.
+ #[test]
+@@ -411,6 +420,7 @@ fn a_file_that_changes_before_the_write_stops_every_file() {
+     assert!(read(&home.join(".grok/hooks/derm.json")).contains("\"failClosed\": true"));
+ }
+ 
++#[cfg(unix)]
+ /// Case 54: nothing for an agent that is not installed.
+ #[test]
+ fn an_agent_that_is_not_installed_gets_nothing_written() {
+@@ -429,6 +439,7 @@ fn an_agent_that_is_not_installed_gets_nothing_written() {
+     assert!(!home.join(".commandcode").exists());
+ }
+ 
++#[cfg(unix)]
+ /// The hook folder: absolute, no `..`, not a link, the right package, closed
+ /// to others, with its hook file.
+ #[test]
+@@ -471,6 +482,7 @@ fn hook_folder_checks() {
+     assert_eq!(r.code, 2);
+ }
+ 
++#[cfg(unix)]
+ /// Droid's hooks.json shadows settings.json: refused while it exists. And a
+ /// harness folder moved outside the home folder is refused (case 65's
+ /// neighbour: derm writes under your home only).
+@@ -497,6 +509,7 @@ fn shadowing_files_and_folders_outside_home_are_refused() {
+     assert!(r.err.contains("outside your home"), "{}", r.err);
+ }
+ 
++#[cfg(unix)]
+ /// OpenCode's `plugin` list in a JSONC file: comments elsewhere are kept; a
+ /// comment inside the list is refused rather than dropped.
+ #[test]
+@@ -531,6 +544,7 @@ fn opencode_plugin_list_keeps_comments_and_refuses_one_inside_the_list() {
+     assert!(r.err.contains("finds its own entry"), "{}", r.err);
+ }
+ 
++#[cfg(unix)]
+ /// Agents whose gate installs through their own command, and Kimi until its
+ /// folder is settled: printed, never written.
+ #[test]
+@@ -565,6 +579,7 @@ fn print_only_agents_print_and_write_nothing() {
+     assert!(r.err.contains("no gate registration"), "{}", r.err);
+ }
+ 
++#[cfg(unix)]
+ /// `--node` pins Node by absolute path.
+ #[test]
+ fn node_can_be_pinned() {
+@@ -602,6 +617,7 @@ fn node_can_be_pinned() {
+     assert!(r.err.contains("not derm's"), "{}", r.err);
+ }
+ 
++#[cfg(unix)]
+ fn opencode_pkg(home: &Path) -> String {
+     package(
+         home,
+@@ -614,6 +630,7 @@ fn oc(home: &Path, file: &str) -> std::path::PathBuf {
+     home.join(".config/opencode").join(file)
+ }
+ 
++#[cfg(unix)]
+ /// OpenCode 1.19.4 merges `config.json`, `opencode.json` and `opencode.jsonc`
+ /// in that order with remeda's `mergeDeep`, which replaces arrays
+ /// (`config.ts:272-274`): a `plugin` list in `opencode.jsonc` replaces the one
+@@ -637,6 +654,7 @@ fn opencode_gate_goes_in_the_file_opencode_reads_last() {
+     assert!(!read(&oc(&home, "opencode.json")).contains("derm"));
+ }
+ 
++#[cfg(unix)]
+ /// A list in a file OpenCode reads first would be replaced by a new list in
+ /// the file derm writes: refused, nothing written. With that file alone, the
+ /// entry goes beside the list there.
+@@ -667,6 +685,7 @@ fn a_plugin_list_in_a_file_read_earlier_is_never_replaced() {
+     );
+ }
+ 
++#[cfg(unix)]
+ /// Kilo 7.8.18's global folder is `$XDG_CONFIG_HOME/kilo` whatever
+ /// `KILO_CONFIG_DIR` says (`core/src/global.ts:24`; that variable adds a
+ /// folder to the project scan, `config.ts:818-836`), and Kilo reads
+@@ -726,6 +745,7 @@ fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
+         .collect()
+ }
+ 
++#[cfg(unix)]
+ /// The fragment's `permission` keys (OpenCode's own prompts as a second
+ /// layer). OpenCode 1.19.4 takes the last matching rule (`findLast`,
+ /// `permission/index.ts:28-32`) and keeps the file's key order
+@@ -803,6 +823,7 @@ fn opencode_permission_block_only_ever_narrows() {
+     );
+ }
+ 
++#[cfg(unix)]
+ /// A legacy `tools` switch set to false becomes a deny that any `permission`
+ /// key of the same name overrides (`config.ts:567-578`): derm adds none for
+ /// it. A `permission` block in another global file is merged key by key
+@@ -865,6 +886,7 @@ fn opencode_wildcard_matches_as_opencode_does() {
+     assert!(wildcard("a\\b", "a/b"));
+ }
+ 
++#[cfg(unix)]
+ /// Mac test w4, MW4-7: `--gate --hook <folder>` for Claude Code and Codex
+ /// printed the GitHub lines (Codex's pinned to the release's tag), so a tester
+ /// following them installed the release, not the folder named. With a folder,
+diff --git a/crates/derm-cli/src/connect/gateway/host.rs b/crates/derm-cli/src/connect/gateway/host.rs
+index a8223dc..8f71a90 100644
+--- a/crates/derm-cli/src/connect/gateway/host.rs
++++ b/crates/derm-cli/src/connect/gateway/host.rs
+@@ -14,7 +14,10 @@
+ //!   seconds, as the fork's `run_isolated_output` does (`harness.rs:1895`).
+ 
+ use std::io::Write;
++#[cfg(unix)]
+ use std::os::unix::process::CommandExt;
++#[cfg(windows)]
++use std::os::windows::process::CommandExt;
+ use std::process::{Command, Output, Stdio};
+ use std::sync::mpsc;
+ use std::thread;
+@@ -62,6 +65,7 @@ fn search_path_from(home: Option<String>, existing: Option<String>) -> String {
+         .into_owned()
+ }
+ 
++#[cfg(unix)]
+ fn terminate(pid: u32) {
+     let pgid = pid as libc::pid_t;
+     // SAFETY: kill(2) with a negative pid signals the process group the
+@@ -79,6 +83,13 @@ fn terminate(pid: u32) {
+     });
+ }
+ 
++/// Windows (lane Z): Ctrl-Break to the child's group, then the process
++/// itself after the same wait.
++#[cfg(windows)]
++fn terminate(pid: u32) {
++    crate::platform::windows::terminate_group(pid, KILL_ESCALATE);
++}
++
+ pub fn exec_output_with_stdin(
+     command: &str,
+     args: &[String],
+@@ -94,8 +105,12 @@ pub fn exec_output_with_stdin(
+             Stdio::null()
+         })
+         .stdout(Stdio::piped())
+-        .stderr(Stdio::piped())
+-        .process_group(0);
++        .stderr(Stdio::piped());
++    // Its own process group, so `terminate` reaches the whole group.
++    #[cfg(unix)]
++    cmd.process_group(0);
++    #[cfg(windows)]
++    cmd.creation_flags(crate::platform::windows::NEW_GROUP);
+     if let Some(dir) = cwd {
+         cmd.current_dir(dir);
+     }
+diff --git a/crates/derm-cli/src/connect/log.rs b/crates/derm-cli/src/connect/log.rs
+index 7bd53e7..cd8e824 100644
+--- a/crates/derm-cli/src/connect/log.rs
++++ b/crates/derm-cli/src/connect/log.rs
+@@ -6,6 +6,7 @@
+ 
+ use std::fs::OpenOptions;
+ use std::io::{BufRead, BufReader, Read, Write};
++#[cfg(unix)]
+ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+ use std::path::{Path, PathBuf};
+ use std::time::Duration;
+@@ -111,11 +112,15 @@ fn to_daemon(socket: &Path, r: &Record) -> Result<(), String> {
+ 
+ fn to_file(log: &Path, r: &Record) -> Result<(), String> {
+     if let Some(dir) = log.parent() {
++        #[cfg(unix)]
+         std::fs::DirBuilder::new()
+             .recursive(true)
+             .mode(0o700)
+             .create(dir)
+             .map_err(|e| format!("{}: {e}", dir.display()))?;
++        // Windows (lane Z): derm's own folder, made private (user-only DACL).
++        #[cfg(windows)]
++        derm_core::platform::private_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+     }
+     let line = json!({
+         "at": now_ms(),
+@@ -123,10 +128,11 @@ fn to_file(log: &Path, r: &Record) -> Result<(), String> {
+         "kind": "config.write",
+         "detail": detail(r),
+     });
+-    let mut f = OpenOptions::new()
+-        .create(true)
+-        .append(true)
+-        .mode(0o600)
++    let mut options = OpenOptions::new();
++    options.create(true).append(true);
++    #[cfg(unix)]
++    options.mode(0o600);
++    let mut f = options
+         .open(log)
+         .map_err(|e| format!("{}: {e}", log.display()))?;
+     writeln!(f, "{line}").map_err(|e| format!("{}: {e}", log.display()))
+@@ -143,10 +149,14 @@ pub fn record(socket: &Path, log_file: &Path, r: &Record) -> Result<String, Stri
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(unix)]
+     use crate::connect::write::tests::scratch;
++    #[cfg(unix)]
+     use std::os::unix::fs::MetadataExt;
++    #[cfg(unix)]
+     use std::os::unix::net::UnixListener;
+ 
++    #[cfg(unix)]
+     fn rec() -> Record {
+         Record {
+             harness: "pi".into(),
+@@ -177,6 +187,7 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn no_daemon_falls_back_to_a_private_log_file() {
+         let d = scratch("log");
+@@ -191,6 +202,7 @@ mod tests {
+         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_running_daemon_gets_hello_then_one_event() {
+         let (d, _gone) = sock_scratch();
+@@ -223,17 +235,20 @@ mod tests {
+         assert!(!d.join("connect.log").exists());
+     }
+ 
++    #[cfg(unix)]
+     /// A folder for a socket test. A Unix socket's path has room for 104
+     /// bytes on macOS and 108 on Linux, and macOS's `$TMPDIR` under
+     /// `/var/folders/` takes about half, so `scratch`'s long names did not
+     /// fit there (Mac test w4, MW4-3). `/tmp` with a short name does, on both.
+     struct Gone(std::path::PathBuf);
++    #[cfg(unix)]
+     impl Drop for Gone {
+         fn drop(&mut self) {
+             let _ = std::fs::remove_dir_all(&self.0);
+         }
+     }
+ 
++    #[cfg(unix)]
+     fn sock_scratch() -> (std::path::PathBuf, Gone) {
+         let base = if Path::new("/tmp").is_dir() {
+             std::path::PathBuf::from("/tmp")
+@@ -249,18 +264,22 @@ mod tests {
+         (d.clone(), Gone(d))
+     }
+ 
++    #[cfg(unix)]
+     fn private_token(d: &Path) {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let t = d.join("daemon.token");
+         std::fs::write(&t, "1".repeat(64)).unwrap();
+         std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o600)).unwrap();
+     }
+ 
++    #[cfg(unix)]
+     /// Fix pass review F7: the token beside the socket is read with
+     /// `derm run`'s checks. One another user could write (group or other
+     /// bits, or a link) is not ours: no connection, the file gets the record.
+     #[test]
+     fn a_token_others_could_write_is_not_used() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let (d, _gone) = sock_scratch();
+         let sock = d.join("daemon.sock");
+@@ -280,6 +299,7 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_daemon_that_refuses_falls_back_to_the_file() {
+         let (d, _gone) = sock_scratch();
+diff --git a/crates/derm-cli/src/connect/mod.rs b/crates/derm-cli/src/connect/mod.rs
+index eda4d3e..ad1eded 100644
+--- a/crates/derm-cli/src/connect/mod.rs
++++ b/crates/derm-cli/src/connect/mod.rs
+@@ -34,7 +34,9 @@ pub mod gateway;
+ mod allowlist;
+ mod diff;
+ mod gate;
+-#[cfg(test)]
++// Shell-script fakes and a live daemon on a Unix socket (lane Z: no
++// Windows twin yet).
++#[cfg(all(test, unix))]
+ mod gate_tests;
+ mod json;
+ mod log;
+diff --git a/crates/derm-cli/src/connect/tests.rs b/crates/derm-cli/src/connect/tests.rs
+index fe60fb3..9d69f90 100644
+--- a/crates/derm-cli/src/connect/tests.rs
++++ b/crates/derm-cli/src/connect/tests.rs
+@@ -706,6 +706,7 @@ fn list_and_path() {
+     );
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn a_symlinked_config_is_refused() {
+     let home = scratch("symlink");
+diff --git a/crates/derm-cli/src/connect/write.rs b/crates/derm-cli/src/connect/write.rs
+index 1e7526c..b7b69cf 100644
+--- a/crates/derm-cli/src/connect/write.rs
++++ b/crates/derm-cli/src/connect/write.rs
+@@ -18,6 +18,7 @@
+ 
+ use std::fs::{self, File, OpenOptions};
+ use std::io::{BufRead, BufReader, Read, Write};
++#[cfg(unix)]
+ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+ use std::path::{Path, PathBuf};
+ 
+@@ -78,7 +79,7 @@ pub fn read_current(path: &Path) -> Result<Current, String> {
+             Ok(Current {
+                 sha256: sha256_hex(&bytes),
+                 bytes: Some(bytes),
+-                mode: meta.mode() & 0o777,
++                mode: mode_of(&meta),
+             })
+         }
+     }
+@@ -124,6 +125,7 @@ fn now_ms() -> u128 {
+         .map_or(0, |d| d.as_millis())
+ }
+ 
++#[cfg(unix)]
+ fn make_private_dir(dir: &Path) -> Result<(), String> {
+     fs::DirBuilder::new()
+         .recursive(true)
+@@ -132,17 +134,41 @@ fn make_private_dir(dir: &Path) -> Result<(), String> {
+         .map_err(|e| format!("{}: {e}", dir.display()))
+ }
+ 
++/// Windows (lane Z): the folder is made, its DACL inherited (a harness's
++/// own config folder is not narrowed under it).
++#[cfg(windows)]
++fn make_private_dir(dir: &Path) -> Result<(), String> {
++    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))
++}
++
++/// A file's Unix mode, kept across a rewrite.
++#[cfg(unix)]
++fn mode_of(meta: &fs::Metadata) -> u32 {
++    meta.mode() & 0o777
++}
++
++/// Windows has no mode: the new file takes its folder's inherited DACL
++/// (lane Z; the old file's own DACL is not carried over).
++#[cfg(windows)]
++fn mode_of(_meta: &fs::Metadata) -> u32 {
++    0o600
++}
++
+ /// Copies the old bytes to `backups/<harness>-<ms>-<file name>`, mode 0600.
+ fn backup(backups: &Path, harness: &str, path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+     make_private_dir(backups)?;
++    // Windows (lane Z): derm's own backups folder, user-only.
++    #[cfg(windows)]
++    derm_core::platform::private_dir(backups).map_err(|e| format!("{}: {e}", backups.display()))?;
+     let base = path
+         .file_name()
+         .map_or("config".into(), |n| n.to_string_lossy().into_owned());
+     let dest = backups.join(format!("{harness}-{}-{base}", now_ms()));
+-    let mut f = OpenOptions::new()
+-        .write(true)
+-        .create_new(true)
+-        .mode(0o600)
++    let mut options = OpenOptions::new();
++    options.write(true).create_new(true);
++    #[cfg(unix)]
++    options.mode(0o600);
++    let mut f = options
+         .open(&dest)
+         .map_err(|e| format!("backup {}: {e}", dest.display()))?;
+     f.write_all(bytes)
+@@ -204,13 +230,15 @@ pub fn commit(
+         .into_owned();
+     let tmp = parent.join(format!(".{name}.derm-{}.tmp", std::process::id()));
+     let result = (|| -> Result<(), String> {
+-        let mut f = OpenOptions::new()
+-            .write(true)
+-            .create_new(true)
+-            .mode(now.mode)
++        let mut options = OpenOptions::new();
++        options.write(true).create_new(true);
++        #[cfg(unix)]
++        options.mode(now.mode);
++        let mut f = options
+             .open(&tmp)
+             .map_err(|e| format!("{}: {e}", tmp.display()))?;
+         // `mode` is filtered by the umask; set it exactly.
++        #[cfg(unix)]
+         f.set_permissions(fs::Permissions::from_mode(now.mode))
+             .map_err(|e| e.to_string())?;
+         f.write_all(new_text.as_bytes())
+@@ -266,6 +294,7 @@ pub(crate) mod tests {
+         assert_eq!(c.text().unwrap(), "");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn writes_after_yes_keeps_the_mode_and_backs_up() {
+         let d = scratch("write");
+@@ -295,6 +324,7 @@ pub(crate) mod tests {
+         assert_eq!(fs::read_dir(&d).unwrap().count(), 2);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn new_file_and_folders_are_private() {
+         let d = scratch("new");
+@@ -358,6 +388,7 @@ pub(crate) mod tests {
+         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"other\": 1}");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn symlinks_and_folders_are_refused() {
+         let d = scratch("link");
+diff --git a/crates/derm-cli/src/doctor/mod.rs b/crates/derm-cli/src/doctor/mod.rs
+index 1b868d3..9950927 100644
+--- a/crates/derm-cli/src/doctor/mod.rs
++++ b/crates/derm-cli/src/doctor/mod.rs
+@@ -120,7 +120,6 @@ pub fn report_path(home: &Path, agent: &str) -> PathBuf {
+ /// Keeps the report as a new 0600 file renamed into place in a 0700
+ /// folder; a link in the way is refused, never followed.
+ pub fn save(home: &Path, report: &Value) -> std::io::Result<()> {
+-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+     let agent = report["agent"].as_str().unwrap_or("");
+     if agent.is_empty()
+         || !agent
+@@ -144,17 +143,18 @@ pub fn save(home: &Path, report: &Value) -> std::io::Result<()> {
+             Ok(_) => {}
+             Err(_) => {
+                 std::fs::create_dir(&d)?;
+-                std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
++                // The seam's `set_private_dir` is `chmod 0700` on Unix.
++                derm_core::platform::set_private_dir(&d)?;
+             }
+         }
+     }
+     let tmp = dir.join(format!(".{agent}.{}.tmp", uuid::Uuid::new_v4().simple()));
+-    let mut f = std::fs::OpenOptions::new()
+-        .write(true)
+-        .create_new(true)
+-        .mode(0o600)
+-        .custom_flags(libc::O_NOFOLLOW)
+-        .open(&tmp)?;
++    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
++    // on Unix.
++    let mut f = derm_core::platform::private_no_follow(
++        std::fs::OpenOptions::new().write(true).create_new(true),
++    )
++    .open(&tmp)?;
+     let text = serde_json::to_string_pretty(report).map_err(std::io::Error::other)?;
+     std::io::Write::write_all(&mut f, text.as_bytes())?;
+     f.sync_all()?;
+@@ -468,7 +468,6 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
+ /// down to it owned by you and writable by no one else (security review L9).
+ /// The real path comes back.
+ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
+-    use std::os::unix::fs::MetadataExt;
+     let real = std::fs::canonicalize(hook).map_err(|e| format!("{}: {e}", hook.display()))?;
+     let root = std::fs::canonicalize(root).map_err(|e| format!("{}: {e}", root.display()))?;
+     let rel = real.strip_prefix(&root).map_err(|_| {
+@@ -487,7 +486,7 @@ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
+     }
+     for p in &parts {
+         let m = std::fs::symlink_metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
+-        if m.uid() != uid || m.mode() & 0o022 != 0 {
++        if !yours_alone(p, &m, uid) {
+             return Err(format!(
+                 "{} is not yours alone (owner or group/other writable); derm will not run a hook someone else could have written",
+                 p.display()
+@@ -501,6 +500,20 @@ fn checked_hook(hook: &Path, root: &Path) -> Result<PathBuf, String> {
+     Ok(real)
+ }
+ 
++/// Owned by `uid`, writable by no one else.
++#[cfg(unix)]
++fn yours_alone(_p: &Path, m: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
++    use std::os::unix::fs::MetadataExt;
++    m.uid() == uid && m.mode() & 0o022 == 0
++}
++
++/// Windows (lane Z): the same, from the owner and DACL.
++#[cfg(windows)]
++fn yours_alone(p: &Path, _m: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
++    uid == derm_core::platform::effective_user()
++        && derm_core::platform::windows::only_owner_writes(p)
++}
++
+ /// A folder name read as a version (`0.10.0`), else `None`.
+ fn semver(name: &str) -> Option<(u64, u64, u64)> {
+     let mut it = name.split('.').map(|p| {
+@@ -610,22 +623,20 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
+     let scratch =
+         std::env::temp_dir().join(format!("derm-doctor-{}", uuid::Uuid::new_v4().simple()));
+     let result = (|| -> Result<Value, String> {
+-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+         let work = scratch.join("work");
+         let pol = scratch.join("policy");
+         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+         std::fs::create_dir_all(&pol).map_err(|e| e.to_string())?;
+         for d in [&scratch, &work, &pol] {
+-            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
+-                .map_err(|e| e.to_string())?;
++            // The seam's `set_private_dir` is `chmod 0700` on Unix.
++            derm_core::platform::set_private_dir(d).map_err(|e| e.to_string())?;
+         }
+         let policy = pol.join("policy.json");
+-        let mut f = std::fs::OpenOptions::new()
+-            .write(true)
+-            .create_new(true)
+-            .mode(0o600)
+-            .open(&policy)
+-            .map_err(|e| e.to_string())?;
++        let mut f = derm_core::platform::private_no_follow(
++            std::fs::OpenOptions::new().write(true).create_new(true),
++        )
++        .open(&policy)
++        .map_err(|e| e.to_string())?;
+         std::io::Write::write_all(
+             &mut f,
+             br#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,
+diff --git a/crates/derm-cli/src/doctor/tests.rs b/crates/derm-cli/src/doctor/tests.rs
+index c140811..1329b64 100644
+--- a/crates/derm-cli/src/doctor/tests.rs
++++ b/crates/derm-cli/src/doctor/tests.rs
+@@ -2,6 +2,7 @@
+ //! files, and the real Claude Code and Codex hooks from this repository as
+ //! the "installed" gate.
+ 
++#[cfg(unix)]
+ use std::os::unix::fs::PermissionsExt;
+ use std::path::{Path, PathBuf};
+ 
+@@ -36,6 +37,7 @@ fn put(path: &Path, text: &str) {
+     std::fs::write(path, text).unwrap();
+ }
+ 
++#[cfg(unix)]
+ fn program(h: &Home, name: &str, body: &str) {
+     let p = h.root.join("bin").join(name);
+     put(&p, &format!("#!/bin/sh\n{body}\n"));
+@@ -122,6 +124,7 @@ fn rows_are_found_by_preset_id_or_orcas_id() {
+     assert!(find_row("vim").is_none());
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn a_version_other_than_the_rows_is_unverified() {
+     // Case 81.
+@@ -285,8 +288,10 @@ fn usage_errors_exit_2() {
+     assert_eq!(main(&s(&["pi", "codex"])), 2);
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn the_report_is_kept_private_and_a_link_is_never_followed() {
++    #[cfg(unix)]
+     use std::os::unix::fs::MetadataExt;
+     let h = home("save");
+     let home_dir = h.root.join("home");
+@@ -315,11 +320,13 @@ fn the_report_is_kept_private_and_a_link_is_never_followed() {
+     assert!(save(&home_dir, &json!({"agent": "../x"})).is_err());
+ }
+ 
++#[cfg(unix)]
+ /// Security review L9: `derm doctor` runs the hook as you, outside any
+ /// sandbox, so it runs only the copy the agent loads from its own plugin
+ /// cache, owned by you and writable by no one else.
+ #[test]
+ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+     // An installPath outside the plugin cache: not run.
+     let h = home("hook-out");
+diff --git a/crates/derm-cli/src/run/boundary/probe.rs b/crates/derm-cli/src/run/boundary/probe.rs
+index dcd39da..7368362 100644
+--- a/crates/derm-cli/src/run/boundary/probe.rs
++++ b/crates/derm-cli/src/run/boundary/probe.rs
+@@ -275,6 +275,7 @@ pub(crate) fn srt_probe(
+     }
+ }
+ 
++#[cfg(unix)]
+ fn private_temp_dir() -> std::io::Result<PathBuf> {
+     use std::os::unix::fs::DirBuilderExt;
+     let base = std::env::temp_dir();
+@@ -293,15 +294,36 @@ fn private_temp_dir() -> std::io::Result<PathBuf> {
+     Err(std::io::Error::other("could not make a private folder"))
+ }
+ 
++/// Windows (lane Z): a new folder, then a user-only DACL.
++#[cfg(windows)]
++fn private_temp_dir() -> std::io::Result<PathBuf> {
++    let base = std::env::temp_dir();
++    for _ in 0..8 {
++        let d = base.join(format!(
++            "derm-srt-probe-{}-{}",
++            std::process::id(),
++            &uuid::Uuid::new_v4().simple().to_string()[..8]
++        ));
++        match std::fs::create_dir(&d) {
++            Ok(()) => {
++                derm_core::platform::set_private_dir(&d)?;
++                return Ok(d);
++            }
++            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
++            Err(e) => return Err(e),
++        }
++    }
++    Err(std::io::Error::other("could not make a private folder"))
++}
++
+ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+     use std::io::Write;
+-    use std::os::unix::fs::OpenOptionsExt;
+-    let mut f = std::fs::OpenOptions::new()
+-        .write(true)
+-        .create_new(true)
+-        .mode(0o600)
+-        .custom_flags(libc::O_NOFOLLOW)
+-        .open(path)?;
++    // The seam's `private_no_follow` is `.mode(0o600).custom_flags(O_NOFOLLOW)`
++    // on Unix.
++    let mut f = derm_core::platform::private_no_follow(
++        std::fs::OpenOptions::new().write(true).create_new(true),
++    )
++    .open(path)?;
+     f.write_all(text.as_bytes())
+ }
+ 
+@@ -408,9 +430,12 @@ fn clean(s: &str) -> String {
+ 
+ #[cfg(test)]
+ mod tests {
++    #[cfg(unix)]
+     use super::*;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
++    #[cfg(unix)]
+     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+         let p = dir.join(name);
+         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+@@ -418,6 +443,7 @@ mod tests {
+         p
+     }
+ 
++    #[cfg(unix)]
+     /// A folder outside /tmp: srt's writable list always holds /tmp, and a
+     /// tool there is refused (preflight's rule), which these tests are not
+     /// about.
+@@ -437,10 +463,12 @@ mod tests {
+         d
+     }
+ 
++    #[cfg(unix)]
+     fn pi() -> &'static harness::Harness {
+         harness::find("pi").unwrap()
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn the_runner_reads_the_first_line_and_the_status_and_keeps_its_deadline() {
+         let d = tmp("runner");
+@@ -481,6 +509,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&d);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn sbx_is_unavailable_without_a_kit_without_a_binary_or_signed_out() {
+         let d = tmp("sbx");
+@@ -523,6 +552,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&d);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn srt_is_unavailable_when_missing_or_when_its_probe_fails() {
+         let d = tmp("srt");
+@@ -583,6 +613,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&d);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn srt_in_a_folder_the_sandbox_can_write_is_not_a_boundary() {
+         // preflight's rule (fix pass review R3): the tool srt runs outside
+diff --git a/crates/derm-cli/src/run/boundary/sbx.rs b/crates/derm-cli/src/run/boundary/sbx.rs
+index e7169e1..2188d4c 100644
+--- a/crates/derm-cli/src/run/boundary/sbx.rs
++++ b/crates/derm-cli/src/run/boundary/sbx.rs
+@@ -214,12 +214,15 @@ pub(crate) fn interactive() -> bool {
+ /// run and says how it went.
+ pub(crate) struct Sandbox {
+     sbx: String,
++    // Read only by a test with a shell-script sbx (Unix; lane Z).
++    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
+     name: String,
+     remove: Vec<String>,
+     done: bool,
+ }
+ 
+ impl Sandbox {
++    #[cfg_attr(all(test, not(unix)), allow(dead_code))]
+     pub(crate) fn name(&self) -> &str {
+         &self.name
+     }
+@@ -340,6 +343,7 @@ pub(crate) fn start(
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
+     fn s(v: &[&str]) -> Vec<String> {
+@@ -487,6 +491,7 @@ mod tests {
+         assert!(stages(&s(&["run", "claude", "/w"]), &[], true).is_err());
+     }
+ 
++    #[cfg(unix)]
+     fn fake_sbx(dir: &Path, fail_on: &str) -> String {
+         let log = dir.join("calls");
+         let p = dir.join("sbx");
+@@ -503,6 +508,7 @@ mod tests {
+         p.to_string_lossy().into_owned()
+     }
+ 
++    #[cfg(unix)]
+     fn plan_for(args: Vec<String>) -> Plan {
+         Plan {
+             program: "sbx".into(),
+@@ -527,6 +533,7 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(unix)]
+     fn tmp(name: &str) -> std::path::PathBuf {
+         let d = std::env::temp_dir().join(format!(
+             "derm-sbx-{name}-{}-{}",
+@@ -537,6 +544,7 @@ mod tests {
+         d
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn create_then_allow_then_attach_then_remove() {
+         let d = tmp("seq");
+@@ -583,6 +591,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&d);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_refused_rule_stops_the_chat_and_removes_the_sandbox() {
+         let d = tmp("refused");
+@@ -606,6 +615,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&d);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_failed_create_starts_nothing_and_removes_nothing() {
+         let d = tmp("nocreate");
+@@ -618,6 +628,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&d);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_sandbox_dropped_on_an_error_path_is_removed() {
+         let d = tmp("drop");
+diff --git a/crates/derm-cli/src/run/boundary/settings.rs b/crates/derm-cli/src/run/boundary/settings.rs
+index b1dda1a..5a4d354 100644
+--- a/crates/derm-cli/src/run/boundary/settings.rs
++++ b/crates/derm-cli/src/run/boundary/settings.rs
+@@ -23,20 +23,30 @@ pub(crate) fn path_for(home: &str) -> PathBuf {
+     Path::new(home).join(".derm").join("settings.json")
+ }
+ 
++/// A regular file of this user's, one link, that no one else may write.
++#[cfg(unix)]
++fn owner_only_writes(_path: &Path, meta: &std::fs::Metadata) -> bool {
++    use std::os::unix::fs::MetadataExt;
++    meta.file_type().is_file()
++        && meta.uid() == derm_core::platform::effective_user()
++        && meta.mode() & 0o022 == 0
++        && meta.nlink() == 1
++}
++
++/// Windows (lane Z): the same, from the owner and DACL.
++#[cfg(windows)]
++fn owner_only_writes(path: &Path, meta: &std::fs::Metadata) -> bool {
++    meta.file_type().is_file() && derm_core::platform::windows::only_owner_writes(path)
++}
++
+ /// The pre-answer, and why the file was not used when it was there.
+ pub(crate) fn load(path: &Path) -> (Option<PreAnswer>, Option<String>) {
+-    use std::os::unix::fs::MetadataExt;
+     let meta = match std::fs::symlink_metadata(path) {
+         Ok(m) => m,
+         Err(_) => return (None, None),
+     };
+-    let uid = derm_core::platform::effective_user();
+     let bad = |why: &str| (None, Some(format!("{} {why}", path.display())));
+-    if !meta.file_type().is_file()
+-        || meta.uid() != uid
+-        || meta.mode() & 0o022 != 0
+-        || meta.nlink() != 1
+-    {
++    if !owner_only_writes(path, &meta) {
+         return bad("is not a regular file of yours that only you can write");
+     }
+     if meta.len() > MAX_FILE {
+@@ -100,6 +110,7 @@ pub(crate) fn parse(text: &str) -> Result<Option<PreAnswer>, String> {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
+     #[test]
+@@ -135,6 +146,7 @@ mod tests {
+         }
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_file_others_can_write_or_a_link_is_not_read() {
+         let d = std::env::temp_dir().join(format!(
+diff --git a/crates/derm-cli/src/run/mod.rs b/crates/derm-cli/src/run/mod.rs
+index c6790c0..063e8fe 100644
+--- a/crates/derm-cli/src/run/mod.rs
++++ b/crates/derm-cli/src/run/mod.rs
+@@ -241,6 +241,7 @@ impl Daemon {
+ 
+ /// `lstat`, not `stat`: a regular file (no link followed), owned by this
+ /// user, one hard link, no group or other write bit (fix pass review R1).
++#[cfg(unix)]
+ fn regular_private_file(path: &Path) -> bool {
+     use std::os::unix::fs::MetadataExt;
+     std::fs::symlink_metadata(path).is_ok_and(|m| {
+@@ -249,6 +250,14 @@ fn regular_private_file(path: &Path) -> bool {
+     })
+ }
+ 
++/// Windows (lane Z): a regular file of this user's, one link, that no one
++/// else may write.
++#[cfg(windows)]
++fn regular_private_file(path: &Path) -> bool {
++    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
++        && derm_core::platform::windows::only_owner_writes(path)
++}
++
+ /// The argv a run record keeps. derm's own part (the wrapper and its flags,
+ /// the harness program) is kept; the harness's own arguments, which every
+ /// plan appends last, keep their flag names and lose every other word to its
+@@ -332,6 +341,19 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
+     run_io(argv, env, None)
+ }
+ 
++/// A folder this user owns (Unix: its uid).
++#[cfg(unix)]
++fn folder_of_mine(_at: &Path, m: &std::fs::Metadata) -> bool {
++    use std::os::unix::fs::MetadataExt;
++    m.uid() == derm_core::platform::real_user()
++}
++
++/// Windows (lane Z): owned by this user, and no reparse point.
++#[cfg(windows)]
++fn folder_of_mine(at: &Path, _m: &std::fs::Metadata) -> bool {
++    derm_core::platform::windows::owned_plain_dir(at)
++}
++
+ /// A folder of the chat's alone: made 0700 with no link at its place, its
+ /// parents made 0700 when new. Removed after the run.
+ /// Every folder between `home` (left out) and `path` (left out) that exists
+@@ -339,8 +361,6 @@ fn run(argv: &[String], env: &RunEnv) -> Result<u8, (u8, String)> {
+ /// lands in another folder (security review L11). A path outside `home` has
+ /// its parent checked alone.
+ fn no_link_above(path: &Path, home: &Path) -> std::io::Result<()> {
+-    use std::os::unix::fs::MetadataExt;
+-    let uid = derm_core::platform::real_user();
+     let Some(parent) = path.parent() else {
+         return Ok(());
+     };
+@@ -360,7 +380,7 @@ fn no_link_above(path: &Path, home: &Path) -> std::io::Result<()> {
+             continue;
+         }
+         match std::fs::symlink_metadata(&at) {
+-            Ok(m) if m.file_type().is_symlink() || !m.is_dir() || m.uid() != uid => {
++            Ok(m) if m.file_type().is_symlink() || !m.is_dir() || !folder_of_mine(&at, &m) => {
+                 return Err(std::io::Error::other(format!(
+                     "{} is a link, not a folder, or not yours; derm will not make the chat's folder under it",
+                     at.display()
+@@ -1033,6 +1053,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
+     #[test]
+@@ -1042,6 +1063,7 @@ mod tests {
+         assert_ne!(a, new_chat_id());
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn the_settings_file_is_private_and_never_follows_a_link() {
+         let dir = std::env::temp_dir().join(format!("derm-run-w-{}", std::process::id()));
+@@ -1098,9 +1120,12 @@ mod tests {
+ #[cfg(test)]
+ mod end_to_end {
+     use super::*;
++    #[cfg(unix)]
+     use derm_audit_linux::client::fake;
++    #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+ 
++    #[cfg(unix)]
+     fn script(dir: &Path, name: &str, body: &str) -> String {
+         let bin = dir.join("bin");
+         std::fs::create_dir_all(&bin).unwrap();
+@@ -1114,12 +1139,14 @@ mod end_to_end {
+         v.iter().map(|x| x.to_string()).collect()
+     }
+ 
++    #[cfg(unix)]
+     struct Setup {
+         fake: fake::Fake,
+         work: PathBuf,
+         env: RunEnv,
+     }
+ 
++    #[cfg(unix)]
+     fn setup(name: &str) -> Setup {
+         let fake = fake::start(&format!("run-{name}"), fake::Mode::Normal);
+         let work = fake.dir.join("work dir");
+@@ -1172,10 +1199,12 @@ mod end_to_end {
+         Setup { fake, work, env }
+     }
+ 
++    #[cfg(unix)]
+     fn seen(st: &Setup) -> String {
+         std::fs::read_to_string(st.fake.dir.join("seen")).unwrap_or_default()
+     }
+ 
++    #[cfg(unix)]
+     fn events(st: &Setup) -> Vec<serde_json::Value> {
+         st.fake
+             .lines()
+@@ -1185,6 +1214,7 @@ mod end_to_end {
+             .collect()
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn run_records_never_hold_a_secret_from_the_harness_argv() {
+         // Integration w1, security finding S13: a key passed to the harness
+@@ -1269,6 +1299,7 @@ mod end_to_end {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn run_records_hold_no_prompt_text_from_the_harness_argv() {
+         // Mac test w1, finding M8: `claude -p "<prompt>"` put the prompt in
+@@ -1307,6 +1338,7 @@ mod end_to_end {
+         assert!(seen(&st).contains("arg=summarise my private plan"));
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn none_mints_a_token_records_start_and_stop_and_returns_the_code() {
+         let st = setup("none");
+@@ -1383,6 +1415,7 @@ mod end_to_end {
+         }
+     }
+ 
++    #[cfg(unix)]
+     /// Lane S's requests 2 and 3 (integration w5, phase 2): `--no-tap` makes
+     /// the chat say it runs untapped and why (case 127), and every
+     /// `run.start` carries content capture's switch as the chat starts.
+@@ -1431,6 +1464,7 @@ mod end_to_end {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn srt_writes_private_settings_and_removes_them_after() {
+         let st = setup("srt");
+@@ -1498,6 +1532,7 @@ mod end_to_end {
+         assert_eq!(ev[0]["detail"]["ioUring"], want);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn run_stop_is_recorded_after_the_daemon_restarted() {
+         // Box test w1, BX8: `systemctl --user restart derm-daemon` during a
+@@ -1549,6 +1584,7 @@ mod end_to_end {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn srt_re_opens_the_policy_only_when_it_is_a_plain_file() {
+         // Fix pass review R1: a link at ~/.derm/policy.json to ~/.derm/backups
+@@ -1614,6 +1650,7 @@ mod end_to_end {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn srt_without_its_dependencies_starts_nothing() {
+         // Box test w1, BX4: srt's own "ripgrep (rg) not found" came after
+@@ -1639,6 +1676,7 @@ mod end_to_end {
+         assert!(events(&st).is_empty(), "nothing recorded");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn sbx_names_the_variables_and_posts_the_blocks_its_log_shows() {
+         let st = setup("sbx");
+@@ -1752,6 +1790,7 @@ mod end_to_end {
+         assert_eq!(stop["detail"]["sandboxRemoved"], true);
+     }
+ 
++    #[cfg(unix)]
+     /// Lane R: Claude Code's own OTel goes to the daemon under `derm run`
+     /// (integration w1's request; `apply_export`), its arguments before the
+     /// user's, its token never in an argument, the helper removed after.
+@@ -1848,6 +1887,7 @@ mod end_to_end {
+         );
+     }
+ 
++    #[cfg(unix)]
+     /// Lane R: Cline gets its approval folder (0700, removed after) and lane
+     /// P's responder runs beside it with `--dir` and the chat's variables.
+     #[test]
+@@ -1911,6 +1951,7 @@ mod end_to_end {
+         assert!(!Path::new(&dir).exists(), "the approval folder was removed");
+     }
+ 
++    #[cfg(unix)]
+     /// Case 80: a program derm has no preset for runs with the outside
+     /// shape, recorded as such.
+     #[test]
+@@ -1953,6 +1994,7 @@ mod end_to_end {
+         assert_eq!(ev.last().unwrap()["kind"], "run.stop");
+     }
+ 
++    #[cfg(unix)]
+     /// Case 83: a full-access flag reaches the gate as a hint and the run
+     /// record keeps it for `derm status`.
+     #[test]
+@@ -1982,6 +2024,7 @@ mod end_to_end {
+         assert_eq!(ev[0]["detail"]["fullAccess"], true);
+     }
+ 
++    #[cfg(unix)]
+     /// `derm acp` end to end: a scripted ACP agent asks about a call the
+     /// policy denies; derm answers it, the client never sees the request,
+     /// and the decision is posted on the chat token beside the run's records.
+@@ -2080,6 +2123,7 @@ mod end_to_end {
+             .any(|l| l["op"] == "hello" && l["token"] == fake::CHAT_TOKEN));
+     }
+ 
++    #[cfg(unix)]
+     /// The OTel receiver keeps one helper folder per process
+     /// (`otel_receiver::helper_in`), and the tests share one fake chat token:
+     /// two Claude Code runs at once in this test process would clear each
+@@ -2087,6 +2131,7 @@ mod end_to_end {
+     /// alone.
+     static OTEL_HELPERS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+ 
++    #[cfg(unix)]
+     fn clone_env(e: &RunEnv) -> RunEnv {
+         RunEnv {
+             socket: e.socket.clone(),
+@@ -2102,6 +2147,7 @@ mod end_to_end {
+         }
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn no_daemon_is_an_error_and_starts_nothing() {
+         let st = setup("down");
+@@ -2124,6 +2170,7 @@ mod end_to_end {
+         assert!(seen(&st).is_empty(), "the harness never started");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn no_daemon_flag_runs_without_token_or_records() {
+         let st = setup("nod");
+@@ -2138,6 +2185,7 @@ mod end_to_end {
+         assert!(st.fake.lines().is_empty(), "the daemon heard nothing");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn dry_run_contacts_nobody_and_starts_nothing() {
+         let st = setup("dry");
+@@ -2154,6 +2202,7 @@ mod end_to_end {
+         assert!(seen(&st).is_empty());
+     }
+ 
++    #[cfg(unix)]
+     /// Security review L5: the copy of the user's `--settings` the export
+     /// adds is derm's argument, but its content is the user's: the record
+     /// does not keep it.
+@@ -2288,6 +2337,7 @@ mod end_to_end {
+         assert!(ps_running_with(&marker).is_empty());
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_harness_that_does_not_start_leaves_nothing_running_or_behind() {
+         let _one = OTEL_HELPERS.lock().unwrap_or_else(|p| p.into_inner());
+@@ -2370,6 +2420,7 @@ mod end_to_end {
+         assert!(!helper.exists(), "{} was left behind", helper.display());
+     }
+ 
++    #[cfg(unix)]
+     /// Security review L11: a link anywhere between HOME and the chat's
+     /// folder is refused, so derm never chmods or removes another folder.
+     #[test]
+diff --git a/crates/derm-cli/src/run/preflight.rs b/crates/derm-cli/src/run/preflight.rs
+index 5b54ff9..5a4b26c 100644
+--- a/crates/derm-cli/src/run/preflight.rs
++++ b/crates/derm-cli/src/run/preflight.rs
+@@ -218,6 +218,7 @@ fn checked(
+ /// entry in order, an empty one meaning the current folder, which for srt is
+ /// the chat's folder (`derm run` starts it there). A relative entry's match is
+ /// returned relative, for the caller to refuse.
++#[cfg(unix)]
+ fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
+     use std::os::unix::fs::PermissionsExt;
+     path_var.split(':').find_map(|d| {
+@@ -234,6 +235,14 @@ fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
+     })
+ }
+ 
++/// Windows (lane Z): PATH split on `;`, the name tried with Windows'
++/// program extensions (`platform::windows::shim::find_program`).
++#[cfg(windows)]
++fn first_on_path(path_var: &str, bin: &str, _cwd: &str) -> Option<String> {
++    crate::platform::windows::shim::find_program(bin, Some(path_var), &|p| p.is_file())
++        .map(|p| p.to_string_lossy().into_owned())
++}
++
+ /// `path` is `dir` or inside it, both compared canonical where they exist.
+ fn under(path: &str, dir: &str) -> bool {
+     let dir = std::fs::canonicalize(dir)
+@@ -247,6 +256,7 @@ fn under(path: &str, dir: &str) -> bool {
+ mod tests {
+     use super::*;
+ 
++    #[cfg(unix)]
+     fn dir_with(name: &str, bins: &[&str]) -> String {
+         let d = std::env::temp_dir().join(format!("derm-pre-{name}-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&d);
+@@ -254,12 +264,14 @@ mod tests {
+         for b in bins {
+             let p = d.join(b);
+             std::fs::write(&p, "#!/bin/sh\n").unwrap();
++            #[cfg(unix)]
+             use std::os::unix::fs::PermissionsExt;
+             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+         }
+         d.to_string_lossy().into_owned()
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_missing_dependency_stops_the_run_and_names_it() {
+         // BX4: the box had bwrap and socat, and rg only in ~/.pi/agent/bin.
+@@ -273,6 +285,7 @@ mod tests {
+         assert!(e.contains("rg"), "{e}");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn the_userns_sysctl_warns_before_the_start() {
+         // BX3.
+@@ -293,6 +306,7 @@ mod tests {
+         assert!(srt(&d, false, Some("1"), &[], "/").unwrap().0.is_empty());
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn the_copy_srt_would_run_must_not_be_relative_or_in_a_writable_folder() {
+         // Fix pass review R3.
+@@ -342,6 +356,7 @@ mod tests {
+         );
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_file_that_is_not_executable_does_not_count() {
+         let d = dir_with("noexec", &["bwrap", "socat"]);
+@@ -349,10 +364,12 @@ mod tests {
+         assert!(srt(&d, true, None, &[], "/").is_err());
+     }
+ 
++    #[cfg(unix)]
+     /// Security review L8: the companion runs outside the sandbox with the
+     /// chat token, so it is held to the same rule as srt's own tools.
+     #[test]
+     fn the_companion_is_never_taken_from_a_folder_the_sandbox_can_write() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let root = std::env::temp_dir().join(format!(
+             "derm-pre-comp-{}-{}",
+@@ -434,6 +451,7 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&root);
+     }
+ 
++    #[cfg(unix)]
+     /// Mac test w4, MW4-1: on macOS `/tmp` is a link to `/private/tmp`, so a
+     /// PATH entry `/tmp/x` that did not exist at start was compared as
+     /// written against the folder's real path and kept, and the sandbox could
+@@ -468,12 +486,14 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&root);
+     }
+ 
++    #[cfg(unix)]
+     /// Review W4-S4: lane P's responder is a `#!/usr/bin/env node` script,
+     /// so the kernel looks `node` up on PATH when it starts. That `node` runs
+     /// outside the sandbox with the chat token, so it is held to the same
+     /// rule as the script.
+     #[test]
+     fn the_companions_interpreter_is_held_to_the_same_rule() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let root = std::env::temp_dir().join(format!(
+             "derm-pre-interp-{}-{}",
+diff --git a/crates/derm-cli/src/run/tap/tests.rs b/crates/derm-cli/src/run/tap/tests.rs
+index b9c0a62..c098665 100644
+--- a/crates/derm-cli/src/run/tap/tests.rs
++++ b/crates/derm-cli/src/run/tap/tests.rs
+@@ -1,4 +1,5 @@
+ use super::*;
++#[cfg(unix)]
+ use std::os::unix::fs::PermissionsExt;
+ 
+ const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+@@ -148,6 +149,7 @@ fn codex_gets_its_provider_flags_before_its_own_and_the_route_only_in_its_enviro
+     let _ = std::fs::remove_dir_all(d.root);
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn a_chat_runs_untapped_and_says_why_when_it_cannot_be_tapped() {
+     // No endpoint published by the daemon.
+@@ -347,6 +349,7 @@ fn the_tap_table_merges_into_the_presets_and_every_row_follows_the_schema() {
+     }
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn the_content_record_follows_the_settings_and_defaults_off() {
+     let d = dirs("content", None);
+diff --git a/crates/derm-cli/src/run/user/mod.rs b/crates/derm-cli/src/run/user/mod.rs
+index a06dba0..c54f42c 100644
+--- a/crates/derm-cli/src/run/user/mod.rs
++++ b/crates/derm-cli/src/run/user/mod.rs
+@@ -33,18 +33,26 @@
+ //! `run_io` passes the chat's details in [`Context`] (lane V's request V-1,
+ //! applied by integration).
+ 
++#[cfg(unix)]
+ use std::path::{Path, PathBuf};
++#[cfg(unix)]
+ use std::process::{Command, Stdio};
++#[cfg(unix)]
+ use std::sync::Mutex;
+ 
+-use serde_json::{json, Value};
++#[cfg(unix)]
++use serde_json::json;
++use serde_json::Value;
+ 
+ use super::plan::Plan;
+ 
++#[cfg(unix)]
+ pub(crate) mod anchor;
++#[cfg(unix)]
+ pub(crate) mod bridge;
+ 
+ /// What `wrap_with` needs from `run_io` (lane V's request V-1).
++#[cfg_attr(not(unix), allow(dead_code))]
+ pub(crate) struct Context<'a> {
+     /// `none`, `srt` or `sbx`.
+     pub boundary: &'a str,
+@@ -61,17 +69,23 @@ pub(crate) struct Context<'a> {
+ }
+ 
+ /// Where `sudo` and `env` must be: root's, never found on `PATH` (case 37).
++#[cfg(unix)]
+ const SUDO: &str = "/usr/bin/sudo";
++#[cfg(unix)]
+ const ENV: &str = "/usr/bin/env";
++#[cfg(unix)]
+ const SH: &str = "/bin/sh";
+ /// The person may say a chat runs as them anyway (`DERM_RUN_AS=you`); the
+ /// chat is then unbounded as them, and the daemon's person check applies.
++#[cfg(unix)]
+ const RUN_AS_VAR: &str = "DERM_RUN_AS";
+ 
+ /// The open bridge, kept until `finish` (or the process's exit).
++#[cfg(unix)]
+ static BRIDGE: Mutex<Option<bridge::Bridge>> = Mutex::new(None);
+ 
+ /// Starts the harness as the agents' user when one is set up (module text).
++#[cfg(unix)]
+ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value>, (u8, String)> {
+     if !cfg!(target_os = "linux") || ctx.boundary != "none" {
+         // A boundary keeps the agent from the daemon's token already (srt
+@@ -201,6 +215,7 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
+ }
+ 
+ /// The variables that point the gate inside at the bridge.
++#[cfg(unix)]
+ fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, String)> {
+     let path = |p: &Path| p.to_string_lossy().into_owned();
+     let mut set = vec![
+@@ -217,20 +232,24 @@ fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, Stri
+ 
+ /// Stops the chat's bridge and removes its folder. `run_io` calls it after
+ /// the harness exits; `atexit` covers an exit that skips that.
++#[cfg(unix)]
+ pub(crate) fn finish() {
+     if let Ok(mut slot) = BRIDGE.lock() {
+         slot.take();
+     }
+ }
+ 
++#[cfg(unix)]
+ extern "C" fn finish_at_exit() {
+     finish();
+ }
+ 
++#[cfg(unix)]
+ fn run_as_you() -> bool {
+     std::env::var(RUN_AS_VAR).is_ok_and(|v| v == "you")
+ }
+ 
++#[cfg(unix)]
+ fn euid() -> u32 {
+     derm_core::platform::effective_user()
+ }
+@@ -238,6 +257,7 @@ fn euid() -> u32 {
+ /// `path` resolved, a regular file of root's that no one else can write, in
+ /// folders of root's no one else can write; `setid`: it must be set-user-id
+ /// (sudo). Returns the resolved path.
++#[cfg(unix)]
+ fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
+     use std::os::unix::fs::MetadataExt;
+     let real = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
+@@ -262,6 +282,7 @@ fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
+ /// terminal program needs. Never `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`,
+ /// `XDG_*`, `SUDO_*` or the loader's: those describe the person, are set for
+ /// the agents' user, or change what a program loads.
++#[cfg(unix)]
+ fn keep(name: &str) -> bool {
+     const NEVER: &[&str] = &[
+         "HOME",
+@@ -284,6 +305,7 @@ fn keep(name: &str) -> bool {
+ }
+ 
+ /// The terminal's variables, kept when derm run has them.
++#[cfg(unix)]
+ const TERMINAL: &[&str] = &[
+     "TERM",
+     "COLORTERM",
+@@ -293,6 +315,7 @@ const TERMINAL: &[&str] = &[
+     "NO_COLOR",
+ ];
+ 
++#[cfg(unix)]
+ fn rewrite(
+     launch: &mut Plan,
+     sudo: &str,
+@@ -334,6 +357,7 @@ fn rewrite(
+ 
+ /// One check run as the agents' user, through the route the harness will
+ /// take. The script is fixed; every path goes in as an argument.
++#[cfg(unix)]
+ struct Probe<'a> {
+     sudo: &'a str,
+     sh: &'a str,
+@@ -347,6 +371,7 @@ struct Probe<'a> {
+ /// Prints `<kind>\t<path>\0` per finding, then `done\t-\0`. `reach`: a path
+ /// the agent can read (a file) or enter or list (a folder); `nowrite`: a chat
+ /// folder it cannot write; `prog-missing`: the harness is not on its `PATH`.
++#[cfg(unix)]
+ const PROBE_SCRIPT: &str = r#"set -u
+ p=$1; prog=$2; shift 2
+ out() { printf '%s\t%s\0' "$1" "$2"; }
+@@ -366,12 +391,14 @@ out done -
+ "#;
+ 
+ #[derive(Debug, Default, PartialEq)]
++#[cfg(unix)]
+ struct Found {
+     reach: Vec<String>,
+     nowrite: Vec<String>,
+     prog_missing: bool,
+ }
+ 
++#[cfg(unix)]
+ impl Probe<'_> {
+     fn argv(&self) -> Vec<String> {
+         let mut a = vec![
+@@ -418,6 +445,7 @@ impl Probe<'_> {
+ }
+ 
+ /// The probe's output, or `None` when it did not finish.
++#[cfg(unix)]
+ fn parse(out: &[u8]) -> Option<Found> {
+     let mut f = Found::default();
+     let mut done = false;
+@@ -435,6 +463,7 @@ fn parse(out: &[u8]) -> Option<Found> {
+     done.then_some(f)
+ }
+ 
++#[cfg(unix)]
+ impl Found {
+     fn refusal(&self, user: &str, program: &str) -> Option<String> {
+         if !self.reach.is_empty() {
+@@ -458,7 +487,18 @@ impl Found {
+     }
+ }
+ 
+-#[cfg(test)]
++/// Windows (lane Z): no agents' user exists there (lane V's is the box's);
++/// the harness runs as you, as `wrap_with` answers on every system but
++/// Linux.
++#[cfg(not(unix))]
++pub(crate) fn wrap_with(_launch: &mut Plan, _ctx: &Context) -> Result<Option<Value>, (u8, String)> {
++    Ok(None)
++}
++
++#[cfg(not(unix))]
++pub(crate) fn finish() {}
++
++#[cfg(all(test, unix))]
+ mod tests {
+     use super::*;
+ 
+diff --git a/crates/derm-cli/src/watch/approve.rs b/crates/derm-cli/src/watch/approve.rs
+index 15f15a9..2734cb6 100644
+--- a/crates/derm-cli/src/watch/approve.rs
++++ b/crates/derm-cli/src/watch/approve.rs
+@@ -514,6 +514,7 @@ fn wipe(s: &mut String) {
+ }
+ 
+ /// Turns the controlling terminal's echo off or on (termios(3), `ECHO`).
++#[cfg(unix)]
+ fn set_tty_echo(on: bool) {
+     use std::os::fd::AsRawFd;
+     let Ok(t) = std::fs::File::open("/dev/tty") else {
+@@ -536,9 +537,16 @@ fn set_tty_echo(on: bool) {
+     }
+ }
+ 
++/// Windows (lane Z): the console's echo.
++#[cfg(windows)]
++fn set_tty_echo(on: bool) {
++    crate::platform::windows::set_console_echo(on);
++}
++
+ /// `tcflush(TCIFLUSH)` on the controlling terminal: drops typed-ahead input
+ /// the kernel holds, so an answer meant for an earlier prompt cannot land on
+ /// this one.
++#[cfg(unix)]
+ fn flush_tty_input() {
+     use std::os::fd::AsRawFd;
+     if let Ok(t) = std::fs::File::open("/dev/tty") {
+@@ -549,6 +557,12 @@ fn flush_tty_input() {
+     }
+ }
+ 
++/// Windows (lane Z): the console's typed-ahead input.
++#[cfg(windows)]
++fn flush_tty_input() {
++    crate::platform::windows::flush_console_input();
++}
++
+ /// Why this process looks like it runs inside a derm chat, if it does: a
+ /// variable `derm run` sets in the harness (`contracts/daemon-protocol.md`,
+ /// section 2), or a `derm run` process among its ancestors. An agent that
+diff --git a/crates/derm-cli/src/watch/live_tests.rs b/crates/derm-cli/src/watch/live_tests.rs
+index 497aa1b..5414ae7 100644
+--- a/crates/derm-cli/src/watch/live_tests.rs
++++ b/crates/derm-cli/src/watch/live_tests.rs
+@@ -3,6 +3,7 @@
+ //! starts it. Nothing here touches your own daemon or files.
+ 
+ use std::io::Write;
++#[cfg(unix)]
+ use std::os::unix::fs::PermissionsExt;
+ use std::path::PathBuf;
+ use std::sync::mpsc;
+@@ -31,6 +32,7 @@ impl Drop for Live {
+     }
+ }
+ 
++#[cfg(unix)]
+ fn live(name: &str) -> Live {
+     let root = std::env::temp_dir().join(format!(
+         "tkj-{name}-{}-{}",
+@@ -113,6 +115,7 @@ impl Shared {
+     }
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn tail_shows_the_backlog_then_live_events_and_cleans_them() {
+     let l = live("tail");
+@@ -142,6 +145,7 @@ fn tail_shows_the_backlog_then_live_events_and_cleans_them() {
+     assert!(text.contains("derm-chat-a"), "{text}");
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn tail_filters_by_chat_and_json_mode_prints_events() {
+     let l = live("tailchat");
+@@ -165,6 +169,7 @@ fn tail_filters_by_chat_and_json_mode_prints_events() {
+     assert_eq!(v["chatId"], "derm-chat-b");
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn report_counts_what_was_posted() {
+     let l = live("report");
+@@ -183,6 +188,7 @@ fn report_counts_what_was_posted() {
+     assert!(text.contains("chain ok"), "{text}");
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn watch_never_takes_a_chat_token() {
+     let l = live("scope");
+@@ -199,6 +205,7 @@ fn watch_never_takes_a_chat_token() {
+     assert!(e.contains("daemon scope"), "{e}");
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn a_token_file_others_can_read_is_refused() {
+     let l = live("mode");
+@@ -208,6 +215,7 @@ fn a_token_file_others_can_read_is_refused() {
+     assert!(e.contains("readable by others"), "{e}");
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn no_daemon_is_a_clear_error() {
+     let dir = std::env::temp_dir().join(format!("tkj-none-{}", std::process::id()));
+@@ -244,6 +252,7 @@ fn ask(l: &Live, id: &str, secs: u32) -> std::thread::JoinHandle<Value> {
+     })
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn the_approver_answers_a_hooks_request_end_to_end() {
+     let l = live("approve");
+@@ -291,6 +300,7 @@ fn the_approver_answers_a_hooks_request_end_to_end() {
+     let _ = harness.wait();
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn with_no_approver_the_daemon_says_no_at_once() {
+     let l = live("noapprover");
+@@ -303,6 +313,7 @@ fn with_no_approver_the_daemon_says_no_at_once() {
+     assert!(t.elapsed() < Duration::from_secs(5));
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn an_unanswered_request_times_out_to_no_and_is_not_answered_late() {
+     let l = live("timeout");
+@@ -326,6 +337,7 @@ fn an_unanswered_request_times_out_to_no_and_is_not_answered_late() {
+     out.wait_for("no request is waiting");
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn status_sees_the_daemon_its_server_and_an_open_chat() {
+     let l = live("status");
+@@ -372,6 +384,7 @@ fn status_sees_the_daemon_its_server_and_an_open_chat() {
+     );
+ }
+ 
++#[cfg(unix)]
+ #[test]
+ fn status_finds_an_open_chat_between_two_floods_of_events() {
+     // Box test w2, BW3: `derm status` read running chats from the tail's
+@@ -416,6 +429,7 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
+     );
+ }
+ 
++#[cfg(unix)]
+ /// S2 part b (wave 5 lane V), end to end: the chat runs as you, so the
+ /// daemon refuses a `yes` until the person's password comes with it. The
+ /// approver asks for it with echo off, sends it once, shows the card again
+diff --git a/crates/derm-cli/src/watch/mod.rs b/crates/derm-cli/src/watch/mod.rs
+index 4fd797b..9124204 100644
+--- a/crates/derm-cli/src/watch/mod.rs
++++ b/crates/derm-cli/src/watch/mod.rs
+@@ -23,7 +23,9 @@ pub(crate) mod status;
+ mod tail;
+ pub(crate) mod text;
+ 
+-#[cfg(test)]
++// Shell-script fakes and a live daemon on a Unix socket (lane Z: no
++// Windows twin yet).
++#[cfg(all(test, unix))]
+ mod live_tests;
+ 
+ pub const USAGE: &str = "usage: derm watch <tail|report|approve> [options]
+diff --git a/crates/derm-cli/src/watch/register.rs b/crates/derm-cli/src/watch/register.rs
+index 68770e0..401bb20 100644
+--- a/crates/derm-cli/src/watch/register.rs
++++ b/crates/derm-cli/src/watch/register.rs
+@@ -329,6 +329,7 @@ fn is_derm_cursor_command(c: &str) -> bool {
+ /// `._/@+~ -`, as `--hook` and `--node` take them, so no `$`, backtick or
+ /// `\`); the hook file is a regular file of yours or root's, writable by no
+ /// one else, in a folder whose `package.json` names derm-hooks-native.
++#[cfg(unix)]
+ pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
+     use std::os::unix::fs::MetadataExt;
+     let c = c.trim_end();
+@@ -376,6 +377,13 @@ pub fn derm_cursor_command_parts(c: &str) -> Option<(String, PathBuf)> {
+     named.then(|| (node.to_string(), file.to_path_buf()))
+ }
+ 
++/// Windows (lane Z): the command form above is Unix paths only; no Windows
++/// form is read yet, so nothing counts as derm's Cursor hook.
++#[cfg(not(unix))]
++pub fn derm_cursor_command_parts(_c: &str) -> Option<(String, PathBuf)> {
++    None
++}
++
+ /// What derm's registered Cursor gate runs, for srt to keep read-only
+ /// (re-review FP5-R2): each derm entry's hook package folder and, when it is
+ /// named by path, its node. Empty when `~/.cursor/hooks.json` is missing,
+@@ -1043,6 +1051,7 @@ mod tests {
+         assert_eq!(check("claude-code", &env).word(), "yes");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_local_install_counts_only_in_its_own_folder() {
+         // Mac test w2, MW3: the only record was `scope: "local"` for one
+@@ -1191,8 +1200,10 @@ mod tests {
+ 
+ #[cfg(test)]
+ mod cursor_tests {
++    #[cfg(unix)]
+     use super::*;
+ 
++    #[cfg(unix)]
+     fn env_in(dir: &Path) -> Env {
+         Env {
+             home: Some(dir.to_path_buf()),
+@@ -1202,14 +1213,17 @@ mod cursor_tests {
+         }
+     }
+ 
++    #[cfg(unix)]
+     fn entry_for(command: &str, fail_closed: bool) -> String {
+         serde_json::json!({"type": "command", "command": command, "timeout": 120, "failClosed": fail_closed})
+             .to_string()
+     }
+ 
++    #[cfg(unix)]
+     /// A real derm-hooks-native folder under `dir`, with its hook file
+     /// (fix pass 1's review, FP4-S3).
+     fn native(dir: &Path, name: &str) -> PathBuf {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let pkg = dir.join(name);
+         std::fs::create_dir_all(pkg.join("bin")).unwrap();
+@@ -1229,6 +1243,7 @@ mod cursor_tests {
+         hook
+     }
+ 
++    #[cfg(unix)]
+     /// Mac test w4, 4.3 (lane Q's Q7, lane N's N4): Cursor showed `unknown`
+     /// after `derm connect cursor --gate --write`. derm's gate is its two
+     /// entries in `~/.cursor/hooks.json`, beside anything else there (Orca's),
+@@ -1290,6 +1305,7 @@ mod cursor_tests {
+             assert_eq!(check("cursor", &env).word(), "no", "{command}");
+         }
+         {
++            #[cfg(unix)]
+             use std::os::unix::fs::PermissionsExt;
+             write(&entry(true), &entry(true));
+             std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o666)).unwrap();
+diff --git a/crates/derm-cli/src/watch/status.rs b/crates/derm-cli/src/watch/status.rs
+index 347949a..e10d992 100644
+--- a/crates/derm-cli/src/watch/status.rs
++++ b/crates/derm-cli/src/watch/status.rs
+@@ -191,6 +191,7 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
+ /// The last `derm doctor` report for an agent, as `derm status` shows it:
+ /// when, which versions, and how many things it found to look at. Read only
+ /// from a regular file of yours under 64 KiB; anything else is not shown.
++#[cfg(unix)]
+ fn last_doctor(path: &Path) -> Option<Value> {
+     use std::io::Read;
+     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+@@ -225,6 +226,19 @@ fn last_doctor(path: &Path) -> Option<Value> {
+     }))
+ }
+ 
++/// Windows (lane Z): a private file of yours, checked on the open handle.
++#[cfg(windows)]
++fn last_doctor(path: &Path) -> Option<Value> {
++    use std::io::Read;
++    let f = derm_core::platform::windows::open_private_file(path).ok()?;
++    if f.metadata().ok()?.len() > 64 * 1024 {
++        return None;
++    }
++    let mut text = String::new();
++    f.take(64 * 1024).read_to_string(&mut text).ok()?;
++    serde_json::from_str(&text).ok()
++}
++
+ /// A program name with no folder part: what a row's `cli` must be.
+ fn plain_name(c: &str) -> bool {
+     !c.contains('/') && !c.starts_with('-') && c.bytes().all(|b| b.is_ascii_graphic())
+@@ -233,6 +247,7 @@ fn plain_name(c: &str) -> bool {
+ /// The first `<dir>/<name>` on PATH that is a regular file with an execute
+ /// bit, in an absolute folder. A relative PATH entry (`.`, empty) is
+ /// skipped: it names whatever folder `derm status` runs in.
++#[cfg(unix)]
+ pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
+     use std::os::unix::fs::PermissionsExt;
+     for dir in path.split(':') {
+@@ -249,6 +264,17 @@ pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
+     None
+ }
+ 
++/// Windows (lane Z): absolute PATH entries split on `;`, the name tried with
++/// Windows' program extensions.
++#[cfg(windows)]
++pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
++    let absolute: Vec<&str> = path
++        .split(';')
++        .filter(|d| !d.is_empty() && Path::new(d).is_absolute())
++        .collect();
++    crate::platform::windows::shim::find_program(name, Some(&absolute.join(";")), &|p| p.is_file())
++}
++
+ /// `<program> --version`, argv only, stdin closed, a clean environment but
+ /// HOME and PATH, killed after `PROBE_TIMEOUT`. The first line of output,
+ /// cleaned and cut, or why there is none. A program that exits with a
+@@ -495,6 +521,7 @@ pub fn running_chats(socket: &Path, now: i64) -> Value {
+ 
+ /// Whether `pid` still runs. A pid can be reused after an exit, so this
+ /// is a hint, said as one.
++#[cfg(unix)]
+ fn alive(pid: u32) -> bool {
+     // SAFETY: kill with signal 0 only checks that the process exists and
+     // that we may signal it.
+@@ -502,6 +529,12 @@ fn alive(pid: u32) -> bool {
+     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+ }
+ 
++/// Windows (lane Z): the process can be opened and has not ended.
++#[cfg(windows)]
++fn alive(pid: u32) -> bool {
++    derm_core::platform::peer::start_time(pid).is_some()
++}
++
+ pub fn render(rows: &[Value], daemon: &Value) -> String {
+     let mut out = String::new();
+     let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+@@ -798,11 +831,13 @@ mod tests {
+         assert!(!out.contains('\u{1b}'), "{out}");
+     }
+ 
++    #[cfg(unix)]
+     /// Lane R (T2.9): a probed version other than the row's says
+     /// "unverified at" (case 81); the last `derm doctor` report is shown; a
+     /// running chat in full access names its flags (case 83).
+     #[test]
+     fn status_shows_unverified_versions_doctor_reports_and_full_access() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let dir = std::env::temp_dir().join(format!("derm-status-r-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&dir);
+@@ -929,8 +964,10 @@ mod tests {
+         assert!(t.contains("no chats started by derm run are open"), "{t}");
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn path_lookup_skips_relative_entries_and_non_executables() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let dir = std::env::temp_dir().join(format!("derm-path-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&dir);
+@@ -947,8 +984,10 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&dir);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_probe_that_hangs_is_killed() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let dir = std::env::temp_dir().join(format!("derm-hang-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&dir);
+@@ -962,11 +1001,13 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&dir);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_probe_that_exits_non_zero_is_not_an_install() {
+         // Box test w2, BW4: /usr/bin/copilot is VS Code's shim, which says
+         // "GitHub Copilot CLI was not found" and exits 127; `derm status` showed
+         // it "on PATH" and the probe as "printed nothing".
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let dir = std::env::temp_dir().join(format!("derm-shim-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&dir);
+@@ -993,11 +1034,13 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&dir);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_probe_returns_when_the_program_exits_even_if_its_child_holds_the_pipes() {
+         // Fix pass 1's review, FP1-S5: `sleep 1d & exit 1` on PATH kept
+         // `derm status --probe` waiting for a day, reading to the end of a pipe
+         // the left-behind sleep still held.
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let dir = std::env::temp_dir().join(format!("derm-hold-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&dir);
+@@ -1028,8 +1071,10 @@ mod tests {
+         let _ = std::fs::remove_dir_all(&dir);
+     }
+ 
++    #[cfg(unix)]
+     #[test]
+     fn a_probe_printing_escapes_is_cleaned() {
++        #[cfg(unix)]
+         use std::os::unix::fs::PermissionsExt;
+         let dir = std::env::temp_dir().join(format!("derm-esc-{}", std::process::id()));
+         let _ = std::fs::remove_dir_all(&dir);
+diff --git a/crates/derm-cli/src/watch/text.rs b/crates/derm-cli/src/watch/text.rs
+index b3cd546..682bb00 100644
+--- a/crates/derm-cli/src/watch/text.rs
++++ b/crates/derm-cli/src/watch/text.rs
+@@ -77,6 +77,7 @@ pub fn date_time(ms: i64) -> String {
+     }
+ }
+ 
++#[cfg(unix)]
+ fn local(ms: i64) -> Option<libc::tm> {
+     let secs = ms.div_euclid(1000) as libc::time_t;
+     // SAFETY: an all-zero `tm` is a valid value for localtime_r to fill;
+@@ -86,6 +87,16 @@ fn local(ms: i64) -> Option<libc::tm> {
+     (!r.is_null()).then_some(tm)
+ }
+ 
++/// Windows (lane Z): the C runtime's `localtime_s`.
++#[cfg(windows)]
++fn local(ms: i64) -> Option<libc::tm> {
++    let secs = ms.div_euclid(1000) as libc::time_t;
++    // SAFETY: as above; localtime_s fills `tm` and returns 0 on success.
++    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
++    let r = unsafe { libc::localtime_s(&mut tm, &secs) };
++    (r == 0).then_some(tm)
++}
++
+ pub fn now_ms() -> i64 {
+     std::time::SystemTime::now()
+         .duration_since(std::time::UNIX_EPOCH)
+diff --git a/crates/derm-cli/tests/run_signals.rs b/crates/derm-cli/tests/run_signals.rs
+index 6c0f8d9..0e1b41a 100644
+--- a/crates/derm-cli/tests/run_signals.rs
++++ b/crates/derm-cli/tests/run_signals.rs
+@@ -3,6 +3,8 @@
+ //! script that stops `derm` leaves the agent running. A terminal's Ctrl-C
+ //! reaches both already (same process group) and is not sent twice; that
+ //! half needs a terminal and is a box and Mac step.
++// Unix processes and signals (lane Z: no Windows form yet).
++#![cfg(unix)]
+ 
+ use std::os::unix::process::CommandExt;
+ use std::path::Path;

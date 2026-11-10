@@ -1,0 +1,66 @@
+diff --git a/crates/derm-cli/src/run/mod.rs b/crates/derm-cli/src/run/mod.rs
+index af6ea0c..88cddb4 100644
+--- a/crates/derm-cli/src/run/mod.rs
++++ b/crates/derm-cli/src/run/mod.rs
+@@ -859,10 +871,24 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
+         "acp": filter.is_some(),
+         "trust": "client",
+     });
++    // Where the audit feed cannot see io_uring operations (lane T's request
++    // T-3, case 128): no boundary on Linux; srt blocks them where its
++    // seccomp helper runs; sbx runs the agent on the VM's own kernel.
++    let io_uring = boundary::io_uring_mark(
++        a.boundary.name(),
++        p.srt_settings.as_deref(),
++        cfg!(target_os = "linux"),
++        std::env::consts::ARCH,
++    );
++    if io_uring == Some("not-audited") {
++        eprintln!("derm run: io_uring operations in this chat are not audited (the audit feed reads syscalls only, case 128)");
++    }
++    let io_uring = io_uring.map(|m| json!(m));
+     // Wave 5's records, only where a seam made one (`contracts/events.md`
+     // section 5); the base's stubs make none.
+     for (key, record) in [
+         ("boundaryChoice", &choice.record),
++        ("ioUring", &io_uring),
+         ("tap", &tap_record),
+         ("content", &content_record),
+         ("agentUser", &agent_user),
+@@ -1325,6 +1363,20 @@ mod end_to_end {
+         assert_eq!(ev[1]["kind"], "run.stop");
+         assert_eq!(ev[1]["detail"]["exitCode"], 3);
+         assert_eq!(ev[0]["pid"], ev[1]["pid"]);
++        // Lane T: the boundary as the command line named it, and where the
++        // audit feed cannot see io_uring (case 128).
++        assert_eq!(
++            ev[0]["detail"]["boundaryChoice"],
++            serde_json::json!({"chosen": "none", "named": true, "reasons": [], "answeredBy": "flag", "preAnswer": null})
++        );
++        assert_eq!(
++            ev[0]["detail"]["ioUring"],
++            if cfg!(target_os = "linux") {
++                serde_json::json!("not-audited")
++            } else {
++                serde_json::Value::Null
++            }
++        );
+         // The token is in no line the daemon got but the mint reply's.
+         for l in st.fake.lines() {
+             assert!(!l.to_string().contains(fake::CHAT_TOKEN), "{l}");
+@@ -1435,6 +1487,15 @@ mod end_to_end {
+             !st.fake.dir.join("srt/chat-s.json").exists(),
+             "removed after the run"
+         );
++        // Lane T's request T-3: srt's seccomp helper refuses io_uring on
++        // x86_64 and aarch64 Linux (case 128).
++        let ev = events(&st);
++        let want = match (cfg!(target_os = "linux"), std::env::consts::ARCH) {
++            (true, "x86_64" | "aarch64") => serde_json::json!("blocked"),
++            (true, _) => serde_json::json!("not-audited"),
++            _ => serde_json::Value::Null,
++        };
++        assert_eq!(ev[0]["detail"]["ioUring"], want);
+     }
+ 
+     #[test]

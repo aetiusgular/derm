@@ -172,7 +172,19 @@ pub fn flags_report(
         // Keyed on the flag, not the reason, which can be the collector's own
         // words (fix pass review F4).
         report.truncated |= reply.truncated || (!reply.complete && reply.connected);
+        // The pump (MW5-14) already put most of these in the log: an event
+        // the log holds is counted from there, once. Only the collector's own
+        // copy counts as held: a record of another source under its id (one
+        // a chat token posted first, FP2-S1) hides nothing.
+        let logged: HashSet<String> = events
+            .iter()
+            .filter(|e| e.source == ActivitySource::Eslogger)
+            .map(|e| e.id.clone())
+            .collect();
         for mut event in reply.events {
+            if logged.contains(&event.id) {
+                continue;
+            }
             if let Some(chat) = chats.get(&event.chat_id) {
                 event.harness = chat.harness.clone();
             }
@@ -327,16 +339,6 @@ pub fn activity_collector_install_plan() -> Result<InstallPlan, String> {
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let names = collector::Names::current();
-    if collector::bundled_plist(&exe, &names).is_some() {
-        return Ok(InstallPlan {
-            route: "smAppService".into(),
-            explanation: collector::explanation(false),
-            plist: String::new(),
-            commands: Vec::new(),
-            staged_plist: None,
-            daemon_path: names.daemon_path.clone(),
-        });
-    }
     let built = built_collector(&exe).ok_or_else(|| {
         "No collector binary found. Build it first: cargo build --release, in macos/activity-collector.".to_string()
     })?;
@@ -357,20 +359,34 @@ pub fn activity_collector_install_plan() -> Result<InstallPlan, String> {
     Ok(plan)
 }
 
-/// Registers the bundled collector. Runs only on your click in the panel,
-/// after the plan was shown.
+/// Registration is the collector app's own (lane Y): SMAppService reads the
+/// calling app's bundle, and `derm-daemon` is not an app, so it says what to
+/// run instead. Integration w5 phase 1, lane Y's request 2.
 pub fn activity_collector_register() -> Result<String, String> {
-    collector::register_bundled()
+    Err(format!(
+        "Register the collector from its app, as you, not with sudo: \"{}/Contents/MacOS/{}\" register. derm-daemon is not an app and cannot register it.",
+        crate::collector::app::installed_app().display(),
+        collector::BINARY_NAME
+    ))
 }
 
 pub fn activity_collector_unregister() -> Result<Vec<String>, String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let names = collector::Names::current();
-    if collector::bundled_plist(&exe, &names).is_some() {
-        collector::unregister_bundled()?;
-        return Ok(Vec::new());
+    let app_installed = std::fs::symlink_metadata(crate::collector::app::installed_app()).is_ok();
+    Ok(unregister_commands(&names, app_installed))
+}
+
+/// The removal for the route in use: the installed app's own `unregister`,
+/// run as you, or the terminal route's commands.
+fn unregister_commands(names: &collector::Names, app_installed: bool) -> Vec<String> {
+    if app_installed {
+        return vec![format!(
+            "\"{}/Contents/MacOS/{}\" unregister",
+            crate::collector::app::installed_app().display(),
+            collector::BINARY_NAME
+        )];
     }
-    Ok(collector::removal_commands(&names))
+    collector::removal_commands(names)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -424,6 +440,34 @@ pub fn read_screenshot(root: &Path, path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Integration w5 phase 1, lane Y's request 2: registration is the app's
+    // own `register`, run as you; derm-daemon has no bundle to register from.
+    #[test]
+    fn register_names_the_apps_own_command() {
+        let err = activity_collector_register().unwrap_err();
+        assert!(
+            err.contains("/Library/PrivilegedHelperTools/derm Activity.app/Contents/MacOS/derm-activity-collector\" register"),
+            "{err}"
+        );
+        assert!(err.contains("not with sudo"), "{err}");
+    }
+
+    #[test]
+    fn unregister_names_the_apps_command_when_the_app_is_installed() {
+        let names = collector::Names::release();
+        let app = unregister_commands(&names, true);
+        assert_eq!(app.len(), 1, "{app:?}");
+        assert!(
+            app[0].ends_with("derm-activity-collector\" unregister"),
+            "{app:?}"
+        );
+        assert!(!app[0].contains("sudo"), "{app:?}");
+        assert_eq!(
+            unregister_commands(&names, false),
+            collector::removal_commands(&names)
+        );
+    }
     use crate::activity::store::ChainWriter;
     use crate::activity::types::{ActivitySource, ApprovalScope, ApprovalSubject};
     use serde_json::json;
@@ -541,6 +585,118 @@ mod tests {
         );
         assert_eq!(report.flags[0].event_id, "es-1");
         assert!(report.events.iter().all(|e| e.harness == "claude"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_collector_event_the_log_already_holds_counts_once() {
+        // MW5-14: the pump puts the collector's events in the log, and
+        // `report` still asks the collector; one action is one row.
+        let dir = temp("collector-once");
+        let day = 20_377 * 86_400_000_i64;
+        let outside = ActivityEvent {
+            id: "es-dup".into(),
+            at: day + 10,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source: ActivitySource::Eslogger,
+            kind: "write".into(),
+            summary: "wrote".into(),
+            detail: json!({ "path": "/Users/t/Desktop/y.txt" }),
+            pid: Some(4),
+            approval_id: None,
+        };
+        let mut writer = ChainWriter::new(dir.clone());
+        writer
+            .write(&Entry::Event(outside.clone()), day + 10)
+            .unwrap();
+        let chats = HashMap::from([(
+            "c1".to_string(),
+            ChatContext {
+                chat_id: "c1".into(),
+                harness: "claude".into(),
+                folders: vec!["/Users/t/app".into()],
+            },
+        )]);
+        let reply = collector::EventsReply {
+            events: vec![outside],
+            chain_ok: true,
+            complete: true,
+            connected: true,
+            ..collector::EventsReply::default()
+        };
+        let report = flags_report(
+            &dir,
+            Some(DATA),
+            Some("c1"),
+            day,
+            day + 1_000,
+            &chats,
+            Some(reply),
+            day + 2_000,
+        );
+        assert_eq!(report.flags.len(), 1, "{:?}", report.flags);
+        assert_eq!(report.flags[0].count, 1, "{:?}", report.flags);
+        assert_eq!(report.events.iter().filter(|e| e.id == "es-dup").count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_of_another_source_under_a_collector_id_hides_nothing() {
+        // FP2-S1: only the collector's own copy in the log stands for a
+        // collector event in the report; a record of another source under
+        // the same id (one a chat posted first) does not.
+        let dir = temp("collector-forged");
+        let day = 20_377 * 86_400_000_i64;
+        let real = ActivityEvent {
+            id: "es-forged".into(),
+            at: day + 10,
+            chat_id: "c1".into(),
+            harness: String::new(),
+            source: ActivitySource::Eslogger,
+            kind: "write".into(),
+            summary: "wrote".into(),
+            detail: json!({ "path": "/Users/t/Desktop/EXFIL.txt" }),
+            pid: Some(4),
+            approval_id: None,
+        };
+        let forged = ActivityEvent {
+            source: ActivitySource::Adapter,
+            detail: json!({ "path": "/Users/t/app/ok.txt" }),
+            ..real.clone()
+        };
+        let mut writer = ChainWriter::new(dir.clone());
+        writer.write(&Entry::Event(forged), day + 5).unwrap();
+        let chats = HashMap::from([(
+            "c1".to_string(),
+            ChatContext {
+                chat_id: "c1".into(),
+                harness: "claude".into(),
+                folders: vec!["/Users/t/app".into()],
+            },
+        )]);
+        let reply = collector::EventsReply {
+            events: vec![real],
+            chain_ok: true,
+            complete: true,
+            connected: true,
+            ..collector::EventsReply::default()
+        };
+        let report = flags_report(
+            &dir,
+            Some(DATA),
+            Some("c1"),
+            day,
+            day + 1_000,
+            &chats,
+            Some(reply),
+            day + 2_000,
+        );
+        assert!(
+            report.flags.iter().any(|f| f.summary.contains("EXFIL.txt")),
+            "{:?}",
+            report.flags
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

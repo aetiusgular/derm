@@ -1,5 +1,8 @@
 //! The daemon over its socket, as clients use it (`contracts/daemon-protocol.md`).
 //! Each test runs its own daemon on a temporary socket and log folder.
+// The daemon over a Unix socket; its Windows twin is lane Z's
+// `tests/windows/` (the named pipe).
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -112,6 +115,24 @@ fn mint(c: &mut Client, chat: &str, harness: &str) -> String {
     let r = c.ask(json!({"op": "token.mint", "chat": chat, "harness": harness}));
     assert_eq!(r["ok"], true, "{r}");
     r["token"].as_str().unwrap().to_string()
+}
+
+/// Marks `chat` as started by `derm run` under srt (lane V, S2 part b: a `yes`
+/// for a chat with no `run.start`, or one that runs as you, needs the
+/// person's password). The harness pid is a child that sleeps, so the test
+/// process is not taken for a chat's harness. Kill the child when done.
+fn started_under_srt(d: &mut Client, chat: &str) -> std::process::Child {
+    let child = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": format!("run-start-{chat}"), "at": 0, "chatId": chat, "harness": "claude-code",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"boundary": "srt", "cwd": "/tmp"}, "pid": child.id()
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    child
 }
 
 fn event(id: &str, chat: &str, source: &str, kind: &str, detail: Value) -> Value {
@@ -582,6 +603,7 @@ fn the_first_approver_answer_wins_and_the_outcome_is_recorded() {
     let mut a2 = Client::daemon(&f);
     assert_eq!(a1.ask(json!({"op": "approver"}))["ok"], true);
     assert_eq!(a2.ask(json!({"op": "approver"}))["ok"], true);
+    let mut harness = started_under_srt(&mut d, "chat-b");
     let (mut c, _) = Client::hello(&f, &token);
     let mut t = Client::daemon(&f);
     t.ask(json!({"op": "tail", "chat": "chat-b"}));
@@ -623,6 +645,8 @@ fn the_first_approver_answer_wins_and_the_outcome_is_recorded() {
     assert_eq!(answered["event"]["detail"]["answer"], "yes");
     assert_eq!(answered["event"]["detail"]["by"], "approver");
     assert_eq!(answered["event"]["approvalId"], "ap-2");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 #[test]
@@ -828,6 +852,7 @@ fn one_chat_cannot_hold_every_approval_slot_or_reuse_a_waiting_id() {
     }}));
     assert_eq!(r["by"], "none");
     // Another chat still gets through.
+    let mut harness = started_under_srt(&mut d, "other");
     let asker = std::thread::spawn(move || {
         d.ask(json!({"op": "approve", "request": {
             "id": "o-1", "chat": "other", "harness": "pi", "tool": "bash",
@@ -843,6 +868,8 @@ fn one_chat_cannot_hold_every_approval_slot_or_reuse_a_waiting_id() {
     for mut c in waiting {
         assert_eq!(c.recv()["answer"], "no");
     }
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 /// Integration w1's security finding S8: pending approvals were keyed by the
@@ -857,6 +884,7 @@ fn two_chats_may_wait_on_the_same_request_id() {
     let tb = mint(&mut d, "chat-b", "claude-code");
     let mut approver = Client::daemon(&f);
     approver.ask(json!({"op": "approver"}));
+    let mut harness = started_under_srt(&mut d, "chat-b");
     let ask = |token: String, f: &Fixture| {
         let (mut c, _) = Client::hello(f, &token);
         c.send(json!({"op": "approve", "request": {
@@ -887,6 +915,8 @@ fn two_chats_may_wait_on_the_same_request_id() {
     let r = approver.ask(json!({"op": "answer", "id": "toolu_1", "answer": "no"}));
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(a.recv()["answer"], "no");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 /// Integration w1's security finding S2, part a (lane J's request 1a): an
@@ -904,7 +934,7 @@ fn an_approver_inside_a_running_chat_is_refused() {
         json!({"op": "event", "event": {
             "id": format!("run-{kind}"), "at": 0, "chatId": "chat-s2", "harness": "pi",
             "source": "run", "kind": kind, "summary": kind,
-            "detail": {"cwd": "/tmp"}, "pid": me
+            "detail": {"boundary": "srt", "cwd": "/tmp"}, "pid": me
         }})
     };
     assert_eq!(d.ask(run("run.start"))["ok"], true);
@@ -929,6 +959,9 @@ fn an_approver_inside_a_running_chat_is_refused() {
     assert_eq!(d.ask(run("run.stop"))["ok"], true);
     let mut a = Client::daemon(&f);
     assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    // Started again under srt, after the approver registered, so a yes for
+    // it needs no person check (lane V, S2 part b).
+    let mut harness = started_under_srt(&mut d, "chat-s2");
     let asker = std::thread::spawn(move || {
         d.ask(json!({"op": "approve", "request": {
             "id": "s2-2", "chat": "chat-s2", "harness": "pi", "tool": "bash",
@@ -962,6 +995,8 @@ fn an_approver_inside_a_running_chat_is_refused() {
     }
     let answered = answered.expect("the answered request's record");
     assert_eq!(answered["detail"]["approver"]["pid"], me, "{answered}");
+    let _ = harness.kill();
+    let _ = harness.wait();
 }
 
 /// Lane K's request 3 (integration w2): computer use's controls are a
@@ -986,12 +1021,25 @@ fn cu_is_daemon_scope_and_says_when_computer_use_is_not_running() {
             "{line}"
         );
         let r = d.ask(line.clone());
-        assert_eq!(r["ok"], false, "{line}: {r}");
+        // BW5R3-2: a status query is answered, with the state as the
+        // reason; the controls are refused with it.
+        let e = if line["action"] == "status" {
+            assert_eq!(r["ok"], true, "{line}: {r}");
+            assert_eq!(r["report"]["running"], false, "{line}: {r}");
+            r["report"]["reason"].as_str().unwrap().to_string()
+        } else {
+            assert_eq!(r["ok"], false, "{line}: {r}");
+            r["error"].as_str().unwrap().to_string()
+        };
+        // BW5R2-1: the answer names the state (off, not built here, a
+        // failed start, or turned on after the daemon started), never
+        // "macOS only".
         assert!(
-            r["error"]
-                .as_str()
-                .unwrap()
-                .starts_with("computer use is not"),
+            e.starts_with("computer use is ")
+                && ["is off", "not built", "did not start", "was off when"]
+                    .iter()
+                    .any(|s| e.contains(s))
+                && !e.contains("macOS only"),
             "{line}: {r}"
         );
     }
@@ -1195,4 +1243,455 @@ fn a_deferred_record_before_the_decision_is_no_conflict() {
         }
     }
     assert_eq!(flags, 6, "six conflicts, none for the honest pair");
+}
+
+/// The wave 5 base: `tap` and `derm` records are the daemon's own
+/// (`contracts/events.md` section 5). No socket client posts one, with a
+/// chat token or the daemon's.
+#[test]
+fn no_socket_client_posts_a_tap_or_derm_record() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-w5", "pi");
+    let (mut c, _) = Client::hello(&f, &token);
+    for source in ["tap", "derm"] {
+        let r = c.ask(event("w5-c", "chat-w5", source, "tap.call", json!({})));
+        assert_eq!(r["ok"], false, "chat scope, {source}: {r}");
+        let r = d.ask(event("w5-d", "chat-w5", source, "tap.call", json!({})));
+        assert_eq!(r["ok"], false, "daemon scope, {source}: {r}");
+        assert_eq!(r["error"], "tap and derm events are written by the daemon");
+    }
+}
+
+/// Lane U's request R1: a `cu.action` record is the daemon's own
+/// (`trust: daemon`, `contracts/wave5-records.schema.json`). No socket
+/// client posts one, under any source, with a chat token or the daemon's:
+/// a daemon-scope client may post `source: cua` (the collector's path),
+/// and an adapter record with that kind would pass a chat's source check.
+#[test]
+fn no_socket_client_posts_a_cu_action_record() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-cu", "claude-code");
+    let (mut c, _) = Client::hello(&f, &token);
+    for source in ["cua", "adapter", "otel"] {
+        let r = c.ask(event("cu-c", "chat-cu", source, "cu.action", json!({})));
+        assert_eq!(r["ok"], false, "chat scope, {source}: {r}");
+    }
+    for source in ["cua", "adapter", "eslogger"] {
+        let r = d.ask(event("cu-d", "chat-cu", source, "cu.action", json!({})));
+        assert_eq!(r["ok"], false, "daemon scope, {source}: {r}");
+        assert_eq!(r["error"], "cu.action events are written by the daemon");
+    }
+}
+
+/// S2 part b (wave 5 lane V): a `yes` for a chat that runs as you with no
+/// boundary needs your password in `proof`; without one, or with a wrong
+/// one, it is refused and the request keeps waiting; a `no` needs nothing.
+/// The password is never in a record.
+#[test]
+fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let mut a = Client::daemon(&f);
+    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    let mut sleeper = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-start-you", "at": 0, "chatId": "chat-you", "harness": "pi",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"boundary": "none", "cwd": "/tmp"}, "pid": sleeper.id()
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    let asker = std::thread::spawn(move || {
+        d.ask(json!({"op": "approve", "request": {
+            "id": "pb-1", "chat": "chat-you", "harness": "pi", "tool": "bash",
+            "summary": "", "timeoutSeconds": 30
+        }}))
+    });
+    assert_eq!(a.recv()["approve"]["id"], "pb-1");
+    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes"}));
+    assert_eq!(r["ok"], false, "{r}");
+    let why = r["error"].as_str().unwrap_or("");
+    assert!(
+        // Linux asks for the password; where no check is built (macOS) the
+        // daemon says so and asks for none (Mac test w5, MW5-4).
+        why.contains(if cfg!(target_os = "linux") {
+            "your password is needed"
+        } else {
+            "needs a person check"
+        }) && why.contains("runs as you"),
+        "{why}"
+    );
+    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes",
+        "proof": {"password": "derm-lane-v-wrong-password"}}));
+    assert_eq!(r["ok"], false, "{r}");
+    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "no"}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(asker.join().unwrap()["answer"], "no");
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "since": 0}));
+    let mut lines = Vec::new();
+    while let Some(line) = t.try_recv(Duration::from_millis(300)) {
+        lines.push(line);
+    }
+    let all = serde_json::to_string(&lines).unwrap();
+    assert!(
+        !all.contains("derm-lane-v-wrong-password"),
+        "no password in any record"
+    );
+    let checks = lines
+        .iter()
+        .filter(|l| l["event"]["kind"] == "person.check")
+        .count();
+    assert_eq!(checks, 2, "both refused yeses are recorded");
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+}
+
+/// One request to the receiver's HTTP port; the status and the body.
+fn http(port: &str, path: &str, host: &str, token: Option<&str>, body: &str) -> (u16, String) {
+    let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    let auth = token.map_or(String::new(), |t| format!("x-derm-token: {t}\r\n"));
+    write!(
+        s,
+        "POST {path} HTTP/1.1\r\nhost: {host}\r\n{auth}content-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut reply = String::new();
+    let _ = s.read_to_string(&mut reply);
+    let status = reply.get(9..12).and_then(|c| c.parse().ok()).unwrap_or(0);
+    let body = reply.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    (status, body)
+}
+
+/// Lane T's P4-R1 (integration w5, continue): a chat's `event` over the
+/// receiver's HTTP port, for a gate inside an sbx VM, under the socket's
+/// chat-scope rules (`daemon-protocol.md`, rule 2).
+#[test]
+fn a_chat_posts_events_over_http_with_the_sockets_chat_rules() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-h", "claude-code");
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "chat": "chat-h"}));
+    let endpoint = f.daemon.endpoint();
+    let port = endpoint.rsplit(':').next().unwrap().to_string();
+    let local = format!("127.0.0.1:{port}");
+    let vm = format!("host.docker.internal:{port}");
+    let post = |id: &str, source: &str, kind: &str| {
+        json!({"event": event(id, "chat-other", source, kind, json!({"toolUseId": "t1"}))["event"]})
+            .to_string()
+    };
+    // An adapter record, from loopback and with sbx's host name: stored in
+    // the token's chat and harness, whatever the record says.
+    for (id, host) in [("h-1", &local), ("h-2", &vm)] {
+        let (status, body) = http(
+            &port,
+            "/derm/v1/event",
+            host,
+            Some(&token),
+            &post(id, "adapter", "tool.call"),
+        );
+        assert_eq!(status, 200, "{body}");
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(reply["ok"], true, "{body}");
+        let e = &t.recv()["event"];
+        assert_eq!(e["id"], id);
+        assert_eq!(e["chatId"], "chat-h");
+        assert_eq!(e["harness"], "claude-code");
+    }
+    // What a chat token may not post on the socket, it may not post here.
+    for (source, kind) in [
+        ("run", "run.start"),
+        ("approval", "approval"),
+        ("auditd", "write"),
+        ("derm", "install.lockdiff"),
+    ] {
+        let (status, body) = http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            Some(&token),
+            &post("h-x", source, kind),
+        );
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["ok"],
+            false,
+            "{source}: {body}"
+        );
+    }
+    // No token, the daemon's own token, a stranger's host, the OTLP route
+    // with sbx's host name, a second field, a bad body: refused before the
+    // daemon sees anything.
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            None,
+            &post("h-3", "adapter", "tool.call")
+        )
+        .0,
+        401
+    );
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            Some(DAEMON_TOKEN),
+            &post("h-3", "adapter", "tool.call")
+        )
+        .0,
+        401
+    );
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &format!("evil.example:{port}"),
+            Some(&token),
+            &post("h-3", "adapter", "tool.call")
+        )
+        .0,
+        403
+    );
+    assert_eq!(http(&port, "/v1/logs", &vm, Some(&token), "{}").0, 403);
+    let two = json!({"event": event("h-3", "c", "adapter", "tool.call", json!({}))["event"], "request": {}}).to_string();
+    assert_eq!(
+        http(&port, "/derm/v1/event", &local, Some(&token), &two).0,
+        400
+    );
+    assert_eq!(
+        http(&port, "/derm/v1/event", &local, Some(&token), "[1]").0,
+        400
+    );
+    assert_eq!(
+        http(&port, "/derm/v1/nothing", &local, Some(&token), "{}").0,
+        404
+    );
+    // An event the socket answers one way is answered the same way here.
+    let mut extra = event("h-4", "c", "adapter", "tool.call", json!({}));
+    extra["event"]["stranger"] = json!(1);
+    let (mut c, _) = Client::hello(&f, &token);
+    let on_socket = c.ask(extra.clone())["ok"].clone();
+    extra["event"]["id"] = json!("h-4b");
+    let (_, body) = http(
+        &port,
+        "/derm/v1/event",
+        &local,
+        Some(&token),
+        &json!({"event": extra["event"]}).to_string(),
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ok"],
+        on_socket,
+        "{body}"
+    );
+    // After the run stops, the token opens nothing here either.
+    assert_eq!(
+        d.ask(event("run-stop-h", "chat-h", "run", "run.stop", json!({})))["ok"],
+        true
+    );
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/event",
+            &local,
+            Some(&token),
+            &post("h-5", "adapter", "tool.call")
+        )
+        .0,
+        401
+    );
+}
+
+/// P4-R1's `approve`: the same request path as the socket's, so with no
+/// approver it is `no` at once, and an approver's answer comes back in the
+/// reply body; the chat and harness come from the token.
+#[test]
+fn a_chat_asks_over_http_and_gets_the_approvers_answer() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-ha", "claude-code");
+    let endpoint = f.daemon.endpoint();
+    let port = endpoint.rsplit(':').next().unwrap().to_string();
+    let local = format!("127.0.0.1:{port}");
+    let request = |id: &str| {
+        json!({"request": {"id": id, "chat": "ignored", "harness": "ignored", "tool": "bash", "summary": "npm i x", "timeoutSeconds": 30}}).to_string()
+    };
+    let (status, body) = http(
+        &port,
+        "/derm/v1/approve",
+        &local,
+        Some(&token),
+        &request("ap-h1"),
+    );
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({"ok": true, "id": "ap-h1", "answer": "no", "by": "none"})
+    );
+    let mut a = Client::daemon(&f);
+    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    let mut harness = started_under_srt(&mut d, "chat-ha");
+    let (p, t) = (port.clone(), token.clone());
+    let asker = std::thread::spawn(move || {
+        http(
+            &p,
+            "/derm/v1/approve",
+            &format!("host.docker.internal:{p}"),
+            Some(&t),
+            &request("ap-h2"),
+        )
+    });
+    let asked = a.recv();
+    assert_eq!(asked["approve"]["chat"], "chat-ha");
+    assert_eq!(asked["approve"]["harness"], "claude-code");
+    assert_eq!(
+        a.ask(json!({"op": "answer", "id": "ap-h2", "answer": "no"}))["ok"],
+        true
+    );
+    let (status, body) = asker.join().unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({"ok": true, "id": "ap-h2", "answer": "no", "by": "approver"})
+    );
+    let _ = harness.kill();
+    let _ = harness.wait();
+}
+
+/// Security finding W5C-S3 (integration w5 continue): an HTTP ask whose
+/// client hung up stops waiting soon after, answered `no` by no one, rather
+/// than holding its place until its timeout (up to an hour).
+#[test]
+fn an_http_ask_whose_client_hung_up_stops_waiting() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-hu", "claude-code");
+    let port = f.daemon.endpoint().rsplit(':').next().unwrap().to_string();
+    let mut a = Client::daemon(&f);
+    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
+    let mut t = Client::daemon(&f);
+    t.ask(json!({"op": "tail", "chat": "chat-hu"}));
+    let mut harness = started_under_srt(&mut d, "chat-hu");
+    let body = json!({"request": {"id": "ap-hu", "chat": "", "harness": "", "tool": "bash", "summary": "s", "timeoutSeconds": 600}}).to_string();
+    let mut s = std::net::TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    write!(
+        s,
+        "POST /derm/v1/approve HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let asked = a.recv();
+    assert_eq!(asked["approve"]["id"], "ap-hu");
+    let started = std::time::Instant::now();
+    drop(s);
+    loop {
+        let line = t.recv();
+        let e = &line["event"];
+        if e["kind"] == "approval"
+            && e["detail"]["requestId"] == "ap-hu"
+            && !e["detail"]["answer"].is_null()
+        {
+            assert_eq!(e["detail"]["answer"], "no");
+            assert_eq!(e["detail"]["by"], "none");
+            break;
+        }
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    // The approver's late answer finds nothing waiting.
+    assert_eq!(
+        a.ask(json!({"op": "answer", "id": "ap-hu", "answer": "yes"}))["ok"],
+        false
+    );
+    let _ = harness.kill();
+    let _ = harness.wait();
+}
+
+/// Mac test w5 retest 4, MW5-25: after a 3,000-file burst, `derm watch
+/// report` failed with "the daemon sent a line over 1 MiB": the report is one
+/// line and its check carried every flag, every hidden row and the full
+/// event each names. The reply now fits under the client's line limit
+/// (`derm_audit_linux::client::MAX_LINE`), keeps its totals, keeps the
+/// events its kept rows name, and says how many rows it left out.
+#[test]
+fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "run-b", "at": 0, "chatId": "chat-b", "harness": "pi", "source": "run",
+        "kind": "run.start", "summary": "pi",
+        "detail": {"boundary": "none", "argv": ["pi"], "host": "box", "cwd": "/home/t/proj"}
+    }}));
+    assert_eq!(r["ok"], true);
+    let n = 3_000;
+    let long = "x".repeat(180);
+    for i in 0..n {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": format!("w-{i}"), "at": i, "chatId": "chat-b", "harness": "pi",
+            "source": "auditd", "kind": "write", "summary": "",
+            "detail": {"path": format!("/home/t/out/{long}-{i}.txt"), "tier": "child"},
+            "pid": 77
+        }}));
+        assert_eq!(r["ok"], true);
+    }
+    let mut reply = Value::Null;
+    for _ in 0..100 {
+        reply = d.ask(json!({"op": "report", "chat": "chat-b", "since": 0, "until": i64::MAX}));
+        if reply["report"]["events"] == n + 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let report = &reply["report"];
+    assert_eq!(report["events"], n + 1, "the log holds every event");
+    let line = serde_json::to_vec(&reply).unwrap().len() + 1;
+    assert!(
+        line < derm_daemon::socket::MAX_LINE_BYTES,
+        "the report line is {line} bytes"
+    );
+    assert_eq!(report["flags"], n, "the total stays whole");
+    let kept = report["check"]["flags"].as_array().unwrap();
+    assert!(!kept.is_empty() && kept.len() < n as usize);
+    assert_eq!(
+        report["check"]["flagsOmitted"].as_u64(),
+        Some(n as u64 - kept.len() as u64)
+    );
+    // Of rows of one reason in one chat, the newest and the oldest are kept
+    // (fix pass 4's review, FP4-S2, and its re-review's R2), listed in the
+    // check's order, and every event they name is there.
+    assert_eq!(kept[kept.len() - 1]["eventId"], format!("w-{}", n - 1));
+    assert_eq!(kept[0]["eventId"], "w-0");
+    let at = |f: &Value| {
+        f["eventId"].as_str().unwrap()[2..]
+            .parse::<usize>()
+            .unwrap()
+    };
+    assert!(
+        kept.windows(2).all(|w| at(&w[0]) < at(&w[1])),
+        "in the check's order"
+    );
+    let ids: std::collections::HashSet<&str> = report["check"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["id"].as_str())
+        .collect();
+    for flag in kept {
+        assert!(ids.contains(flag["eventId"].as_str().unwrap()), "{flag}");
+    }
+    // A quiet window carries no mark.
+    let quiet = d.ask(json!({"op": "report", "chat": "chat-none", "since": 0, "until": i64::MAX}));
+    assert!(quiet["report"]["check"].get("flagsOmitted").is_none());
 }

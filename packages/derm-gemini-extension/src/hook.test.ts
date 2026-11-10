@@ -211,3 +211,21 @@ describe("the extension's files", () => {
     expect(JSON.parse(readFileSync(path.join(pkg, "gemini-extension.json"), "utf8")).name).toBe("derm");
   });
 });
+
+// Lane X's request 7 (integration w5, continue): the gate posts an
+// `install.call` record for an install, beside its decision.
+describe("install records", () => {
+  it("posts install.call under the call key AfterTool shares", async () => {
+    const start = daemon.events().length;
+    const call = { session_id: "s-inst", tool_name: "run_shell_command", tool_input: { command: "npm install left-pad@1.3.0" } };
+    await runHook("before", JSON.stringify({ ...call, hook_event_name: "BeforeTool", timestamp: "2026-11-05T12:00:01.000Z" }), env());
+    const ev = daemon.events().slice(start);
+    const recs = ev.filter((e) => e.kind === "install.call") as { detail: Record<string, unknown>; harness: string }[];
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.harness).toBe("gemini");
+    expect(recs[0]?.detail).toMatchObject({ manager: "npm", form: "add", packages: [{ name: "left-pad", version: "1.3.0", ecosystem: "npm" }], trust: "client" });
+    const decision = (ev.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
+    expect(recs[0]?.detail.decision).toBe(decision);
+    expect(recs[0]?.detail.toolUseId).toBe(callKey(call));
+  });
+});

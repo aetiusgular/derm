@@ -43,6 +43,7 @@ assets = [
   ["target/release/derm-daemon", "usr/bin/", "755"],
   ["target/release/derm-audit-feed", "usr/bin/", "755"],
   ["derm-daemon.service", "usr/lib/systemd/user/derm-daemon.service", "644"],
+  ["derm-audit-feed.service", "usr/lib/systemd/user/derm-audit-feed.service", "644"],
   ["../../NOTICE", "usr/share/doc/derm/NOTICE", "644"],
   ["../../README.md", "usr/share/doc/derm/README.md", "644"],
 ]

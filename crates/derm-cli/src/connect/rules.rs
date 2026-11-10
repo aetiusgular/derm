@@ -120,6 +120,15 @@ pub fn translate(
         if r.action != derm_core::policy::Action::Deny {
             continue;
         }
+        // A command rule (policy.md section 7) denies one command, not the
+        // shell: as the agent's own deny it would take the whole shell away.
+        if let Some(words) = &r.command {
+            skipped.push(format!(
+                "bash {} (a command rule stays with the gate)",
+                words.join(" ")
+            ));
+            continue;
+        }
         if r.chat.is_some() {
             skipped.push(format!("{} (for one chat)", r.tool));
             continue;
@@ -411,6 +420,14 @@ pub fn gemini_toml(policy: &derm_core::policy::PolicyFile) -> (String, Vec<Strin
     let mut skipped = Vec::new();
     for r in &policy.rules {
         if r.action != derm_core::policy::Action::Deny {
+            continue;
+        }
+        // A command rule denies one command, not run_shell_command.
+        if let Some(words) = &r.command {
+            skipped.push(format!(
+                "bash {} (a command rule stays with the gate)",
+                words.join(" ")
+            ));
             continue;
         }
         if r.chat.is_some() {
@@ -727,6 +744,13 @@ pub fn codex_plan(
     let mut rec = CodexRecord::default();
     for r in &policy.rules {
         if r.action != derm_core::policy::Action::Deny {
+            continue;
+        }
+        if let Some(words) = &r.command {
+            notes.push(format!(
+                "skipped: bash {} (a command rule stays with the gate)",
+                words.join(" ")
+            ));
             continue;
         }
         if r.chat.is_some() {

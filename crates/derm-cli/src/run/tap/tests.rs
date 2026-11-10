@@ -1,0 +1,705 @@
+use super::*;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn plan(program: &str, args: &[&str], token: bool) -> Plan {
+    Plan {
+        program: program.into(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        env_set: if token {
+            vec![("DERM_CHAT_TOKEN".into(), TOKEN.into())]
+        } else {
+            Vec::new()
+        },
+        env_remove: Vec::new(),
+        kit: None,
+        sandbox_name: None,
+        srt_settings: None,
+        folders: Vec::new(),
+        state_dirs: Vec::new(),
+        notes: Vec::new(),
+        full_access: Vec::new(),
+        companion: None,
+        scratch_dir: None,
+    }
+}
+
+struct Dirs {
+    root: PathBuf,
+    daemon: PathBuf,
+    home: PathBuf,
+    work: PathBuf,
+}
+
+fn dirs(name: &str, endpoint: Option<&str>) -> Dirs {
+    let root = std::env::temp_dir().join(format!("derm-run-tap-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (daemon, home, work) = (root.join("run"), root.join("home"), root.join("work"));
+    for d in [&daemon, &home, &work] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    if let Some(e) = endpoint {
+        std::fs::write(daemon.join("tap.endpoint"), format!("{e}\n")).unwrap();
+    }
+    Dirs {
+        root,
+        daemon,
+        home,
+        work,
+    }
+}
+
+fn inputs(d: &Dirs) -> Inputs {
+    Inputs {
+        daemon_dir: Some(d.daemon.clone()),
+        home: Some(d.home.to_string_lossy().into_owned()),
+        cwd: Some(d.work.to_string_lossy().into_owned()),
+        inherited: Vec::new(),
+        claude_managed: d.root.join("managed/managed-settings.json"),
+    }
+}
+
+fn env<'a>(p: &'a Plan, k: &str) -> Option<&'a str> {
+    p.env_set
+        .iter()
+        .find(|(n, _)| n == k)
+        .map(|(_, v)| v.as_str())
+}
+
+#[test]
+fn claude_code_gets_its_base_url_with_the_route_and_a_tapped_record() {
+    let d = dirs("claude", Some("http://127.0.0.1:45001"));
+    let mut p = plan("claude", &["-p", "hi"], true);
+    let rec = environment_with("claude-code", &mut p, &inputs(&d))
+        .unwrap()
+        .unwrap();
+    let route = route::of_token(TOKEN);
+    assert_eq!(
+        env(&p, "ANTHROPIC_BASE_URL"),
+        Some(format!("http://127.0.0.1:45001/r/{route}/anthropic").as_str())
+    );
+    assert_eq!(
+        rec,
+        json!({"on": true, "via": "env", "api": "anthropic-messages", "upstream": "api.anthropic.com"})
+    );
+    assert!(
+        !rec.to_string().contains(&route),
+        "the record never holds the route"
+    );
+    assert_eq!(p.args, vec!["-p", "hi"]);
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+#[test]
+fn codex_gets_its_provider_flags_before_its_own_and_the_route_only_in_its_environment() {
+    let d = dirs("codex", Some("http://127.0.0.1:45002"));
+    let mut p = plan("codex", &["exec", "do it"], true);
+    let rec = environment_with("codex", &mut p, &inputs(&d))
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec["via"], "codex-provider");
+    // Codex 0.163.0 ignores a provider set with `-c` before `exec` and
+    // honours it after (run 4 Nov 2026, lane S Research), so the flags go
+    // right after a session subcommand.
+    assert_eq!(
+        &p.args[..3],
+        &[
+            "exec".to_string(),
+            "-c".to_string(),
+            "model_provider=\"derm-tap\"".to_string()
+        ]
+    );
+    assert_eq!(p.args.last().map(String::as_str), Some("do it"));
+    // With no subcommand (the TUI) they go first.
+    let mut tui = plan("codex", &["fix the tests"], true);
+    environment_with("codex", &mut tui, &inputs(&d)).unwrap();
+    assert_eq!(tui.args[0], "-c");
+    assert_eq!(tui.args.last().map(String::as_str), Some("fix the tests"));
+    for sub in ["e", "review", "resume", "fork", "app-server"] {
+        let mut s = plan("codex", &[sub, "--x"], true);
+        environment_with("codex", &mut s, &inputs(&d)).unwrap();
+        assert_eq!(&s.args[..2], &[sub.to_string(), "-c".to_string()], "{sub}");
+    }
+    let route = route::of_token(TOKEN);
+    assert!(!p.args.iter().any(|a| a.contains(&route)));
+    assert_eq!(env(&p, "DERM_TAP_ROUTE"), Some(route.as_str()));
+
+    // Under srt the flags go after `-- <command>`, and srt lets the harness
+    // reach the tap's port.
+    let srt =
+        json!({"network": {"allowedDomains": ["127.0.0.1:4318"], "deniedDomains": []}}).to_string();
+    let mut p = plan(
+        "srt",
+        &["--settings", "/s.json", "--", "/bin/codex", "exec", "x"],
+        true,
+    );
+    p.srt_settings = Some(srt);
+    environment_with("codex", &mut p, &inputs(&d)).unwrap();
+    assert_eq!(
+        &p.args[..6],
+        &["--settings", "/s.json", "--", "/bin/codex", "exec", "-c"]
+    );
+    let s: Value = serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        s["network"]["allowedDomains"],
+        json!(["127.0.0.1:4318", "127.0.0.1:45002"])
+    );
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_chat_runs_untapped_and_says_why_when_it_cannot_be_tapped() {
+    // No endpoint published by the daemon.
+    let d = dirs("noendpoint", None);
+    let mut p = plan("claude", &[], true);
+    assert_eq!(
+        environment_with("claude-code", &mut p, &inputs(&d)).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "no-endpoint"}))
+    );
+    assert_eq!(env(&p, "ANTHROPIC_BASE_URL"), None);
+    // An endpoint that is not loopback http is not used.
+    std::fs::write(d.daemon.join("tap.endpoint"), "http://10.0.0.5:4000\n").unwrap();
+    assert_eq!(
+        environment_with("claude-code", &mut p, &inputs(&d)).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "no-endpoint"}))
+    );
+    // An agent with no base URL.
+    std::fs::write(d.daemon.join("tap.endpoint"), "http://127.0.0.1:4000\n").unwrap();
+    assert_eq!(
+        environment_with("cursor", &mut p, &inputs(&d)).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "no-base-url"}))
+    );
+    assert_eq!(
+        environment_with("pi", &mut p, &inputs(&d))
+            .unwrap()
+            .unwrap()["reason"],
+        "no-base-url"
+    );
+    // The user's setting.
+    let f = d.home.join(".derm/settings.json");
+    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+    std::fs::write(&f, r#"{"version":1,"tap":{"on":false}}"#).unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        environment_with("claude-code", &mut p, &inputs(&d))
+            .unwrap()
+            .unwrap()["reason"],
+        "setting"
+    );
+    assert!(p.env_set.iter().all(|(k, _)| k != "ANTHROPIC_BASE_URL"));
+    // No token: --no-daemon or a dry run; nothing to record.
+    let mut p = plan("claude", &[], false);
+    std::fs::remove_file(&f).unwrap();
+    assert_eq!(
+        environment_with("claude-code", &mut p, &inputs(&d)).unwrap(),
+        None
+    );
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+#[test]
+fn case_113_a_base_url_set_elsewhere_refuses_the_start_and_names_where() {
+    let d = dirs("c113", Some("http://127.0.0.1:4000"));
+    let refuse =
+        |harness: &str, p: &mut Plan, i: &Inputs| environment_with(harness, p, i).unwrap_err().1;
+
+    let mut i = inputs(&d);
+    i.inherited = vec![("ANTHROPIC_BASE_URL".into(), "http://my-gateway:8080".into())];
+    assert!(refuse("claude-code", &mut plan("claude", &[], true), &i)
+        .contains("ANTHROPIC_BASE_URL is set in derm run's environment"));
+
+    let i = inputs(&d);
+    let user = d.home.join(".claude/settings.json");
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(
+        &user,
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9"}}"#,
+    )
+    .unwrap();
+    let why = refuse("claude-code", &mut plan("claude", &[], true), &i);
+    assert!(
+        why.contains(&user.display().to_string()) && why.contains("tap\": {\"on\": false}"),
+        "{why}"
+    );
+    std::fs::remove_file(&user).unwrap();
+
+    let local = d.work.join(".claude/settings.local.json");
+    std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+    std::fs::write(&local, r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#).unwrap();
+    assert!(refuse("claude-code", &mut plan("claude", &[], true), &i)
+        .contains("settings.local.json sets CLAUDE_CODE_USE_BEDROCK"));
+    std::fs::remove_file(&local).unwrap();
+
+    let managed_d = d.root.join("managed/managed-settings.d");
+    std::fs::create_dir_all(&managed_d).unwrap();
+    std::fs::write(
+        managed_d.join("10-gw.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"https://gw.corp"}}"#,
+    )
+    .unwrap();
+    assert!(refuse("claude-code", &mut plan("claude", &[], true), &i).contains("10-gw.json"));
+    std::fs::remove_dir_all(&managed_d).unwrap();
+
+    let inline = r#"{"env":{"ANTHROPIC_BASE_URL":"http://x"}}"#;
+    assert!(refuse(
+        "claude-code",
+        &mut plan("claude", &["--settings", inline], true),
+        &i
+    )
+    .contains("--settings"));
+
+    for args in [
+        &["--oss"][..],
+        &["-p", "work"],
+        &["-c", "model_provider=\"ollama\""],
+        &["--config=openai_base_url=\"http://x\""],
+    ] {
+        assert!(
+            !refuse("codex", &mut plan("codex", args, true), &i).is_empty(),
+            "{args:?}"
+        );
+    }
+    let cfg = d.home.join(".codex/config.toml");
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    for (text, want) in [
+        (
+            "model_provider = \"ollama\"\n",
+            "model_provider = \"ollama\"",
+        ),
+        ("openai_base_url = \"http://x\"\n", "openai_base_url"),
+        (
+            "profile = \"w\"\n[profiles.w]\nmodel_provider = \"lms\"\n",
+            "profile \"w\"",
+        ),
+    ] {
+        std::fs::write(&cfg, text).unwrap();
+        let why = refuse("codex", &mut plan("codex", &[], true), &i);
+        assert!(why.contains(want), "{why}");
+    }
+    // Codex's own provider named outright is not a different route.
+    std::fs::write(&cfg, "model_provider = \"openai\"\nmodel = \"gpt-x\"\n").unwrap();
+    assert!(
+        environment_with("codex", &mut plan("codex", &[], true), &i)
+            .unwrap()
+            .unwrap()["on"]
+            == true
+    );
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// MW5-37: sbx's host proxy adds a harness's credential only to requests for
+/// the provider's own host (`credential@1`'s `inject` domains and
+/// `resourceHosts`; Docker's sandbox credentials page, read 8 Nov 2026), and
+/// a second kit cannot add a host to the workload's credential (one owner
+/// per service and phase; `docker/sandbox-kit-spec` at `6838e3e`,
+/// `credential@1.md`, "Composition"). A base URL pointing the VM at the
+/// host's tap sends the sandbox's sentinel instead (retest 11: every request
+/// 401). So under sbx the tap stands down for every harness, says why, and
+/// opens no port for itself.
+#[test]
+fn mw5_37_under_sbx_the_tap_stands_down_and_sets_no_base_url() {
+    let d = dirs("sbx", Some("http://127.0.0.1:45003"));
+    for (harness, workload) in [
+        ("claude-code", "claude"),
+        ("gemini", "gemini"),
+        ("codex", "codex"),
+    ] {
+        let argv = ["run", "--name", "derm-c", "-e", "DERM_CHAT_ID", workload];
+        let mut p = plan("sbx", &argv, true);
+        p.sandbox_name = Some("derm-c".into());
+        let rec = environment_with(harness, &mut p, &inputs(&d)).unwrap();
+        assert_eq!(
+            rec,
+            Some(json!({"on": false, "via": "none", "reason": "sbx-credential"})),
+            "{harness}"
+        );
+        for var in [
+            "ANTHROPIC_BASE_URL",
+            "GOOGLE_GEMINI_BASE_URL",
+            "DERM_TAP_ROUTE",
+        ] {
+            assert!(env(&p, var).is_none(), "{harness} {var}");
+        }
+        assert_eq!(
+            p.args,
+            argv.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+            "{harness}"
+        );
+        assert!(
+            !p.notes.iter().any(|n| n.contains("45003")),
+            "{harness}: no rule for the tap's port"
+        );
+    }
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// Fix pass 12's review, finding 1: under sbx the chat's folder is mounted
+/// into the VM, so a base URL a project file sets still reaches Claude Code
+/// there and still refuses the start (case 113). What the host's own
+/// environment and home files set does not reach the VM (sbx passes only
+/// the variables `derm run` names, `plan.rs` `OWNED_VARS`), so it does not.
+#[test]
+fn fp12_r1_under_sbx_a_project_files_base_url_still_refuses_the_start() {
+    let d = dirs("sbx-r1", Some("http://127.0.0.1:45003"));
+    let sbx_plan = |args: &[&str]| {
+        let mut p = plan("sbx", args, true);
+        p.sandbox_name = Some("derm-c".into());
+        p
+    };
+    let mut i = inputs(&d);
+    i.inherited = vec![("ANTHROPIC_BASE_URL".into(), "http://my-gateway:8080".into())];
+    let home = d.home.join(".claude");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("settings.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://h"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        environment_with("claude-code", &mut sbx_plan(&["run", "claude"]), &i).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "sbx-credential"})),
+        "the host's own variable and home file stay on the host"
+    );
+    let proj = d.work.join(".claude");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("settings.local.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://planted"}}"#,
+    )
+    .unwrap();
+    let why = environment_with("claude-code", &mut sbx_plan(&["run", "claude"]), &i)
+        .unwrap_err()
+        .1;
+    assert!(
+        why.contains("settings.local.json sets ANTHROPIC_BASE_URL"),
+        "{why}"
+    );
+    std::fs::remove_file(proj.join("settings.local.json")).unwrap();
+    let why = environment_with(
+        "codex",
+        &mut sbx_plan(&["run", "codex", "--", "-c", "model_provider=\"x\""]),
+        &i,
+    )
+    .unwrap_err()
+    .1;
+    assert!(why.contains("model_provider"), "{why}");
+    // The re-review's R1: Gemini CLI 0.66.0 loads `<cwd>/.gemini/.env` or
+    // `<cwd>/.env` in a trusted folder and sets each variable not already set
+    // (bundle `chunk-OYJ7VIJ6.js:16575-16690`); under sbx derm sets no base
+    // URL, so a planted one would hold.
+    for (file, line) in [
+        (
+            d.work.join(".env"),
+            "GOOGLE_GEMINI_BASE_URL=http://planted\n",
+        ),
+        (
+            d.work.join(".gemini/.env"),
+            "export GOOGLE_VERTEX_BASE_URL = \"http://p\"\n",
+        ),
+    ] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, line).unwrap();
+        let why = environment_with("gemini", &mut sbx_plan(&["run", "gemini"]), &i)
+            .unwrap_err()
+            .1;
+        assert!(why.contains("BASE_URL"), "{why}");
+        std::fs::remove_file(&file).unwrap();
+    }
+    // The second re-review's finding 1: forms Gemini's dotenv accepts and a
+    // line parser missed (a BOM, a tab after `export`, a value on the next
+    // line, an invalid byte, a lone CR); and a file derm cannot read whole
+    // is refused.
+    for bytes in [
+        b"\xef\xbb\xbfGOOGLE_GEMINI_BASE_URL=http://p\n".to_vec(),
+        b"export\tGOOGLE_GEMINI_BASE_URL=http://p\n".to_vec(),
+        b"GOOGLE_GEMINI_BASE_URL=\n\"http://p\"\n".to_vec(),
+        b"A=\xff\rGOOGLE_GEMINI_BASE_URL=http://p\r".to_vec(),
+        [
+            b"PAD=".to_vec(),
+            vec![b'x'; 1024 * 1024 + 1],
+            b"\n".to_vec(),
+        ]
+        .concat(),
+    ] {
+        std::fs::write(d.work.join(".env"), &bytes).unwrap();
+        assert!(
+            environment_with("gemini", &mut sbx_plan(&["run", "gemini"]), &i).is_err(),
+            "{:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(60)])
+        );
+    }
+    // Names that only contain the variable's name are not it.
+    std::fs::write(
+        d.work.join(".env"),
+        "GEMINI_API_KEY=x\nMY_GOOGLE_GEMINI_BASE_URL=http://x\nURL=http://x:8080\n",
+    )
+    .unwrap();
+    assert_eq!(
+        environment_with("gemini", &mut sbx_plan(&["run", "gemini"]), &i).unwrap(),
+        Some(json!({"on": false, "via": "none", "reason": "sbx-credential"}))
+    );
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+#[test]
+fn the_tap_table_merges_into_the_presets_and_every_row_follows_the_schema() {
+    let table: Value = serde_json::from_str(crate::connect::presets::table_json()).unwrap();
+    let rows: Vec<&Value> = ["harnesses", "planned"]
+        .iter()
+        .flat_map(|l| table[*l].as_array().unwrap())
+        .filter(|r| !r["tap"].is_null())
+        .collect();
+    assert_eq!(rows.len(), 11);
+    for r in rows {
+        let t = &r["tap"];
+        let via = t["via"].as_str().unwrap();
+        assert!(["env", "codex-provider", "none"].contains(&via));
+        assert!(t["verifiedAt"].is_string());
+        if via == "env" {
+            assert!(t["name"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_'));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_content_record_follows_the_settings_and_defaults_off() {
+    let d = dirs("content", None);
+    let home = d.home.to_string_lossy().into_owned();
+    assert_eq!(
+        content_record(Some(&home)),
+        json!({"on": false, "retentionDays": null})
+    );
+    let f = d.home.join(".derm/settings.json");
+    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+    std::fs::write(
+        &f,
+        r#"{"version":1,"content":{"on":true,"retentionDays":4}}"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        content_record(Some(&home)),
+        json!({"on": true, "retentionDays": 4})
+    );
+    assert_eq!(
+        content_record(None),
+        json!({"on": false, "retentionDays": null})
+    );
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// Mac test w5, MW5-6: with the tap on, `derm run codex -- exec ...` put the
+/// OTel export's `-c` pairs between the tap's last `-c` and its value, so
+/// Codex refused its own command line ("a value is required for
+/// '--config <key=value>'"). The export goes where the user's words begin
+/// (Codex 0.163.0 prepends root `-c` to a subcommand's own,
+/// `codex-rs/cli/src/main.rs:1162-1165, 2156-2161`), whatever the tap
+/// spliced after a session subcommand, and every `-c` keeps its value.
+#[test]
+fn codex_export_and_tap_flags_stay_whole_after_a_session_subcommand() {
+    let d = dirs("codex-mw56", Some("http://127.0.0.1:45003"));
+    for user in [
+        vec!["exec", "do it"],
+        vec!["app-server"],
+        vec!["e", "--json", "x"],
+        vec!["resume", "--last"],
+        vec!["fix the tests"],
+    ] {
+        let mut p = plan("codex", &user, true);
+        p.env_set
+            .push(("CODEX_HOME".into(), d.home.to_string_lossy().into_owned()));
+        let rest: Vec<String> = user.iter().map(|s| s.to_string()).collect();
+        environment_with("codex", &mut p, &inputs(&d)).unwrap();
+        let (what, range) = super::super::wire_export(
+            &mut p,
+            &rest,
+            "codex",
+            Some("http://127.0.0.1:4318"),
+            Some(TOKEN),
+            None,
+            false,
+        );
+        assert_eq!(what, json!("codex"), "{user:?}");
+        let range = range.unwrap();
+        // Codex's grammar: every `-c` takes the next word as its value.
+        let mut i = 0;
+        while i < p.args.len() {
+            if p.args[i] == "-c" {
+                let v = p.args.get(i + 1).map(String::as_str).unwrap_or("");
+                assert!(
+                    !v.is_empty() && v != "-c" && v.contains('='),
+                    "{user:?}: `-c` at {i} has no value: {:?}",
+                    p.args
+                );
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        // The export sits before the user's first word, or right after it
+        // when that word is a session subcommand, beside the tap's pairs
+        // (MW5-15: Codex keeps `-c` from one side of a subcommand only).
+        // The user's words keep their order.
+        if CODEX_SESSION_SUBCOMMANDS.contains(&user[0]) {
+            assert_eq!(p.args[range.start - 1], user[0], "{user:?}: {:?}", p.args);
+        } else {
+            assert_eq!(p.args[range.end], user[0], "{user:?}: {:?}", p.args);
+        }
+        assert!(
+            p.args[range.clone()].iter().any(|a| a.starts_with("otel.")),
+            "{:?}",
+            p.args
+        );
+        let theirs: Vec<&str> = p
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| !range.contains(i) && user.contains(&a.as_str()))
+            .map(|(_, a)| a.as_str())
+            .collect();
+        assert_eq!(theirs, user, "{:?}", p.args);
+        // The record keeps the export labelled and masks the user's words.
+        let rec = super::super::recorded_argv("codex", &p.args, &rest, false, Some(range));
+        assert!(
+            rec.iter().any(|w| w.starts_with("otel.")),
+            "{user:?}: the export was masked as the user's: {rec:?}"
+        );
+        assert!(
+            !rec.iter().any(|w| w == "do it" || w == "fix the tests"),
+            "{rec:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// Mac test w5 retest 4, MW5-15's Codex half: Codex 0.163.0's `-c` is a
+/// clap `global = true` argument (`codex-rs/utils/cli/src/config_override.rs:29-35`),
+/// and clap 4.5.58 keeps the subcommand's occurrences and drops the root's
+/// when both come from the command line (`clap_builder` 4.5.58
+/// `parser/arg_matcher.rs:53-78`). Run with the real Codex 0.163.0
+/// (`/home/claude/repro/mw515c`): `-c otel... exec -c model=...` exported no
+/// OTel log and applied only the child's `model`. So every `-c` derm adds
+/// sits on one side of a session subcommand: after it when the user's first
+/// word is one, before everything when not.
+#[test]
+fn codex_pairs_sit_on_one_side_of_a_session_subcommand() {
+    let d = dirs("codex-mw515", Some("http://127.0.0.1:45004"));
+    let side = |args: &[String], from: usize| -> (usize, usize) {
+        let sub = args[from..]
+            .iter()
+            .position(|a| CODEX_SESSION_SUBCOMMANDS.contains(&a.as_str()))
+            .map(|i| i + from);
+        let Some(sub) = sub else {
+            return (args.iter().filter(|a| *a == "-c").count(), 0);
+        };
+        let before = args[..sub].iter().filter(|a| *a == "-c").count();
+        let after = args[sub..].iter().filter(|a| *a == "-c").count();
+        (before, after)
+    };
+    for tapped in [true, false] {
+        for srt in [false, true] {
+            for user in [
+                vec!["exec", "do it"],
+                vec!["app-server"],
+                vec!["e", "--json", "x"],
+                vec!["resume", "--last"],
+                vec!["fix the tests"],
+            ] {
+                let mut args: Vec<&str> = Vec::new();
+                if srt {
+                    args.extend(["--settings", "/s.json", "--", "/bin/codex"]);
+                }
+                args.extend(user.iter().copied());
+                let mut p = plan(if srt { "srt" } else { "codex" }, &args, true);
+                if srt {
+                    p.srt_settings = Some(
+                        json!({"network": {"allowedDomains": [], "deniedDomains": []}}).to_string(),
+                    );
+                }
+                p.env_set
+                    .push(("CODEX_HOME".into(), d.home.to_string_lossy().into_owned()));
+                let rest: Vec<String> = user.iter().map(|s| s.to_string()).collect();
+                if tapped {
+                    environment_with("codex", &mut p, &inputs(&d)).unwrap();
+                }
+                let (what, range) = super::super::wire_export(
+                    &mut p,
+                    &rest,
+                    "codex",
+                    Some("http://127.0.0.1:4318"),
+                    Some(TOKEN),
+                    None,
+                    false,
+                );
+                assert_eq!(what, json!("codex"));
+                let range = range.unwrap();
+                let from = if srt { 4 } else { 0 };
+                let (before, after) = side(&p.args, from);
+                assert!(
+                    before == 0 || after == 0,
+                    "tapped {tapped}, srt {srt}, {user:?}: `-c` on both sides of the \
+                     subcommand, so Codex drops the root's: {:?}",
+                    p.args
+                );
+                assert!(
+                    p.args[range.clone()].iter().any(|a| a.starts_with("otel.")),
+                    "{:?}",
+                    p.args
+                );
+                // The record keeps derm's export as derm's, wherever it sits.
+                let rec = super::super::recorded_argv(
+                    if srt { "srt" } else { "codex" },
+                    &p.args,
+                    &rest,
+                    false,
+                    Some(range),
+                );
+                assert!(
+                    rec.iter().any(|w| w.starts_with("otel.")),
+                    "{user:?}: the export was masked as the user's: {rec:?}"
+                );
+                assert!(!rec.iter().any(|w| w == "do it" || w == "fix the tests"));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// MW5-40 (Mac test w5, retest 12): `derm run`'s `main` prints every error
+/// as `derm run: {msg}` (`run/mod.rs`, `main`), and the tap's two refusals
+/// carried the prefix themselves, so the line read "derm run: derm run: ...".
+/// Neither refusal starts with it now, on the host and under sbx.
+#[test]
+fn mw5_40_a_tap_refusal_carries_no_prefix_of_its_own() {
+    let d = dirs("mw5-40", Some("http://127.0.0.1:45004"));
+    let mut i = inputs(&d);
+    i.inherited = vec![("ANTHROPIC_BASE_URL".into(), "http://my-gateway:8080".into())];
+    let host = environment_with("claude-code", &mut plan("claude", &[], true), &i)
+        .unwrap_err()
+        .1;
+    assert!(host.contains("ANTHROPIC_BASE_URL"), "{host}");
+    assert!(!host.starts_with("derm run:"), "{host}");
+    let proj = d.work.join(".claude");
+    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::write(
+        proj.join("settings.local.json"),
+        r#"{"env":{"ANTHROPIC_BASE_URL":"http://planted"}}"#,
+    )
+    .unwrap();
+    let mut p = plan("sbx", &["run", "claude"], true);
+    p.sandbox_name = Some("derm-c".into());
+    let vm = environment_with("claude-code", &mut p, &inputs(&d))
+        .unwrap_err()
+        .1;
+    assert!(vm.contains("sbx VM would read it"), "{vm}");
+    assert!(!vm.starts_with("derm run:"), "{vm}");
+    let _ = std::fs::remove_dir_all(d.root);
+}

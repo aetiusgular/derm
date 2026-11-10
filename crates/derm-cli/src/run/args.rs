@@ -38,6 +38,9 @@ pub struct Args {
     pub allow_hosts: Vec<String>,
     pub kit: Option<String>,
     pub no_daemon: bool,
+    /// `--no-tap`: this chat runs untapped (case 127); its gate and the OS
+    /// feed still record it.
+    pub no_tap: bool,
     pub dry_run: bool,
     pub rest: Vec<String>,
     /// The program from `-- <program> ...` (case 80), when no harness id was
@@ -48,7 +51,7 @@ pub struct Args {
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--dry-run] [-- harness args...]
+[--no-tap] [--dry-run] [-- harness args...]
        derm run --boundary sbx|srt|none [options] -- <program> [args...]";
 
 /// A program named after `--` (case 80): an absolute path, or a bare name
@@ -59,8 +62,33 @@ pub fn valid_program(p: &str) -> bool {
     !p.is_empty()
         && !p.starts_with('-')
         && !p.chars().any(char::is_control)
-        && (p.starts_with('/') || !p.contains('/'))
+        && (rooted(p) || !p.chars().any(separator))
         && p != "/"
+}
+
+/// Whether a program path starts at a root, not at the folder the chat
+/// starts in: a leading `/` on Unix; on Windows any path with a root
+/// (`C:\x`, `\x`, `/x`, a UNC path), never `sub\x.exe`, `.\x.exe` or
+/// the drive-relative `C:x.exe` (std 1.97.0 `Path::has_root`, `path.rs:2586-2589`). A path rooted
+/// on the current drive names no file in the chat's folder, and was taken
+/// before (three tests on Windows pass `/opt/...` programs).
+fn rooted(p: &str) -> bool {
+    std::path::Path::new(p).has_root()
+}
+
+/// Whether `p` is an absolute path on this OS: a leading `/` on Unix; on
+/// Windows a drive or UNC prefix and a root (`C:\Users\u`), never `\temp`,
+/// `/Users/u` or `C:temp` (std 1.97.0 `library/std/src/path.rs:2539-2540`).
+/// The Windows test w5 found every `derm run` refused there because the home
+/// was held to a leading `/` (WW5-4).
+pub fn absolute(p: &str) -> bool {
+    std::path::Path::new(p).is_absolute()
+}
+
+/// A path separator on this OS: `/` everywhere; on Windows `\\` too, and
+/// `:`, which makes `C:x.exe` a path relative to the folder of drive C.
+fn separator(c: char) -> bool {
+    c == '/' || (cfg!(windows) && matches!(c, '\\' | ':'))
 }
 
 /// A chat id: 1 to 64 of `[A-Za-z0-9._-]`, not starting with `-` or `.`.
@@ -99,6 +127,110 @@ pub fn valid_host_port(s: &str) -> bool {
     host_ok && port.parse::<u16>().is_ok_and(|p| p > 0) && port.bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Codex's `-c` is a clap global argument, and clap 4.5.58 keeps one side
+/// of it: given both before and after a subcommand, the root's are dropped
+/// (`clap_builder` `parser/arg_matcher.rs:53-78`; run against Codex 0.163.0,
+/// Mac test w5 retest 4, MW5-15). derm's own `-c` pairs go right after a
+/// session subcommand that is the first word, and first otherwise; so a
+/// session subcommand later in the words with a `-c` after it would drop
+/// derm's pairs and the chat would run untapped and unrecorded without a
+/// word. That command line is refused, with the way to write it.
+fn codex_config_split(rest: &[String]) -> Option<String> {
+    // Where derm's own `-c` pairs sit: after a leading session subcommand,
+    // else at the root (`wire_export`, the tap's pairs). clap keeps a global
+    // `-c` from the deepest level that has one, so a user's `-c` after any
+    // subcommand below that level drops derm's (fix pass 4's review,
+    // FP4-S1: `exec resume`, `agents`). Any deeper level lives under one of
+    // these names, so naming the next level is enough.
+    let lead = rest
+        .first()
+        .filter(|w| super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()))
+        .map(String::as_str);
+    let below: &[&str] = match lead {
+        None => CODEX_ROOT_SUBCOMMANDS,
+        Some("exec" | "e") => CODEX_EXEC_SUBCOMMANDS,
+        Some("app-server") => CODEX_APP_SERVER_SUBCOMMANDS,
+        Some(_) => &[],
+    };
+    let from = usize::from(lead.is_some());
+    let config = |w: &String| {
+        w == "-c"
+            || w == "--config"
+            || w.starts_with("--config=")
+            || (w.starts_with("-c") && !w.starts_with("--") && w.len() > 2)
+    };
+    let sub = (from..rest.len())
+        .find(|&i| below.contains(&rest[i].as_str()) && rest[i + 1..].iter().any(config))?;
+    let word = &rest[sub];
+    Some(match lead {
+        None if super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&word.as_str()) => format!(
+            "codex: put {word:?} first (derm run codex -- {word} ...): Codex keeps `-c` from \
+             one side of a subcommand only, so a `-c` after {word:?} would drop derm's own and \
+             this chat would run untapped and unrecorded"
+        ),
+        _ => format!(
+            "codex: put your `-c` before {word:?}: Codex keeps `-c` from the deepest \
+             subcommand that has one, so a `-c` after {word:?} would drop derm's own and this \
+             chat would run untapped and unrecorded"
+        ),
+    })
+}
+
+/// Codex 0.163.0's subcommands at its root, with their aliases and the
+/// hidden ones (`codex-rs/cli/src/main.rs:147-237`, `codex --help`; the
+/// re-review's R1 added `cloud-tasks`, `responses-api-proxy` and
+/// `stdio-to-uds`).
+const CODEX_ROOT_SUBCOMMANDS: &[&str] = &[
+    "agents",
+    "tcp-tunnel",
+    "exec",
+    "e",
+    "review",
+    "login",
+    "logout",
+    "mcp",
+    "plugin",
+    "app-server",
+    "remote-control",
+    "app",
+    "completion",
+    "update",
+    "doctor",
+    "sandbox",
+    "debug",
+    "execpolicy",
+    "apply",
+    "a",
+    "resume",
+    "queue",
+    "archive",
+    "delete",
+    "migrate-rollouts",
+    "unarchive",
+    "fork",
+    "cloud",
+    "cloud-tasks",
+    "exec-server",
+    "features",
+    "responses-api-proxy",
+    "stdio-to-uds",
+    "help",
+];
+
+/// `codex exec`'s own subcommands (`codex-rs/exec/src/cli.rs:172-182`).
+const CODEX_EXEC_SUBCOMMANDS: &[&str] = &["resume", "fork", "review", "help"];
+
+/// `codex app-server`'s own subcommands (`codex app-server --help`, 0.163.0,
+/// and the hidden `generate-internal-json-schema`, `main.rs:642-643`).
+const CODEX_APP_SERVER_SUBCOMMANDS: &[&str] = &[
+    "daemon",
+    "proxy",
+    "generate-ts",
+    "generate-json-schema",
+    "generate-internal-json-schema",
+    "help",
+];
+
 pub fn parse(args: &[String]) -> Result<Args, String> {
     let Some(id) = args.first() else {
         return Err(USAGE.to_string());
@@ -130,6 +262,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         allow_hosts: Vec::new(),
         kit: None,
         no_daemon: false,
+        no_tap: false,
         dry_run: false,
         rest: Vec::new(),
         program: None,
@@ -176,6 +309,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--kit" => out.kit = Some(take("--kit")?),
             "--no-daemon" => out.no_daemon = true,
+            "--no-tap" => out.no_tap = true,
             "--dry-run" => out.dry_run = true,
             other => {
                 return Err(format!(
@@ -204,6 +338,11 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         }
         out.program = Some(program);
     }
+    if out.harness.id == "codex" {
+        if let Some(why) = codex_config_split(&out.rest) {
+            return Err(why);
+        }
+    }
     if out.boundary != Boundary::Srt && (!out.allow_hosts.is_empty() || out.model_url.is_some()) {
         return Err(
             "--allow-host and --model-url shape srt's allow list; they need --boundary srt".into(),
@@ -221,6 +360,63 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// WW5-4 (Windows test w5, 3.1): `derm run` held the home, `DERM_POLICY`,
+    /// `CODEX_HOME` and `CLAUDE_CONFIG_DIR` to a leading `/`, so on Windows it
+    /// refused every start ("HOME is not set to an absolute path") and read
+    /// no Codex file. Fails on `2ce607d` on Windows, where `absolute` did not
+    /// exist and the checks were `starts_with('/')`.
+    #[test]
+    fn ww5_4_an_absolute_path_is_one_for_this_os() {
+        if cfg!(windows) {
+            for p in [
+                r"C:\Users\usern",
+                r"C:\",
+                r"\\?\C:\derm",
+                r"\\server\share\x",
+            ] {
+                assert!(absolute(p), "{p}");
+            }
+            for p in ["/Users/usern", r"\temp", "C:temp", "usern", ""] {
+                assert!(!absolute(p), "{p}");
+            }
+        } else {
+            assert!(absolute("/home/u"));
+            for p in [r"C:\Users\u", "home/u", ""] {
+                assert!(!absolute(p), "{p}");
+            }
+        }
+    }
+
+    /// WW5-4's class on case 80's program: on Windows `sub\x.exe` holds no
+    /// `/`, so it passed as a bare name, though it names a file in the chat's
+    /// folder, which the agent writes.
+    #[test]
+    fn ww5_4_a_program_path_relative_on_this_os_is_refused() {
+        assert!(valid_program("node"));
+        assert!(!valid_program("sub/x"));
+        assert!(!valid_program("./x"));
+        if cfg!(windows) {
+            for p in [
+                r"C:\Program Files\nodejs\node.exe",
+                "/opt/agent/bin/aider",
+                r"\\srv\share\x.exe",
+            ] {
+                assert!(valid_program(p), "{p}");
+            }
+            for p in [
+                r"sub\x.exe",
+                r".\x.exe",
+                r"..\x.exe",
+                "C:x.exe",
+                "x.exe:stream",
+            ] {
+                assert!(!valid_program(p), "{p}");
+            }
+        } else {
+            assert!(valid_program("/usr/bin/node"));
+        }
     }
 
     #[test]
@@ -358,5 +554,88 @@ mod tests {
         assert!(parse(&s(&["pi", "--boundary", "none", "--allow-host", "h:1"])).is_err());
         assert!(parse(&s(&["pi", "--boundary", "srt", "--kit", "x"])).is_err());
         assert!(parse(&s(&["pi", "--boundary", "sbx", "--kit", "x"])).is_ok());
+    }
+
+    /// MW5-15's Codex half: clap keeps one side of a global `-c` (Codex
+    /// 0.163.0, clap 4.5.58), so a session subcommand that is not the first
+    /// word, with `-c` after it, would drop every `-c` derm puts first: the
+    /// chat would run untapped and unrecorded without a word. Refused.
+    #[test]
+    fn codex_with_config_on_both_sides_of_a_later_subcommand_is_refused() {
+        for rest in [
+            &["-m", "gpt", "exec", "-c", "a=1", "hi"][..],
+            &["--full-auto", "exec", "--config", "a=1"][..],
+            &["--full-auto", "exec", "--config=a=1"][..],
+            &["-p", "work", "app-server", "-ca=1"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            let e = parse(&argv).unwrap_err();
+            assert!(
+                e.contains("first") && e.contains("untapped"),
+                "{rest:?}: {e}"
+            );
+        }
+        for rest in [
+            &["exec", "-c", "a=1", "hi"][..],
+            &["-c", "a=1", "fix the tests"][..],
+            &["-m", "gpt", "exec", "hi"][..],
+            &["-c", "a=1", "exec", "hi"][..],
+            &["app-server"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            assert!(parse(&argv).is_ok(), "{rest:?}");
+        }
+        // Another harness's words are its own.
+        let argv = s(&[
+            "pi",
+            "--boundary",
+            "none",
+            "--",
+            "-m",
+            "x",
+            "exec",
+            "-c",
+            "a",
+        ]);
+        assert!(parse(&argv).is_ok());
+    }
+
+    /// Fix pass 4's review, FP4-S1: Codex keeps a global `-c` from the
+    /// deepest level only, so a `-c` below derm's level is refused at every
+    /// depth (`exec resume`, `e fork`, `exec review`, `agents`; run against
+    /// the real 0.163.0 binary by the reviewer).
+    #[test]
+    fn fp4_s1_codex_nested_session_subcommand_with_config_is_refused() {
+        for rest in [
+            &["exec", "resume", "--last", "-c", "a=1"][..],
+            &["e", "fork", "abc", "--config=a=1", "go"][..],
+            &["exec", "review", "--uncommitted", "-ca=1"][..],
+            &["agents", "-c", "a=1"][..],
+            &["exec", "-m", "x", "resume", "--last", "--config", "a=1"][..],
+            &["mcp", "list", "-c", "a=1"][..],
+            &["app-server", "proxy", "-c", "a=1"][..],
+            &["cloud-tasks", "-c", "a=1"][..],
+            &["stdio-to-uds", "/x.sock", "-c", "a=1"][..],
+            &["app-server", "generate-internal-json-schema", "-c", "a=1"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            let err = parse(&argv).expect_err(&format!("{rest:?} was accepted"));
+            assert!(err.contains("untapped"), "{err}");
+        }
+        // A `-c` at derm's own level, or none below it, still runs.
+        for rest in [
+            &["exec", "-c", "a=1", "resume", "--last"][..],
+            &["exec", "resume", "--last"][..],
+            &["-c", "a=1", "exec", "hi"][..],
+            &["exec", "-c", "a=1", "fix the review"][..],
+            &["mcp", "list"][..],
+        ] {
+            let mut argv = s(&["codex", "--boundary", "none", "--"]);
+            argv.extend(s(rest));
+            assert!(parse(&argv).is_ok(), "{rest:?} was refused");
+        }
     }
 }

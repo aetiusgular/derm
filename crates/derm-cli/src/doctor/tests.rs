@@ -2,6 +2,7 @@
 //! files, and the real Claude Code and Codex hooks from this repository as
 //! the "installed" gate.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +37,7 @@ fn put(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+#[cfg(unix)]
 fn program(h: &Home, name: &str, body: &str) {
     let p = h.root.join("bin").join(name);
     put(&p, &format!("#!/bin/sh\n{body}\n"));
@@ -122,6 +124,7 @@ fn rows_are_found_by_preset_id_or_orcas_id() {
     assert!(find_row("vim").is_none());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_version_other_than_the_rows_is_unverified() {
     // Case 81.
@@ -285,8 +288,10 @@ fn usage_errors_exit_2() {
     assert_eq!(main(&s(&["pi", "codex"])), 2);
 }
 
+#[cfg(unix)]
 #[test]
 fn the_report_is_kept_private_and_a_link_is_never_followed() {
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     let h = home("save");
     let home_dir = h.root.join("home");
@@ -315,11 +320,13 @@ fn the_report_is_kept_private_and_a_link_is_never_followed() {
     assert!(save(&home_dir, &json!({"agent": "../x"})).is_err());
 }
 
+#[cfg(unix)]
 /// Security review L9: `derm doctor` runs the hook as you, outside any
 /// sandbox, so it runs only the copy the agent loads from its own plugin
 /// cache, owned by you and writable by no one else.
 #[test]
 fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     // An installPath outside the plugin cache: not run.
     let h = home("hook-out");

@@ -6,9 +6,11 @@
 
 import { randomUUID } from "node:crypto";
 import { constants, lstatSync, readFileSync } from "node:fs";
+import http from "node:http";
 import net from "node:net";
-import { homedir, platform } from "node:os";
+import { homedir, platform, userInfo } from "node:os";
 import path from "node:path";
+import { ownedByTrusted, trustedOwners } from "./owner.ts";
 import { insideFolder } from "./policy.ts";
 
 export const CONNECT_TIMEOUT_MS = 800;
@@ -26,18 +28,26 @@ export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * The socket is trusted only when it is a socket owned by this user in a
  * folder owned by this user that no one else can write. Another user could
- * otherwise plant a socket that answers `yes` to every approval.
+ * otherwise plant a socket that answers `yes` to every approval. Under an
+ * agents' user (owner.ts), "this user" is the person it works for: the
+ * socket is `derm run`'s bridge, and one the agent made is refused.
  */
-export function socketLooksOwned(sock: string): string | undefined {
-  if (typeof process.getuid !== "function") return undefined;
-  const uid = process.getuid();
+export function socketLooksOwned(sock: string, system: NodeJS.Platform = platform()): string | undefined {
+  // Windows (lane Z's request 2): the daemon's endpoint is a named pipe, and
+  // Node's `net` gives no way to read the server's process or its token
+  // (note AU sections 2.1 to 2.3), so a pipe another process squatted first
+  // cannot be told from derm's. Until lane Z builds the server check, the
+  // hook never sends a token there: it fails closed (proposed case AU-1).
+  if (system === "win32") return "the daemon's endpoint cannot be checked on Windows yet (no server check is built)";
+  // No uid to check against: refused, never trusted (it was trusted before).
+  if (typeof process.getuid !== "function") return "this system gives no owner to check the daemon socket against";
   try {
     const s = lstatSync(sock);
     if (!s.isSocket()) return "not a socket";
-    if (s.uid !== uid) return "socket owned by another user";
+    if (!ownedByTrusted(s.uid)) return "socket owned by another user";
     const d = lstatSync(path.dirname(sock));
     if (!d.isDirectory()) return "socket folder is not a folder";
-    if (d.uid !== uid) return "socket folder owned by another user";
+    if (!ownedByTrusted(d.uid)) return "socket folder owned by another user";
     if ((d.mode & 0o022) !== 0) return "socket folder writable by others";
     return undefined;
   } catch {
@@ -69,8 +79,11 @@ export function chatToken(env: NodeJS.ProcessEnv = process.env, cwd: string = pr
   try {
     const st = lstatSync(file);
     if (!st.isFile() || st.size > 256) return undefined;
-    if (typeof process.getuid === "function" && st.uid !== process.getuid()) return undefined;
-    if ((st.mode & 0o077) !== 0) return undefined;
+    if (!ownedByTrusted(st.uid)) return undefined;
+    // Yours alone; under an agents' user, the person's copy in the chat's
+    // bridge, which the agent may read but no one but the person may write.
+    const loose = trustedOwners()?.agent ? (st.mode & 0o022) !== 0 : (st.mode & 0o077) !== 0;
+    if (loose) return undefined;
     const t = readFileSync(file, { encoding: "utf8", flag: constants.O_RDONLY | constants.O_NOFOLLOW }).trim();
     return HEX64.test(t) ? t : undefined;
   } catch {
@@ -79,6 +92,178 @@ export function chatToken(env: NodeJS.ProcessEnv = process.env, cwd: string = pr
 }
 
 type Reply = Record<string, unknown> & { ok?: boolean; error?: string };
+
+/** The host name sbx's VM reaches the host by (Docker's "Develop and test locally" page). */
+export const SBX_HOST = "host.docker.internal";
+
+/**
+ * The file derm's sbx kit writes in the VM, as root, when sbx creates the
+ * sandbox (packaging/sbx-kit/claude/install.sh). A fixed path no variable
+ * moves, under a root-owned folder.
+ */
+export const VM_MARKER = "/opt/derm-kit/sbx-vm";
+
+/**
+ * Why the VM marker does not hold, or undefined when it does: a regular file
+ * with one link, owned by root and writable by no one else, in a folder owned
+ * by root and writable by no one else, on Linux (the sbx VM is Linux). On
+ * Windows a stat's uid is 0 for every file, so a marker there proves nothing
+ * and is never trusted (security finding W5C-S2, integration w5 continue).
+ */
+export function vmMarker(
+  file: string = VM_MARKER,
+  system: NodeJS.Platform = platform(),
+  stat: (p: string) => { uid: number; mode: number; nlink: number; isFile(): boolean; isDirectory(): boolean } = lstatSync,
+): string | undefined {
+  if (system !== "linux") return "the VM route is only for derm's sbx VM, which is Linux";
+  try {
+    const f = stat(file);
+    if (!f.isFile() || f.nlink !== 1) return "the VM marker is not a plain file";
+    if (f.uid !== 0 || (f.mode & 0o022) !== 0) return "the VM marker is not root's alone";
+    const d = stat(path.dirname(file));
+    if (!d.isDirectory() || d.uid !== 0 || (d.mode & 0o022) !== 0) return "the VM marker's folder is not root's alone";
+    return undefined;
+  } catch {
+    return "no VM marker (derm's sbx kit was not installed here)";
+  }
+}
+
+/**
+ * Where a daemon socket would be on this machine whatever DERM_DAEMON_SOCKET
+ * says: the variable's own path, the defaults with and without the
+ * environment's XDG_RUNTIME_DIR, and the home fallback.
+ */
+export function socketCandidates(env: NodeJS.ProcessEnv): string[] {
+  const out = new Set<string>([socketPath(env), socketPath({ ...env, DERM_DAEMON_SOCKET: "" })]);
+  out.add(socketPath({ ...env, DERM_DAEMON_SOCKET: "", XDG_RUNTIME_DIR: "" }));
+  // HOME can be moved by a project's env; the password database's home
+  // cannot (re-review W5R-7).
+  try {
+    const home = userInfo().homedir;
+    if (home) out.add(path.join(home, ".derm", "run", "derm", "daemon.sock"));
+  } catch {
+    // No entry for this uid: the other candidates stand.
+  }
+  if (typeof process.getuid === "function") out.add(path.join("/run/user", String(process.getuid()), "derm", "daemon.sock"));
+  return [...out];
+}
+
+/**
+ * Inside an sbx VM the daemon's socket is not there (the sbx smoke test, step
+ * 5: no host folder but the project is mounted), and the only way to the host
+ * is the receiver's HTTP port at `host.docker.internal` (step 4). The hook
+ * takes that route only when all of these hold (lane T's P4-R2, and security
+ * finding W5C-S2, integration w5 continue):
+ * - the VM marker holds ([`vmMarker`]): a root-owned file derm's sbx kit
+ *   wrote. A project can set every variable below, so the variables alone
+ *   would let a project on the host send the hook's approvals to a listener
+ *   of its own that answers yes; the marker is something it cannot make.
+ * - `DERM_BOUNDARY=sbx`, and `DERM_OTLP_ENDPOINT` a plain
+ *   `http://host.docker.internal:<port>` with no user, path, query or
+ *   fragment, as `derm run` sets them.
+ * - no file where a daemon socket would be, whether DERM_DAEMON_SOCKET names
+ *   it or not, the account's own home included: where there is a socket, it
+ *   is the route.
+ * - the hook does not run as root.
+ * In the VM a project that sets these variables reaches only the daemon port
+ * on the host that sbx's own rule opened, and the daemon there applies the
+ * token's chat scope (contracts/daemon-protocol.md section 4).
+ */
+export function vmEndpoint(
+  env: NodeJS.ProcessEnv = process.env,
+  marker: () => string | undefined = vmMarker,
+  uid: number | undefined = process.getuid?.(),
+  // Where a daemon socket would be; tests pass their own, since the default
+  // reads the account's real home (Mac test w5, MW5-3).
+  candidates: () => string[] = () => socketCandidates(env),
+): URL | undefined {
+  if (env.DERM_BOUNDARY?.trim() !== "sbx") return undefined;
+  // In derm's VM the agent runs as its own user; a hook running as root is on
+  // a host (a container, CI), where one allowed call could write the marker
+  // (re-review W5R-7).
+  if (uid === 0) return undefined;
+  const raw = env.DERM_OTLP_ENDPOINT?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" || url.hostname !== SBX_HOST || url.port === "") return undefined;
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return undefined;
+  if (url.pathname !== "/" && url.pathname !== "") return undefined;
+  if (marker() !== undefined) return undefined;
+  for (const sock of candidates()) {
+    try {
+      lstatSync(sock);
+      return undefined;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") return undefined;
+    }
+  }
+  return url;
+}
+
+const VM_ROUTES: Record<string, { path: string; field: string }> = {
+  event: { path: "/derm/v1/event", field: "event" },
+  approve: { path: "/derm/v1/approve", field: "request" },
+};
+
+/** One HTTP request to the daemon's derm route; its reply line, or why not. */
+export function postVm(url: URL, token: string, request: Record<string, unknown>, replyTimeoutMs: number): Promise<Reply | { failed: string }> {
+  const route = VM_ROUTES[String(request.op)];
+  if (!route) return Promise.resolve({ failed: `no route for ${String(request.op)} from a VM` });
+  const body = JSON.stringify({ [route.field]: request[route.field] });
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const done = (r: Reply | { failed: string }) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      req.destroy();
+      resolve(r);
+    };
+    const req = http.request(
+      {
+        host: url.hostname,
+        port: Number(url.port),
+        method: "POST",
+        path: route.path,
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body), "x-derm-token": token },
+        agent: false,
+      },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c: string) => {
+          text += c;
+          if (text.length > MAX_LINE_BYTES) done({ failed: "daemon reply too long" });
+        });
+        res.on("end", () => {
+          if (res.statusCode !== 200) return done({ failed: `daemon answered HTTP ${String(res.statusCode)}` });
+          try {
+            const reply = JSON.parse(text) as unknown;
+            done(typeof reply === "object" && reply !== null && !Array.isArray(reply) ? (reply as Reply) : { failed: "daemon sent a bad reply" });
+          } catch {
+            done({ failed: "daemon sent a reply that is not JSON" });
+          }
+        });
+        res.on("error", () => done({ failed: "daemon reply failed" }));
+      },
+    );
+    timer = setTimeout(() => done({ failed: "daemon connect timed out" }), CONNECT_TIMEOUT_MS);
+    req.on("socket", (sock) => {
+      sock.on("connect", () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => done({ failed: "daemon reply timed out" }), replyTimeoutMs);
+      });
+    });
+    req.on("error", (e: NodeJS.ErrnoException) => done({ failed: `daemon unreachable (${e.code ?? "error"})` }));
+    req.end(body);
+  });
+}
 
 /** One connection: hello, then each request in order, one reply line each. */
 export async function exchange(
@@ -97,6 +282,16 @@ export async function exchange(
   if (insideFolder(sock, cwd)) return { error: "the daemon socket is inside the session folder, which a project can set; not used" };
   const token = chatToken(env, cwd);
   if (!token) return { error: "no chat token (start the harness with derm run)" };
+  const vm = vmEndpoint(env);
+  if (vm) {
+    const replies: Reply[] = [];
+    for (const request of requests) {
+      const r = await postVm(vm, token, request, opts.replyTimeoutMs);
+      if ("failed" in r) return { error: r.failed as string };
+      replies.push(r);
+    }
+    return { replies };
+  }
   const notOwned = socketLooksOwned(sock);
   if (notOwned) return { error: notOwned };
 
@@ -202,7 +397,7 @@ export type AdapterEvent = {
   id: string;
   chatId: string;
   harness: string;
-  kind: "tool.call" | "approval";
+  kind: "tool.call" | "approval" | "install.call";
   summary: string;
   detail: Record<string, unknown>;
 };

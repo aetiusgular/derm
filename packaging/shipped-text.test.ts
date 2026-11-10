@@ -13,6 +13,8 @@ const UNITS = [
   "crates/derm-daemon/units/derm-daemon.service",
   "crates/derm-daemon/units/io.github.aetiusgular.derm.daemon.plist",
   "packaging/deb/derm-daemon.service",
+  "crates/derm-audit-linux/units/derm-audit-feed.service",
+  "packaging/deb/derm-audit-feed.service",
 ];
 // Read by a release user; the README is also in the archives. The README's
 // open items name a wave 4 lane as their owner on purpose, so the build-note

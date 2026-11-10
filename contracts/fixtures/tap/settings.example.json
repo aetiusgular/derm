@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "boundary": { "preAnswer": null },
+  "tap": { "on": true },
+  "content": { "on": true, "retentionDays": 3 },
+  "installs": { "check": false, "minAgeHours": 48 },
+  "computerUse": { "on": false }
+}

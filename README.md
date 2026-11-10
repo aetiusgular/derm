@@ -31,7 +31,7 @@ Read these before relying on derm. Each is tracked in the status docs under `pla
 | L10 | Medium | Under `derm run --boundary srt`, Cline can write a decision file in the approval folder its responder reads (owner: the Cline adapter, lane P's card) | Run Cline with `--boundary none` and derm's plugin as its gate, or keep asks out of its policy |
 | N1 | Medium | If Cursor's CLI does not fire `beforeMCPExecution`, its MCP calls are not gated; only a deny by bare tool name holds (owner: the Mac test w4) | Deny Cursor's MCP tools by name, or do not rely on derm for Cursor's MCP calls until the Mac test says it fires |
 | Chat token | Medium, by design | A chat's token sits in the agent's environment, so the agent's shell can read it and post records into its own chat. It cannot approve, mint tokens, read other chats or switch the OS feed off | Treat a chat's own records as what that chat's processes said; OS-feed, run and approval records cannot be posted with it |
-| Redactors | Medium | Secret redaction in run records, the OS feed and `derm connect`'s output is best-effort: multi-line TOML and YAML values and a key and value on two lines can still print | Keep `DERM_LOG_CONTENT` off; read a dry run before `--write` |
+| Redactors | Medium | Secret redaction in run records, the OS feed and `derm connect`'s output is best-effort: multi-line TOML and YAML values and a key and value on two lines can still print | Keep the content switch off; read a dry run before `--write` |
 | Later hooks | Low to medium | In oh-my-pi, Kilo, Gemini CLI and Hermes a hook or extension that runs after derm's can still change a call's input after derm decided | Do not install other tool-call hooks beside derm's there |
 | io_uring | Low to medium | File opens and connects done through io_uring are not seen by the auditd feed | None in this release |
 | S16 | Low | The managed Claude Code fragment force-enables `derm@derm` without pinning where the `derm` marketplace comes from (owner: the Claude Code adapter) | Pin the source in managed settings ([the agents page](docs/install/agents.md#claude-code-under-managed-settings)) |
@@ -104,6 +104,42 @@ How derm attaches to each agent in Orca's list. Tier G: derm registers a gate th
 | Any other CLI agent | O | `derm run --boundary <b> -- <command>`, and `derm acp` for one that speaks ACP | Built, wave 4 (lane R): run end to end in the cloud; `derm acp` against Gemini CLI 0.66.0 in `--acp` mode |
 
 Outside Orca's grid: OpenClaw, tier G, `packages/derm-openclaw-plugin` (`before_tool_call`, derm runs last): built, wave 2, contract checks pass against OpenClaw 2026.10.8 in the cloud (lane I). Wave 4's agents' hook contracts and fixtures are in `contracts/hook-dialects.md`.
+
+### Wave 5 columns: tap, intent, boundary
+
+Built on `integration/w5`, run in the cloud only (`plans/parallel/tk_integration_w5.md`); generated from the preset table's wave 5 files (`crates/derm-cli/src/connect/presets/wave5/tap.json` and `kit.json`). Tap: how `derm run` points the agent at the daemon's model tap, in its launch environment only. Intent source: where derm reads what the model asked for (the tap, else the gate's hooks). Under sbx the tap is off for every agent: sbx's proxy adds the provider's credential only to requests for the provider's own host, so a request through the tap would carry none (Mac test w5, MW5-37). Boundaries: what `derm run` can start the agent under; with no `--boundary` it takes sbx, then srt, then warns and asks (case 129), and since phase 4 takes srt before sbx for an agent whose gate is registered and fails closed, until derm's kit passes the box test. Under sbx only Claude Code has derm's gate inside the VM; every kit with full-access words starts its agent with its own approvals off, so an ask there is a deny (case 83). Cursor's intent from its record hooks (note AS) is not wired yet.
+
+| Agent id | Tap | Intent source | Boundaries |
+|---|---|---|---|
+| `claude-code` | `ANTHROPIC_BASE_URL`, verified at 2.1.311 | tap | sbx `claude` (full-access words: `--dangerously-skip-permissions`; derm's gate in the VM through derm's kit), srt, none |
+| `codex` | Codex provider flags, verified at 0.163.0 | tap | sbx `codex` (full-access words: `--dangerously-bypass-approvals-and-sandbox`; no derm gate in the VM), srt, none |
+| `gemini` | `GOOGLE_GEMINI_BASE_URL`, verified at 0.66.0 | tap | sbx `gemini` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `pi` | none: untapped | hooks | sbx `docker.io/sbx/pi-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
+| `cursor` | none: untapped | hooks | sbx `cursor` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `amp` | none: untapped | hooks | sbx `docker.io/sbx/amp-kit:latest` (full-access words: `--dangerously-allow-all`; no derm gate in the VM), srt, none |
+| `auggie` | none: untapped | hooks | srt, none (no sbx form) |
+| `droid` | none: untapped | hooks | sbx `droid` (full-access words: none; no derm gate in the VM), srt, none |
+| `kiro` | none: untapped | hooks | sbx `kiro` (full-access words: `--trust-all-tools`; no derm gate in the VM), srt, none |
+| `rovo-dev` | none: untapped | none (outside shape) | srt, none (no sbx form) |
+| `codebuff` | none: untapped | none (outside shape) | srt, none (no sbx form) |
+| `opencode` | no tap row: untapped | hooks | sbx `opencode` (full-access words: none; no derm gate in the VM), srt, none |
+| `hermes` | no tap row: untapped | hooks | sbx `docker.io/sbx/hermes-agent-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
+| `openclaw` | no tap row: untapped | hooks | sbx `docker.io/sbx/openclaw-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
+| `goose` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `qwen-code` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `copilot-cli` | no tap row: untapped | hooks | sbx `copilot` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `crush` | no tap row: untapped | hooks | sbx `docker.io/sbx/crush-kit:latest` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `zed` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `kilo` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `oh-my-pi` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `continue` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `grok` | no tap row: untapped | hooks | sbx grok kit at sbx-kits-contrib `1de3c1e` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `antigravity` | no tap row: untapped | hooks | sbx `docker.io/sbx/antigravity-kit:latest` (full-access words: `--dangerously-skip-permissions`; no derm gate in the VM; no `derm run` row yet (P4-R6)), srt, none |
+| `openclaude` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `cline` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `command-code` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `kimi` | no tap row: untapped | hooks | srt, none (no sbx form) |
+| `mistral-vibe` | no tap row: untapped | hooks | sbx `docker.io/sbx/vibe-kit:latest` (full-access words: `--agent auto-approve`; no derm gate in the VM; no `derm run` row yet (P4-R6)), srt, none |
 
 Orca's ids differ for three agents: Orca says `claude`, `copilot` and `aug`; derm says `claude-code`, `copilot-cli` and `auggie`. Wave 4's install lines are in `docs/install/agents.md`; `derm connect <agent> --gate` writes most of them. The machine-readable form of this table is the preset table, one file per agent in `crates/derm-cli/src/connect/presets/` (the `coverage` field on each row; `index.json` lists the `harnesses` and the `planned` rows).
 

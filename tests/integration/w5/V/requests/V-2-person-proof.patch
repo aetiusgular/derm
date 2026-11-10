@@ -1,0 +1,845 @@
+diff --git a/crates/derm-cli/src/watch/approve.rs b/crates/derm-cli/src/watch/approve.rs
+index 71916c3..56a3674 100644
+--- a/crates/derm-cli/src/watch/approve.rs
++++ b/crates/derm-cli/src/watch/approve.rs
+@@ -33,8 +33,10 @@ pub const USAGE: &str = "usage: derm watch --approve [--socket <path>]
+        derm watch approve [--socket <path>]
+ 
+ Answers the daemon's approval requests from this terminal: y or yes allows
+-one call, anything else (Enter too) denies it. Ctrl-C stops; requests then
+-get no from the daemon.";
++one call, anything else (Enter too) denies it. When the chat runs as you with
++no boundary, the daemon also asks for your login password before a yes (S2
++part b); it is read with echo off and checked by the system. Ctrl-C stops;
++requests then get no from the daemon.";
+ 
+ /// Typed input this soon after a prompt is shown is dropped: it was typed
+ /// for something else (a request that just timed out, or the shell).
+@@ -138,7 +140,8 @@ pub fn main(args: &Args) -> u8 {
+         }
+         first = false;
+         let mut flush = || flush_tty_input();
+-        match serve(&rx, writer, &mut out, &mut flush) {
++        let mut echo = |on: bool| set_tty_echo(on);
++        match serve_with(&rx, writer, &mut out, &mut flush, &mut echo) {
+             Ended::DaemonGone(why) => {
+                 let _ = writeln!(
+                     out,
+@@ -184,25 +187,56 @@ struct Waiting {
+     deadline: Instant,
+ }
+ 
++/// An answer sent and not yet replied to: its request, kept while the
++/// daemon may still ask for the person's password (S2 part b).
++struct Sent {
++    id: String,
++    word: &'static str,
++    waiting: Option<Waiting>,
++    with_proof: bool,
++}
++
++/// Whether the daemon refused a `yes` for want of the person's password.
++pub fn wants_password(error: &str) -> bool {
++    error.contains("your password is needed")
++}
++
+ /// The approver's loop: shows one request at a time, sends the answer typed
+ /// for it, and keeps the rest in order. `flush` drops typed-ahead input
+ /// when a prompt is shown (the real one calls `tcflush` on the terminal).
++/// `serve_with` with no terminal to set (the tests).
++#[cfg(test)]
+ pub fn serve(
++    rx: &Receiver<In>,
++    writer: impl Write,
++    out: &mut impl Write,
++    flush: &mut dyn FnMut(),
++) -> Ended {
++    serve_with(rx, writer, out, flush, &mut |_| {})
++}
++
++/// `serve`, with `echo` turning the terminal's echo off while a password is
++/// typed and on again after (the real one calls `tcsetattr`).
++pub fn serve_with(
+     rx: &Receiver<In>,
+     mut writer: impl Write,
+     out: &mut impl Write,
+     flush: &mut dyn FnMut(),
++    echo: &mut dyn FnMut(bool),
+ ) -> Ended {
+     let mut queue: VecDeque<Waiting> = VecDeque::new();
+     let mut shown: Option<(Waiting, Instant)> = None;
+-    // The ids of answers sent, oldest first, to match the daemon's replies.
+-    let mut sent: VecDeque<(String, &'static str)> = VecDeque::new();
++    // Answers sent, oldest first, to match the daemon's replies.
++    let mut sent: VecDeque<Sent> = VecDeque::new();
++    // A request whose yes the daemon refused for want of the password: the
++    // next typed line is the password (S2 part b).
++    let mut password_for: Option<Waiting> = None;
+     // When the last answer went out; the next card waits for its reply up to
+     // REPLY_WAIT.
+     let mut answered: Option<Instant> = None;
+     loop {
+         let replied = sent.is_empty() || answered.is_none_or(|t| t.elapsed() >= REPLY_WAIT);
+-        if shown.is_none() && replied {
++        if shown.is_none() && password_for.is_none() && replied {
+             // Skip requests that timed out while another was on screen.
+             while let Some(w) = queue.pop_front() {
+                 if w.deadline > Instant::now() {
+@@ -221,6 +255,10 @@ pub fn serve(
+         }
+         let wait = match (&shown, answered) {
+             (Some((w, _)), _) => w.deadline.saturating_duration_since(Instant::now()),
++            (None, _) if password_for.is_some() => password_for
++                .as_ref()
++                .map(|w| w.deadline.saturating_duration_since(Instant::now()))
++                .unwrap_or_default(),
+             (None, Some(t)) if !sent.is_empty() && !queue.is_empty() => {
+                 REPLY_WAIT.saturating_sub(t.elapsed())
+             }
+@@ -248,17 +286,86 @@ pub fn serve(
+                 }
+             }
+             Ok(In::Daemon(Incoming::Reply(reply))) => {
+-                let (id, word) = sent.pop_front().unwrap_or_default();
+-                match check_ok(reply) {
+-                    Ok(_) => {
+-                        let _ = writeln!(out, "  {word} sent for {}", clean(&id, 64));
++                let Some(answer) = sent.pop_front() else {
++                    continue;
++                };
++                let id = clean(&answer.id, 64);
++                let open = answer
++                    .waiting
++                    .filter(|w| w.deadline > Instant::now() && answer.word == "yes");
++                match (check_ok(reply), open) {
++                    (Ok(_), _) => {
++                        let _ = writeln!(out, "  {} sent for {id}", answer.word);
++                    }
++                    // The daemon wants the person's password for this yes.
++                    (Err(e), Some(w)) if wants_password(&e) && !answer.with_proof => {
++                        let _ = writeln!(out, "  {e}");
++                        let _ = write!(
++                            out,
++                            "  Your login password for {id} (not shown; Enter answers no): "
++                        );
++                        let _ = out.flush();
++                        flush();
++                        echo(false);
++                        password_for = Some(w);
++                    }
++                    // A wrong password: the card again, so y can be tried
++                    // once more after the daemon's back-off.
++                    (Err(e), Some(w)) if answer.with_proof => {
++                        let _ = writeln!(out, "  not sent for {id}: {e}");
++                        flush();
++                        prompt(out, &w, queue.len());
++                        shown = Some((w, Instant::now()));
+                     }
+-                    Err(e) => {
+-                        let _ = writeln!(out, "  too late for {}: {e}", clean(&id, 64));
++                    (Err(e), _) => {
++                        let _ = writeln!(out, "  too late for {id}: {e}");
+                     }
+                 }
+             }
+             Ok(In::Daemon(_)) => {}
++            Ok(In::Typed(mut text, _)) if password_for.is_some() => {
++                echo(true);
++                let _ = writeln!(out);
++                let Some(w) = password_for.take() else {
++                    continue;
++                };
++                let id = w
++                    .req
++                    .get("id")
++                    .and_then(Value::as_str)
++                    .unwrap_or("")
++                    .to_string();
++                let chat = w.req.get("chat").and_then(Value::as_str).unwrap_or("");
++                let password = text.trim_end_matches(['\n', '\r']).to_string();
++                let (line, word) = if password.is_empty() {
++                    (
++                        json!({"op": "answer", "id": id, "chat": chat, "answer": "no"}),
++                        "no",
++                    )
++                } else {
++                    (
++                        json!({"op": "answer", "id": id, "chat": chat, "answer": "yes",
++                            "proof": {"password": password}}),
++                        "yes",
++                    )
++                };
++                let mut wire = line.to_string();
++                let failed = writeln!(writer, "{wire}").is_err();
++                wipe(&mut wire);
++                wipe(&mut text);
++                let mut password = password;
++                wipe(&mut password);
++                if failed {
++                    return Ended::DaemonGone("the answer could not be sent".into());
++                }
++                sent.push_back(Sent {
++                    id,
++                    word,
++                    waiting: Some(w),
++                    with_proof: word == "yes",
++                });
++                answered = Some(Instant::now());
++            }
+             Ok(In::Typed(text, at)) => {
+                 let Some((w, since)) = shown.take() else {
+                     let _ = writeln!(out, "  (no request is waiting; that input was ignored)");
+@@ -286,12 +393,26 @@ pub fn serve(
+                 if writeln!(writer, "{line}").is_err() {
+                     return Ended::DaemonGone("the answer could not be sent".into());
+                 }
+-                sent.push_back((id, word));
++                sent.push_back(Sent {
++                    id,
++                    word,
++                    waiting: yes.then_some(w),
++                    with_proof: false,
++                });
+                 answered = Some(Instant::now());
+             }
+             Ok(In::DaemonGone(why)) => return Ended::DaemonGone(why),
+             Ok(In::TtyGone) => return Ended::TtyGone,
+             Err(RecvTimeoutError::Timeout) => {
++                if let Some(w) = password_for.take() {
++                    echo(true);
++                    let _ = writeln!(
++                        out,
++                        "\n  {}: timed out; the daemon answers no",
++                        label(&w.req)
++                    );
++                    continue;
++                }
+                 if shown.is_none() {
+                     // The reply did not come in time: the next card is drawn
+                     // at the top of the loop.
+@@ -310,7 +431,7 @@ pub fn serve(
+ fn drain_typed(
+     rx: &Receiver<In>,
+     queue: &mut VecDeque<Waiting>,
+-    sent: &mut VecDeque<(String, &'static str)>,
++    sent: &mut VecDeque<Sent>,
+     out: &mut impl Write,
+ ) {
+     let mut keep = Vec::new();
+@@ -334,10 +455,13 @@ fn drain_typed(
+     // queue; it is rare here and handled now.
+     for m in keep {
+         if let In::Daemon(Incoming::Reply(reply)) = m {
+-            let (id, word) = sent.pop_front().unwrap_or_default();
++            let Some(answer) = sent.pop_front() else {
++                continue;
++            };
++            let id = clean(&answer.id, 64);
+             let note = match check_ok(reply) {
+-                Ok(_) => format!("  {word} sent for {}", clean(&id, 64)),
+-                Err(e) => format!("  too late for {}: {e}", clean(&id, 64)),
++                Ok(_) => format!("  {} sent for {id}", answer.word),
++                Err(e) => format!("  not sent for {id}: {e}"),
+             };
+             let _ = writeln!(out, "{note}");
+         }
+@@ -379,6 +503,39 @@ fn prompt(out: &mut impl Write, w: &Waiting, more: usize) {
+     let _ = out.flush();
+ }
+ 
++/// Overwrites a string that held a password, in a way the compiler keeps.
++fn wipe(s: &mut String) {
++    // SAFETY: zero bytes are valid UTF-8, so the String stays valid.
++    for b in unsafe { s.as_bytes_mut() } {
++        // SAFETY: a valid, aligned, exclusive reference.
++        unsafe { std::ptr::write_volatile(b, 0) };
++    }
++    s.clear();
++}
++
++/// Turns the controlling terminal's echo off or on (termios(3), `ECHO`).
++fn set_tty_echo(on: bool) {
++    use std::os::fd::AsRawFd;
++    let Ok(t) = std::fs::File::open("/dev/tty") else {
++        return;
++    };
++    let fd = t.as_raw_fd();
++    // SAFETY: termios is plain data; tcgetattr fills it for an open terminal
++    // fd, and tcsetattr is called only when that succeeded.
++    unsafe {
++        let mut tio: libc::termios = std::mem::zeroed();
++        if libc::tcgetattr(fd, &mut tio) != 0 {
++            return;
++        }
++        if on {
++            tio.c_lflag |= libc::ECHO;
++        } else {
++            tio.c_lflag &= !libc::ECHO;
++        }
++        libc::tcsetattr(fd, libc::TCSANOW, &tio);
++    }
++}
++
+ /// `tcflush(TCIFLUSH)` on the controlling terminal: drops typed-ahead input
+ /// the kernel holds, so an answer meant for an earlier prompt cannot land on
+ /// this one.
+diff --git a/crates/derm-cli/src/watch/live_tests.rs b/crates/derm-cli/src/watch/live_tests.rs
+index dbbbc26..497aa1b 100644
+--- a/crates/derm-cli/src/watch/live_tests.rs
++++ b/crates/derm-cli/src/watch/live_tests.rs
+@@ -65,6 +65,25 @@ fn ev(id: &str, chat: &str, source: &str, kind: &str, summary: &str) -> Value {
+         "kind": kind, "summary": summary, "detail": {}})
+ }
+ 
++/// Marks `chat` as started by `derm run` under `boundary`, with a sleeping
++/// child as its harness (not this process, which is the approver). Wave 5
++/// lane V: a yes for a chat with no `run.start`, or one that runs as you,
++/// needs the person's password (S2 part b).
++fn start_chat(l: &Live, chat: &str, boundary: &str) -> std::process::Child {
++    let child = std::process::Command::new("sleep")
++        .arg("120")
++        .spawn()
++        .unwrap();
++    let r = post(
++        l,
++        json!({"id": format!("start-{chat}"), "at": 0, "chatId": chat, "harness": "claude-code",
++            "source": "run", "kind": "run.start", "summary": "",
++            "detail": {"boundary": boundary, "cwd": "/tmp"}, "pid": child.id()}),
++    );
++    assert_eq!(r["ok"], true, "{r}");
++    child
++}
++
+ /// A `Write` the test can read while `tail::run` still holds it.
+ #[derive(Clone, Default)]
+ struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
+@@ -231,6 +250,7 @@ fn the_approver_answers_a_hooks_request_end_to_end() {
+     let (tx, rx) = mpsc::channel::<In>();
+     let conn = Conn::open(&l.socket, "test approver").unwrap();
+     let writer = approve::register(conn, tx.clone()).unwrap();
++    let mut harness = start_chat(&l, "derm-chat-a", "srt");
+     let out = Shared::default();
+     let mut o = out.clone();
+     let h = std::thread::spawn(move || {
+@@ -267,6 +287,8 @@ fn the_approver_answers_a_hooks_request_end_to_end() {
+     let r = report::fetch(&l.socket, None, now - 60_000, now + 1_000).unwrap();
+     assert_eq!(r["approvals"]["yes:approver"], 1, "{r}");
+     assert_eq!(r["approvals"]["no:approver"], 1, "{r}");
++    let _ = harness.kill();
++    let _ = harness.wait();
+ }
+ 
+ #[test]
+@@ -393,3 +415,58 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
+         "{d}"
+     );
+ }
++
++/// S2 part b (wave 5 lane V), end to end: the chat runs as you, so the
++/// daemon refuses a `yes` until the person's password comes with it. The
++/// approver asks for it with echo off, sends it once, shows the card again
++/// after a wrong one, and Enter at the password prompt answers no. No
++/// password reaches the screen or a record.
++#[test]
++fn a_yes_for_a_chat_that_runs_as_you_asks_for_the_password() {
++    let l = live("person");
++    let (tx, rx) = mpsc::channel::<In>();
++    let conn = Conn::open(&l.socket, "test approver").unwrap();
++    let writer = approve::register(conn, tx.clone()).unwrap();
++    let mut harness = start_chat(&l, "derm-chat-a", "none");
++    let out = Shared::default();
++    let mut o = out.clone();
++    let echoes = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
++    let seen = echoes.clone();
++    let h = std::thread::spawn(move || {
++        let mut flush = || {};
++        let mut echo = |on: bool| seen.lock().unwrap().push(on);
++        approve::serve_with(&rx, writer, &mut o, &mut flush, &mut echo)
++    });
++    let asked = ask(&l, "ap-you", 30);
++    out.wait_for("Allow this one call? [y/N]");
++    std::thread::sleep(approve::SETTLE + Duration::from_millis(50));
++    tx.send(In::Typed("y\n".into(), Instant::now())).unwrap();
++    out.wait_for("not shown; Enter answers no");
++    assert_eq!(
++        *echoes.lock().unwrap(),
++        vec![false],
++        "echo off for the password"
++    );
++    tx.send(In::Typed("derm-lane-v-wrong\n".into(), Instant::now()))
++        .unwrap();
++    let text = out.wait_for("not sent for ap-you");
++    assert_eq!(*echoes.lock().unwrap(), vec![false, true], "echo back on");
++    assert!(
++        text.matches("Allow this one call? [y/N]").count() >= 2,
++        "the card again: {text}"
++    );
++    // Enter at the card: no.
++    std::thread::sleep(approve::SETTLE + Duration::from_millis(50));
++    tx.send(In::Typed("\n".into(), Instant::now())).unwrap();
++    let reply = asked.join().unwrap();
++    assert_eq!(reply["answer"], "no", "{reply}");
++    let text = out.text();
++    assert!(
++        !text.contains("derm-lane-v-wrong"),
++        "the password is never printed: {text}"
++    );
++    tx.send(In::TtyGone).unwrap();
++    let _ = h.join();
++    let _ = harness.kill();
++    let _ = harness.wait();
++}
+diff --git a/crates/derm-daemon/src/computer_use/service.rs b/crates/derm-daemon/src/computer_use/service.rs
+index bdbefd0..1400515 100644
+--- a/crates/derm-daemon/src/computer_use/service.rs
++++ b/crates/derm-daemon/src/computer_use/service.rs
+@@ -649,6 +649,33 @@ mod daemon_tests {
+             let (approver, pushes, _) = Outbox::new(daemon.next_conn());
+             daemon.handle(&Who::Daemon, Request::Approver {}, &approver);
+             assert_eq!(reply(&pushes)["ok"], true);
++            // The chat ran under srt, so a yes needs no person check (wave 5
++            // lane V, S2 part b; a grant from an unbounded chat needs the
++            // person's password).
++            let mut harness = std::process::Command::new("sleep")
++                .arg("120")
++                .spawn()
++                .unwrap();
++            let (started, started_rx, _) = Outbox::new(daemon.next_conn());
++            daemon.handle(
++                &Who::Daemon,
++                Request::Event {
++                    event: Event {
++                        id: "start-chat-1".into(),
++                        at: 0,
++                        chat_id: "chat-1".into(),
++                        harness: "pi".into(),
++                        source: Source::Run,
++                        kind: "run.start".into(),
++                        summary: String::new(),
++                        detail: serde_json::json!({"boundary": "srt"}),
++                        pid: Some(harness.id()),
++                        approval_id: None,
++                    },
++                },
++                &started,
++            );
++            assert_eq!(reply(&started_rx)["ok"], true);
+             let answering = daemon.clone();
+             let approver_conn = approver.clone();
+             let answered = std::thread::spawn(move || {
+@@ -663,6 +690,7 @@ mod daemon_tests {
+                         id,
+                         answer: said,
+                         chat: None,
++                        proof: None,
+                     },
+                     &approver_conn,
+                 );
+@@ -673,6 +701,8 @@ mod daemon_tests {
+                 expect
+             );
+             answered.join().unwrap();
++            let _ = harness.kill();
++            let _ = harness.wait();
+             let _ = std::fs::remove_dir_all(root);
+         }
+     }
+diff --git a/crates/derm-daemon/src/daemon.rs b/crates/derm-daemon/src/daemon.rs
+index 718fe29..b1cfb95 100644
+--- a/crates/derm-daemon/src/daemon.rs
++++ b/crates/derm-daemon/src/daemon.rs
+@@ -268,6 +268,10 @@ pub struct Daemon {
+     /// until its `run.stop` (S2: an approver may not be one of them or run
+     /// under one).
+     runs: Mutex<HashMap<String, RunPid>>,
++    /// A chat that runs as the person with no boundary has started since the
++    /// daemon did: what it left running may hold `daemon.token`, so every
++    /// `yes` needs the person check from then on (S2 part b, lane V).
++    ran_as_you: std::sync::atomic::AtomicBool,
+     /// What `derm status` shows for each running chat, from its `run.start`:
+     /// harness, boundary, when, full-access flags (box test w2, BW3: the
+     /// tail's backlog lost a chat behind a flood of newer events).
+@@ -395,6 +399,7 @@ impl Daemon {
+             pending: Mutex::new(HashMap::new()),
+             chats: Mutex::new(HashMap::new()),
+             runs: Mutex::new(HashMap::new()),
++            ran_as_you: std::sync::atomic::AtomicBool::new(false),
+             run_info: Mutex::new(HashMap::new()),
+             minted_at: Mutex::new(HashMap::new()),
+             state_file,
+@@ -692,8 +697,24 @@ impl Daemon {
+                     out.send(&ok());
+                 }
+             }
+-            Request::Answer { id, answer, chat } => {
+-                out.send(&self.op_answer(out.conn, &id, chat.as_deref(), answer));
++            Request::Answer {
++                id,
++                answer,
++                chat,
++                proof,
++            } => {
++                // S2 part b (lane V): a yes an agent could forge needs the
++                // person's password; the bytes are wiped once checked.
++                let mut password = proof.map(|p| p.password.into_bytes());
++                let ran_as_you = self.ran_as_you.load(Ordering::SeqCst);
++                out.send(&self.op_answer_proved(
++                    out.conn,
++                    &id,
++                    chat.as_deref(),
++                    answer,
++                    password.as_mut(),
++                    ran_as_you,
++                ));
+             }
+             Request::TokenMint { chat, harness } => {
+                 out.send(&self.op_mint(who, &chat, &harness));
+@@ -738,7 +759,11 @@ impl Daemon {
+                         if runs.len() < 2_048 || runs.contains_key(&event.chat_id) {
+                             runs.insert(event.chat_id.clone(), RunPid::of(pid));
+                             if let Ok(mut info) = self.run_info.lock() {
+-                                info.insert(event.chat_id.clone(), run_info_of(&event, now_ms()));
++                                let run = run_info_of(&event, now_ms());
++                                if approver::person::runs_as_person(&run) {
++                                    self.ran_as_you.store(true, Ordering::SeqCst);
++                                }
++                                info.insert(event.chat_id.clone(), run);
+                             }
+                         }
+                     }
+@@ -1267,6 +1292,8 @@ fn run_info_of(event: &Event, received: i64) -> Value {
+         "boundary": cut(event.detail.get("boundary"), 16),
+         "since": received,
+         "fullAccessFlags": flags,
++        // The agents' user the chat runs as (lane V), its name only.
++        "agentUser": cut(event.detail.get("agentUser").and_then(|u| u.get("user")), 32),
+     })
+ }
+ 
+@@ -1295,6 +1322,7 @@ fn run_info_restored(v: &Value) -> Value {
+         "boundary": cut("boundary", 16),
+         "since": v.get("since").and_then(Value::as_i64),
+         "fullAccessFlags": flags,
++        "agentUser": cut("agentUser", 32),
+     })
+ }
+ 
+diff --git a/crates/derm-daemon/src/protocol.rs b/crates/derm-daemon/src/protocol.rs
+index b94c904..25a991c 100644
+--- a/crates/derm-daemon/src/protocol.rs
++++ b/crates/derm-daemon/src/protocol.rs
+@@ -47,6 +47,10 @@ pub enum Request {
+         answer: Answer,
+         #[serde(default)]
+         chat: Option<String>,
++        /// The person's proof, sent only after the daemon refused a `yes`
++        /// for want of it (S2 part b, wave 5 lane V). Never logged.
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        proof: Option<Proof>,
+     },
+     /// Mint a chat token. Needs the daemon scope.
+     #[serde(rename = "token.mint")]
+@@ -72,6 +76,21 @@ pub enum CuAction {
+     Revoke,
+ }
+ 
++/// What an approver sends to show a person answers (S2 part b): the
++/// daemon's user's login password, checked by the system's own helper.
++#[derive(Clone, PartialEq, Serialize, Deserialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub struct Proof {
++    pub password: String,
++}
++
++/// Never prints the password.
++impl std::fmt::Debug for Proof {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("Proof(..)")
++    }
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "lowercase")]
+ pub enum Answer {
+diff --git a/crates/derm-daemon/tests/socket.rs b/crates/derm-daemon/tests/socket.rs
+index a85d846..3fe63c6 100644
+--- a/crates/derm-daemon/tests/socket.rs
++++ b/crates/derm-daemon/tests/socket.rs
+@@ -114,6 +114,24 @@ fn mint(c: &mut Client, chat: &str, harness: &str) -> String {
+     r["token"].as_str().unwrap().to_string()
+ }
+ 
++/// Marks `chat` as started by `derm run` under srt (lane V, S2 part b: a `yes`
++/// for a chat with no `run.start`, or one that runs as you, needs the
++/// person's password). The harness pid is a child that sleeps, so the test
++/// process is not taken for a chat's harness. Kill the child when done.
++fn started_under_srt(d: &mut Client, chat: &str) -> std::process::Child {
++    let child = std::process::Command::new("sleep")
++        .arg("120")
++        .spawn()
++        .unwrap();
++    let r = d.ask(json!({"op": "event", "event": {
++        "id": format!("run-start-{chat}"), "at": 0, "chatId": chat, "harness": "claude-code",
++        "source": "run", "kind": "run.start", "summary": "",
++        "detail": {"boundary": "srt", "cwd": "/tmp"}, "pid": child.id()
++    }}));
++    assert_eq!(r["ok"], true, "{r}");
++    child
++}
++
+ fn event(id: &str, chat: &str, source: &str, kind: &str, detail: Value) -> Value {
+     json!({"op": "event", "event": {
+         "id": id, "at": 0, "chatId": chat, "harness": "pi", "source": source,
+@@ -582,6 +600,7 @@ fn the_first_approver_answer_wins_and_the_outcome_is_recorded() {
+     let mut a2 = Client::daemon(&f);
+     assert_eq!(a1.ask(json!({"op": "approver"}))["ok"], true);
+     assert_eq!(a2.ask(json!({"op": "approver"}))["ok"], true);
++    let mut harness = started_under_srt(&mut d, "chat-b");
+     let (mut c, _) = Client::hello(&f, &token);
+     let mut t = Client::daemon(&f);
+     t.ask(json!({"op": "tail", "chat": "chat-b"}));
+@@ -623,6 +642,8 @@ fn the_first_approver_answer_wins_and_the_outcome_is_recorded() {
+     assert_eq!(answered["event"]["detail"]["answer"], "yes");
+     assert_eq!(answered["event"]["detail"]["by"], "approver");
+     assert_eq!(answered["event"]["approvalId"], "ap-2");
++    let _ = harness.kill();
++    let _ = harness.wait();
+ }
+ 
+ #[test]
+@@ -828,6 +849,7 @@ fn one_chat_cannot_hold_every_approval_slot_or_reuse_a_waiting_id() {
+     }}));
+     assert_eq!(r["by"], "none");
+     // Another chat still gets through.
++    let mut harness = started_under_srt(&mut d, "other");
+     let asker = std::thread::spawn(move || {
+         d.ask(json!({"op": "approve", "request": {
+             "id": "o-1", "chat": "other", "harness": "pi", "tool": "bash",
+@@ -843,6 +865,8 @@ fn one_chat_cannot_hold_every_approval_slot_or_reuse_a_waiting_id() {
+     for mut c in waiting {
+         assert_eq!(c.recv()["answer"], "no");
+     }
++    let _ = harness.kill();
++    let _ = harness.wait();
+ }
+ 
+ /// Integration w1's security finding S8: pending approvals were keyed by the
+@@ -857,6 +881,7 @@ fn two_chats_may_wait_on_the_same_request_id() {
+     let tb = mint(&mut d, "chat-b", "claude-code");
+     let mut approver = Client::daemon(&f);
+     approver.ask(json!({"op": "approver"}));
++    let mut harness = started_under_srt(&mut d, "chat-b");
+     let ask = |token: String, f: &Fixture| {
+         let (mut c, _) = Client::hello(f, &token);
+         c.send(json!({"op": "approve", "request": {
+@@ -887,6 +912,8 @@ fn two_chats_may_wait_on_the_same_request_id() {
+     let r = approver.ask(json!({"op": "answer", "id": "toolu_1", "answer": "no"}));
+     assert_eq!(r["ok"], true, "{r}");
+     assert_eq!(a.recv()["answer"], "no");
++    let _ = harness.kill();
++    let _ = harness.wait();
+ }
+ 
+ /// Integration w1's security finding S2, part a (lane J's request 1a): an
+@@ -904,7 +931,7 @@ fn an_approver_inside_a_running_chat_is_refused() {
+         json!({"op": "event", "event": {
+             "id": format!("run-{kind}"), "at": 0, "chatId": "chat-s2", "harness": "pi",
+             "source": "run", "kind": kind, "summary": kind,
+-            "detail": {"cwd": "/tmp"}, "pid": me
++            "detail": {"boundary": "srt", "cwd": "/tmp"}, "pid": me
+         }})
+     };
+     assert_eq!(d.ask(run("run.start"))["ok"], true);
+@@ -929,6 +956,9 @@ fn an_approver_inside_a_running_chat_is_refused() {
+     assert_eq!(d.ask(run("run.stop"))["ok"], true);
+     let mut a = Client::daemon(&f);
+     assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
++    // Started again under srt, after the approver registered, so a yes for
++    // it needs no person check (lane V, S2 part b).
++    let mut harness = started_under_srt(&mut d, "chat-s2");
+     let asker = std::thread::spawn(move || {
+         d.ask(json!({"op": "approve", "request": {
+             "id": "s2-2", "chat": "chat-s2", "harness": "pi", "tool": "bash",
+@@ -962,6 +992,8 @@ fn an_approver_inside_a_running_chat_is_refused() {
+     }
+     let answered = answered.expect("the answered request's record");
+     assert_eq!(answered["detail"]["approver"]["pid"], me, "{answered}");
++    let _ = harness.kill();
++    let _ = harness.wait();
+ }
+ 
+ /// Lane K's request 3 (integration w2): computer use's controls are a
+@@ -1214,3 +1246,63 @@ fn no_socket_client_posts_a_tap_or_derm_record() {
+         assert_eq!(r["error"], "tap and derm events are written by the daemon");
+     }
+ }
++
++/// S2 part b (wave 5 lane V): a `yes` for a chat that runs as you with no
++/// boundary needs your password in `proof`; without one, or with a wrong
++/// one, it is refused and the request keeps waiting; a `no` needs nothing.
++/// The password is never in a record.
++#[test]
++fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
++    let f = fixture();
++    let mut d = Client::daemon(&f);
++    let mut a = Client::daemon(&f);
++    assert_eq!(a.ask(json!({"op": "approver"}))["ok"], true);
++    let mut sleeper = std::process::Command::new("sleep")
++        .arg("120")
++        .spawn()
++        .unwrap();
++    let r = d.ask(json!({"op": "event", "event": {
++        "id": "run-start-you", "at": 0, "chatId": "chat-you", "harness": "pi",
++        "source": "run", "kind": "run.start", "summary": "",
++        "detail": {"boundary": "none", "cwd": "/tmp"}, "pid": sleeper.id()
++    }}));
++    assert_eq!(r["ok"], true, "{r}");
++    let asker = std::thread::spawn(move || {
++        d.ask(json!({"op": "approve", "request": {
++            "id": "pb-1", "chat": "chat-you", "harness": "pi", "tool": "bash",
++            "summary": "", "timeoutSeconds": 30
++        }}))
++    });
++    assert_eq!(a.recv()["approve"]["id"], "pb-1");
++    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes"}));
++    assert_eq!(r["ok"], false, "{r}");
++    let why = r["error"].as_str().unwrap_or("");
++    assert!(
++        why.contains("password is needed") && why.contains("runs as you"),
++        "{why}"
++    );
++    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "yes",
++        "proof": {"password": "derm-lane-v-wrong-password"}}));
++    assert_eq!(r["ok"], false, "{r}");
++    let r = a.ask(json!({"op": "answer", "id": "pb-1", "answer": "no"}));
++    assert_eq!(r["ok"], true, "{r}");
++    assert_eq!(asker.join().unwrap()["answer"], "no");
++    let mut t = Client::daemon(&f);
++    t.ask(json!({"op": "tail", "since": 0}));
++    let mut lines = Vec::new();
++    while let Some(line) = t.try_recv(Duration::from_millis(300)) {
++        lines.push(line);
++    }
++    let all = serde_json::to_string(&lines).unwrap();
++    assert!(
++        !all.contains("derm-lane-v-wrong-password"),
++        "no password in any record"
++    );
++    let checks = lines
++        .iter()
++        .filter(|l| l["event"]["kind"] == "person.check")
++        .count();
++    assert_eq!(checks, 2, "both refused yeses are recorded");
++    let _ = sleeper.kill();
++    let _ = sleeper.wait();
++}
+diff --git a/tests/integration/w1.mjs b/tests/integration/w1.mjs
+index f2c8aa5..493f899 100644
+--- a/tests/integration/w1.mjs
++++ b/tests/integration/w1.mjs
+@@ -221,43 +221,16 @@ try {
+   const POLICY = join(policyDir, "policy.json");
+   writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }), { mode: 0o600 });
+ 
+-  // ---- 1. derm run (lane D) + real Pi + derm-pi (lane A) -> daemon (lane B)
+-  if (!PI) {
+-    info("derm run with Pi", "not run: no --pi given");
+-  } else {
+-    model = await fakeModel({ name: "bash", input: { command: "echo derm-int-ok" } });
+-    const agent = join(HOME, ".pi", "agent");
+-    mkdirSync(agent, { recursive: true });
+-    writeFileSync(
+-      join(agent, "models.json"),
+-      JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${model.port}`, api: "anthropic-messages", apiKey: "fake-key", models: [{ id: "fake-model", name: "fake-model", contextWindow: 200000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }),
+-    );
+-    // Pi's own ask has no UI in JSON mode, so bash is allowed for this run.
+-    writeFileSync(POLICY, JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
+-    const env = { ...baseEnv, PATH: `${dirname(PI)}${delimiter}${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0" };
+-    const piArgs = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", join(ROOT, "packages", "derm-pi"), "--model", "fake/fake-model", "--mode", "json", "run the step"];
+-    const chat = "int-pi-1";
+-    const r = await runCmd(DERM, ["run", "pi", "--boundary", "none", "--chat", chat, "--cwd", WORK, "--", ...piArgs], env);
+-    check("derm run pi --boundary none exits 0", r.code === 0, `code ${r.code}; ${r.err.split("\n").filter(Boolean).slice(-2).join(" | ")}`);
+-    await until(() => events.some((e) => e.chatId === chat && e.kind === "run.stop"), 5000);
+-    const mine = events.filter((e) => e.chatId === chat);
+-    const start = mine.find((e) => e.source === "run" && e.kind === "run.start");
+-    const stop = mine.find((e) => e.source === "run" && e.kind === "run.stop");
+-    check("run.start reaches the daemon with runsAs you", start && start.detail?.runsAs === "you", start ? JSON.stringify(start.detail).slice(0, 160) : "none");
+-    check("run.stop reaches the daemon with the exit code", stop && stop.detail?.exitCode === 0, stop ? JSON.stringify(stop.detail) : "none");
+-    await until(() => mine.length < 0 || events.some((e) => e.chatId === chat && e.source === "otel" && /tool_result/.test(e.kind + JSON.stringify(e.detail))), 4000);
+-    const otel = events.filter((e) => e.chatId === chat && e.source === "otel");
+-    const kinds = [...new Set(otel.map((e) => e.kind))].sort();
+-    check("Pi's OTLP records land in the run's chat, harness pi", otel.length > 0 && otel.every((e) => e.harness === "pi"), `${otel.length} records, kinds ${kinds.join(",")}`);
+-    const call = otel.find((e) => e.kind === "tool.call");
+-    check("the Pi tool call is one record joined by tool_use_id", Boolean(call), call ? `${call.id} ${call.summary ?? ""}`.slice(0, 120) : `kinds ${kinds.join(",")}`);
+-    await model.close();
+-    model = undefined;
+-  }
+-
+   // A chat token for the hook checks, as `derm run` would mint it.
+   const mint = await tail.c.send({ op: "token.mint", chat: "int-cc-1", harness: "claude-code" });
+   check("token.mint for a claude-code chat", mint.ok === true && /^[0-9a-f]{64}$/.test(mint.token ?? ""));
++  // Started under srt, as \`derm run\` would record it: a yes for a chat with
++  // no run.start, or one that runs as you, needs the person's password (wave
++  // 5 lane V, S2 part b). The harness pid is a sleeping child, not this
++  // process, which is the approver.
++  const ccHarness = spawn("sleep", ["300"], { stdio: "ignore" });
++  const started = await tail.c.send({ op: "event", event: { id: "int-cc-1-start", at: 0, chatId: "int-cc-1", harness: "claude-code", source: "run", kind: "run.start", summary: "", detail: { boundary: "srt", cwd: WORK }, pid: ccHarness.pid } });
++  check("run.start for the claude-code chat, under srt", started.ok === true, JSON.stringify(started));
+   writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }, { tool: "read", action: "allow" }] }), { mode: 0o600 });
+ 
+   // ---- 2. lane F's Claude Code hook -> real daemon
+@@ -302,6 +275,54 @@ try {
+   h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ DERM_CHAT_TOKEN_FILE: join(tokDir, "token"), DERM_CHAT_ID: "int-cc-1" }), pre("toolu_int3"));
+   check("hook reads the chat token from DERM_CHAT_TOKEN_FILE", decision(h.out) === "allow" && asked.length === before3 + 1, `decision ${decision(h.out)}; asked ${asked.length - before3}; ${reason(h.out)}`);
+ 
++  // ---- 1. derm run (lane D) + real Pi + derm-pi (lane A) -> daemon (lane B)
++  if (!PI) {
++    info("derm run with Pi", "not run: no --pi given");
++  } else {
++    model = await fakeModel({ name: "bash", input: { command: "echo derm-int-ok" } });
++    const agent = join(HOME, ".pi", "agent");
++    mkdirSync(agent, { recursive: true });
++    writeFileSync(
++      join(agent, "models.json"),
++      JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${model.port}`, api: "anthropic-messages", apiKey: "fake-key", models: [{ id: "fake-model", name: "fake-model", contextWindow: 200000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }),
++    );
++    // Pi's own ask has no UI in JSON mode, so bash is allowed for this run.
++    writeFileSync(POLICY, JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
++    const env = { ...baseEnv, PATH: `${dirname(PI)}${delimiter}${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0" };
++    const piArgs = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", join(ROOT, "packages", "derm-pi"), "--model", "fake/fake-model", "--mode", "json", "run the step"];
++    const chat = "int-pi-1";
++    const r = await runCmd(DERM, ["run", "pi", "--boundary", "none", "--chat", chat, "--cwd", WORK, "--", ...piArgs], env);
++    check("derm run pi --boundary none exits 0", r.code === 0, `code ${r.code}; ${r.err.split("\n").filter(Boolean).slice(-2).join(" | ")}`);
++    await until(() => events.some((e) => e.chatId === chat && e.kind === "run.stop"), 5000);
++    const mine = events.filter((e) => e.chatId === chat);
++    const start = mine.find((e) => e.source === "run" && e.kind === "run.start");
++    const stop = mine.find((e) => e.source === "run" && e.kind === "run.stop");
++    check("run.start reaches the daemon with runsAs you", start && start.detail?.runsAs === "you", start ? JSON.stringify(start.detail).slice(0, 160) : "none");
++    check("run.stop reaches the daemon with the exit code", stop && stop.detail?.exitCode === 0, stop ? JSON.stringify(stop.detail) : "none");
++    await until(() => mine.length < 0 || events.some((e) => e.chatId === chat && e.source === "otel" && /tool_result/.test(e.kind + JSON.stringify(e.detail))), 4000);
++    const otel = events.filter((e) => e.chatId === chat && e.source === "otel");
++    const kinds = [...new Set(otel.map((e) => e.kind))].sort();
++    check("Pi's OTLP records land in the run's chat, harness pi", otel.length > 0 && otel.every((e) => e.harness === "pi"), `${otel.length} records, kinds ${kinds.join(",")}`);
++    const call = otel.find((e) => e.kind === "tool.call");
++    check("the Pi tool call is one record joined by tool_use_id", Boolean(call), call ? `${call.id} ${call.summary ?? ""}`.slice(0, 120) : `kinds ${kinds.join(",")}`);
++    await model.close();
++    model = undefined;
++  }
++
++
++  // After a chat ran as you (section 1), what it left running could read
++  // daemon.token, so a yes needs the person's password from then on, for
++  // every chat (S2 part b). The approver here answers yes without one: the
++  // daemon refuses it, the ask times out, and the hook denies.
++  if (PI) {
++    writeFileSync(POLICY, JSON.stringify({ version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "ask" }] }), { mode: 0o600 });
++    const before4 = asked.length;
++    h = await runCmd(process.execPath, ["--no-warnings", hookBin, "pre"], hookEnv({ DERM_CHAT_TOKEN: mint.token, DERM_CHAT_ID: "int-cc-1" }), pre("toolu_int4"));
++    const checked = await until(() => events.find((e) => e.source === "approval" && e.kind === "person.check" && e.chatId === "int-cc-1"), 3000);
++    check("after a chat ran as you, a yes without the password is refused", decision(h.out) === "deny" && asked.length === before4 + 1 && checked?.detail?.passed === false, `decision ${decision(h.out)}; asked ${asked.length - before4}; ${checked ? checked.detail.why : "no person.check record"}`);
++  }
++  ccHarness.kill();
++
+   // ---- 3. lane C's derm connect --write -> daemon log
+   const entry = join(top, "entry.json");
+   writeFileSync(entry, readFileSync(join(ROOT, "contracts", "fixtures", "entry", "server.json"), "utf8"));

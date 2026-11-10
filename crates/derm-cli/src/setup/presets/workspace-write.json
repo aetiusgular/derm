@@ -1,0 +1,1706 @@
+{
+  "$comment": "derm setup's policy preset (wave 5, lane W; plans/toolkit_universal_plan.md lane W). `policy` is written to ~/.derm/policy.json as it is; the rest describes it. Command rules (`command`) need contracts/policy.md section 7 in the matchers (lane W's request W-1); until it lands a policy that holds one fails the schema and every call asks, so derm setup refuses to write it.",
+  "name": "workspace-write",
+  "default": true,
+  "summary": "Quiet inside, strict at the edges: reads, edits and shell commands in the project run; pushes, deploys, cloud and container commands, remote shells, package installs (section 6) and control files (step 7a) ask, and Docker's host access is denied. The default, and the policy derm's sbx kit copies into the VM.",
+  "boundary": "Every boundary. Under derm's sbx kit (Claude Code, lane T, P4) this file is copied into the VM as it is, and the kit's full access turns every ask into a deny (case 83): there the asks are where work stops, so ordinary work in the project folder is allowed. On the host under srt or as you, an ask is a card (or the agent's own prompt).",
+  "readAt": "5 Nov 2026",
+  "cli": {
+    "git": "2.43.0 (`git push -h`, `git help -a`, run 5 Nov 2026)",
+    "gh": "2.89.0 (`gh <group> --help` for pr, issue, repo, release, run, workflow, secret, variable, auth, api; run 5 Nov 2026)",
+    "vercel": "65.11.0 (`vercel --help`, `vercel deploy --help`, `env`, `domains`; run 5 Nov 2026; `vc` is the same program, package.json bin)",
+    "netlify": "netlify-cli 27.16.2 (dist/commands/deploy/index.js:33-36 `-p, --prod`, `--prod-if-unlocked`; the env:* and sites:* commands; `ntl` is the same program, package.json bin; read, not run)",
+    "fly": "flyctl: not installed or read here (GitHub release downloads refused by the workspace's proxy); `fly deploy` and `fly apps destroy` from fly.io's docs index, `flyctl` as fly's other name (I). Not verified",
+    "aws": "aws-cli 1.46.2 (pip; the iam service model at awscli/botocore/data/iam/2010-05-08); AWS CLI v2 not read. `aws <service> <operation>`",
+    "gcloud": "Google Cloud SDK 570.0.0 (`gcloud --help`, `gcloud iam --help`, `gcloud projects --help`; run 5 Nov 2026)",
+    "az": "Azure CLI not installed here; `az role assignment create` from Microsoft Learn, Assign Azure roles using Azure CLI (read 5 Nov 2026); `az ad` from its reference index (I)",
+    "docker": "Docker 29.9.2 (`docker run --help`, `docker compose --help`; run 5 Nov 2026)",
+    "kubectl": "Kubernetes v1.36 reference, kubectl apply (read 5 Nov 2026); the other verbs from the same reference's index (I). Not installed here",
+    "terraform": "Terraform v1.17.x reference, terraform destroy, \"a convenience alias for ... terraform apply -destroy\" (read 5 Nov 2026). Not installed here"
+  },
+  "gaps": [
+    "Shell text with `$`, a backtick, `!`, braces, `~`, a backslash or a glob asks under every preset (step 7b), so in the sbx VM it is denied: the agent must spell commands plainly.",
+    "A command reached through a script, a Makefile target, an alias or `find -exec` is not read (policy.md section 7, known limits); a force push by refspec (`git push origin +main`) has no flag to meet.",
+    "Hosts: the presets do not ask about curl or wget. The boundary's network rules decide which hosts a chat reaches (srt's allowlist on the host, sbx's policy in the VM).",
+    "CI workflow folders (`.github/workflows/`) are not a control path of step 7a yet: lane W's request W-3."
+  ],
+  "policy": {
+    "version": 1,
+    "askTimeoutSeconds": 60,
+    "servers": [],
+    "rules": [
+      {
+        "tool": "read",
+        "action": "allow"
+      },
+      {
+        "tool": "glob",
+        "action": "allow"
+      },
+      {
+        "tool": "grep",
+        "action": "allow"
+      },
+      {
+        "tool": "lsp",
+        "action": "allow"
+      },
+      {
+        "tool": "find",
+        "action": "allow"
+      },
+      {
+        "tool": "ls",
+        "action": "allow"
+      },
+      {
+        "tool": "todowrite",
+        "action": "allow"
+      },
+      {
+        "tool": "toolsearch",
+        "action": "allow"
+      },
+      {
+        "tool": "askuserquestion",
+        "action": "allow"
+      },
+      {
+        "tool": "enterplanmode",
+        "action": "allow"
+      },
+      {
+        "tool": "exitplanmode",
+        "action": "allow"
+      },
+      {
+        "tool": "taskcreate",
+        "action": "allow"
+      },
+      {
+        "tool": "taskget",
+        "action": "allow"
+      },
+      {
+        "tool": "tasklist",
+        "action": "allow"
+      },
+      {
+        "tool": "taskupdate",
+        "action": "allow"
+      },
+      {
+        "tool": "taskoutput",
+        "action": "allow"
+      },
+      {
+        "tool": "taskstop",
+        "action": "allow"
+      },
+      {
+        "tool": "agent",
+        "action": "allow"
+      },
+      {
+        "tool": "skill",
+        "action": "allow"
+      },
+      {
+        "tool": "write",
+        "action": "allow"
+      },
+      {
+        "tool": "edit",
+        "action": "allow"
+      },
+      {
+        "tool": "multiedit",
+        "action": "allow"
+      },
+      {
+        "tool": "notebookedit",
+        "action": "allow"
+      },
+      {
+        "tool": "apply_patch",
+        "action": "allow"
+      },
+      {
+        "tool": "patch",
+        "action": "allow"
+      },
+      {
+        "tool": "enterworktree",
+        "action": "allow"
+      },
+      {
+        "tool": "exitworktree",
+        "action": "allow"
+      },
+      {
+        "tool": "bash",
+        "action": "allow"
+      },
+      {
+        "tool": "monitor",
+        "action": "allow"
+      },
+      {
+        "tool": "powershell",
+        "action": "allow"
+      },
+      {
+        "tool": "websearch",
+        "action": "allow"
+      },
+      {
+        "tool": "webfetch",
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "push"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "filter-branch"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "filter-repo"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "reset",
+          "--hard"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "clean"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "reflog",
+          "expire"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "update-ref",
+          "-d"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "clone"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "add"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "set-url"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "rename"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "remove"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "remote",
+          "rm"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "submodule",
+          "add"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "git",
+          "config"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "merge"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "close"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "reopen"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "edit"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "comment"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "review"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "ready"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "revert"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "lock"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "pr",
+          "unlock"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "close"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "reopen"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "comment"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "edit"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "lock"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "unlock"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "pin"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "unpin"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "transfer"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "develop"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "release",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "release",
+          "edit"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "release",
+          "upload"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "fork"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "edit"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "sync"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "deploy-key"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "workflow",
+          "run"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "workflow",
+          "enable"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "workflow",
+          "disable"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "run",
+          "rerun"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "run",
+          "cancel"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "variable",
+          "set"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "label",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "label",
+          "edit"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "label",
+          "clone"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "config",
+          "set"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "alias",
+          "set"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "alias",
+          "import"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "alias",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "gist"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "project"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "codespace"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "copilot"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "agent-task"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "api"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "archive"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "repo",
+          "rename"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "release",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "release",
+          "delete-asset"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "issue",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "run",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "secret"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "variable",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "login"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "logout"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "refresh"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "token"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "status",
+          "-t"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "status",
+          "--show-token"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "setup-git"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "auth",
+          "switch"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "ssh-key"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "gpg-key"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "extension"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "cache",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gh",
+          "label",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "vercel"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "vc"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "netlify"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ntl"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "fly"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "flyctl"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "aws"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "gcloud"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "az"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "build"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "buildx"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "compose"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "exec"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "push"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "login"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "rm"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "rmi"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "system",
+          "prune"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "volume",
+          "rm"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "image",
+          "rm"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "rm"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--privileged"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "-v"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--volume"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--mount"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--pid"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--cap-add"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--device"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "run",
+          "--security-opt"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--privileged"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "-v"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--volume"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--mount"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--pid"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--cap-add"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--device"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "create",
+          "--security-opt"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--privileged"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "-v"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--volume"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--mount"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--pid"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--cap-add"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--device"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "run",
+          "--security-opt"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--privileged"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "-v"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--volume"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--mount"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--pid"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--cap-add"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--device"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "docker",
+          "container",
+          "create",
+          "--security-opt"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "apply"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "delete"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "create"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "replace"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "patch"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "edit"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "scale"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "drain"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "cordon"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "exec"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "set"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "kubectl",
+          "rollout"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "apply"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "destroy"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "import"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "state"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "taint"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "untaint"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "terraform",
+          "force-unlock"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "setup"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "watch",
+          "approve"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "watch",
+          "--approve"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "connect",
+          "--ungate"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "connect",
+          "--write"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "connect"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "run"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "cu"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm-daemon"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ssh"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "scp"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "sftp"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "rsync"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "nc"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ncat"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "socat"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "telnet"
+        ],
+        "action": "ask"
+      }
+    ]
+  }
+}

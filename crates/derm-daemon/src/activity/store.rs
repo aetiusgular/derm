@@ -228,6 +228,56 @@ pub fn read(
     read_where(dir, since_ms, until_ms, chat_id, limit, &|_| true)
 }
 
+/// Reads the records between two times that `keep` wants, the newest
+/// `limit` of them when there are more (`truncated` then says so). `read`
+/// keeps the first `limit` it reads, which for a backlog is the oldest: a
+/// restarted daemon's tail then left out the newest chats (fp13's review,
+/// FP13R-1). A first pass finds the time of the `limit`-th newest record
+/// with a heap of `limit` times; the second reads from there.
+pub fn read_newest(
+    dir: &Path,
+    since_ms: i64,
+    until_ms: i64,
+    chat_id: Option<&str>,
+    limit: usize,
+    keep: &dyn Fn(&ActivityEvent) -> bool,
+) -> ReadBack {
+    let first = read_where(dir, since_ms, until_ms, chat_id, limit, keep);
+    if !first.truncated || limit == 0 {
+        return first;
+    }
+    let heap =
+        std::cell::RefCell::new(std::collections::BinaryHeap::<std::cmp::Reverse<i64>>::new());
+    let count = |e: &ActivityEvent| {
+        if keep(e) {
+            let mut h = heap.borrow_mut();
+            h.push(std::cmp::Reverse(e.at));
+            if h.len() > limit {
+                h.pop();
+            }
+        }
+        false
+    };
+    let _ = read_where(dir, since_ms, until_ms, chat_id, usize::MAX, &count);
+    let cutoff = heap
+        .into_inner()
+        .peek()
+        .map_or(since_ms, |r| r.0)
+        .max(since_ms);
+    // Records stamped at the cutoff itself may be more than one; the caller
+    // keeps the newest `limit` (`merge_backlog`).
+    let mut back = read_where(
+        dir,
+        cutoff,
+        until_ms,
+        chat_id,
+        limit.saturating_add(limit),
+        keep,
+    );
+    back.truncated = true;
+    back
+}
+
 /// Whether a record written later under an event's id may take its place.
 /// Only telemetry replaces telemetry, and a source replaces its own: a
 /// webview write can never wipe a computer-use or collector record by
@@ -235,8 +285,13 @@ pub fn read(
 /// one chat's token cannot replace another chat's record by reusing its id
 /// (tk lane B; chat tokens sit in a harness's environment).
 pub fn may_replace(old: &ActivityEvent, new: &ActivityEvent) -> bool {
-    use super::types::ActivitySource::{Adapter, Otel};
+    use super::types::ActivitySource::{Adapter, Auditd, Eslogger, Otel};
+    // A kernel record does not change: an OS feed that reads its log again
+    // (a gap's re-read, fp13's re-review FP13RR-2) posts the same record
+    // later, and the later copy carried the re-post's time (fp13's second
+    // re-review, FP13RR2-1). The first copy is kept.
     old.chat_id == new.chat_id
+        && !matches!(old.source, Auditd | Eslogger)
         && !is_gate_decision(old)
         && (old.source == new.source
             || (matches!(old.source, Adapter | Otel) && matches!(new.source, Adapter | Otel)))
@@ -253,6 +308,17 @@ pub fn may_replace(old: &ActivityEvent, new: &ActivityEvent) -> bool {
 pub fn is_gate_decision(event: &ActivityEvent) -> bool {
     use super::types::ActivitySource::{Adapter, Otel};
     event.kind == "approval" && matches!(event.source, Adapter | Otel)
+}
+
+/// One chat's run records (`run.start`, `run.stop`, posted by the daemon
+/// scope only) up to `until_ms`, over the whole log, so a report on a
+/// window that misses the chat's start still finds its run (fix pass 4's
+/// review, FP4-S5).
+pub fn read_runs(dir: &Path, chat_id: &str, until_ms: i64, limit: usize) -> ReadBack {
+    read_where(dir, 0, until_ms, Some(chat_id), limit, &|e| {
+        e.source == super::types::ActivitySource::Run
+            && (e.kind == "run.start" || e.kind == "run.stop")
+    })
 }
 
 /// `read`, keeping only the new events `keep` accepts, so the cap counts
@@ -581,6 +647,31 @@ mod tests {
         let capped = read(&dir, day, day + DAY - 1, None, 2);
         assert_eq!(capped.events.len(), 2);
         assert!(!capped.truncated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// fp13 re-review 2 (FP13RR2-1): a feed that reads its log again after a
+    /// gap posts an OS record again under its id, an hour later. The copy
+    /// read back carries the re-post's time, not the kernel event's.
+    #[test]
+    fn fp13rr2_1_a_reposted_os_record_keeps_its_first_time() {
+        let dir = temp_dir("os-repost");
+        let mut writer = ChainWriter::new(dir.clone());
+        let day = 20_377 * DAY;
+        let mut os = event("auditd-1-77", "c1", day + 5);
+        os.source = ActivitySource::Auditd;
+        os.kind = "write".into();
+        writer.write(&Entry::Event(os.clone()), day + 5).unwrap();
+        let mut again = os.clone();
+        again.at = day + 3_600_000;
+        writer.write(&Entry::Event(again), day + 3_600_000).unwrap();
+        let back = read(&dir, day, day + DAY - 1, None, 100);
+        assert_eq!(back.events.len(), 1);
+        assert_eq!(
+            back.events[0].at,
+            day + 5,
+            "the re-post moved the record an hour later"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

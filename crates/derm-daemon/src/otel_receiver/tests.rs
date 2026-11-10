@@ -187,6 +187,33 @@ fn no_token_or_a_wrong_one_is_refused_before_the_body() {
 }
 
 #[test]
+fn the_ipv4_mapped_loopback_is_the_receivers_own_host() {
+    // MW5-15: under srt, derm names the receiver to Claude Code as
+    // `[::ffff:127.0.0.1]` so its exporter takes srt's proxy; the request
+    // arrives with that host. Only loopback's own mapped address counts.
+    let f = fixture(true);
+    let token = f.receiver.token_for("c", "claude").unwrap();
+    let port = f.receiver.port();
+    let with_host = |host: &str| {
+        format!("POST /v1/logs HTTP/1.1\r\nhost: {host}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{{}}")
+    };
+    for host in [
+        format!("[::ffff:7f00:1]:{port}"),
+        format!("[::FFFF:127.0.0.1]:{port}"),
+    ] {
+        assert_eq!(send_raw(port, with_host(&host).as_bytes()), 200, "{host}");
+    }
+    for host in [
+        format!("[::ffff:7f00:2]:{port}"),
+        format!("[::ffff:7f00:1]:{}", port.wrapping_add(1)),
+        format!("[::1]:{port}"),
+        "[::ffff:7f00:1]".to_string(),
+    ] {
+        assert_eq!(send_raw(port, with_host(&host).as_bytes()), 403, "{host}");
+    }
+}
+
+#[test]
 fn wrong_host_method_path_type_encoding_and_size_are_refused() {
     let f = fixture(true);
     let token = f.receiver.token_for("c", "claude").unwrap();
@@ -449,7 +476,7 @@ fn the_whole_reply_goes_out_in_one_write() {
         (200, Some(BodyKind::Protobuf)),
     ] {
         let mut out = Recorder::default();
-        respond(&mut out, status, kind).unwrap();
+        respond(&mut out, status, kind.map(Answer::Otlp)).unwrap();
         assert_eq!(
             out.writes.len(),
             1,
@@ -552,6 +579,48 @@ fn the_headers_helper_is_private_new_and_prints_the_header() {
     fresh_private_dir(&dir).unwrap();
     assert!(elsewhere.join("keep").exists());
     assert!(std::fs::symlink_metadata(&dir).unwrap().is_dir());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Box test w5 retest 2, BW5R2-4: `derm run` asks for
+/// `<runtime>/derm/otel-helper/<chat>`, and the `otel-helper` folder above
+/// the chat's was made 0755 under umask 022. Every folder made on the way is
+/// 0700, and a linked parent is refused, not followed.
+#[cfg(unix)]
+#[test]
+fn bw5r2_4_the_folders_above_a_chats_helper_folder_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("otel-helper-{}", uuid::Uuid::new_v4()));
+    let dir = root.join("derm/otel-helper/chat-a");
+    fresh_private_dir(&dir).unwrap();
+    for folder in [
+        root.join("derm"),
+        root.join("derm/otel-helper"),
+        dir.clone(),
+    ] {
+        let mode = std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", folder.display());
+    }
+    // An existing parent another session left open is made private.
+    std::fs::set_permissions(
+        root.join("derm/otel-helper"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fresh_private_dir(&root.join("derm/otel-helper/chat-b")).unwrap();
+    let mode = std::fs::metadata(root.join("derm/otel-helper"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700);
+    // A link in the parent's place is refused; nothing is made behind it.
+    let elsewhere = root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let linked = root.join("linked");
+    std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+    assert!(fresh_private_dir(&linked.join("chat-c")).is_err());
+    assert!(!elsewhere.join("chat-c").exists());
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -773,4 +842,660 @@ fn every_preset_id_and_other_can_get_a_token() {
         let t = f.receiver.mint("c-mw46", h).unwrap();
         assert_eq!(f.receiver.holder_of(&t), Some(("c-mw46".to_string(), h)));
     }
+}
+
+/// P4-R1 (integration w5, continue): the derm routes answer 503 until the
+/// daemon sets its ops, take JSON only, and hold at most `MAX_APPROVING`
+/// approve requests at once, so the asks cannot hold every connection; and
+/// at most `MAX_APPROVING_PER_CHAT` of one chat's (W5C-S3). Spec change: this
+/// test had one chat hold all of the global cap (then 4); a chat now holds
+/// only its share, and another chat's ask still waits.
+#[test]
+fn the_derm_routes_wait_for_the_daemon_and_bound_waiting_asks() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let chats: Vec<String> = (0..=MAX_APPROVING / MAX_APPROVING_PER_CHAT)
+        .map(|i| format!("chat-d{i}"))
+        .collect();
+    let tokens: Vec<String> = chats
+        .iter()
+        .map(|c| f.receiver.mint(c, "claude-code").unwrap())
+        .collect();
+    let token = tokens[0].clone();
+    let json = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let ask = br#"{"request":{"id":"a","chat":"","harness":"","tool":"bash","summary":"s","timeoutSeconds":5}}"#;
+    assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 503);
+    let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let held = release.clone();
+    f.receiver
+        .set_ops(Arc::new(move |chat, harness, op, _gone| {
+            assert!(chat.starts_with("chat-d"));
+            assert_eq!(harness, "claude-code");
+            if let ChatOp::Approve(_) = op {
+                let (lock, cv) = &*held;
+                let mut open = lock.lock().unwrap();
+                while !*open {
+                    open = cv.wait(open).unwrap();
+                }
+            }
+            serde_json::json!({"ok": true})
+        }));
+    let proto = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/x-protobuf"),
+    ];
+    assert_eq!(post(port, "/derm/v1/event", &proto, b""), 415);
+    assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 200);
+    let start_ask = |t: &str| {
+        let t = t.to_string();
+        std::thread::spawn(move || {
+            post(
+                port,
+                "/derm/v1/approve",
+                &[
+                    ("x-derm-token", t.as_str()),
+                    ("content-type", "application/json"),
+                ],
+                ask,
+            )
+        })
+    };
+    let wait_for = |n: usize| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while f.receiver.approving.load(Ordering::SeqCst) < n && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(f.receiver.approving.load(Ordering::SeqCst), n);
+    };
+    // The first chat holds its share; its next ask is refused at once.
+    let mut waiting: Vec<_> = (0..MAX_APPROVING_PER_CHAT)
+        .map(|_| start_ask(&token))
+        .collect();
+    wait_for(MAX_APPROVING_PER_CHAT);
+    assert_eq!(post(port, "/derm/v1/approve", &json, ask), 503);
+    // Other chats' asks still wait, up to the global cap.
+    for t in &tokens[1..chats.len() - 1] {
+        for _ in 0..MAX_APPROVING_PER_CHAT {
+            waiting.push(start_ask(t));
+        }
+    }
+    wait_for(MAX_APPROVING);
+    let last = [
+        ("x-derm-token", tokens[chats.len() - 1].as_str()),
+        ("content-type", "application/json"),
+    ];
+    assert_eq!(post(port, "/derm/v1/approve", &last, ask), 503);
+    // Events still go through while the asks wait.
+    assert_eq!(post(port, "/derm/v1/event", &json, br#"{"event":{}}"#), 200);
+    {
+        let (lock, cv) = &*release;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+    }
+    for w in waiting {
+        assert_eq!(w.join().unwrap(), 200);
+    }
+    assert_eq!(f.receiver.approving.load(Ordering::SeqCst), 0);
+    assert!(f.receiver.per_chat.lock().unwrap().approving.is_empty());
+    // A body over the socket's line cap is refused before it is read.
+    let big = format!(r#"{{"event":"{}"}}"#, "x".repeat(MAX_DERM_BODY_BYTES));
+    assert_eq!(post(port, "/derm/v1/event", &json, big.as_bytes()), 413);
+}
+
+/// W5C-S3: a waiting approve whose client hung up is told so, and lets go
+/// of its slot; one whose client is still there is not.
+#[test]
+fn a_waiting_ask_learns_its_client_hung_up() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-g", "claude-code").unwrap();
+    let (tx, rx) = mpsc::channel::<bool>();
+    let tx = Mutex::new(tx);
+    f.receiver.set_ops(Arc::new(move |_, _, _, gone| {
+        // Waits up to 10 seconds for the hang-up, as the daemon's wait does.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut saw = false;
+        while Instant::now() < deadline {
+            if gone() {
+                saw = true;
+                break;
+            }
+            std::thread::sleep(GONE_CHECK);
+        }
+        let _ = tx.lock().unwrap().send(saw);
+        serde_json::json!({"ok": true})
+    }));
+    let body = br#"{"request":{"id":"g","chat":"","harness":"","tool":"bash","summary":"s","timeoutSeconds":600}}"#;
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let head = format!(
+        "POST /derm/v1/approve HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    );
+    s.write_all(head.as_bytes()).unwrap();
+    s.write_all(body).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f.receiver.approving.load(Ordering::SeqCst) < 1 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Still there: not gone.
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(rx.try_recv().is_err());
+    let started = Instant::now();
+    drop(s);
+    assert!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "the hang-up was not seen"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while f.receiver.approving.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(f.receiver.approving.load(Ordering::SeqCst), 0);
+}
+
+/// W5C-S4: one chat's token spends only its own bucket and its own share of
+/// the open requests, so another chat's records still get through.
+#[test]
+fn one_chat_cannot_spend_another_chats_rate_or_connections() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let a = f.receiver.mint("chat-ra", "claude-code").unwrap();
+    let b = f.receiver.mint("chat-rb", "claude-code").unwrap();
+    let headers = |t: &str| {
+        [
+            ("content-type", "application/json".to_string()),
+            ("x-derm-token", t.to_string()),
+        ]
+    };
+    let send = |t: &str| {
+        let h = headers(t);
+        let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        post(port, "/v1/traces", &h, b"{}")
+    };
+    let mut limited = 0;
+    for _ in 0..(RATE_BURST as usize + 60) {
+        if send(&a) == 429 {
+            limited += 1;
+        }
+    }
+    assert!(limited > 0, "chat a was never limited");
+    assert_eq!(send(&b), 200, "chat a spent chat b's rate");
+    // Chat a's bucket refills enough for its slow bodies to pass it.
+    std::thread::sleep(Duration::from_millis(1200));
+    // Chat a's slow bodies: its share of the open requests, then 503.
+    let slow: Vec<TcpStream> = (0..MAX_OPEN_PER_CHAT)
+        .map(|_| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let head = format!(
+                "POST /v1/logs HTTP/1.1\r\nhost: 127.0.0.1:{port}\r\nx-derm-token: {a}\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{{"
+            );
+            s.write_all(head.as_bytes()).unwrap();
+            s
+        })
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f
+        .receiver
+        .per_chat
+        .lock()
+        .unwrap()
+        .open
+        .get("chat-ra")
+        .copied()
+        .unwrap_or(0)
+        < MAX_OPEN_PER_CHAT
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(send(&a), 503);
+    assert_eq!(send(&b), 200, "chat a's slow bodies held chat b out");
+    drop(slow);
+}
+
+/// Lane S's request 3's rest (integration w5, continue): the content switch
+/// replaces `DERM_LOG_CONTENT`. A record never keeps prompt or reply text;
+/// with the switch on the text goes to a content file (0600, in the chat's
+/// 0700 folder) and the record says `contentKept`; off, it is dropped, and a
+/// harness's redaction mark is never kept as content.
+#[test]
+fn prompt_text_goes_to_a_content_file_only_with_the_switch_on() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-c", "claude-code").unwrap();
+    let root = std::env::temp_dir().join(format!("derm-otel-content-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let switch = on.clone();
+    let data = root.clone();
+    f.receiver.set_content(Arc::new(move |chat| {
+        assert_eq!(chat, "chat-c");
+        switch
+            .load(Ordering::SeqCst)
+            .then(|| derm_tap::content::Target {
+                root: data.clone(),
+                retention_days: 2,
+            })
+    }));
+    let body = |name: &str, key: &str, text: &str| {
+        serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+            "timeUnixNano": "5000000",
+            "attributes": [
+                { "key": "event.name", "value": { "stringValue": name } },
+                { "key": key, "value": { "stringValue": text } },
+                { "key": "prompt_length", "value": { "stringValue": "14" } }
+            ]
+        }]}]}]})
+        .to_string()
+        .into_bytes()
+    };
+    let headers = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let next = || {
+        f.events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .remove(0)
+    };
+    // Off: the text is dropped and nothing is written.
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("user_prompt", "prompt", "my secret plan")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail["attributes"].get("prompt").is_none());
+    assert!(e.detail.get("contentKept").is_none());
+    assert!(!root.join("content").exists());
+    // On: the prompt and the reply go to their files, never the record.
+    on.store(true, Ordering::SeqCst);
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("user_prompt", "prompt", "my secret plan")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail["attributes"].get("prompt").is_none());
+    assert_eq!(e.detail["contentKept"], true);
+    let name = e.detail["contentFiles"][0].as_str().unwrap().to_string();
+    assert!(
+        name.ends_with(".request") && name.contains("-r2-"),
+        "{name}"
+    );
+    let file = root.join("content").join("chat-c").join(&name);
+    assert!(std::fs::read_to_string(&file)
+        .unwrap()
+        .contains("my secret plan"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(root.join("content/chat-c"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("assistant_response", "response", "the answer")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail["attributes"].get("response").is_none());
+    assert!(e.detail["contentFiles"][0]
+        .as_str()
+        .unwrap()
+        .ends_with(".response"));
+    // A redaction mark is not content.
+    assert_eq!(
+        post(
+            port,
+            "/v1/logs",
+            &headers,
+            &body("user_prompt", "prompt", "<REDACTED>")
+        ),
+        200
+    );
+    let e = next();
+    assert!(e.detail.get("contentKept").is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A call's whole input (`tool_input`, Claude Code's with
+/// `OTEL_LOG_TOOL_DETAILS`, Pi's with the switch on) is content: it leaves
+/// the record, and goes to a content file only with the switch on.
+#[test]
+fn a_calls_whole_input_is_content_too() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-i", "claude-code").unwrap();
+    let body = serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+        "timeUnixNano": "5000000",
+        "attributes": [
+            { "key": "event.name", "value": { "stringValue": "tool_result" } },
+            { "key": "tool_name", "value": { "stringValue": "Write" } },
+            { "key": "success", "value": { "stringValue": "true" } },
+            { "key": "tool_input", "value": { "stringValue": "{\"content\":\"my private notes\"}" } },
+            { "key": "tool_input_size_bytes", "value": { "stringValue": "30" } }
+        ]
+    }]}]}]})
+    .to_string();
+    let headers = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    assert_eq!(post(port, "/v1/logs", &headers, body.as_bytes()), 200);
+    let e = f
+        .events
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .remove(0);
+    assert!(e.detail["attributes"].get("tool_input").is_none());
+    assert_eq!(e.detail["attributes"]["tool_input_size_bytes"], "30");
+    assert!(!serde_json::to_string(&e).unwrap().contains("private notes"));
+}
+
+/// Security finding W5C-S5 (integration w5 continue): Codex's `arguments`
+/// and `output` on its tool events, and Claude Code's `tool_parameters`
+/// (with `OTEL_LOG_TOOL_DETAILS`, which `derm run` sets: the Bash command
+/// line, `full_command` and its description, per Claude Code's monitoring
+/// page), are a call's arguments and result, which the contract keeps out of
+/// every record. Off, they are dropped; on, they go to the content files, the
+/// result to the `.response` one.
+#[test]
+fn a_calls_arguments_and_output_are_content_for_codex_and_claude_code() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-a", "codex").unwrap();
+    let root =
+        std::env::temp_dir().join(format!("derm-otel-args-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    let on = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let switch = on.clone();
+    let data = root.clone();
+    f.receiver.set_content(Arc::new(move |_| {
+        switch
+            .load(Ordering::SeqCst)
+            .then(|| derm_tap::content::Target {
+                root: data.clone(),
+                retention_days: 1,
+            })
+    }));
+    let body = |name: &str, attrs: &[(&str, &str)]| {
+        let mut a =
+            vec![serde_json::json!({ "key": "event.name", "value": { "stringValue": name } })];
+        for (k, v) in attrs {
+            a.push(serde_json::json!({ "key": k, "value": { "stringValue": v } }));
+        }
+        serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{
+            "timeUnixNano": "5000000", "attributes": a
+        }]}]}]})
+        .to_string()
+        .into_bytes()
+    };
+    let headers = [
+        ("x-derm-token", token.as_str()),
+        ("content-type", "application/json"),
+    ];
+    let next = || {
+        f.events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .remove(0)
+    };
+    let codex = body(
+        "codex.tool_result",
+        &[
+            ("tool_name", "shell"),
+            ("call_id", "call_1"),
+            ("arguments", "{\"command\":[\"cat\",\"secret-arg.txt\"]}"),
+            ("output", "the private output"),
+            ("success", "true"),
+        ],
+    );
+    let claude = body(
+        "claude_code.tool_result",
+        &[
+            ("tool_name", "Bash"),
+            (
+                "tool_parameters",
+                "{\"bash_command\":\"curl\",\"full_command\":\"curl -H 'x: secret-param'\"}",
+            ),
+            ("success", "true"),
+        ],
+    );
+    for b in [&codex, &claude] {
+        assert_eq!(post(port, "/v1/logs", &headers, b), 200);
+        let e = next();
+        let attrs = &e.detail["attributes"];
+        for key in ["arguments", "output", "tool_parameters"] {
+            assert!(attrs.get(key).is_none(), "{key} stayed in {attrs}");
+        }
+        let text = serde_json::to_string(&e).unwrap();
+        for secret in ["secret-arg", "private output", "secret-param"] {
+            assert!(!text.contains(secret), "{secret} in {text}");
+        }
+        assert!(e.detail.get("contentKept").is_none());
+    }
+    assert!(!root.join("content").exists());
+    on.store(true, Ordering::SeqCst);
+    assert_eq!(post(port, "/v1/logs", &headers, &codex), 200);
+    let e = next();
+    assert_eq!(e.detail["contentKept"], true);
+    let files: Vec<String> = e.detail["contentFiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    let dir = root.join("content").join("chat-a");
+    let read = |suffix: &str| {
+        let name = files.iter().find(|n| n.ends_with(suffix)).unwrap();
+        std::fs::read_to_string(dir.join(name)).unwrap()
+    };
+    assert!(read(".request").contains("secret-arg"));
+    assert!(!read(".request").contains("private output"));
+    assert!(read(".response").contains("the private output"));
+    assert!(!serde_json::to_string(&e).unwrap().contains("secret-arg"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Security finding W5C-S6 (integration w5 continue): one request makes at
+/// most one content file per part, whatever its record count (2,000 records
+/// made 2,000 files before), each line naming its record; and a chat writes
+/// at most its allowance of content bytes a day, past which a record says
+/// `contentCapped` and nothing is written, while another chat still writes.
+#[test]
+fn one_request_makes_one_content_file_per_part_within_the_chats_allowance() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let a = f.receiver.mint("chat-fa", "claude-code").unwrap();
+    let b = f.receiver.mint("chat-fb", "claude-code").unwrap();
+    let root =
+        std::env::temp_dir().join(format!("derm-otel-files-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    let data = root.clone();
+    f.receiver.set_content(Arc::new(move |_| {
+        Some(derm_tap::content::Target {
+            root: data.clone(),
+            retention_days: 1,
+        })
+    }));
+    let rec = |name: &str, key: &str, text: &str| {
+        serde_json::json!({ "timeUnixNano": "5000000", "attributes": [
+            { "key": "event.name", "value": { "stringValue": name } },
+            { "key": key, "value": { "stringValue": text } }
+        ]})
+    };
+    let body = |recs: Vec<serde_json::Value>| {
+        serde_json::json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": recs }]}]})
+            .to_string()
+            .into_bytes()
+    };
+    let headers = |t: &str| {
+        [
+            ("x-derm-token", t.to_string()),
+            ("content-type", "application/json".to_string()),
+        ]
+    };
+    let send = |t: &str, b: &[u8]| {
+        let h = headers(t);
+        let h: Vec<(&str, &str)> = h.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        post(port, "/v1/logs", &h, b)
+    };
+    let mut recs = Vec::new();
+    for i in 0..50 {
+        recs.push(rec("user_prompt", "prompt", &format!("prompt number {i}")));
+        recs.push(rec(
+            "assistant_response",
+            "response",
+            &format!("answer number {i}"),
+        ));
+    }
+    assert_eq!(send(&a, &body(recs)), 200);
+    let events = f.events.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(events.len(), 100);
+    let dir = root.join("content").join("chat-fa");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names[0].ends_with(".request") && names[1].ends_with(".response"));
+    let request = std::fs::read_to_string(dir.join(&names[0])).unwrap();
+    let lines: Vec<serde_json::Value> = request
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 50);
+    for e in &events {
+        assert_eq!(e.detail["contentKept"], true);
+        let files = e.detail["contentFiles"].as_array().unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(names.contains(&files[0].as_str().unwrap().to_string()));
+    }
+    let response = std::fs::read_to_string(dir.join(&names[1])).unwrap();
+    let mut by_record = std::collections::HashMap::new();
+    for (name, text) in [(&names[0], &request), (&names[1], &response)] {
+        for l in text.lines() {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            by_record.insert(v["record"].as_str().unwrap().to_string(), name.clone());
+        }
+    }
+    for e in &events {
+        assert_eq!(
+            by_record.get(&e.id),
+            Some(&e.detail["contentFiles"][0].as_str().unwrap().to_string())
+        );
+    }
+    assert!(lines.iter().all(|l| l["fields"]["prompt"]
+        .as_str()
+        .is_some_and(|p| p.starts_with("prompt number"))));
+    // Past the allowance: nothing written, the record says so.
+    *f.receiver.content_allowance.lock().unwrap() = 64;
+    let big = body(vec![rec("user_prompt", "prompt", &"x".repeat(200))]);
+    assert_eq!(send(&a, &big), 200);
+    let e = f
+        .events
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .remove(0);
+    assert_eq!(e.detail["contentCapped"], true);
+    assert!(e.detail.get("contentKept").is_none());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+    assert!(!serde_json::to_string(&e).unwrap().contains("xxxx"));
+    // Another chat's allowance is its own.
+    *f.receiver.content_allowance.lock().unwrap() = 1 << 20;
+    assert_eq!(send(&b, &big), 200);
+    let e = f
+        .events
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .remove(0);
+    assert_eq!(e.detail["contentKept"], true);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Re-review W5R-2: before a token is read, any local process could hold
+/// every connection slot with idle connections for the 10 s head deadline,
+/// and every chat's records got 503 (run by the reviewer). Connections with
+/// no token yet share a smaller pool and a shorter deadline, so a chat's
+/// request gets through within seconds of a flood of idle ones. A local
+/// flood can still delay it (any loopback port can be flooded); it cannot
+/// hold it out.
+#[test]
+fn idle_connections_before_a_token_cannot_hold_a_chat_out() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let token = f.receiver.mint("chat-w5r2", "claude-code").unwrap();
+    let held: Vec<TcpStream> = (0..64)
+        .filter_map(|_| TcpStream::connect(("127.0.0.1", port)).ok())
+        .collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let started = Instant::now();
+    let mut got = 0;
+    while started.elapsed() < Duration::from_secs(4) {
+        got = post(
+            port,
+            "/v1/traces",
+            &[
+                ("content-type", "application/json"),
+                ("x-derm-token", &token),
+            ],
+            b"{}",
+        );
+        if got == 200 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(got, 200, "held out for {:?}", started.elapsed());
+    drop(held);
+}
+
+/// Re-review W5R-9 (integration w5's continue): the day's allowance counted
+/// bytes only, so about 1.7 million small content files fit inside it. It
+/// counts the requests that write content too (each writes at most two
+/// files); another chat's count is its own.
+#[test]
+fn a_chats_content_files_are_counted_as_well_as_its_bytes() {
+    let f = fixture(true);
+    *f.receiver.content_writes_allowance.lock().unwrap() = 3;
+    let now = 1_793_000_000_000;
+    for _ in 0..3 {
+        assert!(f.receiver.allow_content("chat-w5r9", 1, now));
+    }
+    assert!(!f.receiver.allow_content("chat-w5r9", 1, now));
+    assert!(f.receiver.allow_content("chat-w5r9-other", 1, now));
+    // A new day starts both counts again.
+    assert!(f
+        .receiver
+        .allow_content("chat-w5r9", 1, now + 24 * 60 * 60 * 1000));
 }

@@ -1,0 +1,18 @@
+{
+  "id": "resp_FIXTURE",
+  "object": "response",
+  "model": "gpt-fixture",
+  "output": [
+    {
+      "type": "function_call",
+      "id": "fc_FIXTURE01",
+      "call_id": "call_FIXTURE01",
+      "name": "shell",
+      "arguments": "{\"command\":\"ls -la src\"}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 900,
+    "output_tokens": 20
+  }
+}

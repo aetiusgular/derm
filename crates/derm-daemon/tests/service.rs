@@ -1,4 +1,7 @@
 //! The daemon as a process: the binary, its files, its lock, a restart.
+// The daemon over a Unix socket; its Windows twin is lane Z's
+// `tests/windows/` (the named pipe).
+#![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -281,6 +284,77 @@ fn a_restart_keeps_a_running_chat_and_its_otlp_port() {
     stop(daemon);
 }
 
+/// Integration w5's close (lane T's T-7, lane V's V-4, lane S's request 7):
+/// `report.running` carries what a chat's `run.start` said about its
+/// boundary choice, io_uring, the tap and content capture, cut to size, and
+/// keeps it across a restart, so `derm status` can say "runs as you",
+/// "io_uring not audited" and "untapped" per chat (cases 127 to 129).
+#[test]
+fn report_running_carries_the_wave_5_marks_across_a_restart() {
+    let d = Dirs::new();
+    let daemon = start(&d);
+    let (mut w, mut r) = session(&d);
+    let mut harness = Command::new("sleep").arg("60").spawn().unwrap();
+    let long = "x".repeat(500);
+    let started = ask(
+        &mut w,
+        &mut r,
+        json!({"op": "event", "event": {
+            "id": "start-m", "at": 0, "chatId": "chat-m", "harness": "pi",
+            "source": "run", "kind": "run.start", "summary": "",
+            "detail": {"cwd": "/tmp", "boundary": "none",
+                "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal",
+                    "reasons": [{"boundary": "sbx", "why": long}], "preAnswer": null},
+                "ioUring": "not-audited", "sbxKit": {"added": false, "why": long},
+                "tap": {"on": false, "reason": "no-tap-flag"},
+                "content": {"on": true, "retentionDays": 3},
+                "runsAs": "derm-agent",
+                "agentUser": {"how": "sudo", "uid": 997, "user": "derm-agent"}},
+            "pid": harness.id()
+        }}),
+    );
+    assert_eq!(started["ok"], true, "{started}");
+    let running = |w: &mut _, r: &mut _| -> Vec<Value> {
+        let rep = ask(
+            w,
+            r,
+            json!({"op": "report", "since": 0, "until": i64::MAX / 2}),
+        );
+        rep["report"]["running"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+    };
+    let want = json!({
+        "boundaryChoice": {"chosen": "none", "named": false, "answeredBy": "terminal"},
+        "ioUring": "not-audited",
+        "sbxKit": {"added": false},
+        "tap": {"on": false, "reason": "no-tap-flag"},
+        "content": {"on": true, "retentionDays": 3},
+    });
+    let rows = running(&mut w, &mut r);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    for k in ["boundaryChoice", "ioUring", "sbxKit", "tap", "content"] {
+        assert_eq!(rows[0][k], want[k], "{k} in {}", rows[0]);
+    }
+    // Box test w5, BW5-16: the agents' user the chat runs as.
+    assert_eq!(rows[0]["agentUser"], "derm-agent", "{}", rows[0]);
+    // The reasons' text stays in the record, not in the running list.
+    assert!(!rows[0].to_string().contains(&long));
+    drop((w, r));
+    stop(daemon);
+    let daemon = start(&d);
+    let (mut w, mut r) = session(&d);
+    let rows = running(&mut w, &mut r);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    for k in ["boundaryChoice", "ioUring", "sbxKit", "tap", "content"] {
+        assert_eq!(rows[0][k], want[k], "after a restart: {k} in {}", rows[0]);
+    }
+    let _ = harness.kill();
+    let _ = harness.wait();
+    stop(daemon);
+}
+
 /// Box test w2, BW3: `derm status` lost a running chat behind newer events
 /// because it read run starts from the tail's backlog. `report` now carries
 /// the daemon's own list of running chats, and it survives a restart with
@@ -343,4 +417,30 @@ fn report_lists_running_chats_across_a_restart_and_drops_a_stopped_one() {
     let _ = harness.kill();
     let _ = harness.wait();
     stop(daemon);
+}
+
+/// Lane S's request 1 (integration w5, phase 2): the daemon publishes its
+/// model tap as `tap.endpoint`, private and loopback, beside `otlp.endpoint`,
+/// and a restart keeps the tap's port when it is free (case 86).
+#[test]
+fn the_tap_endpoint_is_published_private_and_kept_across_a_restart() {
+    let d = Dirs::new();
+    let child = start(&d);
+    let file = d.run().join("tap.endpoint");
+    assert_eq!(mode(&file), 0o600);
+    let first = std::fs::read_to_string(&file).unwrap();
+    let url = first.trim();
+    let port = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("loopback http with a port: {url}"));
+    assert!(port > 0);
+    stop(child);
+    let child = start(&d);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        first,
+        "the tap's port came back"
+    );
+    stop(child);
 }

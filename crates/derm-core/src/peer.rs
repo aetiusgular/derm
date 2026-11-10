@@ -61,8 +61,7 @@ pub fn start_time(pid: u32) -> Option<u64> {
 
 /// This process's effective uid.
 pub fn me() -> u32 {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
+    crate::platform::effective_user()
 }
 
 /// The program a process runs, when the OS says.

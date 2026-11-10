@@ -1,0 +1,21 @@
+diff --git a/crates/derm-core/src/platform/mod.rs b/crates/derm-core/src/platform/mod.rs
+index c071f51..faab2eb 100644
+--- a/crates/derm-core/src/platform/mod.rs
++++ b/crates/derm-core/src/platform/mod.rs
+@@ -114,6 +114,16 @@ pub fn connect(path: &Path) -> std::io::Result<Stream> {
+ /// peer, note AU section 2.3).
+ #[cfg(unix)]
+ pub use crate::peer;
++#[cfg(windows)]
++pub use windows::peer;
++
++/// A handle that names the process that connected for as long as it is held
++/// (lane Z's request Z-1): a pidfd on Linux (`SO_PEERPIDFD`), a process
++/// handle on Windows (`OpenProcess` at accept, note AU section 2.3).
++#[cfg(unix)]
++pub type Pidfd = std::os::fd::OwnedFd;
++#[cfg(windows)]
++pub type Pidfd = windows::peer::Pidfd;
+ 
+ // ---- 6. One daemon per user --------------------------------------------
+ 

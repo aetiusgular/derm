@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.aetiusgular/derm-computer-use",
   "title": "derm computer use",
-  "description": "Mac computer use through the derm helper, served by derm-daemon: one app per approval, recordings.",
+  "description": "Computer use through derm-daemon: one computer_use tool over cua-driver, one app per approval.",
   "version": "0.0.1",
   "websiteUrl": "https://github.com/aetiusgular/derm",
   "repository": {
@@ -66,76 +66,10 @@
           }
         },
         "annotationsOverride": {
-          "computer_use_status": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "list_apps": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "list_windows": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "get_window_state": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "get_accessibility_tree": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "verify_state": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "parse_visual_regions": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "get_screen_size": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "get_cursor_position": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "zoom": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "get_session": {
-            "readOnlyHint": true,
-            "destructiveHint": false,
-            "idempotentHint": true,
-            "openWorldHint": false
-          },
-          "request_app_access": {
+          "computer_use": {
             "readOnlyHint": false,
-            "destructiveHint": false,
-            "idempotentHint": true,
+            "destructiveHint": true,
+            "idempotentHint": false,
             "openWorldHint": false
           }
         },

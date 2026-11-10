@@ -10,7 +10,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { chatToken, decisionId, exchange, insideFolder } from "./daemon.ts";
+import { chatToken, decisionId, exchange, insideFolder, socketLooksOwned } from "./daemon.ts";
 import { loadPolicyFrom } from "./policy.ts";
 import { startFakeDaemon } from "../testing/fakeDaemon.ts";
 
@@ -156,5 +156,206 @@ describe("a gate decision's id (box test w2, BW2)", () => {
     expect(long.length).toBeLessThanOrEqual(128);
     expect(long).toMatch(/-decision-[0-9a-f]{32}$/);
     expect(decisionId("hermes", "a\nb c/d")).toMatch(/^hermes-a_b_c_d-decision-[0-9a-f]{32}$/);
+  });
+});
+
+describe("the daemon's endpoint on Windows (lane Z's request 2)", () => {
+  it("is never trusted until a server check exists, whatever the name", () => {
+    for (const name of ["\\\\.\\pipe\\derm\\daemon", "C:\\Users\\me\\.derm\\run\\daemon.sock"]) {
+      expect(socketLooksOwned(name, "win32")).toMatch(/cannot be checked on Windows/);
+    }
+  });
+
+  it("is still checked the Unix way elsewhere", () => {
+    expect(socketLooksOwned(path.join(tmpdir(), "no-such-derm-socket"), "linux")).toBe("no daemon socket");
+  });
+});
+
+// Lane T's P4-R2 (integration w5, continue): inside an sbx VM the socket is
+// not there, and the hook reaches the daemon over the receiver's HTTP port
+// at host.docker.internal, only when derm run said so.
+describe("the VM route", () => {
+  const absent = path.join(root, "no-such-folder", "daemon.sock");
+  const vmEnv = (extra: Record<string, string> = {}) => ({
+    DERM_BOUNDARY: "sbx",
+    DERM_OTLP_ENDPOINT: "http://host.docker.internal:4318",
+    DERM_DAEMON_SOCKET: absent,
+    ...extra,
+  });
+
+  // W5C-S2 (integration w5 continue): the route also needs the root-owned
+  // marker derm's sbx kit writes; here a stand-in that holds. Spec change:
+  // this test called vmEndpoint with the variables alone before.
+  const marked = () => undefined;
+  // Since W5R-7 the route is never taken as root (this workspace runs tests
+  // as root), so the tests that expect it pass a user's uid.
+
+  it("is taken only for sbx, a plain host.docker.internal URL, and no socket", async () => {
+    const { vmEndpoint } = await import("./daemon.ts");
+    // Socket candidates of the test's own (MW5-3): the default reads the
+    // account's real home, where a Mac running derm has a socket.
+    expect(vmEndpoint(vmEnv(), marked, 1000, () => [absent])?.port).toBe("4318");
+    for (const extra of [
+      { DERM_BOUNDARY: "srt" },
+      { DERM_BOUNDARY: "" },
+      { DERM_OTLP_ENDPOINT: "http://127.0.0.1:4318" },
+      { DERM_OTLP_ENDPOINT: "https://host.docker.internal:4318" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal.evil.example:4318" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal" },
+      { DERM_OTLP_ENDPOINT: "http://u:p@host.docker.internal:4318" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal:4318/v1/logs" },
+      { DERM_OTLP_ENDPOINT: "http://host.docker.internal:4318/?x=1" },
+      { DERM_OTLP_ENDPOINT: "not a url" },
+      // A socket file where the socket would be: the host, never the VM route.
+      { DERM_DAEMON_SOCKET: tokenFile },
+    ]) {
+      expect(vmEndpoint(vmEnv(extra), marked, 1000), JSON.stringify(extra)).toBeUndefined();
+    }
+  });
+
+  // W5C-S2: a project can set every variable the route reads. On the host,
+  // with derm's sbx kit nowhere, the variables alone never take the route.
+  it("is never taken on the variables alone: the kit's root-owned marker must hold", async () => {
+    const { vmEndpoint, vmMarker, VM_MARKER } = await import("./daemon.ts");
+    expect(VM_MARKER).toBe("/opt/derm-kit/sbx-vm");
+    expect(vmEndpoint(vmEnv(), () => "no VM marker")).toBeUndefined();
+    // This test box has no kit installed: the default marker does not hold.
+    expect(vmMarker()).toBeDefined();
+    expect(vmEndpoint(vmEnv())).toBeUndefined();
+  });
+
+  it("the marker holds only for a plain file and folder that are root's alone, on Linux", async () => {
+    const { vmMarker } = await import("./daemon.ts");
+    type S = { uid: number; mode: number; nlink: number; file: boolean; dir: boolean };
+    const fakeStat = (f: Partial<S>, d: Partial<S> = {}) => (p: string) => {
+      const s = { uid: 0, mode: 0o100644, nlink: 1, file: true, dir: false, ...(p === "/k/sbx-vm" ? f : { file: false, dir: true, mode: 0o40755, ...d }) };
+      return { uid: s.uid, mode: s.mode, nlink: s.nlink, isFile: () => s.file, isDirectory: () => s.dir };
+    };
+    expect(vmMarker("/k/sbx-vm", "linux", fakeStat({}))).toBeUndefined();
+    const bad: [Partial<S>, Partial<S>][] = [
+      [{ uid: 1000 }, {}],
+      [{ mode: 0o100664 }, {}],
+      [{ mode: 0o100646 }, {}],
+      [{ nlink: 2 }, {}],
+      [{ file: false }, {}],
+      [{}, { uid: 1000 }],
+      [{}, { mode: 0o40775 }],
+      [{}, { dir: false }],
+    ];
+    for (const [f, d] of bad) expect(vmMarker("/k/sbx-vm", "linux", fakeStat(f, d)), JSON.stringify([f, d])).toBeDefined();
+    // Windows gives uid 0 for every file: a marker there proves nothing.
+    for (const sys of ["win32", "darwin"] as const) expect(vmMarker("/k/sbx-vm", sys, fakeStat({}))).toBeDefined();
+    // A real file this user made is not root's.
+    const mine = path.join(safe, "sbx-vm");
+    writeFileSync(mine, "x", { mode: 0o644 });
+    if (process.getuid?.() !== 0) expect(vmMarker(mine, "linux")).toMatch(/not root's alone/);
+    expect(vmMarker(path.join(safe, "none", "sbx-vm"), "linux")).toMatch(/no VM marker/);
+  });
+
+  // Re-review W5R-7: a project's env can move HOME, so the account's own
+  // home (the password database) is a candidate too; and a hook running as
+  // root is never in derm's VM, where the agent runs as its own user.
+  it("looks for a socket under the account's own home too, and is never taken as root", async () => {
+    const { socketCandidates, vmEndpoint } = await import("./daemon.ts");
+    const { userInfo } = await import("node:os");
+    const saved = process.env.HOME;
+    try {
+      process.env.HOME = path.join(root, "moved-home");
+      expect(socketCandidates({})).toContain(path.join(userInfo().homedir, ".derm", "run", "derm", "daemon.sock"));
+    } finally {
+      process.env.HOME = saved;
+    }
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000, () => [absent])?.port).toBe("4318");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 0, () => [absent])).toBeUndefined();
+  });
+
+  it("is not taken when a socket is where the default would be, whatever DERM_DAEMON_SOCKET names", async () => {
+    const { vmEndpoint } = await import("./daemon.ts");
+    const runtime = path.join(root, "runtime");
+    mkdirSync(path.join(runtime, "derm"), { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(runtime, "derm", "daemon.sock"), "");
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: runtime }), marked, 1000)).toBeUndefined();
+    expect(vmEndpoint(vmEnv({ XDG_RUNTIME_DIR: path.join(root, "no-runtime") }), marked, 1000, () => [absent])?.port).toBe("4318");
+  });
+
+  it("a project on the host that sets the variables never reaches its own listener", async () => {
+    const http = await import("node:http");
+    let asked = 0;
+    const server = http.createServer((_req, res) => {
+      asked++;
+      res.end(JSON.stringify({ ok: true, id: "ap", answer: "yes", by: "approver" }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const env = vmEnv({ DERM_OTLP_ENDPOINT: `http://host.docker.internal:${port}`, DERM_CHAT_TOKEN_FILE: tokenFile });
+      const r = await exchange([{ op: "approve", request: { id: "ap" } }], { env, client: "t", replyTimeoutMs: 1000, cwd: project });
+      // On Windows the hook refuses the chat token file first (no owner to
+      // check), so it stops before any route; elsewhere it falls to the
+      // socket, which is not there. Either way the listener is never asked.
+      expect(r).toEqual({ error: process.platform === "win32" ? "no chat token (start the harness with derm run)" : "no daemon socket" });
+      expect(asked).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("posts each op to its route with the chat token and reads the reply line", async () => {
+    const http = await import("node:http");
+    const { postVm } = await import("./daemon.ts");
+    const seen: { path: string | undefined; token: string | undefined; body: string }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        seen.push({ path: req.url, token: req.headers["x-derm-token"] as string, body });
+        if (req.url === "/derm/v1/approve") return res.end(JSON.stringify({ ok: true, id: "ap", answer: "yes", by: "approver" }));
+        if (req.url === "/derm/v1/event") return res.end(JSON.stringify({ ok: true, id: "e1" }));
+        res.statusCode = 404;
+        res.end("{}");
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const url = new URL(`http://127.0.0.1:${port}`);
+    try {
+      const ev = await postVm(url, CHAT, { op: "event", event: { id: "e1" } }, 1000);
+      expect(ev).toEqual({ ok: true, id: "e1" });
+      const ap = await postVm(url, CHAT, { op: "approve", request: { id: "ap" } }, 1000);
+      expect(ap).toMatchObject({ answer: "yes", by: "approver" });
+      expect(seen.map((s) => [s.path, s.token, JSON.parse(s.body)])).toEqual([
+        ["/derm/v1/event", CHAT, { event: { id: "e1" } }],
+        ["/derm/v1/approve", CHAT, { request: { id: "ap" } }],
+      ]);
+      // An op with no route from a VM is never sent anywhere.
+      expect(await postVm(url, CHAT, { op: "tail" }, 1000)).toEqual({ failed: "no route for tail from a VM" });
+      expect(seen.length).toBe(2);
+    } finally {
+      server.close();
+    }
+    // Nothing listening: unreachable, within the connect timeout.
+    const closed = await postVm(new URL(`http://127.0.0.1:${port}`), CHAT, { op: "event", event: {} }, 1000);
+    expect(closed).toMatchObject({ failed: expect.stringMatching(/unreachable|timed out/) });
+  });
+
+  it("a status other than 200 is not a reply", async () => {
+    const http = await import("node:http");
+    const { postVm } = await import("./daemon.ts");
+    const server = http.createServer((_req, res) => {
+      res.statusCode = 401;
+      res.end("{}");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect(await postVm(new URL(`http://127.0.0.1:${port}`), CHAT, { op: "approve", request: {} }, 1000)).toEqual({ failed: "daemon answered HTTP 401" });
+    } finally {
+      server.close();
+    }
+  });
+
+  it("with no chat token the VM route is not tried", async () => {
+    const r = await exchange([{ op: "event", event: {} }], { env: vmEnv(), client: "t", replyTimeoutMs: 500, cwd: project });
+    expect(r).toEqual({ error: "no chat token (start the harness with derm run)" });
   });
 });

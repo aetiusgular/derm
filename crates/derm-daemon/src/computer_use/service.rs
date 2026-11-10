@@ -43,6 +43,8 @@ pub const WATCH: Duration = Duration::from_secs(2);
 pub const ASK_SECONDS: u32 = 120;
 /// The tool name approvers see for a computer-use grant.
 pub const GRANT_TOOL: &str = "computer-use/grant-app";
+/// The tool name approvers see for foreground input in a granted app (lane U).
+pub const FOREGROUND_TOOL: &str = "computer-use/foreground";
 /// Chats placed at once. Beyond this a new chat is refused, not queued.
 const MAX_CHATS: usize = 256;
 
@@ -54,6 +56,13 @@ pub trait Host: Send + Sync {
     fn chat_of(&self, token: &str) -> Option<(String, String)>;
     /// Asks the daemon's approvers in the chat's name. True only on yes.
     fn ask(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool;
+    /// Asks for a scope beyond an app grant (lane U: foreground input).
+    /// The default asks the same approver under the same tool name.
+    fn ask_scope(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool {
+        self.ask(chat, harness, id, summary)
+    }
+    /// Stores one `cu.action` record in the chat's log (lane U).
+    fn record(&self, _chat: &str, _harness: &str, _detail: Value) {}
 }
 
 #[derive(Clone, Debug)]
@@ -62,9 +71,16 @@ struct Placed {
     token: String,
 }
 
+/// Whether computer use is switched on in the user's settings now.
+pub type Switch = Box<dyn Fn() -> bool + Send + Sync>;
+
 pub struct Service {
     core: Arc<Core>,
     host: Box<dyn Host>,
+    /// Lane U: `computerUse.on`, read at each placement and each sweep, so
+    /// turning it off ends every chat's computer use within `WATCH`. None:
+    /// on (the service's own tests).
+    switch: Mutex<Option<Switch>>,
     placed: Mutex<HashMap<String, Placed>>,
     /// Card ids already sent to the approver.
     asked: Mutex<HashSet<String>>,
@@ -97,15 +113,46 @@ impl Service {
         let service = Arc::new(Service {
             core,
             host,
+            switch: Mutex::new(None),
             placed: Mutex::new(HashMap::new()),
             asked: Mutex::new(HashSet::new()),
         });
         let _ = cell.set(Arc::downgrade(&service));
+        // Lane U: the tool's foreground cards and its action records go
+        // through the same host, in the chat's harness's name.
+        let asker = Arc::downgrade(&service);
+        let recorder = Arc::downgrade(&service);
+        service.core.set_hooks(
+            Box::new(move |chat: &str, id: &str, summary: &str| {
+                asker.upgrade().is_some_and(|service| {
+                    let harness = service.harness_of(chat);
+                    service.host.ask_scope(chat, &harness, id, summary)
+                })
+            }),
+            Box::new(move |chat: &str, detail: Value| {
+                if let Some(service) = recorder.upgrade() {
+                    let harness = service.harness_of(chat);
+                    service.host.record(chat, &harness, detail);
+                }
+            }),
+        );
         service
+    }
+
+    /// Sets the settings switch (lane U).
+    pub fn set_switch(&self, switch: Switch) {
+        *lock(&self.switch) = Some(switch);
+    }
+
+    fn switched_on(&self) -> bool {
+        lock(&self.switch).as_ref().is_none_or(|on| on())
     }
 
     /// The bridge's resolver: a live derm chat token switches its chat on.
     pub fn place(&self, token: &str) -> Option<String> {
+        if !self.switched_on() {
+            return None;
+        }
         let (chat, harness) = self.host.chat_of(token)?;
         {
             let mut placed = lock(&self.placed);
@@ -132,8 +179,9 @@ impl Service {
             .map(|(c, p)| (c.clone(), p.clone()))
             .collect();
         let mut ended = Vec::new();
+        let on = self.switched_on();
         for (chat, link) in placed {
-            if self.host.chat_of(&link.token).map(|(c, _)| c) == Some(chat.clone()) {
+            if on && self.host.chat_of(&link.token).map(|(c, _)| c) == Some(chat.clone()) {
                 continue;
             }
             lock(&self.placed).remove(&chat);
@@ -288,9 +336,89 @@ impl Host for DaemonHost {
                     && reply.get("answer").and_then(Value::as_str) == Some("yes")
             })
     }
+
+    fn ask_scope(&self, chat: &str, harness: &str, id: &str, summary: &str) -> bool {
+        use crate::protocol::{ApprovalRequest, Request};
+        let (out, rx, _) = crate::daemon::Outbox::new(self.0.next_conn());
+        let who = crate::daemon::Who::Chat {
+            chat: chat.to_string(),
+            harness: harness.to_string(),
+        };
+        let request = Request::Approve {
+            request: ApprovalRequest {
+                id: format!("cu-fg-{id}"),
+                chat: chat.to_string(),
+                harness: harness.to_string(),
+                tool: FOREGROUND_TOOL.to_string(),
+                summary: summary.to_string(),
+                timeout_seconds: ASK_SECONDS,
+            },
+        };
+        self.0.handle(&who, request, &out);
+        rx.try_iter()
+            .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+            .any(|reply| {
+                reply.get("ok").and_then(Value::as_bool) == Some(true)
+                    && reply.get("answer").and_then(Value::as_str) == Some("yes")
+            })
+    }
+
+    /// A `cu.action` record from the daemon itself (`trust: daemon`):
+    /// no socket client posts one (`contracts/events.md` section 5).
+    fn record(&self, chat: &str, harness: &str, detail: Value) {
+        let summary = format!(
+            "{} {}",
+            detail.get("action").and_then(Value::as_str).unwrap_or(""),
+            detail.get("verdict").and_then(Value::as_str).unwrap_or("")
+        );
+        self.0.ingest(derm_core::event::Event {
+            id: format!("cu-{}", uuid::Uuid::new_v4().simple()),
+            at: 0,
+            chat_id: chat.to_string(),
+            harness: harness.to_string(),
+            source: derm_core::event::Source::Cua,
+            kind: "cu.action".into(),
+            summary: summary.chars().take(200).collect(),
+            detail,
+            pid: None,
+            approval_id: None,
+        });
+    }
 }
 
 static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
+
+/// Why `start` did not start the service when the setting was on.
+static START_ERROR: OnceLock<String> = OnceLock::new();
+
+/// Why computer use is not running in this daemon, in the words `derm cu
+/// status` prints. Box test w5 retest 2, BW5R2-1: the answer said "macOS
+/// only" on Linux, where lane U runs it too, with the setting merely off.
+pub fn not_running_reason() -> String {
+    let on = settings_path().map(|settings| {
+        super::settings::computer_use_on(&settings, derm_core::platform::real_user())
+    });
+    not_running_reason_for(super::SUPPORTED, on, START_ERROR.get().map(String::as_str))
+}
+
+/// `not_running_reason` from its three inputs: whether this system runs
+/// computer use, the setting as read now (`None` with no usable HOME), and
+/// the error `start` met, if it met one.
+pub(crate) fn not_running_reason_for(
+    supported: bool,
+    on: Option<bool>,
+    start_error: Option<&str>,
+) -> String {
+    if !supported {
+        return "computer use is not built for this system (macOS and Linux only)".into();
+    }
+    match (on, start_error) {
+        (None, _) => "computer use is off: there is no ~/.derm/settings.json to read (HOME is not an absolute path)".into(),
+        (Some(false), _) => "computer use is off: computerUse.on is not set in ~/.derm/settings.json (derm setup asks; the daemon reads it when it starts, so restart derm-daemon after)".into(),
+        (Some(true), Some(e)) => format!("computer use is on in ~/.derm/settings.json but did not start: {e}"),
+        (Some(true), None) => "computer use is on in ~/.derm/settings.json but was off when this daemon started: restart derm-daemon to start it".into(),
+    }
+}
 
 /// The running service, once `start` ran on macOS.
 pub fn running() -> Option<&'static Arc<Service>> {
@@ -299,14 +427,55 @@ pub fn running() -> Option<&'static Arc<Service>> {
 
 /// Starts computer use in a running daemon: the engine, the bridge on
 /// 127.0.0.1, its endpoint in `<runtime dir>/cu.endpoint` (0600), and the
-/// watch thread. macOS only: elsewhere nothing starts and no port opens.
+/// watch thread. macOS and Linux (lane U); elsewhere nothing starts and no
+/// port opens. Only when `computerUse.on` is set (off by default): turning
+/// it on takes a daemon restart; turning it off ends every chat's computer
+/// use at the next sweep.
 pub fn start(daemon: &Arc<crate::daemon::Daemon>, paths: &crate::daemon::Paths) {
-    if !cfg!(target_os = "macos") || SERVICE.get().is_some() {
+    if SERVICE.get().is_some() {
         return;
     }
-    if let Err(e) = start_here(daemon, paths) {
-        eprintln!("derm-daemon: computer use did not start: {e}");
+    let on = super::SUPPORTED
+        && settings_path().is_some_and(|settings| {
+            super::settings::computer_use_on(&settings, derm_core::platform::real_user())
+        });
+    if !on {
+        // Mac test w5, MW5-2: an endpoint left by an earlier daemon stayed,
+        // and `derm-daemon cu-mcp` sent its chat token to whatever listened
+        // on that port. As for the tap's endpoint, no service, no file.
+        clear_endpoint(paths.runtime_dir());
+        return;
     }
+    let Some(settings) = settings_path() else {
+        return;
+    };
+    let uid = derm_core::platform::real_user();
+    match start_here(daemon, paths) {
+        Ok(service) => service.set_switch(Box::new(move || {
+            super::settings::computer_use_on(&settings, uid)
+        })),
+        Err(e) => {
+            clear_endpoint(paths.runtime_dir());
+            eprintln!("derm-daemon: computer use did not start: {e}");
+            let _ = START_ERROR.set(e);
+        }
+    }
+}
+
+/// Removes a `cu.endpoint` no running service wrote (MW5-2).
+fn clear_endpoint(dir: &std::path::Path) {
+    match std::fs::remove_file(dir.join(super::ENDPOINT_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("derm-daemon: a stale computer-use endpoint could not be removed: {e}")
+        }
+        _ => {}
+    }
+}
+
+/// `$HOME/.derm/settings.json`, the file lane W's `derm setup` writes.
+fn settings_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/'))?;
+    Some(derm_tap::settings::path_for(&home))
 }
 
 /// `start` without the OS check, for tests on any system.
@@ -342,7 +511,9 @@ fn write_endpoint(dir: &Path, address: &str) -> Result<(), String> {
         .map_err(|e| format!("endpoint file: {e}"))
 }
 
-#[cfg(test)]
+// Unix-native test fakes (socket pairs, modes); computer use has no
+// Windows runtime yet (lane Z).
+#[cfg(all(test, unix))]
 mod tests {
     use super::super::core::tests::FakeLauncher;
     use super::*;
@@ -418,6 +589,72 @@ mod tests {
         assert!(service.core.grants("c1").is_empty());
         // A relay dialing again with the old token is refused.
         assert_eq!(service.place(CHAT_TOKEN), None);
+    }
+
+    #[test]
+    fn turning_the_setting_off_refuses_new_chats_and_ends_placed_ones() {
+        // Lane U: `computerUse.on` (off by default) is read at each
+        // placement and each sweep.
+        let (service, _, _) = service(true);
+        let on = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let read = on.clone();
+        service.set_switch(Box::new(move || {
+            read.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        service.place(CHAT_TOKEN).unwrap();
+        service
+            .core
+            .grant("c1", "pi", "com.apple.calculator", None, None)
+            .unwrap();
+        on.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(service.sweep(), vec!["c1".to_string()]);
+        assert!(!service.core.is_on("c1"));
+        assert!(service.core.grants("c1").is_empty());
+        assert_eq!(
+            service.place(CHAT_TOKEN),
+            None,
+            "a new placement is refused"
+        );
+        on.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(service.place(CHAT_TOKEN).as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn a_foreground_card_goes_to_the_approver_once_per_chat_and_app() {
+        use super::super::facade::{AccessAnswer, Backend};
+        for (yes, want) in [
+            (
+                true,
+                AccessAnswer::Granted {
+                    bundle_id: "foreground:x".into(),
+                },
+            ),
+            (false, AccessAnswer::Denied),
+        ] {
+            let (service, asks, _) = service(yes);
+            service.place(CHAT_TOKEN).unwrap();
+            let first = service.core.ask_scope(
+                "c1",
+                "foreground:x",
+                "Let this chat bring x to the front",
+                Duration::from_secs(10),
+            );
+            assert_eq!(first, want);
+            let again =
+                service
+                    .core
+                    .ask_scope("c1", "foreground:x", "again", Duration::from_secs(10));
+            assert_eq!(again, want, "the answer holds for the chat");
+            assert_eq!(lock(&asks).len(), 1, "asked once");
+            assert_eq!(lock(&asks)[0].1, "pi", "in the chat's harness's name");
+            // The chat's stop ends the scope with its grants.
+            service.core.stop("c1");
+            service.core.set_chat("c1", true);
+            service
+                .core
+                .ask_scope("c1", "foreground:x", "after stop", Duration::from_secs(10));
+            assert_eq!(lock(&asks).len(), 2, "asked again after a stop");
+        }
     }
 
     #[test]
@@ -503,8 +740,9 @@ mod tests {
             }
         }
         let tools: Value = serde_json::from_str(&line).unwrap();
+        // Lane U: the one tool, computer_use.
         assert_eq!(
-            tools["result"]["tools"][0]["name"], "request_app_access",
+            tools["result"]["tools"][0]["name"], "computer_use",
             "{tools}"
         );
         // The chat's run stops: the next sweep ends the connection.
@@ -649,6 +887,33 @@ mod daemon_tests {
             let (approver, pushes, _) = Outbox::new(daemon.next_conn());
             daemon.handle(&Who::Daemon, Request::Approver {}, &approver);
             assert_eq!(reply(&pushes)["ok"], true);
+            // The chat ran under srt, so a yes needs no person check (wave 5
+            // lane V, S2 part b; a grant from an unbounded chat needs the
+            // person's password).
+            let mut harness = std::process::Command::new("sleep")
+                .arg("120")
+                .spawn()
+                .unwrap();
+            let (started, started_rx, _) = Outbox::new(daemon.next_conn());
+            daemon.handle(
+                &Who::Daemon,
+                Request::Event {
+                    event: Event {
+                        id: "start-chat-1".into(),
+                        at: 0,
+                        chat_id: "chat-1".into(),
+                        harness: "pi".into(),
+                        source: Source::Run,
+                        kind: "run.start".into(),
+                        summary: String::new(),
+                        detail: serde_json::json!({"boundary": "srt"}),
+                        pid: Some(harness.id()),
+                        approval_id: None,
+                    },
+                },
+                &started,
+            );
+            assert_eq!(reply(&started_rx)["ok"], true);
             let answering = daemon.clone();
             let approver_conn = approver.clone();
             let answered = std::thread::spawn(move || {
@@ -663,6 +928,7 @@ mod daemon_tests {
                         id,
                         answer: said,
                         chat: None,
+                        proof: None,
                     },
                     &approver_conn,
                 );
@@ -673,10 +939,80 @@ mod daemon_tests {
                 expect
             );
             answered.join().unwrap();
+            let _ = harness.kill();
+            let _ = harness.wait();
             let _ = std::fs::remove_dir_all(root);
         }
     }
 
+    #[test]
+    fn a_grant_the_agent_asks_for_cannot_be_answered_by_the_agent() {
+        // Case 119, through the daemon: the chat's own token cannot register
+        // as an approver or answer a card, so with no person the card is no.
+        let (daemon, root) = daemon();
+        let token = mint(&daemon, "chat-8");
+        let agent = daemon.hello(&token).expect("a chat token");
+        let (out, rx, _) = Outbox::new(daemon.next_conn());
+        daemon.handle(&agent, Request::Approver {}, &out);
+        assert_eq!(reply(&rx)["ok"], false, "approver needs daemon scope");
+        let (out, rx, _) = Outbox::new(daemon.next_conn());
+        daemon.handle(
+            &agent,
+            Request::Answer {
+                id: "cu-x".into(),
+                answer: Answer::Yes,
+                chat: Some("chat-8".into()),
+                proof: None,
+            },
+            &out,
+        );
+        assert_eq!(reply(&rx)["ok"], false, "a chat token answers nothing");
+        let host = DaemonHost(daemon);
+        assert!(!host.ask("chat-8", "pi", "r9", "Let this chat control x"));
+        assert!(!host.ask_scope("chat-8", "pi", "r9", "foreground"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_cu_action_is_the_daemons_own_record_in_the_chats_log() {
+        let (daemon, root) = daemon();
+        let (tail, pushes, _) = Outbox::new(daemon.next_conn());
+        daemon.handle(
+            &Who::Daemon,
+            Request::Tail {
+                since: None,
+                chat: Some("chat-5".into()),
+                runs: None,
+            },
+            &tail,
+        );
+        let host = DaemonHost(daemon.clone());
+        host.record(
+            "chat-5",
+            "claude-code",
+            serde_json::json!({"trust": "daemon", "action": "click", "app": "calc",
+                "delivery": "background", "verdict": "ok", "effect": true, "verified": null,
+                "screenshotSha256": null, "grant": "exe.calc", "contentKept": false}),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let event = loop {
+            assert!(std::time::Instant::now() < deadline, "no cu.action pushed");
+            let line = pushes.recv_timeout(Duration::from_secs(10)).unwrap();
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if v["event"]["kind"] == "cu.action" {
+                break v["event"].clone();
+            }
+        };
+        assert_eq!(event["source"], "cua");
+        assert_eq!(event["chatId"], "chat-5");
+        assert_eq!(event["harness"], "claude-code");
+        assert_eq!(event["summary"], "click ok");
+        assert_eq!(event["detail"]["trust"], "daemon");
+        assert_eq!(event["detail"]["grant"], "exe.calc");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn start_here_writes_a_private_endpoint_the_relay_reads() {
         use std::os::unix::fs::PermissionsExt;
@@ -692,8 +1028,7 @@ mod daemon_tests {
         let file = run.join(super::super::ENDPOINT_FILE);
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
-        // SAFETY: getuid has no preconditions.
-        let me = unsafe { libc::getuid() };
+        let me = derm_core::platform::real_user();
         let endpoint = super::super::relay::endpoint(&run, me).unwrap();
         assert!(endpoint.starts_with("127.0.0.1:"), "{endpoint}");
 
@@ -743,9 +1078,56 @@ mod daemon_tests {
             .as_array()
             .map(|t| t.iter().filter_map(|t| t["name"].as_str()).collect())
             .unwrap_or_default();
-        assert!(names.contains(&"request_app_access"), "{listed}");
+        assert_eq!(names, vec!["computer_use"], "{listed}");
         drop(stdin);
         assert_eq!(relay.join().unwrap(), 0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Mac test w5, MW5-2: a stale endpoint is removed when no service runs.
+    #[test]
+    fn a_stale_endpoint_is_removed() {
+        let dir = std::env::temp_dir().join(format!("derm-cu-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(super::super::ENDPOINT_FILE), "127.0.0.1:41234\n").unwrap();
+        clear_endpoint(&dir);
+        assert!(!dir.join(super::super::ENDPOINT_FILE).exists());
+        clear_endpoint(&dir); // already gone: no error
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Box test w5 retest 2, BW5R2-1: with the setting off on Linux, `derm
+    /// cu status` said "macOS only". Each state now says what it is and
+    /// what turns it on, and none claims another system.
+    #[test]
+    fn bw5r2_1_a_service_that_is_not_running_says_why() {
+        let off = not_running_reason_for(true, Some(false), None);
+        assert!(
+            off.contains("is off") && off.contains("computerUse.on"),
+            "{off}"
+        );
+        assert!(off.contains("restart derm-daemon"), "{off}");
+        let failed = not_running_reason_for(true, Some(true), Some("bridge: refused"));
+        assert!(
+            failed.contains("did not start: bridge: refused"),
+            "{failed}"
+        );
+        let late = not_running_reason_for(true, Some(true), None);
+        assert!(late.contains("restart derm-daemon"), "{late}");
+        let no_home = not_running_reason_for(true, None, None);
+        assert!(no_home.contains("is off"), "{no_home}");
+        let other = not_running_reason_for(false, Some(true), None);
+        assert!(other.contains("macOS and Linux only"), "{other}");
+        for text in [&off, &failed, &late, &no_home] {
+            assert!(!text.contains("macOS only"), "{text}");
+        }
+        // The daemon's own answer is one of these, on this system.
+        let here = not_running_reason();
+        assert!(
+            [&off, &failed, &late, &no_home, &other]
+                .iter()
+                .any(|t| t.split(':').next() == here.split(':').next()),
+            "{here}"
+        );
     }
 }

@@ -48,14 +48,97 @@ const ROWS: &[(&str, &str)] = &[
     ("rovo-dev", include_str!("presets/rovo-dev.json")),
 ];
 
+/// Wave 5's sibling tables (the wave 5 base, `plans/parallel_build_tk.md`
+/// section 7c), each one lane's: a field per preset id, merged into the rows
+/// by `assemble`. `tap` is lane S's, `kit` lane T's, `executables` lane W's.
+const WAVE5: &[(&str, &str)] = &[
+    ("tap", include_str!("presets/wave5/tap.json")),
+    ("kit", include_str!("presets/wave5/kit.json")),
+    (
+        "executables",
+        include_str!("presets/wave5/executables.json"),
+    ),
+];
+
 /// The assembled table as JSON text: `{"$comment", "version", "harnesses",
-/// "planned"}`, rows in the index's order.
+/// "planned"}`, rows in the index's order, with wave 5's fields merged in.
 pub fn table_json() -> &'static str {
     static TABLE: OnceLock<String> = OnceLock::new();
-    TABLE.get_or_init(|| assemble(INDEX, ROWS).expect("presets/ is checked by its tests"))
+    TABLE.get_or_init(|| {
+        assemble_with(INDEX, ROWS, WAVE5).expect("presets/ is checked by its tests")
+    })
 }
 
+#[cfg(test)]
 fn assemble(index: &str, rows: &[(&str, &str)]) -> Result<String, String> {
+    assemble_with(index, rows, &[])
+}
+
+/// Merges each sibling table's values into the rows as its field. Refuses a
+/// table whose `field` is not its name, an id the index does not name, a row
+/// that already sets the field, and a value that is not the field's shape
+/// (the schema, `contracts/harness-presets.schema.json`, has the rest).
+fn merge_wave5(
+    out: &mut serde_json::Map<String, serde_json::Value>,
+    tables: &[(&str, &str)],
+) -> Result<(), String> {
+    use serde_json::Value;
+    for (field, text) in tables {
+        let table: Value =
+            serde_json::from_str(text).map_err(|e| format!("wave5/{field}.json: {e}"))?;
+        if table.get("field").and_then(Value::as_str) != Some(field) {
+            return Err(format!("wave5/{field}.json: its field is not {field}"));
+        }
+        let values = table
+            .get("rows")
+            .and_then(Value::as_object)
+            .ok_or(format!("wave5/{field}.json: no rows object"))?;
+        for (id, value) in values {
+            let shape_ok = match *field {
+                "executables" => value
+                    .as_array()
+                    .is_some_and(|a| a.iter().all(Value::is_string)),
+                _ => value.is_object() || value.is_null(),
+            };
+            if !shape_ok {
+                return Err(format!("wave5/{field}.json: {id}'s value is not a {field}"));
+            }
+            // Find the row by position first, then borrow it once.
+            let at = ["harnesses", "planned"].iter().find_map(|list| {
+                out.get(*list)
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .position(|r| r.get("id").and_then(Value::as_str) == Some(id.as_str()))
+                    })
+                    .map(|i| (*list, i))
+            });
+            let (list, i) = at.ok_or(format!(
+                "wave5/{field}.json names {id}, which index.json does not"
+            ))?;
+            let row = out
+                .get_mut(list)
+                .and_then(Value::as_array_mut)
+                .and_then(|items| items.get_mut(i))
+                .and_then(Value::as_object_mut)
+                .ok_or(format!("{id}.json: not an object"))?;
+            if row.contains_key(*field) {
+                return Err(format!(
+                    "{id}.json sets {field}, which wave5/{field}.json owns"
+                ));
+            }
+            row.insert((*field).to_string(), value.clone());
+        }
+    }
+    Ok(())
+}
+
+fn assemble_with(
+    index: &str,
+    rows: &[(&str, &str)],
+    wave5: &[(&str, &str)],
+) -> Result<String, String> {
     use serde_json::{Map, Value};
     let index: Value = serde_json::from_str(index).map_err(|e| format!("index.json: {e}"))?;
     let mut seen = std::collections::HashSet::new();
@@ -95,6 +178,7 @@ fn assemble(index: &str, rows: &[(&str, &str)]) -> Result<String, String> {
     if let Some((id, _)) = rows.iter().find(|(id, _)| !seen.contains(*id)) {
         return Err(format!("{id}.json is in no list of index.json"));
     }
+    merge_wave5(&mut out, wave5)?;
     serde_json::to_string(&Value::Object(out)).map_err(|e| e.to_string())
 }
 
@@ -191,6 +275,15 @@ pub struct Preset {
     pub reserved_names: Vec<String>,
     #[serde(default)]
     pub allowlist: Option<String>,
+    /// Wave 5 (the wave 5 base): from `presets/wave5/`, merged by
+    /// `assemble_with`. `None` or empty until the lane that owns the table
+    /// fills it: `tap` lane S, `kit` lane T, `executables` lane W.
+    #[serde(default)]
+    pub tap: Option<serde_json::Value>,
+    #[serde(default)]
+    pub kit: Option<serde_json::Value>,
+    #[serde(default)]
+    pub executables: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -315,6 +408,58 @@ mod tests {
         listed.sort();
         assert_eq!(files, listed, "every row file is embedded, and only those");
         assemble(INDEX, ROWS).unwrap();
+        // Wave 5's sibling tables: every file in presets/wave5/ is embedded.
+        let mut tables: Vec<String> = std::fs::read_dir(dir.join("wave5"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        tables.sort();
+        let mut embedded: Vec<String> = WAVE5.iter().map(|(f, _)| format!("{f}.json")).collect();
+        embedded.sort();
+        assert_eq!(
+            tables, embedded,
+            "every wave5 table is embedded, and only those"
+        );
+        assemble_with(INDEX, ROWS, WAVE5).unwrap();
+    }
+
+    #[test]
+    fn wave5_tables_merge_into_rows_and_refuse_what_they_do_not_own() {
+        let index = r#"{"version":1,"harnesses":["a"],"planned":["b"]}"#;
+        let rows = &[("a", r#"{"id":"a"}"#), ("b", r#"{"id":"b"}"#)];
+        let tap =
+            r#"{"field":"tap","rows":{"a":{"via":"env","name":"ANTHROPIC_BASE_URL"},"b":null}}"#;
+        let exe = r#"{"field":"executables","rows":{"b":["agent-b"]}}"#;
+        let t: serde_json::Value = serde_json::from_str(
+            &assemble_with(index, rows, &[("tap", tap), ("executables", exe)]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(t["harnesses"][0]["tap"]["name"], "ANTHROPIC_BASE_URL");
+        assert!(t["planned"][0]["tap"].is_null());
+        assert_eq!(t["planned"][0]["executables"][0], "agent-b");
+        assert!(
+            t["harnesses"][0].get("executables").is_none(),
+            "absent stays absent"
+        );
+        let stranger = r#"{"field":"tap","rows":{"zzz":{"via":"none"}}}"#;
+        assert!(assemble_with(index, rows, &[("tap", stranger)])
+            .unwrap_err()
+            .contains("does not"));
+        let owned = &[
+            ("a", r#"{"id":"a","tap":{"via":"none"}}"#),
+            ("b", r#"{"id":"b"}"#),
+        ];
+        assert!(assemble_with(index, owned, &[("tap", tap)])
+            .unwrap_err()
+            .contains("owns"));
+        let misnamed = r#"{"field":"kit","rows":{}}"#;
+        assert!(assemble_with(index, rows, &[("tap", misnamed)])
+            .unwrap_err()
+            .contains("its field"));
+        let bad = r#"{"field":"executables","rows":{"a":"agent-a"}}"#;
+        assert!(assemble_with(index, rows, &[("executables", bad)])
+            .unwrap_err()
+            .contains("not a executables"));
     }
 
     #[test]
