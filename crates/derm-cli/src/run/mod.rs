@@ -459,13 +459,11 @@ fn codex_home_for_srt(home: &Path) -> Result<Vec<String>, String> {
 pub(crate) fn policy_refusal(path: &str, from_env: bool, cwd: &str) -> Option<String> {
     let p = Path::new(path);
     if from_env {
-        let real = std::fs::canonicalize(p)
-            .ok()
-            .or_else(|| {
-                let parent = std::fs::canonicalize(p.parent()?).ok()?;
-                Some(parent.join(p.file_name()?))
-            })
-            .unwrap_or_else(|| p.to_path_buf());
+        // By its real path, through the deepest part that exists: on macOS
+        // `/var` is a link to `/private/var`, so a path not there yet would
+        // compare as written and escape the check (case 111; CI's
+        // `rust-macos` on `f1d3a6f`).
+        let real = real_through_existing(p);
         let folder = std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd));
         if real.starts_with(&folder) {
             return Some(
@@ -478,6 +476,25 @@ pub(crate) fn policy_refusal(path: &str, from_env: bool, cwd: &str) -> Option<St
         return None;
     }
     Some("someone other than you may write this policy file; not used, so every call asks".into())
+}
+
+/// `p` with its deepest existing ancestor replaced by that ancestor's real
+/// path, the rest kept as written; `p` itself when no part resolves.
+fn real_through_existing(p: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = p;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |acc, part| acc.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                at = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -3959,7 +3976,15 @@ mod policy_refusal_tests {
         let inside = chat.join(".derm-policy.json");
         std::fs::write(&inside, "{}").unwrap();
         std::fs::set_permissions(&inside, std::fs::Permissions::from_mode(0o600)).unwrap();
-        for p in [inside.clone(), chat.join("sub").join("missing.json")] {
+        // Also through a link to the chat's folder, the shape macOS's `/var`
+        // gives every temp path.
+        let alias = d.join("alias");
+        std::os::unix::fs::symlink(&chat, &alias).unwrap();
+        for p in [
+            inside.clone(),
+            chat.join("sub").join("missing.json"),
+            alias.join("sub").join("deeper").join("missing.json"),
+        ] {
             let why = policy_refusal(&s(&p), true, &s(&chat)).expect("refused");
             assert!(why.contains("inside the chat's folder"), "{why}");
         }
