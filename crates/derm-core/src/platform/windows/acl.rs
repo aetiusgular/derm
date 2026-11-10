@@ -496,6 +496,15 @@ pub fn is_private_path(path: &Path) -> bool {
         && is_private_security(&s, &me)
 }
 
+/// Whether the open file `f` may be changed by no one but this user (and its
+/// owner, LocalSystem, Administrators): `only_owner_writes` judged by the
+/// handle already open, so the file read is the file checked (review FPWR-5).
+pub fn only_owner_writes_file(f: &std::fs::File) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    read_security(f.as_raw_handle() as HANDLE, SE_FILE_OBJECT)
+        .is_ok_and(|s| only_owner_writes_security(&s, &ident::effective_user()))
+}
+
 /// Whether `path` is a file (one link) or folder of ours, no reparse point
 /// on its path, that no one else may change: the Windows form of the Unix
 /// checks "owned by me, no group or other write bit" (`nlink == 1` for a
@@ -563,23 +572,43 @@ pub fn open_private_file(path: &Path) -> io::Result<std::fs::File> {
     Ok(std::fs::File::from(h))
 }
 
-/// The volume serial number and file index of an open object. Microsoft
-/// Learn, BY_HANDLE_FILE_INFORMATION: "To determine whether two open handles
+/// The volume serial number and file id of an open object, to tell whether
+/// two handles name one file (review FPWR-7). Microsoft Learn, FILE_ID_INFO:
+/// "The file identifier and the volume serial number uniquely identify a
+/// file on a single computer. To determine whether two open handles
 /// represent the same file, combine the identifier and the volume serial
-/// number for each file and compare them"; on ReFS the 64-bit index "is not
-/// guaranteed to be unique" (128-bit ids through `FileIdInfo`).
-fn file_id(h: HANDLE) -> Option<(u32, u32, u32)> {
+/// number for each file and compare them." The 128-bit id is asked first,
+/// since on ReFS (a Dev Drive) the 64-bit index of BY_HANDLE_FILE_INFORMATION
+/// "is not guaranteed to be unique"; that index is the fallback where the
+/// class is refused.
+fn file_id(h: HANDLE) -> Option<(u64, [u8; 16])> {
     use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FileIdInfo, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
     };
+    // SAFETY: plain data, filled by the call.
+    let mut id: FILE_ID_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: a handle we hold; `id` is the size the class asks for.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            h,
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if ok != 0 {
+        return Some((id.VolumeSerialNumber, id.FileId.Identifier));
+    }
     // SAFETY: plain data, filled by the call.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     // SAFETY: a file handle we hold.
-    (unsafe { GetFileInformationByHandle(h, &mut info) } != 0).then_some((
-        info.dwVolumeSerialNumber,
-        info.nFileIndexHigh,
-        info.nFileIndexLow,
-    ))
+    if unsafe { GetFileInformationByHandle(h, &mut info) } == 0 {
+        return None;
+    }
+    let mut index = [0u8; 16];
+    index[..4].copy_from_slice(&info.nFileIndexLow.to_le_bytes());
+    index[4..8].copy_from_slice(&info.nFileIndexHigh.to_le_bytes());
+    Some((u64::from(info.dwVolumeSerialNumber), index))
 }
 
 fn links(h: HANDLE) -> Option<u32> {

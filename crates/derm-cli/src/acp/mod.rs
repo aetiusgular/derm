@@ -47,16 +47,11 @@ pub fn main(args: &[String]) -> u8 {
 }
 
 /// What `derm acp` decides with, from what `derm run` hands over: the policy
-/// file `derm run` named, unless it refused it (FPW-S2), and the chat.
+/// `derm run` loaded and checked once (FPW-S2, FPWR-5; never read again by
+/// path here), and the chat.
 pub(crate) fn ctx_from(p: &crate::run::Pipes) -> decide::Ctx {
-    let (policy, problem) = match &p.policy_refused {
-        Some(why) => (derm_core::policy::PolicyFile::default(), Some(why.clone())),
-        None => {
-            let (policy, problem) = derm_core::policy::load(std::path::Path::new(&p.policy));
-            (policy, problem.map(|e| e.to_string()))
-        }
-    };
-    if let Some(problem) = problem {
+    let policy = p.policy_file.clone();
+    if let Some(problem) = &p.policy_problem {
         eprintln!(
             "derm acp: {}: {problem}; every call the agent asks about goes to your client",
             p.policy
