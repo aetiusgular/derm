@@ -136,7 +136,7 @@ export class PolicyStore {
       if (!st.isFile()) return { policy: defaultPolicy(), problem: "policy path is not a file" };
       if (st.size > MAX_POLICY_BYTES) return { policy: defaultPolicy(), problem: "policy file larger than 1 MiB" };
       // On Windows a file's mode is its read-only attribute alone (libuv
-      // v1.52.1 `src/win/fs.c:1955-1959`) and there is no uid, so who may
+      // v1.52.1 `src/win/fs.c:1956-1960`) and there is no uid, so who may
       // write the file cannot be read here: no policy, every call asks
       // (WW5-3). Before, both checks were skipped and any file loaded.
       if (!this.posix) return { policy: defaultPolicy(), problem: WINDOWS_POLICY_PROBLEM };

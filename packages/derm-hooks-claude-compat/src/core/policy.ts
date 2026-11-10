@@ -195,7 +195,7 @@ export function loadPolicy(file: string = policyPath(), platform: NodeJS.Platfor
     const st = fstatSync(fd);
     if (!st.isFile()) return { policy: emptyPolicy(), problem: "policy file is not a regular file" };
     // On Windows Node gives a file's mode from its read-only attribute alone
-    // (libuv v1.52.1 `src/win/fs.c:1955-1959`, Node 24's) and has no
+    // (libuv v1.52.1 `src/win/fs.c:1956-1960`, Node 24's) and has no
     // `process.getuid`, so neither check below can read who may write the
     // file: an ordinary file read as "writable by others", and one Everyone
     // may write passed once marked read-only (WW5-3, Windows test w5). Until

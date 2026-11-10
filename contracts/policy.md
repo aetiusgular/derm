@@ -8,7 +8,7 @@ Schema: `contracts/policy.schema.json`. Fixtures: `fixtures/policy/policy.json` 
 
 - Path: `$DERM_POLICY` if set, else `~/.derm/policy.json`. User-level only. `derm` never reads a project-level policy file, because an agent can write one (rules section 5, item 4).
 - Read lazily: no reader opens it at load or session start (corner case 46). Lane A reads it on the first `tool_call`.
-- A missing file is the default policy: no rules, so every call is `ask` (section 5, step 4), and `ask` times out to `deny`. A file that does not parse, or fails the schema, is treated as missing and the reason says so. Nothing fails open.
+- A missing file is the default policy: no rules, so every call is `ask` (section 4, step 4), and `ask` times out to `deny`. A file that does not parse, or fails the schema, is treated as missing and the reason says so. Nothing fails open.
 
 ```json
 {
