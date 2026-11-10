@@ -563,6 +563,25 @@ pub fn open_private_file(path: &Path) -> io::Result<std::fs::File> {
     Ok(std::fs::File::from(h))
 }
 
+/// The volume serial number and file index of an open object. Microsoft
+/// Learn, BY_HANDLE_FILE_INFORMATION: "To determine whether two open handles
+/// represent the same file, combine the identifier and the volume serial
+/// number for each file and compare them"; on ReFS the 64-bit index "is not
+/// guaranteed to be unique" (128-bit ids through `FileIdInfo`).
+fn file_id(h: HANDLE) -> Option<(u32, u32, u32)> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    // SAFETY: plain data, filled by the call.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: a file handle we hold.
+    (unsafe { GetFileInformationByHandle(h, &mut info) } != 0).then_some((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
+
 fn links(h: HANDLE) -> Option<u32> {
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -646,7 +665,18 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
     // owner of a folder does not have by ownership alone.
     set_user_only(sys::raw(&h), SE_FILE_OBJECT, true)?;
     if s.owner.as_ref() != Some(&me) {
+        // A second handle, by path: it must name the folder the checks above
+        // ran on (review FPW-S3), so a folder swapped in between is refused.
         let w = open_plain(dir, READ_CONTROL | WRITE_OWNER, true)?;
+        if !path_is_plain(sys::raw(&w), dir)?
+            || file_id(sys::raw(&w)).is_none()
+            || file_id(sys::raw(&w)) != file_id(sys::raw(&h))
+        {
+            return Err(io::Error::other(format!(
+                "{} changed while it was being made private",
+                dir.display()
+            )));
+        }
         set_owner(sys::raw(&w), SE_FILE_OBJECT, &me)?;
         let after = read_security(sys::raw(&w), SE_FILE_OBJECT)?;
         if after.owner.as_ref() != Some(&me) {
