@@ -4257,23 +4257,26 @@ mod policy_load_tests {
         assert!(verdict(&planted, true, &chat).contains("the policy file's folder"));
         // FPWR2-1: a file another account owns, whose write right is that
         // owner's alone, is not applied. Setting another owner needs
-        // elevation (the box's SSH route and GitHub's runner are elevated).
-        if derm_core::platform::windows::is_superuser() {
-            let theirs = home.join("theirs.json");
-            std::fs::write(&theirs, RULES).unwrap();
-            for args in [
-                vec!["/grant", "*S-1-5-19:(W)"],
-                vec!["/setowner", "*S-1-5-19"],
-            ] {
-                assert!(std::process::Command::new("icacls")
-                    .arg(&theirs)
-                    .args(&args)
-                    .output()
-                    .unwrap()
-                    .status
-                    .success());
-            }
+        // SeRestorePrivilege (an administrator's token over SSH and on
+        // GitHub's runner); where `icacls /setowner` is refused the case is
+        // skipped and says so. Not gated on `is_superuser`, which reads false
+        // over the box's SSH route although the owner can be set there.
+        let theirs = home.join("theirs.json");
+        std::fs::write(&theirs, RULES).unwrap();
+        let icacls = |args: &[&str]| {
+            std::process::Command::new("icacls")
+                .arg(&theirs)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(icacls(&["/grant", "*S-1-5-19:(W)"]));
+        if icacls(&["/setowner", "*S-1-5-19"]) {
             assert!(verdict(&theirs, false, &chat).contains("may write this policy file"));
+        } else {
+            eprintln!("FPWR2-1's owner case skipped: icacls could not set another owner here");
         }
         let inside = chat.join("p.json");
         std::fs::write(&inside, RULES).unwrap();
