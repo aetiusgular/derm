@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
+import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
 import { FakeRpcClient, type Answer } from "./fake-pi.ts";
 
 type Handler = (event: unknown, ctx: MemoryCtx) => unknown;
@@ -641,5 +641,17 @@ describe("an index changed outside the memory card (review W2-R3)", () => {
     const entry = Object.values(saved.projects)[0]!;
     expect(Object.keys(entry)).toEqual(["memory/INDEX.md"]);
     expect(entry["memory/INDEX.md"]!.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("the approval record on Windows (review FPW-S6)", () => {
+  it("is not trusted, since who may write it cannot be read", async () => {
+    // Fails on 2ce607d: on win32 the mode and owner checks were skipped and the record trusted.
+    const dir = mkdtempSync(path.join(os.tmpdir(), "derm-fpw-s6-"));
+    const file = path.join(dir, "memory-approvals.json");
+    writeFileSync(file, "{}", { mode: 0o600 });
+    expect((await readState(file, "win32")).trusted).toBe(false);
+    if (process.platform !== "win32") expect((await readState(file, "linux")).trusted).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
