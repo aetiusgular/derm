@@ -49,16 +49,17 @@ use std::time::{Duration, Instant};
 use windows_sys::core::BOOL;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{
-    GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT,
-    CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    GenerateConsoleCtrlEvent, GetConsoleProcessList, SetConsoleCtrlHandler, CTRL_BREAK_EVENT,
+    CTRL_CLOSE_EVENT, CTRL_C_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
     OpenThread, ResumeThread, CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
@@ -105,13 +106,48 @@ fn end_left() {
     }
 }
 
-/// Called as `derm` returns from `main`: what each exited harness left
-/// running outlives it, as on Unix (case 68).
+/// How long `release_left` waits for a close still on its way, when a
+/// kept job still has processes and a console is attached (review FPWR-1).
+/// With nothing between `derm` and its harness on the console, `derm`'s
+/// turn came about 15 ms after the harness exited (the box, 8 Nov), and
+/// `derm` can reach the end of `main` sooner than that.
+const CLOSE_LATE: Duration = Duration::from_millis(500);
+
+/// Called as `derm` returns from `main`, or unwinds out of it (review
+/// FPWR-3): what each exited harness left running outlives it, as on Unix
+/// (case 68), unless a close reaches `derm` first.
 pub fn release_left() {
+    let live = LEFT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|j| j.active() != Some(0));
+    if live && attached_to_console() {
+        // Unlocked while it waits: the handler ends the jobs itself.
+        let start = Instant::now();
+        while start.elapsed() < CLOSE_LATE && !is_close(PENDING.load(Ordering::SeqCst)) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     let mut jobs = LEFT.lock().unwrap_or_else(|e| e.into_inner());
+    if is_close(PENDING.load(Ordering::SeqCst)) {
+        for j in jobs.iter() {
+            j.terminate(1);
+        }
+        jobs.clear();
+        return;
+    }
     for j in jobs.drain(..) {
         let _ = j.set_kill_on_close(false);
     }
+}
+
+/// Whether this process has a console (`GetConsoleProcessList` counts the
+/// processes on it, and gives 0 when there is none).
+fn attached_to_console() -> bool {
+    let mut one = [0u32; 1];
+    // SAFETY: a buffer of one entry, its length passed.
+    unsafe { GetConsoleProcessList(one.as_mut_ptr(), 1) > 0 }
 }
 
 unsafe extern "system" fn on_console(event: u32) -> BOOL {
@@ -183,6 +219,23 @@ impl Job {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// The processes still in the job, or `None` when it cannot be read.
+    fn active(&self) -> Option<u32> {
+        // SAFETY: plain data, filled by the call.
+        let mut info: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: our job handle; `info` is sized as passed.
+        let ok = unsafe {
+            QueryInformationJobObject(
+                self.raw(),
+                JobObjectBasicAccountingInformation,
+                (&mut info as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        (ok != 0).then_some(info.ActiveProcesses)
     }
 
     fn terminate(&self, code: u32) {
@@ -373,6 +426,10 @@ pub fn wait(child: &mut Child) -> std::io::Result<ExitStatus> {
     let mut closing: Option<Instant> = None;
     loop {
         if let Some(status) = child.try_wait()? {
+            // `LEFT` is held from the read to the push (review FPWR-2): the
+            // handler stores the event before it takes `LEFT`, so a close
+            // is either read here or ends the job once it is kept.
+            let mut left = LEFT.lock().unwrap_or_else(|e| e.into_inner());
             // A close stored and not yet read (the exit is checked first).
             let closed = closing.is_some() || is_close(PENDING.swap(NONE, Ordering::SeqCst));
             if let Some(job) = take_job(pid) {
@@ -382,7 +439,7 @@ pub fn wait(child: &mut Child) -> std::io::Result<ExitStatus> {
                     drop(job);
                 } else {
                     // Kept until `derm` returns, or a late close ends it.
-                    LEFT.lock().unwrap_or_else(|e| e.into_inner()).push(job);
+                    left.push(job);
                 }
             }
             return Ok(status);
@@ -612,12 +669,46 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let left = pings_left(harness);
+        // The handler has stored its event and ended the jobs; it now only
+        // holds its thread (review FPWR-12).
+        PENDING.store(NONE, Ordering::SeqCst);
         handler.join().unwrap();
         PENDING.store(NONE, Ordering::SeqCst);
         assert!(
             left.is_empty(),
             "a late close left the harness's child running: {left:?}"
         );
+    }
+
+    /// FPWR-1 (the re-review): `derm` reached the end of `main` before the
+    /// close reached it, so the kept job was released first. `release_left`
+    /// waits for a late close while the harness's leftovers live and a
+    /// console is attached; GitHub's runner has none, so there the test
+    /// checks only that the release happened.
+    #[test]
+    fn fpwr_1_a_close_while_derm_returns_still_ends_what_the_harness_left() {
+        let _turn = serial();
+        PENDING.store(NONE, Ordering::SeqCst);
+        let (mut c, harness) = harness_that_leaves_a_ping();
+        wait(&mut c).unwrap();
+        let late = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            // SAFETY: the handler only stores a number, ends jobs and sleeps.
+            unsafe { on_console(CTRL_CLOSE_EVENT) }
+        });
+        release_left();
+        std::thread::sleep(Duration::from_millis(300));
+        let left = pings_left(harness);
+        PENDING.store(NONE, Ordering::SeqCst);
+        late.join().unwrap();
+        PENDING.store(NONE, Ordering::SeqCst);
+        assert!(LEFT.lock().unwrap().is_empty());
+        if attached_to_console() {
+            assert!(
+                left.is_empty(),
+                "a close while derm returned left the child running: {left:?}"
+            );
+        }
     }
 
     /// The other side of WW5-7: an exit with no close leaves what the harness

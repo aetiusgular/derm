@@ -24,12 +24,24 @@ fn main() -> ExitCode {
     // inherits the limit (P2-4).
     derm_core::platform::no_core_dumps();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = dispatch(&args);
     // What an exited harness left running outlives `derm`, as on Unix (case
-    // 68); until here a late console close could still end it (WW5-7).
+    // 68); until `derm` returns, or unwinds out of here, a late console close
+    // can still end it (WW5-7, FPWR-3).
     #[cfg(windows)]
-    platform::windows::exec::release_left();
+    let _release = Release;
+    let code = dispatch(&args);
     ExitCode::from(code)
+}
+
+/// Releases the jobs of exited harnesses when `main` ends, a panic included.
+#[cfg(windows)]
+struct Release;
+
+#[cfg(windows)]
+impl Drop for Release {
+    fn drop(&mut self) {
+        platform::windows::exec::release_left();
+    }
 }
 
 fn dispatch(args: &[String]) -> u8 {
