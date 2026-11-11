@@ -1442,6 +1442,25 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             Err(e) => return Err((1, e)),
         }
     }
+    // Wave 5b lane 5bD (request 5bD-1): on Windows srt runs `derm enter`
+    // with the chat's handoff, written here as you; the session frees the
+    // machine's srt lock and removes the chat's files when this run returns
+    // (`run/boundary/windows_srt/`, `contracts/srt-windows.md`).
+    let _srt_windows = if cfg!(windows) && a.boundary == Boundary::Srt {
+        boundary::windows_srt::wire(
+            &mut p,
+            &chat,
+            a.harness,
+            &cwd,
+            &home,
+            token.as_deref(),
+            &policy_file,
+            policy_problem.as_deref(),
+            a.dry_run,
+        )?
+    } else {
+        None
+    };
     if a.dry_run {
         print!("{}", plan::describe(&p));
         // BW5-5's rest: under sbx the plan's one-step argv is not what runs.

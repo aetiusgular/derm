@@ -1281,11 +1281,17 @@ impl Daemon {
     pub fn running(&self) -> Vec<Value> {
         let runs = self.runs.lock().map(|r| r.clone()).unwrap_or_default();
         let info = self.run_info.lock().map(|i| i.clone()).unwrap_or_default();
+        let chats = self.chats.lock().map(|c| c.clone()).unwrap_or_default();
         let mut out: Vec<Value> = runs
             .iter()
             .map(|(chat, run)| {
                 let mut row = info.get(chat).cloned().unwrap_or_else(|| json!({}));
                 if let Value::Object(m) = &mut row {
+                    // The Windows feed registers a chat it learns late from
+                    // this row (lane 5bE).
+                    if let Some(c) = chats.get(chat) {
+                        m.insert("folders".into(), json!(c.folders));
+                    }
                     m.insert("chat".into(), Value::String(chat.clone()));
                     m.insert("pid".into(), Value::from(run.pid));
                     m.insert("alive".into(), Value::Bool(run.alive()));
@@ -1449,11 +1455,18 @@ impl Daemon {
     /// with when, once it was attached and every connection of it closed;
     /// `none` when none attached since this daemon started. Null elsewhere:
     /// the Mac's collector has its own fields.
+    #[cfg(not(windows))]
     pub fn os_feed_state(&self) -> Value {
         if !cfg!(target_os = "linux") {
             return Value::Null;
         }
         self.os_feed_state_here()
+    }
+
+    /// On Windows: the derm-sysmon service's client (lane 5bE).
+    #[cfg(windows)]
+    pub fn os_feed_state(&self) -> Value {
+        crate::platform::windows::sysmon_feed::state()
     }
 
     fn os_feed_state_here(&self) -> Value {
@@ -1510,6 +1523,15 @@ impl Daemon {
         }
         event.at = now_ms();
         let event = store::bound_event(event);
+        // The Windows feed runs in the daemon and posts no `event` (lane
+        // 5bE): its gaps are noted here, as `op_event` notes the Linux
+        // feed's. A chat token never posts a `sysmon-` id (FP2-S1).
+        if event.source == Source::Auditd
+            && event.kind == "feed.gap"
+            && event.id.starts_with("sysmon-gap-")
+        {
+            self.note_feed_gap(&event);
+        }
         // An OS record posted again (a gap's re-read) stops here: the log,
         // the ring, the tails, the join and the install flags have its first
         // copy, and a repeat pushed a live chat's gate decisions out of the
@@ -3441,6 +3463,68 @@ mod tests {
             chat_for_route(&second.receiver, &route).map(|c| c.id),
             Some("chat-k".to_string())
         );
+        let _ = harness.kill();
+        let _ = harness.wait();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Lane 5bE's request (wave 5b): the Windows feed runs in the daemon and
+    /// posts no `event`, so its gaps are noted from `ingest` and reach the
+    /// report as the Linux feed's do (case 209).
+    #[test]
+    fn w5b_5be_an_in_process_feeds_gap_reaches_the_report() {
+        let (d, root) = daemon();
+        let mut gap = ev_of(
+            "",
+            Source::Auditd,
+            "feed.gap",
+            None,
+            json!({"fromMs": 1_000, "toMs": 2_000, "reason": "records the channel no longer holds"}),
+        );
+        gap.id = "sysmon-gap-5-9".into();
+        d.ingest(gap);
+        let report = d.report(None, 0, i64::MAX / 2);
+        assert_eq!(
+            report["osFeedGaps"][0]["reason"], "records the channel no longer holds",
+            "{report}"
+        );
+        // Another feed's record named `feed.gap` that `op_event` did not
+        // take is not noted twice by this path.
+        let mut other = ev_of("", Source::Auditd, "feed.gap", None, json!({"toMs": 3_000}));
+        other.id = "auditd-1-2".into();
+        d.ingest(other);
+        assert_eq!(
+            d.report(None, 0, i64::MAX / 2)["osFeedGaps"]
+                .as_array()
+                .map(Vec::len),
+            Some(1)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Lane 5bE's request: a running chat's row carries its folders, so the
+    /// Windows feed can register a chat it learns after the chat started.
+    #[test]
+    fn w5b_5be_a_running_chats_row_carries_its_folders() {
+        let (d, root) = daemon();
+        let mut harness = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let begin = ev_of(
+            "chat-w",
+            Source::Run,
+            "run.start",
+            Some(harness.id()),
+            json!({"cwd": "/w/p", "folders": ["/w/q"]}),
+        );
+        assert!(d.op_event(&Who::Daemon, begin).ok);
+        let row = d
+            .running()
+            .into_iter()
+            .find(|r| r["chat"] == "chat-w")
+            .unwrap();
+        assert_eq!(row["folders"], json!(["/w/p", "/w/q"]), "{row}");
         let _ = harness.kill();
         let _ = harness.wait();
         let _ = std::fs::remove_dir_all(root);

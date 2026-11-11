@@ -97,6 +97,11 @@ jobs:
           node-version: "24"
       - run: npm ci --ignore-scripts
       - run: npx tsc --noEmit
+      # The in-process plugins decide through `derm gate serve` since wave 5b
+      # (lane 5bC); their tests that decide find target/debug/derm and skip
+      # without it, so the node job builds it first (lane 5bC's request 5).
+      # rust-toolchain.toml's 1.97.0 is installed by rustup on first use.
+      - run: cargo build -p derm-cli
       - run: npx vitest run
       - run: node scripts/lane-scope.test.mjs
       # The Rust fold's tables and contracts/fixtures/policy/fold.json come

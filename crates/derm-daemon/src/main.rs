@@ -90,6 +90,10 @@ fn main() -> ExitCode {
     // Lane K's seam (wave 2): the Mac collector's registration and the
     // computer-use bridge. Does nothing until lane K fills it.
     derm_daemon::collector::start(&running.daemon, &running.paths);
+    // Wave 5b lane 5bE: the Windows OS feed (the derm-sysmon service's
+    // client); it waits and retries while the service is not installed.
+    #[cfg(windows)]
+    derm_daemon::platform::windows::sysmon_feed::start(&running.daemon);
     // Serves until the listener fails; `running` (and the pid file's lock)
     // lives until then.
     derm_daemon::socket::serve(listener, running.daemon.clone());

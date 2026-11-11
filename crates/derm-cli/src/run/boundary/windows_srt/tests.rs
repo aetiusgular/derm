@@ -362,7 +362,7 @@ fn the_files_access_lists_give_the_sandbox_read_and_the_handoff_delete() {
 }
 
 #[test]
-fn srt_stays_refused_until_run_calls_wire() {
-    // Request 5bD-1 sets WIRED with the call in run/mod.rs.
-    assert_eq!(refusal(), Some(crate::run::preflight::SRT_ON_WINDOWS));
+fn srt_is_refused_on_windows_only_while_another_chat_holds_the_lock() {
+    // Off Windows nothing is held; on Windows CI no other chat runs.
+    assert_eq!(refusal(), None);
 }

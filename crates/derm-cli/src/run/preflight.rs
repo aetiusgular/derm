@@ -140,7 +140,11 @@ pub fn srt_with(
     }
     // srt 0.0.81 checks rg only on Linux (`sandbox-manager.ts:1641-1649`);
     // its README still asks for it on macOS (line 732), so macOS keeps it.
-    let needed: &[(&str, &str)] = if linux {
+    // On Windows srt 0.0.82 runs none of these (ripgrep "is Linux-only",
+    // `src/sandbox/sandbox-manager.ts:1895`; request 5bD-1).
+    let needed: &[(&str, &str)] = if cfg!(windows) {
+        &[]
+    } else if linux {
         &[
             ("bwrap", "bubblewrap"),
             ("socat", "socat"),
@@ -378,17 +382,16 @@ mod tests {
 
     /// WW5-8 (Windows test w5, 4.2): `--boundary srt` stopped on Windows at
     /// "srt needs rg", then at "a relative PATH entry" for every Windows
-    /// entry. srt 0.0.81 needs no rg there, but it also runs the agent as
-    /// its own account with none of the chat's variables, so derm refuses
-    /// srt on Windows and says that. Fails on `2ce607d` on Windows.
+    /// entry. Fails on `2ce607d` on Windows. srt then stayed refused there
+    /// until lane 5bD built its Windows form (request 5bD-1): now the check
+    /// passes with no rg and the real PATH.
     #[cfg(windows)]
     #[test]
-    fn ww5_8_srt_is_refused_on_windows_for_the_true_reason() {
+    fn ww5_8_srt_on_windows_needs_no_rg_and_reads_the_windows_path() {
         let path = std::env::var("PATH").unwrap_or_default();
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
-        let e = srt_with(&path, false, None, false, &[], &cwd).unwrap_err();
-        assert_eq!(e, SRT_ON_WINDOWS);
-        assert!(!e.contains("ripgrep") && !e.contains("relative"), "{e}");
+        let (_, tools) = srt_with(&path, false, None, false, &[], &cwd).unwrap();
+        assert!(tools.is_none());
     }
 
     /// WW5-8's PATH half: the companion's PATH was split on `:` and kept only

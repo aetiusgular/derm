@@ -39,10 +39,9 @@
 //! `tests/windows/5bD/requests/`). Until integration applies that request,
 //! [`WIRED`] is false and srt stays refused on Windows, as on the base.
 
-// `wire` and what it calls are reached from `run/mod.rs` once request 5bD-1
-// is applied; until then only the tests reach part of them. Request 5bD-1
-// removes this line.
-#![allow(dead_code)]
+// Off Windows `wire` builds no session and the machine's lock is never
+// taken.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 mod files;
 pub(crate) mod lock;
@@ -61,7 +60,7 @@ use crate::run::plan::Plan;
 pub(crate) use files::Session;
 
 /// Whether `run/mod.rs` calls [`wire`]. Request 5bD-1 sets it with the call.
-pub(crate) const WIRED: bool = false;
+pub(crate) const WIRED: bool = true;
 
 /// Why derm does not start srt on Windows now, or `None` when it may.
 pub(crate) fn refusal() -> Option<&'static str> {
