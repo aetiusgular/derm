@@ -471,14 +471,15 @@
       "steps": [
         {
           "kind": "plugin-folder",
-          "path": "~/.agents/plugins/derm",
+          "path": "~/.agents/plugins/{gatename}",
           "files": {
-            "plugin.json": {"name": "derm", "version": "{version}", "description": "derm policy gate: a PreToolUse hook that blocks when the gate fails (on_failure: block)"},
+            "plugin.json": {"name": "{gatename}", "version": "{version}", "description": "derm policy gate: a PreToolUse hook that blocks when the gate fails (on_failure: block)"},
             "hooks/hooks.json": {"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120, "on_failure": "block"}]}]}}
           }
         }
       ],
-      "notes": ["goose loads project plugins in <project>/.agents/plugins with no trust prompt (case 78); derm writes only the user folder."]
+      "legacyName": "derm",
+      "notes": ["goose loads project plugins in <project>/.agents/plugins with no trust prompt (case 78) and keeps the first plugin of a name, so derm's folder takes the name kept in ~/.derm/gate-name, which a repository cannot know (note BC, BC-1); derm writes only the user folder."]
     },
     {
       "agent": "mistral-vibe",
@@ -489,12 +490,14 @@
       "markers": ["/derm hook mistral-vibe ", "derm-hook.mjs"],
       "installedIf": ["~/.vibe"],
       "cli": "vibe",
+      "legacyName": "derm-gate",
+      "notes": ["Vibe reads a project's and every --add-dir folder's .vibe/hooks.toml first and drops a later hook of a name it has seen, so derm's hook takes the name kept in ~/.derm/gate-name, which a repository cannot know (note BC, BC-2)."],
       "steps": [
         {
           "kind": "toml-array-entry",
           "path": "~/.vibe/hooks.toml",
           "array": "hooks",
-          "entry": {"name": "derm-gate", "type": "pre_tool", "command": "{command}", "timeout": 120.0, "strict": true, "description": "derm policy gate; strict, so a failed gate denies"}
+          "entry": {"name": "{gatename}", "type": "pre_tool", "command": "{command}", "timeout": 120.0, "strict": true, "description": "derm policy gate; strict, so a failed gate denies"}
         }
       ]
     },

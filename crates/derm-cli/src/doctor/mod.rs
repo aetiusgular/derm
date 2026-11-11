@@ -700,6 +700,7 @@ pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
     use crate::connect::gate::{resolve, Place, Step};
     let cenv = ConnectEnv(env);
     let mut places: Vec<Place> = Vec::new();
+    let mut legacy: Vec<Place> = Vec::new();
     for st in &row.steps {
         let (at, chain): (&Place, &[String]) = match st {
             Step::JsonArrayEntry { at, chain, .. } => (at, chain),
@@ -707,11 +708,30 @@ pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
             | Step::TomlArrayEntry { at, .. }
             | Step::OwnedFile { at, .. } => (at, &[]),
             Step::PluginFolder { at, .. } => {
-                places.push(Place {
-                    path: format!("{}/hooks/hooks.json", at.path),
-                    home_env: at.home_env.clone(),
-                    xdg_config: at.xdg_config,
-                });
+                // BC-1: the folder takes the name in ~/.derm/gate-name; one
+                // still under the fixed name is a problem of its own.
+                let name = crate::connect::gate::read_gate_name(home).ok().flatten();
+                if let Some(n) = name
+                    .as_deref()
+                    .or((!at.path.contains("{gatename}")).then_some(""))
+                {
+                    places.push(Place {
+                        path: format!("{}/hooks/hooks.json", at.path.replace("{gatename}", n)),
+                        home_env: at.home_env.clone(),
+                        xdg_config: at.xdg_config,
+                    });
+                }
+                if let Some(old) = row
+                    .legacy_name
+                    .as_deref()
+                    .filter(|_| at.path.contains("{gatename}"))
+                {
+                    legacy.push(Place {
+                        path: format!("{}/hooks/hooks.json", at.path.replace("{gatename}", old)),
+                        home_env: at.home_env.clone(),
+                        xdg_config: at.xdg_config,
+                    });
+                }
                 continue;
             }
             _ => continue,
@@ -753,6 +773,51 @@ pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
                 "{} runs a `derm hook` found on PATH, not derm by its absolute path (rules case 227): {fix}",
                 file.display()
             ));
+        }
+    }
+    // BC-1, BC-2: derm's gate under an older derm's fixed name, which a
+    // repository's own entry of that name replaces or switches off.
+    let fixed = |text: &str| row.markers.iter().any(|m| text.contains(m.as_str()));
+    for at in &legacy {
+        let file = resolve(at, home, &cenv);
+        if std::fs::read_to_string(&file).is_ok_and(|t| fixed(&t)) {
+            out.push(format!(
+                "{} is derm's gate under the fixed name `{}`, which a repository's own plugin of that name can replace or switch off (note BC, BC-1): run `derm connect {id} --gate --write` again, then remove that folder",
+                file.parent().and_then(Path::parent).unwrap_or(&file).display(),
+                row.legacy_name.as_deref().unwrap_or("")
+            ));
+        }
+    }
+    if let Some(old) = row.legacy_name.as_deref() {
+        for st in &row.steps {
+            let Step::TomlArrayEntry { at, .. } = st else {
+                continue;
+            };
+            if !st.takes_gate_name() {
+                continue;
+            }
+            let file = resolve(at, home, &cenv);
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+                continue;
+            };
+            let named_old = doc
+                .get("hooks")
+                .and_then(|h| h.as_array_of_tables())
+                .is_some_and(|aot| {
+                    aot.iter().any(|t| {
+                        t.get("name").and_then(|v| v.as_str()) == Some(old)
+                            && t.get("command").and_then(|v| v.as_str()).is_some_and(fixed)
+                    })
+                });
+            if named_old {
+                out.push(format!(
+                    "{} names derm's gate `{old}`, a name a project's own hooks.toml can take first (note BC, BC-2): run `derm connect {id} --gate --write` again",
+                    file.display()
+                ));
+            }
         }
     }
     out

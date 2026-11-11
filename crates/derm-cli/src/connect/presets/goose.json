@@ -39,7 +39,7 @@
     "orcaId": "goose",
     "gate": {
       "family": "plugin",
-      "where": "plugin ~/.agents/plugins/derm/ (plugin.json, hooks/hooks.json), PreToolUse, on_failure: block (packages/derm-hooks-native/registration/goose/derm/)",
+      "where": "plugin ~/.agents/plugins/<the name in ~/.derm/gate-name>/ (plugin.json, hooks/hooks.json), PreToolUse, on_failure: block; a name a repository cannot take first (note BC, BC-1)",
       "status": "built",
       "wave": 4,
       "lane": "N",

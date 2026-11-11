@@ -1278,7 +1278,9 @@ mod cursor_tests {
             let e = entry_for(&line, true);
             std::fs::write(
                 &file,
-                format!(r#"{{"version":1,"hooks":{{"preToolUse":[{e}],"beforeMCPExecution":[{e}]}}}}"#),
+                format!(
+                    r#"{{"version":1,"hooks":{{"preToolUse":[{e}],"beforeMCPExecution":[{e}]}}}}"#
+                ),
             )
             .unwrap();
             let r = check("cursor", &env);

@@ -6,7 +6,6 @@
 //! matcher is `derm_core::policy::evaluate`; the redactor
 //! `derm_core::redact::hook`; the daemon client [`super::daemon`].
 
-
 use derm_core::policy::{self, Action, PolicyFile, SHELL_TOOLS};
 use derm_core::redact::hook::{has_token_shape, redact_text, redact_value};
 use serde_json::{Map, Value};

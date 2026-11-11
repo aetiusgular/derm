@@ -4,7 +4,7 @@
 //! `plugins/` are unchanged from 1.58.1, and the new
 //! `agents/state_machine/pre_tool_hook.rs` still sends PreToolUse through
 //! `emit_blocking_with_outcome` and adds an observe-only PreToolUseResult.
-//! - Registered as a plugin `~/.agents/plugins/derm/` with `plugin.json` and
+//! - Registered as a plugin `~/.agents/plugins/<name in ~/.derm/gate-name>/` (BC-1) with `plugin.json` and
 //!   `hooks/hooks.json`: `PreToolUse[{matcher, hooks: [{type: "command",
 //!   command, timeout, on_failure: "block"}]}]`; the command runs under
 //!   `sh -c`.

@@ -125,6 +125,7 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
         command: None,
         hook_dir: Some("/h/derm/packages/derm-opencode-plugin".into()),
         version: "0.1.3".into(),
+        gate_name: Some("derm-0123456789abcdef".into()),
     };
     for a in &rows {
         let writes = a.steps.iter().any(|s| !matches!(s, Step::Commands { .. }));
@@ -200,7 +201,10 @@ fn vibe_gets_lane_ns_table_beside_its_own_and_once() {
             "description"
         ]
     );
-    assert_eq!(ours["name"].as_str(), Some("derm-gate"));
+    // BC-2: the name kept in ~/.derm/gate-name, never the fixed `derm-gate`.
+    let name = gate::read_gate_name(&home).unwrap().unwrap();
+    assert!(gate::valid_gate_name(&name), "{name}");
+    assert_eq!(ours["name"].as_str(), Some(name.as_str()));
     assert_eq!(ours["type"].as_str(), Some("pre_tool"));
     assert_eq!(
         ours["command"].as_str().unwrap(),
@@ -370,9 +374,11 @@ fn goose_plugin_folder_written_and_left_for_you_to_remove() {
     fs::create_dir_all(home.join(".config/goose")).unwrap();
     let r = go(&home, &["goose", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    let dir = home.join(".agents/plugins/derm");
+    // BC-1: the folder takes the name kept in ~/.derm/gate-name.
+    let name = gate::read_gate_name(&home).unwrap().unwrap();
+    let dir = home.join(".agents/plugins").join(&name);
     let plugin = parse(&read(&dir.join("plugin.json")));
-    assert_eq!(plugin.get("name"), Some(&Value::Str("derm".into())));
+    assert_eq!(plugin.get("name"), Some(&Value::Str(name.clone())));
     assert_eq!(
         plugin.get("version"),
         Some(&Value::Str(env!("CARGO_PKG_VERSION").into()))
@@ -387,8 +393,17 @@ fn goose_plugin_folder_written_and_left_for_you_to_remove() {
     // A folder of that name that is not derm's is refused.
     let other = scratch("gate-goose2");
     fake_derm(&other);
-    fs::create_dir_all(other.join(".agents/plugins/derm")).unwrap();
-    fs::write(other.join(".agents/plugins/derm/plugin.json"), "{}").unwrap();
+    let taken = "derm-0123456789abcdef";
+    write_gate_name(&other, taken);
+    fs::create_dir_all(other.join(".agents/plugins").join(taken)).unwrap();
+    fs::write(
+        other
+            .join(".agents/plugins")
+            .join(taken)
+            .join("plugin.json"),
+        "{}",
+    )
+    .unwrap();
     fs::create_dir_all(other.join(".config/goose")).unwrap();
     let r = go(&other, &["goose", "--gate", "--write"]);
     assert_eq!(r.code, 1);
@@ -1817,4 +1832,173 @@ fn hermes_plugin_reads_the_file_derm_connect_writes() {
         _ => None,
     });
     assert_eq!(file.as_deref(), Some("~/.hermes/plugins/derm/derm-path"));
+}
+
+#[cfg(unix)]
+fn write_gate_name(home: &Path, name: &str) {
+    fs::create_dir_all(home.join(".derm")).unwrap();
+    let f = home.join(gate::GATE_NAME_FILE);
+    fs::write(&f, format!("{name}\n")).unwrap();
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[cfg(unix)]
+/// BC-1 and BC-2 (note BC; goose 1.59.0 `plugins/discovery.rs:62-101,
+/// 154-176`, Vibe 3.1.2 `hooks/config.py:94-113`): derm's goose folder and
+/// Vibe hook take one name drawn per user, kept in ~/.derm/gate-name (0600),
+/// written only after the yes, the same on every later `--gate`, and never
+/// the fixed `derm` or `derm-gate` a repository could take first. Failed on
+/// the code before the close (the folder was `derm`, the hook `derm-gate`).
+#[test]
+fn bc1_bc2_goose_and_vibe_take_a_name_a_repository_cannot_know() {
+    let home = scratch("gate-bc12");
+    fake_derm(&home);
+    fs::create_dir_all(home.join(".config/goose")).unwrap();
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    // A dry run draws a name and keeps nothing.
+    let r = go(&home, &["goose", "--gate"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!home.join(gate::GATE_NAME_FILE).exists());
+    assert!(r.out.contains(gate::GATE_NAME_FILE), "{}", r.out);
+    let r = go(&home, &["goose", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let f = home.join(gate::GATE_NAME_FILE);
+    assert_eq!(
+        fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(home.join(".derm"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let name = gate::read_gate_name(&home).unwrap().unwrap();
+    assert!(
+        gate::valid_gate_name(&name) && name != "derm" && name != "derm-gate",
+        "{name}"
+    );
+    assert!(home
+        .join(".agents/plugins")
+        .join(&name)
+        .join("hooks/hooks.json")
+        .is_file());
+    assert!(!home.join(".agents/plugins/derm").exists());
+    // Vibe takes the same name; a second --gate changes nothing.
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&home.join(".vibe/hooks.toml")).parse().unwrap();
+    assert_eq!(doc["hooks"][0]["name"].as_str(), Some(name.as_str()));
+    for agent in ["goose", "mistral-vibe"] {
+        let r = go(&home, &[agent, "--gate"]);
+        assert!(r.out.contains("already registered"), "{agent}: {}", r.out);
+    }
+    assert_eq!(gate::read_gate_name(&home).unwrap(), Some(name));
+    // Two users' draws differ.
+    let names: std::collections::HashSet<String> = (0..64).map(|_| gate::new_gate_name()).collect();
+    assert_eq!(names.len(), 64);
+    assert!(names.iter().all(|n| gate::valid_gate_name(n)));
+}
+
+#[cfg(unix)]
+/// The name file is refused when it is a link, writable by others or not a
+/// name derm drew: derm writes nothing then.
+#[test]
+fn a_gate_name_file_derm_did_not_write_is_refused() {
+    for (label, setup) in [
+        ("group-writable", 0u8),
+        ("a link", 1),
+        ("not a name derm drew", 2),
+    ] {
+        let home = scratch(&format!("gate-name-bad-{setup}"));
+        fake_derm(&home);
+        fs::create_dir_all(home.join(".config/goose")).unwrap();
+        let f = home.join(gate::GATE_NAME_FILE);
+        match setup {
+            0 => {
+                write_gate_name(&home, "derm-0123456789abcdef");
+                fs::set_permissions(&f, fs::Permissions::from_mode(0o620)).unwrap();
+            }
+            1 => {
+                write_gate_name(&home, "derm-0123456789abcdef");
+                let real = home.join("elsewhere");
+                fs::rename(&f, &real).unwrap();
+                std::os::unix::fs::symlink(&real, &f).unwrap();
+            }
+            _ => write_gate_name(&home, "derm"),
+        }
+        let r = go(&home, &["goose", "--gate", "--write"]);
+        assert_eq!(r.code, 1, "{label}: {}{}", r.out, r.err);
+        assert!(
+            r.err.contains("derm will not register under it"),
+            "{label}: {}",
+            r.err
+        );
+        assert!(!home.join(".agents/plugins").exists(), "{label}");
+    }
+}
+
+#[cfg(unix)]
+/// A goose folder an older derm wrote under the fixed name `derm` is named
+/// for removal by `--gate`, found by `--ungate` with no name file, and
+/// reported by `derm doctor`; a Vibe hook named `derm-gate` is renamed in
+/// place.
+#[test]
+fn an_older_derms_fixed_names_are_named_and_replaced() {
+    let home = scratch("gate-legacy");
+    let derm = fake_derm(&home);
+    fs::create_dir_all(home.join(".config/goose")).unwrap();
+    let old = home.join(".agents/plugins/derm");
+    fs::create_dir_all(old.join("hooks")).unwrap();
+    fs::write(old.join("plugin.json"), "{\"name\": \"derm\"}\n").unwrap();
+    let hooks = format!(
+        "{{\"hooks\": {{\"PreToolUse\": [{{\"matcher\": \".*\", \"hooks\": [{{\"type\": \"command\", \"command\": \"{derm} hook goose pre\", \"timeout\": 120, \"on_failure\": \"block\"}}]}}]}}}}\n"
+    );
+    fs::write(old.join("hooks/hooks.json"), &hooks).unwrap();
+    let r = go(&home, &["goose", "--ungate"]);
+    assert!(
+        r.out
+            .contains(&format!("remove the folder {}", old.display())),
+        "{}",
+        r.out
+    );
+    let doctor = crate::doctor::stale_registrations("goose", &doctor_env(&home));
+    assert!(doctor.iter().any(|p| p.contains("BC-1")), "{doctor:?}");
+    let r = go(&home, &["goose", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("left:   remove the folder"), "{}", r.out);
+    assert!(r.out.contains("BC-1"), "{}", r.out);
+    // Vibe: the old entry keeps its place and takes the new name.
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    let cfg = home.join(".vibe/hooks.toml");
+    fs::write(
+        &cfg,
+        format!("[[hooks]]\nname = \"derm-gate\"\ntype = \"pre_tool\"\ncommand = \"{derm} hook mistral-vibe pre\"\ntimeout = 120.0\nstrict = true\n"),
+    )
+    .unwrap();
+    let doctor = crate::doctor::stale_registrations("mistral-vibe", &doctor_env(&home));
+    assert!(doctor.iter().any(|p| p.contains("BC-2")), "{doctor:?}");
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&cfg).parse().unwrap();
+    let all = doc["hooks"].as_array_of_tables().unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        all.get(0).unwrap()["name"].as_str(),
+        gate::read_gate_name(&home).unwrap().as_deref()
+    );
+    let doctor = crate::doctor::stale_registrations("mistral-vibe", &doctor_env(&home));
+    assert!(!doctor.iter().any(|p| p.contains("BC-2")), "{doctor:?}");
+}
+
+#[cfg(unix)]
+fn doctor_env(home: &Path) -> crate::watch::status::Env {
+    crate::watch::status::Env {
+        home: Some(home.to_path_buf()),
+        path: String::new(),
+        vars: vec![],
+        cwd: Some(home.join("proj")),
+    }
 }

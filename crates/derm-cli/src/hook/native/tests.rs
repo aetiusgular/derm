@@ -730,20 +730,48 @@ fn a_fifo_config_does_not_block_and_makes_the_list_incomplete() {
 #[test]
 fn the_native_agents_and_hermess_control_files_ask_through_the_core() {
     const ENTRIES: [&str; 24] = [
-        ".cursor/", "cursor/hooks.json", ".agents/hooks.json", ".agents/plugins/",
-        ".config/goose/", "goose_path_root", "goose_mode", "goose_disable_keyring",
-        ".vibe/", "vibe_home", ".config/crush/", ".local/share/crush/", "crushrc",
-        "crush.json", "crush_global_config", "crush_global_data", ".kiro/", "kiro_home",
-        ".hermes/", "hermes_home", "hermes_safe_mode", "hermes_yolo_mode",
-        "hermes_enable_project_plugins", "hermes_accept_hooks",
+        ".cursor/",
+        "cursor/hooks.json",
+        ".agents/hooks.json",
+        ".agents/plugins/",
+        ".config/goose/",
+        "goose_path_root",
+        "goose_mode",
+        "goose_disable_keyring",
+        ".vibe/",
+        "vibe_home",
+        ".config/crush/",
+        ".local/share/crush/",
+        "crushrc",
+        "crush.json",
+        "crush_global_config",
+        "crush_global_data",
+        ".kiro/",
+        "kiro_home",
+        ".hermes/",
+        "hermes_home",
+        "hermes_safe_mode",
+        "hermes_yolo_mode",
+        "hermes_enable_project_plugins",
+        "hermes_accept_hooks",
     ];
     let allow = LoadedPolicy {
-        policy: derm_core::policy::parse(r#"{"version":1,"rules":[{"tool":"bash","action":"allow"}]}"#)
-            .unwrap(),
+        policy: derm_core::policy::parse(
+            r#"{"version":1,"rules":[{"tool":"bash","action":"allow"}]}"#,
+        )
+        .unwrap(),
         problem: None,
     };
     let env = Env(Default::default());
-    for harness in ["cursor", "antigravity", "goose", "mistral-vibe", "crush", "kiro", "hermes"] {
+    for harness in [
+        "cursor",
+        "antigravity",
+        "goose",
+        "mistral-vibe",
+        "crush",
+        "kiro",
+        "hermes",
+    ] {
         for entry in ENTRIES {
             let call = crate::gate::core::GateCall {
                 harness: harness.into(),
@@ -755,7 +783,11 @@ fn the_native_agents_and_hermess_control_files_ask_through_the_core() {
             };
             let a = crate::gate::core::decide_call(&allow, &call, &env);
             assert_eq!(a.action, Action::Ask, "{harness} {entry}: {}", a.reason);
-            assert!(a.reason.starts_with("input names a control file ("), "{harness} {entry}: {}", a.reason);
+            assert!(
+                a.reason.starts_with("input names a control file ("),
+                "{harness} {entry}: {}",
+                a.reason
+            );
         }
         // and an allowed call that names none still runs
         let call = crate::gate::core::GateCall {
@@ -766,6 +798,10 @@ fn the_native_agents_and_hermess_control_files_ask_through_the_core() {
             tool_use_id: None,
             full_access: Some(false),
         };
-        assert_eq!(crate::gate::core::decide_call(&allow, &call, &env).action, Action::Allow, "{harness}");
+        assert_eq!(
+            crate::gate::core::decide_call(&allow, &call, &env).action,
+            Action::Allow,
+            "{harness}"
+        );
     }
 }

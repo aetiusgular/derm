@@ -49,6 +49,103 @@ pub struct Agent {
     pub refuse_if_exists: Vec<String>,
     pub steps: Vec<Step>,
     pub notes: Vec<String>,
+    /// The fixed name an older derm gave the entry that now takes
+    /// `{gatename}` (goose's plugin folder `derm`, Vibe's hook `derm-gate`),
+    /// so `--gate` names it for removal and `--ungate` and `derm doctor`
+    /// still find it (BC-1, BC-2; the wave 5b close).
+    pub legacy_name: Option<String>,
+}
+
+/// BC-1 and BC-2 (note BC sections 8 and 11, run by the wave 5b base): goose
+/// 1.59.0 lists a project's `.agents/plugins/` before the user's and keeps
+/// the first plugin of a name (`crates/goose/src/plugins/discovery.rs:62-101`),
+/// and reads a project's `.config/goose/settings.json` `disabledPlugins`
+/// before the user's (`is_enabled`, 154-176); Mistral Vibe 3.1.2 reads every
+/// project root's `.vibe/hooks.toml`, `--add-dir` folders included, before
+/// `VIBE_HOME`'s and drops a later hook of a name it has seen
+/// (`vibe/core/hooks/config.py:94-113`, `_harness_manager.py:121-143`). With
+/// derm's fixed names (`derm`, `derm-gate`) a repository could replace or
+/// switch off derm's gate. derm's entry takes a name a repository cannot know
+/// instead: drawn once per user, kept in this file, as derm keeps its pipe's
+/// name (rules case 136).
+pub const GATE_NAME_FILE: &str = ".derm/gate-name";
+
+/// `derm-` and 16 lowercase hex digits.
+pub fn valid_gate_name(n: &str) -> bool {
+    n.len() == 21
+        && n.starts_with("derm-")
+        && n[5..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A new name: the first 64 bits of SHA-256 over a version-4 UUID's 122
+/// random bits.
+pub fn new_gate_name() -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(uuid::Uuid::new_v4().as_bytes());
+    let hex: String = d.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("derm-{hex}")
+}
+
+/// The name in `~/.derm/gate-name`, `None` when the file is absent. A link,
+/// anything but a small regular file, a file of another user or one others
+/// may write, or a malformed name is refused: derm would rather write
+/// nothing than register under a name someone else chose.
+pub fn read_gate_name(home: &Path) -> Result<Option<String>, String> {
+    let file = home.join(GATE_NAME_FILE);
+    let meta = match std::fs::symlink_metadata(&file) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let refuse = |why: &str| {
+        Err(format!(
+            "{} {why}; derm will not register under it. Remove it and run this again",
+            file.display()
+        ))
+    };
+    if !meta.file_type().is_file() || meta.len() > 64 {
+        return refuse("is not a small regular file");
+    }
+    #[cfg(unix)]
+    if meta.uid() != derm_core::platform::real_user() || meta.mode() & 0o022 != 0 {
+        return refuse("is not yours alone");
+    }
+    // Lane Z's rule, as the policy loader applies it (`gate/policy.rs`).
+    #[cfg(windows)]
+    if !derm_core::platform::windows::only_owner_writes(&file) {
+        return refuse("is not yours alone");
+    }
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let name = text.trim_end_matches('\n');
+    if !valid_gate_name(name) {
+        return refuse("does not hold a name derm drew");
+    }
+    Ok(Some(name.to_string()))
+}
+
+/// Whether the row names its entry `{gatename}`.
+pub fn uses_gate_name(agent: &Agent) -> bool {
+    agent.steps.iter().any(Step::takes_gate_name)
+}
+
+impl Step {
+    /// Whether this step's folder or entry takes `{gatename}`.
+    pub fn takes_gate_name(&self) -> bool {
+        match self {
+            Step::PluginFolder { at, files } => {
+                at.path.contains("{gatename}")
+                    || files
+                        .iter()
+                        .any(|(_, v)| json::compact(v).contains("{gatename}"))
+            }
+            Step::TomlArrayEntry { entry, .. } => entry
+                .iter()
+                .any(|(_, v)| matches!(v, Value::Str(x) if x == "{gatename}")),
+            _ => false,
+        }
+    }
 }
 
 /// Where a file is: a `~/` path, moved by `homeEnv` (the variable replaces
@@ -271,6 +368,7 @@ pub fn table() -> Result<Vec<Agent>, String> {
                 refuse_if_exists: strs(r, "refuseIfExists")?,
                 steps,
                 notes: strs(r, "notes")?,
+                legacy_name: opt_s(r, "legacyName"),
             })
         })
         .collect()
@@ -282,10 +380,18 @@ pub struct Vars {
     pub command: Option<String>,
     pub hook_dir: Option<String>,
     pub version: String,
+    /// `{gatename}` ([`GATE_NAME_FILE`]).
+    pub gate_name: Option<String>,
 }
 
 /// Placeholders a whole string may be.
-const WHOLE: &[&str] = &["{command}", "{hook_url}", "{hook_dir}", "{version}"];
+const WHOLE: &[&str] = &[
+    "{command}",
+    "{hook_url}",
+    "{hook_dir}",
+    "{version}",
+    "{gatename}",
+];
 
 /// Fills whole-string placeholders in `v`. Any other `{`...`}` that names a
 /// placeholder is refused, so nothing is spliced into the middle of a value.
@@ -304,6 +410,11 @@ pub fn fill(v: &Value, vars: &Vars) -> Result<Value, String> {
                     need(&vars.hook_dir, "the hook folder")?
                 )),
                 "{version}" => Value::Str(vars.version.clone()),
+                "{gatename}" => Value::Str(
+                    vars.gate_name
+                        .clone()
+                        .ok_or("internal: derm's gate name is needed for this agent")?,
+                ),
                 other => {
                     if WHOLE.iter().any(|p| other.contains(p))
                         || ["{node}", "{hook_file}", "{derm}"]
@@ -1346,10 +1457,23 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 .map(|h| fill_text(t, &node, Some(h), hook_dir.as_deref(), &version, shown_derm))
         }
     });
+    // BC-1, BC-2: the name a repository cannot know. Drawn here when there
+    // is none yet, and kept only by the write below, after the yes; `--ungate`
+    // with none falls back to the old fixed name, which is all it can find.
+    let (gate_name, new_gate_name_drawn) = if uses_gate_name(agent) {
+        match read_gate_name(&ctx.home)? {
+            Some(n) => (Some(n), false),
+            None if o.ungate => (agent.legacy_name.clone(), false),
+            None => (Some(new_gate_name()), true),
+        }
+    } else {
+        (None, false)
+    };
     let vars = Vars {
         command,
         hook_dir: hook_dir.clone(),
         version: version.clone(),
+        gate_name: gate_name.clone(),
     };
     let gate_of = if agent
         .command
@@ -1496,6 +1620,14 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     // Plan every file before anything is written.
     let mut plans: Vec<FilePlan> = Vec::new();
     let mut leave: Vec<String> = Vec::new();
+    if let (true, Some(n)) = (new_gate_name_drawn, &gate_name) {
+        let path = ctx.home.join(GATE_NAME_FILE);
+        plans.push(FilePlan {
+            current: write::read_current(&path)?,
+            path,
+            new_text: format!("{n}\n"),
+        });
+    }
     // A text file whose folder is not there yet (Hermes before its plugin
     // is copied): nothing is registered, so nothing says it is.
     let mut waiting = false;
@@ -1673,7 +1805,35 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 ));
             }
             Step::PluginFolder { at, files } => {
-                let dir = resolve(at, &ctx.home, ctx.env);
+                let named = |name: &str| Place {
+                    path: at.path.replace("{gatename}", name),
+                    ..at.clone()
+                };
+                let dir = match &gate_name {
+                    Some(n) => resolve(&named(n), &ctx.home, ctx.env),
+                    None if at.path.contains("{gatename}") => continue,
+                    None => resolve(at, &ctx.home, ctx.env),
+                };
+                // An older derm's folder under the fixed name: derm's own
+                // when its hooks file carries derm's marker. derm never
+                // deletes a folder; it names it.
+                if let Some(old) = agent
+                    .legacy_name
+                    .as_deref()
+                    .filter(|_| at.path.contains("{gatename}"))
+                {
+                    let old_dir = resolve(&named(old), &ctx.home, ctx.env);
+                    let is_derms = files.iter().any(|(rel, _)| {
+                        std::fs::read_to_string(old_dir.join(rel)).is_ok_and(|t| hit(&t, marker))
+                    });
+                    if old_dir != dir && is_derms {
+                        leave.push(format!(
+                            "remove the folder {}: derm's gate under the fixed name `{old}`, which a repository's own folder of that name can replace or switch off (note BC, BC-1); until it goes, {} runs derm's gate twice",
+                            old_dir.display(),
+                            agent.name
+                        ));
+                    }
+                }
                 if o.ungate {
                     if dir.exists() {
                         leave.push(format!(
