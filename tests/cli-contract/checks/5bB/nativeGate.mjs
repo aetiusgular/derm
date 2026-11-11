@@ -148,20 +148,23 @@ const ran = (t, marker) => t.results.some((x) => x.includes(`${marker}\n`) || x.
 const said = (t, s) => JSON.stringify(t.results).includes(s);
 
 const AGENTS = [
-  { id: "crush", setup: crush },
+  // Crush 0.100.0's bash tool requires `description` and refuses a call without it
+  // ("missing required parameter: description", integration w5b's run); lane N's
+  // crushGate.mjs sends one too.
+  { id: "crush", setup: crush, args: (c) => ({ command: c, description: "step" }) },
   { id: "goose", setup: goose(false), tool: "shell" },
   { id: "mistral-vibe", setup: vibe(false), tool: "bash" },
   { id: "hermes", setup: hermes, tool: "terminal" },
 ];
 
 export const checks = [
-  ...AGENTS.flatMap(({ id, setup, tool }) => [
+  ...AGENTS.flatMap(({ id, setup, tool, args }) => [
     {
       id: `native-${id}-allow`,
       title: `${id}: an allowed shell call runs through derm hook, and the daemon gets derm's record`,
       harness: id,
       async run({ binPath }) {
-        const t = await turn(binPath, { agent: id, policy: ALLOW, command: `echo ${id}-5bb-allowed`, setup, tool });
+        const t = await turn(binPath, { agent: id, policy: ALLOW, command: `echo ${id}-5bb-allowed`, setup, tool, args });
         const record = t.daemon.some((e) => e.kind === "approval" && e.harness === id);
         const ok = ran(t, `${id}-5bb-allowed`) && record;
         return { status: ok ? "pass" : "fail", finding: `exit ${t.r.code}; record ${record}; ${JSON.stringify(t.results).slice(0, 200)}${ok ? "" : `; ${t.r.err.slice(-300)}`}` };
@@ -172,7 +175,7 @@ export const checks = [
       title: `${id}: a denied shell call does not run and the model gets derm's reason (case 79)`,
       harness: id,
       async run({ binPath }) {
-        const t = await turn(binPath, { agent: id, policy: DENY, command: `echo ${id}-5bb-denied`, setup, tool });
+        const t = await turn(binPath, { agent: id, policy: DENY, command: `echo ${id}-5bb-denied`, setup, tool, args });
         const ok = !ran(t, `${id}-5bb-denied`) && said(t, "derm: rule");
         return { status: ok ? "pass" : "fail", finding: `exit ${t.r.code}; ${JSON.stringify(t.results).slice(0, 200)}${ok ? "" : `; ${t.r.err.slice(-300)}`}` };
       },
