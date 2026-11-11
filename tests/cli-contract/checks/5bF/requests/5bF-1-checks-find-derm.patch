@@ -1,0 +1,91 @@
+diff --git a/tests/cli-contract/checks/5bA/rust.mjs b/tests/cli-contract/checks/5bA/rust.mjs
+index 4d4bb09..f76562c 100644
+--- a/tests/cli-contract/checks/5bA/rust.mjs
++++ b/tests/cli-contract/checks/5bA/rust.mjs
+@@ -65,6 +65,9 @@ function stagePlugin(stage, pkg, agent, events) {
+   cpSync(src, dst, { recursive: true, filter: (p) => !p.includes(`${path.sep}node_modules`) });
+   const file = path.join(dst, "hooks", "hooks.json");
+   let text = readFileSync(file, "utf8");
++  // Since lane 5bF the plugin's own hooks file runs `derm hook` through
++  // hooks/derm-gate.sh: nothing to replace, the copy already runs Rust.
++  if (text.includes("derm-gate.sh")) return dst;
+   for (const [from, to] of events) {
+     const re = new RegExp(`node --no-warnings \\\\"[^"\\\\]*derm-hook\\.mjs\\\\" ${from}`, "g");
+     if (!re.test(text)) throw new Error(`5bA staging: ${pkg}/hooks/hooks.json has no ${from} hook`);
+diff --git a/tests/cli-contract/checks/I/geminiGate.mjs b/tests/cli-contract/checks/I/geminiGate.mjs
+index 42432eb..f8cb1e5 100644
+--- a/tests/cli-contract/checks/I/geminiGate.mjs
++++ b/tests/cli-contract/checks/I/geminiGate.mjs
+@@ -9,6 +9,7 @@
+ //
+ //   node tests/cli-contract/run.mjs --cli gemini=/path/to/gemini --only gemini-derm-deny,...
+ 
++import { installDermAtHome } from "../../lib/dermBin.mjs";
+ import { spawn, execFileSync } from "node:child_process";
+ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+ import { tmpdir } from "node:os";
+@@ -47,6 +48,8 @@ async function setup(bin, { settings = {}, policy, edit } = {}) {
+   mkdirSync(path.join(home, ".gemini"), { recursive: true });
+   mkdirSync(path.join(home, ".derm"), { recursive: true, mode: 0o700 });
+   mkdirSync(work);
++  // The extension's launcher finds derm under HOME only (lane 5bF).
++  installDermAtHome(home);
+   const policyFile = path.join(home, ".derm", "policy.json");
+   if (policy) writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
+   writeFileSync(path.join(home, ".gemini", "settings.json"), JSON.stringify({ security: { auth: { selectedType: "gemini-api-key" } }, ...settings }));
+diff --git a/tests/cli-contract/lib/codexDriver.mjs b/tests/cli-contract/lib/codexDriver.mjs
+index 2957eb3..6258a93 100644
+--- a/tests/cli-contract/lib/codexDriver.mjs
++++ b/tests/cli-contract/lib/codexDriver.mjs
+@@ -6,6 +6,7 @@
+ // short PATH and the telemetry switches. Nothing from this workspace's own
+ // environment, credentials or Codex home reaches it.
+ 
++import { installDermAtHome } from "./dermBin.mjs";
+ import { spawnGroup, stopGroup } from "./procs.mjs";
+ import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
+ import { tmpdir, homedir } from "node:os";
+@@ -60,6 +61,8 @@ export function makeTempDirs(prefix = "cc-") {
+   const codexHome = path.join(root, "codex-home");
+   const work = path.join(root, "work");
+   for (const dir of [home, codexHome, work]) mkdirSync(dir, { recursive: true });
++  // The derm plugins' launcher finds derm under HOME only (lane 5bF).
++  installDermAtHome(home);
+   return { root, home, codexHome, work };
+ }
+ 
+diff --git a/tests/cli-contract/lib/dermBin.mjs b/tests/cli-contract/lib/dermBin.mjs
+index 877f1bd..af555cc 100644
+--- a/tests/cli-contract/lib/dermBin.mjs
++++ b/tests/cli-contract/lib/dermBin.mjs
+@@ -4,7 +4,7 @@
+ // per-user install folders (packages/*/src/serve/client.ts:123-133; case 227).
+ // A check's harness runs without `derm run`, so it is given DERM_BIN here:
+ // the runner's own DERM_BIN, else this repository's release or debug build.
+-import { existsSync } from "node:fs";
++import { chmodSync, existsSync, mkdirSync, symlinkSync } from "node:fs";
+ import path from "node:path";
+ import { fileURLToPath } from "node:url";
+ 
+@@ -22,3 +22,21 @@ export function dermBinEnv() {
+   const b = dermBin();
+   return b ? { DERM_BIN: b } : {};
+ }
++
++/**
++ * derm at `<home>/.local/bin/derm` (a link to this build), where the plugins'
++ * launcher finds it (lane 5bF: each plugin's hooks/derm-gate.sh runs derm from
++ * its install folders only, never PATH or DERM_BIN; case 227). Nothing when
++ * no build exists, so a check that needs derm then sees the launcher's own
++ * "no derm this hook can trust".
++ */
++export function installDermAtHome(home) {
++  const b = dermBin();
++  if (!b) return undefined;
++  const bin = path.join(home, ".local", "bin");
++  mkdirSync(bin, { recursive: true });
++  for (const d of [home, path.join(home, ".local"), bin]) chmodSync(d, 0o755);
++  const link = path.join(bin, "derm");
++  if (!existsSync(link)) symlinkSync(b, link);
++  return link;
++}

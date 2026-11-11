@@ -18,11 +18,19 @@
 //!   the row (cases 70, 71).
 //! - With `--run-gate`, the installed gate run once against a fixture: a
 //!   shell call under a policy that denies `bash`, for the agents whose
-//!   installed hook derm can find (Claude Code, Codex). The hook runs as you,
-//!   outside any sandbox, with no chat token, so it reaches no daemon. Only
-//!   the agent's own copy in its plugin cache is run, owned by you and
-//!   writable by no one else; without `--run-gate` the report names the file
-//!   and nothing runs it (security review L9).
+//!   installed hook derm can find (Claude Code, Codex, Gemini). Since wave
+//!   5b (lane 5bF) that is the plugin's launcher, `hooks/derm-gate.sh`, run
+//!   with /bin/sh as the agent runs it, so the Rust hook (`derm hook`) from
+//!   derm's install folders is what answers; a plugin from before wave 5b
+//!   is run with node as before, and named as a problem (case 227). The
+//!   hook runs as you, outside any sandbox, with no chat token, so it
+//!   reaches no daemon. Only the agent's own copy in its plugin cache is
+//!   run, owned by you and writable by no one else; without `--run-gate`
+//!   the report names the file and nothing runs it (security review L9).
+//! - Case 227: a registration in the agent's own files that runs derm's
+//!   gate through a program found on PATH (a wave 4 `node ...
+//!   derm-hook.mjs` line, or a bare `derm hook`), and a plugin whose hooks
+//!   file still runs `node`, are problems with the fix named.
 //! - `--live` (one canary call through the agent on your account) is not
 //!   built in this version, and says so.
 //!
@@ -285,12 +293,20 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         match installed_hook(&id, env) {
             Ok(h) => json!({
                 "state": "not run",
-                "why": format!("pass --run-gate to run {} once with node, as you, outside any sandbox", h.display()),
+                "why": format!(
+                    "pass --run-gate to run {} once with {}, as you, outside any sandbox",
+                    h.display(),
+                    if is_launcher(&h) { "/bin/sh, which runs derm hook from derm's install folders" } else { "node" }
+                ),
                 "hook": h.display().to_string(),
             }),
             Err(why) => json!({"state": "not run", "why": why}),
         }
     };
+    // Case 227: a registration that finds derm's gate, or the node that
+    // runs it, on PATH.
+    let stale = stale_registrations(&id, env);
+    problems.extend(stale.iter().cloned());
     match gate_run["state"].as_str() {
         Some("fail") => problems.push(format!(
             "the installed gate did not deny a denied call: {}",
@@ -326,6 +342,7 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         "failSwitch": row.pointer("/coverage/failSwitch").cloned().unwrap_or(Value::Null),
         "ask": s(row, "/coverage/ask"),
         "gateRun": gate_run,
+        "onPath": stale,
         "live": if live {
             json!("not built in this version: no canary call was made")
         } else {
@@ -525,6 +542,21 @@ fn semver(name: &str) -> Option<(u64, u64, u64)> {
     it.next().is_none().then_some(v)
 }
 
+/// The hook an installed plugin copy runs: the wave 5b launcher
+/// (`hooks/derm-gate.sh`, run with /bin/sh), else a copy from before wave
+/// 5b (`bin/derm-hook.mjs`, run with node).
+fn plugin_hook(copy: &Path) -> Option<PathBuf> {
+    ["hooks/derm-gate.sh", "bin/derm-hook.mjs"]
+        .iter()
+        .map(|rel| copy.join(rel))
+        .find(|p| p.is_file())
+}
+
+/// Whether a hook is the wave 5b launcher.
+fn is_launcher(hook: &Path) -> bool {
+    hook.file_name().is_some_and(|n| n == "derm-gate.sh")
+}
+
 fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
     let home = env.home.as_ref().ok_or("HOME is not set")?;
     match id {
@@ -569,10 +601,9 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
             }
             let mut first_err = None;
             for p in ranked.into_iter().map(|(_, p)| p) {
-                let hook = PathBuf::from(p).join("bin/derm-hook.mjs");
-                if !hook.is_file() {
+                let Some(hook) = plugin_hook(&PathBuf::from(p)) else {
                     continue;
-                }
+                };
                 match checked_hook(&hook, &plugins) {
                     Ok(h) => return Ok(h),
                     Err(e) => {
@@ -580,8 +611,10 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
                     }
                 }
             }
-            Err(first_err
-                .unwrap_or_else(|| "no installed copy of derm@derm holds bin/derm-hook.mjs".into()))
+            Err(first_err.unwrap_or_else(|| {
+                "no installed copy of derm@derm holds hooks/derm-gate.sh or bin/derm-hook.mjs"
+                    .into()
+            }))
         }
         "codex" => {
             let codex = env
@@ -600,13 +633,154 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
                     let name = e.file_name().to_string_lossy().into_owned();
                     semver(&name).map(|v| (v, e.path()))
                 })
-                .filter(|(_, p)| p.join("bin/derm-hook.mjs").is_file())
+                .filter_map(|(v, p)| plugin_hook(&p).map(|h| (v, h)))
                 .max_by_key(|(v, _)| *v)
                 .ok_or_else(|| format!("no installed copy under {}", dir.display()))?;
-            checked_hook(&best.1.join("bin/derm-hook.mjs"), &dir)
+            checked_hook(&best.1, &dir)
+        }
+        // Gemini installs an extension by copying it into
+        // `~/.gemini/extensions/<name>` (gemini-cli 0.68.0,
+        // `EXTENSIONS_DIRECTORY_NAME`, bundle/chunk-ASDLQWJU.js); derm's is
+        // named derm (`gemini-extension.json`).
+        "gemini" => {
+            let dir = home.join(".gemini/extensions");
+            let ext = dir.join("derm");
+            let hook = plugin_hook(&ext).ok_or_else(|| {
+                format!(
+                    "no derm extension under {} holds hooks/derm-gate.sh",
+                    dir.display()
+                )
+            })?;
+            checked_hook(&hook, &dir)
         }
         other => Err(format!("no fixture runner for {other} in this version")),
     }
+}
+
+/// `derm connect`'s view of doctor's environment (`connect::presets::Env`).
+struct ConnectEnv<'a>(&'a Env);
+
+impl crate::connect::presets::Env for ConnectEnv<'_> {
+    fn var(&self, key: &str) -> Option<String> {
+        self.0.var(key).map(str::to_string)
+    }
+}
+
+/// Case 227 (wave 5b lane 5bF): what in this agent's own files runs derm's
+/// gate through a program found on PATH. A plugin copy from before wave 5b
+/// runs `node` (note BC, BC-3, run: a project's `env.PATH` chose which
+/// node ran it); a registration `derm connect --gate` wrote before wave 5b
+/// runs `node ... derm-hook.mjs`; a line naming a bare `derm` runs
+/// whichever derm comes first on PATH. Each comes back as a problem that
+/// names the fix.
+pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
+    let mut out = Vec::new();
+    if matches!(id, "claude-code" | "codex" | "gemini") {
+        if let Ok(h) = installed_hook(id, env) {
+            if !is_launcher(&h) {
+                out.push(format!(
+                    "the installed plugin's hook ({}) runs `node` found on PATH (rules case 227): install derm's plugin from this release, whose hooks file runs /bin/sh on hooks/derm-gate.sh",
+                    h.display()
+                ));
+            }
+        }
+    }
+    let Some(home) = env.home.as_deref() else {
+        return out;
+    };
+    let Ok(table) = crate::connect::gate::table() else {
+        return out;
+    };
+    let Some(row) = table.iter().find(|a| a.agent == id) else {
+        return out;
+    };
+    if !row.command.as_deref().is_some_and(|c| c.contains("{derm}")) {
+        return out;
+    }
+    use crate::connect::gate::{resolve, Place, Step};
+    let cenv = ConnectEnv(env);
+    let mut places: Vec<Place> = Vec::new();
+    for st in &row.steps {
+        let (at, chain): (&Place, &[String]) = match st {
+            Step::JsonArrayEntry { at, chain, .. } => (at, chain),
+            Step::JsonMember { at, .. }
+            | Step::TomlArrayEntry { at, .. }
+            | Step::OwnedFile { at, .. } => (at, &[]),
+            Step::PluginFolder { at, .. } => {
+                places.push(Place {
+                    path: format!("{}/hooks/hooks.json", at.path),
+                    home_env: at.home_env.clone(),
+                    xdg_config: at.xdg_config,
+                });
+                continue;
+            }
+            _ => continue,
+        };
+        places.push(at.clone());
+        for c in chain {
+            places.push(Place {
+                path: c.clone(),
+                home_env: at.home_env.clone(),
+                xdg_config: at.xdg_config,
+            });
+        }
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for at in &places {
+        let file = resolve(at, home, &cenv);
+        if seen.contains(&file) {
+            continue;
+        }
+        seen.push(file.clone());
+        let Ok(m) = std::fs::metadata(&file) else {
+            continue;
+        };
+        if !m.is_file() || m.len() > 1024 * 1024 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let fix = format!("run `derm connect {id} --gate --write` again");
+        if text.contains("derm-hook.mjs") {
+            out.push(format!(
+                "{} registers derm's gate with the line from before wave 5b, which runs the `node` found on PATH (rules case 227): {fix}",
+                file.display()
+            ));
+        }
+        if bare_derm_hook(&text, id) {
+            out.push(format!(
+                "{} runs a `derm hook` found on PATH, not derm by its absolute path (rules case 227): {fix}",
+                file.display()
+            ));
+        }
+    }
+    out
+}
+
+/// Whether `text` holds `hook <id> ` after a program that is not an
+/// absolute path (`derm hook crush pre`, `"derm" hook crush pre`).
+fn bare_derm_hook(text: &str, id: &str) -> bool {
+    let needle = format!(" hook {id} ");
+    let mut from = 0;
+    while let Some(i) = text[from..].find(&needle) {
+        let at = from + i;
+        let before = &text[..at];
+        let word: String = before
+            .chars()
+            .rev()
+            .take_while(|c| !matches!(c, ' ' | '\n' | '\'' | '[' | ',' | '=' | ':'))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let word = word.trim_matches(|c| c == '"' || c == '\\');
+        if word.ends_with("derm") && !word.starts_with('/') {
+            return true;
+        }
+        from = at + needle.len();
+    }
+    false
 }
 
 /// Runs the installed hook once on a shell call, under a policy that denies
@@ -617,9 +791,11 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
         Ok(h) => h,
         Err(why) => return json!({"state": "not run", "why": why}),
     };
-    let Some(node) = probes.node.clone() else {
+    let launcher = is_launcher(&hook);
+    let node = probes.node.clone();
+    if !launcher && node.is_none() {
         return json!({"state": "not run", "why": "node is not on PATH"});
-    };
+    }
     let scratch =
         std::env::temp_dir().join(format!("derm-doctor-{}", uuid::Uuid::new_v4().simple()));
     let result = (|| -> Result<Value, String> {
@@ -642,31 +818,58 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             br#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,
         )
         .map_err(|e| e.to_string())?;
-        let input = json!({
-            "session_id": "derm-doctor",
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "rm -rf derm-doctor-canary"},
-            "tool_use_id": "derm-doctor-1",
-            "cwd": work,
-            "permission_mode": "default",
-        });
-        let mut cmd = Command::new(&node);
-        cmd.arg("--no-warnings")
-            .arg(&hook)
-            .arg("pre")
-            .current_dir(&work)
+        // The agent's own input for a shell call (contracts/fixtures/
+        // hook-dialects; Gemini's tool is `run_shell_command`).
+        let input = if id == "gemini" {
+            json!({
+                "session_id": "derm-doctor",
+                "hook_event_name": "BeforeTool",
+                "tool_name": "run_shell_command",
+                "tool_input": {"command": "rm -rf derm-doctor-canary"},
+                "cwd": work,
+                "timestamp": "2026-11-11T00:00:00.000Z",
+            })
+        } else {
+            json!({
+                "session_id": "derm-doctor",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf derm-doctor-canary"},
+                "tool_use_id": "derm-doctor-1",
+                "cwd": work,
+                "permission_mode": "default",
+            })
+        };
+        let event = if id == "gemini" { "before" } else { "pre" };
+        let mut cmd = if launcher {
+            // As the agent runs it: /bin/sh by its absolute path on the
+            // launcher, which runs `derm hook <agent> <event>` from derm's
+            // install folders (never PATH).
+            let mut c = Command::new("/bin/sh");
+            c.arg(&hook).arg(id).arg(event);
+            c
+        } else {
+            let mut c = Command::new(node.as_ref().expect("checked above"));
+            c.arg("--no-warnings").arg(&hook).arg(event);
+            c
+        };
+        cmd.current_dir(&work)
             .env_clear()
             .env("DERM_POLICY", &policy)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for k in ["HOME", "PATH"] {
-            if let Some(v) = std::env::var_os(k) {
-                cmd.env(k, v);
-            }
+        // HOME is doctor's own (the launcher finds derm under it); PATH only
+        // for node, which the launcher never reads.
+        if let Some(h) = &env.home {
+            cmd.env("HOME", h);
         }
-        let mut child = cmd.spawn().map_err(|e| format!("node: {e}"))?;
+        if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher) {
+            cmd.env("PATH", v);
+        }
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("{}: {e}", if launcher { "/bin/sh" } else { "node" }))?;
         if let Some(mut stdin) = child.stdin.take() {
             let _ = std::io::Write::write_all(&mut stdin, input.to_string().as_bytes());
         }
@@ -708,6 +911,10 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
                         })
                         .unwrap_or(false)
             }
+            // Gemini: its JSON deny, on exit 0 or 2.
+            "gemini" => serde_json::from_str::<Value>(out.trim())
+                .ok()
+                .is_some_and(|v| v["decision"] == "deny" || v["decision"] == "block"),
             // Codex: exit 2 with a reason on stderr.
             _ => code == Some(2) && err.trim_start().starts_with("derm:"),
         };

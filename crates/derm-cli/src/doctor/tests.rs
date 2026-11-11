@@ -88,6 +88,30 @@ fn claude_install(h: &Home, src: &Path) -> PathBuf {
     dest
 }
 
+/// A stand-in for derm at `~/.local/bin/derm`, where the plugins' launcher
+/// finds it (wave 5b lane 5bF): it answers a shell call as `derm hook
+/// <agent> pre` answers one a policy denies, in that agent's own form
+/// (Claude Code's deny decision, Codex's exit 2 with the reason on stderr,
+/// Gemini's JSON deny), and records its argv. The real derm answers the
+/// same call in the contract checks (`tests/cli-contract/checks/5bF/`).
+/// Built on every OS, since the tests that call it run on Windows too
+/// (they were among the Windows job's failures before wave 5b); the modes
+/// are Unix-only.
+fn derm_at_home(h: &Home) {
+    let bin = h.root.join("home/.local/bin");
+    let body = "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HOME/derm-argv\"\ncat >/dev/null\ncase \"$2\" in\nclaude-code) printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: rule bash deny\"}}' ;;\ncodex) echo 'derm: rule bash deny' >&2; exit 2 ;;\ngemini) printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"derm: rule bash deny\"}'; exit 2 ;;\nesac\n";
+    put(&bin.join("derm"), body);
+    #[cfg(unix)]
+    for p in [
+        h.root.join("home"),
+        h.root.join("home/.local"),
+        bin.clone(),
+        bin.join("derm"),
+    ] {
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -217,9 +241,22 @@ fn switches_that_turn_the_gate_off_are_named() {
 #[test]
 fn the_installed_claude_code_gate_denies_a_denied_call() {
     let h = home("cc-gate");
-    claude_install(&h, &repo().join("packages/derm-claude-plugin"));
+    derm_at_home(&h);
+    let dest = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
     let r = run_fixture("claude-code", &env(&h), &probes());
     assert_eq!(r["state"], "pass", "{r}");
+    std::fs::remove_dir_all(&dest).unwrap();
+    // The launcher ran `derm hook claude-code pre` from ~/.local/bin.
+    assert!(
+        r["hook"].as_str().unwrap().ends_with("hooks/derm-gate.sh"),
+        "{r}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook claude-code pre\n"
+    );
+    // A plugin from before wave 5b (only bin/derm-hook.mjs) is still run,
+    // with node, as before.
     // A hook that lets everything through fails the check.
     let fake = h.root.join("fake-plugin");
     put(
@@ -242,6 +279,7 @@ fn the_installed_claude_code_gate_denies_a_denied_call() {
 #[test]
 fn the_installed_codex_gate_denies_a_denied_call() {
     let h = home("cx-gate");
+    derm_at_home(&h);
     let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
     copy_dir(
         &repo().join("packages/derm-codex-plugin"),
@@ -254,9 +292,94 @@ fn the_installed_codex_gate_denies_a_denied_call() {
     let r = run_fixture("codex", &env(&h2), &probes());
     assert_eq!(r["state"], "not run");
     // An agent with no runner says so.
-    let r = run_fixture("gemini", &env(&h2), &probes());
+    let r = run_fixture("crush", &env(&h2), &probes());
     assert_eq!(r["state"], "not run");
     assert!(r["why"].as_str().unwrap().contains("no fixture runner"));
+}
+
+/// Wave 5b lane 5bF: Gemini's extension, copied where Gemini installs it,
+/// runs the launcher with Gemini's own input, and its JSON deny passes.
+#[cfg(unix)]
+#[test]
+fn the_installed_gemini_gate_denies_a_denied_call() {
+    let h = home("gm-gate");
+    derm_at_home(&h);
+    let r = run_fixture("gemini", &env(&h), &probes());
+    assert_eq!(r["state"], "not run", "{r}");
+    copy_dir(
+        &repo().join("packages/derm-gemini-extension"),
+        &h.root.join("home/.gemini/extensions/derm"),
+    );
+    let r = run_fixture("gemini", &env(&h), &probes());
+    assert_eq!(r["state"], "pass", "{r}");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook gemini before\n"
+    );
+}
+
+/// Case 227 (wave 5b lane 5bF): a registration that finds derm's gate, or
+/// its node, on PATH is a problem with the fix; one naming derm by its
+/// absolute path is not.
+#[cfg(unix)]
+#[test]
+fn a_registration_that_finds_the_gate_on_path_is_a_problem() {
+    let h = home("on-path");
+    let crush = h.root.join("home/.config/crush/crush.json");
+    let mut e = env(&h);
+    let line = |cmd: &str| {
+        format!(
+            "{{\"hooks\":{{\"PreToolUse\":[{{\"name\":\"derm-gate\",\"command\":{}}}]}}}}",
+            serde_json::to_string(cmd).unwrap()
+        )
+    };
+    for (cmd, want) in [
+        (
+            "node --no-warnings \"/x/derm-hooks-native/bin/derm-hook.mjs\" crush",
+            Some("before wave 5b"),
+        ),
+        ("derm hook crush pre", Some("found on PATH")),
+        ("\"derm\" hook crush pre", Some("found on PATH")),
+        ("/usr/local/bin/derm hook crush pre", None),
+        ("\"/opt/x/derm\" hook crush pre", None),
+    ] {
+        put(&crush, &line(cmd));
+        let p = stale_registrations("crush", &e);
+        match want {
+            Some(w) => {
+                assert_eq!(p.len(), 1, "{cmd}: {p:?}");
+                assert!(
+                    p[0].contains(w) && p[0].contains("derm connect crush --gate --write"),
+                    "{cmd}: {p:?}"
+                );
+            }
+            None => assert!(p.is_empty(), "{cmd}: {p:?}"),
+        }
+    }
+    // XDG_CONFIG_HOME moves the file, as derm connect reads it.
+    let xdg = h.root.join("xdg");
+    put(&xdg.join("crush/crush.json"), &line("derm hook crush pre"));
+    e.vars
+        .push(("XDG_CONFIG_HOME".into(), xdg.display().to_string()));
+    put(&crush, &line("/usr/bin/derm hook crush pre"));
+    assert_eq!(stale_registrations("crush", &e).len(), 1);
+    // A plugin copy from before wave 5b.
+    let h2 = home("on-path-plugin");
+    let old = h2.root.join("old-plugin");
+    put(&old.join("bin/derm-hook.mjs"), "process.exitCode = 2;");
+    claude_install(&h2, &old);
+    let p = stale_registrations("claude-code", &env(&h2));
+    assert!(
+        p.iter().any(|x| x.contains("runs `node` found on PATH")),
+        "{p:?}"
+    );
+    claude_install(&h2, &repo().join("packages/derm-claude-plugin"));
+    assert!(stale_registrations("claude-code", &env(&h2)).is_empty());
+    // And the report lists them as problems.
+    let row = find_row("crush").unwrap();
+    put(&crush, &line("derm hook crush pre"));
+    let r = doctor(&row, &env(&h), &probes(), false, false);
+    assert!(r["problems"].to_string().contains("found on PATH"), "{r}");
 }
 
 #[test]
@@ -350,13 +473,14 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
     // A copy whose folder others can write: not run.
     let h = home("hook-mode");
     let dest = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
-    std::fs::set_permissions(dest.join("bin"), std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::set_permissions(dest.join("hooks"), std::fs::Permissions::from_mode(0o777)).unwrap();
     let r = run_fixture("claude-code", &env(&h), &probes());
     assert_eq!(r["state"], "not run", "{r}");
     assert!(r["why"].as_str().unwrap().contains("writable"), "{r}");
     // Codex: the highest version, read as a version; a name that is not one
     // is never picked.
     let h = home("hook-semver");
+    derm_at_home(&h);
     let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
     for v in ["0.2.0", "zzz"] {
         put(
@@ -374,7 +498,7 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
         r["hook"]
             .as_str()
             .unwrap()
-            .ends_with("0.10.0/bin/derm-hook.mjs"),
+            .ends_with("0.10.0/hooks/derm-gate.sh"),
         "{r}"
     );
 }
@@ -384,6 +508,7 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
 #[test]
 fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     let h = home("ask-gate");
+    derm_at_home(&h);
     let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
     copy_dir(
         &repo().join("packages/derm-codex-plugin"),
@@ -394,12 +519,13 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     assert_eq!(r["gateRun"]["state"], "not run", "{r}");
     let why = r["gateRun"]["why"].as_str().unwrap();
     assert!(why.contains("--run-gate"), "{why}");
-    assert!(why.contains("0.1.3/bin/derm-hook.mjs"), "{why}");
+    assert!(why.contains("0.1.3/hooks/derm-gate.sh"), "{why}");
+    assert!(why.contains("/bin/sh, which runs derm hook"), "{why}");
     assert!(render(&r).contains("--run-gate"));
     let r = doctor(&row, &env(&h), &probes(), false, true);
     assert_eq!(r["gateRun"]["state"], "pass", "{r}");
     assert!(
-        render(&r).contains("0.1.3/bin/derm-hook.mjs"),
+        render(&r).contains("0.1.3/hooks/derm-gate.sh"),
         "{}",
         render(&r)
     );
