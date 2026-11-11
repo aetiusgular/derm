@@ -86,3 +86,6 @@ ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "pl
 [target.'cfg(windows)'.dependencies]
 # [lane-Z]
 # [lane-5bE]
+# The Sysmon service's client and the feed's logic (lane 5bE's own crate):
+# platform/windows/sysmon_feed/ drives it.
+derm-sysmon = { path = "../derm-sysmon" }

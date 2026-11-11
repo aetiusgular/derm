@@ -3,24 +3,52 @@
 //! user's derm daemon over a named pipe (`contracts/sysmon-service.md`;
 //! `plans/toolkit_wave5b_plan.md` section 0, item 3). Lane 5bE's.
 //!
-//! Note BC section 11 (run on the box, 10 Nov): a virtual service account
-//! (`NT SERVICE\<name>`) reads the channel once it is in Event Log Readers;
-//! a pipe server reads its client's pid with `GetNamedPipeClientProcessId`,
-//! cannot open a virtual account's client process (`OpenProcess` fails 5),
-//! names its image with `NtQuerySystemInformation` class 88, and can
-//! impersonate it only after it has read from the pipe (1368 before).
+//! The portable part, built and tested on every OS:
+//! - [`wire`]: the pipe's JSON lines;
+//! - [`route`]: whose an event is (case 233);
+//! - [`stream`]: one client's place, acks and gaps (case 232);
+//! - [`acl`]: "only administrators can write this", decided from an
+//!   owner and its access entries;
+//! - [`cmdline`]: a Windows command line's words, for the argv shape;
+//! - [`ingest`]: the daemon's side, without the pipe;
+//! - [`decode`]: `derm-sysmon decode`.
 //!
-//! The base's stub serves nothing: [`serve`] says it is not built.
+//! Windows only: [`service`] (the service, its channel reader and its pipe)
+//! and [`client`] (the daemon's connection). The research behind each is
+//! `tests/windows/5bE/RESEARCH.md`.
 
-/// What the service does when Windows starts it: on the base, nothing.
+pub mod acl;
+pub mod cmdline;
+pub mod decode;
+pub mod ingest;
+pub mod route;
+pub mod stream;
+pub mod wire;
+
+#[cfg(windows)]
+pub mod client;
+#[cfg(windows)]
+pub mod service;
+#[cfg(windows)]
+mod win;
+
+/// What the service does when Windows starts it.
+#[cfg(windows)]
 pub fn serve() -> Result<(), String> {
-    Err("derm-sysmon: not built yet (wave 5b lane 5bE)".into())
+    service::run()
+}
+
+/// Off Windows there is no service.
+#[cfg(not(windows))]
+pub fn serve() -> Result<(), String> {
+    Err("derm-sysmon runs only on Windows, as a service".into())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
     #[test]
-    fn the_stub_serves_nothing() {
+    fn off_windows_the_service_does_not_run() {
         assert!(super::serve().is_err());
     }
 }
