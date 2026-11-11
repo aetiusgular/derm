@@ -1,0 +1,12 @@
+# Every file is checked out with the bytes the repository holds, on every OS.
+#
+# Git for Windows checks out text files with CRLF when `core.autocrlf` is
+# true, and the CI Windows job's checkout did: recorded fixtures stored with
+# LF (`git ls-files --eol`: i/lf) were read with CRLF, so byte comparisons
+# with each harness's own output, the plist, the catalog's formatting check
+# and the NOTICE tables failed there and nowhere else. Unset `text` means "do
+# not attempt any end-of-line conversion upon checkin or checkout"
+# (gitattributes(5), https://git-scm.com/docs/gitattributes), whatever
+# `core.autocrlf` says. The `.cmd` shims under tests/windows/fixtures are
+# stored with CRLF and keep it.
+* -text
