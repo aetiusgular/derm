@@ -326,13 +326,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         ));
     }
     let installed = ctx.home.join(t.installed_if).exists()
-        || ctx
-            .env
-            .var("PATH")
-            .unwrap_or_default()
-            .split(':')
-            .filter(|d| d.starts_with('/'))
-            .any(|d| std::path::Path::new(d).join(t.cli).is_file());
+        || names::cli_on_path(&ctx.env.var("PATH").unwrap_or_default(), t.cli);
     if !installed {
         ctx.out.push_str(&format!(
             "\n{} does not look installed here; derm writes nothing for an agent that is not installed.\n",
@@ -508,7 +502,7 @@ fn run_gemini(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     let base = ctx
         .env
         .var("GEMINI_CLI_HOME")
-        .filter(|d| d.starts_with('/'))
+        .filter(|d| names::absolute(d))
         .map_or_else(|| ctx.home.clone(), PathBuf::from);
     let file = base.join(".gemini/policies/derm.toml");
     if !file.starts_with(&ctx.home)
@@ -552,13 +546,7 @@ fn run_gemini(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         &format!("{label} (after derm connect --rules)"),
     ));
     let installed = base.join(".gemini").exists()
-        || ctx
-            .env
-            .var("PATH")
-            .unwrap_or_default()
-            .split(':')
-            .filter(|d| d.starts_with('/'))
-            .any(|d| std::path::Path::new(d).join("gemini").is_file());
+        || names::cli_on_path(&ctx.env.var("PATH").unwrap_or_default(), "gemini");
     if !installed {
         ctx.out.push_str("\nGemini CLI does not look installed here; derm writes nothing for an agent that is not installed.\n");
         return Ok(if o.write { 1 } else { 0 });
@@ -901,13 +889,7 @@ fn run_codex(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         ));
     }
     let installed = file.parent().is_some_and(|d| d.exists())
-        || ctx
-            .env
-            .var("PATH")
-            .unwrap_or_default()
-            .split(':')
-            .filter(|d| d.starts_with('/'))
-            .any(|d| std::path::Path::new(d).join("codex").is_file());
+        || names::cli_on_path(&ctx.env.var("PATH").unwrap_or_default(), "codex");
     if !installed {
         ctx.out.push_str("\nCodex does not look installed here; derm writes nothing for an agent that is not installed.\n");
         return Ok(if o.write { 1 } else { 0 });

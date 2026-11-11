@@ -212,7 +212,9 @@ fn case_113_a_base_url_set_elsewhere_refuses_the_start_and_names_where() {
         .contains("ANTHROPIC_BASE_URL is set in derm run's environment"));
 
     let i = inputs(&d);
-    let user = d.home.join(".claude/settings.json");
+    // Joined part by part, as the message names it (`\` between parts on
+    // Windows, where `join(".claude/settings.json")` keeps the `/`).
+    let user = d.home.join(".claude").join("settings.json");
     std::fs::create_dir_all(user.parent().unwrap()).unwrap();
     std::fs::write(
         &user,

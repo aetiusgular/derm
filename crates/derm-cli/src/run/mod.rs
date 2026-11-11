@@ -3802,8 +3802,29 @@ mod end_to_end {
         out
     }
 
+    /// Windows has no `ps` of its own (Git's `ps` takes no `-axww`): every
+    /// process's command line from CIM's `Win32_Process`, whose
+    /// `CommandLine` is the line the process was started with (Microsoft
+    /// Learn, "Win32_Process class"). The reader itself is left out.
+    #[cfg(windows)]
+    fn ps_running_with(marker: &str) -> Vec<String> {
+        let script = "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId): $($_.CommandLine)\" }";
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .output()
+            .expect("powershell runs");
+        let me = format!("{}:", std::process::id());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.contains(marker) && !l.starts_with(&me) && !l.contains("Get-CimInstance"))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// `ps -axww -o pid=,stat=,args=`: every process, its state, its whole
     /// argument line (procps-ng and BSD ps). `ps` itself is left out.
+    #[cfg(not(windows))]
     fn ps_running_with(marker: &str) -> Vec<String> {
         let out = std::process::Command::new("ps")
             .args(["-axww", "-o", "pid=,stat=,args="])
@@ -3831,11 +3852,24 @@ mod end_to_end {
     #[test]
     fn both_process_readers_find_a_marked_process_and_lose_it_when_it_ends() {
         let marker = format!("derm-mark-{}", uuid::Uuid::new_v4().simple());
+        #[cfg(not(windows))]
         let mut child = std::process::Command::new("sh")
             // `; :` keeps the shell itself running: macOS's sh execs a
             // lone last command in place, which drops the marker (CI's
             // rust-macos job on abe7e46).
             .args(["-c", "sleep 30; :", &marker])
+            .spawn()
+            .unwrap();
+        // Windows: cmd.exe holds the marker in its own command line and
+        // waits on `ping`, whose line does not hold it (Git's `sh` emulates
+        // fork with a second sh.exe, which would show the marker twice).
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args([
+                "/d",
+                "/c",
+                &format!("ping -n 31 127.0.0.1 >nul & rem {marker}"),
+            ])
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);

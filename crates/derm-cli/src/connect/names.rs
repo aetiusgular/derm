@@ -90,11 +90,47 @@ pub fn configured(preset: &Preset, text: &str) -> Vec<String> {
     }
 }
 
+/// Whether a folder or file named by an environment variable is an absolute
+/// path in this OS's own form: on Unix the same as `starts_with('/')`; on
+/// Windows a drive or UNC path (`C:\Users\u`), never `/Users/u`, which is
+/// rooted there but relative to the current drive (`Path::is_absolute`;
+/// case 224).
+pub fn absolute(p: &str) -> bool {
+    Path::new(p).is_absolute()
+}
+
+/// Whether `cli` is a file in an absolute folder of the PATH value
+/// `path_var`, as a shell on this OS finds it: on Unix `:` between folders
+/// and the name as given; on Windows `;` between folders and the name tried
+/// with the program extensions (`platform::windows::shim::find_program`,
+/// the `derm status` lookup's rule), since a CLI npm installs there is
+/// started through its `.cmd` (case 224).
+pub fn cli_on_path(path_var: &str, cli: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let folders: Vec<&str> = path_var
+            .split(';')
+            .filter(|d| !d.is_empty() && absolute(d))
+            .collect();
+        crate::platform::windows::shim::find_program(cli, Some(&folders.join(";")), &|p| {
+            p.is_file()
+        })
+        .is_some()
+    }
+    #[cfg(not(windows))]
+    {
+        path_var
+            .split(':')
+            .filter(|d| absolute(d))
+            .any(|d| Path::new(d).join(cli).is_file())
+    }
+}
+
 /// The policy file the gate reads: `DERM_POLICY` when it is an absolute
 /// path, else `~/.derm/policy.json` (derm-core's `default_path`, through the
 /// caller's environment so tests never read the real one).
 pub fn policy_path(home: &Path, env: &dyn Env) -> PathBuf {
-    match env.var("DERM_POLICY").filter(|p| p.starts_with('/')) {
+    match env.var("DERM_POLICY").filter(|p| absolute(p)) {
         Some(p) => PathBuf::from(p),
         None => home.join(".derm/policy.json"),
     }
