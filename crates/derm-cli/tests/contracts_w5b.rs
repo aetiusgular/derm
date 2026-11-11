@@ -60,11 +60,16 @@ fn gate_serve_answers_the_fixture_exchange() {
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
             .collect();
+    // The chat's folder is a sibling of the policy: a `DERM_POLICY` inside
+    // the folder the gate runs in is refused (case 226, `gate/policy.rs`),
+    // which the base's first form of this test ran into (lane 5bC's request 3).
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
     let mut child = derm()
         .args(["gate", "serve", "--agent", "pi"])
         .env("HOME", &dir)
         .env("DERM_POLICY", &policy)
-        .current_dir(&dir)
+        .current_dir(&work)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
