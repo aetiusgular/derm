@@ -13,7 +13,9 @@ const pkgs = packagesWithTables() as { name: string; table: string }[];
 
 describe("plugin NOTICE files", () => {
   it("are current for every package that carries the table", () => {
-    expect(pkgs.length).toBe(12);
+    // 10 since the wave 5b close: derm-codex-plugin and derm-hermes-plugin
+    // carry no core copy, so no table (their NOTICE is derm's licence alone).
+    expect(pkgs.length).toBe(10);
     expect(() => execFileSync(process.execPath, [join(ROOT, "packaging", "gen-notices.mjs"), "--check"], { stdio: "pipe" })).not.toThrow();
   });
 
