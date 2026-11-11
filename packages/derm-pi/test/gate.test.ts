@@ -1,14 +1,23 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path, { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createGate, memoryIndexPath, memoryIndexText } from "../extensions/gate.ts";
 import { DECISION_CHANNEL, type DecisionNotice, type ToolCallResult, type UserBashResult } from "../src/pi-api.ts";
 import { sha256Hex } from "../src/policy.ts";
-import { FakeRpcClient, fakePi, memFs, type Answer } from "./fake-pi.ts";
+import { GateServe } from "../src/serve/client.ts";
+import { FakeRpcClient, fakePi, type Answer } from "./fake-pi.ts";
 
-const HOME = "/home/u";
-const POLICY = `${HOME}/.derm/policy.json`;
+// Wave 5b (lane 5bC): the policy's answer is `derm gate serve`'s, so the
+// cases that decide run against a derm build (DERM_BIN, else target/debug
+// or target/release), with a real policy file in a temp home. The policy
+// file's checks are the Rust loader's (`gate::policy::load_for_hook`, the
+// rule every gate shares, case 226), and its wording is derm-core's.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const DERM = process.env.DERM_TEST_NO_BUILD ? undefined : [process.env.DERM_BIN, join(ROOT, "target/debug/derm"), join(ROOT, "target/release/derm"), join(ROOT, "target/debug/derm.exe"), join(ROOT, "target/release/derm.exe")].find((p) => p !== undefined && existsSync(p));
+const describeDerm = describe.runIf(DERM !== undefined);
+const UID = typeof process.getuid === "function" ? process.getuid() : -1;
 
 const policyText = (over: object = {}) =>
   JSON.stringify({
@@ -26,27 +35,55 @@ const policyText = (over: object = {}) =>
     ...over,
   });
 
-function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?: string | null; mode?: number; uid?: number; env?: Record<string, string>; tools?: { name: string; description?: string }[] } = {}) {
-  const files: Record<string, { text: string; mode?: number; uid?: number }> = {};
-  if (opts.policy !== null) files[POLICY] = { text: opts.policy ?? policyText(), mode: opts.mode ?? 0o100600, uid: opts.uid ?? 1000 };
-  const mem = memFs(files);
+const roots: string[] = [];
+afterEach(() => {
+  for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+});
+
+function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?: string | null; mode?: number; uid?: number; env?: Record<string, string>; tools?: { name: string; description?: string }[]; policyInProject?: boolean } = {}) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "derm-pi-gate-")));
+  roots.push(root);
+  const home = join(root, "home");
+  const project = join(root, "project");
+  const policyPath = join(home, ".derm", "policy.json");
+  mkdirSync(join(home, ".derm"), { recursive: true });
+  mkdirSync(project);
+  chmodSync(home, 0o700);
+  chmodSync(join(home, ".derm"), 0o700);
+  if (opts.policy !== null) {
+    writeFileSync(policyPath, opts.policy ?? policyText());
+    chmodSync(policyPath, (opts.mode ?? 0o600) & 0o777);
+    if (opts.uid !== undefined) chownSync(policyPath, opts.uid, opts.uid);
+  }
+  // A project can plant a policy in its own folder and name it.
+  const planted = join(project, "evil-policy.json");
+  if (opts.policyInProject) {
+    writeFileSync(planted, policyText({ rules: [{ tool: "*", action: "allow" }] }));
+    chmodSync(planted, 0o600);
+  }
+  // No daemon: an ask is Pi's own card (approve answers "harness").
+  const env: Record<string, string> = { HOME: home, DERM_DAEMON_SOCKET: join(root, "no-daemon.sock"), ...(opts.policyInProject ? { DERM_POLICY: planted } : {}), ...opts.env };
   let envReads = 0;
+  let starts = 0;
+  let serve: GateServe | undefined;
   const client = new FakeRpcClient((r) => (opts.answer ? opts.answer(r) : { confirmed: true }));
   const pi = fakePi({ client, ...(opts.hasUI !== undefined ? { hasUI: opts.hasUI } : {}), ...(opts.tools ? { tools: opts.tools } : {}) });
   const gate = createGate({
     env: () => {
       envReads++;
-      return opts.env ?? {};
+      return env;
     },
-    fs: mem.fs,
-    home: () => HOME,
-    uid: 1000,
+    serve: () => {
+      starts++;
+      serve ??= new GateServe({ agent: "pi", env, cwd: () => project, trusted: (u) => u === UID, locate: () => ({ path: DERM as string }) });
+      return serve;
+    },
   });
   gate(pi.api);
   const call = (toolName: string, input: Record<string, unknown>, id = "call-1") =>
     pi.emit("tool_call", { type: "tool_call", toolName, toolCallId: id, input }) as Promise<ToolCallResult | undefined>;
   const notices = () => pi.bus.filter((b) => b.channel === DECISION_CHANNEL).map((b) => b.data as DecisionNotice);
-  return { pi, mem, client, call, notices, envReads: () => envReads };
+  return { pi, client, call, notices, envReads: () => envReads, starts: () => starts, root, home, project, policyPath };
 }
 
 afterEach(() => {
@@ -54,42 +91,34 @@ afterEach(() => {
 });
 
 describe("load (corner case 46)", () => {
-  it("the factory registers handlers and reads nothing", () => {
+  it("the factory registers handlers, reads nothing and starts nothing", () => {
     const s = setup();
-    expect(s.mem.calls).toEqual([]);
     expect(s.envReads()).toBe(0);
+    expect(s.starts()).toBe(0);
     expect(s.pi.touched.every((t) => t.startsWith("on:"))).toBe(true);
     expect([...s.pi.handlers.keys()].sort()).toEqual(["tool_call", "tool_result", "user_bash"]);
   });
 
-  it("session_start reads nothing (the gate does not listen to it)", async () => {
+  it("session_start starts nothing (the gate does not listen to it)", async () => {
     const s = setup();
     await s.pi.emit("session_start", { type: "session_start", reason: "startup" });
-    expect(s.mem.calls).toEqual([]);
+    expect(s.starts()).toBe(0);
   });
 
-  it("the first tool call reads the policy once; later calls only stat it", async () => {
-    const s = setup();
-    await s.call("read", { path: "a.txt" });
-    await s.call("read", { path: "b.txt" });
-    expect(s.mem.calls.filter((c) => c.startsWith("read:"))).toEqual([`read:${POLICY}`]);
-    expect(s.mem.calls.filter((c) => c.startsWith("stat:"))).toHaveLength(2);
-  });
-
-  it("an edited policy file is read again", async () => {
+  it.runIf(DERM !== undefined)("an edited policy file is read again", async () => {
     const s = setup();
     expect(await s.call("mcp__exa__delete_index", {})).toMatchObject({ block: true });
-    s.mem.files[POLICY] = { text: policyText({ rules: [{ tool: "exa/*", action: "allow" }] }), mode: 0o100600, uid: 1000, mtimeMs: 2 } as never;
+    writeFileSync(s.policyPath, policyText({ rules: [{ tool: "exa/*", action: "allow" }] }));
     expect(await s.call("mcp__exa__delete_index", {})).toBeUndefined();
   });
 });
 
-describe("decisions", () => {
+describeDerm("decisions", () => {
   it("allow runs and is announced as accept", async () => {
     const s = setup();
     expect(await s.call("mcp__exa__search", { query: "rust" })).toBeUndefined();
     expect(s.notices()).toEqual([
-      { toolName: "mcp__exa__search", toolCallId: "call-1", toolNameNormalized: "exa/search", decision: "accept", reason: "rule exa/*: allow" },
+      { toolName: "mcp__exa__search", toolCallId: "call-1", toolNameNormalized: "exa/search", decision: "accept", reason: "rule exa/* allow" },
     ]);
     expect(s.client.requests).toHaveLength(0);
   });
@@ -134,7 +163,7 @@ describe("decisions", () => {
   it("deny blocks with the rule as the reason and asks nothing", async () => {
     const s = setup();
     const r = await s.call("mcp__exa__delete_index", {});
-    expect(r).toEqual({ block: true, reason: "Blocked by derm: rule exa/delete_index: deny" });
+    expect(r).toEqual({ block: true, reason: "Blocked by derm: rule exa/delete_index deny" });
     expect(s.notices()[0]?.decision).toBe("reject");
     expect(s.client.requests).toHaveLength(0);
   });
@@ -172,7 +201,7 @@ describe("decisions", () => {
   it("a shell allow with shell text becomes ask (case 30)", async () => {
     const s = setup({ answer: () => ({ confirmed: false }) });
     expect(await s.call("bash", { command: "echo $HOME" })).toEqual({ block: true, reason: "Blocked by derm: not approved" });
-    expect(s.client.requests[0]?.message).toContain("Why derm asks: shell text the matcher cannot read");
+    expect(s.client.requests[0]?.message).toContain("Why derm asks: shell text");
   });
 
   it("a bash command that names the policy file is asked about", async () => {
@@ -182,7 +211,7 @@ describe("decisions", () => {
   });
 });
 
-describe("ask through a fake RPC client (Pi rpc-mode.js:47-85; case 63)", () => {
+describeDerm("ask through a fake RPC client (Pi rpc-mode.js:47-85; case 63)", () => {
   it("yes runs the call", async () => {
     const s = setup({ answer: () => ({ confirmed: true }) });
     expect(await s.call("mcp__cu__open_app", { app: "Notes" })).toBeUndefined();
@@ -203,21 +232,19 @@ describe("ask through a fake RPC client (Pi rpc-mode.js:47-85; case 63)", () => 
     expect(await s.call("mcp__cu__open_app", {})).toMatchObject({ block: true });
   });
 
+  // Real time, a 1 s ask: the co-process's own request timers run on the
+  // clock, so the clock is not faked here.
   it("no answer times out to deny, told apart from a no", async () => {
-    vi.useFakeTimers();
-    const s = setup({ answer: () => "never" });
+    const s = setup({ policy: policyText({ askTimeoutSeconds: 1 }), answer: () => "never" });
     const pending = s.call("mcp__cu__open_app", {});
-    await vi.advanceTimersByTimeAsync(5001);
     expect(await pending).toEqual({ block: true, reason: "Blocked by derm: ask timed out" });
     expect(s.notices()[0]).toMatchObject({ decision: "ask_timeout", reason: "ask timed out" });
   });
 
   it("a client whose confirm never settles at all still times out (derm's own timer)", async () => {
-    vi.useFakeTimers();
-    const s = setup();
+    const s = setup({ policy: policyText({ askTimeoutSeconds: 1 }) });
     const ctx = s.pi.ctx({ ui: { confirm: () => new Promise<boolean>(() => undefined), notify: () => undefined } });
     const pending = s.pi.emit("tool_call", { type: "tool_call", toolName: "write", toolCallId: "w", input: { path: "a" } }, ctx);
-    await vi.advanceTimersByTimeAsync(5001);
     expect(await pending).toMatchObject({ block: true, reason: "Blocked by derm: ask timed out" });
   });
 
@@ -229,7 +256,7 @@ describe("ask through a fake RPC client (Pi rpc-mode.js:47-85; case 63)", () => 
 
   it("no UI (json or print mode) refuses at once", async () => {
     const s = setup({ hasUI: false });
-    expect(await s.call("mcp__cu__open_app", {})).toEqual({ block: true, reason: "Blocked by derm: rule cu/*: ask; no UI to ask in, so refused" });
+    expect(await s.call("mcp__cu__open_app", {})).toEqual({ block: true, reason: "Blocked by derm: rule cu/* ask; no UI to ask in, so refused" });
     expect(s.client.requests).toHaveLength(0);
   });
 
@@ -265,7 +292,7 @@ describe("ask through a fake RPC client (Pi rpc-mode.js:47-85; case 63)", () => 
   });
 });
 
-describe("the policy file (contract section 1; rules section 5, item 4)", () => {
+describeDerm("the policy file (contract section 1; rules section 5, item 4)", () => {
   it("no file: every call is ask, and the card says so", async () => {
     const s = setup({ policy: null, answer: () => ({ confirmed: false }) });
     expect(await s.call("read", { path: "a" })).toMatchObject({ block: true });
@@ -273,50 +300,53 @@ describe("the policy file (contract section 1; rules section 5, item 4)", () => 
   });
 
   it("a group-writable file is not used", async () => {
-    const s = setup({ mode: 0o100620, answer: () => ({ confirmed: false }) });
+    const s = setup({ mode: 0o620, answer: () => ({ confirmed: false }) });
     await s.call("read", { path: "a" });
-    expect(s.client.requests[0]?.message).toContain("writable by group or others");
+    expect(s.client.requests[0]?.message).toContain("someone other than you may write this policy file");
   });
 
-  it("a file owned by someone else is not used", async () => {
-    const s = setup({ uid: 0, answer: () => ({ confirmed: false }) });
+  it.runIf(UID === 0)("a file owned by someone else is not used (root only: chown)", async () => {
+    const s = setup({ uid: 4242, answer: () => ({ confirmed: false }) });
     await s.call("read", { path: "a" });
-    expect(s.client.requests[0]?.message).toContain("owned by another user");
+    expect(s.client.requests[0]?.message).toContain("someone other than you may write this policy file");
   });
 
   it("a relative DERM_POLICY is refused", async () => {
     const s = setup({ env: { DERM_POLICY: ".derm/policy.json" }, answer: () => ({ confirmed: false }) });
     await s.call("read", { path: "a" });
-    expect(s.client.requests[0]?.message).toContain("DERM_POLICY must be an absolute path");
-    expect(s.mem.calls).toEqual([]);
+    expect(s.client.requests[0]?.message).toContain("DERM_POLICY is not an absolute path");
   });
 
-  it("a symbolic link at the policy path is refused, not followed (S11)", async () => {
+  // derm-pi refused any link at the policy path (S11); the loader every gate
+  // shares follows it as the hook core does and judges the file it reads and
+  // both folders, the link's and the target's, so a swap is still refused
+  // (case 226; tk_lane_5bC.md, Decisions).
+  it("a link at the policy path is judged by the file it reaches and both folders (S11)", async () => {
     const s = setup({ answer: () => ({ confirmed: false }) });
-    s.mem.files[POLICY] = { ...(s.mem.files[POLICY] as object), isLink: true } as never;
+    const open = join(s.root, "open");
+    mkdirSync(open);
+    chmodSync(open, 0o777);
+    writeFileSync(join(open, "p.json"), policyText());
+    chmodSync(join(open, "p.json"), 0o600);
+    rmSync(s.policyPath);
+    symlinkSync(join(open, "p.json"), s.policyPath);
     expect(await s.call("read", { path: "a" })).toMatchObject({ block: true });
-    expect(s.client.requests[0]?.message).toContain("policy file is a symbolic link");
-  });
-
-  it("the file that is checked is the file that is read: one handle for both (S11)", async () => {
-    const s = setup();
-    // The handle keeps what it opened, so a swap after the open does not
-    // reach the read; only the next call's open sees it.
-    expect(await s.call("mcp__exa__delete_index", {})).toMatchObject({ block: true });
-    expect(s.mem.calls.filter((c) => c.startsWith("open:"))).toHaveLength(1);
+    expect(s.client.requests[0]?.message).toContain("the policy file's folder");
   });
 
   it("a DERM_POLICY inside the session folder is refused (S11; the hook core does the same)", async () => {
-    const s = setup({ env: { DERM_POLICY: `${process.cwd()}/evil-policy.json` }, answer: () => ({ confirmed: false }) });
-    await s.call("read", { path: "a" });
-    expect(s.client.requests[0]?.message).toContain("DERM_POLICY is inside the session folder");
-    expect(s.mem.calls).toEqual([]);
+    const s = setup({ policyInProject: true, answer: () => ({ confirmed: false }) });
+    expect(await s.call("read", { path: "a" })).toMatchObject({ block: true });
+    expect(s.client.requests[0]?.message).toContain("DERM_POLICY is inside the chat's folder");
   });
 
   it("an absolute DERM_POLICY is used", async () => {
-    const s = setup({ env: { DERM_POLICY: "/etc/elsewhere.json" }, answer: () => ({ confirmed: false }) });
-    await s.call("read", { path: "a" });
-    expect(s.mem.calls[0]).toBe("open:/etc/elsewhere.json");
+    const s = setup({ answer: () => ({ confirmed: false }) });
+    const elsewhere = join(s.home, ".derm", "elsewhere.json");
+    writeFileSync(elsewhere, policyText({ rules: [{ tool: "read", action: "deny" }] }));
+    chmodSync(elsewhere, 0o600);
+    const t = setup({ env: { DERM_POLICY: elsewhere }, answer: () => ({ confirmed: false }) });
+    expect(await t.call("read", { path: "a" })).toEqual({ block: true, reason: "Blocked by derm: rule read deny" });
   });
 
   it("a chat rule matches DERM_CHAT_ID, else the Pi session id", async () => {
@@ -339,7 +369,7 @@ describe("the policy file (contract section 1; rules section 5, item 4)", () => 
   });
 });
 
-describe("fails closed", () => {
+describeDerm("fails closed", () => {
   it("an input nested too deep to check is blocked", async () => {
     const s = setup();
     let deep: Record<string, unknown> = { v: "x" };
@@ -348,14 +378,6 @@ describe("fails closed", () => {
     expect(s.notices()[0]?.decision).toBe("reject");
   });
 
-  it("an fs that throws something odd leaves the default policy, not an allow", async () => {
-    const s = setup({ answer: () => ({ confirmed: false }) });
-    s.mem.fs.open = async () => {
-      throw new Error("EIO");
-    };
-    expect(await s.call("read", { path: "a" })).toMatchObject({ block: true });
-    expect(s.client.requests[0]?.message).toContain("policy file unreadable");
-  });
 });
 
 describe("tool_result redaction", () => {
@@ -418,9 +440,9 @@ describe("user_bash (commands you type)", () => {
     expect(typeof r?.result.truncated).toBe("boolean");
   });
 
-  it("does not read the policy file", async () => {
+  it("starts no co-process and reads no policy", async () => {
     const s = setup();
     await bash(s, "export CHATGPT_BASE_URL=x");
-    expect(s.mem.calls).toEqual([]);
+    expect(s.starts()).toBe(0);
   });
 });

@@ -9,6 +9,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
 import { FakeRpcClient, type Answer } from "./fake-pi.ts";
+import { GateServe } from "../src/serve/client.ts";
+import { DERM } from "./serve/real.ts";
+
+// Wave 5b (lane 5bC): the approved-index record is kept by `derm gate serve`
+// (memory.check, memory.approve), so a host here gets a co-process from a
+// derm build, with the record where the test puts it.
+const UID = typeof process.getuid === "function" ? process.getuid() : -1;
 
 type Handler = (event: unknown, ctx: MemoryCtx) => unknown;
 
@@ -36,7 +43,17 @@ function host(answer: Answer | ((n: number) => Answer) = { confirmed: true }, op
   const client = new FakeRpcClient(() => (typeof answer === "function" ? answer(asked++) : answer));
   const notes: string[] = [];
   // The approved-index record lives in the scratch folder, never ~/.derm (W2-R3).
-  createMemory({ confirmMs: opts.confirmMs ?? 2_000, now: opts.now ?? (() => new Date("2026-10-28T12:00:00Z")), statePath: opts.statePath ?? path.join(root, "state", "memory-index.json") })(api);
+  const statePath = opts.statePath ?? path.join(root, "state", "memory-index.json");
+  const serves = new Map<string, GateServe>();
+  const serve = (cwd: string) => {
+    let s = serves.get(cwd);
+    if (s === undefined) {
+      s = new GateServe({ agent: "pi", env: { HOME: root, DERM_MEMORY_STATE: statePath }, cwd: () => cwd, trusted: (u) => u === UID, locate: () => (DERM ? { path: DERM } : { problem: "no derm build" }) });
+      serves.set(cwd, s);
+    }
+    return s;
+  };
+  createMemory({ confirmMs: opts.confirmMs ?? 2_000, now: opts.now ?? (() => new Date("2026-10-28T12:00:00Z")), statePath, serve })(api);
   return {
     used,
     tools,
@@ -400,7 +417,7 @@ describe("/memory", () => {
 // (FP1-S1) found that "first sight of a project takes what is there" let a
 // removed record, a renamed project or an unwritable record folder inject
 // anything with no card; now an index the record does not hold asks too.
-describe("an index changed outside the memory card (review W2-R3)", () => {
+describe.runIf(DERM !== undefined)("an index changed outside the memory card (review W2-R3; needs a derm build)", () => {
   const sh = (cmd: string) => execFileSync("sh", ["-c", cmd], { cwd: project });
   const titles = (h: ReturnType<typeof host>) => h.client.requests.map((r) => r.title);
   const CHANGED = "Use a changed derm memory index?";
@@ -463,22 +480,32 @@ describe("an index changed outside the memory card (review W2-R3)", () => {
 
   it("a record that cannot be written asks every session, and injects nothing it was not told to (FP1-S1)", async () => {
     put("memory/INDEX.md", "- [build](build.md): npm run check\n");
-    // The record's folder refuses writes (a chmod by someone else; the
-    // cloud runs tests as root, where a 0500 folder is still writable, so the
-    // refusal is made at the rename that would put the record in place).
-    const rename = vi.spyOn(fsp, "rename").mockRejectedValue(Object.assign(new Error("EACCES"), { code: "EACCES" }));
+    // The record's folder refuses writes (a chmod by someone else). The
+    // record is written by `derm gate serve` (wave 5b), so the refusal is
+    // made on disk: a 0500 folder, or, as root (the cloud), where a 0500
+    // folder is still writable, a record path whose folder is a file.
+    const dir = path.join(root, "state");
+    mkdirSync(dir, { recursive: true });
+    let blocked = statePath();
+    if (UID === 0) {
+      writeFileSync(path.join(root, "state-file"), "");
+      blocked = path.join(root, "state-file", "memory-index.json");
+    } else {
+      execFileSync("chmod", ["500", dir]);
+    }
     try {
-      const one = host({ confirmed: true });
+      const one = host({ confirmed: true }, { statePath: blocked });
       const a = (await one.emit("before_agent_start", userRun, one.ctx(project))) as { message: { content: string } };
       expect(titles(one)).toEqual([UNKNOWN]);
       expect(a.message.content).toContain("npm run check");
-      expect(existsSync(statePath())).toBe(false);
-      const two = host({ confirmed: false });
+      expect(existsSync(blocked)).toBe(false);
+      const two = host({ confirmed: false }, { statePath: blocked });
       const b = (await two.emit("before_agent_start", userRun, two.ctx(project))) as { message: { content: string } } | undefined;
       expect(titles(two)).toEqual([UNKNOWN]);
       expect(b?.message.content ?? "").not.toContain("npm run check");
     } finally {
-      rename.mockRestore();
+      execFileSync("chmod", ["700", dir]);
+      rmSync(path.join(root, "state-file"), { force: true });
     }
   });
 

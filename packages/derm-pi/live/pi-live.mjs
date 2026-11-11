@@ -3,7 +3,7 @@
 // OTLP receiver. Lane A ran it in the cloud on Pi 1.4.0; the box test runs it
 // on the box's Pi. Not a vitest file: it needs a Pi binary.
 //
-//   node packages/derm-pi/live/pi-live.mjs --pi /path/to/pi [--json]
+//   node packages/derm-pi/live/pi-live.mjs --pi /path/to/pi [--derm /path/to/derm] [--json]
 //
 // What it starts, all on 127.0.0.1 and all stopped at the end: a fake
 // Anthropic Messages server (the SSE shape of the fork's
@@ -29,6 +29,15 @@ if (piIndex < 0 || !args[piIndex + 1]) {
   process.exit(2);
 }
 const PI = resolve(args[piIndex + 1]);
+// Wave 5b (lane 5bC): the gate's decision is `derm gate serve`'s, run from
+// derm's absolute path (case 227): --derm, else DERM_BIN, else this
+// checkout's build.
+const dermIndex = args.indexOf("--derm");
+const DERM = resolve(
+  dermIndex >= 0 && args[dermIndex + 1]
+    ? args[dermIndex + 1]
+    : process.env.DERM_BIN || join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "target", "debug", "derm"),
+);
 const JSON_OUT = args.includes("--json");
 const PACKAGE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TOKEN = "c".repeat(64);
@@ -146,7 +155,7 @@ function runPi(dir, mode, extraEnv, onLine) {
   else argv.push("--mode", "rpc");
   const child = spawn(PI, argv, {
     cwd: join(dir, "work"),
-    env: { PATH: process.env.PATH, HOME: dir, PI_CODING_AGENT_DIR: join(dir, "agent"), PI_OFFLINE: "1", PI_TELEMETRY: "0", ...extraEnv },
+    env: { PATH: process.env.PATH, HOME: dir, PI_CODING_AGENT_DIR: join(dir, "agent"), PI_OFFLINE: "1", PI_TELEMETRY: "0", DERM_BIN: DERM, ...extraEnv },
     stdio: ["pipe", "pipe", "pipe"],
   });
   // JSON mode reads piped stdin as part of the prompt (Pi docs/cli.md:26-30),
@@ -265,7 +274,16 @@ await jsonScenario("no policy file asks, then refuses", { name: "bash", input: {
   { policy: null },
 );
 
-await jsonScenario("tool result is redacted", { name: "bash", input: { command: `echo GITHUB_TOKEN=${GH_TOKEN}` } }, ({ toolResult }) =>
+// Since wave 5b the gate is the hook core's (one decide path, case 229): a
+// shell command whose own text holds a secret asks, as it does for every
+// agent. The token is put together by the shell, so only its output holds it.
+const GH_HEAD = GH_TOKEN.slice(0, 10);
+const GH_TAIL = GH_TOKEN.slice(10);
+await jsonScenario("a secret in a shell command asks", { name: "bash", input: { command: `echo GITHUB_TOKEN=${GH_TOKEN}` } }, ({ toolResult }) =>
+  check("a secret in a shell command's text asks, refused without UI", toolResult.includes("secret-like value in input") && !toolResult.includes(GH_TOKEN), toolResult.slice(0, 160)),
+);
+
+await jsonScenario("tool result is redacted", { name: "bash", input: { command: `printf %s%s ${GH_HEAD} ${GH_TAIL}` } }, ({ toolResult }) =>
   check("tool result is redacted before the model", toolResult.includes("[REDACTED by derm]") && !toolResult.includes(GH_TOKEN), toolResult.slice(0, 160)),
 );
 

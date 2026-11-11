@@ -67,6 +67,9 @@ import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { askUser, cardText } from "../src/ask.ts";
+import { harnessId } from "../src/harness.ts";
+import { ownedByTrusted } from "../src/owner.ts";
+import { GateServe, sharedServe } from "../src/serve/client.ts";
 
 // ---- The part of Pi's 1.4.0 API this file uses (Pi supplies the real one;
 // derm-pi imports nothing from Pi, as src/pi-api.ts explains). ----
@@ -157,6 +160,16 @@ export interface MemoryOptions {
   /** Where the approved-index record lives. Defaults to `DERM_MEMORY_STATE`
    * (absolute), else `~/.derm/memory-index.json`, read at the first run. */
   statePath?: string;
+  /** The co-process for a folder; tests pass their own. */
+  serve?: (cwd: string) => GateServe;
+}
+
+/** What `memory.check` says about one index (contract section 2.4). */
+interface Checked {
+  state: "approved" | "changed" | "unknown";
+  trusted: boolean;
+  projectKnown: boolean;
+  lines: string[];
 }
 
 export const CHANGED_TITLE = "Use a changed derm memory index?";
@@ -421,27 +434,8 @@ export async function readState(file: string | undefined, platform: NodeJS.Platf
   }
 }
 
-/** Writes the record: a new 0600 file beside it, then a rename, so a reader
- * never sees half of it and a link at the name is replaced, not followed.
- * The folder is made 0700 when missing. Best effort. */
-async function writeState(file: string, projects: Record<string, Record<string, Approved>>): Promise<boolean> {
-  const dir = path.dirname(file);
-  const tmp = path.join(dir, `.memory-index-${process.pid}-${randomUUID()}.tmp`);
-  let handle: FileHandle | undefined;
-  try {
-    await fsp.mkdir(dir, { recursive: true, mode: 0o700 });
-    handle = await fsp.open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    await handle.write(`${JSON.stringify({ version: 1, projects })}\n`);
-    await handle.close();
-    handle = undefined;
-    await fsp.rename(tmp, file);
-    return true;
-  } catch {
-    await handle?.close().catch(() => undefined);
-    await fsp.rm(tmp, { force: true }).catch(() => undefined);
-    return false;
-  }
-}
+// The record is written by `derm gate serve` (`memory.approve`): a new 0600
+// file beside it, then a rename, as this file did until wave 5b.
 
 /** The project's key in the record: its real path, so two spellings of one
  * folder share their approvals. */
@@ -606,21 +600,58 @@ export function createMemory(options: MemoryOptions = {}) {
   /** After a card's own append to `rel`: the new text is approved when the
    * text before it was (or there was none), else the record stays as it
    * was and the next run asks (review W2-R3). */
+  // The co-process that keeps the record (contract section 2.4). A record
+  // path given here goes to its own co-process, so it never reaches the one
+  // the gate shares.
+  const own = new Map<string, GateServe>();
+  function serveFor(cwd: string): GateServe {
+    if (options.serve) return options.serve(cwd);
+    if (options.statePath === undefined) return sharedServe({ agent: harnessId(), env: process.env, cwd: () => cwd, trusted: ownedByTrusted });
+    let s = own.get(cwd);
+    if (s === undefined || s.closed) {
+      s = new GateServe({ agent: harnessId(), env: { ...process.env, DERM_MEMORY_STATE: options.statePath }, cwd: () => cwd, trusted: ownedByTrusted });
+      own.set(cwd, s);
+    }
+    return s;
+  }
+
+  /** `memory.check`; undefined when the co-process cannot answer (nothing is approved then). */
+  async function check(cwd: string, project: string, rel: string, sha256: string): Promise<Checked | undefined> {
+    try {
+      const r = await serveFor(cwd).request("memory.check", { project, rel, sha256 });
+      if (r.ok !== true || (r.state !== "approved" && r.state !== "changed" && r.state !== "unknown")) return undefined;
+      const lines = Array.isArray(r.lines) ? r.lines.filter((l): l is string => typeof l === "string") : [];
+      return { state: r.state, trusted: r.trusted === true, projectKnown: r.projectKnown === true, lines };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** `memory.approve`, sent only for a card's own write or your yes (case 48). */
+  async function approveIndex(cwd: string, project: string, rel: string, raw: string): Promise<boolean> {
+    try {
+      const a = approvedOf(raw);
+      const r = await serveFor(cwd).request("memory.approve", { project, rel, sha256: a.sha256, lines: a.lines });
+      return r.ok === true && r.written === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** After a card's own append to `rel`: the new text is approved when the
+   * text before it was (or there was none), else the record stays as it
+   * was and the next run asks (review W2-R3). */
   async function noteCardWrite(cwd: string, rel: string, before: string, added: string): Promise<void> {
-    const file = statePathOf(options.statePath);
-    if (file === undefined) return;
     const after = await readPlain(cwd, rel, MAX_INDEX_BYTES);
     if (after === undefined || after !== before + added) return;
-    const state = await readState(file);
-    if (!state.trusted) return;
     const key = await projectKey(cwd);
-    const known = state.projects[key];
-    const rec = known?.[rel];
+    const c = await check(cwd, key, rel, sha(before));
+    if (c === undefined || !c.trusted) return;
     // A new index file the card made counts; text it appended to counts only
     // when that text was approved (FP1-S1: no project-wide first sight).
-    const beforeApproved = rec !== undefined ? rec.sha256 === sha(before) : before === "";
+    const beforeApproved = c.state === "approved" || (c.state === "unknown" && before === "");
     if (!beforeApproved) return;
-    await writeState(file, { ...state.projects, [key]: { ...(known ?? {}), [rel]: approvedOf(after) } });
+    await approveIndex(cwd, key, rel, after);
   }
 
   async function ask(ctx: MemoryCtx, title: string, body: string): Promise<"yes" | "no" | "timeout" | "no_ui" | "aborted"> {
@@ -741,23 +772,20 @@ export function createMemory(options: MemoryOptions = {}) {
       // AGENTS.md does (docs/security.md:57).
       if (untrusted(ctx)) return undefined;
       const files = await readIndexes(ctx.cwd);
-      // What you approved (review W2-R3): read each run, so an approval in
+      // What you approved (review W2-R3): asked each run, so an approval in
       // another session counts here.
       const file = statePathOf(options.statePath);
-      const state = await readState(file);
       const key = await projectKey(ctx.cwd);
-      const known = state.trusted ? state.projects[key] : undefined;
       // Every index the record does not hold as approved asks, the first
       // time too: a removed or moved record must not approve what is there
       // (FP1-S1).
-      const approvedNow: Record<string, Approved> = { ...(known ?? {}) };
-      let dirty = false;
       const use = new Map<string, string>();
       const leftOut: string[] = [];
       for (const [rel, raw] of files) {
         if (indexLines(raw).length === 0) continue;
         const h = sha(raw);
-        if (known?.[rel]?.sha256 === h) {
+        const c = await check(ctx.cwd, key, rel, h);
+        if (c?.trusted === true && c.state === "approved") {
           use.set(rel, raw);
           continue;
         }
@@ -766,10 +794,14 @@ export function createMemory(options: MemoryOptions = {}) {
           leftOut.push(rel);
           continue;
         }
-        const answer = await ask(ctx, known === undefined ? UNKNOWN_TITLE : CHANGED_TITLE, changedCard(rel, raw, known?.[rel], known !== undefined, file));
+        const projectKnown = c?.trusted === true && c.projectKnown;
+        const before = c?.trusted === true && c.state === "changed" ? { sha256: "", lines: c.lines } : undefined;
+        const answer = await ask(ctx, projectKnown ? CHANGED_TITLE : UNKNOWN_TITLE, changedCard(rel, raw, before, projectKnown, file));
         if (answer === "yes") {
-          approvedNow[rel] = approvedOf(raw);
-          dirty = true;
+          // A record that could not be used is never rewritten: the
+          // co-process answers written false, and every session keeps
+          // asking until it is fixed.
+          if (c?.trusted === true) await approveIndex(ctx.cwd, key, rel, raw);
           use.set(rel, raw);
         } else {
           declined.add(mark);
@@ -777,9 +809,6 @@ export function createMemory(options: MemoryOptions = {}) {
         }
       }
       held = leftOut;
-      // A record that could not be used is never rewritten here: every
-      // session keeps asking until it is fixed.
-      if (dirty && file !== undefined && state.trusted) await writeState(file, { ...state.projects, [key]: approvedNow });
       const index = await buildIndex(ctx.cwd, use, leftOut);
       if (!index) return undefined;
       const hash = sha(index.text);

@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,12 +7,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { REDACTED } from "./core/redact.ts";
 import { decide } from "./decide.ts";
-import { DermBlocked, after, before, defaultDeps } from "./opencode.ts";
+import { DermBlocked, after, before, defaultDeps, type Deps } from "./opencode.ts";
 import * as entry from "./plugin.ts";
+import { GateServe } from "./serve/client.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+// Wave 5b (lane 5bC): the decision is `derm gate serve`'s, so these run
+// against a derm build (DERM_BIN, else target/debug or target/release).
+const ROOT = path.resolve(here, "../../..");
+const DERM = process.env.DERM_TEST_NO_BUILD ? undefined : [process.env.DERM_BIN, path.join(ROOT, "target/debug/derm"), path.join(ROOT, "target/release/derm"), path.join(ROOT, "target/debug/derm.exe"), path.join(ROOT, "target/release/derm.exe")].find((p) => p !== undefined && existsSync(p));
 const root = mkdtempSync(path.join(tmpdir(), "derm-opencode-"));
 const policyFile = path.join(root, "policy.json");
+// The session's folder: the policy sits outside it (case 226).
+const project = path.join(root, "project");
+mkdirSync(project);
 writeFileSync(
   policyFile,
   JSON.stringify({
@@ -38,10 +46,15 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const deps = (extra: Record<string, string> = {}) => defaultDeps({ DERM_POLICY: policyFile, ...daemon.env(), ...extra });
+// One co-process per environment, with derm by its absolute path (case 227).
+function deps(extra: Record<string, string> = {}, env?: Record<string, string>): Deps {
+  const e = env ?? { DERM_POLICY: policyFile, ...daemon.env(), ...extra };
+  const s = new GateServe({ agent: "opencode", env: e, cwd: () => project, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  return { ...defaultDeps(e), serve: () => s };
+}
 const call = (tool: string) => ({ tool, sessionID: "ses_1", callID: `call_${Math.random().toString(36).slice(2)}` });
 
-describe("tool.execute.before", () => {
+describe.runIf(DERM !== undefined)("tool.execute.before (needs a derm build)", () => {
   it("lets an allowed call through and records it", async () => {
     const before0 = daemon.events().length;
     await expect(before(call("bash"), { args: { command: "ls" } }, deps())).resolves.toBeUndefined();
@@ -59,7 +72,7 @@ describe("tool.execute.before", () => {
       daemon.setApprove(b);
       await expect(before(call("github_create_issue"), { args: {} }, deps()), b).rejects.toBeInstanceOf(DermBlocked);
     }
-    await expect(before(call("github_create_issue"), { args: {} }, defaultDeps({ DERM_POLICY: policyFile, DERM_DAEMON_SOCKET: path.join(root, "absent.sock") }))).rejects.toThrow("not reachable");
+    await expect(before(call("github_create_issue"), { args: {} }, deps({}, { DERM_POLICY: policyFile, DERM_DAEMON_SOCKET: path.join(root, "absent.sock") }))).rejects.toThrow("not reachable");
   });
   it("redacts in place, so the tool runs with the redacted object", async () => {
     const args = { query: "q", api_key: "abc", nested: { url: "https://h/?token=zz9" } };
@@ -73,12 +86,12 @@ describe("tool.execute.before", () => {
     // A shell call with no args serializes to "{}", which the matcher cannot read: ask, then deny.
     daemon.setApprove("none");
     await expect(before(call("bash"), undefined as never, deps())).rejects.toBeInstanceOf(DermBlocked);
-    const broken = { ...deps(), loadPolicy: () => { throw new Error("boom"); } };
+    const broken = { ...deps(), serve: () => { throw new Error("boom"); } };
     await expect(before(call("bash"), { args: {} }, broken)).rejects.toThrow("derm: hook error: boom");
   });
 });
 
-describe("tool.execute.after", () => {
+describe.runIf(DERM !== undefined)("tool.execute.after (needs a derm build)", () => {
   it("redacts a built-in tool's output and metadata in place", async () => {
     const out = { title: "bash", output: "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789", metadata: { output: "password=hunter2", exit: 0 } };
     await after({ ...call("bash"), args: {} }, out, deps());
@@ -120,7 +133,7 @@ describe("plugin files", () => {
 
 // Lane X's request 7 (integration w5, continue): the gate posts an
 // `install.call` record for an install, beside its decision.
-describe("install records", () => {
+describe.runIf(DERM !== undefined)("install records (needs a derm build)", () => {
   it("posts install.call beside the decision", async () => {
     const n = daemon.events().length;
     await before({ ...call("bash"), callID: "call_inst1" }, { args: { command: "npm install left-pad@1.3.0" } }, deps()).catch(() => undefined);
@@ -134,3 +147,28 @@ describe("install records", () => {
     expect(recs[0]?.detail.toolUseId).toBe("call_inst1");
   });
 });
+
+// Case 228: no co-process, no call. Runs with or without a derm build.
+describe("a co-process that is not running", () => {
+  it("blocks every call and says why, and blocks after a crash until it starts again", async () => {
+    const none: Deps = { env: {}, serve: () => new GateServe({ agent: "opencode", env: {}, cwd: () => root, trusted: () => true, locate: () => ({ problem: "no derm to run: DERM_BIN is not set" }) }) };
+    await expect(before(call("bash"), { args: { command: "ls" } }, none)).rejects.toThrow(/derm: the derm gate co-process is not running \(no derm to run/);
+    const dead: Deps = {
+      env: {},
+      serve: () => new GateServe({ agent: "opencode", env: {}, cwd: () => root, trusted: () => true, locate: () => ({ path: process.execPath }), spawn: () => execFileSyncSpawn() }),
+    };
+    await expect(before(call("read"), { args: {} }, dead)).rejects.toBeInstanceOf(DermBlocked);
+  });
+  it("after() never throws without one", async () => {
+    const none: Deps = { env: {}, serve: () => { throw new Error("no co-process"); } };
+    await expect(after({ ...call("bash"), args: {} }, { output: "x" }, none)).resolves.toBeUndefined();
+  });
+  it("the client copy is byte-identical to derm-pi's canonical one", () => {
+    expect(readFileSync(path.join(here, "serve", "client.ts"), "utf8")).toBe(readFileSync(path.join(ROOT, "packages", "derm-pi", "src", "serve", "client.ts"), "utf8"));
+  });
+});
+
+/** A child that exits at once: the co-process crashed before its hello. */
+function execFileSyncSpawn() {
+  return spawn(process.execPath, ["-e", "process.exit(3)"], { stdio: ["pipe", "pipe", "pipe"] });
+}

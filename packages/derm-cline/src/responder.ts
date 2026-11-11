@@ -31,6 +31,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import path from "node:path";
 import { insideFolder } from "./core/policy.ts";
 import { answerRequest, defaultDeps, HARNESS, type ApprovalAnswer, type ApprovalRequest, type Deps } from "./cline.ts";
+import { event } from "./serve/client.ts";
 
 /** The folder name `derm run cline` gives the approval folder; a control path in control.ts. */
 export const APPROVAL_FOLDER_NAME = "cline-approvals";
@@ -355,10 +356,9 @@ export class Responder {
 
   /** A conflict record. The chat is `DERM_CHAT_ID` only, never the request file's (P-S5). */
   private async recordConflict(req: ApprovalRequest | undefined, reason: string): Promise<void> {
-    await this.deps.postEvent({
+    await event(this.deps.serve(), {
       id: `${HARNESS}-approval-file-conflict-${randomUUID().replace(/-/g, "")}`,
       chatId: this.deps.env.DERM_CHAT_ID?.trim() ?? "",
-      harness: HARNESS,
       kind: "approval",
       summary: "approval file conflict",
       detail: {

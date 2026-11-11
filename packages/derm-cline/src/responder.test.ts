@@ -5,10 +5,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
-import { defaultDeps } from "./cline.ts";
+import { defaultDeps, type Deps } from "./cline.ts";
+import { GateServe } from "./serve/client.ts";
 import { decisionName, folderProblem, main, PARTIAL_GRACE_MS, parseArgs, parseRequestName, Responder, UNTAKEN_MS } from "./responder.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+// Wave 5b (lane 5bC): the decision is `derm gate serve`'s, so the answers
+// need a derm build (DERM_BIN, else target/debug or target/release).
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const DERM = process.env.DERM_TEST_NO_BUILD ? undefined : [process.env.DERM_BIN, path.join(ROOT, "target/debug/derm"), path.join(ROOT, "target/release/derm"), path.join(ROOT, "target/debug/derm.exe"), path.join(ROOT, "target/release/derm.exe")].find((p) => p !== undefined && existsSync(p));
 const root = mkdtempSync(path.join(tmpdir(), "derm-clr-"));
 const work = path.join(root, "work");
 mkdirSync(work);
@@ -52,7 +57,10 @@ function request(dir: string, sessionId: string, toolCallId: string, toolName: s
 }
 function responder(dir: string, opts: { now?: () => number; log?: string[] } = {}): Responder {
   const log = opts.log ?? [];
-  return new Responder({ dir, cwd: work, deps: defaultDeps({ DERM_POLICY: policyFile, ...daemon.env() }, () => work), log: (l) => log.push(l), ...(opts.now ? { now: opts.now } : {}) });
+  const env = { DERM_POLICY: policyFile, ...daemon.env() };
+  const s = new GateServe({ agent: "cline", env, cwd: () => work, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  const deps: Deps = { ...defaultDeps(env, () => work), serve: () => s };
+  return new Responder({ dir, cwd: work, deps, log: (l) => log.push(l), ...(opts.now ? { now: opts.now } : {}) });
 }
 async function pass(r: Responder): Promise<void> {
   await r.tick();
@@ -94,7 +102,7 @@ describe("request names", () => {
   });
 });
 
-describe("answers", () => {
+describe.runIf(DERM !== undefined)("answers (needs a derm build)", () => {
   it("an allowed call: a decision file Cline reads as yes, 0600, written whole", async () => {
     const dir = folder();
     const rid = request(dir, "s1", "call_1", "run_commands", { commands: ["ls"] });
@@ -108,7 +116,7 @@ describe("answers", () => {
     const a = request(dir, "s1", "c1", "fetch_web_content", { url: "https://x" });
     const b = request(dir, "s1", "c2", "run_commands", { commands: ["export CHATGPT_BASE_URL=http://x"] });
     await pass(responder(dir));
-    expect(decision(dir, "s1", a)).toEqual({ approved: false, reason: "derm: rule fetch_web_content" });
+    expect(decision(dir, "s1", a)).toEqual({ approved: false, reason: "derm: rule fetch_web_content deny" });
     expect(decision(dir, "s1", b)).toEqual({ approved: false, reason: "derm: reject list: chatgpt_base_url" });
   });
   it("an ask waits on the approver: yes approves, anything else denies", async () => {
@@ -190,7 +198,7 @@ describe("answers", () => {
   });
 });
 
-describe("an agent that writes in the folder (review P-S5, P-S8)", () => {
+describe.runIf(DERM !== undefined)("an agent that writes in the folder (review P-S5, P-S8; needs a derm build)", () => {
   it("an answer no Cline takes is removed, so it cannot wait for a real request of the same name", async () => {
     const dir = folder();
     let now = 10_000;
@@ -214,7 +222,7 @@ describe("an agent that writes in the folder (review P-S5, P-S8)", () => {
     await new Promise((res) => setTimeout(res, 20));
     request(dir, "s1", "c1", "fetch_web_content", { url: "https://x/with-a-longer-body" });
     await pass(r);
-    expect(decision(dir, "s1", rid)).toEqual({ approved: false, reason: "derm: rule fetch_web_content" });
+    expect(decision(dir, "s1", rid)).toEqual({ approved: false, reason: "derm: rule fetch_web_content deny" });
   });
   it("a request that goes while derm waits on the approver gets no answer, and a conflict is recorded", async () => {
     const dir = folder();
@@ -263,10 +271,11 @@ describe("the command", () => {
     expect(await main([], {})).toBe(1);
     expect(await main(["--dir", path.join(root, "nope")], {})).toBe(1);
   });
-  it("runs from its launcher, answers, and stops on SIGTERM with 0", async () => {
+  it.runIf(DERM !== undefined)("runs from its launcher, answers, and stops on SIGTERM with 0 (needs a derm build)", async () => {
     const dir = folder();
     const child = spawn(process.execPath, ["--no-warnings", path.join(here, "../bin/derm-cline-approvals.mjs"), "--dir", dir, "--cwd", work], {
-      env: { ...process.env, DERM_POLICY: policyFile, ...daemon.env() },
+      // derm by its absolute path: the responder never looks it up on PATH (case 227).
+      env: { ...process.env, DERM_POLICY: policyFile, ...daemon.env(), DERM_BIN: DERM ?? "" },
       stdio: ["ignore", "ignore", "pipe"],
     });
     let err = "";

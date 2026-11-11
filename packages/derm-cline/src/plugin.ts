@@ -6,9 +6,12 @@
 // Plugins Run"), so module state here belongs to one session.
 //
 // Nothing is read when the plugin loads or is set up (rules case 46): the
-// policy file is read on the first tool call. `setup` keeps only the
-// session's folder, for the policy's and the token's folder checks. No import
-// of @cline/sdk: the host provides it, and the types are not needed at run time.
+// co-process (`derm gate serve`, wave 5b) starts on the first tool call and
+// reads the policy then. `setup` keeps only the session's folder, for the
+// policy's and the token's folder checks, and stops the co-process when the
+// session ends (`ctx.onDispose`, docs/sdk/plugins.mdx at 071e1b2, "Setup and
+// Call Context"). No import of @cline/sdk: the host provides it, and the
+// types are not needed at run time.
 
 import { beforeTool, defaultDeps, type BeforeToolContext, type BeforeToolResult } from "./cline.ts";
 
@@ -18,11 +21,12 @@ const deps = defaultDeps(process.env, () => sessionFolder ?? process.cwd());
 const plugin = {
   name: "derm",
   manifest: { capabilities: ["hooks"] },
-  setup(_api: unknown, ctx?: { cwd?: unknown }): void {
+  setup(_api: unknown, ctx?: { cwd?: unknown; onDispose?: unknown }): void {
     if (typeof ctx?.cwd === "string" && ctx.cwd !== "") sessionFolder = ctx.cwd;
+    if (typeof ctx?.onDispose === "function") (ctx.onDispose as (fn: () => void) => void)(() => deps.serve().close());
   },
   hooks: {
-    beforeTool(context: BeforeToolContext): BeforeToolResult {
+    beforeTool(context: BeforeToolContext): Promise<BeforeToolResult> {
       return beforeTool(context, deps);
     },
   },
