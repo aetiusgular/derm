@@ -394,7 +394,9 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     assert_eq!(r["gateRun"]["state"], "not run", "{r}");
     let why = r["gateRun"]["why"].as_str().unwrap();
     assert!(why.contains("--run-gate"), "{why}");
-    assert!(why.contains("0.1.3/bin/derm-hook.mjs"), "{why}");
+    // The path in this OS's own spelling (`\` between parts on Windows).
+    let tail = Path::new("0.1.3").join("bin").join("derm-hook.mjs");
+    assert!(why.contains(&tail.display().to_string()), "{why}");
     assert!(render(&r).contains("--run-gate"));
     let r = doctor(&row, &env(&h), &probes(), false, true);
     assert_eq!(r["gateRun"]["state"], "pass", "{r}");
