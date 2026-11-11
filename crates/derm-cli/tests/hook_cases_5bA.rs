@@ -4,6 +4,10 @@
 //! `contracts/fixtures/hook-cases/gen.mjs`; do not edit by hand. They fail on
 //! the base, whose dialects are stubs, and pass when the lane is done.
 //! Run with `cargo test -p derm-cli --test hook_cases_5bA`.
+//! Unix only: the recordings are Linux's and the replay's fake daemon is
+//! a Unix socket (`support/replay.rs`); a Windows run waits for a Windows
+//! fake daemon (the wave 5b close, "Come back to").
+#![cfg(unix)]
 
 mod support;
 

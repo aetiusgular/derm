@@ -206,7 +206,10 @@ fn another_agents_input_is_not_answered_in_this_dialect() {
 
 /// Lane 5bF (case 227): `derm connect cursor --gate` prints a registration
 /// that runs `derm hook cursor pre` by derm's absolute path, with no
-/// `--hook` folder and no `node`.
+/// `--hook` folder and no `node`. Unix only: it sets `HOME`, which derm
+/// reads as `USERPROFILE` on Windows, and the launcher route there is lane
+/// 5bF's Windows half ("Come back to", the wave 5b close).
+#[cfg(unix)]
 #[test]
 fn connect_gate_registers_derm_hook_by_its_absolute_path() {
     let home = scratch("connect");
