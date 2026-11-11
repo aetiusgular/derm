@@ -1,6 +1,8 @@
 """Unit tests for derm_gate.py. Run: python3 -m unittest discover -s packages/derm-hermes-plugin/tests
 
-The runner is faked except in the tests that start the real bin/derm-decide.mjs.
+The runner is faked except in the tests that start the real ``derm hook hermes``
+(``RealDerm``): the binary in ``DERM_TEST_BIN``, else ``target/debug/derm`` of this
+repository when it was built (``cargo build -p derm-cli``).
 """
 
 import importlib.util
@@ -68,20 +70,108 @@ class GateMapping(unittest.TestCase):
 
         self.assertIsNone(derm_gate.Gate(boom, lambda: False).transform_tool_result("terminal", {}, "ok"))
 
-    def test_no_node_blocks(self):
-        old = os.environ.get("PATH", "")
-        os.environ["PATH"] = "/nonexistent"
+    def test_no_trusted_derm_blocks(self):
+        # Case 227: derm is never looked up on PATH; with none it can trust, every call blocks.
+        empty = tempfile.mkdtemp()
         try:
-            out = derm_gate.Gate(derm_gate.node_runner, lambda: False).pre_tool_call("terminal", {"command": "ls"})
+            def runner(payload):
+                return derm_gate.derm_runner(payload, derm=derm_gate.find_derm(Path(empty), Path(empty)))
+
+            out = derm_gate.Gate(runner, lambda: False).pre_tool_call("terminal", {"command": "ls"})
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+        self.assertEqual(out["action"], "block")
+        self.assertIn("no derm found", out["message"])
+
+    def test_a_refusal_before_any_dialect_still_blocks_with_its_reason(self):
+        out = derm_gate.Gate(fixed({"action": "block", "message": "derm: unknown event"}), lambda: False).pre_tool_call("terminal", {})
+        self.assertEqual(out, {"action": "block", "message": "derm: unknown event"})
+
+
+class FindDerm(unittest.TestCase):
+    """Case 227: the derm-path file, then the install folders, each a file only you can change."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        os.chmod(self.dir, 0o700)
+        self.plugin = self.dir / "plugin"
+        self.home = self.dir / "home"
+        self.bin = self.dir / "bin"
+        for d in (self.plugin, self.home, self.bin):
+            d.mkdir(mode=0o700)
+        self.derm = self.bin / "derm"
+        self.derm.write_text("#!/bin/sh\n")
+        os.chmod(self.derm, 0o755)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_the_derm_path_file_names_derm(self):
+        f = self.plugin / "derm-path"
+        f.write_text(f"{self.derm}\n")
+        os.chmod(f, 0o600)
+        self.assertEqual(derm_gate.find_derm(self.plugin, self.home), str(self.derm))
+
+    def test_a_derm_others_may_write_is_refused(self):
+        f = self.plugin / "derm-path"
+        f.write_text(str(self.derm))
+        os.chmod(f, 0o600)
+        os.chmod(self.derm, 0o775)
+        with self.assertRaises(RuntimeError) as e:
+            derm_gate.find_derm(self.plugin, self.home)
+        self.assertIn("someone other than you", str(e.exception))
+        os.chmod(self.derm, 0o755)
+        os.chmod(self.bin, 0o777)
+        with self.assertRaises(RuntimeError) as e:
+            derm_gate.find_derm(self.plugin, self.home)
+        self.assertIn("folder of", str(e.exception))
+
+    def test_a_derm_path_file_others_may_write_is_refused(self):
+        f = self.plugin / "derm-path"
+        f.write_text(str(self.derm))
+        os.chmod(f, 0o666)
+        with self.assertRaises(RuntimeError) as e:
+            derm_gate.find_derm(self.plugin, self.home)
+        self.assertIn("derm-path not used", str(e.exception))
+
+    def test_a_relative_path_is_refused(self):
+        f = self.plugin / "derm-path"
+        f.write_text("derm")
+        os.chmod(f, 0o600)
+        with self.assertRaises(RuntimeError) as e:
+            derm_gate.find_derm(self.plugin, self.home)
+        self.assertIn("not an absolute path", str(e.exception))
+
+    def test_the_user_install_folder_is_used_without_a_derm_path_file(self):
+        local = self.home / ".local" / "bin"
+        local.mkdir(parents=True, mode=0o700)
+        (local / "derm").write_text("#!/bin/sh\n")
+        os.chmod(local / "derm", 0o755)
+        self.assertEqual(derm_gate.find_derm(self.plugin, self.home), str(local / "derm"))
+
+    def test_path_is_never_searched(self):
+        old = os.environ.get("PATH", "")
+        os.environ["PATH"] = str(self.bin)
+        try:
+            if Path("/usr/bin/derm").exists():
+                self.skipTest("/usr/bin/derm is installed here")
+            with self.assertRaises(RuntimeError):
+                derm_gate.find_derm(self.plugin, self.home)
         finally:
             os.environ["PATH"] = old
-        self.assertEqual(out["action"], "block")
-        self.assertIn("node is not on PATH", out["message"])
 
 
-@unittest.skipIf(shutil.which("node") is None, "node not on PATH")
-class RealDecide(unittest.TestCase):
-    """bin/derm-decide.mjs with a real policy file, no daemon."""
+def _built_derm():
+    given = os.environ.get("DERM_TEST_BIN")
+    if given:
+        return given
+    built = HERE.parent.parent.parent / "target" / "debug" / "derm"
+    return str(built) if built.is_file() else None
+
+
+@unittest.skipIf(_built_derm() is None, "no derm binary built (cargo build -p derm-cli, or DERM_TEST_BIN)")
+class RealDerm(unittest.TestCase):
+    """derm hook hermes with a real policy file, no daemon."""
 
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -96,7 +186,8 @@ class RealDecide(unittest.TestCase):
         self.env = {"DERM_POLICY": self.policy, "DERM_DAEMON_SOCKET": os.path.join(self.dir, "absent.sock")}
         self.saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
-        self.gate = derm_gate.Gate(derm_gate.node_runner, lambda: False)
+        derm = _built_derm()
+        self.gate = derm_gate.Gate(lambda payload: derm_gate.derm_runner(payload, derm=derm), lambda: False)
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -111,7 +202,8 @@ class RealDecide(unittest.TestCase):
 
     def test_mcp_tool_denied_by_server_rule(self):
         out = self.gate.pre_tool_call("mcp__exa__web_search", {"query": "x"})
-        self.assertEqual(out, {"action": "block", "message": "derm: rule exa/*"})
+        # derm-core names the action after the rule (contracts/hook-dialects.md 9.3, rule 2).
+        self.assertEqual(out, {"action": "block", "message": "derm: rule exa/* deny"})
 
     def test_reject_list(self):
         out = self.gate.pre_tool_call("terminal", {"command": "git -c core.sshCommand=x fetch"})
