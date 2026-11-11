@@ -9,6 +9,7 @@
 //
 //   node tests/cli-contract/run.mjs --cli gemini=/path/to/gemini --only gemini-derm-deny,...
 
+import { installDermAtHome } from "../../lib/dermBin.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,6 +48,8 @@ async function setup(bin, { settings = {}, policy, edit } = {}) {
   mkdirSync(path.join(home, ".gemini"), { recursive: true });
   mkdirSync(path.join(home, ".derm"), { recursive: true, mode: 0o700 });
   mkdirSync(work);
+  // The extension's launcher finds derm under HOME only (lane 5bF).
+  installDermAtHome(home);
   const policyFile = path.join(home, ".derm", "policy.json");
   if (policy) writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
   writeFileSync(path.join(home, ".gemini", "settings.json"), JSON.stringify({ security: { auth: { selectedType: "gemini-api-key" } }, ...settings }));

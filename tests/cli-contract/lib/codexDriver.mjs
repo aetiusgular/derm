@@ -6,6 +6,7 @@
 // short PATH and the telemetry switches. Nothing from this workspace's own
 // environment, credentials or Codex home reaches it.
 
+import { installDermAtHome } from "./dermBin.mjs";
 import { spawnGroup, stopGroup } from "./procs.mjs";
 import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
@@ -60,6 +61,8 @@ export function makeTempDirs(prefix = "cc-") {
   const codexHome = path.join(root, "codex-home");
   const work = path.join(root, "work");
   for (const dir of [home, codexHome, work]) mkdirSync(dir, { recursive: true });
+  // The derm plugins' launcher finds derm under HOME only (lane 5bF).
+  installDermAtHome(home);
   return { root, home, codexHome, work };
 }
 

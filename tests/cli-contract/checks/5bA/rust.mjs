@@ -65,6 +65,9 @@ function stagePlugin(stage, pkg, agent, events) {
   cpSync(src, dst, { recursive: true, filter: (p) => !p.includes(`${path.sep}node_modules`) });
   const file = path.join(dst, "hooks", "hooks.json");
   let text = readFileSync(file, "utf8");
+  // Since lane 5bF the plugin's own hooks file runs `derm hook` through
+  // hooks/derm-gate.sh: nothing to replace, the copy already runs Rust.
+  if (text.includes("derm-gate.sh")) return dst;
   for (const [from, to] of events) {
     const re = new RegExp(`node --no-warnings \\\\"[^"\\\\]*derm-hook\\.mjs\\\\" ${from}`, "g");
     if (!re.test(text)) throw new Error(`5bA staging: ${pkg}/hooks/hooks.json has no ${from} hook`);

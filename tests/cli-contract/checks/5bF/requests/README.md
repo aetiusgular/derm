@@ -1,6 +1,6 @@
 # Lane 5bF's requests for integration (wave 5b)
 
-Each patch applies with `git apply` on lane 5bF's head and touches files lane 5bF does not own. None is applied on the lane branch. Each was applied and run before it was written here (`plans/parallel/tk_lane_5bF.md`, Requests).
+Applied on `integration/w5b` by the close (11 Nov); do not apply them again. Each patch applies with `git apply` on lane 5bF's head and touches files lane 5bF does not own. None is applied on the lane branch. Each was applied and run before it was written here (`plans/parallel/tk_lane_5bF.md`, Requests).
 
 - `5bF-1-checks-find-derm.patch`: the plugins' hooks files run derm through `hooks/derm-gate.sh`, which finds derm under HOME only. The shared checks put derm in their scratch home (`lib/dermBin.mjs` `installDermAtHome`, called by `lib/codexDriver.mjs` `makeTempDirs` and `checks/I/geminiGate.mjs`), and `checks/5bA/rust.mjs` stops staging a plugin whose hooks file already runs the launcher. Without it `run.mjs` throws at import (5bA's staging finds no `derm-hook.mjs` line) and lane F's and I's plugin checks are denied by the launcher's "no derm this hook can trust". With it: 251 checks, 126 pass, 19 info, 0 fail, 106 skipped.
 - `5bF-2-status-reads-derm-hook.patch`: `derm status` (`watch/register.rs`) reads the Cursor line `derm connect cursor --gate` writes since lane 5bF as derm's gate (through 5bA's `is_derm_rust_command`), and names the fix without `--hook`. One test.

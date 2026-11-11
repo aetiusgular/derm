@@ -629,6 +629,18 @@ fn print_only_gates_are_named_from_connects_table() {
     assert!(!super::gate_is_print_only("zed"));
 }
 
+/// Lane 5bF's request 3: a command-hook agent's gate is `derm hook`, so
+/// derm setup registers it with no package folder.
+#[test]
+fn a_derm_hook_gate_needs_no_package_folder() {
+    for id in ["cursor", "crush", "qwen-code", "grok"] {
+        assert!(super::gate_is_derm_hook(id), "{id}");
+    }
+    for id in ["claude-code", "pi", "opencode", "zed"] {
+        assert!(!super::gate_is_derm_hook(id), "{id}");
+    }
+}
+
 #[test]
 fn the_gate_package_comes_from_connects_table() {
     assert_eq!(super::gate_package("pi").as_deref(), Some("derm-pi"));
