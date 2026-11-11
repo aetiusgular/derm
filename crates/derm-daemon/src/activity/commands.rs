@@ -87,16 +87,18 @@ fn plain_folder(folder: &str) -> Option<String> {
         .then(|| trimmed.to_string())
 }
 
-/// Windows: a drive or UNC path, `\` or `/` between parts. A chat folder
+/// Windows: a rooted path, `\` or `/` between parts. A chat folder
 /// `derm run` names there is `C:\...` (its `cwd`), which the Unix rule
 /// above refused, so no Windows chat had folders: no write-outside check, no
 /// lockfile diff (case 224; CI's Windows job,
-/// `install_records_reach_the_lockfile_diff_and_the_control_flags`). `/x`
-/// is rooted but relative to the current drive there, and is refused.
+/// `install_records_reach_the_lockfile_diff_and_the_control_flags`). `/x`,
+/// rooted on the current drive, is kept as the Unix rule kept it; a
+/// relative folder (`x`, `C:x`) and a root (`C:\`, which cuts to `C:`) are
+/// not (`Path::has_root`).
 #[cfg(windows)]
 fn plain_folder(folder: &str) -> Option<String> {
     let trimmed = folder.trim_end_matches(['/', '\\']);
-    (std::path::Path::new(trimmed).is_absolute()
+    (std::path::Path::new(trimmed).has_root()
         && !trimmed.split(['/', '\\']).any(|part| part == ".."))
     .then(|| trimmed.to_string())
 }

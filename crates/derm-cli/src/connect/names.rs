@@ -90,13 +90,14 @@ pub fn configured(preset: &Preset, text: &str) -> Vec<String> {
     }
 }
 
-/// Whether a folder or file named by an environment variable is an absolute
-/// path in this OS's own form: on Unix the same as `starts_with('/')`; on
-/// Windows a drive or UNC path (`C:\Users\u`), never `/Users/u`, which is
-/// rooted there but relative to the current drive (`Path::is_absolute`;
-/// case 224).
+/// Whether a folder or file named by an environment variable is rooted, so
+/// no project folder can be what it names: on Unix the same as
+/// `starts_with('/')`; on Windows a drive or UNC path (`C:\Users\u`), and
+/// also `\x` or `/x`, rooted on the current drive, which is how the
+/// harness itself reads such a value (`PathBuf::from` of it). Only a
+/// relative value, `C:x` included, is refused (`Path::has_root`; case 224).
 pub fn absolute(p: &str) -> bool {
-    Path::new(p).is_absolute()
+    Path::new(p).has_root()
 }
 
 /// Whether `cli` is a file in an absolute folder of the PATH value
