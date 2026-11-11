@@ -87,6 +87,10 @@ impl FakeDaemon {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         conns += 1;
+                        // BSD and macOS hand the accepted socket the
+                        // listener's O_NONBLOCK; Linux does not (accept(2),
+                        // VERSIONS, man7.org). The connection reads blocking.
+                        let _ = stream.set_nonblocking(false);
                         let (l3, b3) = (l2.clone(), b2.clone());
                         let conn = conns;
                         std::thread::spawn(move || serve(stream, conn, l3, b3));

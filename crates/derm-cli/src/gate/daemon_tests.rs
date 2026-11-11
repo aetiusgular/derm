@@ -502,19 +502,27 @@ mod unix {
         let t = tree();
         let absent = t.root.join("no-such-folder").join("daemon.sock");
         let runtime = t.root.join("runtime");
-        std::fs::create_dir_all(runtime.join("derm")).unwrap();
-        std::fs::write(runtime.join("derm").join("daemon.sock"), "").unwrap();
+        let home = t.root.join("home");
         let env = vm_env(
             &absent,
-            &[("XDG_RUNTIME_DIR", &runtime.display().to_string())],
+            &[
+                ("XDG_RUNTIME_DIR", &runtime.display().to_string()),
+                ("HOME", &home.display().to_string()),
+            ],
         );
+        // Where this OS's default socket is for that environment (macOS:
+        // under HOME's Library; elsewhere: under XDG_RUNTIME_DIR).
+        let default = socket_path(&env.with("DERM_DAEMON_SOCKET", ""));
+        std::fs::create_dir_all(default.parent().unwrap()).unwrap();
+        std::fs::write(&default, "").unwrap();
         assert_eq!(
             vm_endpoint(&env, &|| None, Some(1000), &|| socket_candidates(&env)),
             None
         );
         assert!(socket_candidates(&Env::default())
             .iter()
-            .any(|p| p.ends_with(".derm/run/derm/daemon.sock")));
+            .any(|p| p.ends_with(".derm/run/derm/daemon.sock")
+                || p.ends_with("Library/Application Support/derm/daemon.sock")));
     }
 
     #[test]
