@@ -40,3 +40,5 @@ The contract's sections 2 and 3 as lane 5bD built them (contracts are no lane's)
 - 230 and 231 as the wave 5b plan proposes, with 231's detection read as "deleted by `derm enter` once read".
 - **A handoff or chat file the agent wrote.** A file the sandbox account can write or re-permission is refused by `derm enter` and (5bD-2) by the gate, whatever variable names it. Tests: `enter::win::tests::a_file_we_may_only_read_is_not_writable_here`, `a_file_of_ours_is_writable_here_and_its_bytes_read`.
 - **A path cmd.exe would read as more than a path.** srt runs its `-c` string through `cmd.exe /d /s /c`, which expands `%` inside quotes; derm's and the handoff's paths with `"`, `%`, `!`, a control character or a trailing `\` are refused before srt starts. Test: `windows_srt::tests::a_path_cmd_would_read_as_more_than_a_path_is_refused`.
+
+Applied by integration w5b at the phase merge (5bD-1; 5bD-3 written into `contracts/srt-windows.md`). 5bD-2 is open for the close; 5bD-4 goes into rules section 4 at the close.
