@@ -4,7 +4,15 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Hermes Agent plugin: pre_tool_call and transform_tool_result in Python, deciding through derm's shared gate core in Node (wave 2, lane I, T2.4)",
-  "files": ["plugin.yaml", "__init__.py", "derm_gate.py", "bin/derm-decide.mjs", "src/decide.ts", "src/control.ts", "src/core/", "README.md", "NOTICE"],
-  "engines": { "node": ">=22.19.0" }
+  "description": "Hermes Agent plugin: pre_tool_call and transform_tool_result in Python, deciding through `derm hook hermes` run by the absolute path in derm-path (wave 2 lane I; Rust since wave 5b lanes 5bB and 5bF)",
+  "files": [
+    "plugin.yaml",
+    "__init__.py",
+    "derm_gate.py",
+    "README.md",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
 }

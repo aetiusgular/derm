@@ -16,8 +16,8 @@ At 0.163.0 every failed hook run lets the call through: a hook that cannot start
 Plugin hooks run with your full user rights and Codex's whole environment, outside the sandbox. From `hooks/hooks.json`:
 
 ```
-node --no-warnings "${PLUGIN_ROOT}/bin/derm-hook.mjs" pre     # PreToolUse, every tool, timeout 120 s
-node --no-warnings "${PLUGIN_ROOT}/bin/derm-hook.mjs" post    # PostToolUse, every tool, timeout 30 s
+/bin/sh "$PLUGIN_ROOT/hooks/derm-gate.sh" codex pre     # PreToolUse, every tool, timeout 120 s
+/bin/sh "$PLUGIN_ROOT/hooks/derm-gate.sh" codex post    # PostToolUse, every tool, timeout 30 s
 ```
 
 Codex substitutes `${PLUGIN_ROOT}` into the text and runs it through your shell. The hook reads only the policy file and, when present, the daemon's socket and token file. It makes no network call and has no dependencies. Node 22.18 or later must be on `PATH`.

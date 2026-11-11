@@ -11,16 +11,31 @@
 // hermes_cli/plugins_discovery.py:112-131), the fake chat-completions server
 // as the model (agent/legacy_cli.py:36-55: --base-url, --api-key, --model),
 // one `terminal` call.
+//
+// Since the wave 5b close the plugin runs `derm hook hermes` (lane 5bB) by
+// the absolute path in `derm-path` beside derm_gate.py, which `derm connect
+// hermes --gate` writes (lane 5bF); the Node decider it ran before left the
+// repository at the switch-over. Each turn writes that file for this
+// repository's derm build (`DERM_BIN`, else target/release, else
+// target/debug), mode 0600.
 
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hermes-plugin");
+const REPO = path.resolve(HERE, "..", "..", "..", "..");
+const PLUGIN = path.join(REPO, "packages", "derm-hermes-plugin");
+
+function derm() {
+  for (const p of [process.env.DERM_BIN, path.join(REPO, "target", "release", "derm"), path.join(REPO, "target", "debug", "derm")]) {
+    if (p && existsSync(p)) return path.resolve(p);
+  }
+  throw new Error("no derm binary: build derm-cli or set DERM_BIN");
+}
 
 function run(bin, args, env, cwd, seconds = 180) {
   return new Promise((resolve) => {
@@ -46,6 +61,8 @@ async function hermesTurn(bin, { policy, command }) {
   mkdirSync(path.join(root, ".derm"), { recursive: true, mode: 0o700 });
   mkdirSync(work);
   cpSync(PLUGIN, path.join(home, "plugins", "derm"), { recursive: true, filter: (p) => !p.includes("node_modules") && !p.endsWith(".test.ts") && !p.includes(`${path.sep}tests`) });
+  writeFileSync(path.join(home, "plugins", "derm", "derm-path"), `${derm()}\n`);
+  chmodSync(path.join(home, "plugins", "derm", "derm-path"), 0o600);
   writeFileSync(path.join(home, "config.yaml"), "plugins:\n  enabled:\n    - derm\n");
   const policyFile = path.join(root, ".derm", "policy.json");
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
