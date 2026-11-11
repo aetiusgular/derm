@@ -1,0 +1,29 @@
+# Wave 5b lane 5bE's crate (the wave 5b base). The lane adds its
+# dependencies under its own marker, each pinned exactly with a reason in its
+# status doc (note BC pins `windows-service` 0.8.1 and `windows-sys` 0.61.2,
+# the version Cargo.lock already holds). Everything else changes only
+# through integration. scripts/lane-scope.mjs checks this.
+
+[package]
+name = "derm-sysmon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "derm-sysmon: the Windows service that reads Sysmon's channel for each user's derm daemon"
+
+[[bin]]
+name = "derm-sysmon"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# [lane-5bE]
+
+[dev-dependencies]
+# [lane-5bE]
+
+[target.'cfg(windows)'.dependencies]
+# [lane-5bE]

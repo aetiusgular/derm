@@ -264,7 +264,9 @@ pub(crate) fn srt_probe(
     // so its install line would point at a boundary derm then refuses
     // (review FPW-S7).
     if cfg!(windows) {
-        return Err(reason(preflight::SRT_ON_WINDOWS.into(), None));
+        if let Some(why) = super::windows_srt::refusal() {
+            return Err(reason(why.into(), None));
+        }
     }
     let Some(srt) = crate::watch::status::find_on_path("srt", path) else {
         return Err(reason(

@@ -133,7 +133,10 @@ pub fn srt_with(
     cwd: &str,
 ) -> Result<(Vec<String>, Option<Tools>), String> {
     if cfg!(windows) {
-        return Err(SRT_ON_WINDOWS.to_string());
+        // Wave 5b lane 5bD's seam (the wave 5b base).
+        if let Some(why) = super::boundary::windows_srt::refusal() {
+            return Err(why.to_string());
+        }
     }
     // srt 0.0.81 checks rg only on Linux (`sandbox-manager.ts:1641-1649`);
     // its README still asks for it on macOS (line 732), so macOS keeps it.
