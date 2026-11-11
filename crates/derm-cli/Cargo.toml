@@ -2,6 +2,7 @@
 # lanes Q and R in wave 4 (sections added by integration w2), and lanes S, T,
 # U, V, W and Z in wave 5 (sections and the Windows table added by the wave 5
 # base).
+# Wave 5b (the wave 5b base): sections for lanes 5bA to 5bD.
 # Each lane edits only the lines under its own `# [lane-X]` comment, in any
 # table, and pins every dependency to an exact version
 # (plans/parallel_build_tk.md, section 2, point 5). A section ends at the
@@ -23,6 +24,11 @@ path = "src/main.rs"
 
 [features]
 default = []
+# The wave 5b base: the red tests (`tests/hook_cases_5bA.rs`, `_5bB.rs` and
+# the contract tests) build only with this feature, so CI's
+# `cargo test --workspace` stays green while they fail on purpose;
+# integration turns it on by default at the close (wave 5b plan section 6).
+w5b-red = []
 # [lane-C]
 # [lane-D]
 # [lane-J]
@@ -34,6 +40,10 @@ default = []
 # [lane-V]
 # [lane-W]
 # [lane-Z]
+# [lane-5bA]
+# [lane-5bB]
+# [lane-5bC]
+# [lane-5bD]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -69,6 +79,22 @@ derm-tap = { path = "../derm-tap" }
 # [lane-V]
 # [lane-W]
 # [lane-Z]
+# [lane-5bA]
+# [lane-5bB]
+# [lane-5bC]
+# [lane-5bD]
+
+[[test]]
+name = "hook_cases_5bA"
+required-features = ["w5b-red"]
+
+[[test]]
+name = "hook_cases_5bB"
+required-features = ["w5b-red"]
+
+[[test]]
+name = "contracts_w5b"
+required-features = ["w5b-red"]
 
 [dev-dependencies]
 # [lane-C]
@@ -87,8 +113,13 @@ derm-daemon = { path = "../derm-daemon" }
 # [lane-V]
 # [lane-W]
 # [lane-Z]
+# [lane-5bA]
+# [lane-5bB]
+# [lane-5bC]
+# [lane-5bD]
 
 # Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
+
 [target.'cfg(windows)'.dependencies]
 # [lane-Z]
 # `derm run` on Windows (note AU section 4): Job Objects, the console's
@@ -102,3 +133,7 @@ windows-sys = { version = "=0.61.2", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+# [lane-5bA]
+# [lane-5bB]
+# [lane-5bC]
+# [lane-5bD]

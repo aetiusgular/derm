@@ -10,7 +10,10 @@
 //! and lets none through.
 
 pub fn answer(agent: &str, event: &str, stdin: &mut dyn std::io::Read) -> super::Reply {
-    let _ = (event, stdin);
+    use std::io::Read;
+    let _ = event;
+    // Read what the agent sent, so it never meets a closed pipe.
+    let _ = std::io::copy(&mut stdin.take(16 << 20), &mut std::io::sink());
     super::fail_closed(
         agent,
         "derm hook: this agent's dialect is not built yet (wave 5b lane 5bA); the call is denied",

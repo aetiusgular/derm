@@ -17,6 +17,15 @@ description = "derm-sysmon: the Windows service that reads Sysmon's channel for 
 name = "derm-sysmon"
 path = "src/main.rs"
 
+[features]
+# The wave 5b base's red test (`tests/contract.rs`): built only with this
+# feature until lane 5bE makes it pass; integration turns it on at the close.
+w5b-red = []
+
+[[test]]
+name = "contract"
+required-features = ["w5b-red"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

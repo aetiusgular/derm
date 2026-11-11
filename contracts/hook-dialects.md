@@ -88,3 +88,48 @@ Lane P:
 - **Amp:** install by copying the package's `src/` into `~/.config/amp/plugins/derm/` (Amp refuses a plugin that resolves outside its folder; binary strings, V); `tool.result` can replace the output, which derm redacts; the web tools are `web_search` and `read_web_page`. What Amp does when a handler throws or hangs is NF. Needs an account: not run.
 
 Separators (the paragraph above): Droid's `___` and Copilot's `-` are still not in `RAW_SEPARATORS`; lane L's dialects send those names to the core as given, so an allow on them asks (fail safe). Lane N's dialects hand the core `mcp__<server>__<tool>` wherever they can settle the split (Cursor's server field, Vibe's one dot, Crush's and Kiro's configured server names), so Mistral Vibe's `.` needs no entry.
+
+## 9. Wave 5b: `derm hook` (the wave 5b base, 10 Nov 2026)
+
+Wave 5b moves every command-hook gate to Rust (`plans/toolkit_wave5b_plan.md`; note BC holds the evidence, `research-notes/BC_wave5b_base_research.md`, with its section 11 holding over sections 1 to 10). Sections 1 to 3 stay the record of what each dialect does; this section adds how derm itself is run and how the Rust dialects are held to the TypeScript ones. Marks as above.
+
+### 9.1 The registration line
+
+Every gate is `derm hook <agent> <event>`, derm named by its absolute path (case 227; dcg writes its own `current_exe()` and refuses a relative one, note BC section 3, V). The agent comes from argv, never from the input. The events per agent are `crates/derm-cli/src/hook/mod.rs`'s `AGENTS`: `pre` and `post` for Claude Code and Codex, `before` and `after` for Gemini, `pre` and `post` for Hermes (its payload's `event` field says which; the argv's must agree), `pre` for the others.
+
+| Agent | How the agent starts the line (V unless marked) | Form derm writes |
+|---|---|---|
+| Claude Code 2.1.322 | exec form: `command` plus `args`, no shell; `${CLAUDE_PLUGIN_ROOT}` replaced in both (BC 3, run). A project's settings `env.PATH` reaches every hook, plugin hooks included (BC 3, run; BC-3) | exec form, `command` the absolute path; never a bare `derm` or `node` |
+| Codex 0.167.1 | always a shell string: `$SHELL -lc <line>` on Unix (a login shell; `/bin/sh` when `SHELL` is unset), `%COMSPEC% /C "<line>"` on Windows; a hook's `commandWindows` (alias `command_windows`) replaces `command` on Windows. The environment is the session's plus `PLUGIN_ROOT`, `CLAUDE_PLUGIN_ROOT`, `PLUGIN_DATA`, `CLAUDE_PLUGIN_DATA`; `${PLUGIN_ROOT}` in the line is the shell's to expand, so not on Windows (`codex-rs/hooks/src/engine/command_runner.rs:444-517`, `discovery.rs:311-318, 654-662`, `protocol/src/hooks*.rs:152-155` at `rust-v0.167.1`, read by the base; unchanged from 0.167.0) | `command` with the absolute path quoted for `sh`, and `commandWindows` with the `.exe` path quoted for `cmd` (corrects BC-5's Codex half: the field exists) |
+| Gemini 0.68.0 | `bash -c <line>` on Unix, `bash` found on the hook's PATH; on Windows `ComSpec` when it is PowerShell, else `pwsh.exe` on PATH, else `powershell.exe`, with `-NoProfile -NonInteractive -Command`, so a quoted path needs `&` (`packages/core/src/utils/shell-utils.ts:658-698`, `hooks/hookRunner.ts:330-366, 511-531` at `v0.68.0`; unchanged from 0.67.0). The line's `$GEMINI_PROJECT_DIR`, `$GEMINI_CWD`, `$GEMINI_SESSION_ID` and `$CLAUDE_PROJECT_DIR` are replaced, escaped for the shell | `"<abs>" hook gemini before` on Unix; `& "<abs>.exe" hook gemini before` on Windows |
+| OpenClaude 0.35.1 | as Claude Code; `/bin/sh` by absolute path on POSIX, Git Bash on Windows through `git` on PATH or `CLAUDE_CODE_GIT_BASH_PATH` (BCR-2) | as Claude Code |
+| Copilot CLI 1.0.108, Grok 1.0.77, Auggie 0.37.1 | exec forms: Copilot `exec`, Grok `args` (a bare command resolves beside the hook file first), Auggie `command`+`args` (BC 3) | exec form with the absolute path |
+| Qwen Code 0.27.1, Droid 1.7.0, Command Code 1.88.5, Kimi 2.5.2, goose 1.58.1, Crush 0.100.0, Mistral Vibe 3.1.1 | a shell string; Droid, goose and Qwen find their shell on PATH (BC 3, BCR-2) | the absolute path, quoted for that shell |
+| Cursor 2026.11.10, Kiro, Antigravity | docs only (BC 1); Cursor's project `.cursor/hooks.json` ran under `-p --trust` with no further prompt (part 2, run) | the absolute path; NF beyond the docs |
+| Hermes 0.23.1 (`main` at `2b7a6ce`, BCR-6) | Python's `subprocess.run` with an argv list (`derm_gate.py:45-63`) | `[<abs derm>, "hook", "hermes", <event>]`, never `shutil.which` |
+
+Lane 5bF writes these lines (`crates/derm-cli/src/connect/gates.json`, the plugins' hook files); lane 5bA and 5bB read the input they produce. A plugin's own hook file cannot know derm's absolute path at install time: it runs a launcher in its package that runs derm from its fixed per-user install folder, writable by no one else, as case 109's rule says (wave 5b plan section 2.1, lane 5bC; I until 5bF builds it).
+
+### 9.2 Whose input it is (BCR-7, case 109)
+
+`derm hook <agent>` answers in `<agent>`'s dialect only when the input's own marks agree with argv. Grok 1.0.77 runs the hooks in `~/.claude/settings.json` and `~/.cursor/hooks.json` after folder trust, by default (its embedded docs' hook-locations table and `[compat.*] hooks = true`, read in its binary; BCR-7, V), and Cursor runs Claude Code's (case 109). A user-level `derm hook claude-code pre` registration therefore fires inside Grok and Cursor.
+
+- The marks per dialect are what the TypeScript dialect reads today: Cursor's `cursor_version` with its camelCase event (`packages/derm-claude-plugin/src/hook.ts`, `runByCursor`, `cursorGateRegistered`); Gemini's `hook_event_name` `BeforeTool`/`AfterTool`; Copilot's camelCase fields with `toolArgs` as a JSON string (BC 2); Grok sends both spellings (BC 2).
+- Input with another agent's marks gets case 109's answer: it defers, with no decision and no record, only when derm's own gate for that agent is registered and fails closed; otherwise it blocks and names the fix. It never decides in a dialect it does not speak.
+- What marks a Grok run of a Claude Code hook carries is **NF**: lane 5bA records that input from Grok 1.0.77 (or the version it pins) before it builds the check, and until then a Claude-format input whose marks cannot be told apart is answered as the argv's agent and the doubt is in the lane's Not verified list.
+
+### 9.3 How a Rust dialect is held to the TypeScript (the red tests)
+
+The base recorded every hook call the TypeScript dialect tests make (`fixtures/hook-cases/record-setup.ts`, run through `record.vitest.config.ts`: 299 test cases, 528 calls at `e29ce27`) and turned them into one case file per lane (`fixtures/hook-cases/5bA.json`, 165 cases and 335 calls; `5bB.json`, 62 cases and 193 calls) with `gen.mjs`. `crates/derm-cli/tests/hook_cases_5bA.rs` and `_5bB.rs` hold one Rust test per case, built with the feature `w5b-red` (`cargo test -p derm-cli --features w5b-red --test hook_cases_5bA`). `tests/support/replay.rs` sets each call up as recorded (the temp folders and their files, the environment, stdin, a fake daemon in the recorded answer mode, an empty `HOME` where the case set none) and runs `derm hook <agent> <event>` with exactly that environment. A call passes when:
+
+1. the exit code is the TypeScript's;
+2. stdout is empty when the TypeScript's was, and otherwise each JSON line is equal to the TypeScript's after every string under a reason key (`reason`, `permissionDecisionReason`, `systemMessage`, `stopReason`, `user_message`, `agent_message`, `message`, `additionalContext`, `followup_message`) is cut to its first two words after `derm: ` (derm-core's reasons name the rule's action, `rule bash deny`, where the TypeScript's said `rule bash`; the wording is derm-core's from now on); a rewritten input (`updatedInput`, Hermes's `args`) is compared whole;
+3. stderr's first line is cut the same way and equal;
+4. the daemon lines after `hello` are the same sequence of `event` (kind, harness, decision, tool) and `approve` (harness, tool).
+
+The harness was checked against the TypeScript itself: with `DERM_REPLAY_ORACLE=ts` it replays each call against the TypeScript hook's own launcher, and all 227 cases passed (the base, 10 Nov). On the base's stubs all 227 fail.
+
+### 9.4 What the replay cannot hold
+
+- `fixtures/hook-cases/manual-calls.json`: a recorded call a test made with its own dependencies, which no process can make (one: Command Code's derived token file with the fake daemon's folder named as derm's own). The replay skips it; lane 5bA ports it as a Rust test in its folder.
+- `fixtures/hook-cases/manual.json`: the 72 TypeScript cases that make no hook call (registration lines, plugin files and launchers, server-name readers, preset agreement, the core copies), each with its lane: 5bA 16, 5bB 17, 5bF 33, integration 2 (the switch-over), the base 4 (ported here: `derm_core::redact::hook`, `gate::core`, `gate::daemon` and `hook` tests). Each lane ports its own as Rust tests in its folder and names them in its status doc; integration's switch-over table (wave 5b plan section 6) checks every line.

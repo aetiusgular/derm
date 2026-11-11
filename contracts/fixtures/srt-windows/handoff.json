@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "chat": "derm-0123456789ab",
+  "harness": "claude-code",
+  "argv": ["C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe", "-p", "hi"],
+  "cwd": "C:\\work\\proj",
+  "variables": {"DERM_CHAT_ID": "derm-0123456789ab", "DERM_BOUNDARY": "srt", "CLAUDE_CONFIG_DIR": "C:\\Users\\u\\.derm-srt\\chats\\derm-0123456789ab\\claude"},
+  "token": "2222222222222222222222222222222222222222222222222222222222222222",
+  "daemon": {"http": "http://127.0.0.1:60088"},
+  "policy": {"version": 1, "rules": [{"tool": "bash", "action": "ask"}]},
+  "policyProblem": null,
+  "expires": 4102444800000
+}

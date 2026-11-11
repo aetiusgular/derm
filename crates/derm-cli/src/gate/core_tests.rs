@@ -554,3 +554,60 @@ fn the_approval_summary_is_redacted_and_cut_at_160() {
     assert_eq!(long.encode_utf16().count(), 160);
     assert!(long.ends_with('…'));
 }
+
+/// `contracts/fixtures/gate-serve/exchange.jsonl`'s `decide` replies are what
+/// this core answers, so lane 5bC's co-process is held to the real gate,
+/// not to a hand-written reply.
+#[test]
+fn the_gate_serve_fixture_is_what_the_core_answers() {
+    let policy = LoadedPolicy {
+        policy: derm_core::policy::parse(include_str!(
+            "../../../../contracts/fixtures/gate-serve/policy.json"
+        ))
+        .unwrap(),
+        problem: None,
+    };
+    let lines: Vec<Value> =
+        include_str!("../../../../contracts/fixtures/gate-serve/exchange.jsonl")
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+    let mut checked = 0;
+    for pair in lines.windows(2) {
+        let (input, out) = (&pair[0]["line"], &pair[1]["line"]);
+        if pair[0]["dir"] != "in" || input["op"] != "decide" {
+            continue;
+        }
+        let c = &input["call"];
+        let call = GateCall {
+            harness: "pi".into(),
+            tool: c["tool"].as_str().unwrap().into(),
+            tool_input: c["input"].clone(),
+            chat: c["chat"].as_str().map(str::to_string),
+            tool_use_id: c["toolUseId"].as_str().map(str::to_string),
+            full_access: c["fullAccess"].as_bool(),
+        };
+        let a = decide_call(&policy, &call, &no_env());
+        let action = match a.action {
+            Action::Allow => "allow",
+            Action::Ask => "ask",
+            Action::Deny => "deny",
+        };
+        assert_eq!(out["action"], json!(action), "{input}");
+        assert_eq!(out["normalizedTool"], json!(a.normalized_tool), "{input}");
+        assert_eq!(out["reason"], json!(a.reason), "{input}");
+        assert_eq!(
+            out["updatedInput"],
+            a.updated_input.clone().unwrap_or(Value::Null),
+            "{input}"
+        );
+        assert_eq!(out["redacted"], json!(a.redacted), "{input}");
+        assert_eq!(
+            out["askTimeoutSeconds"],
+            json!(a.ask_timeout_seconds),
+            "{input}"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
+}
