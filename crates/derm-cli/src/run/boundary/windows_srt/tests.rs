@@ -362,7 +362,10 @@ fn the_files_access_lists_give_the_sandbox_read_and_the_handoff_delete() {
 }
 
 #[test]
-fn srt_is_refused_on_windows_only_while_another_chat_holds_the_lock() {
-    // Off Windows nothing is held; on Windows CI no other chat runs.
-    assert_eq!(refusal(), None);
+fn srt_on_windows_is_held_off_until_its_gate_runs_inside() {
+    // The wave 5b close (W5B-S2, W5B-S3): refused with the reason, before
+    // any lock is looked at. Off Windows nothing is held; on Windows CI no
+    // other chat runs.
+    assert_eq!(refusal(), Some(crate::run::preflight::SRT_ON_WINDOWS));
+    assert!(!lock::held_elsewhere());
 }

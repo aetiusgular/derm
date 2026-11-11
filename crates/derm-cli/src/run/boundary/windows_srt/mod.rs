@@ -59,8 +59,17 @@ use crate::run::plan::Plan;
 
 pub(crate) use files::Session;
 
-/// Whether `run/mod.rs` calls [`wire`]. Request 5bD-1 sets it with the call.
-pub(crate) const WIRED: bool = true;
+/// Whether `run/mod.rs` calls [`wire`]. Request 5bD-1 set it with the call;
+/// the wave 5b close set it back (11 Nov, its security review): inside srt
+/// on Windows no derm gate runs yet, since the state copy leaves the plugin
+/// folders out and the gate cannot reach the policy or the daemon until
+/// request 5bD-2 (W5B-S3, high, inference), and a deny for a path not made
+/// yet is dropped, so an agent there can create `.codex\` or `.git\hooks\`
+/// for code that runs outside the sandbox later (W5B-S2, high, read in
+/// `settings.rs:82-86` and `files.rs:112-122, 326-343`). srt stays refused on
+/// Windows, failing safe (rules section 9, item 7), until the Windows test
+/// settles both and 5bD-2 is built.
+pub(crate) const WIRED: bool = false;
 
 /// Why derm does not start srt on Windows now, or `None` when it may.
 pub(crate) fn refusal() -> Option<&'static str> {

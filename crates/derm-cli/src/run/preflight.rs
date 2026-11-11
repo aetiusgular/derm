@@ -121,7 +121,7 @@ pub fn apparmor_note_for(
 /// harness, and the plan's paths are written the Unix way. Until srt on
 /// Windows has a design of its own, `--boundary srt` stops here and the
 /// default choice never picks it.
-pub const SRT_ON_WINDOWS: &str = "derm does not start srt on Windows yet: srt 0.0.81 runs the agent there as its own srt-sandbox account, with that account's profile and none of the chat's variables, so the agent would have neither your sign-in nor derm's gate. Use --boundary sbx, or none";
+pub const SRT_ON_WINDOWS: &str = "derm does not start srt on Windows yet: srt runs the agent there as its own srt-sandbox account, and inside it derm's gate does not run yet and a deny for a path not made yet is not held, so the agent would run ungated with folders it could plant code in. Use --boundary sbx, or none";
 
 /// `srt` with whether Ubuntu's bubblewrap profile is installed, for the note.
 pub fn srt_with(
@@ -380,18 +380,19 @@ fn absolute(p: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// WW5-8 (Windows test w5, 4.2): `--boundary srt` stopped on Windows at
-    /// "srt needs rg", then at "a relative PATH entry" for every Windows
-    /// entry. Fails on `2ce607d` on Windows. srt then stayed refused there
-    /// until lane 5bD built its Windows form (request 5bD-1): now the check
-    /// passes with no rg and the real PATH.
+    /// WW5-8 (the Windows test): the srt check stopped at "srt needs rg",
+    /// then at "a relative PATH entry" for every Windows entry. Fails on
+    /// `2ce607d` on Windows. Lane 5bD's request 5bD-1 let srt start there;
+    /// the wave 5b close held it off again (W5B-S2, W5B-S3), so the check
+    /// refuses for that reason, never for rg or the PATH.
     #[cfg(windows)]
     #[test]
-    fn ww5_8_srt_on_windows_needs_no_rg_and_reads_the_windows_path() {
+    fn ww5_8_srt_is_refused_on_windows_for_the_true_reason() {
         let path = std::env::var("PATH").unwrap_or_default();
         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
-        let (_, tools) = srt_with(&path, false, None, false, &[], &cwd).unwrap();
-        assert!(tools.is_none());
+        let e = srt_with(&path, false, None, false, &[], &cwd).unwrap_err();
+        assert_eq!(e, SRT_ON_WINDOWS);
+        assert!(!e.contains("ripgrep") && !e.contains("relative"), "{e}");
     }
 
     /// WW5-8's PATH half: the companion's PATH was split on `:` and kept only

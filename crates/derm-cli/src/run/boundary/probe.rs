@@ -524,21 +524,17 @@ mod tests {
 
     /// FPW-S7 (the Windows fix pass's review): with no srt on PATH, the
     /// probe printed srt's install line on Windows for a boundary derm then
-    /// refused there. Since lane 5bD (request 5bD-1) derm starts srt on
-    /// Windows, so the install line is the right answer, and it is
-    /// Windows' own: no ripgrep, and srt's once-per-machine install.
+    /// refused there. Lane 5bD's request 5bD-1 let srt start on Windows; the
+    /// wave 5b close held it off again (W5B-S2, W5B-S3), so the probe names
+    /// the refusal and no install line, as before 5bD-1.
     #[cfg(windows)]
     #[test]
-    fn fpw_s7_on_windows_the_probe_gives_windows_own_install_line() {
+    fn fpw_s7_on_windows_the_probe_names_the_refusal_not_an_install() {
         let h = harness::find("pi").unwrap();
-        let never: Runner = &|_, _, _| panic!("nothing is run with no srt");
+        let never: Runner = &|_, _, _| panic!("nothing is run on Windows");
         let r = srt_probe(h, "", None, None, false, r"C:\", never).unwrap_err();
-        assert!(r.why.contains("not installed"), "{}", r.why);
-        let line = r.install.unwrap();
-        assert!(
-            line.contains("windows-install") && !line.contains("ripgrep"),
-            "{line}"
-        );
+        assert_eq!(r.why, preflight::SRT_ON_WINDOWS);
+        assert!(r.install.is_none(), "{:?}", r.install);
     }
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
