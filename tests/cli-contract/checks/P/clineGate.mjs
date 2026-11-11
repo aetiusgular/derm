@@ -277,7 +277,7 @@ export const checks = [
         const deny = await ask("call:2/x", "fetch_web_content", { url: "https://x" });
         const asked = await ask("call_3", "github__create_issue", { title: "t" });
         const left = readdirSync(dir);
-        const ok = allow.approved === true && deny.approved === false && deny.reason === "derm: rule fetch_web_content" && asked.approved === true && left.length === 0 && daemon.approvals().length === 1;
+        const ok = allow.approved === true && deny.approved === false && deny.reason === "derm: rule fetch_web_content deny" /* derm-core's wording since wave 5b (lane 5bC request 6) */ && asked.approved === true && left.length === 0 && daemon.approvals().length === 1;
         return { status: ok ? "pass" : "fail", finding: `allow ${JSON.stringify(allow)}; deny ${JSON.stringify(deny)}; ask ${JSON.stringify(asked)}; left ${JSON.stringify(left)}; approvals ${daemon.approvals().length}` };
       } finally {
         await stopGroup(child);

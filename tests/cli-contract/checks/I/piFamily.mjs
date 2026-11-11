@@ -155,7 +155,7 @@ export const checks = [
       const scoped = await ompRun(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "allow" }, { tool: "bash", harness: "oh-my-pi", action: "deny" }] }, script: ompBash("echo omp-scoped-ran") });
       const ran = JSON.stringify(allowed.results).includes("omp-allowed-ran");
       const scopedText = JSON.stringify(scoped.results);
-      const scopedBlocked = !scopedText.includes("omp-scoped-ran") && scopedText.includes("harness=oh-my-pi");
+      const scopedBlocked = !scopedText.includes("omp-scoped-ran") && scopedText.includes("for harness oh-my-pi") /* derm-core's wording since wave 5b (hook-dialects 9.3; lane 5bC request 6) */;
       return { status: ran && scopedBlocked ? "pass" : "fail", finding: `allowed ran ${ran}; oh-my-pi rule applied ${scopedBlocked}; ${scopedText.slice(0, 160)}` };
     },
   },

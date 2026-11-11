@@ -257,12 +257,17 @@ export const checks = [
     title: "A hung gate lets a shell call through (Gemini fails open, case 70); the extension's policy still denies a control-file write",
     harness: "gemini",
     async run({ binPath }) {
-      // A FIFO as the policy file: the hook's read blocks until Gemini's timeout (1 s in this copy).
+      // The gate's command sleeps past Gemini's timeout (1 s in this copy). Gemini runs a hook
+      // line with `bash -c` (contracts/hook-dialects.md 9.1, 0.68.0), so the sleep is the hook.
+      // It was a FIFO as the policy file until wave 5b: derm's Rust gate opens its policy
+      // without blocking (FPWR2-2) and answers, so a FIFO no longer hangs it (lane 5bA's
+      // request 2); a sleeping command hangs either gate.
       const s = await setup(binPath, {
         edit: (dir) => {
           const f = path.join(dir, "hooks", "hooks.json");
           const h = JSON.parse(readFileSync(f, "utf8"));
           h.hooks.BeforeTool[0].hooks[0].timeout = 1000;
+          h.hooks.BeforeTool[0].hooks[0].command = `sleep 30; ${h.hooks.BeforeTool[0].hooks[0].command}`;
           writeFileSync(f, JSON.stringify(h));
         },
       });
@@ -270,9 +275,7 @@ export const checks = [
         script: (_b, n) => (n === 0 ? [functionCall("run_shell_command", { command: "echo derm-fail-open-ran" }), functionCall("write_file", { file_path: path.join(s.work, ".gemini", "x.json"), content: "{}" })] : [text("done")]),
       });
       try {
-        const fifo = path.join(s.root, "policy.fifo");
-        execFileSync("mkfifo", [fifo]);
-        const r = await turn(binPath, s, fake, { DERM_POLICY: fifo });
+        const r = await turn(binPath, s, fake, {});
         const text = JSON.stringify(responsesOf(fake));
         const shellRan = text.includes("derm-fail-open-ran");
         const wrote = existsSync(path.join(s.work, ".gemini", "x.json"));
