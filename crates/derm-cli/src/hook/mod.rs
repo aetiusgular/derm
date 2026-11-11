@@ -62,7 +62,8 @@ pub struct Reply {
 }
 
 /// The agent's own deny, with `derm: <reason>` (each dialect's `deny` or
-/// `block` in the TypeScript, `bin/fallback.mjs` for the native ones). For an
+/// `block` in the TypeScript, `bin/fallback.mjs` for the native ones; Hermes's
+/// plugin adds the prefix itself). For an
 /// agent derm does not know: the reason on stderr and exit 2, the most any
 /// hook runner reads as a failure.
 pub fn fail_closed(agent: &str, reason: &str) -> Reply {
@@ -95,8 +96,14 @@ pub fn fail_closed(agent: &str, reason: &str) -> Reply {
         "gemini" => exit2(json(
             serde_json::json!({"decision": "deny", "reason": text}),
         )),
+        // `derm hook hermes` answers in the Node decider's shape, and
+        // `derm_gate.py` adds `derm: ` itself (its `_block`), so the reason
+        // goes without it, as `hook/native/hermes.rs`'s own deny does.
         "hermes" => Reply {
-            stdout: json(serde_json::json!({"action": "block", "message": text})),
+            stdout: json(serde_json::json!({
+                "decision": "deny",
+                "reason": text.trim_start_matches("derm: "),
+            })),
             stderr: String::new(),
             exit: 0,
         },
@@ -190,5 +197,23 @@ mod tests {
             "{\"decision\":\"block\",\"reason\":\"derm: x\"}\n"
         );
         assert_eq!(r.exit, 2);
+    }
+
+    /// Lane 5bB's request 1: Hermes's plugin runs `derm hook hermes`, whose
+    /// reply is the old Node decider's (`hook/native/hermes.rs`), and
+    /// `derm_gate.py` adds `derm: ` itself (`_block`, lines 52-54, 167-168).
+    /// Recorded: `{"decision":"deny","reason":"unknown event other"}`
+    /// (`decide.test.ts`, "anything it cannot read is a deny").
+    #[test]
+    fn hermes_fails_closed_in_the_deciders_own_shape() {
+        let r = fail_closed("hermes", "unknown  event other");
+        assert_eq!(
+            (r.stdout.as_str(), r.stderr.as_str(), r.exit),
+            (
+                "{\"decision\":\"deny\",\"reason\":\"unknown event other\"}\n",
+                "",
+                0
+            )
+        );
     }
 }
