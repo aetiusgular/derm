@@ -18,13 +18,13 @@ name = "derm-sysmon"
 path = "src/main.rs"
 
 [features]
-# The wave 5b base's red test (`tests/contract.rs`): built only with this
-# feature until lane 5bE makes it pass; integration turns it on at the close.
+# The wave 5b base's red test (`tests/contract.rs`) built only with this
+# feature until lane 5bE made it pass. Since the close (11 Nov) it always
+# builds; the feature is kept, empty, so recorded commands still run.
 w5b-red = []
 
 [[test]]
 name = "contract"
-required-features = ["w5b-red"]
 
 [dependencies]
 serde.workspace = true

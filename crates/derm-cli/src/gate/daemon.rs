@@ -50,6 +50,7 @@ impl Env {
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect())
     }
+    #[cfg(test)]
     pub fn of(pairs: &[(&str, &str)]) -> Env {
         Env(pairs
             .iter()

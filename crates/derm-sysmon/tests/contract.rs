@@ -1,7 +1,7 @@
 //! Lane 5bE's red test (the wave 5b base): `derm-sysmon decode` turns the
 //! recorded Sysmon events (`tests/windows/fixtures/sysmon/chat.xml`) into
 //! the records the daemon ingests (`contracts/sysmon-service.md` section
-//! 4), on every OS. Built with `--features w5b-red`.
+//! 4), on every OS. Always built since the wave 5b close.
 
 use std::io::Write;
 use std::process::{Command, Stdio};

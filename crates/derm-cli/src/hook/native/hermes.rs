@@ -31,7 +31,6 @@ use derm_core::redact::hook::redact_text;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::control::{narrow, HERMES_CONTROL_PATHS};
 use super::{action_word, chat_from, json_line, str_field, Input, Io};
 use crate::gate::core::{
     decide_call, input_text_for, install_events, resolve_ask, AskResolution, GateCall,
@@ -123,12 +122,9 @@ fn pre(input: &Input, io: &dyn Io) -> Result<Reply, String> {
         full_access: None,
     };
     let mut answer = decide_call(&io.load_policy(), &call, io.env());
-    let text = input_text_for(&answer.normalized_tool, &call.tool_input)?;
-    let (action, control) = narrow(&HERMES_CONTROL_PATHS, answer.action, &text);
-    if let Some(c) = control {
-        answer.action = action;
-        answer.reason = format!("input names a control file ({c})");
-    }
+    // Hermes's control files are derm-core's (`CONTROL_PATHS`, integration
+    // w2), asked in `decide_call`; the copy here went at the wave 5b close.
+    input_text_for(&answer.normalized_tool, &call.tool_input)?;
     answer.ask_timeout_seconds = answer.ask_timeout_seconds.min(ASK_CAP_SECONDS);
     let mut decision = answer.action;
     let mut reason = answer.reason.clone();

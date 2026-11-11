@@ -2,8 +2,8 @@
 //! boundary so they build on the base and fail there: `contracts/
 //! gate-serve.md` (lane 5bC), `srt-windows.md` (5bD), `hook-dialects.md`
 //! section 9 (5bA's marks rule, 5bF's registration line). The Sysmon
-//! service's is `crates/derm-sysmon/tests/contract.rs` (5bE). Built with the
-//! feature `w5b-red`: `cargo test -p derm-cli --features w5b-red --test
+//! service's is `crates/derm-sysmon/tests/contract.rs` (5bE). They pass
+//! since the close and always build: `cargo test -p derm-cli --test
 //! contracts_w5b`.
 
 mod support;

@@ -193,8 +193,6 @@ fn policy_folder_private(folder: &Path) -> bool {
 /// is judged by the trusted owners (`derm_core::owner`; under an agents' user,
 /// the person it works for, note BB BBR-4) and not by the real uid alone; on
 /// Windows by its access list, as [`load_policy_checked`] does.
-// Called by the lanes' dialects; until they land only the tests call it.
-#[allow(dead_code)]
 pub(crate) fn load_for_hook(
     env: &crate::gate::daemon::Env,
     cwd: &Path,

@@ -6,13 +6,12 @@
 //! matcher is `derm_core::policy::evaluate`; the redactor
 //! `derm_core::redact::hook`; the daemon client [`super::daemon`].
 
-use std::path::Path;
 
 use derm_core::policy::{self, Action, PolicyFile, SHELL_TOOLS};
 use derm_core::redact::hook::{has_token_shape, redact_text, redact_value};
 use serde_json::{Map, Value};
 
-use super::daemon::{self, AdapterEvent, ApproveOutcome, ApproveRequest, By, Env};
+use super::daemon::{AdapterEvent, ApproveOutcome, ApproveRequest, By, Env};
 
 /// An ask never waits longer than this inside a hook, whatever the policy
 /// says, so the agent's own hook timeout (120 s in derm's hook files) is
@@ -472,14 +471,6 @@ pub fn resolve_ask(
             AskResolution::Deny(format!("{}; declined in derm", answer.reason))
         }
     }
-}
-
-/// The real approver: the daemon's `approve` with this environment.
-pub fn daemon_approve<'a>(
-    env: &'a Env,
-    cwd: &'a Path,
-) -> impl Fn(&ApproveRequest) -> ApproveOutcome + 'a {
-    move |r| daemon::approve(r, env, cwd)
 }
 
 #[cfg(test)]

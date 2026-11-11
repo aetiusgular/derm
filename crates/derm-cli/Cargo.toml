@@ -24,10 +24,10 @@ path = "src/main.rs"
 
 [features]
 default = []
-# The wave 5b base: the red tests (`tests/hook_cases_5bA.rs`, `_5bB.rs` and
-# the contract tests) build only with this feature, so CI's
-# `cargo test --workspace` stays green while they fail on purpose;
-# integration turns it on by default at the close (wave 5b plan section 6).
+# The wave 5b base's red tests (`tests/hook_cases_5bA.rs`, `_5bB.rs` and
+# `contracts_w5b.rs`) built only with this feature while they failed on
+# purpose. Since the close (11 Nov) they pass and always build; the feature
+# is kept, empty, so the lanes' recorded commands still run.
 w5b-red = []
 # [lane-C]
 # [lane-D]
@@ -86,15 +86,12 @@ derm-tap = { path = "../derm-tap" }
 
 [[test]]
 name = "hook_cases_5bA"
-required-features = ["w5b-red"]
 
 [[test]]
 name = "hook_cases_5bB"
-required-features = ["w5b-red"]
 
 [[test]]
 name = "contracts_w5b"
-required-features = ["w5b-red"]
 
 [dev-dependencies]
 # [lane-C]

@@ -14,7 +14,6 @@
 //! the dialect's deny (case 70).
 
 mod antigravity;
-mod control;
 mod crush;
 pub(crate) mod crush_servers;
 mod cursor;
@@ -279,7 +278,7 @@ fn gate_call(d: &Dialect, read: &ReadCall, with_chat: bool) -> GateCall {
     }
 }
 
-/// Decides one read call: the core, the agent's control files, then the ask
+/// Decides one read call: the core (the agents' control files included), then the ask
 /// (`decide`).
 pub fn decide(d: &Dialect, input: &Input, read: &ReadCall, io: &dyn Io) -> Result<Outcome, String> {
     let call = gate_call(d, read, true);
@@ -303,12 +302,11 @@ pub fn decide(d: &Dialect, input: &Input, read: &ReadCall, io: &dyn Io) -> Resul
             answer.reason = why.clone();
         }
     }
-    let text = input_text_for(&answer.normalized_tool, &read.tool_input)?;
-    let (action, control) = control::narrow(&control::NATIVE_CONTROL_PATHS, answer.action, &text);
-    if let Some(c) = control {
-        answer.action = action;
-        answer.reason = format!("input names a control file ({c})");
-    }
+    // The agents' own control files are derm-core's (`CONTROL_PATHS`, folded
+    // in by integration w4), asked in `decide_call` before any allow stands;
+    // lane 5bB's own copy of them was removed at the wave 5b close (its
+    // request 3). An input the core cannot read as text still fails here.
+    input_text_for(&answer.normalized_tool, &read.tool_input)?;
     let cannot_rewrite = || {
         format!(
             "secret-like value in input that derm cannot rewrite on {}",

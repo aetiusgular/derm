@@ -15,11 +15,7 @@
 //! Everything here but `serve/` is integration's after the base (wave 5b
 //! plan section 2.0, part 3): a lane that needs a change writes a request.
 
-// Used by the lanes' dialects (`hook/`, `gate/serve/`); until they land
-// only the tests call them. Integration drops the allows at the close.
-#[allow(dead_code)]
 pub mod core;
-#[allow(dead_code)]
 pub mod daemon;
 pub mod decide;
 pub mod policy;

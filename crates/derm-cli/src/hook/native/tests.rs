@@ -720,3 +720,52 @@ fn a_fifo_config_does_not_block_and_makes_the_list_incomplete() {
     assert!(!r.complete);
     assert_eq!(r.why.as_deref(), Some("crush.json could not be read"));
 }
+
+/// Lane 5bB's request 3, at the wave 5b close: the native agents' and
+/// Hermes's control files were a second list in `hook/native/control.rs`,
+/// each entry already in derm-core's `CONTROL_PATHS` (integration w2 and
+/// w4), so the copy never changed an answer and was removed. This holds what
+/// it held: an allowed shell call naming any of them, in any letter case,
+/// asks through the gate's decide path for every one of these agents.
+#[test]
+fn the_native_agents_and_hermess_control_files_ask_through_the_core() {
+    const ENTRIES: [&str; 24] = [
+        ".cursor/", "cursor/hooks.json", ".agents/hooks.json", ".agents/plugins/",
+        ".config/goose/", "goose_path_root", "goose_mode", "goose_disable_keyring",
+        ".vibe/", "vibe_home", ".config/crush/", ".local/share/crush/", "crushrc",
+        "crush.json", "crush_global_config", "crush_global_data", ".kiro/", "kiro_home",
+        ".hermes/", "hermes_home", "hermes_safe_mode", "hermes_yolo_mode",
+        "hermes_enable_project_plugins", "hermes_accept_hooks",
+    ];
+    let allow = LoadedPolicy {
+        policy: derm_core::policy::parse(r#"{"version":1,"rules":[{"tool":"bash","action":"allow"}]}"#)
+            .unwrap(),
+        problem: None,
+    };
+    let env = Env(Default::default());
+    for harness in ["cursor", "antigravity", "goose", "mistral-vibe", "crush", "kiro", "hermes"] {
+        for entry in ENTRIES {
+            let call = crate::gate::core::GateCall {
+                harness: harness.into(),
+                tool: "bash".into(),
+                tool_input: json!({"command": format!("cat ~/{}x", entry.to_uppercase())}),
+                chat: None,
+                tool_use_id: None,
+                full_access: Some(false),
+            };
+            let a = crate::gate::core::decide_call(&allow, &call, &env);
+            assert_eq!(a.action, Action::Ask, "{harness} {entry}: {}", a.reason);
+            assert!(a.reason.starts_with("input names a control file ("), "{harness} {entry}: {}", a.reason);
+        }
+        // and an allowed call that names none still runs
+        let call = crate::gate::core::GateCall {
+            harness: harness.into(),
+            tool: "bash".into(),
+            tool_input: json!({"command": "ls"}),
+            chat: None,
+            tool_use_id: None,
+            full_access: Some(false),
+        };
+        assert_eq!(crate::gate::core::decide_call(&allow, &call, &env).action, Action::Allow, "{harness}");
+    }
+}
