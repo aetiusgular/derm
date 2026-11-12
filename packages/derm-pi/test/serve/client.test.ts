@@ -299,11 +299,15 @@ describe("who else may write, on macOS (MW5B-1, MW5B-2)", () => {
     };
   }
 
-  it("trusts Homebrew's admin-group prefix for an admin (MW5B-2)", () => {
+  // macOS paths through Node's `path`, which is Windows-style on a Windows
+  // host; there the client takes only DERM_BIN and never reads them.
+  it.runIf(unix)("trusts Homebrew's admin-group prefix for an admin (MW5B-2)", () => {
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew())).toBeUndefined();
   });
 
-  it("refuses it for a user not in admin, for staff, for any group off macOS", () => {
+  // macOS paths through Node's `path`, which is Windows-style on a Windows
+  // host; there the client takes only DERM_BIN and never reads them.
+  it.runIf(unix)("refuses it for a user not in admin, for staff, for any group off macOS", () => {
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ groups: () => [20, 12] }))).toMatch(/others may write \/opt\/homebrew\/bin/);
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ groups: () => undefined }))).toMatch(/others may write/);
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ binGid: 20 }))).toMatch(/others may write/);
@@ -311,7 +315,9 @@ describe("who else may write, on macOS (MW5B-1, MW5B-2)", () => {
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ platform: "linux" }))).toMatch(/others may write/);
   });
 
-  it("refuses an access list that lets anyone write, behind an @ (MW5B-1)", () => {
+  // macOS paths through Node's `path`, which is Windows-style on a Windows
+  // host; there the client takes only DERM_BIN and never reads them.
+  it.runIf(unix)("refuses an access list that lets anyone write, behind an @ (MW5B-1)", () => {
     const allow = (p: string) => `-rwxr-xr-x@ 1 501 80 1 Nov 11 16:00 ${p}\n 0: group:everyone allow write\n`;
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ acl: (p) => (p.endsWith("/derm") ? allow(p) : `d\n`) }))).toBe("others may write it");
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ acl: (p) => (p === "/opt/homebrew/bin" ? allow(p) : `d\n`) }))).toMatch(/others may write \/opt\/homebrew\/bin/);
@@ -359,7 +365,9 @@ describe("the route to derm through links (FP1-S2, FP1-S8)", () => {
     expect(refuseCandidate(path.join(t.bin, "derm"), t.d)).toBe("not named derm");
   });
 
-  it("trusts Homebrew's admin group on a folder, never on the derm file", () => {
+  // macOS paths through Node's `path`, which is Windows-style on a Windows
+  // host; there the client takes only DERM_BIN and never reads them.
+  it.runIf(unix)("trusts Homebrew's admin group on a folder, never on the derm file", () => {
     const base = brewDeps();
     const file = (p: string) => p.endsWith("/derm");
     const stat = (p: string) => {

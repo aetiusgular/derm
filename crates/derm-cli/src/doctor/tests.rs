@@ -619,7 +619,10 @@ fn bw5b_3_goose_project_plugins_and_disabled_plugins_are_named() {
         "{\"disabledPlugins\": [\"derm\", \"derm-gate\"]}",
     );
     let s = shadows("goose", &row, &e);
-    let paths: Vec<&str> = s.iter().map(|v| v["path"].as_str().unwrap()).collect();
+    let paths: Vec<String> = s
+        .iter()
+        .map(|v| v["path"].as_str().unwrap().replace('\\', "/"))
+        .collect();
     for want in [
         ".agents/plugins/derm",
         ".agents/plugins/lint",
@@ -644,10 +647,10 @@ fn bw5b_3_goose_project_plugins_and_disabled_plugins_are_named() {
         &format!("{{\"disabledPlugins\": [\"{name}\"]}}"),
     );
     let s = shadows("goose", &row, &e);
-    let off: Vec<&str> = s
+    let off: Vec<String> = s
         .iter()
         .filter(|v| v["turnsOff"] == json!(true))
-        .map(|v| v["path"].as_str().unwrap())
+        .map(|v| v["path"].as_str().unwrap().replace('\\', "/"))
         .collect();
     // goose stops at the first scope that lists derm's (local), so your own
     // settings do not decide here (FP1-S11).
@@ -735,7 +738,7 @@ fn fp1_s11_goose_scopes_decide_in_order_and_the_old_name_counts() {
     let off = |s: &Vec<serde_json::Value>| {
         s.iter()
             .filter(|v| v["turnsOff"] == json!(true))
-            .map(|v| v["path"].as_str().unwrap().to_string())
+            .map(|v| v["path"].as_str().unwrap().replace('\\', "/"))
             .collect::<Vec<_>>()
     };
     let s = shadows("goose", &row, &e);
