@@ -2379,7 +2379,14 @@ fn mw5b_1_the_launchers_access_list_reader_agrees_with_connects() {
         // FP1-S4: the same under a shell that runs a pipeline's last part in
         // the current shell (zsh, ksh; bash's lastpipe), where an `exit`
         // there would leave the caller too.
-        if Path::new("/bin/bash").exists() {
+        // bash 4.2 added lastpipe; macOS's /bin/bash is 3.2 and refuses
+        // the option, so this half runs where a bash takes it (Linux CI).
+        let lastpipe = std::process::Command::new("/bin/bash")
+            .args(["-O", "lastpipe", "-c", "true"])
+            .env_clear()
+            .status()
+            .is_ok_and(|s| s.success());
+        if lastpipe {
             let o = std::process::Command::new("/bin/bash")
                 .args(["-O", "lastpipe", "-c"])
                 .arg(format!("{func}\nset +m\nif acl_open \"$1\"; then echo open; else echo closed; fi; echo after"))
@@ -2412,7 +2419,8 @@ fn fp1_s2_the_launcher_runs_only_a_file_named_derm() {
     let bin = home.join(".local/bin");
     fs::create_dir_all(&bin).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
-    let real_true = fs::canonicalize("/bin/true").unwrap();
+    // /usr/bin/true is on Linux and macOS alike (macOS has no /bin/true).
+    let real_true = fs::canonicalize("/usr/bin/true").unwrap();
     std::os::unix::fs::symlink(&real_true, bin.join("derm")).unwrap();
     let h = home.display().to_string();
     let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
