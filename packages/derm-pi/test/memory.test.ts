@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
+import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, openNoLink, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
 import { FakeRpcClient, type Answer } from "./fake-pi.ts";
 import { GateServe } from "../src/serve/client.ts";
 import { DERM } from "./serve/real.ts";
@@ -226,6 +226,35 @@ describe("the index, injected as a message", () => {
     symlinkSync(path.join(elsewhere, "INDEX.md"), path.join(project, "refs", "INDEX.md"));
     const h = host();
     expect(await h.emit("before_agent_start", userRun, h.ctx(project))).toBeUndefined();
+  });
+
+  // WW5B-4 (Windows test w5b): Node on Windows has no O_NOFOLLOW
+  // (`constants.O_NOFOLLOW` is undefined there), so an index that is a link
+  // was opened through it and its target injected. Played here with the flag
+  // taken away: the open is kept only when the file it opened is the one the
+  // name holds, not followed (lstat, open, fstat; CPython 3.13.5
+  // Lib/shutil.py:660-675).
+  it("opens no file through a link when the system has no O_NOFOLLOW", async () => {
+    const elsewhere = path.join(root, "secrets");
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(path.join(elsewhere, "INDEX.md"), "- private key here\n");
+    const dir = path.join(root, "plain");
+    mkdirSync(dir);
+    const link = path.join(dir, "INDEX.md");
+    symlinkSync(path.join(elsewhere, "INDEX.md"), link);
+    const { constants } = await import("node:fs");
+    expect(await openNoLink(link, constants.O_RDONLY, undefined, 0)).toBeUndefined();
+    // A link to nothing is not followed into a new file either.
+    const dangling = path.join(dir, "new.md");
+    symlinkSync(path.join(elsewhere, "made-by-us.md"), dangling);
+    const h = await openNoLink(dangling, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o644, 0);
+    expect(h).toBeUndefined();
+    expect(existsSync(path.join(elsewhere, "made-by-us.md"))).toBe(false);
+    // A plain file opens.
+    writeFileSync(path.join(dir, "real.md"), "ok\n");
+    const ok = await openNoLink(path.join(dir, "real.md"), constants.O_RDONLY, undefined, 0);
+    expect(ok).toBeDefined();
+    await ok?.close();
   });
 
   it("context keeps only the newest copy, and leaves one copy alone", async () => {

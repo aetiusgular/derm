@@ -200,6 +200,48 @@ function under(root: string, rel: string): string | undefined {
 }
 
 /**
+ * Opens `abs` and keeps the handle only when it is the file the name holds,
+ * not one a link leads to. Node has no `O_NOFOLLOW` on Windows
+ * (`constants.O_NOFOLLOW` is undefined there), so an index that was a link
+ * was opened through it and its target injected (WW5B-4, Windows test w5b;
+ * `memory.test.ts` "reads no index through a link"). The name is read with
+ * `lstat` before the open (a link, a junction or any reparse point is
+ * refused: libuv v1.52.1 `src/win/fs.c:1940-1944` reports every reparse
+ * point to lstat as a link) and again after it, and both must be the opened
+ * file's device and inode (`fstat`; libuv `fs.c:1908, 1971`, the volume's
+ * serial and the file id) — the lstat, open, fstat check CPython's rmtree
+ * uses against link races (Lib/shutil.py:660-675 at v3.13.5). Where the
+ * system has `O_NOFOLLOW` it is passed too. A name that was not there before
+ * an `O_CREAT` open and is a link after it is refused, but the open may
+ * have made the link's target (a race; Windows only). `nofollow` is for
+ * tests that play Windows.
+ */
+export async function openNoLink(abs: string, flags: number, mode?: number, nofollow: number = constants.O_NOFOLLOW ?? 0): Promise<FileHandle | undefined> {
+  let before: import("node:fs").BigIntStats | undefined;
+  try {
+    before = await fsp.lstat(abs, { bigint: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+  }
+  if (before?.isSymbolicLink()) return undefined;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await fsp.open(abs, flags | nofollow, mode);
+    const st = await handle.stat({ bigint: true });
+    const after = await fsp.lstat(abs, { bigint: true });
+    const same = (x: { dev: bigint; ino: bigint }) => x.dev === st.dev && x.ino === st.ino;
+    if (after.isSymbolicLink() || !same(after) || (before !== undefined && !same(before))) {
+      await handle.close().catch(() => undefined);
+      return undefined;
+    }
+    return handle;
+  } catch {
+    await handle?.close().catch(() => undefined);
+    return undefined;
+  }
+}
+
+/**
  * Reads a regular file, never through a link, at most `max` bytes. The
  * folders between `root` and the file must be real folders too: a project
  * whose `memory/` links to `~/.ssh` gets nothing read or injected.
@@ -211,7 +253,8 @@ async function readPlain(root: string, rel: string, max: number): Promise<string
   try {
     // O_NONBLOCK: a FIFO an agent made under the index's name must not
     // hang the run (integration w2 review, W2-S6; case 38).
-    handle = await fsp.open(abs, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await openNoLink(abs, constants.O_RDONLY | constants.O_NONBLOCK);
+    if (handle === undefined) return undefined;
     const st = await handle.stat();
     if (!st.isFile()) return undefined;
     const buf = Buffer.alloc(Math.min(st.size, max));
@@ -254,7 +297,8 @@ async function appendPlain(root: string, rel: string, text: string): Promise<boo
   if (!abs || !(await realFolders(root, path.dirname(abs), true))) return false;
   let handle: FileHandle | undefined;
   try {
-    handle = await fsp.open(abs, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o644);
+    handle = await openNoLink(abs, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NONBLOCK, 0o644);
+    if (handle === undefined) return false;
     const st = await handle.stat();
     if (!st.isFile()) return false;
     await handle.write(text);
@@ -272,7 +316,8 @@ async function createPlain(root: string, rel: string, text: string): Promise<boo
   if (!abs || !(await realFolders(root, path.dirname(abs), true))) return false;
   let handle: FileHandle | undefined;
   try {
-    handle = await fsp.open(abs, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o644);
+    handle = await openNoLink(abs, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o644);
+    if (handle === undefined) return false;
     await handle.write(text);
     return true;
   } catch {
