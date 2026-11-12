@@ -220,6 +220,45 @@ pub fn rotated_path(log: &Path) -> PathBuf {
 /// non-blocking, checked by its handle; fp13's review, FP13R-7, as
 /// `derm-core`'s lockfile reader opens).
 pub fn load(path: &Path) -> Loaded {
+    #[cfg(windows)]
+    {
+        load_windows(path)
+    }
+    #[cfg(not(windows))]
+    {
+        load_unix(path)
+    }
+}
+
+/// Windows: a `Metadata` there holds no owner or DACL, so the seam's
+/// `owner` and `is_private` refuse every file (`platform/windows/mod.rs`).
+/// The owner and DACL are read on the open handle instead, never through a
+/// reparse point (`open_private_file`), as the daemon token's reader does
+/// (`client.rs`, `read_daemon_token_windows`).
+#[cfg(windows)]
+fn load_windows(path: &Path) -> Loaded {
+    let f = match derm_core::platform::windows::open_private_file(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Missing,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Loaded::Refused("it is not this user's private file")
+        }
+        Err(_) => return Loaded::Refused("it could not be opened (a link?)"),
+    };
+    let Ok(meta) = f.metadata() else {
+        return Loaded::Refused("it could not be read");
+    };
+    if !meta.is_file() {
+        return Loaded::Refused("it is not a regular file");
+    }
+    if meta.len() > POS_MAX_BYTES {
+        return Loaded::Refused("it is too large");
+    }
+    read_place(f)
+}
+
+#[cfg(not(windows))]
+fn load_unix(path: &Path) -> Loaded {
     let mut o = OpenOptions::new();
     o.read(true);
     derm_core::platform::private_no_follow(&mut o);
@@ -247,6 +286,10 @@ pub fn load(path: &Path) -> Loaded {
     {
         return Loaded::Refused("it is not this user's private file");
     }
+    read_place(f)
+}
+
+fn read_place(f: File) -> Loaded {
     let mut text = String::new();
     if f.take(POS_MAX_BYTES).read_to_string(&mut text).is_err() {
         return Loaded::Refused("it could not be read");

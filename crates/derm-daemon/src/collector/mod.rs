@@ -850,6 +850,15 @@ mod tests {
             socket: root.join("run/derm/daemon.sock"),
             data: root.join("data"),
         };
+        // The plan is a Mac's root shell: off Unix, where no absolute path
+        // begins with `/`, it refuses the binary's path rather than build a
+        // command it cannot show safely.
+        if cfg!(windows) {
+            let e = install_plan(&paths, &binary, &peer).unwrap_err();
+            assert!(e.contains("cannot show safely"), "{e}");
+            let _ = std::fs::remove_dir_all(&root);
+            return;
+        }
         let plan = install_plan(&paths, &binary, &peer).unwrap();
         let text = plan.explanation.join("\n");
         assert!(!text.contains("Only MonoCode"), "{text}");

@@ -919,7 +919,7 @@ fn folders_closed(root: &Path, dir: &Path, file: &str, uid: derm_core::platform:
 pub fn resolve(at: &Place, home: &Path, env: &dyn Env) -> PathBuf {
     let rest = &at.path[2..];
     if let Some(var) = &at.home_env {
-        if let Some(dir) = env.var(var).filter(|d| d.starts_with('/')) {
+        if let Some(dir) = env.var(var).filter(|d| super::names::absolute(d)) {
             let tail = rest.split_once('/').map_or("", |(_, t)| t);
             return PathBuf::from(dir).join(tail);
         }
@@ -927,7 +927,8 @@ pub fn resolve(at: &Place, home: &Path, env: &dyn Env) -> PathBuf {
     if at.xdg_config {
         if let (Some(tail), Some(x)) = (
             rest.strip_prefix(".config/"),
-            env.var("XDG_CONFIG_HOME").filter(|d| d.starts_with('/')),
+            env.var("XDG_CONFIG_HOME")
+                .filter(|d| super::names::absolute(d)),
         ) {
             return PathBuf::from(x).join(tail);
         }

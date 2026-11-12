@@ -335,14 +335,15 @@ impl Preset {
             return None;
         }
         if let Some(var) = &self.home_env {
-            if let Some(dir) = env.var(var).filter(|d| d.starts_with('/')) {
+            if let Some(dir) = env.var(var).filter(|d| super::names::absolute(d)) {
                 let file = Path::new(raw).file_name()?;
                 return Some(PathBuf::from(dir).join(file));
             }
         }
         if self.xdg_config && !macos {
             if let (Some(xdg), Some(rest)) = (
-                env.var("XDG_CONFIG_HOME").filter(|d| d.starts_with('/')),
+                env.var("XDG_CONFIG_HOME")
+                    .filter(|d| super::names::absolute(d)),
                 raw.strip_prefix("~/.config/"),
             ) {
                 return Some(PathBuf::from(xdg).join(rest));

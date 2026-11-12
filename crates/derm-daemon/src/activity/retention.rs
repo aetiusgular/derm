@@ -366,6 +366,26 @@ mod tests {
             )
             .unwrap();
         }
+        // The same three links on Windows, made as symbolic links (Microsoft
+        // Learn, "Symbolic Links": `CreateSymbolicLinkW` needs
+        // SeCreateSymbolicLinkPrivilege, which an elevated administrator,
+        // as CI's runner is, holds). Without them the screenshot folder had
+        // no link to keep it and the test read 2 deletions, not 1.
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(&outside, dir.join("screenshots/2026-10-02"))
+                .unwrap();
+            std::os::windows::fs::symlink_file(
+                outside.join("precious.txt"),
+                dir.join("app-2026-10-03.jsonl"),
+            )
+            .unwrap();
+            std::os::windows::fs::symlink_file(
+                outside.join("precious.txt"),
+                dir.join("screenshots/2026-10-01/link.png"),
+            )
+            .unwrap();
+        }
         let items = scan(&dir);
         assert_eq!(items.len(), 2, "{items:?}");
         let today = parse_day("2026-10-16").unwrap();

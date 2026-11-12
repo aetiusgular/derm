@@ -945,6 +945,21 @@ fn bare_derm_hook(text: &str, id: &str) -> bool {
     crate::connect::gate::derm_hook_runs(text, id).contains(&false)
 }
 
+/// What node needs from a cleared environment on Windows besides HOME and
+/// PATH. Without `SystemRoot`, node 24 aborts before any script runs, in
+/// `InitializeOncePerProcessInternal` (exit 134; CI's Windows job, node
+/// 24.22.2), where it checks that OpenSSL's CSPRNG seeds (`src/node.cc`,
+/// `CHECK(ncrypto::CSPRNG(nullptr, 0))`); Windows' crypto providers resolve
+/// their DLLs through `%SystemRoot%` ("Always, always include SystemRoot
+/// when passing a custom environment block to CreateProcess",
+/// https://jpassing.com/2009/12/28/the-hidden-danger-of-forgetting-to-specify-systemroot-in-a-custom-environment-block).
+/// `USERPROFILE` is Windows' HOME. srt's sandbox keeps the same two from the
+/// account's profile (`enter/handoff.rs`, `RESERVED`). From lane/windows-ci.
+#[cfg(windows)]
+const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
+#[cfg(not(windows))]
+const NODE_WINDOWS_ENV: &[&str] = &[];
+
 /// Runs the installed hook once on a shell call, under a policy that denies
 /// `bash`, from a folder of its own (the hook refuses a `DERM_POLICY` inside
 /// the session folder). Pass: the agent's own deny form.
@@ -1028,6 +1043,15 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
         }
         if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher) {
             cmd.env("PATH", v);
+        }
+        // An older plugin's node on Windows needs these too (lane/windows-ci,
+        // `NODE_WINDOWS_ENV`); the launcher never runs there.
+        if !launcher {
+            for k in NODE_WINDOWS_ENV {
+                if let Some(v) = std::env::var_os(k) {
+                    cmd.env(k, v);
+                }
+            }
         }
         let mut child = cmd
             .spawn()

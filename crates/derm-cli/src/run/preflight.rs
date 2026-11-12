@@ -593,17 +593,44 @@ mod tests {
         std::fs::create_dir_all(work.join("node_modules/.bin")).unwrap();
         let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
         let w = s(&work);
-        let path =
-            format!("node_modules/.bin::{w}/node_modules/.bin:/usr/local/bin:/usr/bin:.:/tmp/x");
+        // Folders that exist on this OS and that no sandbox here can write,
+        // and one under a writable folder that does not exist. Windows has
+        // no /usr/bin: its system folders stand in (case 224).
+        #[cfg(not(windows))]
+        let (system, writable_tmp, missing) = (
+            vec!["/usr/local/bin".to_string(), "/usr/bin".to_string()],
+            "/tmp".to_string(),
+            "/tmp/x".to_string(),
+        );
+        #[cfg(windows)]
+        let (system, writable_tmp, missing) = {
+            let sys = std::env::var("SystemRoot").unwrap();
+            (
+                vec![format!(r"{sys}\System32"), sys],
+                s(&root),
+                s(&root.join("x")),
+            )
+        };
+        let join = |parts: &[&str]| s(std::path::Path::new(&std::env::join_paths(parts).unwrap()));
+        let work_bin = format!("{w}/node_modules/.bin");
+        let path = join(&[
+            "node_modules/.bin",
+            "",
+            &work_bin,
+            &system[0],
+            &system[1],
+            ".",
+            &missing,
+        ]);
         assert_eq!(
-            companion_path(&path, &[w.clone(), "/tmp".to_string()]),
-            "/usr/local/bin:/usr/bin"
+            companion_path(&path, &[w.clone(), writable_tmp]),
+            join(&[&system[0], &system[1]])
         );
         // Under no boundary nothing is writable to the sandbox; relative
         // and empty entries still go.
         assert_eq!(
             companion_path(&path, &[]),
-            format!("{w}/node_modules/.bin:/usr/local/bin:/usr/bin:/tmp/x")
+            join(&[&work_bin, &system[0], &system[1], &missing])
         );
         let _ = std::fs::remove_dir_all(&root);
     }

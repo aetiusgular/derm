@@ -177,8 +177,12 @@ fn shell_safe(path: &str) -> bool {
 }
 
 /// The installed app: `APP_HOME/APP_NAME`.
+///
+/// A macOS path, spelled with `/` whatever OS builds it: `Path::join` would
+/// put a `\` before the app's name on Windows, and the path is shown in
+/// commands to run on a Mac (`activity_collector_register`; case 224).
 pub fn installed_app() -> PathBuf {
-    Path::new(APP_HOME).join(APP_NAME)
+    PathBuf::from(format!("{APP_HOME}/{APP_NAME}"))
 }
 
 /// What the plan sees on this Mac before it is shown: whether the terminal
@@ -283,6 +287,30 @@ mod tests {
         dir
     }
 
+    /// The bash that runs the script. On Windows, Git's: `Command::new`
+    /// looks in the system folder before PATH (std's `Command` docs), and
+    /// `%SystemRoot%\System32\bash.exe` is WSL's launcher, not a bash for
+    /// this machine's paths; Git's takes `C:/...` paths as they are.
+    fn bash() -> PathBuf {
+        #[cfg(windows)]
+        {
+            let system = std::env::var_os("SystemRoot").map(PathBuf::from);
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|d| d.join("bash.exe"))
+                .find(|b| b.is_file() && !system.as_ref().is_some_and(|s| b.starts_with(s)))
+                .expect("Git's bash on PATH")
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from("bash")
+        }
+    }
+
+    /// A path as the script's bash reads it: `/` between parts everywhere.
+    fn for_bash(p: &Path) -> String {
+        p.to_string_lossy().replace('\\', "/")
+    }
+
     /// Runs `build-app.sh --layout` as the release would assemble the
     /// bundle, around a stand-in binary.
     fn built_app(name: &str) -> (PathBuf, PathBuf) {
@@ -290,15 +318,26 @@ mod tests {
         let bin = dir.join("collector-bin");
         std::fs::write(&bin, b"stand-in collector").unwrap();
         let out = dir.join("out");
-        let status = std::process::Command::new("bash")
-            .arg(repo().join("packaging/macos/collector/build-app.sh"))
+        let status = std::process::Command::new(bash())
+            .arg(for_bash(
+                &repo().join("packaging/macos/collector/build-app.sh"),
+            ))
             .args(["--layout", "0.2.0-rc.1"])
-            .arg(&bin)
-            .arg(&out)
+            .arg(for_bash(&bin))
+            .arg(for_bash(&out))
             .status()
             .unwrap();
         assert!(status.success());
         (dir, out.join(APP_NAME))
+    }
+
+    /// The plan is a Mac's root shell: off Unix, where no absolute path
+    /// begins with `/`, it refuses the app's path rather than build a
+    /// command it cannot show safely (`shell_safe`). What each test below
+    /// checks on Windows, after the bundle itself was built there.
+    fn refused_off_unix(app: &Path, names: &Names, present: Present) {
+        let e = plan(app, names, present).unwrap_err();
+        assert!(e.contains("cannot show safely"), "{e}");
     }
 
     #[test]
@@ -355,6 +394,11 @@ mod tests {
         assert_eq!(string_value(&info, "CFBundleVersion"), Some("0.2.0"));
         assert!(!info.contains('@'), "every placeholder filled: {info}");
 
+        if cfg!(windows) {
+            refused_off_unix(&app, &names, Present::default());
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        }
         let plan = plan(&app, &names, Present::default()).unwrap();
         assert_eq!(plan.route, "smAppService");
         let all = plan.commands.join("\n");
@@ -451,6 +495,11 @@ mod tests {
             ("bad signature", false, false, false),
         ] {
             let (dir, app) = built_app("shell");
+            if cfg!(windows) {
+                refused_off_unix(&app, &names, Present::default());
+                std::fs::remove_dir_all(dir).unwrap();
+                continue;
+            }
             let plan = plan(&app, &names, Present::default()).unwrap();
             let root = plan.commands.iter().find(|c| c.contains("ditto")).unwrap();
             if spoil {
@@ -491,15 +540,16 @@ mod tests {
     fn an_earlier_install_is_stopped_first() {
         let (dir, app) = built_app("present");
         let names = Names::release();
-        let plan = plan(
-            &app,
-            &names,
-            Present {
-                terminal_install: true,
-                installed_app: true,
-            },
-        )
-        .unwrap();
+        let present = Present {
+            terminal_install: true,
+            installed_app: true,
+        };
+        if cfg!(windows) {
+            refused_off_unix(&app, &names, present);
+            std::fs::remove_dir_all(dir).unwrap();
+            return;
+        }
+        let plan = plan(&app, &names, present).unwrap();
         let first_root_copy = plan
             .commands
             .iter()

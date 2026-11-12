@@ -223,10 +223,18 @@ mod tests {
     #[test]
     fn a_relative_socket_flag_is_refused() {
         assert!(socket(Some("run/daemon.sock")).is_err());
-        assert_eq!(
-            socket(Some("/tmp/x/daemon.sock")).unwrap(),
-            PathBuf::from("/tmp/x/daemon.sock")
-        );
+        // An absolute path in this OS's own form. On Windows `/tmp/x` is
+        // rooted but relative to the current drive, so it is refused too
+        // (`Path::is_absolute`; case 224).
+        let abs = if cfg!(windows) {
+            r"C:\tmp\x\daemon.sock"
+        } else {
+            "/tmp/x/daemon.sock"
+        };
+        assert_eq!(socket(Some(abs)).unwrap(), PathBuf::from(abs));
+        if cfg!(windows) {
+            assert!(socket(Some("/tmp/x/daemon.sock")).is_err());
+        }
     }
 
     #[test]

@@ -141,8 +141,15 @@ mod tests {
 
     #[test]
     fn search_path_keeps_the_inherited_path_first() {
-        let p = search_path_from(Some("/h".into()), Some("/a:/b".into()));
-        assert!(p.starts_with("/a:/b:/h/.local/bin"), "{p}");
+        // PATH in this OS's own form: `:` between folders on Unix, `;` on
+        // Windows (`std::env::split_paths`, `join_paths`; case 224).
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let inherited = format!("/a{sep}/b");
+        let p = search_path_from(Some("/h".into()), Some(inherited.clone()));
+        assert!(
+            p.starts_with(&format!("{inherited}{sep}/h/.local/bin")),
+            "{p}"
+        );
         assert!(p.ends_with("/snap/bin"));
     }
 
