@@ -10,7 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, openNoLink, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
 import { FakeRpcClient, type Answer } from "./fake-pi.ts";
 import { GateServe } from "../src/serve/client.ts";
-import { DERM } from "./serve/real.ts";
+import { DERM, removeRoot, stopServe } from "./serve/real.ts";
+
+// Every co-process a test starts, stopped and waited for before its folder
+// goes (WB-P1-1: on Windows a running process holds its working folder).
+const started: GateServe[] = [];
 
 // Wave 5b (lane 5bC): the approved-index record is kept by `derm gate serve`
 // (memory.check, memory.approve), so a host here gets a co-process from a
@@ -48,8 +52,9 @@ function host(answer: Answer | ((n: number) => Answer) = { confirmed: true }, op
   const serve = (cwd: string) => {
     let s = serves.get(cwd);
     if (s === undefined) {
-      s = new GateServe({ agent: "pi", env: { HOME: root, DERM_MEMORY_STATE: statePath }, cwd: () => cwd, trusted: (u) => u === UID, locate: () => (DERM ? { path: DERM } : { problem: "no derm build" }) });
+      s = new GateServe({ agent: "pi", env: { HOME: root, USERPROFILE: root, DERM_MEMORY_STATE: statePath }, cwd: () => cwd, trusted: (u) => u === UID, locate: () => (DERM ? { path: DERM } : { problem: "no derm build" }) });
       serves.set(cwd, s);
+      started.push(s);
     }
     return s;
   };
@@ -96,7 +101,10 @@ beforeEach(() => {
   project = path.join(root, "project");
   mkdirSync(project);
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(async () => {
+  for (const s of started.splice(0)) await stopServe(s);
+  removeRoot(root);
+});
 
 function put(rel: string, text: string) {
   const abs = path.join(project, rel);

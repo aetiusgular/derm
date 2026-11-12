@@ -15,8 +15,8 @@ import { DERM, real, type Real } from "./serve/real.ts";
 
 const itDerm = it.runIf(DERM !== undefined);
 const opened: Real[] = [];
-afterEach(() => {
-  for (const r of opened.splice(0)) r.close();
+afterEach(async () => {
+  for (const r of opened.splice(0)) await r.close();
 });
 function realFor(rules: object[], opts: { servers?: string[]; env?: Record<string, string> } = {}): Real {
   const r = real(JSON.stringify({ version: 1, askTimeoutSeconds: 1, servers: opts.servers ?? [], rules }), opts.env ?? {});

@@ -19,8 +19,29 @@ export type Real = {
   policyPath: string;
   env: Record<string, string>;
   serve: (env: Record<string, string | undefined>, cwd: string, harness: string) => GateServe;
-  close: () => void;
+  close: () => Promise<void>;
 };
+
+/**
+ * Stops a co-process and waits for its exit. On Windows a running process
+ * holds its working folder, so the temp folder cannot be removed until it
+ * has exited (`rmSync` EPERM); `kill()` alone returns first (WB-P1-1,
+ * Windows test w5b, step 2, reproduced on the box).
+ */
+export async function stopServe(s: GateServe | undefined): Promise<void> {
+  const child = s?.child;
+  s?.close();
+  if (child === undefined || child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    setTimeout(resolve, 5000).unref?.();
+  });
+}
+
+/** Removes a test's temp folder, retrying as Windows needs (WB-P1-1). */
+export function removeRoot(root: string): void {
+  rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
 
 /** `policy` undefined: no policy file. `env` is added to the session's. */
 export function real(policy: string | undefined, env: Record<string, string> = {}): Real {
@@ -36,7 +57,9 @@ export function real(policy: string | undefined, env: Record<string, string> = {
     writeFileSync(policyPath, policy);
     chmodSync(policyPath, 0o600);
   }
-  const full = { HOME: home, DERM_DAEMON_SOCKET: path.join(root, "no-daemon.sock"), ...env };
+  // USERPROFILE: the Rust gate reads Windows' home there (`gate/policy.rs`,
+  // `load_for_hook`), not HOME (WB-P1-1).
+  const full = { HOME: home, USERPROFILE: home, DERM_DAEMON_SOCKET: path.join(root, "no-daemon.sock"), ...env };
   const made = new Map<string, GateServe>();
   return {
     root,
@@ -52,9 +75,9 @@ export function real(policy: string | undefined, env: Record<string, string> = {
       }
       return s;
     },
-    close: () => {
-      for (const s of made.values()) s.close();
-      rmSync(root, { recursive: true, force: true });
+    close: async () => {
+      for (const s of made.values()) await stopServe(s);
+      removeRoot(root);
     },
   };
 }

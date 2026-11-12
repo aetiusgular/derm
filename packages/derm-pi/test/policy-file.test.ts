@@ -16,7 +16,7 @@ import { createGate } from "../extensions/gate.ts";
 import { PolicyStore, WINDOWS_POLICY_PROBLEM } from "../src/policy-store.ts";
 import type { ToolCallResult } from "../src/pi-api.ts";
 import { FakeRpcClient, fakePi } from "./fake-pi.ts";
-import { DERM } from "./serve/real.ts";
+import { DERM, removeRoot, stopServe } from "./serve/real.ts";
 import { GateServe } from "../src/serve/client.ts";
 
 const itDerm = it.runIf(DERM !== undefined);
@@ -24,15 +24,21 @@ const root = realpathSync(mkdtempSync(path.join(tmpdir(), "derm-pi-policy-")));
 // The session's folder: apart from the policies, which a project could set.
 const project = path.join(root, "project");
 mkdirSync(project);
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+const started: GateServe[] = [];
+// WB-P1-1: each co-process stopped and waited for before the folder goes.
+afterAll(async () => {
+  for (const s of started.splice(0)) await stopServe(s);
+  removeRoot(root);
+});
 
 const allowRead = JSON.stringify({ version: 1, askTimeoutSeconds: 1, rules: [{ tool: "read", action: "allow" }] });
 
 function gateWith(policyPath: string) {
   const client = new FakeRpcClient(() => ({ confirmed: false }));
   const pi = fakePi({ client });
-  const env = { DERM_POLICY: policyPath, HOME: root, DERM_DAEMON_SOCKET: path.join(root, "no-daemon.sock") };
+  const env = { DERM_POLICY: policyPath, HOME: root, USERPROFILE: root, DERM_DAEMON_SOCKET: path.join(root, "no-daemon.sock") };
   const serve = new GateServe({ agent: "pi", env, cwd: () => project, trusted: (u) => u === (process.getuid?.() ?? 0), locate: () => ({ path: DERM as string }) });
+  started.push(serve);
   createGate({ env: () => env, serve: () => serve })(pi.api);
   const call = () => pi.emit("tool_call", { type: "tool_call", toolName: "read", toolCallId: "c1", input: { path: "a.txt" } }) as Promise<ToolCallResult | undefined>;
   return { call, client };

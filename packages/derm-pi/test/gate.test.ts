@@ -8,6 +8,7 @@ import { DECISION_CHANNEL, type DecisionNotice, type ToolCallResult, type UserBa
 import { sha256Hex } from "../src/policy.ts";
 import { GateServe } from "../src/serve/client.ts";
 import { FakeRpcClient, fakePi, type Answer } from "./fake-pi.ts";
+import { removeRoot, stopServe } from "./serve/real.ts";
 
 // Wave 5b (lane 5bC): the policy's answer is `derm gate serve`'s, so the
 // cases that decide run against a derm build (DERM_BIN, else target/debug
@@ -36,8 +37,12 @@ const policyText = (over: object = {}) =>
   });
 
 const roots: string[] = [];
-afterEach(() => {
-  for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+const serves: GateServe[] = [];
+// Each co-process is stopped and its exit waited for before its folders go
+// (WB-P1-1: on Windows a running process holds its working folder).
+afterEach(async () => {
+  for (const s of serves.splice(0)) await stopServe(s);
+  for (const r of roots.splice(0)) removeRoot(r);
 });
 
 function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?: string | null; mode?: number; uid?: number; env?: Record<string, string>; tools?: { name: string; description?: string }[]; policyInProject?: boolean } = {}) {
@@ -62,7 +67,8 @@ function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?
     chmodSync(planted, 0o600);
   }
   // No daemon: an ask is Pi's own card (approve answers "harness").
-  const env: Record<string, string> = { HOME: home, DERM_DAEMON_SOCKET: join(root, "no-daemon.sock"), ...(opts.policyInProject ? { DERM_POLICY: planted } : {}), ...opts.env };
+  // USERPROFILE: the Rust gate's home on Windows (WB-P1-1).
+  const env: Record<string, string> = { HOME: home, USERPROFILE: home, DERM_DAEMON_SOCKET: join(root, "no-daemon.sock"), ...(opts.policyInProject ? { DERM_POLICY: planted } : {}), ...opts.env };
   let envReads = 0;
   let starts = 0;
   let serve: GateServe | undefined;
@@ -75,7 +81,10 @@ function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?
     },
     serve: () => {
       starts++;
-      serve ??= new GateServe({ agent: "pi", env, cwd: () => project, trusted: (u) => u === UID, locate: () => ({ path: DERM as string }) });
+      if (serve === undefined) {
+        serve = new GateServe({ agent: "pi", env, cwd: () => project, trusted: (u) => u === UID, locate: () => ({ path: DERM as string }) });
+        serves.push(serve);
+      }
       return serve;
     },
   });
