@@ -1641,7 +1641,9 @@ fn ww5b_2_derm_connect_codex_gate_on_windows_exits_1_with_the_reason() {
 /// otherwise the keg path, as before.
 #[test]
 fn mw5b_6_a_homebrew_derm_registers_by_its_opt_link() {
-    let prefix = scratch("mw5b6");
+    // By its real path: on macOS the temp folder is under /var, a link to
+    // /private/var (case 111; CI's rust-macos, run 43156387323).
+    let prefix = fs::canonicalize(scratch("mw5b6")).unwrap();
     let keg = prefix.join("Cellar/derm/1.2.3");
     let real = fake_derm_in(&keg, "bin");
     let opt = prefix.join("opt");
