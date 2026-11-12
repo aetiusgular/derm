@@ -94,14 +94,15 @@ Written by the wave 6 base from `plans/toolkit_wave6_plan.md` sections 2.1 and 2
 |---|---|
 | `tier` | `standard` or `whole`; `asked` (what `--tier` or the setting said), `why` when they differ (an agent with no sandbox row, srt with `standard`: `contracts/sandbox.md` section 1); `via` (the row's: `settings-flag`, `config-override`, `advisory`, `none`); `vendorVersion` (the agent's version as read); `pinSha256` (section 6 of `sandbox.md`); `vendorUnderSbx` (`on` when the vendor sandbox runs inside sbx) |
 
-Set only by `run/standard/`; the base's stub sets none, so a chat reads as before wave 6.
+Set only by `run/standard/`; the base's stub sets none, so a chat reads as before wave 6. A dry run prints `tier: <tier>` from this record, and `taint: <verdict> (--taint)` when the flag is given (the base's `run/mod.rs`).
 
 ### 6.2 Taint (lane 6D)
 
 | `kind` | `source` | What it says |
 |---|---|---|
 | `taint.mark` | `adapter` (the gate, light tier or daemon) or `derm` (the daemon from the tap) | A chat became tainted: `reason` (`untrusted-content`: a fetch, a web search, an MCP result, an unknown tool; `secret-read`: a read of a secret path), `toolUseId` of the call that brought it, `via` (`tap`, `hook`, `both`), and for a result the tap saw, its sha256 and size; never the result. Id `<harness>-<tool_use_id>-taint` |
-| `taint.review` | `adapter` | A call taint raised to `ask` (or `deny` where `taint.verdict` says so): the call's `toolUseId`, `rule` (`new-host`, `protected-write`, `install`, `push`, `session-written-code`, `named-in-result`), and the `taint.mark` ids it rests on. A call taint did not change gets no record |
+| `taint.review` | `adapter` | A call taint caught: the chat's `verdict` (`ask`, `deny`, `record`) and what it gave (`ask` or `deny`; under `record` the call runs and `wouldBe` says `ask`), the call's `toolUseId`, `rule` (`new-host`, `protected-write`, `install`, `push`, `session-written-code`, `named-in-result`), and the `taint.mark` ids it rests on. A call taint did not catch gets no record |
+| `run.start`'s `taint` | `derm` (`derm run`) | The chat's verdict when `--taint` named one: `{"verdict": "ask"|"deny"|"record", "from": "flag"}`, written by the base's `run/mod.rs`. Absent: the setting, else `ask` (`policy.md` section 9) |
 
 `derm status` says "taint from hooks only" for a chat whose tap is off (case 219). Taint follows files the chat wrote (OpenMoat ADR-029): a write by a tainted chat is recorded by path in the chat's taint state, not as a record of its own.
 

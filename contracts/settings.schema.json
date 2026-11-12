@@ -64,13 +64,13 @@
       "additionalProperties": false
     },
     "tier": {
-      "description": "Wave 6 lane 6A (the wave 6 base; contracts/sandbox.md section 1). `default`: the tier derm run picks when no --tier is given. `standard` (the agent's own sandbox where its sandbox row says it has one, the Whole tier otherwise) is the base's reading of the wave 6 plan's call 4 (recommended there; Tony's call stands open).",
+      "description": "Wave 6 lane 6A (the wave 6 base; contracts/sandbox.md section 1). `default`: the tier derm run picks when no --tier is given. `whole` (srt or sbx around the agent, as lane T chooses: today's behaviour) is Tony's call of 12 Nov on the wave 6 plan's call 4; `standard` (the agent's own sandbox where its sandbox row says it has one) is opt-in.",
       "type": "object",
-      "properties": { "default": { "enum": ["standard", "whole"], "default": "standard" } },
+      "properties": { "default": { "enum": ["standard", "whole"], "default": "whole" } },
       "additionalProperties": false
     },
     "taint": {
-      "description": "Wave 6 lane 6D (the wave 6 base; contracts/policy.md section 9). `verdict`: what a call taint catches gets. `ask` (review) is the wave 6 plan's call 2 as recommended there, until E1 measures the false positives (case 220); `record` marks and asks nothing. Taint never lowers an answer.",
+      "description": "Wave 6 lane 6D (the wave 6 base; contracts/policy.md section 9). `verdict`: what a call taint catches gets, for a chat whose start named none (`derm run --taint` chooses per chat, Tony's call of 12 Nov: all three verdicts, picked per task). `ask` (review) is the default until E1 measures the false positives (case 220); `deny` refuses; `record` marks and asks nothing. Taint never lowers an answer.",
       "type": "object",
       "properties": { "verdict": { "enum": ["ask", "deny", "record"], "default": "ask" } },
       "additionalProperties": false

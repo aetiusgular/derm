@@ -14,14 +14,18 @@
 
 use serde_json::Value;
 
-use super::args::Boundary;
+use super::args::{Boundary, Tier};
 use super::plan::Plan;
 
 /// The seam `run_io` calls. `Ok(None)`: no Standard-tier record (the stub).
 /// An `Err` stops the run before the harness starts, as the tap's does.
+/// `tier`: `--tier` as given, or `None` for the setting's default
+/// (`tier.default`, `whole` since Tony's call of 12 Nov: today's boundary
+/// choice, unchanged).
 pub(crate) fn environment(
     _harness: &str,
     _boundary: Boundary,
+    _tier: Option<Tier>,
     _plan: &mut Plan,
 ) -> Result<Option<Value>, (u8, String)> {
     Ok(None)
@@ -51,7 +55,7 @@ mod tests {
         };
         let before = format!("{p:?}");
         assert_eq!(
-            environment("claude-code", Boundary::None, &mut p).unwrap(),
+            environment("claude-code", Boundary::None, Some(Tier::Standard), &mut p).unwrap(),
             None
         );
         assert_eq!(format!("{p:?}"), before);

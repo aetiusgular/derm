@@ -173,7 +173,12 @@ fn e0_scenarios(owner: &str) -> Vec<Value> {
 /// Replays a scenario's steps in one chat; returns the e0Allowed steps'
 /// decisions.
 fn replay(name: &str, s: &Value) -> Vec<(usize, String)> {
-    let dir = scratch(name);
+    replay_in(&scratch(name), name, s)
+}
+
+/// The same, in a home the caller prepared (a `settings.json` in it).
+fn replay_in(dir: &Path, name: &str, s: &Value) -> Vec<(usize, String)> {
+    let dir = dir.to_path_buf();
     let policy = preset_policy(&dir, "workspace-write");
     let session = format!("e0-{name}");
     let steps = s["steps"].as_array().unwrap();
@@ -265,6 +270,46 @@ fn e0_taint_misses_are_reviewed() {
         }
     }
     assert!(misses.is_empty(), "still allowed: {misses:#?}");
+}
+
+/// Owner: lane 6D (`contracts/policy.md` section 9: all three verdicts,
+/// Tony's call of 12 Nov). With the light tier's setting at `deny`, the
+/// agent-written script E0 found allowed is denied; at `record`, it runs and
+/// the chat's log holds a `taint.review` that says what it would have been.
+#[test]
+fn each_taint_verdict_does_what_it_says() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = e0_scenarios("6D")
+        .into_iter()
+        .find(|s| s["id"] == "agent-written-shell-script-runs")
+        .unwrap();
+    for (verdict, want) in [("deny", "deny"), ("record", "allow")] {
+        let name = format!("verdict-{verdict}");
+        let dir = scratch(&name);
+        std::fs::create_dir_all(dir.join(".derm")).unwrap();
+        std::fs::set_permissions(dir.join(".derm"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let settings = dir.join(".derm/settings.json");
+        std::fs::write(
+            &settings,
+            format!(r#"{{"version":1,"taint":{{"verdict":"{verdict}"}}}}"#),
+        )
+        .unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let got = replay_in(&dir, &name, &s);
+        assert!(got.iter().all(|(_, d)| d == want), "{verdict}: {got:?}");
+        if verdict == "record" {
+            let log = std::fs::read_to_string(dir.join(format!(".derm/local/e0-{name}.jsonl")))
+                .unwrap_or_default();
+            let review = log
+                .lines()
+                .filter_map(|l| derm_core::audit_chain::parse(l).ok())
+                .find(|l| l.kind == "taint.review");
+            let r = review.expect("record writes a taint.review");
+            assert_eq!(r.record["detail"]["verdict"], "record");
+            assert_eq!(r.record["detail"]["wouldBe"], "ask");
+        }
+    }
 }
 
 // --- Lane 6B: the light tier ------------------------------------------------

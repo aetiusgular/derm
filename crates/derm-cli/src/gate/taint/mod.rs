@@ -7,10 +7,11 @@
 //! What lane 6D builds here (note AZ rows D1 to D6; E0's ranked list item 5
 //! and request R-E0-6): a chat is tainted after untrusted content or a
 //! secret read; after that, egress to a new host, protected writes,
-//! installs, pushes and running a file the session wrote are `ask` (the
-//! verdict is review, call 2 of the wave 6 plan's section 7, until E1
-//! measures it). Taint only raises an answer: an allow can become an ask,
-//! never the other way (rules section 5, item 7). The same calls not
+//! installs, pushes and running a file the session wrote get the chat's
+//! verdict: `ask`, `deny` or `record`, chosen per chat with `derm run
+//! --taint` (Tony's call of 12 Nov), else the setting, else `ask`
+//! (`contracts/policy.md` section 9). Taint only raises an answer: an allow
+//! can become an ask, never the other way (rules section 5, item 7). The same calls not
 //! covered by `locallog/` (note AZ, S1) are not covered here.
 //!
 //! [`decide_call`]: super::core::decide_call

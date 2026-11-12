@@ -27,6 +27,45 @@ impl Boundary {
     }
 }
 
+/// `--tier` (wave 6; `contracts/sandbox.md` section 1). `Whole` is srt or
+/// sbx around the agent, chosen as lane T chooses it; `Standard` is the
+/// agent's own sandbox from derm's policy (lane 6A).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    Standard,
+    Whole,
+}
+
+impl Tier {
+    // Lane 6A writes it into `run.start`'s `tier` record.
+    #[allow(dead_code)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Standard => "standard",
+            Tier::Whole => "whole",
+        }
+    }
+}
+
+/// `--taint` (wave 6; `contracts/policy.md` section 9): what this chat's
+/// tainted calls get. Chosen per chat by the person who starts it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaintVerdict {
+    Ask,
+    Deny,
+    Record,
+}
+
+impl TaintVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaintVerdict::Ask => "ask",
+            TaintVerdict::Deny => "deny",
+            TaintVerdict::Record => "record",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Args {
     pub harness: &'static Harness,
@@ -42,6 +81,10 @@ pub struct Args {
     /// feed still record it.
     pub no_tap: bool,
     pub dry_run: bool,
+    /// `--tier`; `None` means the setting's default (`tier.default`).
+    pub tier: Option<Tier>,
+    /// `--taint`; `None` means the setting's default (`taint.verdict`).
+    pub taint: Option<TaintVerdict>,
     pub rest: Vec<String>,
     /// The program from `-- <program> ...` (case 80), when no harness id was
     /// given. `None` means the harness's own command.
@@ -51,7 +94,7 @@ pub struct Args {
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--no-tap] [--dry-run] [-- harness args...]
+[--no-tap] [--tier standard|whole] [--taint ask|deny|record] [--dry-run] [-- harness args...]
        derm run --boundary sbx|srt|none [options] -- <program> [args...]";
 
 /// A program named after `--` (case 80): an absolute path, or a bare name
@@ -264,6 +307,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         no_daemon: false,
         no_tap: false,
         dry_run: false,
+        tier: None,
+        taint: None,
         rest: Vec::new(),
         program: None,
     };
@@ -311,6 +356,23 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "--no-daemon" => out.no_daemon = true,
             "--no-tap" => out.no_tap = true,
             "--dry-run" => out.dry_run = true,
+            // Wave 6 (the wave 6 base): the two choices a person makes per
+            // chat. Their effect is lanes 6A's and 6D's.
+            "--tier" => {
+                out.tier = Some(match take("--tier")?.as_str() {
+                    "standard" => Tier::Standard,
+                    "whole" => Tier::Whole,
+                    other => return Err(format!("--tier is standard or whole, not {other:?}")),
+                })
+            }
+            "--taint" => {
+                out.taint = Some(match take("--taint")?.as_str() {
+                    "ask" => TaintVerdict::Ask,
+                    "deny" => TaintVerdict::Deny,
+                    "record" => TaintVerdict::Record,
+                    other => return Err(format!("--taint is ask, deny or record, not {other:?}")),
+                })
+            }
             other => {
                 return Err(format!(
                     "unknown option {other:?}; harness arguments go after --\n{USAGE}"
@@ -547,6 +609,45 @@ mod tests {
             assert!(!valid_host_port(bad), "{bad}");
         }
         assert!(parse(&s(&["pi", "--boundary", "srt", "--allow-host", "*:443"])).is_err());
+    }
+
+    /// The wave 6 base: `--tier` and `--taint`, each checked, each optional.
+    #[test]
+    fn tier_and_taint_are_read_and_checked() {
+        let a = parse(&s(&[
+            "claude-code",
+            "--boundary",
+            "srt",
+            "--tier",
+            "whole",
+            "--taint",
+            "record",
+        ]))
+        .unwrap();
+        assert_eq!(a.tier, Some(Tier::Whole));
+        assert_eq!(a.taint, Some(TaintVerdict::Record));
+        let b = parse(&s(&["claude-code", "--boundary", "none"])).unwrap();
+        assert_eq!((b.tier, b.taint), (None, None));
+        for (flag, bad) in [
+            ("--tier", "vendor"),
+            ("--taint", "allow"),
+            ("--taint", "ASK"),
+        ] {
+            let e = parse(&s(&["claude-code", "--boundary", "none", flag, bad])).unwrap_err();
+            assert!(e.starts_with(flag), "{e}");
+        }
+        assert!(parse(&s(&["claude-code", "--boundary", "none", "--taint"])).is_err());
+        // After `--` they are the harness's words, not derm's.
+        let c = parse(&s(&[
+            "claude-code",
+            "--boundary",
+            "none",
+            "--",
+            "--taint",
+            "x",
+        ]))
+        .unwrap();
+        assert_eq!(c.taint, None);
     }
 
     #[test]

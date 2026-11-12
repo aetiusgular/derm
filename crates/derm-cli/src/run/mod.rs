@@ -1369,7 +1369,14 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // The Standard tier (lane 6A's seam; `contracts/sandbox.md`): the agent's
     // own sandbox from derm's policy, as `detail.tier`. The base's stub
     // returns none.
-    let tier_record = standard::environment(a.harness.id, a.boundary, &mut p)?;
+    let tier_record = standard::environment(a.harness.id, a.boundary, a.tier, &mut p)?;
+    // The chat's taint verdict when the person named one (`--taint`;
+    // `contracts/events.md` section 6.2): the gate (lane 6D) reads it from
+    // the daemon's record of this chat, never from the harness's
+    // environment, which a project's settings can set (case 227).
+    let taint_record: Option<serde_json::Value> = a
+        .taint
+        .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
     // Content capture's switch as the chat starts (lane S's request 3). It
     // replaced DERM_LOG_CONTENT (request 3's rest, integration w5): with it
     // on, the harness's own argument words and its OTel prompts go to
@@ -1470,6 +1477,18 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     };
     if a.dry_run {
         print!("{}", plan::describe(&p));
+        // The wave 6 base: the two per-chat choices, as `run.start` will
+        // record them (`contracts/events.md` sections 6.1 and 6.2).
+        if let Some(t) = tier_record
+            .as_ref()
+            .and_then(|r| r.get("tier"))
+            .and_then(|t| t.as_str())
+        {
+            println!("tier: {t}");
+        }
+        if let Some(v) = &a.taint {
+            println!("taint: {} (--taint)", v.as_str());
+        }
         // BW5-5's rest: under sbx the plan's one-step argv is not what runs.
         if a.boundary == Boundary::Sbx {
             if let Some(steps) = boundary::sbx::describe_steps(&p.args, &p.env_set) {
@@ -1733,6 +1752,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ("sbxKit", &sbx_kit),
         // Wave 6 (`contracts/events.md` section 6.1).
         ("tier", &tier_record),
+        ("taint", &taint_record),
     ] {
         if let Some(v) = record {
             base[key] = v.clone();
