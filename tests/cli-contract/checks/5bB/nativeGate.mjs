@@ -30,6 +30,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { ranText } from "../../lib/ran.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..", "..", "..");
@@ -163,7 +164,7 @@ const hermes = ({ root, home, fake }) => {
 
 const ALLOW = { version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "allow" }, { tool: "terminal", action: "allow" }] };
 const DENY = { version: 1, rules: [{ tool: "bash", action: "deny" }, { tool: "terminal", action: "deny" }] };
-const ran = (t, marker) => t.results.some((x) => x.includes(`${marker}\n`) || x.includes(`${marker}\\n`) || x.trim().endsWith(marker));
+const ran = (t, marker) => t.results.some((x) => ranText(x, marker));
 const said = (t, s) => JSON.stringify(t.results).includes(s);
 
 const AGENTS = [
