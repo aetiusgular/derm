@@ -314,6 +314,100 @@ fn a_moved_derm_or_a_wave_4_node_entry_is_replaced() {
 }
 
 #[cfg(unix)]
+/// BW5B-1 (box test w5b, step 5): a `derm hook <id>` line with no path is
+/// derm's own entry too. `--gate --write` replaces it with derm's absolute
+/// path, never appends a second gate beside it; `--ungate` removes it; and
+/// doctor, whose advice was to run `--gate --write` again, is then quiet.
+#[test]
+fn bw5b_1_a_bare_derm_hook_line_is_derms_entry_to_connect_and_doctor() {
+    let home = scratch("gate-bare");
+    let derm = fake_derm(&home);
+    let cfg = home.join(".config/crush/crush.json");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    for bare in [
+        "derm hook crush pre",
+        "\\\"derm\\\" hook crush pre",
+        "./derm hook crush pre",
+    ] {
+        fs::write(
+            &cfg,
+            format!("{{\"hooks\": {{\"PreToolUse\": [{{\"name\": \"derm-gate\", \"command\": \"{bare}\", \"timeout\": 120}}, {{\"name\": \"mine\", \"command\": \"lint\"}}]}}}}\n"),
+        )
+        .unwrap();
+        let before = crate::doctor::stale_registrations("crush", &doctor_env(&home));
+        assert!(
+            before.iter().any(|p| p.contains("found on PATH")),
+            "{bare}: {before:?}"
+        );
+        let r = go(&home, &["crush", "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{bare}: {}{}", r.out, r.err);
+        let v = parse(&read(&cfg));
+        let Some(Value::Array(list)) = v.get_path(&["hooks", "PreToolUse"]) else {
+            panic!()
+        };
+        assert_eq!(list.len(), 2, "{bare}: {list:?}");
+        assert!(
+            json::compact(&list[0]).contains(&format!("{derm} hook crush pre")),
+            "{bare}: {list:?}"
+        );
+        assert!(
+            json::compact(&list[1]).contains("\"mine\""),
+            "{bare}: {list:?}"
+        );
+        let after = crate::doctor::stale_registrations("crush", &doctor_env(&home));
+        assert!(after.is_empty(), "{bare}: {after:?}");
+    }
+    // --ungate takes a bare line out as well.
+    fs::write(
+        &cfg,
+        "{\"hooks\": {\"PreToolUse\": [{\"name\": \"derm-gate\", \"command\": \"derm hook crush pre\"}, {\"name\": \"mine\", \"command\": \"lint\"}]}}\n",
+    )
+    .unwrap();
+    let r = go(&home, &["crush", "--ungate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let all = read(&cfg);
+    assert!(!all.contains("hook crush"), "{all}");
+    assert!(all.contains("\"mine\""), "{all}");
+    // A TOML row (Vibe) the same way.
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    let vibe = home.join(".vibe/hooks.toml");
+    fs::write(
+        &vibe,
+        "[[hooks]]\nname = \"x\"\ntype = \"pre_tool\"\ncommand = \"derm hook mistral-vibe pre\"\ntimeout = 120.0\nstrict = true\n",
+    )
+    .unwrap();
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&vibe).parse().unwrap();
+    let hooks = doc["hooks"].as_array_of_tables().unwrap();
+    assert_eq!(hooks.len(), 1, "{}", read(&vibe));
+    assert_eq!(
+        hooks.get(0).unwrap()["command"].as_str(),
+        Some(format!("{derm} hook mistral-vibe pre").as_str())
+    );
+    // Not derm: a program named otherwise, or a word that only ends in derm.
+    for other in [
+        "xderm hook crush pre",
+        "/opt/notderm hook crush pre",
+        "derm hooks crush pre",
+    ] {
+        fs::write(
+            &cfg,
+            format!("{{\"hooks\": {{\"PreToolUse\": [{{\"name\": \"theirs\", \"command\": \"{other}\"}}]}}}}\n"),
+        )
+        .unwrap();
+        let r = go(&home, &["crush", "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{other}: {}{}", r.out, r.err);
+        let v = parse(&read(&cfg));
+        let Some(Value::Array(list)) = v.get_path(&["hooks", "PreToolUse"]) else {
+            panic!()
+        };
+        assert_eq!(list.len(), 2, "{other}: {list:?}");
+        assert!(json::compact(&list[0]).contains(other), "{other}: {list:?}");
+    }
+}
+
+#[cfg(unix)]
 /// Cursor: two lists in one new file that starts with `version: 1`, as lane
 /// N's `registration/cursor/hooks.json`, each running `derm hook cursor pre`
 /// (the dialect reads which event from the input).
@@ -2000,5 +2094,264 @@ fn doctor_env(home: &Path) -> crate::watch::status::Env {
         path: String::new(),
         vars: vec![],
         cwd: Some(home.join("proj")),
+    }
+}
+
+// ---- Integration w5b fix pass 1: MW5B-1 and MW5B-2 ----
+
+/// MW5B-1: lines in the form Apple's `ls -lden` prints an access list
+/// (file_cmds-479 `ls/print.c:322-385`: ` <n>: <name>[ inherited] <type>
+/// <perm,...>`, the name a UUID under `-n`), read as macOS's checks read
+/// them. Any `allow` (or unknown) entry with a write-class permission
+/// (`ls/print.c:243-262`) is open, whoever it names; a deny never is; a
+/// line the reader cannot place is open (fails safe).
+#[cfg(unix)]
+#[test]
+fn mw5b_1_an_access_list_line_that_grants_write_is_read_as_open() {
+    let head = "-rwxr-xr-x@ 1 501 20 6840512 Nov 11 16:00 /Users/u/.local/bin/derm\n";
+    let uuid = "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEF12";
+    assert!(!gate::acl_grants_write(head));
+    assert!(!gate::acl_grants_write(""));
+    for (entry, open) in [
+        (format!(" 0: {uuid} allow write"), true),
+        (" 0: group:everyone allow write".to_string(), true),
+        (
+            format!(" 0: {uuid} inherited allow add_file,search,file_inherit,directory_inherit"),
+            true,
+        ),
+        (
+            format!(" 0: {uuid} allow read,execute,readattr,readextattr,readsecurity"),
+            false,
+        ),
+        (format!(" 0: {uuid} deny delete"), false),
+        (format!(" 0: {uuid} deny write,append,delete,chown"), false),
+        (
+            format!(" 0: {uuid} allow list,search,add_subdirectory"),
+            true,
+        ),
+        (format!(" 0: {uuid} allow delete_child"), true),
+        (format!(" 0: {uuid} allow writeattr"), true),
+        (format!(" 0: {uuid} allow writeextattr"), true),
+        (format!(" 0: {uuid} allow writesecurity"), true),
+        (format!(" 0: {uuid} allow chown"), true),
+        (format!(" 0: {uuid} allow append"), true),
+        (format!(" 0: {uuid} allow delete"), true),
+        (format!(" 0: {uuid} unknown write"), true),
+        (format!(" 0: {uuid} allow "), false),
+        ("garbage".to_string(), true),
+    ] {
+        let text = format!("{head}{entry}\n");
+        assert_eq!(gate::acl_grants_write(&text), open, "{entry}");
+    }
+    // A deny first and an allow after: the allow still opens it.
+    assert!(gate::acl_grants_write(&format!(
+        "{head} 0: {uuid} deny delete\n 1: {uuid} allow write\n"
+    )));
+}
+
+/// MW5B-2: a group write bit is trusted only on macOS, only for gid 80
+/// (`admin`, the group Homebrew's installer gives an admin's prefix,
+/// install.sh at 7986efa lines 182-192), and only when you are in it.
+#[cfg(unix)]
+#[test]
+fn mw5b_2_group_write_is_trusted_only_for_macos_admin_members() {
+    let member = Some(vec![20, 12, 61, 79, 80, 81]);
+    let not = Some(vec![20, 12, 61]);
+    assert!(gate::group_write_trusted(80, true, || member.clone()));
+    assert!(!gate::group_write_trusted(80, true, || not.clone()));
+    assert!(!gate::group_write_trusted(80, true, || None));
+    assert!(!gate::group_write_trusted(20, true, || member.clone()));
+    assert!(!gate::group_write_trusted(80, false, || member.clone()));
+    assert_eq!(gate::MACOS_ADMIN_GID, 80);
+    // `/usr/bin/id -G`'s output as the ports read it.
+    assert_eq!(
+        gate::parse_groups("20 12 61 79 80 81\n"),
+        Some(vec![20, 12, 61, 79, 80, 81])
+    );
+    assert_eq!(gate::parse_groups("20 x 80\n"), None);
+    assert_eq!(gate::parse_groups(""), None);
+}
+
+#[cfg(unix)]
+/// MW5B-2, off macOS: a folder with a group write bit is refused as before,
+/// by derm connect and by the launcher, whatever its group.
+#[test]
+fn mw5b_2_off_macos_a_group_write_bit_is_still_refused() {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    let home = scratch("mw5b2-linux");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o775)).unwrap();
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(r.err.contains("others may write"), "{}", r.err);
+    set_self(Path::new(&f));
+    assert!(gate::self_path().is_err());
+}
+
+#[cfg(target_os = "macos")]
+/// Whether this user is in macOS's `admin` group, as every port reads it.
+fn in_admin() -> bool {
+    let o = std::process::Command::new("/usr/bin/id")
+        .arg("-G")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .any(|g| g == "80")
+}
+
+#[cfg(target_os = "macos")]
+/// MW5B-2 on a real Mac (CI's `rust-macos`): a folder as Homebrew's
+/// installer leaves it, `g+rwx` with group `admin`, is trusted by derm
+/// connect and the launcher when this user is an admin, and refused when
+/// not; group `staff` (gid 20) is refused either way.
+#[test]
+fn mw5b_2_on_macos_a_homebrew_style_admin_folder_is_trusted_for_an_admin() {
+    use std::os::unix::fs::chown;
+    let home = scratch("mw5b2-mac");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    let h = home.display().to_string();
+    let admin = in_admin();
+    if admin {
+        chown(&bin, None, Some(80)).unwrap();
+    }
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o775)).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    set_self(Path::new(&f));
+    if admin {
+        assert_eq!(r.code, Some(0), "{}", r.err);
+        assert!(r.out.starts_with("argv:hook claude-code pre"), "{}", r.out);
+        assert!(gate::self_path().is_ok());
+    } else {
+        assert_eq!(r.code, Some(2), "{}", r.out);
+        assert!(gate::self_path().is_err());
+    }
+    // staff, which other accounts share: refused.
+    chown(&bin, None, Some(20)).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(r.err.contains("others may write"), "{}", r.err);
+    assert!(gate::self_path().is_err());
+}
+
+#[cfg(target_os = "macos")]
+/// MW5B-1 on a real Mac: `chmod +a "group:everyone allow write"` on derm or
+/// its folder, with an extended attribute so `ls -l` shows `@` and not `+`:
+/// refused by derm connect and the launcher. A deny entry is not.
+#[test]
+fn mw5b_1_on_macos_an_access_list_that_lets_others_write_is_refused() {
+    let home = scratch("mw5b1-mac");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    let h = home.display().to_string();
+    let run = |args: &[&str]| {
+        let s = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .status()
+            .unwrap();
+        assert!(s.success(), "{args:?}");
+    };
+    run(&["/usr/bin/xattr", "-w", "com.example.x", "1", &f]);
+    set_self(Path::new(&f));
+    let ok = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(ok.code, Some(0), "{}", ok.err);
+    assert!(gate::self_path().is_ok());
+    run(&["/bin/chmod", "+a", "group:everyone deny delete", &f]);
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(0), "deny entry: {}", r.err);
+    assert!(gate::self_path().is_ok());
+    for target in [f.clone(), bin.display().to_string()] {
+        run(&["/bin/chmod", "+a", "group:everyone allow write", &target]);
+        let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+        assert_eq!(r.code, Some(2), "{target}: {}", r.out);
+        assert!(r.err.contains("others may write"), "{target}: {}", r.err);
+        assert!(gate::self_path().is_err(), "{target}");
+        run(&["/bin/chmod", "-N", &target]);
+    }
+}
+
+#[cfg(unix)]
+/// Case 112 for MW5B-1 and MW5B-2: the launcher and the in-process clients
+/// name the same group, the same write-class permissions and the same two
+/// programs as derm connect's check.
+#[test]
+fn mw5b_the_launcher_and_the_clients_read_access_lists_and_groups_as_connect_does() {
+    let sh = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let ts = read(&repo().join("packages/derm-pi/src/serve/client.ts"));
+    for p in gate::ACL_WRITE_PERMS {
+        assert!(sh.contains(&format!("*,{p},*")), "{p} not in derm-gate.sh");
+        assert!(ts.contains(&format!("\"{p}\"")), "{p} not in client.ts");
+    }
+    assert!(sh.contains("/bin/ls -lden --"));
+    assert!(ts.contains("\"/bin/ls\", [\"-lden\", \"--\""));
+    assert!(sh.contains("/usr/bin/id -G"));
+    assert!(ts.contains("\"/usr/bin/id\", [\"-G\"]"));
+    assert!(sh.contains(&format!("\"{}\"", gate::MACOS_ADMIN_GID)));
+    assert!(ts.contains(&format!("MACOS_ADMIN_GID = {}", gate::MACOS_ADMIN_GID)));
+}
+
+#[cfg(unix)]
+/// Case 112 for MW5B-1: the launcher's own `acl_open`, cut from
+/// `derm-gate.sh` and fed each fixture in place of `/bin/ls -lden`, reads
+/// every line as `gate::acl_grants_write` does, here on any Unix.
+#[test]
+fn mw5b_1_the_launchers_access_list_reader_agrees_with_connects() {
+    let sh = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let start = sh.find("acl_open() {").unwrap();
+    let end = start + sh[start..].find("\n}\n").unwrap() + 3;
+    let func = sh[start..end].replace("/bin/ls -lden -- \"$1\"", "/bin/cat -- \"$1\"");
+    assert_ne!(
+        func,
+        sh[start..end],
+        "the reader no longer runs /bin/ls -lden"
+    );
+    let dir = scratch("mw5b1-sh");
+    let head = "drwxr-xr-x@ 3 501 80 96 Nov 11 16:00 /opt/homebrew/bin";
+    let u = "0D2F3A4B-1C2D-4E5F-8A9B-0C1D2E3F4A5B";
+    let lines = [
+        String::new(),
+        format!(" 0: {u} allow write"),
+        format!(" 0: {u} inherited allow add_file,search,file_inherit"),
+        format!(" 0: {u} allow read,execute,readattr"),
+        format!(" 0: {u} deny delete"),
+        format!(" 0: {u} deny write,chown"),
+        format!(" 0: {u} allow list,delete_child"),
+        format!(" 0: {u} unknown writesecurity"),
+        format!(" 0: {u} allow "),
+        format!(" 0: {u}"),
+        format!(" 0: {u} inherited"),
+        "garbage".to_string(),
+        format!(" 0: {u} deny delete\n 1: {u} allow chown"),
+        format!(" 0: {u} allow readextattr\n 1: {u} allow appendx"),
+    ];
+    for (i, l) in lines.iter().enumerate() {
+        let text = if l.is_empty() {
+            format!("{head}\n")
+        } else {
+            format!("{head}\n{l}\n")
+        };
+        let f = dir.join(format!("ls-{i}"));
+        fs::write(&f, &text).unwrap();
+        let o = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{func}\nacl_open \"$1\""))
+            .arg("sh")
+            .arg(&f)
+            .env_clear()
+            .output()
+            .unwrap();
+        let sh_open = o.status.code() == Some(0);
+        assert_eq!(sh_open, gate::acl_grants_write(&text), "line {i}: {l:?}");
     }
 }

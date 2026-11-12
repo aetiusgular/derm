@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { approve, decide, GateServe, installCandidates, locateDerm, record, redact, refuseCandidate, ServeUnavailable, sharedServe, type LocateDeps } from "../../src/serve/client.ts";
+import { aclGrantsWrite, ACL_WRITE_PERMS, approve, decide, GateServe, installCandidates, locateDerm, MACOS_ADMIN_GID, parseGroups, record, redact, refuseCandidate, ServeUnavailable, sharedServe, type LocateDeps } from "../../src/serve/client.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(here, "fake-serve.mjs");
@@ -79,6 +79,9 @@ describe("failing closed (case 228)", () => {
     });
     const both = [s.request("decide", { call: { tool: "bash" } }), s.request("decide", { call: { tool: "bash" } })];
     for (const p of both) await expect(p).rejects.toThrow(/exited \(4\): boom/);
+    // BW5B-5 (box test w5b, step 7): the reason names which derm it ran,
+    // since two builds can print the same version.
+    await expect(both[0]).rejects.toThrow(`${process.execPath} gate serve exited (4)`);
     const a = await decide(s, { tool: "bash", input: {} });
     expect(a.action).toBe("allow");
     expect(starts).toBe(2);
@@ -232,5 +235,87 @@ describe.runIf(DERM !== undefined && unix)("against the real derm gate serve", (
     await expect(s.request("hello", { agent: "kilo", protocol: 1 })).resolves.toMatchObject({ ok: false });
     expect((await decide(s, { tool: "bash", input: { command: "ls" } })).action).toBe("allow");
     s.close();
+  });
+});
+
+// Integration w5b fix pass 1: MW5B-1 (an access list hidden behind "@") and
+// MW5B-2 (Homebrew's admin-group prefix), as derm connect and the launcher
+// read them (case 112; crates/derm-cli/src/connect/gate_tests.rs, mw5b_*).
+describe("who else may write, on macOS (MW5B-1, MW5B-2)", () => {
+  const u = "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEF12";
+  const head = "-rwxr-xr-x@ 1 501 20 6840512 Nov 11 16:00 /Users/u/.local/bin/derm\n";
+
+  it("reads an access list line in the form macOS's ls prints it (file_cmds-479 ls/print.c)", () => {
+    expect(aclGrantsWrite(head)).toBe(false);
+    const cases: [string, boolean][] = [
+      [` 0: ${u} allow write`, true],
+      [` 0: group:everyone allow write`, true],
+      [` 0: ${u} inherited allow add_file,search,file_inherit`, true],
+      [` 0: ${u} allow read,execute,readattr,readextattr,readsecurity`, false],
+      [` 0: ${u} deny delete`, false],
+      [` 0: ${u} deny write,append,delete,chown`, false],
+      [` 0: ${u} allow list,search,add_subdirectory`, true],
+      [` 0: ${u} unknown write`, true],
+      [` 0: ${u} allow `, false],
+      [` 0: ${u}`, true],
+      [` 0: ${u} inherited`, true],
+      ["garbage", true],
+    ];
+    for (const p of ACL_WRITE_PERMS) cases.push([` 0: ${u} allow ${p}`, true]);
+    for (const [line, open] of cases) expect([line, aclGrantsWrite(`${head}${line}\n`)]).toEqual([line, open]);
+    expect(aclGrantsWrite(`${head} 0: ${u} deny delete\n 1: ${u} allow write\n`)).toBe(true);
+  });
+
+  it("reads /usr/bin/id -G's groups", () => {
+    expect(parseGroups("20 12 61 79 80 81\n")).toEqual([20, 12, 61, 79, 80, 81]);
+    expect(parseGroups("20 x 80")).toBeUndefined();
+    expect(parseGroups("")).toBeUndefined();
+    expect(MACOS_ADMIN_GID).toBe(80);
+  });
+
+  // A Homebrew layout: /opt/homebrew/bin (g+rwx, group admin) links into a
+  // keg whose folders are 0755 (the Mac test w5b, step 2).
+  function brew(over: Partial<LocateDeps> & { binGid?: number; binMode?: number } = {}): LocateDeps {
+    const bin = "/opt/homebrew/bin";
+    const keg = "/opt/homebrew/Cellar/derm/0.1.3/bin";
+    return {
+      env: {},
+      cwd: "/Users/u/proj",
+      platform: "darwin",
+      home: "/Users/u",
+      trusted: (x) => x === 501,
+      realpath: (p) => (p === `${bin}/derm` ? `${keg}/derm` : p),
+      stat: (p) => {
+        if (p === `${keg}/derm`) return { uid: 501, gid: 80, mode: 0o100755, isFile: true, isDir: false };
+        if (p === keg) return { uid: 501, gid: 80, mode: 0o40755, isFile: false, isDir: true };
+        if (p === bin) return { uid: 501, gid: over.binGid ?? 80, mode: over.binMode ?? 0o40775, isFile: false, isDir: true };
+        throw new Error("no such file");
+      },
+      groups: () => [20, 12, 61, 79, 80, 81],
+      acl: (p) => `drwxr-xr-x  3 501 80 96 Nov 11 16:00 ${p}\n`,
+      ...over,
+    };
+  }
+
+  it("trusts Homebrew's admin-group prefix for an admin (MW5B-2)", () => {
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew())).toBeUndefined();
+  });
+
+  it("refuses it for a user not in admin, for staff, for any group off macOS", () => {
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ groups: () => [20, 12] }))).toMatch(/others may write \/opt\/homebrew\/bin/);
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ groups: () => undefined }))).toMatch(/others may write/);
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ binGid: 20 }))).toMatch(/others may write/);
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ binMode: 0o40777 }))).toMatch(/others may write/);
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ platform: "linux" }))).toMatch(/others may write/);
+  });
+
+  it("refuses an access list that lets anyone write, behind an @ (MW5B-1)", () => {
+    const allow = (p: string) => `-rwxr-xr-x@ 1 501 80 1 Nov 11 16:00 ${p}\n 0: group:everyone allow write\n`;
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ acl: (p) => (p.endsWith("/derm") ? allow(p) : `d\n`) }))).toBe("others may write it");
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ acl: (p) => (p === "/opt/homebrew/bin" ? allow(p) : `d\n`) }))).toMatch(/others may write \/opt\/homebrew\/bin/);
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ acl: () => undefined }))).toBe("others may write it");
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ acl: (p) => `d\n 0: ${u} deny delete\n` }))).toBeUndefined();
+    // Off macOS the access list is not read: the mode bits are its mask.
+    expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ platform: "linux", binMode: 0o40755, acl: () => undefined }))).toBeUndefined();
   });
 });

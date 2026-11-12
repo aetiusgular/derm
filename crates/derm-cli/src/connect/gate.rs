@@ -625,10 +625,135 @@ fn fill_text(
     out.replace("{hook_dir}", hook_dir.unwrap_or("<the package folder>"))
 }
 
-/// Owned by you (or root) and not writable by group or others.
+/// Owned by you (or root), not writable by others, not writable by its
+/// group unless that group is macOS's `admin` and you are in it (MW5B-2),
+/// and on macOS no access list entry that lets anyone write (MW5B-1). The
+/// plugins' launcher (`hooks/derm-gate.sh`, `closed`) and the in-process
+/// clients (`src/serve/client.ts`, `refuseCandidate`) apply the same rule;
+/// a test holds the three to one list (case 112).
 #[cfg(unix)]
-fn closed(_path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
-    (meta.uid() == uid || meta.uid() == 0) && meta.mode() & 0o022 == 0
+fn closed(path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
+    let macos = cfg!(target_os = "macos");
+    (meta.uid() == uid || meta.uid() == 0)
+        && meta.mode() & 0o002 == 0
+        && (meta.mode() & 0o020 == 0 || group_write_trusted(meta.gid(), macos, macos_groups))
+        && !(macos && macos_acl_grants_write(path))
+}
+
+/// macOS's `admin` group. Homebrew's installer gives its prefix folders
+/// (`bin`, `Cellar` and the rest) `g+rwx` with this group when you are in
+/// it, and otherwise your own group, dropping the group bit (`go-w`) when
+/// that is `staff`, \"Other standard macOS accounts also belong to staff\"
+/// (Homebrew/install `install.sh` at 7986efa, lines 164, 182-192, 697-701,
+/// 843-852). An admin can already change any file with sudo; `staff` would
+/// let every account write derm. Tony's call, 11 Nov: Homebrew stays.
+#[cfg(unix)]
+pub const MACOS_ADMIN_GID: u32 = 80;
+
+/// Whether a group write bit on a file of group `gid` lets in no one you do
+/// not already trust: only on macOS, only `admin`, only when you are in it
+/// (`groups` reads your groups as `/usr/bin/id -G` lists them). sudo trusts
+/// a group write bit the same way, for one group it names
+/// (`lib/util/secure_path.c:36-53` at 28079db); OpenSSH refuses every one
+/// (`misc.c` `safe_path`).
+#[cfg(unix)]
+pub fn group_write_trusted(
+    gid: u32,
+    macos: bool,
+    groups: impl FnOnce() -> Option<Vec<u32>>,
+) -> bool {
+    macos && gid == MACOS_ADMIN_GID && groups().is_some_and(|g| g.contains(&MACOS_ADMIN_GID))
+}
+
+/// `/usr/bin/id -G`'s groups, or `None` when a word is not a number.
+#[cfg(unix)]
+pub fn parse_groups(text: &str) -> Option<Vec<u32>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    words.iter().map(|w| w.parse().ok()).collect()
+}
+
+/// Your groups on macOS, read as the launcher reads them: `/usr/bin/id -G`
+/// lists them through Directory Services' full membership
+/// (`getgrouplist_2`; Apple shell_cmds-329 `id/id.c:532-566`), not the
+/// process's `getgroups(2)`.
+#[cfg(unix)]
+fn macos_groups() -> Option<Vec<u32>> {
+    let o = std::process::Command::new("/usr/bin/id")
+        .arg("-G")
+        .env_clear()
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    parse_groups(&String::from_utf8_lossy(&o.stdout))
+}
+
+/// The permissions macOS's `ls -le` prints that let the one an entry names
+/// change a file or what a folder holds (Apple file_cmds-479
+/// `ls/print.c:243-262`, `chmod/chmod_acl.c:55-72`).
+#[cfg(unix)]
+pub const ACL_WRITE_PERMS: &[&str] = &[
+    "write",
+    "append",
+    "delete",
+    "add_file",
+    "add_subdirectory",
+    "delete_child",
+    "writeattr",
+    "writeextattr",
+    "writesecurity",
+    "chown",
+];
+
+/// Whether `ls -lden`'s output for one path holds an access list entry that
+/// lets anyone write (MW5B-1). macOS keeps access lists apart from the mode
+/// bits, and `ls -l` marks a file with extended attributes `@` and only
+/// otherwise one with an access list `+` (ls(1) on macOS 26.5.1), so the
+/// entries themselves are read. Each entry after the first line is
+/// ` <n>: <uuid>[ inherited] <allow|deny> <perm,...>` (file_cmds-479
+/// `ls/print.c:322-385`; the name is a UUID under `-n`). An entry that is
+/// not a deny and names a write-class permission is open, whoever it names;
+/// a line that cannot be placed is open too.
+#[cfg(unix)]
+pub fn acl_grants_write(ls: &str) -> bool {
+    ls.lines().skip(1).any(|line| {
+        let mut w = line.split_whitespace();
+        if !w.next().is_some_and(|n| n.ends_with(':')) {
+            return true;
+        }
+        let _who = w.next();
+        let mut kind = w.next();
+        if kind == Some("inherited") {
+            kind = w.next();
+        }
+        let Some(kind) = kind else {
+            return true;
+        };
+        kind != "deny"
+            && w.next()
+                .is_some_and(|p| p.split(',').any(|x| ACL_WRITE_PERMS.contains(&x)))
+    })
+}
+
+/// On macOS: whether `path`'s access list lets anyone write, read with
+/// `/bin/ls -lden` by its absolute path; a path `ls` cannot read counts as
+/// open (refused).
+#[cfg(unix)]
+fn macos_acl_grants_write(path: &Path) -> bool {
+    let o = std::process::Command::new("/bin/ls")
+        .arg("-lden")
+        .arg("--")
+        .arg(path)
+        .env_clear()
+        .output();
+    match o {
+        Ok(o) if o.status.success() => acl_grants_write(&String::from_utf8_lossy(&o.stdout)),
+        _ => true,
+    }
 }
 
 /// Windows (lane Z): owned by you and writable by no one else (SYSTEM and
@@ -850,9 +975,51 @@ fn under_home(p: &Path, home: &Path) -> bool {
     p.starts_with(home) && !p.components().any(|c| matches!(c, Component::ParentDir))
 }
 
-/// Whether `text` holds any of the row's markers.
+/// Whether `text` holds any of the row's markers. A `derm hook <id>` row's
+/// marker (`/derm hook <id> `) also finds the line with no path (BW5B-1):
+/// connect and doctor read one rule, [`derm_hook_runs`].
 fn hit(text: &str, markers: &[String]) -> bool {
-    markers.iter().any(|m| text.contains(m.as_str()))
+    markers.iter().any(|m| {
+        text.contains(m.as_str())
+            || m.strip_prefix("/derm hook ")
+                .and_then(|r| r.strip_suffix(' '))
+                .is_some_and(|id| derm_hook_runs(text, id).contains(&false))
+    })
+}
+
+/// Where `text` (a hooks file, or one entry of it, as written or as compact
+/// JSON) runs `derm hook <id> `: for each place, whether the program is
+/// named by an absolute path. The program is the word before ` hook <id> `,
+/// read back to a space, a quote or a JSON or TOML delimiter, with JSON's
+/// escapes and its quotes taken off; it is derm when its last path part is
+/// `derm` or `derm.exe`. `derm connect` takes every such line as its own
+/// entry (to replace or remove), and `derm doctor` names each one that is
+/// not absolute (case 227). One reader for both (BW5B-1; case 112's class).
+pub fn derm_hook_runs(text: &str, id: &str) -> Vec<bool> {
+    let needle = format!(" hook {id} ");
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find(&needle) {
+        let at = from + i;
+        from = at + needle.len();
+        let word: String = text[..at]
+            .chars()
+            .rev()
+            .take_while(|c| !matches!(c, ' ' | '\t' | '\n' | '\'' | '[' | ',' | '=' | ':' | '{'))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        let word = word.trim_matches(|c| c == '"' || c == '\\');
+        let last = word.rsplit(['/', '\\']).next().unwrap_or(word);
+        if last != "derm" && last != "derm.exe" {
+            continue;
+        }
+        // Rooted is enough: a rooted path is not looked up on PATH.
+        let p = Path::new(word);
+        out.push(p.is_absolute() || p.has_root());
+    }
+    out
 }
 
 fn has_marker(v: &Value, markers: &[String]) -> bool {

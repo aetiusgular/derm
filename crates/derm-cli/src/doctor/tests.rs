@@ -589,3 +589,128 @@ fn the_claude_code_hook_doctor_names_is_the_one_this_folder_loads() {
         got.display()
     );
 }
+
+/// BW5B-3 (box test w5b, step 3): goose 1.59.0 loads every folder under the
+/// session folder's `.agents/plugins/` as a project plugin with no prompt,
+/// ranks it before yours, keeps the first plugin of a name, and reads
+/// `disabledPlugins` from the session folder's `.config/goose/settings.json`
+/// and `settings.local.json` and from your own (`plugins/discovery.rs:52-101,
+/// 155-176, 181-250`, `agents/services.rs:383` at 5d03ef6). doctor names
+/// each, and says which one switches derm's gate off.
+#[test]
+fn bw5b_3_goose_project_plugins_and_disabled_plugins_are_named() {
+    let h = home("goose-shadows");
+    let e = env(&h);
+    let row = find_row("goose").unwrap();
+    assert!(shadows("goose", &row, &e).is_empty());
+    let proj = h.root.join("proj");
+    let name = "derm-0123456789abcdef";
+    put(&h.root.join("home/.derm/gate-name"), &format!("{name}\n"));
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        h.root.join("home/.derm/gate-name"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    put(&proj.join(".agents/plugins/derm/hooks/hooks.json"), "{}");
+    put(&proj.join(".agents/plugins/lint/plugin.json"), "{}");
+    put(
+        &proj.join(".config/goose/settings.json"),
+        "{\"disabledPlugins\": [\"derm\", \"derm-gate\"]}",
+    );
+    let s = shadows("goose", &row, &e);
+    let paths: Vec<&str> = s.iter().map(|v| v["path"].as_str().unwrap()).collect();
+    for want in [
+        ".agents/plugins/derm",
+        ".agents/plugins/lint",
+        ".config/goose/settings.json",
+    ] {
+        assert!(paths.iter().any(|p| p.ends_with(want)), "{want}: {s:?}");
+    }
+    // None of these is derm's drawn name: each adds hooks, none turns derm off.
+    assert!(s.iter().all(|v| v["turnsOff"] == json!(false)), "{s:?}");
+    // A project plugin under derm's drawn name, or a disabledPlugins that
+    // names it (project, local or yours), switches derm's gate off.
+    put(
+        &proj.join(format!(".agents/plugins/{name}/plugin.json")),
+        "{}",
+    );
+    put(
+        &proj.join(".config/goose/settings.local.json"),
+        &format!("{{\"disabledPlugins\": [\"{name}\"]}}"),
+    );
+    put(
+        &h.root.join("home/.config/goose/settings.json"),
+        &format!("{{\"disabledPlugins\": [\"{name}\"]}}"),
+    );
+    let s = shadows("goose", &row, &e);
+    let off: Vec<&str> = s
+        .iter()
+        .filter(|v| v["turnsOff"] == json!(true))
+        .map(|v| v["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(off.len(), 3, "{s:?}");
+    assert!(
+        off.iter()
+            .any(|p| p.ends_with(&format!(".agents/plugins/{name}"))),
+        "{off:?}"
+    );
+    assert!(
+        off.iter()
+            .any(|p| p.ends_with("proj/.config/goose/settings.local.json")),
+        "{off:?}"
+    );
+    assert!(
+        off.iter()
+            .any(|p| p.ends_with("home/.config/goose/settings.json")),
+        "{off:?}"
+    );
+    // The session folder is your home: goose reads one plugins folder, yours.
+    let mut at_home = env(&h);
+    at_home.cwd = Some(h.root.join("home"));
+    put(
+        &h.root
+            .join("home/.agents/plugins")
+            .join(name)
+            .join("plugin.json"),
+        "{}",
+    );
+    let s = shadows("goose", &row, &at_home);
+    assert!(
+        !s.iter()
+            .any(|v| v["path"].as_str().unwrap().contains(".agents/plugins")),
+        "{s:?}"
+    );
+}
+
+/// BW5B-3: a repository decides how many plugin folders doctor reads; it
+/// names derm's own always and at most 32 others.
+#[test]
+fn bw5b_3_a_project_with_many_goose_plugins_is_listed_in_bounds() {
+    let h = home("goose-many");
+    let e = env(&h);
+    let row = find_row("goose").unwrap();
+    let name = "derm-fedcba9876543210";
+    put(&h.root.join("home/.derm/gate-name"), &format!("{name}\n"));
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        h.root.join("home/.derm/gate-name"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let plugins = h.root.join("proj/.agents/plugins");
+    for i in 0..100 {
+        std::fs::create_dir_all(plugins.join(format!("p{i:03}"))).unwrap();
+    }
+    std::fs::create_dir_all(plugins.join(name)).unwrap();
+    let s = shadows("goose", &row, &e);
+    assert_eq!(s.len(), 34, "{s:?}");
+    assert!(s
+        .iter()
+        .any(|v| v["turnsOff"] == json!(true) && v["path"].as_str().unwrap().ends_with(name)));
+    assert!(
+        s.iter()
+            .any(|v| v["what"].as_str().unwrap().starts_with("68 more")),
+        "{s:?}"
+    );
+}

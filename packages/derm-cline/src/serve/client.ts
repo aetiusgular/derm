@@ -8,8 +8,10 @@
 //   puts it (docs/install/linux.md, macos.md, Homebrew). Each candidate is
 //   used only when its real path is a regular, executable file whose owner is
 //   trusted, that no one else may write, in a folder no one else may write
-//   (case 109's rule), and outside the session's folder, which a project
-//   controls. On Windows Node cannot read who may write a file (libuv
+//   (case 109's rule; "no one else" as `refuseCandidate` reads it: a group
+//   write bit only for macOS's admin group when you are in it, and on macOS
+//   no access list that lets anyone write; MW5B-1, MW5B-2), and outside the
+//   session's folder, which a project controls. On Windows Node cannot read who may write a file (libuv
 //   v1.52.1 src/win/fs.c:1956-1960; WW5-3), so only `DERM_BIN` is taken
 //   there, and it is not checked: an open item (tk_lane_5bC.md).
 // - The co-process starts at the first request, once per session, and is
@@ -27,7 +29,7 @@
 // api/child_process.html). This file imports nothing from the package, so
 // the copies stay byte-equal; the plugin passes its trusted-owner rule in.
 
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -55,8 +57,66 @@ export interface LocateDeps {
   home: string;
   /** Whether a file owned by this uid may be trusted (root always is). */
   trusted: (uid: number) => boolean;
-  stat?: (p: string) => { uid: number; mode: number; isFile: boolean; isDir: boolean };
+  stat?: (p: string) => { uid: number; gid?: number; mode: number; isFile: boolean; isDir: boolean };
   realpath?: (p: string) => string;
+  /** macOS: your groups as `/usr/bin/id -G` lists them (MW5B-2). */
+  groups?: () => number[] | undefined;
+  /** macOS: `/bin/ls -lden` of a path, or undefined when it cannot be read (MW5B-1). */
+  acl?: (p: string) => string | undefined;
+}
+
+/**
+ * macOS's `admin` group. Homebrew's installer gives its prefix folders
+ * `g+rwx` with this group when you are in it, and drops the group bit when
+ * your group is `staff`, which other accounts share (Homebrew/install
+ * install.sh at 7986efa, lines 182-192). A group write bit is trusted only
+ * for this group, only on macOS, only when you are in it (MW5B-2; sudo's
+ * secure_path trusts one named group the same way). derm connect and the
+ * plugins' launcher read it the same way (case 112).
+ */
+export const MACOS_ADMIN_GID = 80;
+
+/** The permissions macOS's `ls -le` prints that let their holder change a file or a folder (Apple file_cmds-479, ls/print.c:243-262). */
+export const ACL_WRITE_PERMS = ["write", "append", "delete", "add_file", "add_subdirectory", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown"];
+
+/**
+ * Whether `ls -lden`'s output for one path holds an access list entry that
+ * lets anyone write (MW5B-1): each line after the first is
+ * ` <n>: <uuid>[ inherited] <allow|deny> <perm,...>` (file_cmds-479,
+ * ls/print.c:322-385). An entry that is not a deny and names a write-class
+ * permission is open, whoever it names; a line that cannot be placed is open.
+ */
+export function aclGrantsWrite(ls: string): boolean {
+  const lines = ls.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.slice(1).some((line) => {
+    const w = line.split(/\s+/).filter((x) => x !== "");
+    if (!(w[0] ?? "").endsWith(":")) return true;
+    let i = 2;
+    let kind = w[i];
+    if (kind === "inherited") kind = w[++i];
+    if (kind === undefined) return true;
+    if (kind === "deny") return false;
+    const perms = w[i + 1];
+    return perms !== undefined && perms.split(",").some((x) => ACL_WRITE_PERMS.includes(x));
+  });
+}
+
+/** `/usr/bin/id -G`'s groups, or undefined when a word is not a number. */
+export function parseGroups(text: string): number[] | undefined {
+  const words = text.split(/\s+/).filter((x) => x !== "");
+  if (words.length === 0 || !words.every((x) => /^[0-9]+$/.test(x))) return undefined;
+  return words.map(Number);
+}
+
+function idGroups(): number[] | undefined {
+  const r = spawnSync("/usr/bin/id", ["-G"], { env: {}, encoding: "utf8" });
+  return r.status === 0 && typeof r.stdout === "string" ? parseGroups(r.stdout) : undefined;
+}
+
+function lsAcl(p: string): string | undefined {
+  const r = spawnSync("/bin/ls", ["-lden", "--", p], { env: {}, encoding: "utf8" });
+  return r.status === 0 && typeof r.stdout === "string" ? r.stdout : undefined;
 }
 
 /** Where derm's own installs put it, by OS (docs/install/*.md; Homebrew's prefixes). */
@@ -67,9 +127,9 @@ export function installCandidates(platform: NodeJS.Platform, home: string): stri
   return [local, ...brew, "/usr/bin/derm"];
 }
 
-function realStat(p: string): { uid: number; mode: number; isFile: boolean; isDir: boolean } {
+function realStat(p: string): { uid: number; gid?: number; mode: number; isFile: boolean; isDir: boolean } {
   const s = statSync(p);
-  return { uid: s.uid, mode: s.mode, isFile: s.isFile(), isDir: s.isDirectory() };
+  return { uid: s.uid, gid: s.gid, mode: s.mode, isFile: s.isFile(), isDir: s.isDirectory() };
 }
 
 function inside(file: string, folder: string): boolean {
@@ -103,15 +163,34 @@ export function refuseCandidate(candidate: string, d: LocateDeps): string | unde
   if (inside(candidate, d.cwd) || inside(file, cwdReal)) return "inside the session's folder, which a project can write";
   if (d.platform === "win32") return undefined;
   const owned = (uid: number) => uid === 0 || d.trusted(uid);
+  const macos = d.platform === "darwin";
+  let groups: number[] | undefined | null = null;
+  const inAdmin = () => {
+    if (groups === null) groups = (d.groups ?? idGroups)();
+    return groups !== undefined && groups.includes(MACOS_ADMIN_GID);
+  };
+  // No other write bit; a group write bit only for macOS's admin group when
+  // you are in it (MW5B-2); on macOS no access list entry that lets anyone
+  // write (MW5B-1). On Linux the group bits are an access list's mask
+  // (acl(5)), so the mode bits bound it.
+  const open = (p: string, s: { gid?: number; mode: number }) => {
+    if ((s.mode & 0o002) !== 0) return true;
+    if ((s.mode & 0o020) !== 0 && !(macos && s.gid === MACOS_ADMIN_GID && inAdmin())) return true;
+    if (macos) {
+      const ls = (d.acl ?? lsAcl)(p);
+      if (ls === undefined || aclGrantsWrite(ls)) return true;
+    }
+    return false;
+  };
   try {
     const f = stat(file);
     if (!f.isFile) return "not a regular file";
     if ((f.mode & 0o111) === 0) return "not executable";
     if (!owned(f.uid)) return "owned by someone derm does not trust";
-    if ((f.mode & 0o022) !== 0) return "others may write it";
+    if (open(file, f)) return "others may write it";
     for (const folder of new Set([path.dirname(file), path.dirname(candidate)])) {
       const s = stat(folder);
-      if (!s.isDir || !owned(s.uid) || (s.mode & 0o022) !== 0) return `others may write ${folder}`;
+      if (!s.isDir || !owned(s.uid) || open(folder, s)) return `others may write ${folder}`;
     }
   } catch {
     return "cannot be read";
@@ -207,18 +286,21 @@ export class GateServe {
     }
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(o.env)) if (v !== undefined) env[k] = v;
+    // Each reason names the program it ran (BW5B-5: two derm builds can
+    // print the same version, and the last candidate is a system derm).
+    const prog = `${located.path} gate serve`;
     let child: ChildProcess;
     try {
       child = (o.spawn ?? nodeSpawn)(located.path, ["gate", "serve", "--agent", o.agent], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, shell: false });
     } catch (e) {
-      throw this.fail(`derm gate serve did not start: ${(e as Error)?.message ?? String(e)}`);
+      throw this.fail(`${prog} did not start: ${(e as Error)?.message ?? String(e)}`);
     }
     this.child = child;
     this.buffered = "";
     this.stderr = "";
-    child.on("error", (e: Error) => this.stop(`derm gate serve: ${e.message}`, child));
-    child.on("exit", (code, signal) => this.stop(`derm gate serve exited (${signal ?? code})${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`, child));
-    child.stdin?.on("error", () => this.stop("derm gate serve closed its input", child));
+    child.on("error", (e: Error) => this.stop(`${prog}: ${e.message}`, child));
+    child.on("exit", (code, signal) => this.stop(`${prog} exited (${signal ?? code})${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`, child));
+    child.stdin?.on("error", () => this.stop(`${prog} closed its input`, child));
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.onData(chunk, child));
     child.stderr?.setEncoding("utf8");

@@ -474,6 +474,95 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
                 }
             }
         }
+        // BW5B-3, case 78. goose 1.59.0 loads hooks with the session folder
+        // as the project (`agents/services.rs:383`): every folder under its
+        // `.agents/plugins/` is a plugin, loaded with no prompt and ranked
+        // before yours, the first of a name kept (`plugins/discovery.rs:
+        // 52-101, 181-201`), unless the session folder is your home, whose
+        // folder is the same one; and `disabledPlugins` in the session
+        // folder's `.config/goose/settings.local.json` and `settings.json`
+        // and in your `~/.config/goose/settings.json` switches a plugin off
+        // by name (`discovery.rs:155-176, 203-250`), all at 5d03ef6.
+        "goose" => {
+            let name = env
+                .home
+                .as_deref()
+                .and_then(|h| crate::connect::gate::read_gate_name(h).ok().flatten());
+            let ours = |n: &str| name.as_deref() == Some(n);
+            let mut settings: Vec<(PathBuf, &str)> = Vec::new();
+            if let Some(cwd) = &env.cwd {
+                let project = cwd.join(".agents/plugins");
+                let yours = env.home.as_ref().map(|h| h.join(".agents/plugins"));
+                let same = yours.as_ref().is_some_and(|y| {
+                    y == &project
+                        || matches!(
+                            (std::fs::canonicalize(y), std::fs::canonicalize(&project)),
+                            (Ok(a), Ok(b)) if a == b
+                        )
+                });
+                if !same {
+                    // A repository decides how many folders this holds: read
+                    // at most 4,096 entries, name derm's own always, and at
+                    // most 32 others, then say how many more there are. A
+                    // name that is not UTF-8 is skipped, as goose skips it
+                    // (`discovery.rs:197`).
+                    let mut kids: Vec<(String, PathBuf)> = std::fs::read_dir(&project)
+                        .into_iter()
+                        .flatten()
+                        .take(4096)
+                        .flatten()
+                        .filter(|e| e.path().is_dir())
+                        .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
+                        .collect();
+                    kids.sort();
+                    let mut others = 0usize;
+                    for (n, p) in kids {
+                        if ours(&n) {
+                            seen(p, format!("a project plugin named `{n}`, derm's gate's own name, which goose keeps in place of yours: derm's gate does not run here"), true);
+                        } else if others < 32 {
+                            others += 1;
+                            seen(p, format!("a project plugin `{n}` that goose loads with no prompt, before yours; its hooks run beside derm's (a deny from either stops the call)"), false);
+                        } else {
+                            others += 1;
+                        }
+                    }
+                    if others > 32 {
+                        seen(
+                            project.clone(),
+                            format!("{} more project plugins here, not listed", others - 32),
+                            false,
+                        );
+                    }
+                }
+                settings.push((cwd.join(".config/goose/settings.local.json"), "local"));
+                settings.push((cwd.join(".config/goose/settings.json"), "project"));
+            }
+            if let Some(h) = &env.home {
+                settings.push((h.join(".config/goose/settings.json"), "user"));
+            }
+            let mut done: Vec<PathBuf> = Vec::new();
+            for (path, scope) in settings {
+                if done.contains(&path) {
+                    continue;
+                }
+                done.push(path.clone());
+                if !path.exists() {
+                    continue;
+                }
+                let listed: Vec<String> = read_json_small(&path)
+                    .and_then(|v| v.get("disabledPlugins").cloned())
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect();
+                if let Some(n) = listed.iter().find(|n| ours(n)) {
+                    seen(path, format!("disabledPlugins in the {scope} settings names `{n}`, derm's gate: goose does not run it"), true);
+                } else if scope != "user" {
+                    seen(path, format!("the {scope} settings can switch plugins off by name (disabledPlugins: {})", if listed.is_empty() { "none now".to_string() } else { listed.join(", ") }), false);
+                }
+            }
+        }
         _ => {}
     }
     out
@@ -826,26 +915,9 @@ pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
 /// Whether `text` holds `hook <id> ` after a program that is not an
 /// absolute path (`derm hook crush pre`, `"derm" hook crush pre`).
 fn bare_derm_hook(text: &str, id: &str) -> bool {
-    let needle = format!(" hook {id} ");
-    let mut from = 0;
-    while let Some(i) = text[from..].find(&needle) {
-        let at = from + i;
-        let before = &text[..at];
-        let word: String = before
-            .chars()
-            .rev()
-            .take_while(|c| !matches!(c, ' ' | '\n' | '\'' | '[' | ',' | '=' | ':'))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let word = word.trim_matches(|c| c == '"' || c == '\\');
-        if word.ends_with("derm") && !word.starts_with('/') {
-            return true;
-        }
-        from = at + needle.len();
-    }
-    false
+    // BW5B-1: the same reader `derm connect` finds its own entry with, so
+    // the fix this names (`--gate --write`) replaces what it names.
+    crate::connect::gate::derm_hook_runs(text, id).contains(&false)
 }
 
 /// Runs the installed hook once on a shell call, under a policy that denies
