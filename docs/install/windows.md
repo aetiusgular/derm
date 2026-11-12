@@ -26,6 +26,12 @@ The Windows test runs on the box's Windows 11 drive before any of this is releas
 - **Sysmon.** Its event channel, `Microsoft-Windows-Sysmon/Operational`, can be read by SYSTEM, Administrators, Backup Operators, Server Operators and Event Log Readers only, and an administrator's normal (not elevated) session reads it as a user. A daemon that reads Sysmon as you therefore needs you in Event Log Readers (an administrator's one-time step: `net localgroup "Event Log Readers" <you> /add`, then sign out and in), or a reader that runs elevated. derm does not read Sysmon yet; which of the two it will ask for is open.
 - **Elevation.** The daemon's own folders (`%USERPROFILE%\.derm\run\derm` and the data folder) are made as yours even from an elevated terminal, and the same folders an older build left owned by Administrators are taken back for you. Other files and folders derm makes from an elevated terminal (a chat's approval folder, a pid file) are still owned by Administrators, and a later run without elevation refuses them as another user's; remove them, or run elevated again.
 
+## The gates on Windows (Windows test w5b, 11 Nov 2026)
+
+- **The Claude Code, Codex and Gemini plugins** start `/bin/sh` on their launcher, which Windows does not have, so their gate cannot run there in this build, and an agent may run a call whose hook cannot start. `derm connect claude-code|codex|gemini --gate` says so and registers nothing.
+- **Pi, oh-my-pi, OpenCode, Kilo Code and OpenClaw** run only the derm `DERM_BIN` names, which `derm run` sets to itself; started outside `derm run` they refuse every call.
+- **Crush, goose, Hermes and the other `derm hook` lines** are not registered on Windows in this build either: `derm connect <agent> --gate` refuses with the reason.
+
 ## srt on Windows (wave 5b, lane 5bD; not released, not yet run on a Windows machine)
 
 What `derm run --boundary srt` does on Windows once integration wires it in (`contracts/srt-windows.md`, `crates/derm-cli/src/run/boundary/windows_srt/`). Until then it still stops, as above.

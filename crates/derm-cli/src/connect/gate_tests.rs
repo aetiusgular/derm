@@ -1566,6 +1566,44 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
     }
 }
 
+/// WW5B-2 (Windows test w5b, step 3): on Windows the launcher plugins'
+/// `--gate` is refused with the reason, and the in-process plugins' note
+/// names DERM_BIN, not Unix folders.
+#[test]
+fn ww5b_2_on_windows_the_launcher_plugins_are_refused_with_the_reason() {
+    for a in ["claude-code", "codex", "gemini"] {
+        let Some(Err(why)) = gate::windows_gate(a) else {
+            panic!("{a}: not refused");
+        };
+        assert!(why.contains("/bin/sh") && why.contains("nothing is registered"), "{why}");
+        assert!(!why.contains("denies every call"), "{why}");
+    }
+    for a in ["pi", "oh-my-pi", "opencode", "kilo", "openclaw"] {
+        let Some(Ok(note)) = gate::windows_gate(a) else {
+            panic!("{a}: no note");
+        };
+        assert!(note.contains("DERM_BIN"), "{note}");
+        assert!(!note.contains("/usr/bin"), "{note}");
+    }
+    for a in ["crush", "goose", "hermes", "cursor"] {
+        assert!(gate::windows_gate(a).is_none(), "{a}");
+    }
+}
+
+/// WW5B-2 through `derm connect` on Windows: exit 1 with the reason, no
+/// route of Unix folders.
+#[cfg(windows)]
+#[test]
+fn ww5b_2_derm_connect_codex_gate_on_windows_exits_1_with_the_reason() {
+    let home = scratch("ww5b2");
+    for a in ["codex", "gemini", "claude-code"] {
+        let r = go(&home, &[a, "--gate"]);
+        assert_eq!(r.code, 1, "{a}: {} {}", r.out, r.err);
+        assert!(r.err.contains("/bin/sh"), "{a}: {}", r.err);
+        assert!(!r.out.contains("/usr/bin/derm"), "{a}: {}", r.out);
+    }
+}
+
 #[cfg(unix)]
 /// MW5B-6 (Mac test w5b retest, step 4): a derm Homebrew installed runs from
 /// `<prefix>/Cellar/<name>/<version>/bin/derm`, a folder `brew upgrade`

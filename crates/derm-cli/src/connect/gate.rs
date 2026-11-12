@@ -613,12 +613,42 @@ const FINDS_DERM: &[&str] = &[
     "openclaw",
 ];
 
+/// WW5B-2 (Windows test w5b, step 3): on Windows the Claude Code, Codex and
+/// Gemini plugins' hooks start `/bin/sh` on their launcher (each hooks
+/// file at this build), which Windows does not have: Codex's line under
+/// `cmd /C` exited 1, Gemini's under PowerShell exited 1 ("'/bin/sh' is not
+/// recognized"), Claude Code's exec form failed with `spawn ENOENT` (run on
+/// the box). `derm connect --gate` printed a route of Unix folders and "or
+/// the gate denies every call", which is not what an agent does with a hook
+/// that cannot start (case 70: some let the call through). So on Windows
+/// `--gate` refuses those three with the reason, as it refuses the `{derm}`
+/// rows ([`checked_self`]); the in-process plugins take only the derm
+/// `DERM_BIN` names there (`src/serve/client.ts`, `locateDerm`), so their
+/// note says that. `None` for every other agent.
+pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
+    match agent {
+        "claude-code" | "codex" | "gemini" => Some(Err(format!(
+            "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
+        ))),
+        "pi" | "oh-my-pi" | "opencode" | "kilo" | "openclaw" => Some(Ok(format!(
+            "on Windows {agent}'s gate runs only the derm DERM_BIN names, which `derm run` sets to itself; started outside `derm run` it refuses every call (rules case 227)"
+        ))),
+        _ => None,
+    }
+}
+
 /// For an agent whose gate looks derm up in its install folders: which
 /// folder will answer, or that none will, so a chat is not a surprise deny
 /// (integration w5b's \"Look out for\": a plugin with no derm it can trust
 /// refuses every call).
 fn route_note(agent: &Agent, ctx: &mut Ctx) {
     if !FINDS_DERM.contains(&agent.agent.as_str()) {
+        return;
+    }
+    if cfg!(windows) {
+        if let Some(Ok(note)) = windows_gate(&agent.agent) {
+            ctx.out.push_str(&format!("route:  {note}\n"));
+        }
         return;
     }
     let me = self_path().ok().and_then(|p| std::fs::canonicalize(p).ok());
@@ -1647,6 +1677,11 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             .steps
             .iter()
             .any(|st| matches!(st, Step::TextFile { content, .. } if content.contains("{derm}")));
+    if cfg!(windows) && !o.ungate {
+        if let Some(Err(why)) = windows_gate(&agent.agent) {
+            return Err(why);
+        }
+    }
     let derm = if uses_derm && !o.ungate {
         Some(self_path()?)
     } else {
