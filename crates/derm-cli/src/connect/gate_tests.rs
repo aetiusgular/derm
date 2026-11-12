@@ -1567,6 +1567,47 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
 }
 
 #[cfg(unix)]
+/// MW5B-6 (Mac test w5b retest, step 4): a derm Homebrew installed runs from
+/// `<prefix>/Cellar/<name>/<version>/bin/derm`, a folder `brew upgrade`
+/// removes (`brew cleanup` after an upgrade, `man brew` 7.0.12 lines 726-731
+/// and 1942), so a registration names it by Homebrew's `opt` link, "a
+/// stable path for this formula ... stable even when the software is
+/// updated" (Homebrew/brew 7.0.12 `formula.rb:1583-1599`), which `optlink`
+/// points at the current keg (`keg.rb:644-647`). Only when the link leads
+/// to this very derm and its folder is closed, as derm's own folder is;
+/// otherwise the keg path, as before.
+#[test]
+fn mw5b_6_a_homebrew_derm_registers_by_its_opt_link() {
+    let prefix = scratch("mw5b6");
+    let keg = prefix.join("Cellar/derm/1.2.3");
+    let real = fake_derm_in(&keg, "bin");
+    let opt = prefix.join("opt");
+    fs::create_dir_all(&opt).unwrap();
+    fs::set_permissions(&opt, fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("../Cellar/derm/1.2.3", opt.join("derm")).unwrap();
+    let want = opt.join("derm/bin/derm").display().to_string();
+    assert_eq!(gate::self_path(), Ok(want.clone()));
+    // The registered line still runs this derm.
+    assert_eq!(
+        fs::canonicalize(&want).unwrap(),
+        fs::canonicalize(&real).unwrap()
+    );
+    // An opt folder others may write: the link could be repointed, so the
+    // keg path, as before.
+    fs::set_permissions(&opt, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(gate::self_path(), Ok(real.clone()));
+    fs::set_permissions(&opt, fs::Permissions::from_mode(0o755)).unwrap();
+    // A link to another version: the keg path.
+    fs::remove_file(opt.join("derm")).unwrap();
+    fs::create_dir_all(prefix.join("Cellar/derm/1.2.2/bin")).unwrap();
+    std::os::unix::fs::symlink("../Cellar/derm/1.2.2", opt.join("derm")).unwrap();
+    assert_eq!(gate::self_path(), Ok(real.clone()));
+    // No opt link at all (a derm built from a clone): the real path.
+    fs::remove_file(opt.join("derm")).unwrap();
+    assert_eq!(gate::self_path(), Ok(real));
+}
+
+#[cfg(unix)]
 /// The launcher with its Homebrew candidates moved into `brew` (a copy in a
 /// scratch folder): the candidate loop as written, run against folders a
 /// test can make. The real file's paths are the ones `install_candidates`

@@ -888,6 +888,14 @@ pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
                 file.display()
             ));
         }
+        // MW5B-6: a registered derm that is not there runs nothing (a
+        // Homebrew keg `brew upgrade` cleaned up, a moved build).
+        for gone in gone_derms(&text, id) {
+            out.push(format!(
+                "{} runs {gone} hook {id}, and {gone} is not there (removed, or an older Homebrew version `brew upgrade` cleaned up): the agent's gate runs nothing until {fix}",
+                file.display()
+            ));
+        }
     }
     // BC-1, BC-2: derm's gate under an older derm's fixed name, which a
     // repository's own entry of that name replaces or switches off.
@@ -943,6 +951,22 @@ fn bare_derm_hook(text: &str, id: &str) -> bool {
     // BW5B-1: the same reader `derm connect` finds its own entry with, so
     // the fix this names (`--gate --write`) replaces what it names.
     crate::connect::gate::derm_hook_runs(text, id).contains(&false)
+}
+
+/// Each absolute derm a `derm hook <id>` line in `text` names that is not
+/// there now (links followed: a dangling link counts), once each.
+fn gone_derms(text: &str, id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in crate::connect::gate::derm_hook_programs(text, id) {
+        let path = Path::new(&p);
+        if (path.is_absolute() || path.has_root())
+            && std::fs::metadata(path).is_err()
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// What node needs from a cleared environment on Windows besides HOME and

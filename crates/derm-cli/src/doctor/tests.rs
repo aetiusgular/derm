@@ -318,6 +318,50 @@ fn the_installed_gemini_gate_denies_a_denied_call() {
     );
 }
 
+/// MW5B-6 (Mac test w5b retest, step 4): a registration whose derm is not
+/// there any more (a Homebrew keg `brew upgrade` cleaned up) runs nothing:
+/// Cursor then blocks every call (`failClosed`), an agent that fails open
+/// runs it ungated (case 70). Doctor names the line, the path and the fix,
+/// for every agent whose gate is a `derm hook` line.
+#[cfg(unix)]
+#[test]
+fn mw5b_6_a_registration_whose_derm_is_gone_is_named() {
+    let h = home("gone-derm");
+    let e = env(&h);
+    let gone = h.root.join("Cellar/derm/0.1.3-w5b/bin/derm");
+    let crush = h.root.join("home/.config/crush/crush.json");
+    put(
+        &crush,
+        &format!(
+            "{{\"hooks\":{{\"PreToolUse\":[{{\"name\":\"derm-gate\",\"command\":\"{} hook crush pre\"}}]}}}}",
+            gone.display()
+        ),
+    );
+    let p = stale_registrations("crush", &e);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains(&gone.display().to_string()), "{p:?}");
+    assert!(p[0].contains("is not there"), "{p:?}");
+    assert!(p[0].contains("derm connect crush --gate --write"), "{p:?}");
+    // Cursor's two entries, as derm connect writes them.
+    let cursor = h.root.join("home/.cursor/hooks.json");
+    let entry = format!(
+        "{{\"command\":\"{} hook cursor pre\",\"timeout\":120,\"failClosed\":true}}",
+        gone.display()
+    );
+    put(
+        &cursor,
+        &format!("{{\"version\":1,\"hooks\":{{\"preToolUse\":[{entry}],\"beforeMCPExecution\":[{entry}]}}}}"),
+    );
+    let p = stale_registrations("cursor", &e);
+    assert!(
+        p.iter().any(|x| x.contains("is not there") && x.contains("derm connect cursor --gate --write")),
+        "{p:?}"
+    );
+    // Once it is there again, nothing.
+    put(&gone, "#!/bin/sh\n");
+    assert!(stale_registrations("crush", &e).is_empty());
+}
+
 /// Case 227 (wave 5b lane 5bF): a registration that finds derm's gate, or
 /// its node, on PATH is a problem with the fix; one naming derm by its
 /// absolute path is not.
@@ -327,6 +371,13 @@ fn a_registration_that_finds_the_gate_on_path_is_a_problem() {
     let h = home("on-path");
     let crush = h.root.join("home/.config/crush/crush.json");
     let mut e = env(&h);
+    // Programs that are there: since fix pass 2 (MW5B-6) a line naming a
+    // derm that is not there is a problem of its own (the next test).
+    let there = h.root.join("bin/derm");
+    put(&there, "#!/bin/sh\n");
+    let there = there.display().to_string();
+    let quoted = format!("\"{there}\" hook crush pre");
+    let plain = format!("{there} hook crush pre");
     let line = |cmd: &str| {
         format!(
             "{{\"hooks\":{{\"PreToolUse\":[{{\"name\":\"derm-gate\",\"command\":{}}}]}}}}",
@@ -340,8 +391,8 @@ fn a_registration_that_finds_the_gate_on_path_is_a_problem() {
         ),
         ("derm hook crush pre", Some("found on PATH")),
         ("\"derm\" hook crush pre", Some("found on PATH")),
-        ("/usr/local/bin/derm hook crush pre", None),
-        ("\"/opt/x/derm\" hook crush pre", None),
+        (plain.as_str(), None),
+        (quoted.as_str(), None),
     ] {
         put(&crush, &line(cmd));
         let p = stale_registrations("crush", &e);
@@ -361,7 +412,7 @@ fn a_registration_that_finds_the_gate_on_path_is_a_problem() {
     put(&xdg.join("crush/crush.json"), &line("derm hook crush pre"));
     e.vars
         .push(("XDG_CONFIG_HOME".into(), xdg.display().to_string()));
-    put(&crush, &line("/usr/bin/derm hook crush pre"));
+    put(&crush, &line(&plain));
     assert_eq!(stale_registrations("crush", &e).len(), 1);
     // A plugin copy from before wave 5b.
     let h2 = home("on-path-plugin");

@@ -539,7 +539,48 @@ fn checked_self(exe: &Path) -> Result<String, String> {
             dir.display()
         ));
     }
-    Ok(text)
+    Ok(homebrew_opt(&real, uid).unwrap_or(text))
+}
+
+/// MW5B-6: for a derm Homebrew installed, `<prefix>/Cellar/<name>/<version>/
+/// bin/derm`, the same file by Homebrew's `opt` link,
+/// `<prefix>/opt/<name>/bin/derm`. `brew upgrade` removes the old version's
+/// folder (`man brew` 7.0.12, lines 726-731 and 1942), so a line naming the
+/// keg exits 127 after it; `opt_prefix` is "a stable path for this formula
+/// ... stable even when the software is updated" (Homebrew/brew 7.0.12
+/// `formula.rb:1583-1599`), which `optlink` points at the current keg
+/// (`keg.rb:644-647`), and Homebrew's own service file for derm names it
+/// (`sh.brew.derm.plist`, read on the Mac). Used only when the link leads to
+/// this very file, is a link in a real `opt` folder that is closed as derm's
+/// own folder is (one more place that decides which program runs), and the
+/// path is plain; otherwise `None`, and the keg path is registered.
+#[cfg(not(windows))]
+fn homebrew_opt(real: &Path, uid: derm_core::platform::UserId) -> Option<String> {
+    let bin = real.parent()?;
+    let version = bin.parent()?;
+    let name_dir = version.parent()?;
+    let cellar = name_dir.parent()?;
+    if bin.file_name()? != "bin" || cellar.file_name()? != "Cellar" {
+        return None;
+    }
+    let prefix = cellar.parent()?;
+    let name = name_dir.file_name()?;
+    let opt_dir = prefix.join("opt");
+    let link = opt_dir.join(name);
+    let opt = link.join("bin").join("derm");
+    let text = opt.to_str().filter(|t| plain_hook_path(t))?.to_string();
+    if !std::fs::symlink_metadata(&link)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
+    let om = std::fs::symlink_metadata(&opt_dir).ok()?;
+    if !om.is_dir() || !closed(&opt_dir, &om, uid) {
+        return None;
+    }
+    (std::fs::canonicalize(&opt).ok()? == real).then_some(text)
 }
 
 /// Where derm's own installs put it, in the order the plugins' launcher
@@ -1000,6 +1041,19 @@ fn hit(text: &str, markers: &[String]) -> bool {
 /// entry (to replace or remove), and `derm doctor` names each one that is
 /// not absolute (case 227). One reader for both (BW5B-1; case 112's class).
 pub fn derm_hook_runs(text: &str, id: &str) -> Vec<bool> {
+    derm_hook_programs(text, id)
+        .into_iter()
+        .map(|p| {
+            let p = Path::new(&p);
+            p.is_absolute() || p.has_root()
+        })
+        .collect()
+}
+
+/// The program of each place `text` runs `derm hook <id> `, as
+/// [`derm_hook_runs`] reads it (one reader; MW5B-6: doctor names a
+/// registered derm that is not there any more).
+pub fn derm_hook_programs(text: &str, id: &str) -> Vec<String> {
     let needle = format!(" hook {id} ");
     let mut out = Vec::new();
     let mut from = 0;
@@ -1031,8 +1085,7 @@ pub fn derm_hook_runs(text: &str, id: &str) -> Vec<bool> {
             continue;
         }
         // Rooted is enough: a rooted path is not looked up on PATH.
-        let p = Path::new(word);
-        out.push(p.is_absolute() || p.has_root());
+        out.push(word.to_string());
     }
     out
 }
