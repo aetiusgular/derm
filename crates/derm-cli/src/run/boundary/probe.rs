@@ -185,7 +185,11 @@ pub(crate) fn sbx_install_line() -> &'static str {
 /// The line that installs srt (`@anthropic-ai/sandbox-runtime`; its README
 /// names bubblewrap, socat and ripgrep on Linux and ripgrep on macOS).
 pub(crate) fn srt_install_line() -> &'static str {
-    if cfg!(target_os = "linux") {
+    // srt 0.0.82's README, "Windows (alpha)", "Setup": once per machine, and
+    // it asks to elevate (request 5bD-1).
+    if cfg!(windows) {
+        "npm install -g @anthropic-ai/sandbox-runtime, then once per machine: npx @anthropic-ai/sandbox-runtime windows-install (one elevation prompt)"
+    } else if cfg!(target_os = "linux") {
         "npm install -g @anthropic-ai/sandbox-runtime, and the bubblewrap, socat and ripgrep packages"
     } else {
         "npm install -g @anthropic-ai/sandbox-runtime, and ripgrep"
@@ -264,7 +268,9 @@ pub(crate) fn srt_probe(
     // so its install line would point at a boundary derm then refuses
     // (review FPW-S7).
     if cfg!(windows) {
-        return Err(reason(preflight::SRT_ON_WINDOWS.into(), None));
+        if let Some(why) = super::windows_srt::refusal() {
+            return Err(reason(why.into(), None));
+        }
     }
     let Some(srt) = crate::watch::status::find_on_path("srt", path) else {
         return Err(reason(
@@ -307,6 +313,12 @@ pub(crate) fn srt_probe(
         Ok(d) => d,
         Err(e) => return Err(reason(format!("no folder for srt's probe: {e}"), None)),
     };
+    // srt on Windows (request 5bD-1): its own backend, loopback binding off
+    // as derm's chats run it (`windows_srt`), and a program cmd.exe has.
+    if cfg!(windows) {
+        settings["network"]["allowLocalBinding"] = serde_json::json!(false);
+        settings["windows"] = serde_json::json!({"backend": "srt-win"});
+    }
     let file = dir.join("settings.json");
     let written = write_private(&file, &settings.to_string());
     let result = written
@@ -317,13 +329,20 @@ pub(crate) fn srt_probe(
             } else {
                 "/bin/true"
             };
+            // srt runs a `-c` string through `cmd.exe /d /s /c` on Windows
+            // (`windows_srt::command_string`), which has no `true`.
+            let program: [String; 2] = if cfg!(windows) {
+                ["-c".into(), "exit 0".into()]
+            } else {
+                ["--".into(), truth.into()]
+            };
             run(
                 &srt,
                 &[
                     "--settings".into(),
                     file.to_string_lossy().into_owned(),
-                    "--".into(),
-                    truth.into(),
+                    program[0].clone(),
+                    program[1].clone(),
                 ],
                 SRT_LIMIT,
             )
@@ -504,8 +523,10 @@ mod tests {
     use super::*;
 
     /// FPW-S7 (the Windows fix pass's review): with no srt on PATH, the
-    /// probe said "srt is not installed" and printed srt's install line on
-    /// Windows, for a boundary derm then refuses there. Fails on `2ce607d`.
+    /// probe printed srt's install line on Windows for a boundary derm then
+    /// refused there. Lane 5bD's request 5bD-1 let srt start on Windows; the
+    /// wave 5b close held it off again (W5B-S2, W5B-S3), so the probe names
+    /// the refusal and no install line, as before 5bD-1.
     #[cfg(windows)]
     #[test]
     fn fpw_s7_on_windows_the_probe_names_the_refusal_not_an_install() {

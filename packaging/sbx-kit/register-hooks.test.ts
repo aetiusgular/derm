@@ -6,13 +6,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error: plain JavaScript, no declarations (it runs on the image's Node with no build step).
 import { POST_TIMEOUT, PRE_TIMEOUT, merge, registerFile } from "./register-hooks.mjs";
 
 const NODE = "/usr/bin/node";
 const HOOK = "/opt/derm-kit/bin/derm-hook.mjs";
-const SCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), "register-hooks.mjs");
+// `fileURLToPath`, not the URL's pathname: on Windows the pathname is
+// `/D:/a/...`, which Node read as `D:\D:\a\...` (CI's Windows job).
+const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "register-hooks.mjs");
 
 describe("merge", () => {
   it("adds a blocking PreToolUse and a PostToolUse in exec form to empty settings", () => {

@@ -385,7 +385,10 @@ fn a_cli_on_path_counts_as_installed() {
     let home = scratch("onpath");
     let bin = home.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    fs::write(bin.join("codex"), "").unwrap();
+    // As npm installs a CLI on this OS: on Windows a shell finds `codex`
+    // through `codex.cmd` (PATHEXT), never a file with no extension.
+    let program = if cfg!(windows) { "codex.cmd" } else { "codex" };
+    fs::write(bin.join(program), "").unwrap();
     let env = MapEnv(HashMap::from([(
         "PATH".to_string(),
         bin.display().to_string(),

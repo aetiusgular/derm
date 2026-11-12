@@ -306,11 +306,7 @@ fn installed(preset: &Preset, path: &Path, home: &Path, env: &dyn Env) -> bool {
     let Some(cli) = &preset.cli else {
         return false;
     };
-    env.var("PATH")
-        .unwrap_or_default()
-        .split(':')
-        .filter(|d| d.starts_with('/'))
-        .any(|d| Path::new(d).join(cli).is_file())
+    names::cli_on_path(&env.var("PATH").unwrap_or_default(), cli)
 }
 
 fn origin_line(spec: &ServerSpec) -> String {

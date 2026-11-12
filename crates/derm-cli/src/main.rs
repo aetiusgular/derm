@@ -11,6 +11,12 @@ mod connect;
 // Wave 5 (the wave 5 base): `cu/` lane U, `setup/` lane W, `platform/` lane Z.
 mod cu;
 mod doctor;
+// Wave 5b (the wave 5b base): `gate/` (integration's; `gate/serve/` lane
+// 5bC), `hook/` (`claude_format/` lane 5bA, `native/` lane 5bB), `enter/`
+// (lane 5bD).
+mod enter;
+mod gate;
+mod hook;
 mod platform;
 mod run;
 #[cfg(unix)]
@@ -66,12 +72,16 @@ fn dispatch(args: &[String]) -> u8 {
         // Wave 4 lane R (integration w2's scaffold).
         Some("acp") => acp::main(&args[1..]),
         Some("doctor") => doctor::main(&args[1..]),
+        // Wave 5b (the wave 5b base): the gate in Rust.
+        Some("hook") => hook::main(&args[1..]),
+        Some("gate") => gate::main(&args[1..]),
+        Some("enter") => enter::main(&args[1..]),
         Some("--version") => {
             println!("derm {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|--version> ...");
             2
         }
     }
@@ -103,7 +113,9 @@ mod tests {
         // wave 2 (exit 0) and reads the machine's daemon socket and agent
         // config files, which a unit test must not (lane J's request 2,
         // integration w2). `watch::status` has its own tests on fixtures.
-        for cmd in ["connect", "run", "watch", "cu", "acp", "doctor", "setup"] {
+        for cmd in [
+            "connect", "run", "watch", "cu", "acp", "doctor", "setup", "hook", "gate", "enter",
+        ] {
             assert_eq!(dispatch(&s(&[cmd])), 2, "{cmd}");
         }
     }

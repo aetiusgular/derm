@@ -605,20 +605,27 @@ fn ask_gates(ctx: &mut Ctx, installed: &[String]) {
         .say("\nderm's gate is built for these agents and not registered:");
     for a in &todo {
         let id = s(a, "id").to_string();
-        let package = gate_package(&id);
+        // Since wave 5b (lane 5bF) a command-hook agent's gate is `derm
+        // hook`, run from derm itself: no package folder to name.
+        let derm_hook = gate_is_derm_hook(&id);
+        let package = gate_package(&id).filter(|_| !derm_hook);
         let hook = match (&ctx.packages, &package) {
             (Some(p), Some(pkg)) => Some(p.join("packages").join(pkg)),
             _ => None,
         };
-        let line = format!(
-            "derm connect {id} --gate --hook {} --write",
-            hook.as_ref()
-                .map(|h| h.display().to_string())
-                .unwrap_or_else(|| format!(
-                    "<derm's source>/packages/{}",
-                    package.clone().unwrap_or_default()
-                ))
-        );
+        let line = if derm_hook {
+            format!("derm connect {id} --gate --write")
+        } else {
+            format!(
+                "derm connect {id} --gate --hook {} --write",
+                hook.as_ref()
+                    .map(|h| h.display().to_string())
+                    .unwrap_or_else(|| format!(
+                        "<derm's source>/packages/{}",
+                        package.clone().unwrap_or_default()
+                    ))
+            )
+        };
         if ctx.dry_run {
             ctx.ask.say(&format!(
                 "  {} ({id}): would ask, then run `{line}`",
@@ -630,17 +637,24 @@ fn ask_gates(ctx: &mut Ctx, installed: &[String]) {
         if ctx.ask.choose(&q, &["no", "yes"]) != "yes" {
             continue;
         }
-        let Some(hook) = hook else {
-            ctx.ask.say(&format!(
-                "  derm setup does not know where derm's packages are: run it again with --packages <folder of a release's source or a clone>, or run `{line}` yourself."
-            ));
-            continue;
+        let args: Vec<String> = if derm_hook {
+            [id.as_str(), "--gate", "--write"]
+                .iter()
+                .map(|x| x.to_string())
+                .collect()
+        } else {
+            let Some(hook) = hook else {
+                ctx.ask.say(&format!(
+                    "  derm setup does not know where derm's packages are: run it again with --packages <folder of a release's source or a clone>, or run `{line}` yourself."
+                ));
+                continue;
+            };
+            [id.as_str(), "--gate", "--hook"]
+                .iter()
+                .map(|x| x.to_string())
+                .chain([hook.display().to_string(), "--write".into()])
+                .collect()
         };
-        let args: Vec<String> = [id.as_str(), "--gate", "--hook"]
-            .iter()
-            .map(|x| x.to_string())
-            .chain([hook.display().to_string(), "--write".into()])
-            .collect();
         let code = (ctx.connect)(&args);
         if code == 0 {
             ctx.changed
@@ -669,6 +683,16 @@ fn gate_is_print_only(id: &str) -> bool {
                     .iter()
                     .any(|s| matches!(s, crate::connect::gate::Step::Commands { .. }))
         })
+    })
+}
+
+/// Whether an agent's gate is `derm hook`, registered by derm's own path
+/// (wave 5b lane 5bF; `connect/gates.json` rows whose command names
+/// `{derm}`).
+fn gate_is_derm_hook(id: &str) -> bool {
+    crate::connect::gate::table().is_ok_and(|t| {
+        t.iter()
+            .any(|a| a.agent == id && a.command.as_deref().is_some_and(|c| c.contains("{derm}")))
     })
 }
 

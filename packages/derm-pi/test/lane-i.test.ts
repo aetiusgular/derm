@@ -1,21 +1,34 @@
 // Wave 2 lane I: oh-my-pi, the frozen input (BX9, rules case 88) and the new
 // control markers. The live checks in tests/cli-contract/checks/I/ run the same
 // against Pi 1.4.0 and oh-my-pi 18.13.3.
-import { describe, expect, it } from "vitest";
+//
+// Wave 5b (lane 5bC): the decision is `derm gate serve`'s, so the cases that
+// decide need a derm build (test/serve/real.ts); omp's MCP names are split
+// by derm-core's normalizer with the policy's servers.
+import { afterEach, describe, expect, it } from "vitest";
 import { createGate } from "../extensions/gate.ts";
 import { deepFreeze, freezeEnabled } from "../src/freeze.ts";
 import { harnessId, OMP, ompToolName } from "../src/harness.ts";
 import type { ToolCallResult } from "../src/pi-api.ts";
-import { FakeRpcClient, fakePi, memFs } from "./fake-pi.ts";
+import { FakeRpcClient, fakePi } from "./fake-pi.ts";
+import { DERM, real, type Real } from "./serve/real.ts";
 
-const HOME = "/home/u";
-const POLICY = `${HOME}/.derm/policy.json`;
+const itDerm = it.runIf(DERM !== undefined);
+const opened: Real[] = [];
+afterEach(async () => {
+  for (const r of opened.splice(0)) await r.close();
+});
+function realFor(rules: object[], opts: { servers?: string[]; env?: Record<string, string> } = {}): Real {
+  const r = real(JSON.stringify({ version: 1, askTimeoutSeconds: 1, servers: opts.servers ?? [], rules }), opts.env ?? {});
+  opened.push(r);
+  return r;
+}
 
 function setup(rules: object[], opts: { harness?: string; servers?: string[]; env?: Record<string, string> } = {}) {
-  const mem = memFs({ [POLICY]: { text: JSON.stringify({ version: 1, askTimeoutSeconds: 1, servers: opts.servers ?? [], rules }), mode: 0o100600, uid: 1000 } });
+  const r = realFor(rules, opts);
   const client = new FakeRpcClient(() => ({ confirmed: false }));
   const pi = fakePi({ client });
-  createGate({ env: () => opts.env ?? {}, fs: mem.fs, home: () => HOME, uid: 1000, ...(opts.harness ? { harness: opts.harness } : {}) })(pi.api);
+  createGate({ env: () => r.env, serve: r.serve, ...(opts.harness ? { harness: opts.harness } : {}) })(pi.api);
   const event = (toolName: string, input: Record<string, unknown>) => ({ type: "tool_call" as const, toolName, toolCallId: "c1", input });
   const call = (e: ReturnType<typeof event>) => pi.emit("tool_call", e) as Promise<ToolCallResult | undefined>;
   return { pi, call, event, client };
@@ -28,10 +41,10 @@ describe("the harness", () => {
     expect(harnessId({ Bun: undefined })).toBe("pi");
   });
 
-  it("a harness rule for oh-my-pi applies under omp and not under Pi", async () => {
+  itDerm("a harness rule for oh-my-pi applies under omp and not under Pi", async () => {
     const rules = [{ tool: "bash", action: "allow" }, { tool: "bash", harness: "oh-my-pi", action: "deny" }];
     const omp = setup(rules, { harness: OMP });
-    expect(await omp.call(omp.event("bash", { command: "ls" }))).toMatchObject({ block: true, reason: "Blocked by derm: rule bash harness=oh-my-pi: deny" });
+    expect(await omp.call(omp.event("bash", { command: "ls" }))).toMatchObject({ block: true, reason: "Blocked by derm: rule bash deny for harness oh-my-pi" });
     const pi = setup(rules);
     expect(await pi.call(pi.event("bash", { command: "ls" }))).toBeUndefined();
   });
@@ -47,14 +60,14 @@ describe("omp's MCP names (mcp__<server>_<tool>)", () => {
     expect(ompToolName("bash", ["bash"])).toBe("bash");
   });
 
-  it("a rule on my_srv/* matches omp's name; without the server list it would be my/srv_do_it", async () => {
+  itDerm("a rule on my_srv/* matches omp's name; without the server list it would be my/srv_do_it", async () => {
     const s = setup([{ tool: "my_srv/*", action: "deny" }, { tool: "my/*", action: "allow" }], { harness: OMP, servers: ["my_srv"] });
-    expect(await s.call(s.event("mcp__my_srv_do_it", {}))).toMatchObject({ block: true, reason: "Blocked by derm: rule my_srv/*: deny" });
+    expect(await s.call(s.event("mcp__my_srv_do_it", {}))).toMatchObject({ block: true, reason: "Blocked by derm: rule my_srv/* deny" });
   });
 });
 
 describe("the allowed input is the input that runs (BX9)", () => {
-  it("after an allow the input is frozen, deeply: a later handler's change throws", async () => {
+  itDerm("after an allow the input is frozen, deeply: a later handler's change throws", async () => {
     const s = setup([{ tool: "bash", action: "allow" }]);
     const e = s.event("bash", { command: "ls", nested: { a: [1, 2] } });
     expect(await s.call(e)).toBeUndefined();
@@ -67,7 +80,7 @@ describe("the allowed input is the input that runs (BX9)", () => {
     expect(e.input.command).toBe("ls");
   });
 
-  it("a later extension's change makes Pi's runner fail the call (the throw is the block)", async () => {
+  itDerm("a later extension's change makes Pi's runner fail the call (the throw is the block)", async () => {
     const s = setup([{ tool: "bash", action: "allow" }]);
     // A second extension loaded after derm, as Pi orders them (runner.js:957-971).
     s.pi.api.on("tool_call", (ev: { input: Record<string, unknown> }) => {
@@ -79,7 +92,7 @@ describe("the allowed input is the input that runs (BX9)", () => {
     expect(e.input.command).toBe("ls");
   });
 
-  it("a handler that only reads (Orca's kind) still works", async () => {
+  itDerm("a handler that only reads (Orca's kind) still works", async () => {
     const s = setup([{ tool: "bash", action: "allow" }]);
     let copied: unknown;
     s.pi.api.on("tool_call", (ev: { input: Record<string, unknown> }) => {
@@ -90,7 +103,7 @@ describe("the allowed input is the input that runs (BX9)", () => {
     expect(copied).toEqual({ command: "ls" });
   });
 
-  it("a deny leaves the input alone; an ask freezes it before the card, answered or not (FP1-S6)", async () => {
+  itDerm("a deny leaves the input alone; an ask freezes it before the card, answered or not (FP1-S6)", async () => {
     const s = setup([{ tool: "bash", action: "deny" }, { tool: "write", action: "ask" }]);
     const d = s.event("bash", { command: "ls" });
     await s.call(d);
@@ -103,10 +116,10 @@ describe("the allowed input is the input that runs (BX9)", () => {
     expect(Object.isFrozen(a.input)).toBe(true);
   });
 
-  it("code that changes the input while the card is open cannot change what a yes runs (FP1-S6)", async () => {
+  itDerm("code that changes the input while the card is open cannot change what a yes runs (FP1-S6)", async () => {
     const policy = { version: 1, askTimeoutSeconds: 1, rules: [{ tool: "bash", action: "ask" }] };
     for (const env of [{}, { DERM_PI_FREEZE_INPUT: "0" }]) {
-      const mem = memFs({ [POLICY]: { text: JSON.stringify(policy), mode: 0o100600, uid: 1000 } });
+      const r = realFor(policy.rules);
       const e = { type: "tool_call" as const, toolName: "bash", toolCallId: "c1", input: { command: "ls" } as Record<string, unknown> };
       let shown = "";
       const pi = fakePi({
@@ -121,7 +134,7 @@ describe("the allowed input is the input that runs (BX9)", () => {
           return { confirmed: true };
         }),
       });
-      createGate({ env: () => env, fs: mem.fs, home: () => HOME, uid: 1000 })(pi.api);
+      createGate({ env: () => ({ ...r.env, ...env }), serve: r.serve })(pi.api);
       const out = await pi.emit("tool_call", e);
       expect(shown).toContain("ls");
       if ("DERM_PI_FREEZE_INPUT" in env) {
@@ -133,16 +146,16 @@ describe("the allowed input is the input that runs (BX9)", () => {
     }
   });
 
-  it("an approved ask is frozen too", async () => {
-    const mem = memFs({ [POLICY]: { text: JSON.stringify({ version: 1, askTimeoutSeconds: 1, rules: [{ tool: "write", action: "ask" }] }), mode: 0o100600, uid: 1000 } });
+  itDerm("an approved ask is frozen too", async () => {
+    const r = realFor([{ tool: "write", action: "ask" }]);
     const pi = fakePi({ client: new FakeRpcClient(() => ({ confirmed: true })) });
-    createGate({ env: () => ({}), fs: mem.fs, home: () => HOME, uid: 1000 })(pi.api);
+    createGate({ env: () => r.env, serve: r.serve })(pi.api);
     const e = { type: "tool_call" as const, toolName: "write", toolCallId: "c1", input: { path: "a", content: "b" } };
     expect(await pi.emit("tool_call", e)).toBeUndefined();
     expect(Object.isFrozen(e.input)).toBe(true);
   });
 
-  it("DERM_PI_FREEZE_INPUT=0 turns it off", async () => {
+  itDerm("DERM_PI_FREEZE_INPUT=0 turns it off", async () => {
     expect(freezeEnabled({ DERM_PI_FREEZE_INPUT: "0" })).toBe(false);
     expect(freezeEnabled({})).toBe(true);
     const s = setup([{ tool: "bash", action: "allow" }], { env: { DERM_PI_FREEZE_INPUT: "0" } });
@@ -162,7 +175,7 @@ describe("the allowed input is the input that runs (BX9)", () => {
 });
 
 describe("control markers added in wave 2", () => {
-  it("an allowed command naming omp's folder or the folder variables asks", async () => {
+  itDerm("an allowed command naming omp's folder or the folder variables asks", async () => {
     const s = setup([{ tool: "bash", action: "allow" }]);
     for (const command of ["cat /home/u/.omp/agent/config.yml", "export PI_CODING_AGENT_DIR=/tmp/x", "export PI_CONFIG_DIR=/tmp/y", "export DERM_PI_FREEZE_INPUT=0"]) {
       const r = await s.call(s.event("bash", { command }));

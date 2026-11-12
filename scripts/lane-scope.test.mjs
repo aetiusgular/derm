@@ -25,6 +25,8 @@ default = []
 # [lane-C]
 fork-docker-mcp = []
 # [lane-D]
+# [lane-5bA]
+# [lane-5bB]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -53,6 +55,14 @@ for (const [p, t] of Object.entries({
   "crates/derm-cli/src/main.rs": "fn main() {}\n",
   "crates/derm-cli/src/connect/mod.rs": "// c\n",
   "crates/derm-cli/src/run/mod.rs": "// d\n",
+  "crates/derm-cli/src/hook/mod.rs": "// hook\n",
+  "crates/derm-cli/src/hook/claude_format/mod.rs": "// a\n",
+  "crates/derm-cli/src/gate/core.rs": "// gate\n",
+  "crates/derm-cli/src/gate/serve/mod.rs": "// c\n",
+  "crates/derm-cli/tests/hook_cases_5bA.rs": "// red\n",
+  "crates/derm-cli/tests/support/replay.rs": "// replay\n",
+  "crates/derm-sysmon/src/lib.rs": "// e\n",
+  "crates/derm-sysmon/tests/contract.rs": "// red\n",
   "crates/derm-daemon/src/lib.rs": "// b\n",
   "crates/derm-daemon/src/computer_use/mod.rs": "// k\n",
   "packages/derm-pi/extensions/gate.ts": "// a\n",
@@ -123,6 +133,19 @@ const cases = [
   ["wave 5: lane F no longer owns core/installs/", "F", () => write("packages/derm-claude-plugin/src/core/installs/index.ts", "// f\n"), 1, "owned by lane X"],
   ["wave 5: derm-core's manifest, own section (X)", "X", () => write("crates/derm-core/Cargo.toml", coreCargo.replace("# [lane-X]\n", "# [lane-X]\nureq = \"=3.0.0\"\n")), 0, "clean"],
   ["wave 5: derm-core's manifest, another lane's section (Z writes under X)", "Z", () => write("crates/derm-core/Cargo.toml", coreCargo.replace("# [lane-X]\n", "# [lane-X]\nwindows = \"=0.61.0\"\n")), 1, "lane X's section changed"],
+  // Wave 5b (the wave 5b base): lane names with digits, the gate's seams,
+  // and the base's red tests, which no lane edits.
+  ["wave 5b: lane 5bA's hook/claude_format/", "5bA", () => write("crates/derm-cli/src/hook/claude_format/mod.rs", "// a2\n"), 0, "clean"],
+  ["wave 5b: hook/mod.rs is no lane's", "5bA", () => write("crates/derm-cli/src/hook/mod.rs", "// x\n"), 1, "owned by no lane"],
+  ["wave 5b: lane 5bB cannot edit claude_format/", "5bB", () => write("crates/derm-cli/src/hook/claude_format/mod.rs", "// b\n"), 1, "owned by lane 5bA"],
+  ["wave 5b: lane 5bC's gate/serve/", "5bC", () => write("crates/derm-cli/src/gate/serve/mod.rs", "// c2\n"), 0, "clean"],
+  ["wave 5b: gate/ outside serve/ is no lane's", "5bC", () => write("crates/derm-cli/src/gate/core.rs", "// x\n"), 1, "owned by no lane"],
+  ["wave 5b: the red tests are no lane's", "5bA", () => write("crates/derm-cli/tests/hook_cases_5bA.rs", "// x\n"), 1, "no lane edits this"],
+  ["wave 5b: the replay harness is no lane's", "5bB", () => write("crates/derm-cli/tests/support/replay.rs", "// x\n"), 1, "no lane edits this"],
+  ["wave 5b: lane 5bE's crate", "5bE", () => write("crates/derm-sysmon/src/lib.rs", "// e2\n"), 0, "clean"],
+  ["wave 5b: lane 5bE's red test is not its own", "5bE", () => write("crates/derm-sysmon/tests/contract.rs", "// x\n"), 1, "owned by no lane"],
+  ["wave 5b: shared Cargo.toml, own section (5bA)", "5bA", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-5bA]\n", "# [lane-5bA]\nx = []\n")), 0, "clean"],
+  ["wave 5b: shared Cargo.toml, 5bB writes under 5bA", "5bB", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-5bA]\n", "# [lane-5bA]\nx = []\n")), 1, "lane 5bA's section changed"],
 ];
 
 let failed = 0;
@@ -142,6 +165,7 @@ for (const [name, argv, code] of [
   // "O" is never a lane (section 7a skips it). "Z" was the bad letter until
   // the wave 5 base made lane Z.
   ["bad lane letter", ["O", "--base", base], 2],
+  ["bad wave 5b lane", ["5bG", "--base", base], 2],
   ["bad base", ["A", "--base", "no-such-commit"], 2],
   ["stray argument", ["A", "--frob"], 2],
 ]) {
@@ -152,6 +176,6 @@ for (const [name, argv, code] of [
 }
 
 rmSync(repo, { recursive: true, force: true });
-const total = cases.length + 3;
+const total = cases.length + 4;
 console.log(`${total - failed} of ${total} as expected`);
 process.exit(failed ? 1 : 0);

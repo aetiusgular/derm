@@ -17,12 +17,15 @@ const source = path.join(here, "..", "src", "core");
 // derm-gemini-extension and derm-kilo-plugin added by integration w1 for wave 2 lane I;
 // derm-hermes-plugin and derm-openclaw-plugin by integration w2 (lane I's request 3);
 // the four wave 4 packages by integration w2's scaffold (section 8, step 6).
+// The wave 5b close (11 Nov) removed derm-codex-plugin and derm-hermes-plugin:
+// their hooks run `derm hook` in Rust and no file of theirs reads the core.
+// The rest keep a copy until their last reader moves (the close's status doc,
+// switch-over: Amp's TypeScript gate, the shims' owner checks, Gemini's policy
+// writer, the compat and native packages' contract checks).
 const targets = [
-  "derm-codex-plugin",
   "derm-opencode-plugin",
   "derm-gemini-extension",
   "derm-kilo-plugin",
-  "derm-hermes-plugin",
   "derm-openclaw-plugin",
   "derm-hooks-claude-compat",
   "derm-hooks-native",

@@ -88,6 +88,30 @@ fn claude_install(h: &Home, src: &Path) -> PathBuf {
     dest
 }
 
+/// A stand-in for derm at `~/.local/bin/derm`, where the plugins' launcher
+/// finds it (wave 5b lane 5bF): it answers a shell call as `derm hook
+/// <agent> pre` answers one a policy denies, in that agent's own form
+/// (Claude Code's deny decision, Codex's exit 2 with the reason on stderr,
+/// Gemini's JSON deny), and records its argv. The real derm answers the
+/// same call in the contract checks (`tests/cli-contract/checks/5bF/`).
+/// Built on every OS, since the tests that call it run on Windows too
+/// (they were among the Windows job's failures before wave 5b); the modes
+/// are Unix-only.
+fn derm_at_home(h: &Home) {
+    let bin = h.root.join("home/.local/bin");
+    let body = "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$HOME/derm-argv\"\ncat >/dev/null\ncase \"$2\" in\nclaude-code) printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: rule bash deny\"}}' ;;\ncodex) echo 'derm: rule bash deny' >&2; exit 2 ;;\ngemini) printf '%s\\n' '{\"decision\":\"deny\",\"reason\":\"derm: rule bash deny\"}'; exit 2 ;;\nesac\n";
+    put(&bin.join("derm"), body);
+    #[cfg(unix)]
+    for p in [
+        h.root.join("home"),
+        h.root.join("home/.local"),
+        bin.clone(),
+        bin.join("derm"),
+    ] {
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -217,9 +241,22 @@ fn switches_that_turn_the_gate_off_are_named() {
 #[test]
 fn the_installed_claude_code_gate_denies_a_denied_call() {
     let h = home("cc-gate");
-    claude_install(&h, &repo().join("packages/derm-claude-plugin"));
+    derm_at_home(&h);
+    let dest = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
     let r = run_fixture("claude-code", &env(&h), &probes());
     assert_eq!(r["state"], "pass", "{r}");
+    std::fs::remove_dir_all(&dest).unwrap();
+    // The launcher ran `derm hook claude-code pre` from ~/.local/bin.
+    assert!(
+        r["hook"].as_str().unwrap().ends_with("hooks/derm-gate.sh"),
+        "{r}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook claude-code pre\n"
+    );
+    // A plugin from before wave 5b (only bin/derm-hook.mjs) is still run,
+    // with node, as before.
     // A hook that lets everything through fails the check.
     let fake = h.root.join("fake-plugin");
     put(
@@ -242,6 +279,7 @@ fn the_installed_claude_code_gate_denies_a_denied_call() {
 #[test]
 fn the_installed_codex_gate_denies_a_denied_call() {
     let h = home("cx-gate");
+    derm_at_home(&h);
     let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
     copy_dir(
         &repo().join("packages/derm-codex-plugin"),
@@ -254,9 +292,145 @@ fn the_installed_codex_gate_denies_a_denied_call() {
     let r = run_fixture("codex", &env(&h2), &probes());
     assert_eq!(r["state"], "not run");
     // An agent with no runner says so.
-    let r = run_fixture("gemini", &env(&h2), &probes());
+    let r = run_fixture("crush", &env(&h2), &probes());
     assert_eq!(r["state"], "not run");
     assert!(r["why"].as_str().unwrap().contains("no fixture runner"));
+}
+
+/// Wave 5b lane 5bF: Gemini's extension, copied where Gemini installs it,
+/// runs the launcher with Gemini's own input, and its JSON deny passes.
+#[cfg(unix)]
+#[test]
+fn the_installed_gemini_gate_denies_a_denied_call() {
+    let h = home("gm-gate");
+    derm_at_home(&h);
+    let r = run_fixture("gemini", &env(&h), &probes());
+    assert_eq!(r["state"], "not run", "{r}");
+    copy_dir(
+        &repo().join("packages/derm-gemini-extension"),
+        &h.root.join("home/.gemini/extensions/derm"),
+    );
+    let r = run_fixture("gemini", &env(&h), &probes());
+    assert_eq!(r["state"], "pass", "{r}");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook gemini before\n"
+    );
+}
+
+/// MW5B-6 (Mac test w5b retest, step 4): a registration whose derm is not
+/// there any more (a Homebrew keg `brew upgrade` cleaned up) runs nothing:
+/// Cursor then blocks every call (`failClosed`), an agent that fails open
+/// runs it ungated (case 70). Doctor names the line, the path and the fix,
+/// for every agent whose gate is a `derm hook` line.
+#[cfg(unix)]
+#[test]
+fn mw5b_6_a_registration_whose_derm_is_gone_is_named() {
+    let h = home("gone-derm");
+    let e = env(&h);
+    let gone = h.root.join("Cellar/derm/0.1.3-w5b/bin/derm");
+    let crush = h.root.join("home/.config/crush/crush.json");
+    put(
+        &crush,
+        &format!(
+            "{{\"hooks\":{{\"PreToolUse\":[{{\"name\":\"derm-gate\",\"command\":\"{} hook crush pre\"}}]}}}}",
+            gone.display()
+        ),
+    );
+    let p = stale_registrations("crush", &e);
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].contains(&gone.display().to_string()), "{p:?}");
+    assert!(p[0].contains("is not there"), "{p:?}");
+    assert!(p[0].contains("derm connect crush --gate --write"), "{p:?}");
+    // Cursor's two entries, as derm connect writes them.
+    let cursor = h.root.join("home/.cursor/hooks.json");
+    let entry = format!(
+        "{{\"command\":\"{} hook cursor pre\",\"timeout\":120,\"failClosed\":true}}",
+        gone.display()
+    );
+    put(
+        &cursor,
+        &format!("{{\"version\":1,\"hooks\":{{\"preToolUse\":[{entry}],\"beforeMCPExecution\":[{entry}]}}}}"),
+    );
+    let p = stale_registrations("cursor", &e);
+    assert!(
+        p.iter().any(|x| x.contains("is not there") && x.contains("derm connect cursor --gate --write")),
+        "{p:?}"
+    );
+    // Once it is there again, nothing.
+    put(&gone, "#!/bin/sh\n");
+    assert!(stale_registrations("crush", &e).is_empty());
+}
+
+/// Case 227 (wave 5b lane 5bF): a registration that finds derm's gate, or
+/// its node, on PATH is a problem with the fix; one naming derm by its
+/// absolute path is not.
+#[cfg(unix)]
+#[test]
+fn a_registration_that_finds_the_gate_on_path_is_a_problem() {
+    let h = home("on-path");
+    let crush = h.root.join("home/.config/crush/crush.json");
+    let mut e = env(&h);
+    // Programs that are there: since fix pass 2 (MW5B-6) a line naming a
+    // derm that is not there is a problem of its own (the next test).
+    let there = h.root.join("bin/derm");
+    put(&there, "#!/bin/sh\n");
+    let there = there.display().to_string();
+    let quoted = format!("\"{there}\" hook crush pre");
+    let plain = format!("{there} hook crush pre");
+    let line = |cmd: &str| {
+        format!(
+            "{{\"hooks\":{{\"PreToolUse\":[{{\"name\":\"derm-gate\",\"command\":{}}}]}}}}",
+            serde_json::to_string(cmd).unwrap()
+        )
+    };
+    for (cmd, want) in [
+        (
+            "node --no-warnings \"/x/derm-hooks-native/bin/derm-hook.mjs\" crush",
+            Some("before wave 5b"),
+        ),
+        ("derm hook crush pre", Some("found on PATH")),
+        ("\"derm\" hook crush pre", Some("found on PATH")),
+        (plain.as_str(), None),
+        (quoted.as_str(), None),
+    ] {
+        put(&crush, &line(cmd));
+        let p = stale_registrations("crush", &e);
+        match want {
+            Some(w) => {
+                assert_eq!(p.len(), 1, "{cmd}: {p:?}");
+                assert!(
+                    p[0].contains(w) && p[0].contains("derm connect crush --gate --write"),
+                    "{cmd}: {p:?}"
+                );
+            }
+            None => assert!(p.is_empty(), "{cmd}: {p:?}"),
+        }
+    }
+    // XDG_CONFIG_HOME moves the file, as derm connect reads it.
+    let xdg = h.root.join("xdg");
+    put(&xdg.join("crush/crush.json"), &line("derm hook crush pre"));
+    e.vars
+        .push(("XDG_CONFIG_HOME".into(), xdg.display().to_string()));
+    put(&crush, &line(&plain));
+    assert_eq!(stale_registrations("crush", &e).len(), 1);
+    // A plugin copy from before wave 5b.
+    let h2 = home("on-path-plugin");
+    let old = h2.root.join("old-plugin");
+    put(&old.join("bin/derm-hook.mjs"), "process.exitCode = 2;");
+    claude_install(&h2, &old);
+    let p = stale_registrations("claude-code", &env(&h2));
+    assert!(
+        p.iter().any(|x| x.contains("runs `node` found on PATH")),
+        "{p:?}"
+    );
+    claude_install(&h2, &repo().join("packages/derm-claude-plugin"));
+    assert!(stale_registrations("claude-code", &env(&h2)).is_empty());
+    // And the report lists them as problems.
+    let row = find_row("crush").unwrap();
+    put(&crush, &line("derm hook crush pre"));
+    let r = doctor(&row, &env(&h), &probes(), false, false);
+    assert!(r["problems"].to_string().contains("found on PATH"), "{r}");
 }
 
 #[test]
@@ -350,13 +524,14 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
     // A copy whose folder others can write: not run.
     let h = home("hook-mode");
     let dest = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
-    std::fs::set_permissions(dest.join("bin"), std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::fs::set_permissions(dest.join("hooks"), std::fs::Permissions::from_mode(0o777)).unwrap();
     let r = run_fixture("claude-code", &env(&h), &probes());
     assert_eq!(r["state"], "not run", "{r}");
     assert!(r["why"].as_str().unwrap().contains("writable"), "{r}");
     // Codex: the highest version, read as a version; a name that is not one
     // is never picked.
     let h = home("hook-semver");
+    derm_at_home(&h);
     let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
     for v in ["0.2.0", "zzz"] {
         put(
@@ -374,7 +549,7 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
         r["hook"]
             .as_str()
             .unwrap()
-            .ends_with("0.10.0/bin/derm-hook.mjs"),
+            .ends_with("0.10.0/hooks/derm-gate.sh"),
         "{r}"
     );
 }
@@ -384,6 +559,7 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
 #[test]
 fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     let h = home("ask-gate");
+    derm_at_home(&h);
     let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
     copy_dir(
         &repo().join("packages/derm-codex-plugin"),
@@ -394,12 +570,13 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     assert_eq!(r["gateRun"]["state"], "not run", "{r}");
     let why = r["gateRun"]["why"].as_str().unwrap();
     assert!(why.contains("--run-gate"), "{why}");
-    assert!(why.contains("0.1.3/bin/derm-hook.mjs"), "{why}");
+    assert!(why.contains("0.1.3/hooks/derm-gate.sh"), "{why}");
+    assert!(why.contains("/bin/sh, which runs derm hook"), "{why}");
     assert!(render(&r).contains("--run-gate"));
     let r = doctor(&row, &env(&h), &probes(), false, true);
     assert_eq!(r["gateRun"]["state"], "pass", "{r}");
     assert!(
-        render(&r).contains("0.1.3/bin/derm-hook.mjs"),
+        render(&r).contains("0.1.3/hooks/derm-gate.sh"),
         "{}",
         render(&r)
     );
@@ -461,5 +638,181 @@ fn the_claude_code_hook_doctor_names_is_the_one_this_folder_loads() {
         got.starts_with(other.canonicalize().unwrap()),
         "{}",
         got.display()
+    );
+}
+
+/// BW5B-3 (box test w5b, step 3): goose 1.59.0 loads every folder under the
+/// session folder's `.agents/plugins/` as a project plugin with no prompt,
+/// ranks it before yours, keeps the first plugin of a name, and reads
+/// `disabledPlugins` from the session folder's `.config/goose/settings.json`
+/// and `settings.local.json` and from your own (`plugins/discovery.rs:52-101,
+/// 155-176, 181-250`, `agents/services.rs:383` at 5d03ef6). doctor names
+/// each, and says which one switches derm's gate off.
+#[test]
+fn bw5b_3_goose_project_plugins_and_disabled_plugins_are_named() {
+    let h = home("goose-shadows");
+    let e = env(&h);
+    let row = find_row("goose").unwrap();
+    assert!(shadows("goose", &row, &e).is_empty());
+    let proj = h.root.join("proj");
+    let name = "derm-0123456789abcdef";
+    put(&h.root.join("home/.derm/gate-name"), &format!("{name}\n"));
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        h.root.join("home/.derm/gate-name"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    put(&proj.join(".agents/plugins/derm/hooks/hooks.json"), "{}");
+    put(&proj.join(".agents/plugins/lint/plugin.json"), "{}");
+    put(
+        &proj.join(".config/goose/settings.json"),
+        "{\"disabledPlugins\": [\"derm\", \"derm-gate\"]}",
+    );
+    let s = shadows("goose", &row, &e);
+    let paths: Vec<String> = s
+        .iter()
+        .map(|v| v["path"].as_str().unwrap().replace('\\', "/"))
+        .collect();
+    for want in [
+        ".agents/plugins/derm",
+        ".agents/plugins/lint",
+        ".config/goose/settings.json",
+    ] {
+        assert!(paths.iter().any(|p| p.ends_with(want)), "{want}: {s:?}");
+    }
+    // None of these is derm's drawn name: each adds hooks, none turns derm off.
+    assert!(s.iter().all(|v| v["turnsOff"] == json!(false)), "{s:?}");
+    // A project plugin under derm's drawn name, or a disabledPlugins that
+    // names it (project, local or yours), switches derm's gate off.
+    put(
+        &proj.join(format!(".agents/plugins/{name}/plugin.json")),
+        "{}",
+    );
+    put(
+        &proj.join(".config/goose/settings.local.json"),
+        &format!("{{\"disabledPlugins\": [\"{name}\"]}}"),
+    );
+    put(
+        &h.root.join("home/.config/goose/settings.json"),
+        &format!("{{\"disabledPlugins\": [\"{name}\"]}}"),
+    );
+    let s = shadows("goose", &row, &e);
+    let off: Vec<String> = s
+        .iter()
+        .filter(|v| v["turnsOff"] == json!(true))
+        .map(|v| v["path"].as_str().unwrap().replace('\\', "/"))
+        .collect();
+    // goose stops at the first scope that lists derm's (local), so your own
+    // settings do not decide here (FP1-S11).
+    assert_eq!(off.len(), 2, "{s:?}");
+    assert!(
+        off.iter()
+            .any(|p| p.ends_with(&format!(".agents/plugins/{name}"))),
+        "{off:?}"
+    );
+    assert!(
+        off.iter()
+            .any(|p| p.ends_with("proj/.config/goose/settings.local.json")),
+        "{off:?}"
+    );
+    assert!(
+        !off.iter()
+            .any(|p| p.ends_with("home/.config/goose/settings.json")),
+        "{off:?}"
+    );
+    // The session folder is your home: goose reads one plugins folder, yours.
+    let mut at_home = env(&h);
+    at_home.cwd = Some(h.root.join("home"));
+    put(
+        &h.root
+            .join("home/.agents/plugins")
+            .join(name)
+            .join("plugin.json"),
+        "{}",
+    );
+    let s = shadows("goose", &row, &at_home);
+    assert!(
+        !s.iter()
+            .any(|v| v["path"].as_str().unwrap().contains(".agents/plugins")),
+        "{s:?}"
+    );
+}
+
+/// BW5B-3: a repository decides how many plugin folders doctor reads; it
+/// names derm's own always and at most 32 others.
+#[test]
+fn bw5b_3_a_project_with_many_goose_plugins_is_listed_in_bounds() {
+    let h = home("goose-many");
+    let e = env(&h);
+    let row = find_row("goose").unwrap();
+    let name = "derm-fedcba9876543210";
+    put(&h.root.join("home/.derm/gate-name"), &format!("{name}\n"));
+    #[cfg(unix)]
+    std::fs::set_permissions(
+        h.root.join("home/.derm/gate-name"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let plugins = h.root.join("proj/.agents/plugins");
+    for i in 0..100 {
+        std::fs::create_dir_all(plugins.join(format!("p{i:03}"))).unwrap();
+    }
+    std::fs::create_dir_all(plugins.join(name)).unwrap();
+    let s = shadows("goose", &row, &e);
+    assert_eq!(s.len(), 34, "{s:?}");
+    assert!(s
+        .iter()
+        .any(|v| v["turnsOff"] == json!(true) && v["path"].as_str().unwrap().ends_with(name)));
+    assert!(
+        s.iter()
+            .any(|v| v["what"].as_str().unwrap().starts_with("68 more")),
+        "{s:?}"
+    );
+}
+
+/// FP1-S11 (the fix pass's review): goose decides a plugin by the first
+/// scope that lists it, local, then project, then yours, `enabledPlugins` as
+/// well as `disabledPlugins` (`plugins/discovery.rs:155-176` at 5d03ef6);
+/// with no drawn name, derm's gate is under the older fixed name `derm`.
+#[test]
+fn fp1_s11_goose_scopes_decide_in_order_and_the_old_name_counts() {
+    let h = home("goose-scopes");
+    let e = env(&h);
+    let row = find_row("goose").unwrap();
+    // No ~/.derm/gate-name: derm's plugin is the one named `derm`.
+    put(&h.root.join("proj/.agents/plugins/derm/plugin.json"), "{}");
+    put(
+        &h.root.join("home/.config/goose/settings.json"),
+        "{\"disabledPlugins\": [\"derm\"]}",
+    );
+    let off = |s: &Vec<serde_json::Value>| {
+        s.iter()
+            .filter(|v| v["turnsOff"] == json!(true))
+            .map(|v| v["path"].as_str().unwrap().replace('\\', "/"))
+            .collect::<Vec<_>>()
+    };
+    let s = shadows("goose", &row, &e);
+    let o = off(&s);
+    assert!(
+        o.iter().any(|p| p.ends_with("proj/.agents/plugins/derm")),
+        "{s:?}"
+    );
+    assert!(
+        o.iter()
+            .any(|p| p.ends_with("home/.config/goose/settings.json")),
+        "{s:?}"
+    );
+    // The session folder's local settings enable it: your disable no longer counts.
+    put(
+        &h.root.join("proj/.config/goose/settings.local.json"),
+        "{\"enabledPlugins\": [\"derm\"]}",
+    );
+    let s = shadows("goose", &row, &e);
+    assert!(
+        !off(&s)
+            .iter()
+            .any(|p| p.ends_with("home/.config/goose/settings.json")),
+        "{s:?}"
     );
 }

@@ -1,11 +1,15 @@
 {
-  "description": "derm policy gate for Codex. Codex fails open when a hook fails or times out, so the hook never crashes on purpose and caps its own waits below this timeout.",
+  "description": "derm policy gate for Codex. Codex runs each line with its shell and lets a call through when a hook fails or times out, so derm's hook never crashes on purpose and caps its own waits below this timeout. /bin/sh by its absolute path runs hooks/derm-gate.sh, which runs `derm hook codex <event>` from derm's install folders, never from PATH (contracts/hook-dialects.md 9.1; rules case 227).",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "node --no-warnings \"${PLUGIN_ROOT}/bin/derm-hook.mjs\" pre", "timeout": 120 }
+          {
+            "type": "command",
+            "command": "/bin/sh \"$PLUGIN_ROOT/hooks/derm-gate.sh\" codex pre",
+            "timeout": 120
+          }
         ]
       }
     ],
@@ -13,7 +17,11 @@
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "node --no-warnings \"${PLUGIN_ROOT}/bin/derm-hook.mjs\" post", "timeout": 30 }
+          {
+            "type": "command",
+            "command": "/bin/sh \"$PLUGIN_ROOT/hooks/derm-gate.sh\" codex post",
+            "timeout": 30
+          }
         ]
       }
     ]

@@ -394,8 +394,23 @@ mod tests {
         list.iter().map(|value| value.to_string()).collect()
     }
 
+    /// The home and catalog folder in this OS's own form. Docker strips
+    /// `file://` and hands the rest to Go's `filepath.IsAbs` and
+    /// `filepath.Abs` (docker/mcp-gateway `pkg/workingset/workingset.go`
+    /// `parseLocalFileReference`, `pkg/catalog/catalog.go`
+    /// `ResolveLocalCatalogPath`, read at `7e0f342`), so on Windows the
+    /// reference it reads is `file://C:/Users/...`, never `file:///C:/...`.
+    #[cfg(windows)]
+    const HOME: &str = r"C:\Users\me";
+    #[cfg(windows)]
+    const CATALOGS: &str = "file://C:/Users/me/.docker/mcp/catalogs";
+    #[cfg(not(windows))]
+    const HOME: &str = "/Users/me";
+    #[cfg(not(windows))]
+    const CATALOGS: &str = "file:///Users/me/.docker/mcp/catalogs";
+
     fn allowed(list: &[&str]) -> bool {
-        allowed_timeout(&args(list), Some(Path::new("/Users/me"))).is_some()
+        allowed_timeout(&args(list), Some(Path::new(HOME))).is_some()
     }
 
     #[test]
@@ -438,7 +453,7 @@ mod tests {
             "add",
             "derm_github",
             "--server",
-            "file:///Users/me/.docker/mcp/catalogs/exa.yaml",
+            &format!("{CATALOGS}/exa.yaml"),
         ]));
         assert!(allowed(&[
             "mcp",
@@ -654,7 +669,7 @@ mod tests {
             "add",
             "derm_x",
             "--server",
-            "file:///Users/me/.docker/mcp/catalogs/../../.ssh/id_rsa",
+            &format!("{CATALOGS}/../../.ssh/id_rsa"),
         ]));
         assert!(!allowed(&[
             "mcp",

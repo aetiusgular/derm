@@ -2,9 +2,9 @@
 // nothing, because the validate path never called the two checks. These run
 // the real command line and the exported pass.
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { CATALOG_DIR, loadCatalog, optInChecks } from "./index.ts";
@@ -16,10 +16,22 @@ describe("opt-in checks in the validate path", () => {
   it("node library/cli.ts validate runs skills-ref on every skill when DERM_LIBRARY_SKILLS_REF=1", async () => {
     const bin = mkdtempSync(join(tmpdir(), "derm-skillsref-"));
     const seen = join(bin, "seen");
-    // A fake skills-ref: records each folder, fails each with one finding.
-    writeFileSync(join(bin, "skills-ref"), `#!/bin/sh\necho "$2" >> '${seen}'\necho "Validation failed for $2:" >&2\necho "  - fake finding" >&2\nexit 1\n`);
-    chmodSync(join(bin, "skills-ref"), 0o755);
-    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env["PATH"]}`, DERM_LIBRARY_SKILLS_REF: "1" };
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env["PATH"]}`, DERM_LIBRARY_SKILLS_REF: "1" };
+    if (process.platform === "win32") {
+      // Windows starts only a program file from PATH here: libuv tries the
+      // name with `.com` and `.exe`, never a script with no extension (a
+      // pip install there is `skills-ref.exe`). The fake is this node,
+      // copied under that name, with a preload that acts only in the copy:
+      // records the folder, fails it with one finding.
+      copyFileSync(process.execPath, join(bin, "skills-ref.exe"));
+      const pre = join(bin, "fake-skills-ref.cjs");
+      writeFileSync(pre, `if (/skills-ref\\.exe$/i.test(process.execPath)) { require("fs").appendFileSync(${JSON.stringify(seen)}, process.argv[2] + "\\n"); process.stderr.write("Validation failed for " + process.argv[2] + ":\\n  - fake finding\\n"); process.exit(1); }\n`);
+      env["NODE_OPTIONS"] = `--require ${JSON.stringify(pre)}`;
+    } else {
+      // A fake skills-ref: records each folder, fails each with one finding.
+      writeFileSync(join(bin, "skills-ref"), `#!/bin/sh\necho "$2" >> '${seen}'\necho "Validation failed for $2:" >&2\necho "  - fake finding" >&2\nexit 1\n`);
+      chmodSync(join(bin, "skills-ref"), 0o755);
+    }
     delete env["DERM_LIBRARY_ONLINE"];
     const r = await run(process.execPath, [CLI, "validate"], { env }).then(
       (x) => ({ code: 0, out: x.stdout }),
@@ -68,7 +80,7 @@ describe("opt-in checks in the validate path", () => {
     expect(seen.length).toBeGreaterThan(0);
     for (const a of seen) {
       expect(a[0]).toBe("validate");
-      expect(a[1]?.startsWith("/")).toBe(true);
+      expect(isAbsolute(a[1] ?? "")).toBe(true);
     }
   });
 });

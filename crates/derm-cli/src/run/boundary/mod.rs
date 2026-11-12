@@ -40,6 +40,8 @@ pub(crate) mod probe;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sbx;
 mod settings;
+// Wave 5b lane 5bD (the wave 5b base's seam).
+pub(crate) mod windows_srt;
 
 #[allow(unused_imports)]
 pub(crate) use io_uring::mark as io_uring_mark;

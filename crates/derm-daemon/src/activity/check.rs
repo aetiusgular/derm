@@ -160,13 +160,92 @@ fn covering<'a>(
     })
 }
 
-/// True when `path` is the folder or below it, read literally.
+/// True when `path` is the folder or below it, read literally (on Windows,
+/// as Windows reads a path: [`inside_windows`]).
 pub fn inside(path: &str, folder: &str) -> bool {
+    #[cfg(windows)]
+    {
+        inside_windows(path, folder)
+    }
+    #[cfg(not(windows))]
+    {
+        inside_unix(path, folder)
+    }
+}
+
+/// [`inside`] on Unix: `/` between parts, compared byte for byte.
+pub fn inside_unix(path: &str, folder: &str) -> bool {
     let folder = folder.trim_end_matches('/');
     if folder.is_empty() || !path.starts_with('/') || path.split('/').any(|p| p == "..") {
         return false;
     }
     path == folder || path.starts_with(&format!("{folder}/"))
+}
+
+/// [`inside`] on Windows (WW5B-1, Windows test w5b: every write a Windows
+/// chat made was flagged "outside this chat's folders", its own folder
+/// included). `\` or `/` between parts; a drive's letter and the names
+/// compared without ASCII case, as NTFS compares them by default (a name
+/// that differs only outside ASCII stays apart, so a flag is never hidden by
+/// a fold Windows would not make); the folder `derm run` sends is
+/// `std::fs::canonicalize`'s extended-length `\\?\C:\...` (Rust 1.97.0
+/// `library/std/src/fs.rs`, canonicalize: "On Windows, this converts the
+/// path to use extended length path syntax"), and Sysmon names the same file
+/// `C:\...`, so a `\\?\` before a drive is read as the drive path, as
+/// `dunce::simplified` reads it (dunce 1.0.5 `src/lib.rs:53-60, 152-182`;
+/// other `\\?\` forms are compared as written). A folder NTFS keeps case
+/// sensitive (`fsutil file setCaseSensitiveInfo`, folders WSL makes) is still
+/// compared without ASCII case, so a write to a sibling that differs only in
+/// case is read as inside: open, low (FP2-S5). A path must be rooted
+/// (`C:\...`, `\\server\...` or `\...`), with no `..` part.
+pub fn inside_windows(path: &str, folder: &str) -> bool {
+    fn plain(s: &str) -> String {
+        let b = s.as_bytes();
+        let s = if b.len() >= 6
+            && b.starts_with(br"\\?\")
+            && b[4].is_ascii_alphabetic()
+            && b[5] == b':'
+        {
+            &s[4..]
+        } else {
+            s
+        };
+        s.replace('/', "\\")
+    }
+    fn rooted(s: &str) -> bool {
+        let b = s.as_bytes();
+        b.first() == Some(&b'\\')
+            || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
+    }
+    // FP2-S6 (fix pass 2's review): a folder in the `\\` namespace is a
+    // share only with a server and a share name; `\\?`, `\\.` or a bare
+    // `\\server` would hold every path under them.
+    fn share_or_drive(s: &str) -> bool {
+        match s.strip_prefix("\\\\") {
+            Some(rest) => {
+                let mut parts = rest.split('\\');
+                let server = parts.next().unwrap_or("");
+                let share = parts.next().unwrap_or("");
+                !server.is_empty() && server != "?" && server != "." && !share.is_empty()
+            }
+            None => true,
+        }
+    }
+    let path = plain(path);
+    let folder = plain(folder);
+    let folder = folder.trim_end_matches('\\');
+    if folder.is_empty()
+        || !share_or_drive(folder)
+        || !rooted(&path)
+        || !rooted(folder)
+        || path.split('\\').any(|p| p == "..")
+    {
+        return false;
+    }
+    let (p, f) = (path.as_bytes(), folder.as_bytes());
+    p.len() >= f.len()
+        && p[..f.len()].eq_ignore_ascii_case(f)
+        && (p.len() == f.len() || p[f.len()] == b'\\')
 }
 
 /// The user's home folder from a path, `/Users/<name>` or `/home/<name>`.
@@ -1532,6 +1611,85 @@ mod tests {
         assert!(flags[0]
             .summary
             .starts_with("Deleted /Users/t/Documents/taxes.pdf"));
+    }
+
+    /// WW5B-1 (Windows test w5b): a Windows chat's own folder, as `derm run`
+    /// sends it (`\\?\C:\...`), holds the writes Sysmon names `C:\...`;
+    /// a sibling with a shared prefix, another drive, `..` and a relative
+    /// path do not.
+    #[test]
+    fn ww5b_1_windows_paths_are_inside_as_windows_reads_them() {
+        let folder = r"\\?\C:\derm-win-w5\proj-w5b12";
+        for (path, want) in [
+            (r"C:\derm-win-w5\proj-w5b12\w5b12-written.txt", true),
+            (r"C:\derm-win-w5\proj-w5b12", true),
+            (r"c:\DERM-WIN-W5\proj-w5b12\x", true),
+            (r"C:/derm-win-w5/proj-w5b12/sub/x", true),
+            (r"\\?\C:\derm-win-w5\proj-w5b12\x", true),
+            (r"C:\derm-win-w5\proj-w5b12x\x", false),
+            (r"C:\derm-win-w5\proj-w5b12\..\x", false),
+            (r"D:\derm-win-w5\proj-w5b12\x", false),
+            (r"C:\Users\usern\w5b12-written.txt", false),
+            (r"derm-win-w5\proj-w5b12\x", false),
+            (r"C:x", false),
+        ] {
+            assert_eq!(inside_windows(path, folder), want, "{path}");
+        }
+        assert!(inside_windows(r"C:\a\b", r"C:\a\"));
+        assert!(!inside_windows(r"C:\a\b", ""));
+        assert!(!inside_windows(r"C:\a\b", r"C:\"));
+        // FP2-S6: no folder holds a whole namespace.
+        for (path, folder) in [
+            (r"\\?\UNC\evil\share\x", r"\\?\"),
+            (r"\\?\Volume{1234}\Users\x", r"\\?\"),
+            (r"\\.\PhysicalDrive0", r"\\.\"),
+            (r"\\otherhost\c$\Windows\x", r"\\otherhost\"),
+        ] {
+            assert!(!inside_windows(path, folder), "{path} in {folder}");
+        }
+        assert!(inside_windows(r"\\srv\share\p\x", r"\\srv\share\p"));
+        // Names that differ outside ASCII are not folded together.
+        assert!(!inside_windows("C:\\\u{e9}\\x", "C:\\\u{c9}"));
+        // The Unix forms the rest of this file uses still read the same.
+        assert!(inside_windows("/a/b", "/a"));
+        assert!(!inside_windows("/ab", "/a"));
+        assert!(!inside_windows("a/b", "a"));
+        assert!(!inside_windows("/a/../b", "/a"));
+    }
+
+    /// WW5B-1 through the check itself, on Windows: the Windows test's
+    /// write, inside its chat's folder, is no flag; one in the home is.
+    #[cfg(windows)]
+    #[test]
+    fn ww5b_1_a_windows_chats_own_write_is_not_flagged() {
+        let chats = HashMap::from([(
+            "c1".to_string(),
+            ChatContext {
+                chat_id: "c1".into(),
+                harness: "claude".into(),
+                folders: vec![r"\\?\C:\derm-win-w5\proj-w5b12".into()],
+            },
+        )]);
+        let events = [
+            es(
+                "1",
+                1,
+                "create",
+                r"C:\derm-win-w5\proj-w5b12\w5b12-written.txt",
+            ),
+            es("2", 2, "create", r"C:\Users\usern\w5b12-written.txt"),
+        ];
+        let hosts = HashSet::new();
+        let out = run_full(&CheckInput {
+            events: &events,
+            approvals: &[],
+            chats: &chats,
+            known_hosts: &hosts,
+            now_ms: 1_000_000,
+            data_dir: None,
+        });
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["2"], "{:?}", out.flags);
     }
 
     #[test]

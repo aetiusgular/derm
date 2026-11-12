@@ -121,7 +121,7 @@ pub fn apparmor_note_for(
 /// harness, and the plan's paths are written the Unix way. Until srt on
 /// Windows has a design of its own, `--boundary srt` stops here and the
 /// default choice never picks it.
-pub const SRT_ON_WINDOWS: &str = "derm does not start srt on Windows yet: srt 0.0.81 runs the agent there as its own srt-sandbox account, with that account's profile and none of the chat's variables, so the agent would have neither your sign-in nor derm's gate. Use --boundary sbx, or none";
+pub const SRT_ON_WINDOWS: &str = "derm does not start srt on Windows yet: srt runs the agent there as its own srt-sandbox account, and inside it derm's gate does not run yet and a deny for a path not made yet is not held, so the agent would run ungated with folders it could plant code in. Use --boundary sbx, or none";
 
 /// `srt` with whether Ubuntu's bubblewrap profile is installed, for the note.
 pub fn srt_with(
@@ -133,11 +133,18 @@ pub fn srt_with(
     cwd: &str,
 ) -> Result<(Vec<String>, Option<Tools>), String> {
     if cfg!(windows) {
-        return Err(SRT_ON_WINDOWS.to_string());
+        // Wave 5b lane 5bD's seam (the wave 5b base).
+        if let Some(why) = super::boundary::windows_srt::refusal() {
+            return Err(why.to_string());
+        }
     }
     // srt 0.0.81 checks rg only on Linux (`sandbox-manager.ts:1641-1649`);
     // its README still asks for it on macOS (line 732), so macOS keeps it.
-    let needed: &[(&str, &str)] = if linux {
+    // On Windows srt 0.0.82 runs none of these (ripgrep "is Linux-only",
+    // `src/sandbox/sandbox-manager.ts:1895`; request 5bD-1).
+    let needed: &[(&str, &str)] = if cfg!(windows) {
+        &[]
+    } else if linux {
         &[
             ("bwrap", "bubblewrap"),
             ("socat", "socat"),
@@ -373,11 +380,11 @@ fn absolute(p: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// WW5-8 (Windows test w5, 4.2): `--boundary srt` stopped on Windows at
-    /// "srt needs rg", then at "a relative PATH entry" for every Windows
-    /// entry. srt 0.0.81 needs no rg there, but it also runs the agent as
-    /// its own account with none of the chat's variables, so derm refuses
-    /// srt on Windows and says that. Fails on `2ce607d` on Windows.
+    /// WW5-8 (the Windows test): the srt check stopped at "srt needs rg",
+    /// then at "a relative PATH entry" for every Windows entry. Fails on
+    /// `2ce607d` on Windows. Lane 5bD's request 5bD-1 let srt start there;
+    /// the wave 5b close held it off again (W5B-S2, W5B-S3), so the check
+    /// refuses for that reason, never for rg or the PATH.
     #[cfg(windows)]
     #[test]
     fn ww5_8_srt_is_refused_on_windows_for_the_true_reason() {
@@ -586,17 +593,44 @@ mod tests {
         std::fs::create_dir_all(work.join("node_modules/.bin")).unwrap();
         let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
         let w = s(&work);
-        let path =
-            format!("node_modules/.bin::{w}/node_modules/.bin:/usr/local/bin:/usr/bin:.:/tmp/x");
+        // Folders that exist on this OS and that no sandbox here can write,
+        // and one under a writable folder that does not exist. Windows has
+        // no /usr/bin: its system folders stand in (case 224).
+        #[cfg(not(windows))]
+        let (system, writable_tmp, missing) = (
+            vec!["/usr/local/bin".to_string(), "/usr/bin".to_string()],
+            "/tmp".to_string(),
+            "/tmp/x".to_string(),
+        );
+        #[cfg(windows)]
+        let (system, writable_tmp, missing) = {
+            let sys = std::env::var("SystemRoot").unwrap();
+            (
+                vec![format!(r"{sys}\System32"), sys],
+                s(&root),
+                s(&root.join("x")),
+            )
+        };
+        let join = |parts: &[&str]| s(std::path::Path::new(&std::env::join_paths(parts).unwrap()));
+        let work_bin = format!("{w}/node_modules/.bin");
+        let path = join(&[
+            "node_modules/.bin",
+            "",
+            &work_bin,
+            &system[0],
+            &system[1],
+            ".",
+            &missing,
+        ]);
         assert_eq!(
-            companion_path(&path, &[w.clone(), "/tmp".to_string()]),
-            "/usr/local/bin:/usr/bin"
+            companion_path(&path, &[w.clone(), writable_tmp]),
+            join(&[&system[0], &system[1]])
         );
         // Under no boundary nothing is writable to the sandbox; relative
         // and empty entries still go.
         assert_eq!(
             companion_path(&path, &[]),
-            format!("{w}/node_modules/.bin:/usr/local/bin:/usr/bin:/tmp/x")
+            join(&[&work_bin, &system[0], &system[1], &missing])
         );
         let _ = std::fs::remove_dir_all(&root);
     }

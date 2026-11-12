@@ -63,11 +63,10 @@ pub fn clean_context(mut context: ChatContext) -> Option<ChatContext> {
         .collect();
     let mut folders = Vec::new();
     for folder in context.folders {
-        let trimmed = folder.trim_end_matches('/').to_string();
-        let ok = trimmed.starts_with('/')
-            && trimmed.len() <= MAX_FOLDER_LEN
-            && !trimmed.contains('\0')
-            && !trimmed.split('/').any(|part| part == "..");
+        let Some(trimmed) = plain_folder(&folder) else {
+            continue;
+        };
+        let ok = trimmed.len() <= MAX_FOLDER_LEN && !trimmed.contains('\0');
         if ok && !folders.contains(&trimmed) {
             folders.push(trimmed);
         }
@@ -77,6 +76,31 @@ pub fn clean_context(mut context: ChatContext) -> Option<ChatContext> {
     }
     context.folders = folders;
     Some(context)
+}
+
+/// An absolute folder, its trailing separators cut, with no `..` part; the
+/// root (which cuts to nothing on Unix, to `C:` on Windows) is not one.
+#[cfg(not(windows))]
+fn plain_folder(folder: &str) -> Option<String> {
+    let trimmed = folder.trim_end_matches('/');
+    (trimmed.starts_with('/') && !trimmed.split('/').any(|part| part == ".."))
+        .then(|| trimmed.to_string())
+}
+
+/// Windows: a rooted path, `\` or `/` between parts. A chat folder
+/// `derm run` names there is `C:\...` (its `cwd`), which the Unix rule
+/// above refused, so no Windows chat had folders: no write-outside check, no
+/// lockfile diff (case 224; CI's Windows job,
+/// `install_records_reach_the_lockfile_diff_and_the_control_flags`). `/x`,
+/// rooted on the current drive, is kept as the Unix rule kept it; a
+/// relative folder (`x`, `C:x`) and a root (`C:\`, which cuts to `C:`) are
+/// not (`Path::has_root`).
+#[cfg(windows)]
+fn plain_folder(folder: &str) -> Option<String> {
+    let trimmed = folder.trim_end_matches(['/', '\\']);
+    (std::path::Path::new(trimmed).has_root()
+        && !trimmed.split(['/', '\\']).any(|part| part == ".."))
+    .then(|| trimmed.to_string())
 }
 
 /// The chat's harness and folders, for the check. Sent by the webview when a

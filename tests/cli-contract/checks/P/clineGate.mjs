@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { spawnGroup, stopGroup } from "../../lib/procs.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBinEnv } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PKG = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-cline");
@@ -100,7 +101,7 @@ async function clineTurn(bin, { policy, tool = "run_commands", args, approve = "
       mkdirSync(path.join(work, ".cline", "plugins"), { recursive: true });
       writeFileSync(path.join(work, ".cline", "plugins", name), text);
     }
-    const env = { PATH: process.env.PATH, HOME: home, NO_COLOR: "1", CLINE_LOG_ENABLED: "0", ...daemon.env() };
+    const env = { ...dermBinEnv(), PATH: process.env.PATH, HOME: home, NO_COLOR: "1", CLINE_LOG_ENABLED: "0", ...daemon.env() };
     let approvals;
     if (responder) {
       approvals = path.join(root, "cline-approvals");
@@ -268,7 +269,7 @@ export const checks = [
       chmodSync(dir, 0o700);
       const policyFile = path.join(root, "policy.json");
       writeFileSync(policyFile, JSON.stringify({ version: 1, askTimeoutSeconds: 5, servers: ["github"], rules: [{ tool: "bash", action: "allow" }, { tool: "fetch_web_content", action: "deny" }, { tool: "github/*", action: "ask" }] }), { mode: 0o600 });
-      const env = { PATH: process.env.PATH, HOME: path.join(root, "home"), DERM_POLICY: policyFile, ...daemon.env() };
+      const env = { ...dermBinEnv(), PATH: process.env.PATH, HOME: path.join(root, "home"), DERM_POLICY: policyFile, ...daemon.env() };
       const child = spawnGroup(process.execPath, ["--no-warnings", path.join(PKG, "bin", "derm-cline-approvals.mjs"), "--dir", dir, "--cwd", work], { env, stdio: "ignore" });
       try {
         const ask = (toolCallId, toolName, input) =>
@@ -277,7 +278,7 @@ export const checks = [
         const deny = await ask("call:2/x", "fetch_web_content", { url: "https://x" });
         const asked = await ask("call_3", "github__create_issue", { title: "t" });
         const left = readdirSync(dir);
-        const ok = allow.approved === true && deny.approved === false && deny.reason === "derm: rule fetch_web_content" && asked.approved === true && left.length === 0 && daemon.approvals().length === 1;
+        const ok = allow.approved === true && deny.approved === false && deny.reason === "derm: rule fetch_web_content deny" /* derm-core's wording since wave 5b (lane 5bC request 6) */ && asked.approved === true && left.length === 0 && daemon.approvals().length === 1;
         return { status: ok ? "pass" : "fail", finding: `allow ${JSON.stringify(allow)}; deny ${JSON.stringify(deny)}; ask ${JSON.stringify(asked)}; left ${JSON.stringify(left)}; approvals ${daemon.approvals().length}` };
       } finally {
         await stopGroup(child);

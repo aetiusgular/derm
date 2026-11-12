@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,11 +7,19 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import entry from "../index.ts";
 import { REDACTED } from "./core/redact.ts";
-import { DERM_PRIORITY, afterToolCall, beforeToolCall, defaultDeps, toolForGate } from "./openclaw.ts";
+import { DERM_PRIORITY, afterToolCall, beforeToolCall, defaultDeps, toolForGate, type Deps } from "./openclaw.ts";
+import { GateServe } from "./serve/client.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+// Wave 5b (lane 5bC): the decision is `derm gate serve`'s, so these run
+// against a derm build (DERM_BIN, else target/debug or target/release).
+const ROOT = path.resolve(here, "../../..");
+const DERM = process.env.DERM_TEST_NO_BUILD ? undefined : [process.env.DERM_BIN, path.join(ROOT, "target/debug/derm"), path.join(ROOT, "target/release/derm"), path.join(ROOT, "target/debug/derm.exe"), path.join(ROOT, "target/release/derm.exe")].find((p) => p !== undefined && existsSync(p));
 const root = mkdtempSync(path.join(tmpdir(), "derm-openclaw-"));
 const policyFile = path.join(root, "policy.json");
+// The session's folder: the policy sits outside it (case 226).
+const project = path.join(root, "project");
+mkdirSync(project);
 writeFileSync(
   policyFile,
   JSON.stringify({
@@ -36,17 +45,22 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const deps = (extra: Record<string, string> = {}) => defaultDeps({ DERM_POLICY: policyFile, ...daemon.env(), ...extra });
+// One co-process per environment, with derm by its absolute path (case 227).
+function deps(extra: Record<string, string> = {}): Deps {
+  const e = { DERM_POLICY: policyFile, ...daemon.env(), ...extra };
+  const s = new GateServe({ agent: "openclaw", env: e, cwd: () => project, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  return { ...defaultDeps(e), serve: () => s };
+}
 const ctx = { sessionId: "ses-1", sessionKey: "agent:main" };
 
-describe("before_tool_call", () => {
+describe.runIf(DERM !== undefined)("before_tool_call (needs a derm build)", () => {
   it("an allow hands back the params derm checked, so they are the ones that run", async () => {
     const params = { command: "ls -la" };
     expect(await beforeToolCall({ toolName: "exec", params, toolCallId: "t1" }, ctx, deps())).toEqual({ params: { command: "ls -la" } });
   });
 
   it("a deny is a final block with derm's reason", async () => {
-    expect(await beforeToolCall({ toolName: "web_fetch", params: { url: "https://x" } }, ctx, deps())).toEqual({ block: true, blockReason: "derm: rule web_fetch" });
+    expect(await beforeToolCall({ toolName: "web_fetch", params: { url: "https://x" } }, ctx, deps())).toEqual({ block: true, blockReason: "derm: rule web_fetch deny" });
     expect(await beforeToolCall({ toolName: "exec", params: { command: "git -c core.fsmonitor=x status" } }, ctx, deps())).toEqual({ block: true, blockReason: "derm: reject list: core.fsmonitor" });
   });
 
@@ -91,7 +105,7 @@ describe("before_tool_call", () => {
 
   it("bad input and a broken policy load block", async () => {
     expect(await beforeToolCall({}, ctx, deps())).toMatchObject({ block: true });
-    const broken = { ...deps(), loadPolicy: () => { throw new Error("boom"); } };
+    const broken = { ...deps(), serve: () => { throw new Error("boom"); } };
     expect(await beforeToolCall({ toolName: "read", params: {} }, ctx, broken)).toEqual({ block: true, blockReason: "derm: hook error: boom" });
   });
 
@@ -103,7 +117,7 @@ describe("before_tool_call", () => {
   });
 });
 
-describe("after_tool_call", () => {
+describe.runIf(DERM !== undefined)("after_tool_call (needs a derm build)", () => {
   it("records the call with a hash and never throws", async () => {
     const n = daemon.events().length;
     await afterToolCall({ toolName: "exec", result: { stdout: "ok" }, toolCallId: "t-43" }, ctx, deps());
@@ -139,7 +153,7 @@ describe("plugin files", () => {
 
 // Lane X's request 7 (integration w5, continue): the gate posts an
 // `install.call` record for an install, beside its decision.
-describe("install records", () => {
+describe.runIf(DERM !== undefined)("install records (needs a derm build)", () => {
   it("posts install.call beside the decision, for OpenClaw's exec", async () => {
     const n = daemon.events().length;
     await beforeToolCall({ toolName: "exec", params: { command: "npm install left-pad@1.3.0" }, toolCallId: "t-inst" }, ctx, deps());
@@ -151,5 +165,25 @@ describe("install records", () => {
     const decision = (ev.find((e) => e.kind === "approval") as { detail: { decision: string } } | undefined)?.detail.decision;
     expect(recs[0]?.detail.decision).toBe(decision);
     expect(recs[0]?.detail.toolUseId).toBe("t-inst");
+  });
+});
+
+// Case 228: no co-process, no call. Runs with or without a derm build.
+describe("a co-process that is not running", () => {
+  it("blocks every call and says why, and blocks after a crash", async () => {
+    const none: Deps = { env: {}, serve: () => new GateServe({ agent: "openclaw", env: {}, cwd: () => project, trusted: () => true, locate: () => ({ problem: "no derm to run: DERM_BIN is not set" }) }) };
+    expect(await beforeToolCall({ toolName: "read", params: {} }, ctx, none)).toMatchObject({ block: true, blockReason: expect.stringMatching(/^derm: the derm gate co-process is not running \(no derm to run/) });
+    const dead: Deps = {
+      env: {},
+      serve: () => new GateServe({ agent: "openclaw", env: {}, cwd: () => project, trusted: () => true, locate: () => ({ path: process.execPath }), spawn: () => spawn(process.execPath, ["-e", "process.exit(3)"], { stdio: ["pipe", "pipe", "pipe"] }) }),
+    };
+    expect(await beforeToolCall({ toolName: "read", params: {} }, ctx, dead)).toMatchObject({ block: true });
+  });
+  it("after_tool_call never throws without one", async () => {
+    const none: Deps = { env: {}, serve: () => { throw new Error("no co-process"); } };
+    await expect(afterToolCall({ toolName: "exec", result: {} }, ctx, none)).resolves.toBeUndefined();
+  });
+  it("the client copy is byte-identical to derm-pi's canonical one", () => {
+    expect(readFileSync(path.join(here, "serve", "client.ts"), "utf8")).toBe(readFileSync(path.join(ROOT, "packages", "derm-pi", "src", "serve", "client.ts"), "utf8"));
   });
 });

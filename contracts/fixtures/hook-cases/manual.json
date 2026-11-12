@@ -1,0 +1,365 @@
+{
+ "source": "the TypeScript dialect test cases that make no hook call, each with the lane that ports it by hand and how (contracts/hook-dialects.md section 9.4); wave 5b base, at e29ce27",
+ "cases": [
+  {
+   "test": "packages/derm-claude-plugin/src/hook.test.ts :: redaction (best effort) > finds key-value pairs and known token shapes, and leaves ordinary text",
+   "lane": "base",
+   "how": "ported by the wave 5b base: derm_core::redact::hook, gate::core and gate::daemon tests"
+  },
+  {
+   "test": "packages/derm-claude-plugin/src/hook.test.ts :: redaction (best effort) > the approval summary is redacted and short",
+   "lane": "base",
+   "how": "ported by the wave 5b base: derm_core::redact::hook, gate::core and gate::daemon tests"
+  },
+  {
+   "test": "packages/derm-claude-plugin/src/hook.test.ts :: the daemon socket is trusted only when it is ours > refuses a missing socket and a folder others can write",
+   "lane": "base",
+   "how": "ported by the wave 5b base: derm_core::redact::hook, gate::core and gate::daemon tests"
+  },
+  {
+   "test": "packages/derm-claude-plugin/src/hook.test.ts :: bin/derm-hook.mjs > runs the hook and fails closed when the hook cannot load",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/bin.test.ts :: bin/derm-hook.mjs > the manifest names the launcher and this package",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/bin.test.ts :: bin/derm-hook.mjs > covers the same six agents as the dialects, with each one's own deny",
+   "lane": "base",
+   "how": "ported by the wave 5b base: hook::tests::the_fallback_matches_the_native_packages_table"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/bin.test.ts :: bin/derm-hook.mjs > an unknown agent exits 2 with the reason on stderr",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/bin.test.ts :: bin/derm-hook.mjs > each agent's bad input comes back as that agent's deny, through the real launcher",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/bin.test.ts :: bin/derm-hook.mjs > an allowed call runs through the launcher end to end (Crush's allow)",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: openclaude > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: qwen-code > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: droid > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: command-code > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: kimi > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: auggie > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: copilot-cli > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: grok > its shell aliases equal its preset row's coverage.shellAliases",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: the chat token when the agent strips it (case 76) > a chat id with a separator or a dot is not used to find a file",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: the launcher > blocks with exit 2 for an unknown agent or event, and never prints the input",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: the launcher > runs the hook end to end for each agent's fixture",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-codex-plugin/src/hook.test.ts :: plugin files > decide denies anything that is not a tool call",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-codex-plugin/src/hook.test.ts :: plugin files > the core copy is byte-identical to the canonical one",
+   "lane": "integration",
+   "how": "the switch-over: the copied core leaves the repository (wave 5b plan section 6)"
+  },
+  {
+   "test": "packages/derm-codex-plugin/src/hook.test.ts :: plugin files > the launcher runs the hook",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-gemini-extension/src/hook.test.ts :: Gemini BeforeTool > matches an MCP tool by mcp_context, so a server with _ or - splits right",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-gemini-extension/src/hook.test.ts :: the hook's environment > reads the chat token file from GEMINI_CLI_DERM_CHAT_TOKEN_FILE when Gemini dropped DERM_CHAT_TOKEN_FILE",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-gemini-extension/src/hook.test.ts :: bin/derm-hook.mjs > blocks when the hook cannot load (exit 2, deny on stdout)",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-gemini-extension/src/hook.test.ts :: bin/derm-hook.mjs > runs the hook as Gemini would",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-gemini-extension/src/hook.test.ts :: the extension's files > hooks/hooks.json has Gemini's shape and a timeout above the ask cap",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-gemini-extension/src/hook.test.ts :: the extension's files > the manifest names the extension derm",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hermes-plugin/src/decide.test.ts :: bin/derm-decide.mjs > answers a deny on a Node that cannot load the hook",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hermes-plugin/src/decide.test.ts :: bin/derm-decide.mjs > runs as derm_gate.py runs it",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hermes-plugin/src/decide.test.ts :: plugin files > the core copy is byte-identical to the canonical one (sync-core.mjs does not list this package yet)",
+   "lane": "integration",
+   "how": "the switch-over: the copied core leaves the repository (wave 5b plan section 6)"
+  },
+  {
+   "test": "packages/derm-hermes-plugin/src/decide.test.ts :: plugin files > plugin.yaml names the two hooks register() wires",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > covers every dialect",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > waits longer than the gate's longest ask, so a slow ask is not a timeout (case 70)",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > openclaude: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > qwen-code: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > droid: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > command-code: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > auggie: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > copilot-cli: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > grok: the entry has the fixture's structure, with every tool matched",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > Kimi: exactly the keys Kimi accepts, since a fifth makes it drop the whole config",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > sets the fail-closed switch where the agent has one",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > Grok: turns its Claude and Cursor hook imports off, so derm's gate does not run twice (case 75)",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > Droid: never its hooks.json",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > refuses a hook path a shell would read differently",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/registration.test.ts :: registration > the command line it gives runs the hook (a deny with no policy rule and no daemon)",
+   "lane": "5bF",
+   "how": "the registration derm connect --gate writes (gates.json and the gate writers)"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/mistralVibe.test.ts :: Mistral Vibe pre_tool > names: one dot splits an MCP name; more asks; built-ins take the model's names",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S6: the derived token file stays in derm's own socket folder > a socket outside derm's default folders derives nothing",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S6: the derived token file stays in derm's own socket folder > a socket in one of the folders given derives the chat's token file",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S6: the derived token file stays in derm's own socket folder > HOME and XDG_RUNTIME_DIR in the hook's environment do not move derm's folders",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S8, L-S9: the hook command line > refuses a control character or a line separator in the path",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S8, L-S9: the hook command line > refuses an agent that is not one of the eight",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S8, L-S9: the hook command line > a TOML basic string escapes control characters",
+   "lane": "5bF",
+   "how": "registration, packaging or the launcher route: a test of the line derm connect --gate writes or of the plugin files"
+  },
+  {
+   "test": "packages/derm-hooks-claude-compat/src/security.test.ts :: L-S10: Kimi's deny JSON > is one line, the same reason as stderr",
+   "lane": "5bA",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/kiro.test.ts :: Kiro PreToolUse > a Markdown agent profile or Powers make the server list incomplete",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush's configured MCP server names > reads the mcp keys of a JSON config",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush's configured MCP server names > reads mcp add lines from a plain crushrc and refuses anything it cannot read statically",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush's configured MCP server names > walks from the working folder to the git root, and only the working folder without one",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush's configured MCP server names > collects the global, data and project files Crush loads",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush's configured MCP server names > follows CRUSH_GLOBAL_CONFIG, CRUSH_GLOBAL_DATA and XDG folders",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush's configured MCP server names > is incomplete when a file cannot be read whole, or with no cwd",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush MCP names to the core's form (W2-R1 for single underscores) > a name that can split one way needs no list",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush MCP names to the core's form (W2-R1 for single underscores) > splits at the one configured server that fits",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/crushServers.test.ts :: Crush MCP names to the core's form (W2-R1 for single underscores) > asks when two servers fit, when none does, or when the list is incomplete",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > cursor: shell aliases, ask route and package agree (case 82)",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > antigravity: shell aliases, ask route and package agree (case 82)",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > goose: shell aliases, ask route and package agree (case 82)",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > mistral-vibe: shell aliases, ask route and package agree (case 82)",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > crush: shell aliases, ask route and package agree (case 82)",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > kiro: shell aliases, ask route and package agree (case 82)",
+   "lane": "5bB",
+   "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  }
+ ]
+}

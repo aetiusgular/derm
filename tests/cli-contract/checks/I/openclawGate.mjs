@@ -15,6 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBinEnv } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-openclaw-plugin");
@@ -65,7 +66,7 @@ async function ocTurn(bin, { policy, script, approve = "none", extraPlugins = {}
   const cfg = path.join(home, ".openclaw", "openclaw.json");
   writeFileSync(cfg, JSON.stringify(config, null, 1));
   const nodeBin = process.env.OPENCLAW_NODE_BIN;
-  const env = { PATH: nodeBin ? `${nodeBin}:${process.env.PATH}` : process.env.PATH, HOME: home, OPENCLAW_CONFIG_PATH: cfg, DERM_POLICY: policyFile, NO_COLOR: "1", ...daemon.env() };
+  const env = { ...dermBinEnv(), PATH: nodeBin ? `${nodeBin}:${process.env.PATH}` : process.env.PATH, HOME: home, OPENCLAW_CONFIG_PATH: cfg, DERM_POLICY: policyFile, NO_COLOR: "1", ...daemon.env() };
   try {
     const r = await run(bin, ["agent", "exec", "run the step", "--model", "local/fake-model", "--cwd", work, "--json", "--timeout", "120"], env, work);
     return { r, results: toolResults(fake), turns: fake.turns().length, daemon: { events: daemon.events(), approvals: daemon.approvals() } };

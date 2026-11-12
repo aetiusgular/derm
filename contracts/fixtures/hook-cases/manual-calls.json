@@ -1,0 +1,12 @@
+{
+ "source": "gen.mjs: recorded calls the replay skips, for each lane to port by hand (contracts/hook-dialects.md section 9.4)",
+ "calls": [
+  {
+   "lane": "5bA",
+   "case": "hooks_claude_compat_hook_the_chat_token_when_the_agent_strips_it_case_76_command_code_with_derm_chat_token_and",
+   "call": 0,
+   "test": "packages/derm-hooks-claude-compat/src/hook.test.ts :: the chat token when the agent strips it (case 76) > Command Code: with DERM_CHAT_TOKEN and DERM_CHAT_TOKEN_FILE stripped, the hook finds the token file from DERM_CHAT_ID and DERM_DAEMON_SOCKET",
+   "why": "deps.loadPolicy is the test's own function"
+  }
+ ]
+}

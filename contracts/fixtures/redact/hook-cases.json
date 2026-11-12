@@ -1,0 +1,3171 @@
+{
+ "source": "packages/derm-claude-plugin/src/core/redact.ts at e29ce27, recorded by contracts/fixtures/redact/record.mjs (wave 5b base, 10 Nov 2026)",
+ "marker": "[redacted by derm]",
+ "random": {
+  "count": 30000,
+  "sha256": "bcd6e43945e13bbf5147ee3eadee502c664eb2ac8db715f2789ebe557ff61849",
+  "first": [
+   {
+    "text": "token\r=v--1\\'}: =v  \tapi_key:Aapikey\ten:",
+    "out": "token\r=[redacted by derm]'}: =v  \tapi_key:[redacted by derm]\ten:",
+    "count": 2
+   },
+   {
+    "text": ".1\"é\\'\n_]password]passwd: [redacted by derm]\\api_key&_--Token en",
+    "out": ".1\"é\\'\n_]password]passwd: [redacted by derm]\\api_key&_--Token en",
+    "count": 0
+   },
+   {
+    "text": "Token  en[\t\tapikeyA'passwdsecret,\t] .;42&\r[redacted by derm]",
+    "out": "Token  en[\t\tapikeyA'passwdsecret,\t] .;42&\r[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "-max_tokenssecretx\nen--\\';[=}é\r{: \n{ghp_--\t_]1{\r",
+    "out": "-max_tokenssecretx\nen--\\';[=}é\r{: \n{ghp_--\t_]1{\r",
+    "count": 0
+   },
+   {
+    "text": "[max_tokens\\'secret\\\"}   x]{&token  42 42[}A",
+    "out": "[max_tokens\\'secret\\\"}   x]{&token  42 42[}A",
+    "count": 0
+   },
+   {
+    "text": "token&passwd\"entokenghp_--max_tokensghp_=TokenTOK  ]",
+    "out": "token&passwd\"entokenghp_--max_tokensghp_=[redacted by derm]  ]",
+    "count": 1
+   },
+   {
+    "text": "en",
+    "out": "en",
+    "count": 0
+   },
+   {
+    "text": "\\'42,\\  ",
+    "out": "\\'42,\\  ",
+    "count": 0
+   },
+   {
+    "text": "[REDACTED xapi_key[redacted by derm]};A",
+    "out": "[REDACTED xapi_key[redacted by derm]};A",
+    "count": 0
+   },
+   {
+    "text": " ;[redacted   passwdsecretToken=vghp_api_key:: ghp_",
+    "out": " ;[redacted   passwdsecretToken=[redacted by derm] ghp_",
+    "count": 1
+   },
+   {
+    "text": "\r\\\"\\[REDACTED x\"en\r\\\"  \t[REDACTED x: &;apikey",
+    "out": "\r\\\"\\[REDACTED x\"en\r\\\"  \t[REDACTED x: &;apikey",
+    "count": 0
+   },
+   {
+    "text": "en\\abcdefghijklmnopqrstuvwxyz0123456789apikeytoken,\\\n'{",
+    "out": "en\\abcdefghijklmnopqrstuvwxyz0123456789apikeytoken,\\\n'{",
+    "count": 0
+   },
+   {
+    "text": "_enTOKTokentokensecret_'é&[42private_key'_\\",
+    "out": "_enTOKTokentokensecret_'é&[42private_key'_\\",
+    "count": 0
+   },
+   {
+    "text": ": \r_passwd: &tokenghp_é_en[token",
+    "out": ": \r_passwd: &tokenghp_é_en[token",
+    "count": 0
+   },
+   {
+    "text": ":: max_tokens&abcdefghijklmnopqrstuvwxyz012345678942",
+    "out": ":: max_tokens&abcdefghijklmnopqrstuvwxyz012345678942",
+    "count": 0
+   },
+   {
+    "text": "apikey{:-tokenghp_\rpasswdghp_  token1: \\[REDACTED x-: [REDACTED x",
+    "out": "apikey{:-tokenghp_\rpasswdghp_  token1: [redacted by derm] x-: [REDACTED x",
+    "count": 1
+   },
+   {
+    "text": "passwd\"private_keysecret[1\"A;[redacted42xpasswd\\'{42\t;&",
+    "out": "passwd\"private_keysecret[1\"A;[redacted42xpasswd\\'{42\t;&",
+    "count": 0
+   },
+   {
+    "text": "\\\"\rpasswd[redacted\"}max_tokensapi_key\":\npasswd",
+    "out": "\\\"\rpasswd[redacted\"}max_tokensapi_key\":\npasswd",
+    "count": 0
+   },
+   {
+    "text": "-  ",
+    "out": "-  ",
+    "count": 0
+   },
+   {
+    "text": "=\\\"42: passwd}é: --Aprivate_key1'max_tokensmax_tokens--.apikey.secret.=",
+    "out": "=\\\"42: passwd}é: --Aprivate_key1'max_tokensmax_tokens--.apikey.secret.=",
+    "count": 0
+   },
+   {
+    "text": " 1=\t é- ]passwd-\\'-",
+    "out": " 1=\t é- ]passwd-\\'-",
+    "count": 0
+   },
+   {
+    "text": "xxmax_tokens_  &{tokenpasswordapi_keyprivate_key\napikey'max_tokens']",
+    "out": "xxmax_tokens_  &{tokenpasswordapi_keyprivate_key\napikey'max_tokens']",
+    "count": 0
+   },
+   {
+    "text": "en\\'42",
+    "out": "en\\'42",
+    "count": 0
+   },
+   {
+    "text": "--42secret\rpassword1  é]\\\n",
+    "out": "--42secret\rpassword1  é]\\\n",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]\\{1password:   -AATOK\rprivate_key{1x:",
+    "out": "[redacted by derm]\\{1password:   [redacted by derm]\rprivate_key{1x:",
+    "count": 1
+   },
+   {
+    "text": "{\ntoken[redacted by derm]\"=v{[redacted by derm][REDACTED xAen[REDACTED x[redacted by derm]éToken",
+    "out": "{\ntoken[redacted by derm]\"=v{[redacted by derm][REDACTED xAen[REDACTED x[redacted by derm]éToken",
+    "count": 0
+   },
+   {
+    "text": "TokenTokenprivate_key[redacted by derm]x1secret\t\r:\r  ",
+    "out": "TokenTokenprivate_key[redacted by derm]x1secret\t\r:\r  ",
+    "count": 0
+   },
+   {
+    "text": ",{{11 secret-- ghp_[REDACTED x ",
+    "out": ",{{11 secret-- ghp_[REDACTED x ",
+    "count": 0
+   },
+   {
+    "text": "apikey.A=-_",
+    "out": "apikey.A=[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "é private_keyapikey é ghp_=[redacted by derm] é}][&\t\\\"passwd.ghp_token _42",
+    "out": "é private_keyapikey é ghp_=[redacted by derm] é}][&\t\\\"passwd.ghp_token _42",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]{TOK: -enghp_[redacted&.}\\: }TOK,[[REDACTED x1",
+    "out": "[redacted by derm]{TOK: -enghp_[redacted&.}\\: }TOK,[[REDACTED x1",
+    "count": 0
+   },
+   {
+    "text": "]Aé'  token']é42password",
+    "out": "]Aé'  token']é42password",
+    "count": 0
+   },
+   {
+    "text": "{\\'token [redacted by derm]1\\\"]--.[redactedx[redacted by derm][REDACTED x\\''",
+    "out": "{\\'token [redacted by derm]1\\\"]--.[redactedx[redacted by derm][REDACTED x\\''",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]password=api_key[ {max_tokens.=v42tokenapi_keytoken\nghp_: ",
+    "out": "[redacted by derm]password=[redacted by derm] {max_tokens.=[redacted by derm]\nghp_: ",
+    "count": 2
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789Aapikey[redacted[REDACTED x\\--[passwd\r_secretabcdefghijklmnopqrstuvwxyz0123456789en ghp_ 42abcdefghijklmnopqrstuvwxyz0123456789=vapikey.api_keyAémax_tokenstoken",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789Aapikey[redacted[REDACTED x\\--[passwd\r_secretabcdefghijklmnopqrstuvwxyz0123456789en ghp_ 42abcdefghijklmnopqrstuvwxyz0123456789=vapikey.api_keyAémax_tokenstoken",
+    "count": 0
+   },
+   {
+    "text": "=vToken{passwd\\private_keyabcdefghijklmnopqrstuvwxyz0123456789\\\n\n\\\"]max_tokens{ghp_ ",
+    "out": "=vToken{passwd\\private_keyabcdefghijklmnopqrstuvwxyz0123456789\\\n\n\\\"]max_tokens{ghp_ ",
+    "count": 0
+   },
+   {
+    "text": "[REDACTED xen[redacted[redacted by derm]- private_keyabcdefghijklmnopqrstuvwxyz0123456789-\rapi_key;  \t password&--\\\"ghp_ ",
+    "out": "[REDACTED xen[redacted[redacted by derm]- private_keyabcdefghijklmnopqrstuvwxyz0123456789-\rapi_key;  \t password&--\\\"ghp_ ",
+    "count": 0
+   },
+   {
+    "text": "{\"Token",
+    "out": "{\"Token",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]Token;_[\\\nprivate_keysecret[redacted by derm]secret=max_tokenspasswdapikey[redacted by derm]: _--",
+    "out": "[redacted by derm]Token;_[\\\nprivate_keysecret[redacted by derm]secret=[redacted by derm] by derm]: _--",
+    "count": 1
+   },
+   {
+    "text": "\n\\\n\"[REDACTED x\n  TOK,[redacted by derm]--abcdefghijklmnopqrstuvwxyz0123456789:max_tokensA,[redacted.1\"max_tokens=apikey",
+    "out": "\n\\\n\"[REDACTED x\n  TOK,[redacted by derm]--abcdefghijklmnopqrstuvwxyz0123456789:max_tokensA,[redacted.1\"max_tokens=[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": " [REDACTED x&private_key\r1\\'é\tA {.passwd\n;\\\"",
+    "out": " [REDACTED x&private_key\r1\\'é\tA {.passwd\n;\\\"",
+    "count": 0
+   },
+   {
+    "text": "1\rTOKen{TOKen passwdA[REDACTED xghp_TOK  1_;,ghp_xTOKghp_:\\': [redacted by derm];\\'",
+    "out": "1\rTOKen{TOKen passwdA[REDACTED xghp_TOK  1_;,ghp_xTOKghp_:\\': [redacted by derm];\\'",
+    "count": 0
+   },
+   {
+    "text": "apikeysecret[redacted\\\n\n\r=\\\"[1token--[redacted by derm][redacted by derm]token: \\'\r\r\n.ghp_secret_",
+    "out": "apikeysecret[redacted\\\n\n\r=\\\"[1token--[redacted by derm][redacted by derm]token: [redacted by derm]'\r\r\n.ghp_secret_",
+    "count": 1
+   },
+   {
+    "text": " ]",
+    "out": " ]",
+    "count": 0
+   },
+   {
+    "text": "  ",
+    "out": "  ",
+    "count": 0
+   },
+   {
+    "text": "secret\t\"\n&;\\\"Token'passworden_max_tokens\"\t[redacted1,",
+    "out": "secret\t\"\n&;\\\"Token'passworden_max_tokens\"\t[redacted1,",
+    "count": 0
+   },
+   {
+    "text": "\"Aen  [redactedapi_key ][1en\\\": secret[redacted by derm][redacted by derm]max_tokensmax_tokens'xen]é",
+    "out": "\"Aen  [redactedapi_key ][1en\\\": secret[redacted by derm][redacted by derm]max_tokensmax_tokens'xen]é",
+    "count": 0
+   },
+   {
+    "text": "\\\"]password\nmax_tokens étokenprivate_key;&",
+    "out": "\\\"]password\nmax_tokens étokenprivate_key;&",
+    "count": 0
+   },
+   {
+    "text": "password-enen--private_keyA max_tokensxapi_keypasswdabcdefghijklmnopqrstuvwxyz0123456789TOK]  ",
+    "out": "password-enen--private_keyA max_tokensxapi_keypasswdabcdefghijklmnopqrstuvwxyz0123456789TOK]  ",
+    "count": 0
+   },
+   {
+    "text": "en: secretA1",
+    "out": "en: secretA1",
+    "count": 0
+   },
+   {
+    "text": "token [redacted by derm]\"\ren",
+    "out": "token [redacted by derm]\"\ren",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]en",
+    "out": "[redacted by derm]en",
+    "count": 0
+   },
+   {
+    "text": "&.\n.;'{=v",
+    "out": "&.\n.;'{=v",
+    "count": 0
+   },
+   {
+    "text": "é,{enmax_tokens\n-\nsecret\\\"=-TOK",
+    "out": "é,{enmax_tokens\n-\nsecret\\\"=-TOK",
+    "count": 0
+   },
+   {
+    "text": "  }42 \\",
+    "out": "  }42 \\",
+    "count": 0
+   },
+   {
+    "text": "passwdapi_key\\'  \\\"x\r\n \"\\\n_private_key[redacted by derm][-apikey; =v}",
+    "out": "passwdapi_key\\'  \\\"x\r\n \"\\\n_private_key[redacted by derm][-apikey; =v}",
+    "count": 0
+   },
+   {
+    "text": "\\\n,tokené\n   ] =v&private_keyapikey-",
+    "out": "\\\n,tokené\n   ] =v&private_keyapikey-",
+    "count": 0
+   },
+   {
+    "text": "\\'1apikeyapi_key\\\n1---Tokenpasswd}.",
+    "out": "\\'1apikeyapi_key\\\n1---Tokenpasswd}.",
+    "count": 0
+   },
+   {
+    "text": "passwdA\\'\\'[[REDACTED x [redacted by derm]]",
+    "out": "passwdA\\'\\'[[REDACTED x [redacted by derm]]",
+    "count": 0
+   },
+   {
+    "text": ", }TOKpasswd\\: :\r]\\'}:{: [REDACTED x",
+    "out": ", }TOKpasswd\\: :\r]\\'}:{: [REDACTED x",
+    "count": 0
+   },
+   {
+    "text": "passwdprivate_key: TOK1[redacted=v[redacted by derm].\\'_1private_key: \"\\\"[redacted by derm].passwdmax_tokensabcdefghijklmnopqrstuvwxyz0123456789",
+    "out": "passwdprivate_key: [redacted by derm] by derm].\\'_1private_key: \"\\\"[redacted by derm].passwdmax_tokensabcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 1
+   },
+   {
+    "text": "en1TOK:[REDACTED x1&",
+    "out": "en1TOK:[REDACTED x1&",
+    "count": 0
+   },
+   {
+    "text": ": &. =v]  é&\\'épassword'Token[redacted by derm]max_tokens\\[redacted\nghp_[redacted by derm]}  --",
+    "out": ": &. =v]  é&\\'épassword'Token[redacted by derm]max_tokens\\[redacted\nghp_[redacted by derm]}  --",
+    "count": 0
+   },
+   {
+    "text": "=\\\"}-",
+    "out": "=\\\"}-",
+    "count": 0
+   },
+   {
+    "text": "tokenmax_tokens}\\é",
+    "out": "tokenmax_tokens}\\é",
+    "count": 0
+   },
+   {
+    "text": " '  .[\r:;api_key\\\"_[redacted by derm]42max_tokens=;en42\"\\\"=secret\"=secret[REDACTED xé[redacted",
+    "out": " '  .[\r:;api_key\\\"_[redacted by derm]42max_tokens=;en42\"\\\"=secret\"=secret[REDACTED xé[redacted",
+    "count": 0
+   },
+   {
+    "text": "1api_key--api_key\r: =v{'{token",
+    "out": "1api_key--api_key\r: [redacted by derm]'{token",
+    "count": 1
+   },
+   {
+    "text": ".][redacted by derm] \t\\\nprivate_key[REDACTED xabcdefghijklmnopqrstuvwxyz0123456789=v   -&.private_key1&[redacted\\} [redacted by derm]",
+    "out": ".][redacted by derm] \t\\\nprivate_key[REDACTED xabcdefghijklmnopqrstuvwxyz0123456789=v   -&.private_key1&[redacted\\} [redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "1.\t=v[REDACTED xTOK,\\'--ghp_ghp_1token.]secret\\A\n,apikey[redacted by derm]",
+    "out": "1.\t=v[REDACTED xTOK,\\'--ghp_ghp_1token.]secret\\A\n,apikey[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "apikey\\\";\tapikeypasswd;42 abcdefghijklmnopqrstuvwxyz0123456789,\"\"[redacted by derm]\rabcdefghijklmnopqrstuvwxyz0123456789  &\"}password\\\"",
+    "out": "apikey\\\";\tapikeypasswd;42 abcdefghijklmnopqrstuvwxyz0123456789,\"\"[redacted by derm]\rabcdefghijklmnopqrstuvwxyz0123456789  &\"}password\\\"",
+    "count": 0
+   },
+   {
+    "text": "apikey1passworden-[redacted by derm]",
+    "out": "apikey1passworden-[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": " =vpasswd enxpasswordabcdefghijklmnopqrstuvwxyz0123456789.api_key\r  : \\\":TOK=enprivate_keyghp_  ",
+    "out": " =vpasswd enxpasswordabcdefghijklmnopqrstuvwxyz0123456789.api_key\r  : [redacted by derm]\":TOK=enprivate_keyghp_  ",
+    "count": 1
+   },
+   {
+    "text": "}=v\n\\'-",
+    "out": "}=v\n\\'-",
+    "count": 0
+   },
+   {
+    "text": "TOKétoken:\\'=vghp_",
+    "out": "TOKétoken:[redacted by derm]'=vghp_",
+    "count": 1
+   },
+   {
+    "text": "}[redactedpasswd--\r\\abcdefghijklmnopqrstuvwxyz0123456789_.\\\" secret[redacted by derm]",
+    "out": "}[redactedpasswd--\r\\abcdefghijklmnopqrstuvwxyz0123456789_.\\\" secret[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "TOK,\tpassword[redacted by derm] ]TOKprivate_key \\\n",
+    "out": "TOK,\tpassword[redacted by derm] ]TOKprivate_key \\\n",
+    "count": 0
+   },
+   {
+    "text": "42:\\'=v--1\t\t[REDACTED x_TOK: ],42\\\n",
+    "out": "42:\\'=v--1\t\t[REDACTED x_TOK: ],42\\\n",
+    "count": 0
+   },
+   {
+    "text": "=v",
+    "out": "=v",
+    "count": 0
+   },
+   {
+    "text": ",{secret[ \\\n&tokenmax_tokens\\'token\\'42\r\"=apikey1  \\\n=\n",
+    "out": ",{secret[ \\\n&tokenmax_tokens\\'token\\'42\r\"=apikey1  \\\n=\n",
+    "count": 0
+   },
+   {
+    "text": ".='tokenpasswd--éxATOKprivate_key\\abcdefghijklmnopqrstuvwxyz0123456789&\\\"apikey42TOK.enprivate_keyapikeyé[redacted",
+    "out": ".='tokenpasswd--éxATOKprivate_key\\abcdefghijklmnopqrstuvwxyz0123456789&\\\"apikey42TOK.enprivate_keyapikeyé[redacted",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]\r\\\n\n_ghp_=-\\\n ghp_\"[redactedmax_tokens\\\n=[REDACTED xsecretapikey--\r ",
+    "out": "[redacted by derm]\r\\\n\n_ghp_=-\\\n ghp_\"[redactedmax_tokens\\\n=[REDACTED xsecretapikey--\r ",
+    "count": 0
+   },
+   {
+    "text": "A\\\\&=max_tokens_api_key \n[REDACTED x\r  en],\\  passwd",
+    "out": "A\\\\&=max_tokens_api_key \n[REDACTED x\r  en],\\  passwd",
+    "count": 0
+   },
+   {
+    "text": "\\é']TOK\n42&={abcdefghijklmnopqrstuvwxyz0123456789{\\",
+    "out": "\\é']TOK\n42&={abcdefghijklmnopqrstuvwxyz0123456789{\\",
+    "count": 0
+   },
+   {
+    "text": ":}max_tokens\\\n==en\\'[redacted }}=",
+    "out": ":}max_tokens\\\n==en\\'[redacted }}=",
+    "count": 0
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": ":: ",
+    "out": ":: ",
+    "count": 0
+   },
+   {
+    "text": ";:==passwd\r_max_tokens1passwordabcdefghijklmnopqrstuvwxyz0123456789: {\\'\t\ntokenxsecret=vsecret1[REDACTED x",
+    "out": ";:==passwd\r_max_tokens1passwordabcdefghijklmnopqrstuvwxyz0123456789: [redacted by derm]'\t\ntokenxsecret=[redacted by derm] x",
+    "count": 2
+   },
+   {
+    "text": "passwdé{passwdpassword ] max_tokens{\tprivate_key[  xapi_keyabcdefghijklmnopqrstuvwxyz0123456789secret ené 1=vsecret\\\n",
+    "out": "passwdé{passwdpassword ] max_tokens{\tprivate_key[  xapi_keyabcdefghijklmnopqrstuvwxyz0123456789secret ené 1=vsecret\\\n",
+    "count": 0
+   },
+   {
+    "text": "max_tokens1",
+    "out": "max_tokens1",
+    "count": 0
+   },
+   {
+    "text": "Token-- 42]  private_key:42=vmax_tokens\ten\"[redactedToken_é[redacted",
+    "out": "Token-- 42]  private_key:[redacted by derm]\ten\"[redactedToken_é[redacted",
+    "count": 1
+   },
+   {
+    "text": "\\' \\\"Token}abcdefghijklmnopqrstuvwxyz0123456789[redacted\n:  ] abcdefghijklmnopqrstuvwxyz0123456789",
+    "out": "\\' \\\"Token}abcdefghijklmnopqrstuvwxyz0123456789[redacted\n:  ] abcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": " \\[redacted by derm]}\".=v ",
+    "out": " \\[redacted by derm]}\".=v ",
+    "count": 0
+   },
+   {
+    "text": "passwordé\\' [_\\\"",
+    "out": "passwordé\\' [_\\\"",
+    "count": 0
+   },
+   {
+    "text": ",42--1--{-}[abcdefghijklmnopqrstuvwxyz0123456789---.abcdefghijklmnopqrstuvwxyz0123456789Token: _",
+    "out": ",42--1--{-}[abcdefghijklmnopqrstuvwxyz0123456789---.abcdefghijklmnopqrstuvwxyz0123456789Token: [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "secret1",
+    "out": "secret1",
+    "count": 0
+   },
+   {
+    "text": "max_tokens[redacted by derm]\".\t.\"passwdpasswd],ghp_tokenghp_\n}",
+    "out": "max_tokens[redacted by derm]\".\t.\"passwdpasswd],ghp_tokenghp_\n}",
+    "count": 0
+   },
+   {
+    "text": "token-apikeysecret\r&\\: Token}enmax_tokens[redacted by derm]   ",
+    "out": "token-apikeysecret\r&\\: Token}enmax_tokens[redacted by derm]   ",
+    "count": 0
+   },
+   {
+    "text": "[redacted\";token[redacted by derm]tokenpassword:",
+    "out": "[redacted\";token[redacted by derm]tokenpassword:",
+    "count": 0
+   },
+   {
+    "text": ".\" ';token",
+    "out": ".\" ';token",
+    "count": 0
+   },
+   {
+    "text": "[\"\\\n=",
+    "out": "[\"\\\n=",
+    "count": 0
+   },
+   {
+    "text": "\"[=vghp_,;[redacted\napikey\rghp_[redacted[redacted,[redacted.\\\"password  &",
+    "out": "\"[=vghp_,;[redacted\napikey\rghp_[redacted[redacted,[redacted.\\\"password  &",
+    "count": 0
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789api_key .max_tokens\tToken{apikey",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789api_key .max_tokens\tToken{apikey",
+    "count": 0
+   },
+   {
+    "text": "--}x Tokené\rpasswdTOK--\\']\r'ghp_: abcdefghijklmnopqrstuvwxyz0123456789=\\&token&passwd\\'}=vpasswd\\\n",
+    "out": "--}x Tokené\rpasswdTOK--\\']\r'ghp_: abcdefghijklmnopqrstuvwxyz0123456789=\\&token&passwd\\'}=vpasswd\\\n",
+    "count": 0
+   },
+   {
+    "text": ".abcdefghijklmnopqrstuvwxyz0123456789[\\'",
+    "out": ".abcdefghijklmnopqrstuvwxyz0123456789[\\'",
+    "count": 0
+   },
+   {
+    "text": "&password[redactedx'[redacted",
+    "out": "&password[redactedx'[redacted",
+    "count": 0
+   },
+   {
+    "text": "_,\n---apikey apikey-TOK' \nTOK42token,passwd._[redacted by derm]apikey\\\"\"secretmax_tokens_",
+    "out": "_,\n---apikey apikey-TOK' \nTOK42token,passwd._[redacted by derm]apikey\\\"\"secretmax_tokens_",
+    "count": 0
+   },
+   {
+    "text": "_{[redacted by derm]\r1: secret[redacted\" 1",
+    "out": "_{[redacted by derm]\r1: secret[redacted\" 1",
+    "count": 0
+   },
+   {
+    "text": "[redacted\\\"apikey.\n\"password:[: secretA: 1\rabcdefghijklmnopqrstuvwxyz0123456789max_tokensx,é\\'[{ passwdé[",
+    "out": "[redacted\\\"apikey.\n\"password:[redacted by derm] secretA: 1\rabcdefghijklmnopqrstuvwxyz0123456789max_tokensx,é\\'[{ passwdé[",
+    "count": 1
+   },
+   {
+    "text": "[[redacted by derm][x",
+    "out": "[[redacted by derm][x",
+    "count": 0
+   },
+   {
+    "text": "[redactedsecret\t=v[:  private_key\n,1\n[redactedsecret_{passwd [redacted by derm]&en\\\"TOK secret{\"\\\n",
+    "out": "[redactedsecret\t=[redacted by derm]  private_key\n,1\n[redactedsecret_{passwd [redacted by derm]&en\\\"TOK secret{\"\\\n",
+    "count": 1
+   },
+   {
+    "text": "&'.apikey,=ghp_;--password42\nxx=private_keyabcdefghijklmnopqrstuvwxyz0123456789private_key",
+    "out": "&'.apikey,=ghp_;--password42\nxx=private_keyabcdefghijklmnopqrstuvwxyz0123456789private_key",
+    "count": 0
+   },
+   {
+    "text": ",\t- api_key\n{[redacted[[redacted by derm]\",1\"1:--42_[redacted by derm]abcdefghijklmnopqrstuvwxyz0123456789",
+    "out": ",\t- api_key\n{[redacted[[redacted by derm]\",1\"1:--42_[redacted by derm]abcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": "\n][redacted by derm]\t\n[redacted--\\'api_key\t--\r\\",
+    "out": "\n][redacted by derm]\t\n[redacted--\\'api_key\t--\r\\",
+    "count": 0
+   },
+   {
+    "text": "--ghp_1\\;TOK\t[redacted",
+    "out": "--ghp_1\\;TOK\t[redacted",
+    "count": 0
+   },
+   {
+    "text": "é-}abcdefghijklmnopqrstuvwxyz0123456789Token,\\'\t&[REDACTED x  passwd{Aapikey,{\"A[redacted by derm]é.\\\";tokenA.",
+    "out": "é-}abcdefghijklmnopqrstuvwxyz0123456789Token,\\'\t&[REDACTED x  passwd{Aapikey,{\"A[redacted by derm]é.\\\";tokenA.",
+    "count": 0
+   },
+   {
+    "text": "} private_key\\\n =v &",
+    "out": "} private_key\\\n =v &",
+    "count": 0
+   },
+   {
+    "text": "-token",
+    "out": "-token",
+    "count": 0
+   },
+   {
+    "text": "}42=v=[REDACTED x,: \r_A-\nprivate_key\\'][REDACTED x[secret{secret42Token]\\",
+    "out": "}42=v=[REDACTED x,: \r_A-\nprivate_key\\'][REDACTED x[secret{secret42Token]\\",
+    "count": 0
+   },
+   {
+    "text": "token  private_keyabcdefghijklmnopqrstuvwxyz0123456789\nen:[REDACTED x \"A\\\n42passwd éapikeyprivate_key\n[redacted by derm]&[REDACTED x1.A'\r",
+    "out": "token  private_keyabcdefghijklmnopqrstuvwxyz0123456789\nen:[REDACTED x \"A\\\n42passwd éapikeyprivate_key\n[redacted by derm]&[REDACTED x1.A'\r",
+    "count": 0
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789]",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789]",
+    "count": 0
+   },
+   {
+    "text": ": [\r{:\"secret1TOK,[redacted by derm]apikeyen;max_tokensprivate_key[[redacted by derm]max_tokens ",
+    "out": ": [\r{:\"secret1TOK,[redacted by derm]apikeyen;max_tokensprivate_key[[redacted by derm]max_tokens ",
+    "count": 0
+   },
+   {
+    "text": "private_key\nx=[redacted by derm]éghp_]: \\'=vpasswdtoken\\_\r\\max_tokens\n;apikeyTOKpassword",
+    "out": "private_key\nx=[redacted by derm]éghp_]: \\'=vpasswdtoken\\_\r\\max_tokens\n;apikeyTOKpassword",
+    "count": 0
+   },
+   {
+    "text": "A=&\r42[REDACTED xghp_api_key_=TOKpasswd\\\n\\\n 42token[redacted\\'[REDACTED x api_key",
+    "out": "A=&\r42[REDACTED xghp_api_key_=[redacted by derm]\n\\\n 42token[redacted\\'[REDACTED x api_key",
+    "count": 1
+   },
+   {
+    "text": " \rapikey{: \\'\r[redacted by derm]\\\n[  \n,--\"--,abcdefghijklmnopqrstuvwxyz0123456789\napikeyéx42;",
+    "out": " \rapikey{: \\'\r[redacted by derm]\\\n[  \n,--\"--,abcdefghijklmnopqrstuvwxyz0123456789\napikeyéx42;",
+    "count": 0
+   },
+   {
+    "text": "[redacted-token=}\\'abcdefghijklmnopqrstuvwxyz0123456789.A;Token[REDACTED x&42[",
+    "out": "[redacted-token=}\\'abcdefghijklmnopqrstuvwxyz0123456789.A;Token[REDACTED x&42[",
+    "count": 0
+   },
+   {
+    "text": "=v \n]\t,:",
+    "out": "=v \n]\t,:",
+    "count": 0
+   },
+   {
+    "text": "token[redacted by derm]_apikeyx :[\tapi_key Token]",
+    "out": "token[redacted by derm]_apikeyx :[redacted by derm]\tapi_key Token]",
+    "count": 1
+   },
+   {
+    "text": "1\n\"  [redacted by derm]passwd",
+    "out": "1\n\"  [redacted by derm]passwd",
+    "count": 0
+   },
+   {
+    "text": "=v;en:A[",
+    "out": "=v;en:A[",
+    "count": 0
+   },
+   {
+    "text": "=vsecretTOKA TOK",
+    "out": "=vsecretTOKA TOK",
+    "count": 0
+   },
+   {
+    "text": "  ;[redacted{ghp_  \\\"TOK[redacted'",
+    "out": "  ;[redacted{ghp_  \\\"TOK[redacted'",
+    "count": 0
+   },
+   {
+    "text": "ghp_[[REDACTED xé'\n: \rtoken\\\n\\\"private_key42ghp_\\'\\,",
+    "out": "ghp_[[REDACTED xé'\n: \rtoken\\\n\\\"private_key42ghp_\\'\\,",
+    "count": 0
+   },
+   {
+    "text": ";}[redacted by derm]token[redacted by derm]api_keyapi_key   ;[redacted by derm]=:token}&;:",
+    "out": ";}[redacted by derm]token[redacted by derm]api_keyapi_key   ;[redacted by derm]=:token}&;:",
+    "count": 0
+   },
+   {
+    "text": "}[redacted  token",
+    "out": "}[redacted  token",
+    "count": 0
+   },
+   {
+    "text": "}\n: abcdefghijklmnopqrstuvwxyz0123456789{x token\\\néabcdefghijklmnopqrstuvwxyz0123456789",
+    "out": "}\n: abcdefghijklmnopqrstuvwxyz0123456789{x token\\\néabcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": "-enapikey\\\"x\n\t: api_keyghp_:  42A} -A[redacted by derm]1=v",
+    "out": "-enapikey\\\"x\n\t: api_keyghp_:  [redacted by derm]} -A[redacted by derm]1=v",
+    "count": 1
+   },
+   {
+    "text": "][redacted'--",
+    "out": "][redacted'--",
+    "count": 0
+   },
+   {
+    "text": "1]max_tokens\\'[redacted by derm]&Token[redacted by derm]{42passwordpasswd ",
+    "out": "1]max_tokens\\'[redacted by derm]&Token[redacted by derm]{42passwordpasswd ",
+    "count": 0
+   },
+   {
+    "text": "private_keyAé\tghp_api_keypasswd",
+    "out": "private_keyAé\tghp_api_keypasswd",
+    "count": 0
+   },
+   {
+    "text": "private_key1\r[redactedA\r];[\\'api_key.: max_tokensAtoken=vapikey-TOKTokenpasswd\\\"",
+    "out": "private_key1\r[redactedA\r];[\\'api_key.: [redacted by derm]\"",
+    "count": 1
+   },
+   {
+    "text": "\\\" [redacted[REDACTED xmax_tokens\\',}[redacted by derm] éTOKghp_]max_tokensabcdefghijklmnopqrstuvwxyz0123456789-};",
+    "out": "\\\" [redacted[REDACTED xmax_tokens\\',}[redacted by derm] éTOKghp_]max_tokensabcdefghijklmnopqrstuvwxyz0123456789-};",
+    "count": 0
+   },
+   {
+    "text": "\t: ': 'A .= [\r}x--secret: =vAapikey&x:\napi_key",
+    "out": "\t: ': 'A .= [\r}x--secret: [redacted by derm]&x:\napi_key",
+    "count": 1
+   },
+   {
+    "text": "\r: ",
+    "out": "\r: ",
+    "count": 0
+   },
+   {
+    "text": "\\\"[redacted by derm]--\n  ,\nen} [REDACTED x]Token\r\t  ",
+    "out": "\\\"[redacted by derm]--\n  ,\nen} [REDACTED x]Token\r\t  ",
+    "count": 0
+   },
+   {
+    "text": "secretapikey",
+    "out": "secretapikey",
+    "count": 0
+   },
+   {
+    "text": "passwdA\témax_tokens\r\r;_\r\\",
+    "out": "passwdA\témax_tokens\r\r;_\r\\",
+    "count": 0
+   },
+   {
+    "text": " \\\"tokensecret\n \"apikey1_[redactedtokenx\\\"42",
+    "out": " \\\"tokensecret\n \"apikey1_[redactedtokenx\\\"42",
+    "count": 0
+   },
+   {
+    "text": "\t[redacted by derm] \tabcdefghijklmnopqrstuvwxyz0123456789: abcdefghijklmnopqrstuvwxyz0123456789apikey\\\"::\\'A\\'",
+    "out": "\t[redacted by derm] \tabcdefghijklmnopqrstuvwxyz0123456789: abcdefghijklmnopqrstuvwxyz0123456789apikey\\\"::\\'A\\'",
+    "count": 0
+   },
+   {
+    "text": "- ]._TOK  passwd{tokenprivate_key.[[REDACTED xAmax_tokens;[REDACTED x\"",
+    "out": "- ]._TOK  passwd{tokenprivate_key.[[REDACTED xAmax_tokens;[REDACTED x\"",
+    "count": 0
+   },
+   {
+    "text": "apikeyx: [REDACTED x\r\t42secret",
+    "out": "apikeyx: [REDACTED x\r\t42secret",
+    "count": 0
+   },
+   {
+    "text": "apikey: private_key',: ghp_abcdefghijklmnopqrstuvwxyz0123456789-]private_key-'\\\n",
+    "out": "apikey: [redacted by derm]',: [redacted by derm]-]private_key-'\\\n",
+    "count": 2
+   },
+   {
+    "text": "é-secret",
+    "out": "é-secret",
+    "count": 0
+   },
+   {
+    "text": "ghp_ATOK=: -TOK\rapi_keymax_tokenstoken\n\n\\42",
+    "out": "ghp_ATOK=: -TOK\rapi_keymax_tokenstoken\n\n\\42",
+    "count": 0
+   },
+   {
+    "text": "passwdé[redactedapikeypasswdprivate_keyé Token\\'",
+    "out": "passwdé[redactedapikeypasswdprivate_keyé Token\\'",
+    "count": 0
+   },
+   {
+    "text": ",ghp_abcdefghijklmnopqrstuvwxyz0123456789apikey   \\\n[redacted by derm][redactedprivate_keymax_tokens=1secret[redacted",
+    "out": ",[redacted by derm]   \\\n[redacted by derm][redactedprivate_keymax_tokens=[redacted by derm]",
+    "count": 2
+   },
+   {
+    "text": " ]ghp_: : &A",
+    "out": " ]ghp_: : &A",
+    "count": 0
+   },
+   {
+    "text": "Token[REDACTED x\\",
+    "out": "Token[REDACTED x\\",
+    "count": 0
+   },
+   {
+    "text": "passwdsecret'[redacted42secret&42,",
+    "out": "passwdsecret'[redacted42secret&42,",
+    "count": 0
+   },
+   {
+    "text": "passwd--=vghp_\n-\\\n\rA[max_tokens.\t]\\'secret[redacted by derm] \\\"private_key\\'Token-\t',TOK",
+    "out": "passwd--=[redacted by derm]\n-\\\n\rA[max_tokens.\t]\\'secret[redacted by derm] \\\"private_key\\'Token-\t',TOK",
+    "count": 1
+   },
+   {
+    "text": "x[\"}[redacted by derm]}, x",
+    "out": "x[\"}[redacted by derm]}, x",
+    "count": 0
+   },
+   {
+    "text": " x\tpassword.abcdefghijklmnopqrstuvwxyz0123456789  TOK1  passwdabcdefghijklmnopqrstuvwxyz0123456789]A\t_\r max_tokens: --api_keysecreté",
+    "out": " x\tpassword.abcdefghijklmnopqrstuvwxyz0123456789  TOK1  passwdabcdefghijklmnopqrstuvwxyz0123456789]A\t_\r max_tokens: [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "[redacted-\\\nprivate_key:Amax_tokenspasswd1=v1  xpasswd",
+    "out": "[redacted-\\\nprivate_key:[redacted by derm]  xpasswd",
+    "count": 1
+   },
+   {
+    "text": "--.\\\"\\\"--;apikey",
+    "out": "--.\\\"\\\"--;apikey",
+    "count": 0
+   },
+   {
+    "text": ":api_key&& [abcdefghijklmnopqrstuvwxyz0123456789:[redacted by derm]en'max_tokens Token\rTOK",
+    "out": ":api_key&& [abcdefghijklmnopqrstuvwxyz0123456789:[redacted by derm]en'max_tokens Token\rTOK",
+    "count": 0
+   },
+   {
+    "text": "TOK\nsecret]éToken\\\ntokenx\rabcdefghijklmnopqrstuvwxyz0123456789\n passwd1\\\n]abcdefghijklmnopqrstuvwxyz0123456789=[redacted by derm]max_tokens",
+    "out": "TOK\nsecret]éToken\\\ntokenx\rabcdefghijklmnopqrstuvwxyz0123456789\n passwd1\\\n]abcdefghijklmnopqrstuvwxyz0123456789=[redacted by derm]max_tokens",
+    "count": 0
+   },
+   {
+    "text": "=v1;secretApassword\nxapi_key: abcdefghijklmnopqrstuvwxyz0123456789=vapi_key}password{--:::TOK{enmax_tokensx\\'secret",
+    "out": "=v1;secretApassword\nxapi_key: [redacted by derm]}password{--:::TOK{enmax_tokensx\\'secret",
+    "count": 1
+   },
+   {
+    "text": "\\'&\"\n=vpasswd",
+    "out": "\\'&\"\n=vpasswd",
+    "count": 0
+   },
+   {
+    "text": "en\\\"password[REDACTED xpassword  A\\[redacted by derm]",
+    "out": "en\\\"password[REDACTED xpassword  A\\[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "\"apikeyabcdefghijklmnopqrstuvwxyz0123456789]\\'é\\\n: Token{abcdefghijklmnopqrstuvwxyz0123456789  ;[[redacted42[redactedabcdefghijklmnopqrstuvwxyz0123456789Aapi_key[redacted;private_key\rmax_tokens, '",
+    "out": "\"apikeyabcdefghijklmnopqrstuvwxyz0123456789]\\'é\\\n: Token{abcdefghijklmnopqrstuvwxyz0123456789  ;[[redacted42[redactedabcdefghijklmnopqrstuvwxyz0123456789Aapi_key[redacted;private_key\rmax_tokens, '",
+    "count": 0
+   },
+   {
+    "text": "\"Token'ghp_\n42\" =ven[redacted[REDACTED x_\\   [redactedsecret",
+    "out": "\"Token'ghp_\n42\" =ven[redacted[REDACTED x_\\   [redactedsecret",
+    "count": 0
+   },
+   {
+    "text": "token[REDACTED x",
+    "out": "token[REDACTED x",
+    "count": 0
+   },
+   {
+    "text": " max_tokens",
+    "out": " max_tokens",
+    "count": 0
+   },
+   {
+    "text": ",[redactedprivate_keyabcdefghijklmnopqrstuvwxyz0123456789\txmax_tokens: \n]Token:-\t: abcdefghijklmnopqrstuvwxyz0123456789\\\"passwd",
+    "out": ",[redactedprivate_keyabcdefghijklmnopqrstuvwxyz0123456789\txmax_tokens: \n[redacted by derm]\t: abcdefghijklmnopqrstuvwxyz0123456789\\\"passwd",
+    "count": 1
+   },
+   {
+    "text": "--:passwordtokenA\ntoken\"é   A[redacted by derm]}-,\"[",
+    "out": "--:passwordtokenA\ntoken\"é   A[redacted by derm]}-,\"[",
+    "count": 0
+   },
+   {
+    "text": "{apikeyTOK",
+    "out": "{apikeyTOK",
+    "count": 0
+   },
+   {
+    "text": "apikey',[redacted by derm]\"x  token  \\\"{é Tokensecretx[redacted",
+    "out": "apikey',[redacted by derm]\"x  token  \\\"{é Tokensecretx[redacted",
+    "count": 0
+   },
+   {
+    "text": "_=vabcdefghijklmnopqrstuvwxyz0123456789\"passwdpassword:\"--'\\'TOK=v--tokensecretprivate_key--'.: ghp_\r\"  secret-",
+    "out": "_=vabcdefghijklmnopqrstuvwxyz0123456789\"passwdpassword:\"--'\\'TOK=v--tokensecretprivate_key--'.: ghp_\r\"  secret-",
+    "count": 0
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789\\\n;=1,passwd{.' apikeyapi_keysecretsecret\r'",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789\\\n;=1,passwd{.' apikeyapi_keysecretsecret\r'",
+    "count": 0
+   },
+   {
+    "text": "'\r\\\"\n\r\\\"[ : \\'\\api_key--é=[redacted,password\ré42---[\r[REDACTED x--",
+    "out": "'\r\\\"\n\r\\\"[ : \\'\\api_key--é=[redacted,password\ré42---[\r[REDACTED x--",
+    "count": 0
+   },
+   {
+    "text": "\"é\rToken.en&--, 'token",
+    "out": "\"é\rToken.en&--, 'token",
+    "count": 0
+   },
+   {
+    "text": "Token&\\\n{passwd [REDACTED x[REDACTED xsecret--\\\"Token =vprivate_key1-\nx]];private_key en =vpasswd",
+    "out": "Token&\\\n{passwd [REDACTED x[REDACTED xsecret--\\\"Token =[redacted by derm]\nx]];private_key en =vpasswd",
+    "count": 1
+   },
+   {
+    "text": "'",
+    "out": "'",
+    "count": 0
+   },
+   {
+    "text": "éétoken;-",
+    "out": "éétoken;-",
+    "count": 0
+   },
+   {
+    "text": "apikey[\\\"token[ghp_:\\'=ghp_.\rabcdefghijklmnopqrstuvwxyz0123456789  [redacted=v{TOKpassword[redacted by derm]x42password",
+    "out": "apikey[\\\"token[ghp_:\\'=ghp_.\rabcdefghijklmnopqrstuvwxyz0123456789  [redacted=v{TOKpassword[redacted by derm]x42password",
+    "count": 0
+   },
+   {
+    "text": " éen   \\'secret\\: =v=\\[redactedabcdefghijklmnopqrstuvwxyz0123456789ghp_TOKToken\t",
+    "out": " éen   \\'secret\\: =v=\\[redactedabcdefghijklmnopqrstuvwxyz0123456789ghp_TOKToken\t",
+    "count": 0
+   },
+   {
+    "text": "42]api_key\\\n[redacted by derm]:- max_tokens\\\n.\\\"}'[redactedprivate_key{xxmax_tokens--é[redacted=",
+    "out": "42]api_key\\\n[redacted by derm]:- max_tokens\\\n.\\\"}'[redactedprivate_key{xxmax_tokens--é[redacted=",
+    "count": 0
+   },
+   {
+    "text": ":,  \\'abcdefghijklmnopqrstuvwxyz0123456789secret =:. -- max_tokens: A\\'",
+    "out": ":,  \\'abcdefghijklmnopqrstuvwxyz0123456789secret =[redacted by derm] -- max_tokens: [redacted by derm]'",
+    "count": 2
+   },
+   {
+    "text": ".é1",
+    "out": ".é1",
+    "count": 0
+   },
+   {
+    "text": "\\\n=private_key&\n[redacted by derm]=vpasswd.--ghp_\ten:",
+    "out": "\\\n=private_key&\n[redacted by derm]=vpasswd.--ghp_\ten:",
+    "count": 0
+   },
+   {
+    "text": "}'",
+    "out": "}'",
+    "count": 0
+   },
+   {
+    "text": "  \\'é",
+    "out": "  \\'é",
+    "count": 0
+   },
+   {
+    "text": "token\\'=v\n[redacted by derm]en[redacted by derm].\\'tokenpasswd[redacted by derm] max_tokenspasswd._[REDACTED x}\n&",
+    "out": "token\\'=v\n[redacted by derm]en[redacted by derm].\\'tokenpasswd[redacted by derm] max_tokenspasswd._[REDACTED x}\n&",
+    "count": 0
+   },
+   {
+    "text": "_}ghp_TOK\\\nmax_tokens42[\\\"private_key 1_  Tokenapi_keyabcdefghijklmnopqrstuvwxyz0123456789.\\\n\\'[redacted\\A",
+    "out": "_}ghp_TOK\\\nmax_tokens42[\\\"private_key 1_  Tokenapi_keyabcdefghijklmnopqrstuvwxyz0123456789.\\\n\\'[redacted\\A",
+    "count": 0
+   },
+   {
+    "text": "\\'42abcdefghijklmnopqrstuvwxyz0123456789{AxA \t.[redacted by derm],\npasswordTOKmax_tokens,[REDACTED x\\x\\\"[redacted: ghp_",
+    "out": "\\'42abcdefghijklmnopqrstuvwxyz0123456789{AxA \t.[redacted by derm],\npasswordTOKmax_tokens,[REDACTED x\\x\\\"[redacted: ghp_",
+    "count": 0
+   },
+   {
+    "text": "  {;-tokensecret }\nToken=vmax_tokens\\\"\nenapikey[redacted by derm]\t&,",
+    "out": "  {;-tokensecret }\nToken=[redacted by derm]\"\nenapikey[redacted by derm]\t&,",
+    "count": 1
+   },
+   {
+    "text": "1[REDACTED xabcdefghijklmnopqrstuvwxyz0123456789=vx\"api_key",
+    "out": "1[REDACTED xabcdefghijklmnopqrstuvwxyz0123456789=vx\"api_key",
+    "count": 0
+   },
+   {
+    "text": "\\\"en42\\\"\tA\\\"Token[redacted by derm]{max_tokenssecretTOKsecret:=[redactedprivate_keyabcdefghijklmnopqrstuvwxyz0123456789.en1.ghp_\n} ",
+    "out": "\\\"en42\\\"\tA\\\"Token[redacted by derm]{max_tokenssecretTOKsecret:[redacted by derm]\n} ",
+    "count": 1
+   },
+   {
+    "text": "\r\\'1 \t--; .private_keytoken ;en]\\\nx: \t[redacted by derm]\t  1TOKghp_Token",
+    "out": "\r\\'1 \t--; .private_keytoken ;en]\\\nx: \t[redacted by derm]\t  1TOKghp_Token",
+    "count": 0
+   },
+   {
+    "text": "\\\"\n\\\n[redacted  abcdefghijklmnopqrstuvwxyz01234567891 .",
+    "out": "\\\"\n\\\n[redacted  abcdefghijklmnopqrstuvwxyz01234567891 .",
+    "count": 0
+   },
+   {
+    "text": " =[REDACTED xTOKapikey =\n  [redacted by derm] x",
+    "out": " =[REDACTED xTOKapikey =\n  [redacted by derm] x",
+    "count": 0
+   },
+   {
+    "text": "--max_tokens\n_",
+    "out": "--max_tokens\n_",
+    "count": 0
+   },
+   {
+    "text": "A_TOK;--[ =v{--[redacted by derm]42max_tokens[REDACTED x[redacted[redacted by derm]42xtokenghp_[redacted by derm]apikey",
+    "out": "A_TOK;--[ =v{--[redacted by derm]42max_tokens[REDACTED x[redacted[redacted by derm]42xtokenghp_[redacted by derm]apikey",
+    "count": 0
+   },
+   {
+    "text": "  42x42]=   token: \\  = }api_key\t",
+    "out": "  42x42]=   token: [redacted by derm]  = }api_key\t",
+    "count": 1
+   },
+   {
+    "text": " \n\r: \t;[REDACTED x=",
+    "out": " \n\r: \t;[REDACTED x=",
+    "count": 0
+   },
+   {
+    "text": "  1\\\"--:--\tabcdefghijklmnopqrstuvwxyz0123456789=private_key{[redacted by derm]  Token\\TOK\"A",
+    "out": "  1\\\"--:--\tabcdefghijklmnopqrstuvwxyz0123456789=private_key{[redacted by derm]  Token\\TOK\"A",
+    "count": 0
+   },
+   {
+    "text": " [redacted by derm]{api_key",
+    "out": " [redacted by derm]{api_key",
+    "count": 0
+   },
+   {
+    "text": "{&[redacted by derm]=vapi_key&.apikey",
+    "out": "{&[redacted by derm]=vapi_key&.apikey",
+    "count": 0
+   },
+   {
+    "text": "=v[REDACTED xsecret-",
+    "out": "=v[REDACTED xsecret-",
+    "count": 0
+   },
+   {
+    "text": "max_tokenstoken\t}en42api_key=, -Tokenx-[redacted by derm]=v: max_tokens[A\\\"1=,\\'[REDACTED x=",
+    "out": "max_tokenstoken\t}en42api_key=, -Tokenx-[redacted by derm]=v: max_tokens[A\\\"1=,\\'[REDACTED x=",
+    "count": 0
+   },
+   {
+    "text": "_\tprivate_key\\\"x ",
+    "out": "_\tprivate_key\\\"x ",
+    "count": 0
+   },
+   {
+    "text": "=v\t'\\'password passwordTOK.max_tokens=api_key=",
+    "out": "=v\t'\\'password passwordTOK.max_tokens=[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "{ \\\ntoken=A[redacted\t",
+    "out": "{ \\\ntoken=[redacted by derm]\t",
+    "count": 1
+   },
+   {
+    "text": "\"=v--Tokenpassword42token42\t",
+    "out": "\"=v--Tokenpassword42token42\t",
+    "count": 0
+   },
+   {
+    "text": "]\\'abcdefghijklmnopqrstuvwxyz0123456789passwordémax_tokens1[",
+    "out": "]\\'abcdefghijklmnopqrstuvwxyz0123456789passwordémax_tokens1[",
+    "count": 0
+   },
+   {
+    "text": "-'password1[redactedpasswd",
+    "out": "-'password1[redactedpasswd",
+    "count": 0
+   },
+   {
+    "text": "\t\t [{",
+    "out": "\t\t [{",
+    "count": 0
+   },
+   {
+    "text": "\\\n",
+    "out": "\\\n",
+    "count": 0
+   },
+   {
+    "text": "\n42-TOK1password[en_\\\"=v--",
+    "out": "\n42-TOK1password[en_\\\"=v--",
+    "count": 0
+   },
+   {
+    "text": "--",
+    "out": "--",
+    "count": 0
+   },
+   {
+    "text": ":  password.-;Token{=  [REDACTED x\\é\"enA'",
+    "out": ":  password.-;Token{=  [REDACTED x\\é\"enA'",
+    "count": 0
+   },
+   {
+    "text": "\\' apikey\"abcdefghijklmnopqrstuvwxyz0123456789=token",
+    "out": "\\' apikey\"abcdefghijklmnopqrstuvwxyz0123456789=token",
+    "count": 0
+   },
+   {
+    "text": "[REDACTED x\n A\t{'max_tokens\\\"=v \\\nghp_api_key.\rtoken\\\n",
+    "out": "[REDACTED x\n A\t{'max_tokens\\\"=v \\\nghp_api_key.\rtoken\\\n",
+    "count": 0
+   },
+   {
+    "text": "\t1é{",
+    "out": "\t1é{",
+    "count": 0
+   },
+   {
+    "text": ": ",
+    "out": ": ",
+    "count": 0
+   },
+   {
+    "text": "\\\"passwd'en=v[REDACTED x\té\\-- TOK.abcdefghijklmnopqrstuvwxyz0123456789\\';[redactedé",
+    "out": "\\\"passwd'en=v[REDACTED x\té\\-- TOK.abcdefghijklmnopqrstuvwxyz0123456789\\';[redactedé",
+    "count": 0
+   },
+   {
+    "text": "[abcdefghijklmnopqrstuvwxyz0123456789&[redacted]_apikeyprivate_key\\\n,42\"password][\r=apikey[REDACTED x",
+    "out": "[abcdefghijklmnopqrstuvwxyz0123456789&[redacted]_apikeyprivate_key\\\n,42\"password][\r=apikey[REDACTED x",
+    "count": 0
+   },
+   {
+    "text": "ghp_.ghp_[REDACTED xghp_- }=v}-Tokenmax_tokens[=v;=\\'42 Tokenghp_x=vmax_tokens'token\"",
+    "out": "ghp_.ghp_[REDACTED xghp_- }=v}-Tokenmax_tokens[=v;=\\'42 Tokenghp_x=[redacted by derm]'token\"",
+    "count": 1
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789_-=vapi_key}api_keyAprivate_key}42=,token\\\"]",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789_-=vapi_key}api_keyAprivate_key}42=,token\\\"]",
+    "count": 0
+   },
+   {
+    "text": "en}private_key;\\\\'TokenTOK}",
+    "out": "en}private_key;\\\\'TokenTOK}",
+    "count": 0
+   },
+   {
+    "text": "private_key\r] :en\ntoken\\\n : A\"--private_key}A42\t:\n\\\nTokenx[redactedabcdefghijklmnopqrstuvwxyz0123456789.",
+    "out": "private_key\r] :en\ntoken\\\n : A\"--private_key}A42\t:\n\\\nTokenx[redactedabcdefghijklmnopqrstuvwxyz0123456789.",
+    "count": 0
+   },
+   {
+    "text": "apikeymax_tokenspassword[REDACTED x--\r{TOK,en&\"{\t\\é_ api_keysecret=apikey._A\\'apikeysecret",
+    "out": "apikeymax_tokenspassword[REDACTED x--\r{TOK,en&\"{\t\\é_ api_keysecret=[redacted by derm]'apikeysecret",
+    "count": 1
+   },
+   {
+    "text": "A{[REDACTED xprivate_key&apikey[token ",
+    "out": "A{[REDACTED xprivate_key&apikey[token ",
+    "count": 0
+   },
+   {
+    "text": "\n1 .-1secret_'TOK A",
+    "out": "\n1 .-1secret_'TOK A",
+    "count": 0
+   },
+   {
+    "text": "\né''\n&:\t\"[redacted by derm]}token",
+    "out": "\né''\n&:\t\"[redacted by derm]}token",
+    "count": 0
+   },
+   {
+    "text": ":,-\\\\'",
+    "out": ":,-\\\\'",
+    "count": 0
+   },
+   {
+    "text": "-:].,_api_keyapi_keyA[redacted by derm]ghp_'passwd]\\\nA ghp_\\'",
+    "out": "-:].,_api_keyapi_keyA[redacted by derm]ghp_'passwd]\\\nA ghp_\\'",
+    "count": 0
+   },
+   {
+    "text": " \n&\\\"42[redacted=password_é}==vpasswdéépasswd42apikeyx\tapi_keytokené\"",
+    "out": " \n&\\\"42[redacted=password_é}==vpasswdéépasswd42apikeyx\tapi_keytokené\"",
+    "count": 0
+   },
+   {
+    "text": "=\r=",
+    "out": "=\r=",
+    "count": 0
+   },
+   {
+    "text": "].é42.private_key.ghp_ghp_passwordTokenmax_tokens\n",
+    "out": "].é42.private_key.ghp_ghp_passwordTokenmax_tokens\n",
+    "count": 0
+   },
+   {
+    "text": "_[redacted by derm]TOK': ",
+    "out": "_[redacted by derm]TOK': ",
+    "count": 0
+   },
+   {
+    "text": "\\\"\\\"entokenprivate_key]token}Tokenpassword1\r=v[Token [REDACTED x\\abcdefghijklmnopqrstuvwxyz0123456789\\\\'[redacted",
+    "out": "\\\"\\\"entokenprivate_key]token}Tokenpassword1\r=[redacted by derm] [REDACTED x\\abcdefghijklmnopqrstuvwxyz0123456789\\\\'[redacted",
+    "count": 1
+   },
+   {
+    "text": ".éAsecret\n-secret",
+    "out": ".éAsecret\n-secret",
+    "count": 0
+   },
+   {
+    "text": "\t[redacted by derm]-ghp_=vghp_max_tokens\"é[\"_Ax\"=api_key=v\\\"42_password--en",
+    "out": "\t[redacted by derm]-ghp_=vghp_max_tokens\"é[\"_Ax\"=api_key=[redacted by derm]\"42_password--en",
+    "count": 1
+   },
+   {
+    "text": "\tprivate_keyAmax_tokens \\\n TOK\\\n\\&=private_key\r_;\"A42é={ abcdefghijklmnopqrstuvwxyz0123456789",
+    "out": "\tprivate_keyAmax_tokens \\\n TOK\\\n\\&=private_key\r_;\"A42é={ abcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": ",=v[redacted by derm]en\\enapi_keyenprivate_key][REDACTED xTOK ghp_\\\"\rx:[redacted by derm]'{",
+    "out": ",=v[redacted by derm]en\\enapi_keyenprivate_key][REDACTED xTOK ghp_\\\"\rx:[redacted by derm]'{",
+    "count": 0
+   },
+   {
+    "text": "\\'",
+    "out": "\\'",
+    "count": 0
+   },
+   {
+    "text": ",private_keyghp_api_key[redacted\\\n.xé[REDACTED x\\\npasswd[redacted by derm]_,\nghp_password;:max_tokens]\"Tokenapikey\t",
+    "out": ",private_keyghp_api_key[redacted\\\n.xé[REDACTED x\\\npasswd[redacted by derm]_,\nghp_password;:max_tokens]\"Tokenapikey\t",
+    "count": 0
+   },
+   {
+    "text": "_;\t\rtokenapikeyATOK=vghp_.=passwd,}\\\n",
+    "out": "_;\t\rtokenapikeyATOK=[redacted by derm],}\\\n",
+    "count": 1
+   },
+   {
+    "text": "private_key[REDACTED x42  }42en\\\"\r&[redacted by derm]\\[.]Aen[;=v\\\"",
+    "out": "private_key[REDACTED x42  }42en\\\"\r&[redacted by derm]\\[.]Aen[;=v\\\"",
+    "count": 0
+   },
+   {
+    "text": " \"éapikey  TOKTokentoken",
+    "out": " \"éapikey  TOKTokentoken",
+    "count": 0
+   },
+   {
+    "text": "\\'[é\"\\:{\t x en;A.\t;]password_-",
+    "out": "\\'[é\"\\:{\t x en;A.\t;]password_-",
+    "count": 0
+   },
+   {
+    "text": "\t\t  api_keyapikeyapikey&_&",
+    "out": "\t\t  api_keyapikeyapikey&_&",
+    "count": 0
+   },
+   {
+    "text": ";\"xabcdefghijklmnopqrstuvwxyz0123456789&]A{passwd_,[REDACTED x[redacted by derm]\"\"abcdefghijklmnopqrstuvwxyz0123456789xsecret=vpasswd\t\n  TOK;é",
+    "out": ";\"xabcdefghijklmnopqrstuvwxyz0123456789&]A{passwd_,[REDACTED x[redacted by derm]\"\"abcdefghijklmnopqrstuvwxyz0123456789xsecret=[redacted by derm]\t\n  TOK;é",
+    "count": 1
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789-apikey.\\' =42_\t",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789-apikey.\\' =42_\t",
+    "count": 0
+   },
+   {
+    "text": "=--  {max_tokens-[redacted.]private_key\\é.passwordenapi_key: ghp_ --ghp_\r{apikeymax_tokensghp_",
+    "out": "=--  {max_tokens-[redacted.]private_key\\é.passwordenapi_key: [redacted by derm] --ghp_\r{apikeymax_tokensghp_",
+    "count": 1
+   },
+   {
+    "text": "42\"secretapikey  A,",
+    "out": "42\"secretapikey  A,",
+    "count": 0
+   },
+   {
+    "text": "  }[redacted by derm]{:}=42=v\nxTokensecret42\r: private_key[redacted[REDACTED xTOK;[REDACTED x",
+    "out": "  }[redacted by derm]{:}=42=v\nxTokensecret42\r: [redacted by derm] xTOK;[REDACTED x",
+    "count": 1
+   },
+   {
+    "text": "1\r42&\n{: =Token\\  ',secretapi_key\\\" ",
+    "out": "1\r42&\n{: =Token\\  ',secretapi_key\\\" ",
+    "count": 0
+   },
+   {
+    "text": "\\\n,\\1\\\nx{--TOK  en--enA\\',--  apikey'\n ",
+    "out": "\\\n,\\1\\\nx{--TOK  en--enA\\',--  apikey'\n ",
+    "count": 0
+   },
+   {
+    "text": "  .: max_tokenstoken[redacted by derm]",
+    "out": "  .: max_tokenstoken[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "  ,'_TOK\rapikey:password\"[redactedghp_éTOKpasswdghp_",
+    "out": "  ,'_TOK\rapikey:[redacted by derm]\"[redactedghp_éTOKpasswdghp_",
+    "count": 1
+   },
+   {
+    "text": ":[redacted by derm]_password--: _: Token[[REDACTED x=  ':&",
+    "out": ":[redacted by derm]_password--: [redacted by derm] Token[[REDACTED x=  ':&",
+    "count": 1
+   },
+   {
+    "text": "'api_keymax_tokenstokenprivate_key: ]TOK\\\"max_tokens[redacted by derm],=\\'é-=en\n",
+    "out": "'api_keymax_tokenstokenprivate_key: [redacted by derm]\"max_tokens[redacted by derm],=\\'é-=en\n",
+    "count": 1
+   },
+   {
+    "text": ":[redacted\r",
+    "out": ":[redacted\r",
+    "count": 0
+   },
+   {
+    "text": "ghp_tokenToken 1ATokenTOKpassword;private_keytoken\\'}[REDACTED x}\\,  ghp_'';Token_",
+    "out": "ghp_tokenToken 1ATokenTOKpassword;private_keytoken\\'}[REDACTED x}\\,  ghp_'';Token_",
+    "count": 0
+   },
+   {
+    "text": "-[redacted\\\"token[REDACTED x\\\npassword[REDACTED x",
+    "out": "-[redacted\\\"token[REDACTED x\\\npassword[REDACTED x",
+    "count": 0
+   },
+   {
+    "text": "  [\\\"{ [REDACTED x\rA][redacted'}=\\'ghp_token]Aapikey= _private_keyprivate_key: passwd-_",
+    "out": "  [\\\"{ [REDACTED x\rA][redacted'}=\\'ghp_token]Aapikey= [redacted by derm] passwd-_",
+    "count": 1
+   },
+   {
+    "text": "42private_key[redacted\\\n =api_key",
+    "out": "42private_key[redacted\\\n =api_key",
+    "count": 0
+   },
+   {
+    "text": "=étoken\\'max_tokens}:,token,Aen\\\":émax_tokensprivate_keyen_\\\n--max_tokens\"[redacted [redacted",
+    "out": "=étoken\\'max_tokens}:,token,Aen\\\":émax_tokensprivate_keyen_\\\n--max_tokens\"[redacted [redacted",
+    "count": 0
+   },
+   {
+    "text": "--\r: api_key'passwd\"\\\"A\\\"",
+    "out": "--\r: api_key'passwd\"\\\"A\\\"",
+    "count": 0
+   },
+   {
+    "text": "[redacted by derm]_",
+    "out": "[redacted by derm]_",
+    "count": 0
+   },
+   {
+    "text": "-\"Token[REDACTED xpassword\\\"-'  en-ghp_\\\"passwd: [REDACTED x[REDACTED x\\\"",
+    "out": "-\"Token[REDACTED xpassword\\\"-'  en-ghp_\\\"passwd: [REDACTED x[REDACTED x\\\"",
+    "count": 0
+   },
+   {
+    "text": "}--.  1tokenapikeyapi_keyprivate_key\\\n abcdefghijklmnopqrstuvwxyz01234567891;}",
+    "out": "}--.  1tokenapikeyapi_keyprivate_key\\\n abcdefghijklmnopqrstuvwxyz01234567891;}",
+    "count": 0
+   },
+   {
+    "text": "apikey [redactedé }\\']ghp__en[redactedsecretpassword\\\"---",
+    "out": "apikey [redactedé }\\']ghp__en[redactedsecretpassword\\\"---",
+    "count": 0
+   },
+   {
+    "text": ",,\"[REDACTED x\r1  ]{.A'en.1--x:&abcdefghijklmnopqrstuvwxyz0123456789",
+    "out": ",,\"[REDACTED x\r1  ]{.A'en.1--x:&abcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": "\\--token\t\\\n;{.private_keymax_tokens\r{]A private_key apikey",
+    "out": "\\--token\t\\\n;{.private_keymax_tokens\r{]A private_key apikey",
+    "count": 0
+   },
+   {
+    "text": "TOKTokené=[  =Aabcdefghijklmnopqrstuvwxyz0123456789",
+    "out": "TOKTokené=[  =Aabcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": "  abcdefghijklmnopqrstuvwxyz0123456789 TOKA{\r\tTOK=\"",
+    "out": "  abcdefghijklmnopqrstuvwxyz0123456789 TOKA{\r\tTOK=\"",
+    "count": 0
+   },
+   {
+    "text": ".[redacted[REDACTED xapikey apikey]:  \"[REDACTED x",
+    "out": ".[redacted[REDACTED xapikey apikey]:  \"[REDACTED x",
+    "count": 0
+   },
+   {
+    "text": "=",
+    "out": "=",
+    "count": 0
+   },
+   {
+    "text": "apikeyghp_password{password.en\"].}secret",
+    "out": "apikeyghp_password{password.en\"].}secret",
+    "count": 0
+   },
+   {
+    "text": ":1secret=[redactedapi_keypasswd _:  secretpasswd : {--\\\ntoken:--TOKtoken   ",
+    "out": ":1secret=[redactedapi_keypasswd _:  secretpasswd : [redacted by derm]\ntoken:[redacted by derm]   ",
+    "count": 2
+   },
+   {
+    "text": "&",
+    "out": "&",
+    "count": 0
+   },
+   {
+    "text": " A.]",
+    "out": " A.]",
+    "count": 0
+   },
+   {
+    "text": "\"TOK: ghp_max_tokens\n=[redacted[REDACTED x=v[_ =v{&Token&x42\n: &: TOK",
+    "out": "\"TOK: ghp_max_tokens\n=[redacted[REDACTED x=v[_ =v{&Token&x42\n: &: TOK",
+    "count": 0
+   },
+   {
+    "text": "\\'apikey]\\{passwd.=,en;,=v\\api_key passwordTOK\"",
+    "out": "\\'apikey]\\{passwd.=,en;,=v\\api_key passwordTOK\"",
+    "count": 0
+   },
+   {
+    "text": "abcdefghijklmnopqrstuvwxyz0123456789\\\\x--=v\t\r}\\\n;max_tokenssecret\\api_key \n[REDACTED x[redacted by derm]",
+    "out": "abcdefghijklmnopqrstuvwxyz0123456789\\\\x--=v\t\r}\\\n;max_tokenssecret\\api_key \n[REDACTED x[redacted by derm]",
+    "count": 0
+   },
+   {
+    "text": "{",
+    "out": "{",
+    "count": 0
+   },
+   {
+    "text": " ghp_max_tokenspasswdxé:11secretToken",
+    "out": " ghp_max_tokenspasswdxé:11secretToken",
+    "count": 0
+   },
+   {
+    "text": "-max_tokens\r'\npasswordToken[redacted by derm]-'\",Tokenghp_\\\n{private_key: 1secret",
+    "out": "-max_tokens\r'\npasswordToken[redacted by derm]-'\",Tokenghp_\\\n{private_key: [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": ".;]=\\\n\"-- \\\nabcdefghijklmnopqrstuvwxyz0123456789password -- \"passwd&private_key\"",
+    "out": ".;]=\\\n\"-- \\\nabcdefghijklmnopqrstuvwxyz0123456789password -- \"passwd&private_key\"",
+    "count": 0
+   },
+   {
+    "text": ":: A--}x\nmax_tokensAtokenabcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789",
+    "out": ":: A--}x\nmax_tokensAtokenabcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz0123456789",
+    "count": 0
+   },
+   {
+    "text": "TOKghp_apikey[redacted by derm]apikey[apikey: ,_42'\"[redacted by derm]\r\nprivate_key\\ ghp_ ghp__",
+    "out": "TOKghp_apikey[redacted by derm]apikey[apikey: ,_42'\"[redacted by derm]\r\nprivate_key\\ ghp_ ghp__",
+    "count": 0
+   },
+   {
+    "text": ";passwordabcdefghijklmnopqrstuvwxyz012345678942ghp_&  abcdefghijklmnopqrstuvwxyz0123456789{[REDACTED x[redacted by derm] \\\né_ghp_TOK&private_keyxprivate_key\napikey\r--",
+    "out": ";passwordabcdefghijklmnopqrstuvwxyz012345678942ghp_&  abcdefghijklmnopqrstuvwxyz0123456789{[REDACTED x[redacted by derm] \\\né_ghp_TOK&private_keyxprivate_key\napikey\r--",
+    "count": 0
+   },
+   {
+    "text": "[redacted&\r;abcdefghijklmnopqrstuvwxyz0123456789{\\\"é=vprivate_key=v1A\n",
+    "out": "[redacted&\r;abcdefghijklmnopqrstuvwxyz0123456789{\\\"é=vprivate_key=[redacted by derm]\n",
+    "count": 1
+   },
+   {
+    "text": "1-&42[REDACTED x42max_tokensabcdefghijklmnopqrstuvwxyz0123456789_",
+    "out": "1-&42[REDACTED x42max_tokensabcdefghijklmnopqrstuvwxyz0123456789_",
+    "count": 0
+   },
+   {
+    "text": "\rprivate_key;}TOK\\\"max_tokens42max_tokens=v.private_key42}",
+    "out": "\rprivate_key;}TOK\\\"max_tokens42max_tokens=[redacted by derm]}",
+    "count": 1
+   },
+   {
+    "text": "{token&token[REDACTED x[TOKpassword'\\apikey  [.\\'42TOKxA:api_key",
+    "out": "{token&token[REDACTED x[TOKpassword'\\apikey  [.\\'42TOKxA:api_key",
+    "count": 0
+   },
+   {
+    "text": "token[\\\"api_key--_  --password\\'\\\"token\n: -= éprivate_key=é[REDACTED x ",
+    "out": "token[\\\"api_key--_  --password\\'\\\"token\n: [redacted by derm] éprivate_key=[redacted by derm] x ",
+    "count": 2
+   }
+  ]
+ },
+ "pem": {
+  "count": 30000,
+  "sha256": "3e11461fb71c4cc398c1ee38dda709c671b04ffdc0c0e52bf940519a0ba606a0",
+  "first": [
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "xPRIVATE KEY-----\nPRIVATE KEY-----\n",
+    "out": "xPRIVATE KEY-----\nPRIVATE KEY-----\n",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "EC -----BEGIN xPRIVATE KEY----------BEGIN -----BEGIN xBEGIN-----BEGIN ",
+    "out": "EC -----BEGIN xPRIVATE KEY----------BEGIN -----BEGIN xBEGIN-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "x-EC PRIVATE KEY-----xPRIVATE KEY----------BEGIN xPRIVATE KEY-----",
+    "out": "x-EC PRIVATE KEY-----xPRIVATE KEY----------BEGIN xPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEY----------BEGIN -----BEGIN \n",
+    "out": "EC PRIVATE KEY----------BEGIN -----BEGIN \n",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN EC PRIVATE KEY------xEC -BEGINBEGIN",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "\nEC xxxPRIVATE KEY-----xx-",
+    "out": "\nEC xxxPRIVATE KEY-----xx-",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ---x",
+    "out": "-----BEGIN ---x",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-----BEGIN xx\n",
+    "out": "BEGIN-----BEGIN xx\n",
+    "count": 0
+   },
+   {
+    "text": "------BEGIN EC EC BEGIN-----BEGIN \nBEGIN\n",
+    "out": "------BEGIN EC EC BEGIN-----BEGIN \nBEGIN\n",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-BEGINEC BEGINPRIVATE KEY-----",
+    "out": "BEGIN-BEGINEC BEGINPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-EC BEGIN------BEGIN ",
+    "out": "-EC BEGIN------BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "------BEGIN BEGIN-----BEGIN -----BEGIN EC PRIVATE KEY-----PRIVATE KEY-----\n",
+    "out": "------BEGIN BEGIN-----BEGIN [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "xEC \n\n\n-----BEGIN ",
+    "out": "xEC \n\n\n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "EC \nPRIVATE KEY----------BEGIN \n",
+    "out": "EC \nPRIVATE KEY----------BEGIN \n",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----BEGIN\nEC BEGIN\nEC -----BEGIN x",
+    "out": "PRIVATE KEY-----BEGIN\nEC BEGIN\nEC -----BEGIN x",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -----BEGIN x-----BEGIN xEC \n\nBEGIN",
+    "out": "-----BEGIN -----BEGIN x-----BEGIN xEC \n\nBEGIN",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-----BEGIN PRIVATE KEY----------BEGIN x",
+    "out": "BEGIN[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "xPRIVATE KEY-----PRIVATE KEY-----\nEC ",
+    "out": "xPRIVATE KEY-----PRIVATE KEY-----\nEC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----BEGINxEC \n-PRIVATE KEY-----BEGIN-----BEGIN ",
+    "out": "PRIVATE KEY-----BEGINxEC \n-PRIVATE KEY-----BEGIN-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "EC EC -----BEGIN BEGINPRIVATE KEY------EC -----BEGIN -",
+    "out": "EC EC [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "BEGINxPRIVATE KEY-----PRIVATE KEY------",
+    "out": "BEGINxPRIVATE KEY-----PRIVATE KEY------",
+    "count": 0
+   },
+   {
+    "text": "BEGINEC -PRIVATE KEY----------BEGIN PRIVATE KEY-----EC ------BEGIN ",
+    "out": "BEGINEC -PRIVATE KEY-----[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "x\nPRIVATE KEY----------BEGIN xBEGIN-----BEGIN \nPRIVATE KEY-----",
+    "out": "x\nPRIVATE KEY----------BEGIN xBEGIN-----BEGIN \nPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEYPRIVATE KEY-----xPRIVATE KEY-----EC x-----BEGIN EC ",
+    "out": "EC PRIVATE KEYPRIVATE KEY-----xPRIVATE KEY-----EC x-----BEGIN EC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN BEGINPRIVATE KEY------PRIVATE KEY----------BEGIN -----BEGIN \n-",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "EC EC --x\n-\n-----BEGIN ",
+    "out": "EC EC --x\n-\n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC --EC -BEGIN------BEGIN -----BEGIN ",
+    "out": "EC --EC -BEGIN------BEGIN -----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "BEGINBEGIN-----BEGIN -----BEGIN -----BEGIN BEGIN-EC -----BEGIN ",
+    "out": "BEGINBEGIN-----BEGIN -----BEGIN -----BEGIN BEGIN-EC -----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY------x-----BEGIN -----BEGIN EC BEGIN\n-----BEGIN ",
+    "out": "PRIVATE KEY------x-----BEGIN -----BEGIN EC BEGIN\n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "\n--x-\n-----BEGIN x-",
+    "out": "\n--x-\n-----BEGIN x-",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN BEGINPRIVATE KEY----------BEGIN -----BEGIN PRIVATE KEY-----\n-EC ",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN -----BEGIN \nEC ",
+    "out": "PRIVATE KEY----------BEGIN -----BEGIN \nEC ",
+    "count": 0
+   },
+   {
+    "text": "x\n-----BEGIN --\n-----BEGIN PRIVATE KEY-----x",
+    "out": "x\n-----BEGIN --\n[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "\nBEGINEC ------BEGIN ",
+    "out": "\nBEGINEC ------BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "\n-----BEGIN PRIVATE KEY-----BEGINBEGIN",
+    "out": "\n[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "xPRIVATE KEY----------BEGIN -----BEGIN BEGIN",
+    "out": "xPRIVATE KEY----------BEGIN -----BEGIN BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC BEGIN-----BEGIN BEGIN-----BEGIN xBEGIN-x",
+    "out": "EC BEGIN-----BEGIN BEGIN-----BEGIN xBEGIN-x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN BEGINxPRIVATE KEY-----x------BEGIN -\n",
+    "out": "-----BEGIN BEGINxPRIVATE KEY-----x------BEGIN -\n",
+    "count": 0
+   },
+   {
+    "text": "\nBEGINxxPRIVATE KEY-----",
+    "out": "\nBEGINxxPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----PRIVATE KEY-----\nx-----BEGIN ",
+    "out": "PRIVATE KEY-----PRIVATE KEY-----\nx-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "xBEGIN\nxBEGINPRIVATE KEY-----PRIVATE KEY-----xEC ",
+    "out": "xBEGIN\nxBEGINPRIVATE KEY-----PRIVATE KEY-----xEC ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN \n-BEGIN-----BEGIN -----BEGIN -EC x",
+    "out": "-----BEGIN \n-BEGIN-----BEGIN -----BEGIN -EC x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "xPRIVATE KEY-----BEGINEC -----BEGIN ",
+    "out": "xPRIVATE KEY-----BEGINEC -----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "BEGIN\nEC -----BEGIN -",
+    "out": "BEGIN\nEC -----BEGIN -",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "BEGINBEGIN\n-PRIVATE KEY-----xPRIVATE KEY-----BEGIN BEGIN",
+    "out": "BEGINBEGIN\n-PRIVATE KEY-----xPRIVATE KEY-----BEGIN BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN -----BEGIN -BEGIN",
+    "out": "PRIVATE KEY----------BEGIN -----BEGIN -BEGIN",
+    "count": 0
+   },
+   {
+    "text": "\nPRIVATE KEY-----\nEC EC -----BEGIN xEC -----BEGIN ",
+    "out": "\nPRIVATE KEY-----\nEC EC -----BEGIN xEC -----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "xBEGINPRIVATE KEY-----xBEGINBEGIN\nxEC ",
+    "out": "xBEGINPRIVATE KEY-----xBEGINBEGIN\nxEC ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "\n--PRIVATE KEY------",
+    "out": "\n--PRIVATE KEY------",
+    "count": 0
+   },
+   {
+    "text": "-\nPRIVATE KEY-----EC PRIVATE KEY-----xx\nPRIVATE KEY-----",
+    "out": "-\nPRIVATE KEY-----EC PRIVATE KEY-----xx\nPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "BEGINBEGIN\nEC -----BEGIN EC -----BEGIN EC MIIB",
+    "out": "BEGINBEGIN\nEC -----BEGIN EC -----BEGIN EC MIIB",
+    "count": 0
+   },
+   {
+    "text": "\nEC -----BEGIN PRIVATE KEY----------BEGIN -BEGIN\nx",
+    "out": "\nEC [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "x-EC BEGINEC ",
+    "out": "x-EC BEGINEC ",
+    "count": 0
+   },
+   {
+    "text": "xx\n-----BEGIN BEGINPRIVATE KEY----------BEGIN PRIVATE KEY-----x",
+    "out": "xx\n[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-----BEGIN BEGINPRIVATE KEY-----PRIVATE KEY-----\n",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-\n-----BEGIN xEC EC --BEGIN",
+    "out": "-\n-----BEGIN xEC EC --BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "\nBEGINEC EC PRIVATE KEY-----",
+    "out": "\nBEGINEC EC PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-xEC BEGIN-----BEGIN ",
+    "out": "-xEC BEGIN-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "\nEC -\nBEGINxEC BEGINEC ",
+    "out": "\nEC -\nBEGINxEC BEGINEC ",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "\nEC --\n-----BEGIN -\nEC ",
+    "out": "\nEC --\n-----BEGIN -\nEC ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "\n\nx-BEGIN",
+    "out": "\n\nx-BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC BEGINEC x-----BEGIN ",
+    "out": "EC BEGINEC x-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN EC -----BEGIN PRIVATE KEY-----\n",
+    "out": "-----BEGIN EC [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "BEGIN-\n-----BEGIN EC ",
+    "out": "BEGIN-\n-----BEGIN EC ",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN BEGINPRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY------BEGINx",
+    "out": "PRIVATE KEY-----[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "xxBEGINBEGINRSA PRIVATE KEY-----PRIVATE KEY------\n",
+    "out": "xxBEGINBEGINRSA PRIVATE KEY-----PRIVATE KEY------\n",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----EC PRIVATE KEY----------BEGIN -",
+    "out": "PRIVATE KEY-----EC PRIVATE KEY----------BEGIN -",
+    "count": 0
+   },
+   {
+    "text": "EC \n-----BEGIN x-",
+    "out": "EC \n-----BEGIN x-",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "\n------BEGIN PRIVATE KEY-----\n-EC xEC ",
+    "out": "\n-[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -----BEGIN PRIVATE KEY------PRIVATE KEY-----",
+    "out": "-----BEGIN [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-EC PRIVATE KEY-----EC EC ",
+    "out": "-EC PRIVATE KEY-----EC EC ",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "-\nPRIVATE KEY-----xBEGINBEGINBEGINPRIVATE KEY-----x",
+    "out": "-\nPRIVATE KEY-----xBEGINBEGINBEGINPRIVATE KEY-----x",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN \n-----BEGIN ------BEGIN -----BEGIN EC xEC ",
+    "out": "-----BEGIN \n-----BEGIN ------BEGIN -----BEGIN EC xEC ",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEY-----EC EC PRIVATE KEY-----\n-PRIVATE KEY-----x",
+    "out": "EC PRIVATE KEY-----EC EC PRIVATE KEY-----\n-PRIVATE KEY-----x",
+    "count": 0
+   },
+   {
+    "text": "-\n\n-BEGIN\nxEC PRIVATE KEY-----",
+    "out": "-\n\n-BEGIN\nxEC PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGINEC EC BEGIN\n",
+    "out": "BEGINEC EC BEGIN\n",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -",
+    "out": "-----BEGIN -",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY------BEGINPRIVATE KEY-----PRIVATE KEY-----",
+    "out": "PRIVATE KEY------BEGINPRIVATE KEY-----PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGINPRIVATE KEY-------\n\nBEGIN-----BEGIN \n",
+    "out": "BEGINPRIVATE KEY-------\n\nBEGIN-----BEGIN \n",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----PRIVATE KEY-----xBEGINx",
+    "out": "PRIVATE KEY-----PRIVATE KEY-----xBEGINx",
+    "count": 0
+   },
+   {
+    "text": "\n\nBEGINBEGINPRIVATE KEY-----",
+    "out": "\n\nBEGINBEGINPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-EC BEGINx\n",
+    "out": "-EC BEGINx\n",
+    "count": 0
+   },
+   {
+    "text": "\nBEGIN-----BEGIN \nPRIVATE KEY-----BEGINEC xPRIVATE KEY-----",
+    "out": "\nBEGIN-----BEGIN \nPRIVATE KEY-----BEGINEC xPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-\nBEGINxBEGIN",
+    "out": "-\nBEGINxBEGIN",
+    "count": 0
+   },
+   {
+    "text": "BEGINBEGINxEC PRIVATE KEY------xEC x",
+    "out": "BEGINBEGINxEC PRIVATE KEY------xEC x",
+    "count": 0
+   },
+   {
+    "text": "BEGIN\n-----BEGIN xBEGIN",
+    "out": "BEGIN\n-----BEGIN xBEGIN",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -BEGINPRIVATE KEY------",
+    "out": "-----BEGIN -BEGINPRIVATE KEY------",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "EC -----BEGIN -----BEGIN -----BEGIN -PRIVATE KEY----------BEGIN xBEGIN",
+    "out": "EC -----BEGIN -----BEGIN -----BEGIN -PRIVATE KEY----------BEGIN xBEGIN",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN PRIVATE KEY------BEGIN-\n",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "EC EC \nEC PRIVATE KEY-----",
+    "out": "EC EC \nEC PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGINPRIVATE KEY-----BEGIN-BEGIN",
+    "out": "BEGINPRIVATE KEY-----BEGIN-BEGIN",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC EC \n-\nBEGINEC -PRIVATE KEY-----",
+    "out": "EC EC \n-\nBEGINEC -PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGINEC PRIVATE KEY----------BEGIN x",
+    "out": "BEGINEC PRIVATE KEY----------BEGIN x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN \nPRIVATE KEY-----BEGINBEGINBEGIN-PRIVATE KEY-----EC ",
+    "out": "-----BEGIN \nPRIVATE KEY-----BEGINBEGINBEGIN-PRIVATE KEY-----EC ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "-\n--EC ",
+    "out": "-\n--EC ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "x-----BEGIN x\nPRIVATE KEY-----",
+    "out": "x-----BEGIN x\nPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "xBEGIN-----BEGIN BEGIN\n",
+    "out": "xBEGIN-----BEGIN BEGIN\n",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN xBEGIN\nPRIVATE KEY-----",
+    "out": "-----BEGIN xBEGIN\nPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "\nBEGIN\n-EC PRIVATE KEY-----BEGINPRIVATE KEY-----\n",
+    "out": "\nBEGIN\n-EC PRIVATE KEY-----BEGINPRIVATE KEY-----\n",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN BEGIN-----BEGIN BEGIN-----BEGIN BEGINEC BEGIN",
+    "out": "PRIVATE KEY----------BEGIN BEGIN-----BEGIN BEGIN-----BEGIN BEGINEC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-----BEGIN ------BEGIN EC EC x-----BEGIN EC ",
+    "out": "BEGIN-----BEGIN ------BEGIN EC EC x-----BEGIN EC ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "-BEGIN------BEGIN -BEGIN-PRIVATE KEY------",
+    "out": "-BEGIN------BEGIN -BEGIN-PRIVATE KEY------",
+    "count": 0
+   },
+   {
+    "text": "x\n-xPRIVATE KEY-----",
+    "out": "x\n-xPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY----------BEGIN BEGINEC xEC ",
+    "out": "PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY----------BEGIN BEGINEC xEC ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "-EC \n-BEGIN------BEGIN EC \n",
+    "out": "-EC \n-BEGIN------BEGIN EC \n",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "BEGIN------BEGIN -EC EC \n-----BEGIN -----BEGIN ",
+    "out": "BEGIN------BEGIN -EC EC \n-----BEGIN -----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "EC xxEC EC x\n\nBEGIN",
+    "out": "EC xxEC EC x\n\nBEGIN",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "x-EC \n\n",
+    "out": "x-EC \n\n",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "EC -----BEGIN -----BEGIN PRIVATE KEY----------BEGIN BEGINBEGIN\n\n",
+    "out": "EC -----BEGIN [redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "PRIVATE KEY-----EC EC EC BEGIN",
+    "out": "PRIVATE KEY-----EC EC EC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "------BEGIN PRIVATE KEY----------BEGIN -",
+    "out": "-[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "EC BEGIN-PRIVATE KEY-----BEGINxPRIVATE KEY-----BEGINx",
+    "out": "EC BEGIN-PRIVATE KEY-----BEGINxPRIVATE KEY-----BEGINx",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----EC \n-BEGIN",
+    "out": "PRIVATE KEY-----EC \n-BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEYxx-----BEGIN xx-----BEGIN --",
+    "out": "PRIVATE KEYxx-----BEGIN xx-----BEGIN --",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEY----------BEGIN x\nEC \n-x",
+    "out": "EC PRIVATE KEY----------BEGIN x\nEC \n-x",
+    "count": 0
+   },
+   {
+    "text": "-BEGIN-----BEGIN PRIVATE KEY-----x",
+    "out": "-BEGIN[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "PRIVATE KEY-----BEGINEC BEGINPRIVATE KEY-----",
+    "out": "PRIVATE KEY-----BEGINEC BEGINPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-PRIVATE KEY-----EC -",
+    "out": "BEGIN-PRIVATE KEY-----EC -",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----PRIVATE KEY------\n-----BEGIN ",
+    "out": "PRIVATE KEY-----PRIVATE KEY------\n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEY---------\nEC -",
+    "out": "EC PRIVATE KEY---------\nEC -",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "\nEC EC BEGINPRIVATE KEY-----",
+    "out": "\nEC EC BEGINPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY------BEGIN------BEGIN \n-----BEGIN PRIVATE KEY------",
+    "out": "PRIVATE KEY------BEGIN------BEGIN \n[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "EC -x-----BEGIN -",
+    "out": "EC -x-----BEGIN -",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "EC xxxBEGIN",
+    "out": "EC xxxBEGIN",
+    "count": 0
+   },
+   {
+    "text": "END",
+    "out": "END",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN xx-----BEGIN PRIVATE KEY-----EC PRIVATE KEY-----PRIVATE KEY-----BEGIN",
+    "out": "-----BEGIN xx[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "x-----BEGIN BEGINPRIVATE KEY-----EC ",
+    "out": "x[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "\nxx-----BEGIN  ------BEGIN -----BEGIN x",
+    "out": "\nxx-----BEGIN  ------BEGIN -----BEGIN x",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-PRIVATE KEY-----EC -----BEGIN x",
+    "out": "-PRIVATE KEY-----EC -----BEGIN x",
+    "count": 0
+   },
+   {
+    "text": "BEGINBEGINPRIVATE KEY-----EC -----BEGIN -----BEGIN x-----BEGIN x",
+    "out": "BEGINBEGINPRIVATE KEY-----EC -----BEGIN -----BEGIN x-----BEGIN x",
+    "count": 0
+   },
+   {
+    "text": "BEGINx------BEGIN -EC EC BEGINEC ",
+    "out": "BEGINx------BEGIN -EC EC BEGINEC ",
+    "count": 0
+   },
+   {
+    "text": "\nEC EC x-----BEGIN ",
+    "out": "\nEC EC x-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN \nEC EC x",
+    "out": "-----BEGIN \nEC EC x",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN BEGINEC -xxEC --",
+    "out": "-----BEGIN BEGINEC -xxEC --",
+    "count": 0
+   },
+   {
+    "text": "EC \nBEGINEC EC ",
+    "out": "EC \nBEGINEC EC ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "-----END EC \nBEGINBEGIN",
+    "out": "-----END EC \nBEGINBEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----\n\nxx",
+    "out": "PRIVATE KEY-----\n\nxx",
+    "count": 0
+   },
+   {
+    "text": "EC BEGINBEGINBEGIN-----BEGIN ",
+    "out": "EC BEGINBEGINBEGIN-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -----BEGIN -----------BEGIN xBEGINPRIVATE KEY-----BEGIN",
+    "out": "-----BEGIN -----BEGIN -----------BEGIN xBEGINPRIVATE KEY-----BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC BEGINEC \n-",
+    "out": "EC BEGINEC \n-",
+    "count": 0
+   },
+   {
+    "text": "xBEGINx-x",
+    "out": "xBEGINx-x",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "x-BEGIN\nEC ",
+    "out": "x-BEGIN\nEC ",
+    "count": 0
+   },
+   {
+    "text": "x-\nPRIVATE KEY----------BEGIN --EC BEGIN",
+    "out": "x-\nPRIVATE KEY----------BEGIN --EC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC xEC PRIVATE KEY-----x",
+    "out": "EC xEC PRIVATE KEY-----x",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN -----BEGIN EC x------BEGIN -EC ",
+    "out": "PRIVATE KEY----------BEGIN -----BEGIN EC x------BEGIN -EC ",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN BEGINPRIVATE KEY-----\n-----BEGIN BEGIN-----BEGIN x",
+    "out": "PRIVATE KEY-----[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "PRIVATE KEY-----\n-----BEGIN PRIVATE KEY-----\nEC PRIVATE KEY-----EC -----BEGIN ",
+    "out": "PRIVATE KEY-----\n[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "EC BEGINBEGINPRIVATE KEY-----BEGINPRIVATE KEY----------BEGIN \nEC ",
+    "out": "EC BEGINBEGINPRIVATE KEY-----BEGINPRIVATE KEY----------BEGIN \nEC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "--xxEC ",
+    "out": "--xxEC ",
+    "count": 0
+   },
+   {
+    "text": "xx-BEGINBEGIN",
+    "out": "xx-BEGINBEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -----BEGIN -PRIVATE KEY-----x-\nPRIVATE KEY-----EC ",
+    "out": "-----BEGIN -----BEGIN -PRIVATE KEY-----x-\nPRIVATE KEY-----EC ",
+    "count": 0
+   },
+   {
+    "text": "xEC \nEC \n-----BEGIN -----BEGIN -----BEGIN EC ",
+    "out": "xEC \nEC \n-----BEGIN -----BEGIN -----BEGIN EC ",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----xPRIVATE KEY-------EC ------BEGIN \n",
+    "out": "PRIVATE KEY-----xPRIVATE KEY-------EC ------BEGIN \n",
+    "count": 0
+   },
+   {
+    "text": "EC EC xEC -",
+    "out": "EC EC xEC -",
+    "count": 0
+   },
+   {
+    "text": "BEGINPRIVATE KEY-----xPRIVATE KEY----------BEGIN ",
+    "out": "BEGINPRIVATE KEY-----xPRIVATE KEY----------BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "BEGINx-----BEGIN EC \n",
+    "out": "BEGINx-----BEGIN EC \n",
+    "count": 0
+   },
+   {
+    "text": "\nEC -EC PRIVATE KEY-----PRIVATE KEY-----BEGINxEC ",
+    "out": "\nEC -EC PRIVATE KEY-----PRIVATE KEY-----BEGINxEC ",
+    "count": 0
+   },
+   {
+    "text": "xBEGIN-----BEGIN EC -",
+    "out": "xBEGIN-----BEGIN EC -",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN PRIVATE KEY-----BEGINBEGINPRIVATE KEY-----EC -----BEGIN PRIVATE KEY------",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "BEGINxx\n\n",
+    "out": "BEGINxx\n\n",
+    "count": 0
+   },
+   {
+    "text": "-BEGIN\nEC PRIVATE KEY-----",
+    "out": "-BEGIN\nEC PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEY-----x-----BEGIN EC BEGIN-----BEGIN -PRIVATE KEY-----",
+    "out": "EC PRIVATE KEY-----x-----BEGIN EC BEGIN-----BEGIN -PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC ",
+    "out": "EC ",
+    "count": 0
+   },
+   {
+    "text": "EC \nBEGINBEGINxxEC \nx",
+    "out": "EC \nBEGINBEGINxxEC \nx",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-EC EC -----BEGIN ",
+    "out": "BEGIN-EC EC -----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----\nPRIVATE KEY----------BEGIN -----BEGIN -----BEGIN -----BEGIN --",
+    "out": "PRIVATE KEY-----\nPRIVATE KEY----------BEGIN -----BEGIN -----BEGIN -----BEGIN --",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -BEGINPRIVATE KEY-----EC \nPRIVATE KEY------x",
+    "out": "-----BEGIN -BEGINPRIVATE KEY-----EC \nPRIVATE KEY------x",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----",
+    "out": "PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC xEC -----BEGIN BEGINBEGIN-----BEGIN BEGINx",
+    "out": "EC xEC -----BEGIN BEGINBEGIN-----BEGIN BEGINx",
+    "count": 0
+   },
+   {
+    "text": "BEGIN\nxBEGINx",
+    "out": "BEGIN\nxBEGINx",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN PRIVATE KEY-----ENDxPRIVATE KEY-----",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "PRIVATE KEY----------BEGIN EC -\n-PRIVATE KEY-----EC PRIVATE KEY-----",
+    "out": "PRIVATE KEY----------BEGIN EC -\n-PRIVATE KEY-----EC PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC EC PRIVATE KEY-----BEGINEC \nxEC BEGIN",
+    "out": "EC EC PRIVATE KEY-----BEGINEC \nxEC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "xxEC BEGINEC ",
+    "out": "xxEC BEGINEC ",
+    "count": 0
+   },
+   {
+    "text": "EC PRIVATE KEY-----EC PRIVATE KEY-----\n",
+    "out": "EC PRIVATE KEY-----EC PRIVATE KEY-----\n",
+    "count": 0
+   },
+   {
+    "text": "EC xx\n-----BEGIN ",
+    "out": "EC xx\n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "\n-BEGINPRIVATE KEY-----EC ",
+    "out": "\n-BEGINPRIVATE KEY-----EC ",
+    "count": 0
+   },
+   {
+    "text": "x-PRIVATE KEY-----------BEGIN ",
+    "out": "x-PRIVATE KEY-----------BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-------BEGIN -PRIVATE KEY-----x\nBEGIN-----BEGIN ",
+    "out": "-------BEGIN -PRIVATE KEY-----x\nBEGIN-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "xPRIVATE KEY------xEC ",
+    "out": "xPRIVATE KEY------xEC ",
+    "count": 0
+   },
+   {
+    "text": "\n",
+    "out": "\n",
+    "count": 0
+   },
+   {
+    "text": "\n-----BEGIN EC -----BEGIN EC ",
+    "out": "\n-----BEGIN EC -----BEGIN EC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN PRIVATE KEY-----PRIVATE KEY-----EC -----BEGIN ",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "-----BEGIN PRIVATE KEY-----EC BEGIN-",
+    "out": "[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "BEGIN-----BEGIN \n-----BEGIN PRIVATE KEY-----",
+    "out": "BEGIN-----BEGIN \n[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "x-----BEGIN PRIVATE KEY-----BEGIN\n",
+    "out": "x[redacted by derm]",
+    "count": 1
+   },
+   {
+    "text": "BEGINxPRIVATE KEY------PRIVATE KEY-----",
+    "out": "BEGINxPRIVATE KEY------PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN EC xEC -----BEGIN BEGIN-----BEGIN --",
+    "out": "-----BEGIN EC xEC -----BEGIN BEGIN-----BEGIN --",
+    "count": 0
+   },
+   {
+    "text": "EC xxBEGINBEGINEC BEGINEC BEGIN",
+    "out": "EC xxBEGINBEGINEC BEGINEC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "xBEGINEC \n--BEGINEC BEGIN",
+    "out": "xBEGINEC \n--BEGINEC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----EC xEC \n",
+    "out": "PRIVATE KEY-----EC xEC \n",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -xxxEC PRIVATE KEY-----BEGINx",
+    "out": "-----BEGIN -xxxEC PRIVATE KEY-----BEGINx",
+    "count": 0
+   },
+   {
+    "text": "PRIVATE KEY-----x\n\n-----BEGIN ",
+    "out": "PRIVATE KEY-----x\n\n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "xBEGINPRIVATE KEY----------BEGIN xBEGIN-----BEGIN \n-----BEGIN ",
+    "out": "xBEGINPRIVATE KEY----------BEGIN xBEGIN-----BEGIN \n-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN EC -----BEGIN -PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY------",
+    "out": "-----BEGIN EC -----BEGIN -PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY-----PRIVATE KEY------",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "x",
+    "out": "x",
+    "count": 0
+   },
+   {
+    "text": "x-PRIVATE KEY-----BEGIN-----BEGIN \n-----BEGIN EC BEGIN",
+    "out": "x-PRIVATE KEY-----BEGIN-----BEGIN \n-----BEGIN EC BEGIN",
+    "count": 0
+   },
+   {
+    "text": "xPRIVATE KEY-----xPRIVATE KEY-----EC BEGINBEGINBEGINx",
+    "out": "xPRIVATE KEY-----xPRIVATE KEY-----EC BEGINBEGINBEGINx",
+    "count": 0
+   },
+   {
+    "text": "-xx-----BEGIN BEGINEC \nEC x",
+    "out": "-xx-----BEGIN BEGINEC \nEC x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN -EC EC EC ",
+    "out": "-----BEGIN -EC EC EC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "BEGIN\n\nEC -PRIVATE KEY----------BEGIN BEGIN-",
+    "out": "BEGIN\n\nEC -PRIVATE KEY----------BEGIN BEGIN-",
+    "count": 0
+   },
+   {
+    "text": "-\nEC xx",
+    "out": "-\nEC xx",
+    "count": 0
+   },
+   {
+    "text": "BEGIN-BEGIN\n\n\n-PRIVATE KEY-----x",
+    "out": "BEGIN-BEGIN\n\n\n-PRIVATE KEY-----x",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN x--PRIVATE KEY-----",
+    "out": "-----BEGIN x--PRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "-BEGIN\nxPRIVATE KEY-----",
+    "out": "-BEGIN\nxPRIVATE KEY-----",
+    "count": 0
+   },
+   {
+    "text": "EC -xEC \n",
+    "out": "EC -xEC \n",
+    "count": 0
+   },
+   {
+    "text": "BEGIN",
+    "out": "BEGIN",
+    "count": 0
+   },
+   {
+    "text": "EC BEGINEC xEC ",
+    "out": "EC BEGINEC xEC ",
+    "count": 0
+   },
+   {
+    "text": "-----BEGIN ",
+    "out": "-----BEGIN ",
+    "count": 0
+   },
+   {
+    "text": "xBEGINBEGINxx-PRIVATE KEY------x",
+    "out": "xBEGINBEGINxx-PRIVATE KEY------x",
+    "count": 0
+   },
+   {
+    "text": "-",
+    "out": "-",
+    "count": 0
+   },
+   {
+    "text": "EC -----BEGIN -PRIVATE KEY-----EC -----BEGIN \n\n-",
+    "out": "EC -----BEGIN -PRIVATE KEY-----EC -----BEGIN \n\n-",
+    "count": 0
+   },
+   {
+    "text": "xBEGIN-BEGINPRIVATE KEY----------BEGIN BEGIN\n-",
+    "out": "xBEGIN-BEGINPRIVATE KEY----------BEGIN BEGIN\n-",
+    "count": 0
+   }
+  ]
+ },
+ "named": [
+  {
+   "text": "{\"api_token\": \"abc\", \"n\": 1}",
+   "out": "{\"api_token\": \"[redacted by derm]\", \"n\": 1}",
+   "count": 1
+  },
+  {
+   "text": "curl -H 'x' --password=hunter2 && ls",
+   "out": "curl -H 'x' --password=[redacted by derm] && ls",
+   "count": 1
+  },
+  {
+   "text": "max_tokens=1000",
+   "out": "max_tokens=1000",
+   "count": 0
+  },
+  {
+   "text": "\"secret\": \"a\\\"b\"",
+   "out": "\"secret\": \"[redacted by derm]\"",
+   "count": 1
+  },
+  {
+   "text": "\"secret\": \"\"",
+   "out": "\"secret\": \"\"",
+   "count": 0
+  },
+  {
+   "text": "TOKEN=abc",
+   "out": "TOKEN=[redacted by derm]",
+   "count": 1
+  },
+  {
+   "text": "key sk-proj-abcdefghijklmnopqrstuvwx-_zABCDEFGHIJKLMNOP0123 end",
+   "out": "key [redacted by derm] end",
+   "count": 1
+  },
+  {
+   "text": "key sk-svcacct-abcdefghijklmnopqrstuvwx-_zABCDEFGHIJKLMNOP0123 end",
+   "out": "key [redacted by derm] end",
+   "count": 1
+  },
+  {
+   "text": "key sk-admin-abcdefghijklmnopqrstuvwx-_zABCDEFGHIJKLMNOP0123 end",
+   "out": "key [redacted by derm] end",
+   "count": 1
+  },
+  {
+   "text": "sk-proj-short",
+   "out": "sk-proj-short",
+   "count": 0
+  },
+  {
+   "text": "task-proj-abcdefghijklmnopqrstuvwxyz",
+   "out": "task-proj-abcdefghijklmnopqrstuvwxyz",
+   "count": 0
+  },
+  {
+   "text": "sk-project-plan",
+   "out": "sk-project-plan",
+   "count": 0
+  },
+  {
+   "text": "sk-admin-dashboard-settings-page",
+   "out": "sk-admin-dashboard-settings-page",
+   "count": 0
+  },
+  {
+   "text": "the sk-proj-management-overview-v2 folder",
+   "out": "the sk-proj-management-overview-v2 folder",
+   "count": 0
+  },
+  {
+   "text": "ok\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n",
+   "out": "ok\n[redacted by derm]",
+   "count": 1
+  },
+  {
+   "text": "a -----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY----- b -----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY----- c",
+   "out": "a [redacted by derm] b [redacted by derm] c",
+   "count": 2
+  },
+  {
+   "text": "token ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and gho_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB and ghs_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc and ghr_dddddddddddddddddddddddddddddddddddd_x",
+   "out": "token [redacted by derm] and gho_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB and ghs_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc and ghr_dddddddddddddddddddddddddddddddddddd_x",
+   "count": 1
+  },
+  {
+   "text": "github_pat_aaaaaaaaaaaaaaaaaaaaaa github_pat_bbbbbbbbbbbbbbbbbbbbb",
+   "out": "[redacted by derm] github_pat_bbbbbbbbbbbbbbbbbbbbb",
+   "count": 1
+  },
+  {
+   "text": "AKIAABCDEFGHIJKLMNOP ASIA0123456789ABCDEF AKIAABCDEFGHIJKLMNOPQ xAKIAABCDEFGHIJKLMNOP",
+   "out": "[redacted by derm] [redacted by derm] AKIAABCDEFGHIJKLMNOPQ xAKIAABCDEFGHIJKLMNOP",
+   "count": 2
+  },
+  {
+   "text": "sk-ant-aaaaaaaaaaaaaaaaaaaa- sk-ant-aaaaaaaaaaaaaaaaaaa sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ--",
+   "out": "[redacted by derm]- sk-ant-aaaaaaaaaaaaaaaaaaa [redacted by derm]--",
+   "count": 2
+  },
+  {
+   "text": "xoxb-1111111111 xoxp-123-456-789abc- xoxz-111111111111",
+   "out": "[redacted by derm] [redacted by derm]- xoxz-111111111111",
+   "count": 2
+  }
+ ],
+ "values": [
+  {
+   "input": {
+    "command": "echo hi",
+    "env": {
+     "API_TOKEN": "x",
+     "PLAIN": "token=abc"
+    },
+    "args": [
+     "--password=p",
+     {
+      "private_key": ""
+     }
+    ],
+    "n": 3
+   },
+   "value": {
+    "command": "echo hi",
+    "env": {
+     "API_TOKEN": "[redacted by derm]",
+     "PLAIN": "token=[redacted by derm]"
+    },
+    "args": [
+     "--password=[redacted by derm]",
+     {
+      "private_key": ""
+     }
+    ],
+    "n": 3
+   },
+   "count": 3
+  },
+  {
+   "input": {
+    "url": "https://x?token=abc",
+    "headers": {
+     "Authorization": "Bearer ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   },
+   "value": {
+    "url": "https://x?token=[redacted by derm]",
+    "headers": {
+     "Authorization": "Bearer [redacted by derm]"
+    }
+   },
+   "count": 2
+  }
+ ]
+}

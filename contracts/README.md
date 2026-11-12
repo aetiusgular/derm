@@ -1,6 +1,6 @@
 # Contracts
 
-Written by tk session 0 on 27 Oct 2026. Lanes build against these and their fixtures, not against each other's code (`plans/parallel_build_tk.md`, section 2, point 3). No lane edits this folder during a wave; a change is a request for integration. Since the wave 5 base, two exceptions: lane S may add files in `fixtures/tap/` and lane X in `fixtures/installs/` (`scripts/lane-ownership.json`).
+Written by tk session 0 on 27 Oct 2026. Lanes build against these and their fixtures, not against each other's code (`plans/parallel_build_tk.md`, section 2, point 3). No lane edits this folder during a wave; a change is a request for integration. Since the wave 5 base, two exceptions: lane S may add files in `fixtures/tap/` and lane X in `fixtures/installs/` (`scripts/lane-ownership.json`). Wave 5b's red tests read `fixtures/hook-cases/`, `gate-serve/`, `srt-windows/` and `sysmon-service/`; a lane that finds a recorded case wrong writes it under "Requests for integration" and does not change the case.
 
 | Contract | Fixture | Filled by | Read by |
 |---|---|---|---|
@@ -15,6 +15,11 @@ Written by tk session 0 on 27 Oct 2026. Lanes build against these and their fixt
 | `settings.schema.json` (wave 5): `~/.derm/settings.json` | `fixtures/tap/settings.example.json` | W writes; S, T, U, X read their keys | S, T, U, W, X |
 | `cu-tool.schema.json` (wave 5): Hermes's `computer_use` input, MIT (NOTICE) | none; `contracts.test.ts` holds a few inputs | U | U |
 | `harness-presets.schema.json`'s `tap`, `kit`, `executables` (wave 5) | the empty tables in `crates/derm-cli/src/connect/presets/wave5/` | S, T, W, one table each | S, T, W, Z |
+| `hook-dialects.md` section 9 (wave 5b, the wave 5b base): `derm hook`'s registration line, whose input it is (BCR-7), how a Rust dialect is held to the TypeScript | `fixtures/hook-cases/` (227 recorded cases, the recorder, `manual.json`) | 5bA, 5bB; 5bF for the lines | 5bA, 5bB, 5bF |
+| `gate-serve.md` (wave 5b): `derm gate serve`'s JSON lines | `fixtures/gate-serve/` (held to `gate::core` by a test) | 5bC | 5bC |
+| `srt-windows.md` (wave 5b): the handoff and `derm enter` | `fixtures/srt-windows/handoff.json` | 5bD | 5bD |
+| `sysmon-service.md` (wave 5b): `derm-sysmon`'s pipe | `fixtures/sysmon-service/exchange.jsonl`, `tests/windows/fixtures/sysmon/chat.xml` | 5bE | 5bE |
+| `fixtures/redact/` (wave 5b): the hook redactor's outputs, recorded from `core/redact.ts` | itself | the base (`derm_core::redact::hook`) | everyone |
 
 A server's tool list is not in `server.json` (upstream's 2025-12-11 schema has no tool list, and derm's `_meta` object is `additionalProperties: false`): it lives in a sibling `tools.json` in the entry's folder, as the seed catalog does since wave 1. Integration w2 blessed that form at lane G's request: a tool list inside `_meta` would push a large server past the official registry's 4,096-byte cap on the publisher object (lane G, `validators.go:727-737`), and a mirrored entry has no tool list at all unless something connected to the server.
 

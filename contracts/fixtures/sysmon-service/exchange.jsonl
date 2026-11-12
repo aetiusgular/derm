@@ -1,0 +1,7 @@
+{"from":"daemon","line":{"op":"hello","protocol":1}}
+{"from":"service","line":{"ok":true,"protocol":1,"user":"S-1-5-21-1111111111-2222222222-3333333333-1001","cursor":null}}
+{"from":"daemon","line":{"op":"claim","processGuid":"{a1a1a1a1-0000-0000-0000-000000004100}","chat":"c1"}}
+{"from":"service","line":{"ok":true}}
+{"from":"service","line":{"op":"events","records":[{"recordId":101,"xml":"<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System><Provider Name='Microsoft-Windows-Sysmon' Guid='{5770385f-c22a-43e0-bf4c-06f5698ffbd9}'/><EventID>11</EventID><Version>2</Version><TimeCreated SystemTime='2026-11-05T09:30:01.1234567Z'/><EventRecordID>101</EventRecordID></System><EventData><Data Name='RuleName'>-</Data><Data Name='ProcessGuid'>{a1a1a1a1-0000-0000-0000-000000004100}</Data><Data Name='ProcessId'>4100</Data><Data Name='TargetFilename'>C:\\work\\proj\\a.txt</Data><Data Name='User'>BOX\\u</Data></EventData></Event>"}]}}
+{"from":"daemon","line":{"op":"ack","recordId":101}}
+{"from":"service","line":{"op":"gap","from":102,"to":140,"reason":"the channel wrapped"}}

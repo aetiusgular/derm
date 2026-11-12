@@ -20,13 +20,16 @@
 // Codex's native relay reads returning the same params as no rewrite,
 // dist/native-hook-relay-6I61vqHJ.mjs:178-181). Not covered: a higher-priority
 // plugin that already asked for approval froze its own params snapshot.
+//
+// Wave 5b (lane 5bC): the policy's answer, the approver and the records are
+// `derm gate serve`'s (contracts/gate-serve.md); OpenClaw's control files are
+// in derm-core's list (`CONTROL_PATHS`), so src/control.ts is no longer on
+// the path. A co-process that is not running blocks the call (case 228), as
+// a throw does.
 
-import { createHash, randomUUID } from "node:crypto";
-import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, installEvents, resolveAsk, type GateCall } from "./core/gate.ts";
-import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
-import { redactValue } from "./core/redact.ts";
-import { narrowForControl } from "./control.ts";
+import { createHash } from "node:crypto";
+import { ownedByTrusted } from "./core/owner.ts";
+import { approve, decide, event, record, redact, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "./serve/client.ts";
 
 export const HARNESS = "openclaw";
 /** Lower than any plugin's ordinary priority, so derm runs last. */
@@ -36,18 +39,11 @@ export const DERM_TIMEOUT_MS = 120_000;
 
 export type Deps = {
   env: NodeJS.ProcessEnv;
-  loadPolicy: () => LoadedPolicy;
-  resolveAsk: typeof resolveAsk;
-  postEvent: typeof postEvent;
+  serve: () => GateServe;
 };
 
-export function defaultDeps(env: NodeJS.ProcessEnv = process.env): Deps {
-  return {
-    env,
-    loadPolicy: () => loadPolicyFrom(env),
-    resolveAsk: (answer, call, canAsk) => resolveAsk(answer, call, canAsk, (r) => approve(r, env)),
-    postEvent: (e) => postEvent(e, env),
-  };
+export function defaultDeps(env: NodeJS.ProcessEnv = process.env, cwd: () => string = () => process.cwd()): Deps {
+  return { env, serve: () => sharedServe({ agent: HARNESS, env, cwd, trusted: ownedByTrusted }) };
 }
 
 export type BeforeEvent = { toolName?: unknown; params?: unknown; toolKind?: unknown; toolCallId?: unknown; runId?: unknown };
@@ -91,17 +87,15 @@ export async function beforeToolCall(event: BeforeEvent, ctx: BeforeCtx, deps: D
     const params = isPlainObject(event.params) ? event.params : {};
     const chat = chatOf(ctx, deps.env);
     const id = typeof event.toolCallId === "string" && event.toolCallId !== "" ? event.toolCallId : undefined;
-    const call: GateCall = { harness: HARNESS, tool: toolForGate(event), toolInput: params, ...(chat !== undefined ? { chat } : {}), ...(id !== undefined ? { toolUseId: id } : {}) };
-    const answer = decideCall(deps.loadPolicy(), call);
-    const narrowed = narrowForControl(answer.action, inputTextFor(answer.normalizedTool, params));
-    if (narrowed.control) {
-      answer.action = narrowed.action;
-      answer.reason = `input names a control file (${narrowed.control})`;
-    }
+    const call: Call = { tool: toolForGate(event), input: params, ...(chat !== undefined ? { chat } : {}), ...(id !== undefined ? { toolUseId: id } : {}) };
+    const s = deps.serve();
+    // OpenClaw's own approval can still decide an ask, so this plugin settles
+    // the outcome and records it.
+    const answer = await decide(s, call, false);
     let action: "allow" | "deny" | "approval" = answer.action === "ask" ? "approval" : answer.action;
     let reason = answer.reason;
     if (answer.action === "ask") {
-      const r = await deps.resolveAsk(answer, call, true);
+      const r = await approve(s, call, answer, true, false);
       action = r.kind === "allow" ? "allow" : r.kind === "deny" ? "deny" : "approval";
       reason = r.reason;
     }
@@ -109,17 +103,7 @@ export async function beforeToolCall(event: BeforeEvent, ctx: BeforeCtx, deps: D
       action = "deny";
       reason = "secret-like value in input that derm cannot rewrite on OpenClaw";
     }
-    await deps.postEvent({
-      // A decision is written once per chat and id (the daemon, S9), so
-      // one with no call id gets its own id instead of a shared "unknown".
-      id: decisionId(HARNESS, id),
-      chatId: chat ?? "",
-      harness: HARNESS,
-      kind: "approval",
-      summary: `${answer.normalizedTool} ${action === "approval" ? "ask" : action}`,
-      detail: { tool: answer.normalizedTool, decision: action === "approval" ? "ask" : action, policyAction: answer.action, reason, redacted: answer.redacted, ...(id ? { toolUseId: id } : {}) },
-    });
-    for (const e of installEvents(call, answer, action === "approval" ? "ask" : action, chat ?? "")) await deps.postEvent(e);
+    await record(s, call, answer, action === "approval" ? "ask" : action, { reason });
     if (action === "deny") return block(reason);
     if (action === "approval") {
       return {
@@ -136,6 +120,7 @@ export async function beforeToolCall(event: BeforeEvent, ctx: BeforeCtx, deps: D
     // they are the ones that run.
     return { params: (isPlainObject(answer.updatedInput) ? answer.updatedInput : params) as Record<string, unknown> };
   } catch (error) {
+    if (error instanceof ServeUnavailable) return block(unavailable(error));
     return block(`hook error: ${(error as Error)?.message ?? String(error)}`);
   }
 }
@@ -152,14 +137,14 @@ export async function afterToolCall(event: AfterEvent, ctx: BeforeCtx, deps: Dep
       serialized = "";
     }
     const sha = createHash("sha256").update(serialized, "utf8").digest("hex");
-    const { count } = redactValue(event?.result);
+    const s = deps.serve();
+    const { count } = await redact(s, event?.result ?? null);
     const chat = chatOf(ctx, deps.env);
     const id = typeof event?.toolCallId === "string" ? event.toolCallId : undefined;
-    const tool = decideCall(deps.loadPolicy(), { harness: HARNESS, tool: toolForGate(event as BeforeEvent), toolInput: {} }).normalizedTool;
-    await deps.postEvent({
+    const tool = (await decide(s, { tool: toolForGate(event as BeforeEvent) || "unknown", input: {} }, false)).normalizedTool;
+    await event_(s, {
       id: `${HARNESS}-${id ?? "unknown"}`,
       chatId: chat ?? "",
-      harness: HARNESS,
       kind: "tool.call",
       summary: `${tool} done${count ? `, ${count} secret-like` : ""}`,
       detail: { tool, resultSha256: sha, resultBytes: Buffer.byteLength(serialized, "utf8"), secretLike: count, ...(id ? { toolUseId: id } : {}) },
@@ -168,3 +153,6 @@ export async function afterToolCall(event: AfterEvent, ctx: BeforeCtx, deps: Dep
     // The tool already ran.
   }
 }
+
+/** The client's `event`, named apart from this hook's `event` argument. */
+const event_ = event;

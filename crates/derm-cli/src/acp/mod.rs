@@ -23,7 +23,9 @@
 //! note AQ section 7), so there `derm acp` needs a one-file wrapper per
 //! agent (not run).
 
-pub mod decide;
+// The decide path moved to `crate::gate::decide` (the wave 5b base),
+// unchanged; `derm acp` still answers through it.
+pub use crate::gate::decide;
 pub mod proxy;
 
 use std::sync::Arc;

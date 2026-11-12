@@ -1,0 +1,1 @@
+{"version":1,"askTimeoutSeconds":1,"servers":["exa","my-server","github"],"rules":[{"tool":"bash","action":"allow"},{"tool":"read","action":"allow"},{"tool":"exa/*","action":"allow"},{"tool":"my_server/*","action":"deny"},{"tool":"github/*","action":"ask"},{"tool":"write","action":"ask"}]}

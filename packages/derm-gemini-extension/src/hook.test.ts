@@ -204,7 +204,8 @@ describe("the extension's files", () => {
     expect(gate.matcher).toBe(".*");
     expect(gate.hooks[0]).toMatchObject({ type: "command", name: "derm-gate" });
     expect(gate.hooks[0].timeout).toBeGreaterThan(90_000);
-    expect(gate.hooks[0].command).toContain("${extensionPath}${/}bin${/}derm-hook.mjs");
+    // Since lane 5bF the hook runs derm through the launcher, never node from PATH (case 227); held in Rust by connect::gate_tests::geminis_extension_hooks_run_the_launcher.
+    expect(gate.hooks[0].command).toContain("${extensionPath}${/}hooks${/}derm-gate.sh");
   });
 
   it("the manifest names the extension derm", () => {

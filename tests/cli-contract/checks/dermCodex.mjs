@@ -86,7 +86,8 @@ async function execWithPlugin({ codexPath, rules, first, approve = "none", mcp =
   const mkt = path.join(dirs.root, "mkt");
   mkdirSync(path.join(mkt, ".agents", "plugins"), { recursive: true });
   writeFileSync(path.join(mkt, ".agents", "plugins", "marketplace.json"), JSON.stringify({ name: "derm", plugins: [{ name: "derm", source: { source: "local", path: "./derm" } }] }));
-  for (const part of [".codex-plugin", "hooks", "bin", "src"]) cpSync(path.join(PLUGIN, part), path.join(mkt, "derm", part), { recursive: true });
+  // Since the wave 5b close the plugin is its manifest and hooks/ (the launcher runs derm hook); bin/ and src/ left at the switch-over.
+  for (const part of [".codex-plugin", "hooks"]) cpSync(path.join(PLUGIN, part), path.join(mkt, "derm", part), { recursive: true });
   const stubLog = path.join(dirs.root, "stub.log");
   const extra = [
     // default_tools_approval_mode: Codex's own approval would refuse the call under approval_policy "never" (config/src/mcp_types.rs:280).

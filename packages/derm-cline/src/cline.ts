@@ -35,11 +35,22 @@
 // (sdk/packages/core/src/extensions/mcp/name-transform.ts:20-35); the matcher
 // splits them at the run of underscores.
 
-import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, denyAskInFullAccess, inputTextFor, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
-import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
+//
+// Wave 5b (lane 5bC): the policy's answer, the approver and the records are
+// `derm gate serve`'s (contracts/gate-serve.md); Cline's control files are
+// in derm-core's list (`CONTROL_PATHS`), so src/control.ts is no longer on
+// the path. Cline turns a plugin off after five failed hook calls in a row
+// and then runs every call under its own policy (docs/sdk/plugins.mdx at
+// 071e1b2, "Plugin Status and Errors"), and a hook that takes over 3 s is a
+// failure ("When a hook fails"). So the hook never throws and never waits
+// past its budget: a co-process that is not running, or does not answer in
+// time, is a skip with the reason (case 228), which Cline counts as an
+// answer, not a failure. The co-process starts at the first call, within
+// that call's budget, and stops with the session (`ctx.onDispose`).
+
+import { ownedByTrusted } from "./core/owner.ts";
 import { overBudget } from "./budget.ts";
-import { narrowForControl } from "./control.ts";
+import { approve, decide as serveDecide, event, record, ServeUnavailable, sharedServe, unavailable, type Answer, type Call, type GateServe } from "./serve/client.ts";
 
 export const HARNESS = "cline";
 
@@ -47,24 +58,35 @@ export const HARNESS = "cline";
 export const CLINE_SHELL_TOOLS = ["run_commands"] as const;
 
 
+/** What a hook may spend before Cline's 3 s: start (once) and one answer. */
+export const START_MS = 1200;
+export const ANSWER_MS = 1200;
+
 export type Deps = {
   env: NodeJS.ProcessEnv;
   /** The session folder for the policy's and the token's folder checks. */
   cwd: () => string;
-  loadPolicy: () => LoadedPolicy;
-  resolveAsk: typeof resolveAsk;
-  postEvent: typeof postEvent;
+  serve: () => GateServe;
 };
 
 export function defaultDeps(env: NodeJS.ProcessEnv = process.env, cwd: () => string = () => process.cwd()): Deps {
+  return { env, cwd, serve: () => sharedServe({ agent: HARNESS, env, cwd, trusted: ownedByTrusted, startMs: START_MS, requestMs: ANSWER_MS }) };
+}
+
+/** The call as derm reads it from Cline's: `bash` for Cline's shell (case 82). */
+export type GateCall = { harness: string; tool: string; toolInput: unknown; chat?: string; toolUseId?: string };
+
+function serveCall(call: GateCall): Call {
   return {
-    env,
-    cwd,
-    loadPolicy: () => loadPolicyFrom(env, cwd()),
-    resolveAsk: (answer, call, canAsk) => resolveAsk(answer, call, canAsk, (r) => approve(r, env)),
-    postEvent: (e) => postEvent(e, env),
+    tool: call.tool,
+    input: call.toolInput,
+    ...(call.chat !== undefined ? { chat: call.chat } : {}),
+    ...(call.toolUseId !== undefined ? { toolUseId: call.toolUseId } : {}),
   };
 }
+
+/** `FULL_ACCESS_NOTE` (`gate::core`): under full access an ask is a deny (case 83). */
+const FULL_ACCESS_NOTE = "the chat runs in full access (DERM_FULL_ACCESS=1), so derm denies what it would ask";
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -162,27 +184,26 @@ export function gateCallOf(toolName: string, input: unknown, ids: { toolCallId?:
 /** Tools whose input leaves the machine as it is: a secret-like value there is rewritten; anywhere else it asks (P-S6). */
 export const CLINE_SEND_OUT_TOOLS = ["fetch_web_content"] as const;
 
-/** The policy's answer for one call, with Cline's control files and write tool applied. */
-export function decide(call: GateCall, rawTool: string, deps: Pick<Deps, "loadPolicy">): GateAnswer {
-  const answer = decideCall(deps.loadPolicy(), call);
-  const narrowed = narrowForControl(answer.action, inputTextFor(answer.normalizedTool, call.toolInput));
-  if (narrowed.control) {
-    answer.action = narrowed.action;
-    answer.reason = `input names a control file (${narrowed.control})`;
-  }
+/** The policy's answer for one call (the co-process's, posted by no one yet), with Cline's rewrite rule applied. */
+export async function decide(call: GateCall, rawTool: string, deps: Pick<Deps, "serve" | "env">): Promise<Answer> {
+  const answer = await serveDecide(deps.serve(), serveCall(call), false);
   // Input is rewritten only for a tool that sends it out as it is: an MCP
   // server's tool or a web fetch. Anywhere else (a shell, an editor write, a
   // tool that runs code) a rewrite changes what the call does, so it asks
   // (P-S6). Matched on Cline's own name, not the normalized one.
   const sendsOut = /__/.test(rawTool) || (CLINE_SEND_OUT_TOOLS as readonly string[]).includes(rawTool);
   if (answer.updatedInput !== undefined && !sendsOut) {
-    delete answer.updatedInput;
+    answer.updatedInput = undefined;
     if (answer.action === "allow") {
       answer.action = "ask";
       answer.reason = "secret-like value in input";
     }
   }
-  return denyAskInFullAccess(answer, call);
+  if (answer.action === "ask" && deps.env.DERM_FULL_ACCESS === "1") {
+    answer.action = "deny";
+    answer.reason = `${answer.reason}; ${FULL_ACCESS_NOTE}`;
+  }
+  return answer;
 }
 
 // ------------------------------------------------------------ the SDK plugin
@@ -197,50 +218,47 @@ export type BeforeToolContext = {
 /** The subset of `AgentBeforeToolResult` derm answers with (sdk/packages/shared/src/agent.ts:433-446). */
 export type BeforeToolResult = { skip: true; reason: string } | { policy: { autoApprove: false } } | { input: unknown } | undefined;
 
-export function beforeTool(context: BeforeToolContext, deps: Deps): BeforeToolResult {
+export async function beforeTool(context: BeforeToolContext, deps: Deps): Promise<BeforeToolResult> {
   let call: GateCall | undefined;
-  let answer: GateAnswer | undefined;
+  let answer: Answer | undefined;
   let result: BeforeToolResult;
   try {
     const toolName = context?.toolCall?.toolName;
     if (typeof toolName !== "string" || toolName === "") return { skip: true, reason: "derm: tool call has no tool name" };
     const input = context.input !== undefined ? context.input : context.toolCall?.input;
-    // Before the core sees it: Cline gives this hook 3 s (P-S2).
+    // Before the co-process sees it: Cline gives this hook 3 s (P-S2).
     const heavy = overBudget(input);
     if (heavy) return { skip: true, reason: `derm: ${heavy}` };
     call = gateCallOf(toolName, input, { toolCallId: context.toolCall?.toolCallId, conversationId: context.snapshot?.conversationId }, deps.env);
-    answer = decide(call, toolName, deps);
+    answer = await decide(call, toolName, deps);
     if (answer.action === "deny") result = { skip: true, reason: `derm: ${answer.reason}` };
     else if (answer.action === "ask") result = { policy: { autoApprove: false } };
     else if (answer.updatedInput !== undefined) result = { input: answer.updatedInput };
     else result = undefined;
   } catch (error) {
-    result = { skip: true, reason: error instanceof Unreadable ? `derm: ${error.message}` : `derm: hook error: ${(error as Error)?.message ?? String(error)}` };
+    result = {
+      skip: true,
+      reason:
+        error instanceof Unreadable
+          ? `derm: ${error.message}`
+          : error instanceof ServeUnavailable
+            ? `derm: ${unavailable(error)}`
+            : `derm: hook error: ${(error as Error)?.message ?? String(error)}`,
+    };
   }
   if (call && answer) {
     const decision = result === undefined || (result !== undefined && "input" in result) ? "allow" : "skip" in result ? "deny" : "ask";
     // Not awaited: Cline gives a hook 3 s and ignores it after that, so the
-    // record must never hold the answer. postEvent never throws.
-    void deps.postEvent({
-      id: decisionId(HARNESS, call.toolUseId),
-      chatId: call.chat ?? "",
-      harness: HARNESS,
-      kind: "approval",
-      summary: `${answer.normalizedTool} ${decision}`,
-      detail: {
-        tool: answer.normalizedTool,
-        decision: decision === "ask" ? "ask (Cline's approval)" : decision,
-        policyAction: answer.action,
-        reason: answer.reason,
-        redacted: answer.redacted,
-        via: "plugin",
-        ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
-      },
+    // record must never hold the answer. An ask goes on to Cline's approval,
+    // which the approval-file responder answers and records with its
+    // installs; so the plugin records them only for a call it decided.
+    void record(deps.serve(), serveCall(call), answer, decision, {
+      label: decision === "ask" ? "ask (Cline's approval)" : decision,
+      via: "plugin",
+      reason: answer.reason,
+      ...(decision === "ask" ? { installs: false } : {}),
+      wait: false,
     });
-    // An ask goes on to Cline's approval, which the approval-file responder
-    // answers and records with its installs; so the plugin records them only
-    // for a call it decided.
-    if (decision !== "ask") for (const e of installEvents(call, answer, decision, call.chat ?? "")) void deps.postEvent(e);
   }
   return result;
 }
@@ -268,7 +286,7 @@ export type ApprovalAnswer = { approved: boolean; reason?: string };
  */
 export async function answerRequest(request: ApprovalRequest, deps: Deps): Promise<ApprovalAnswer> {
   let call: GateCall | undefined;
-  let answer: GateAnswer | undefined;
+  let answer: Answer | undefined;
   let out: ApprovalAnswer;
   try {
     if (!isPlainObject(request) || typeof request.toolName !== "string" || request.toolName === "") {
@@ -278,7 +296,7 @@ export async function answerRequest(request: ApprovalRequest, deps: Deps): Promi
       if (heavy) return { approved: false, reason: `derm: ${heavy}` };
       // No chat from the file: the agent can write it (P-S5).
       call = gateCallOf(request.toolName, request.input, { toolCallId: request.toolCallId }, deps.env);
-      answer = decide(call, request.toolName, deps);
+      answer = await decide(call, request.toolName, deps);
       if (answer.action === "allow" && answer.updatedInput !== undefined) {
         // An approval file cannot rewrite the input: ask instead.
         answer.action = "ask";
@@ -287,31 +305,23 @@ export async function answerRequest(request: ApprovalRequest, deps: Deps): Promi
       if (answer.action === "allow") out = { approved: true };
       else if (answer.action === "deny") out = { approved: false, reason: `derm: ${answer.reason}` };
       else {
-        const r = await deps.resolveAsk(answer, call, false);
+        const r = await approve(deps.serve(), serveCall(call), answer, false, false);
         out = r.kind === "allow" ? { approved: true } : { approved: false, reason: `derm: ${r.reason}` };
       }
     }
   } catch (error) {
-    out = { approved: false, reason: error instanceof Unreadable ? `derm: ${error.message}` : `derm: responder error: ${(error as Error)?.message ?? String(error)}` };
+    out = {
+      approved: false,
+      reason:
+        error instanceof Unreadable
+          ? `derm: ${error.message}`
+          : error instanceof ServeUnavailable
+            ? `derm: ${unavailable(error)}`
+            : `derm: responder error: ${(error as Error)?.message ?? String(error)}`,
+    };
   }
   if (call && answer) {
-    await deps.postEvent({
-      id: decisionId(HARNESS, call.toolUseId),
-      chatId: call.chat ?? "",
-      harness: HARNESS,
-      kind: "approval",
-      summary: `${answer.normalizedTool} ${out.approved ? "allow" : "deny"}`,
-      detail: {
-        tool: answer.normalizedTool,
-        decision: out.approved ? "allow" : "deny",
-        policyAction: answer.action,
-        reason: out.reason ?? answer.reason,
-        redacted: answer.redacted,
-        via: "approval-file",
-        ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
-      },
-    });
-    for (const e of installEvents(call, answer, out.approved ? "allow" : "deny", call.chat ?? "")) await deps.postEvent(e);
+    await record(deps.serve(), serveCall(call), answer, out.approved ? "allow" : "deny", { via: "approval-file", reason: out.reason ?? answer.reason });
   }
   return out;
 }

@@ -30,6 +30,7 @@ computer-use = []
 # [lane-X]
 # [lane-Y]
 # [lane-Z]
+# [lane-5bE]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -54,6 +55,8 @@ derm-tap = { path = "../derm-tap" }
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "platform-verifier"] }
 # [lane-Y]
 # [lane-Z]
+# [lane-5bE]
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # objc2 0.6.4 and objc2-foundation 0.3.2 were here for activity/collector.rs's
 # `sm` module (integration w1's fix pass); integration w5's phase 1 merge
@@ -66,6 +69,7 @@ ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "pl
 # [lane-X]
 # [lane-Y]
 # [lane-Z]
+# [lane-5bE]
 
 [dev-dependencies]
 # [lane-K]
@@ -75,7 +79,13 @@ ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "pl
 # [lane-X]
 # [lane-Y]
 # [lane-Z]
+# [lane-5bE]
 
 # Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
+
 [target.'cfg(windows)'.dependencies]
 # [lane-Z]
+# [lane-5bE]
+# The Sysmon service's client and the feed's logic (lane 5bE's own crate):
+# platform/windows/sysmon_feed/ drives it.
+derm-sysmon = { path = "../derm-sysmon" }

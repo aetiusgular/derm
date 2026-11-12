@@ -402,34 +402,39 @@ fn cmd_run(args: &[String]) -> u8 {
         eprintln!("derm-audit-feed run: cannot read {}", log.display());
         return 1;
     };
-    let rotated = open(&resume::rotated_path(&log));
+    // BW5B-R1: every rotated file that opens, `<log>.1` first.
+    let place = match &loaded {
+        resume::Loaded::Kept(p) => Some((p.dev, p.inode)),
+        _ => None,
+    };
+    let rotated = open_rotated(&log, &open, place);
+    let found: Vec<resume::Found> = rotated.iter().map(|r| r.1).collect();
     // FP13RR-4: whether an earlier run started here is the feed's own
     // marker; made now if this is the first start.
     let ran = data_dir(&home).is_some_and(|d| resume::started_before(&d));
-    let (start, gap) = resume::decide(
-        &loaded,
-        &log,
-        cur,
-        rotated.as_ref().map(|r| r.1),
-        from_start,
-        ran,
-        &|which, at| match which {
-            resume::Which::Log => line_at(&log_file, at),
-            resume::Which::Rotated => rotated.as_ref().and_then(|r| line_at(&r.0, at)),
-        },
-    );
+    let (start, gap) =
+        resume::decide(
+            &loaded,
+            &log,
+            cur,
+            &found,
+            from_start,
+            ran,
+            &|which, at| match which {
+                resume::Which::Log => line_at(&log_file, at),
+                resume::Which::Rotated(n) => n
+                    .checked_sub(1)
+                    .and_then(|i| rotated.get(i))
+                    .and_then(|r| line_at(&r.0, at)),
+            },
+        );
     eprintln!("derm-audit-feed: starting at {start:?}");
     // Where reading starts in each file.
-    let (prev, log_at) = match start {
-        resume::Start::End => (None, cur.len),
-        resume::Start::Beginning => (None, 0),
-        resume::Start::At(o) => (None, o),
-        resume::Start::Rotated { offset } => (rotated.map(|r| (r.0, offset)), 0),
-    };
+    let (prev, log_at) = start_files(&start, rotated, cur.len);
     // A gap's end: the first record of what is read again.
     let gap = gap.map(|g| {
         let first = prev
-            .as_ref()
+            .first()
             .and_then(|(f, at)| line_at(f, *at))
             .or_else(|| line_at(&log_file, log_at))
             .map(|(_, k)| k.0);
@@ -580,8 +585,63 @@ fn post_or_stop(poster: &mut Client, socket: &Path, token: &str, e: &Event) -> b
     }
 }
 
-/// Follows the log like `tail -F`: `prev` (the rotated file, from an
-/// offset) first, then the log from `at`, both already open (fp13's review,
+/// Every rotated log that opens, `<log>.1`, `<log>.2` and on, stopping at
+/// the first that does not (ausearch's walk, audit 4.1.2
+/// `src/ausearch.c:266-303`; BW5B-R1), opened now and held so a rotation
+/// before the read is read through. It stops at the kept place's file too,
+/// as ausearch stops at its checkpoint's, so no older file is held open
+/// (FP2-S4: up to 999 descriptors); and a file met twice (auditd renamed it
+/// one place up during the walk, `src/auditd-event.c:1261-1279`) is kept once.
+#[cfg(unix)]
+fn open_rotated(
+    log: &Path,
+    open: &dyn Fn(&Path) -> Option<(File, resume::Found)>,
+    place: Option<(u64, u64)>,
+) -> Vec<(File, resume::Found)> {
+    let mut out: Vec<(File, resume::Found)> = Vec::new();
+    for n in 1..=resume::ROTATED_MAX {
+        let Some(f) = open(&resume::rotated_path_n(log, n)) else {
+            break;
+        };
+        let id = (f.1.dev, f.1.inode);
+        if out.iter().any(|(_, g)| (g.dev, g.inode) == id) {
+            continue;
+        }
+        out.push(f);
+        if Some(id) == place {
+            break;
+        }
+    }
+    out
+}
+
+/// The rotated files to read before the log, oldest first, each from where
+/// reading starts in it, and where reading starts in the log.
+#[cfg(unix)]
+fn start_files(
+    start: &resume::Start,
+    rotated: Vec<(File, resume::Found)>,
+    log_len: u64,
+) -> (Vec<(File, u64)>, u64) {
+    match *start {
+        resume::Start::End => (Vec::new(), log_len),
+        resume::Start::Beginning => (Vec::new(), 0),
+        resume::Start::At(o) => (Vec::new(), o),
+        resume::Start::Rotated { file, offset } => {
+            let mut prev: Vec<(File, u64)> = rotated
+                .into_iter()
+                .take(file)
+                .enumerate()
+                .map(|(i, (f, _))| (f, if i + 1 == file { offset } else { 0 }))
+                .collect();
+            prev.reverse();
+            (prev, 0)
+        }
+    }
+}
+
+/// Follows the log like `tail -F`: `prev` (the rotated files, oldest first,
+/// each from an offset) first, then the log from `at`, all already open (fp13's review,
 /// FP13R-9: opened by path only on `Caught`, a rotation in between was read
 /// past), and on across rotation (a new inode or a file that shrank). Each
 /// line goes with its file's device and inode and its start and end, so the
@@ -593,10 +653,10 @@ fn follow(
     path: &Path,
     file: File,
     at: u64,
-    prev: Option<(File, u64)>,
+    prev: Vec<(File, u64)>,
     tx: &mpsc::Sender<Msg>,
 ) -> std::io::Result<()> {
-    if let Some((mut f, offset)) = prev {
+    for (mut f, offset) in prev {
         let meta = f.metadata()?;
         f.seek(SeekFrom::Start(offset))?;
         let mut r = BufReader::new(f);
@@ -735,7 +795,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<Msg>();
         let path = log.clone();
         let f = opened(&log);
-        std::thread::spawn(move || follow(&path, f, 4, None, &tx));
+        std::thread::spawn(move || follow(&path, f, 4, Vec::new(), &tx));
         let (l, ino, end) = next_line(&rx);
         assert_eq!((l.as_str(), end), ("two\n", 8));
         assert_eq!(next_line(&rx).0, "three\n");
@@ -766,12 +826,128 @@ mod tests {
         std::fs::write(&log, "c\n").unwrap();
         let (tx, rx) = mpsc::channel::<Msg>();
         let path = log.clone();
-        let prev = Some((opened(&dir.join("audit.log.1")), 2));
+        let prev = vec![(opened(&dir.join("audit.log.1")), 2)];
         let f = opened(&log);
         std::thread::spawn(move || follow(&path, f, 0, prev, &tx));
         assert_eq!(next_line(&rx).0, "b\n");
         assert_eq!(next_line(&rx).0, "c\n");
         drop(rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BW5B-R1 (box test w5b retest, item 5): the feed stopped with its place
+    /// in `audit.log`; two rotations later that file is `audit.log.2`. The
+    /// start finds it there and reads on from the place, then `.1`, then the
+    /// log, skipping nothing. Real files, real offsets, the kept line read
+    /// back, as on the box.
+    #[test]
+    fn bw5b_r1_a_place_two_rotations_back_is_read_on_through_every_newer_file() {
+        let dir = std::env::temp_dir().join(format!("derm-bw5br1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("audit.log");
+        let line = |s: u64| {
+            format!("type=SYSCALL msg=audit(1794449590.{:03}:{s}): arch=c000003e syscall=257 success=yes exit=3 pid=1 uid=1000\n", s % 1000)
+        };
+        // The file the feed was reading: two lines read, one not.
+        let kept = format!("{}{}{}", line(1), line(2), line(3));
+        std::fs::write(&log, &kept).unwrap();
+        let place = line(1).len() as u64 + line(2).len() as u64;
+        let opened_meta = std::fs::metadata(&log).unwrap();
+        let k = line_at(&opened(&log), line(1).len() as u64).unwrap();
+        let pos = resume::Pos {
+            log: log.display().to_string(),
+            dev: opened_meta.dev(),
+            inode: opened_meta.ino(),
+            offset: place,
+            check: Some(resume::Check {
+                start: line(1).len() as u64,
+                end: k.0,
+                ts_ms: (k.1).0,
+                serial: (k.1).1,
+            }),
+            log_ms: 1,
+        };
+        // Two rotations while it was down.
+        std::fs::rename(&log, dir.join("audit.log.2")).unwrap();
+        std::fs::write(dir.join("audit.log.1"), line(4)).unwrap();
+        std::fs::write(&log, line(5)).unwrap();
+        let open = |p: &Path| -> Option<(File, resume::Found)> {
+            let f = File::open(p).ok()?;
+            let m = f.metadata().ok()?;
+            Some((
+                f,
+                resume::Found {
+                    dev: m.dev(),
+                    inode: m.ino(),
+                    len: m.len(),
+                },
+            ))
+        };
+        let (log_file, cur) = open(&log).unwrap();
+        // An older file beyond the place's is not opened (FP2-S4).
+        std::fs::write(dir.join("audit.log.3"), line(0)).unwrap();
+        let rotated = open_rotated(&log, &open, Some((pos.dev, pos.inode)));
+        assert_eq!(rotated.len(), 2);
+        let found: Vec<resume::Found> = rotated.iter().map(|r| r.1).collect();
+        let (start, gap) = resume::decide(
+            &resume::Loaded::Kept(pos),
+            &log,
+            cur,
+            &found,
+            false,
+            true,
+            &|which, at| match which {
+                resume::Which::Log => line_at(&log_file, at),
+                resume::Which::Rotated(n) => rotated.get(n - 1).and_then(|r| line_at(&r.0, at)),
+            },
+        );
+        assert!(gap.is_none(), "{gap:?}");
+        assert_eq!(
+            start,
+            resume::Start::Rotated {
+                file: 2,
+                offset: place
+            }
+        );
+        let (prev, at) = start_files(&start, rotated, cur.len);
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let path = log.clone();
+        std::thread::spawn(move || follow(&path, log_file, at, prev, &tx));
+        assert_eq!(next_line(&rx).0, line(3));
+        assert_eq!(next_line(&rx).0, line(4));
+        assert_eq!(next_line(&rx).0, line(5));
+        drop(rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FP2-S4: a file met twice in the walk (auditd renamed it one place
+    /// up meanwhile; played with a hard link) is opened once, so its lines
+    /// are not posted twice.
+    #[test]
+    fn fp2_s4_a_rotated_file_met_twice_is_kept_once() {
+        let dir = std::env::temp_dir().join(format!("derm-fp2s4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("audit.log");
+        std::fs::write(&log, "c\n").unwrap();
+        std::fs::write(dir.join("audit.log.1"), "b\n").unwrap();
+        std::fs::hard_link(dir.join("audit.log.1"), dir.join("audit.log.2")).unwrap();
+        std::fs::write(dir.join("audit.log.3"), "a\n").unwrap();
+        let open = |p: &Path| -> Option<(File, resume::Found)> {
+            let f = File::open(p).ok()?;
+            let m = f.metadata().ok()?;
+            Some((
+                f,
+                resume::Found {
+                    dev: m.dev(),
+                    inode: m.ino(),
+                    len: m.len(),
+                },
+            ))
+        };
+        let got = open_rotated(&log, &open, None);
+        assert_eq!(got.len(), 2, "the hard link is the same file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -798,7 +974,7 @@ mod tests {
         std::fs::write(&log, "new-1\nnew-2\n").unwrap();
         let (tx, rx) = mpsc::channel::<Msg>();
         let path = log.clone();
-        std::thread::spawn(move || follow(&path, held, 7, None, &tx));
+        std::thread::spawn(move || follow(&path, held, 7, Vec::new(), &tx));
         let got: Vec<String> = (0..4).map(|_| next_line(&rx).0).collect();
         drop(rx);
         let _ = std::fs::remove_dir_all(&dir);

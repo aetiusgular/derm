@@ -724,6 +724,12 @@ pub const CONTROL_PATHS: &[&str] = &[
     // name too, for `cd /opt/derm-kit && touch sbx-vm`.
     "derm-kit/",
     "sbx-vm",
+    // Wave 5b's close (W5B-S1): derm's own program, now the gate for every
+    // agent, wherever the plugins' launcher and shims find it, and the
+    // variable the in-process plugins read it from.
+    "/bin/derm",
+    "cellar/derm/",
+    "derm_bin",
 ];
 
 /// The path the shell opens is the same with `//` or `/./` in it, so a
@@ -1592,6 +1598,37 @@ mod tests {
             &call("Bash", "pi", "git \u{200B}-c core.hooksPath=/tmp/h commit"),
         );
         assert_eq!(d.reason, "reject list: core.hookspath");
+    }
+
+    /// W5B-S1 (wave 5b close's security review, reproduced): since wave 5b
+    /// derm's own program is the gate for every agent (`derm hook`, the
+    /// plugins' launcher, `derm gate serve`), so a write to it, or to
+    /// `DERM_BIN`, which the in-process plugins read, replaces the gate for
+    /// every later chat. It is a control file wherever the launcher looks.
+    #[test]
+    fn derms_own_program_is_a_control_file() {
+        let p = policy(r#"[{"tool":"*","action":"allow"}]"#);
+        for (tool, text) in [
+            ("Write", "/root/.local/bin/derm"),
+            ("Bash", "cp /tmp/x /root/.local/bin/derm"),
+            ("Bash", "cp /tmp/x ~/.local/bin/derm-daemon"),
+            ("Bash", "ln -sf /tmp/x /opt/homebrew/bin/derm"),
+            ("Bash", "cp x /opt/homebrew/Cellar/derm/0.1.3/bin/derm"),
+            ("Bash", "export DERM_BIN=/tmp/x"),
+            ("Bash", "cp /tmp/x /usr/local/bin/derm"),
+        ] {
+            let d = evaluate(&p, &call(tool, "pi", text));
+            assert_eq!(d.action, Action::Ask, "{tool} {text}: {}", d.reason);
+            assert!(
+                d.reason.starts_with("input names a control file"),
+                "{text}: {}",
+                d.reason
+            );
+        }
+        assert_eq!(
+            evaluate(&p, &call("Bash", "pi", "ls src/dermatology")).action,
+            Action::Allow
+        );
     }
 
     #[test]

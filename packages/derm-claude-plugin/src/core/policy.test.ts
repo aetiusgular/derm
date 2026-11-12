@@ -258,3 +258,18 @@ describe("tied allow rules and pins (integration w1, security finding S10)", () 
     expect(evaluate({ policy: tied }, { ...base, description: "Write a file." }).action).toBe("allow");
   });
 });
+
+describe("W5B-S1: derm's own program is a control file (wave 5b close)", () => {
+  it("asks on a write or a shell line that names it, wherever the launcher looks", () => {
+    const p = { policy: { version: 1, rules: [{ tool: "*", action: "allow" }], servers: [] } } as unknown as Parameters<typeof evaluate>[0];
+    for (const [tool, text] of [
+      ["Write", "/root/.local/bin/derm"],
+      ["Bash", "cp /tmp/x /opt/homebrew/Cellar/derm/0.1.3/bin/derm"],
+      ["Bash", "export DERM_BIN=/tmp/x"],
+    ] as const) {
+      const d = evaluate(p, { tool, harness: "claude-code", inputText: text });
+      expect(d.action, text).toBe("ask");
+      expect(d.reason).toMatch(/^input names a control file/);
+    }
+  });
+});

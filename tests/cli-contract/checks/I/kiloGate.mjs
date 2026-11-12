@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBinEnv } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-kilo-plugin");
@@ -60,6 +61,7 @@ async function kiloTurn(bin, { policy, script, approve = "none", install = "conf
     ...(install === "config" ? { plugin: [pathToFileURL(PLUGIN).href] } : {}),
   };
   const env = {
+    ...dermBinEnv(),
     PATH: process.env.PATH,
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, ".config"),

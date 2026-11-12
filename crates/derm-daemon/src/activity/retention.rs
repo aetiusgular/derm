@@ -366,6 +366,55 @@ mod tests {
             )
             .unwrap();
         }
+        // The same three links on Windows. A symbolic link needs
+        // SeCreateSymbolicLinkPrivilege (Microsoft Learn, "Symbolic Links"),
+        // which CI's elevated runner holds and an account without elevation
+        // or Developer Mode does not (error 1314 under `runas
+        // /trustlevel:0x20000` on the box, Windows test w5b, step 8 item 2).
+        // A junction needs none, and retention reads it as a link all the
+        // same: Rust's `FileType::is_symlink` is true for any name-surrogate
+        // reparse point, a junction's included (Rust 1.97.0
+        // `library/std/src/sys/fs/windows.rs:1195-1203`). So the folder link
+        // is a junction, and a file link falls back to a junction to its
+        // folder when the privilege is not held.
+        #[cfg(windows)]
+        {
+            fn junction(target: &std::path::Path, link: &std::path::Path) {
+                use std::os::windows::process::CommandExt;
+                let o = std::process::Command::new("cmd")
+                    .args(["/d", "/c"])
+                    .raw_arg(format!(
+                        "mklink /J \"{}\" \"{}\"",
+                        link.display(),
+                        target.display()
+                    ))
+                    .output()
+                    .unwrap();
+                assert!(o.status.success(), "{o:?}");
+            }
+            fn file_link(target: &std::path::Path, link: &std::path::Path) {
+                match std::os::windows::fs::symlink_file(target, link) {
+                    Ok(()) => {}
+                    Err(e) if e.raw_os_error() == Some(1314) => {
+                        eprintln!(
+                            "no SeCreateSymbolicLinkPrivilege: {} as a junction",
+                            link.display()
+                        );
+                        junction(target.parent().unwrap(), link);
+                    }
+                    Err(e) => panic!("{}: {e}", link.display()),
+                }
+            }
+            junction(&outside, &dir.join("screenshots").join("2026-10-02"));
+            file_link(
+                &outside.join("precious.txt"),
+                &dir.join("app-2026-10-03.jsonl"),
+            );
+            file_link(
+                &outside.join("precious.txt"),
+                &dir.join("screenshots").join("2026-10-01").join("link.png"),
+            );
+        }
         let items = scan(&dir);
         assert_eq!(items.len(), 2, "{items:?}");
         let today = parse_day("2026-10-16").unwrap();

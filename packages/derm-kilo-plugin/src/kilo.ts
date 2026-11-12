@@ -15,17 +15,17 @@
 //   splits them, `-` included (the normalizer folds `-` to `_` on both sides).
 // - Kilo never fires permission.ask (note AQ section 4c), so a policy ask goes
 //   to the derm daemon's approver; anything but an approver's yes is a deny.
-// - No runtime import of @opencode-ai/plugin or @kilocode/plugin, and no
-//   engines.opencode in package.json: Kilo refuses a plugin whose
-//   engines.opencode range its own 7.x version does not satisfy
-//   (plugin/shared.ts:195-206).
+// - No runtime 
+//
+// Wave 5b (lane 5bC): the policy's answer, the approver and the records are
+// `derm gate serve`'s (contracts/gate-serve.md); Kilo's control files are in
+// derm-core's list (`CONTROL_PATHS`, folded in by integration w2), so the
+// co-process narrows for them and src/control.ts is no longer on the path.
+// This file keeps Kilo's glue: the in-place rewrite and the throw.
 
 import { createHash, randomUUID } from "node:crypto";
-import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, installEvents, resolveAsk, type GateCall } from "./core/gate.ts";
-import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
-import { redactText, redactValue } from "./core/redact.ts";
-import { narrowForControl } from "./control.ts";
+import { ownedByTrusted } from "./core/owner.ts";
+import { approve, decide, event, record, redact, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "./serve/client.ts";
 
 export const HARNESS = "kilo";
 
@@ -35,18 +35,11 @@ export type AfterInput = { tool: string; sessionID: string; callID: string; args
 
 export type Deps = {
   env: NodeJS.ProcessEnv;
-  loadPolicy: () => LoadedPolicy;
-  resolveAsk: typeof resolveAsk;
-  postEvent: typeof postEvent;
+  serve: () => GateServe;
 };
 
-export function defaultDeps(env: NodeJS.ProcessEnv = process.env): Deps {
-  return {
-    env,
-    loadPolicy: () => loadPolicyFrom(env),
-    resolveAsk: (answer, call, canAsk) => resolveAsk(answer, call, canAsk, (r) => approve(r, env)),
-    postEvent: (e) => postEvent(e, env),
-  };
+export function defaultDeps(env: NodeJS.ProcessEnv = process.env, cwd: () => string = () => process.cwd(), harness: string = HARNESS): Deps {
+  return { env, serve: () => sharedServe({ agent: harness, env, cwd, trusted: ownedByTrusted }) };
 }
 
 /** The error a blocked call throws; Kilo shows its message as the tool's failure. */
@@ -63,9 +56,13 @@ function chatOf(sessionID: unknown, env: NodeJS.ProcessEnv): string | undefined 
   return typeof sessionID === "string" && sessionID !== "" ? sessionID : undefined;
 }
 
+function container(v: unknown): boolean {
+  return typeof v === "object" && v !== null;
+}
+
 /** Replaces the contents of `target` with `source`, keeping the same object. */
 function replaceInPlace(target: unknown, source: unknown): boolean {
-  if (typeof target !== "object" || target === null || typeof source !== "object" || source === null) return false;
+  if (!container(target) || !container(source)) return false;
   if (Array.isArray(target) && Array.isArray(source)) {
     target.splice(0, target.length, ...source);
     return true;
@@ -77,27 +74,29 @@ function replaceInPlace(target: unknown, source: unknown): boolean {
   return true;
 }
 
+function callOf(harness: string, input: BeforeInput, args: unknown, env: NodeJS.ProcessEnv): Call {
+  const chat = chatOf(input.sessionID, env);
+  return {
+    tool: input.tool,
+    input: args ?? {},
+    ...(chat !== undefined ? { chat } : {}),
+    ...(typeof input.callID === "string" && input.callID !== "" ? { toolUseId: input.callID } : {}),
+  };
+}
+
 export async function before(input: BeforeInput, output: BeforeOutput, deps: Deps): Promise<void> {
   try {
     if (typeof input?.tool !== "string" || input.tool === "") throw new DermBlocked("tool call has no tool name");
-    const chat = chatOf(input.sessionID, deps.env);
-    const call: GateCall = {
-      harness: HARNESS,
-      tool: input.tool,
-      toolInput: output?.args ?? {},
-      ...(chat !== undefined ? { chat } : {}),
-      ...(typeof input.callID === "string" ? { toolUseId: input.callID } : {}),
-    };
-    const answer = decideCall(deps.loadPolicy(), call);
-    const narrowed = narrowForControl(answer.action, inputTextFor(answer.normalizedTool, call.toolInput));
-    if (narrowed.control) {
-      answer.action = narrowed.action;
-      answer.reason = `input names a control file (${narrowed.control})`;
-    }
+    const s = deps.serve();
+    const call = callOf(HARNESS, input, output?.args, deps.env);
+    // Input that is not an object cannot be rewritten in place: the plugin
+    // then settles the outcome and records it itself.
+    const inPlace = container(output?.args);
+    const answer = await decide(s, call, inPlace);
     let action = answer.action;
     let reason = answer.reason;
     if (action === "ask") {
-      const r = await deps.resolveAsk(answer, call, false);
+      const r = await approve(s, call, answer, false, inPlace);
       action = r.kind === "allow" ? "allow" : "deny";
       reason = r.reason;
     }
@@ -105,20 +104,11 @@ export async function before(input: BeforeInput, output: BeforeOutput, deps: Dep
       action = "deny";
       reason = "secret-like value in input that derm cannot rewrite";
     }
-    await deps.postEvent({
-      // A decision is written once per chat and id (the daemon, S9), so
-      // one with no call id gets its own id instead of a shared "unknown".
-      id: decisionId(HARNESS, call.toolUseId),
-      chatId: chat ?? "",
-      harness: HARNESS,
-      kind: "approval",
-      summary: `${answer.normalizedTool} ${action}`,
-      detail: { tool: answer.normalizedTool, decision: action, policyAction: answer.action, reason, redacted: answer.redacted, ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}) },
-    });
-    for (const e of installEvents(call, answer, action, chat ?? "")) await deps.postEvent(e);
+    if (!inPlace) await record(s, call, answer, action, { reason });
     if (action === "deny") throw new DermBlocked(reason);
   } catch (error) {
     if (error instanceof DermBlocked) throw error;
+    if (error instanceof ServeUnavailable) throw new DermBlocked(unavailable(error));
     throw new DermBlocked(`hook error: ${(error as Error)?.message ?? String(error)}`);
   }
 }
@@ -132,32 +122,29 @@ export async function after(input: AfterInput, output: unknown, deps: Deps): Pro
       serialized = "";
     }
     const sha = createHash("sha256").update(serialized, "utf8").digest("hex");
+    const s = deps.serve();
     let count = 0;
     if (typeof output === "object" && output !== null) {
       const o = output as Record<string, unknown>;
-      if (typeof o.output === "string") {
-        const r = redactText(o.output);
-        count += r.count;
-        o.output = r.text;
-      }
-      if (Array.isArray(o.content)) {
-        const r = redactValue(o.content);
-        if (r.count && replaceInPlace(o.content, r.value)) count += r.count;
-      }
-      if (typeof o.metadata === "object" && o.metadata !== null) {
-        const r = redactValue(o.metadata);
-        if (r.count && replaceInPlace(o.metadata, r.value)) count += r.count;
+      const parts: Record<string, unknown> = {};
+      for (const k of ["output", "content", "metadata"]) if (k in o) parts[k] = o[k];
+      const r = await redact(s, parts);
+      if (r.count > 0 && typeof r.value === "object" && r.value !== null) {
+        const v = r.value as Record<string, unknown>;
+        if (typeof o.output === "string" && typeof v.output === "string") o.output = v.output;
+        for (const k of ["content", "metadata"]) if (container(o[k])) replaceInPlace(o[k], v[k]);
+        count = r.count;
       }
     }
     const chat = chatOf(input?.sessionID, deps.env);
-    const tool = decideCall(deps.loadPolicy(), { harness: HARNESS, tool: String(input?.tool ?? ""), toolInput: {} }).normalizedTool;
-    await deps.postEvent({
-      id: `${HARNESS}-${typeof input?.callID === "string" ? input.callID : "unknown"}`,
+    const callId = typeof input?.callID === "string" ? input.callID : undefined;
+    const tool = (await decide(s, { tool: String(input?.tool ?? "") || "unknown", input: {} }, false)).normalizedTool;
+    await event(s, {
+      id: `${HARNESS}-${callId ?? `unknown-${randomUUID()}`}`,
       chatId: chat ?? "",
-      harness: HARNESS,
       kind: "tool.call",
       summary: `${tool} done${count ? `, ${count} redacted` : ""}`,
-      detail: { tool, resultSha256: sha, resultBytes: Buffer.byteLength(serialized, "utf8"), redacted: count, ...(typeof input?.callID === "string" ? { toolUseId: input.callID } : {}) },
+      detail: { tool, resultSha256: sha, resultBytes: Buffer.byteLength(serialized, "utf8"), redacted: count, ...(callId ? { toolUseId: callId } : {}) },
     });
   } catch {
     // After the call nothing is gained by failing: the tool already ran.

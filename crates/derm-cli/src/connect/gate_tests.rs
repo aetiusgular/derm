@@ -81,6 +81,31 @@ fn package(home: &Path, folder: &str, name: &str) -> String {
     dir.display().to_string()
 }
 
+#[cfg(unix)]
+/// Makes `path` the derm a registration names (`gate::TEST_SELF`).
+fn set_self(path: &Path) {
+    gate::TEST_SELF.with(|t| *t.borrow_mut() = Some(path.to_path_buf()));
+}
+
+#[cfg(unix)]
+/// A derm in `<home>/<sub>/derm`, closed to others, made the derm this
+/// test registers; its real path back.
+fn fake_derm_in(home: &Path, sub: &str) -> String {
+    let dir = home.join(sub);
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let f = dir.join("derm");
+    fs::write(&f, "#!/bin/sh\nexit 2\n").unwrap();
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+    set_self(&f);
+    fs::canonicalize(&f).unwrap().display().to_string()
+}
+
+#[cfg(unix)]
+fn fake_derm(home: &Path) -> String {
+    fake_derm_in(home, "bin")
+}
+
 fn parse(text: &str) -> Value {
     json::parse(text, true).unwrap().root.unwrap().to_value()
 }
@@ -97,26 +122,33 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
     ids.dedup();
     assert_eq!(ids.len(), rows.len(), "an agent listed twice");
     let vars = Vars {
-        command: Some("node --no-warnings \"/h/derm/bin/derm-hook.mjs\" x".into()),
+        command: None,
         hook_dir: Some("/h/derm/packages/derm-opencode-plugin".into()),
         version: "0.1.3".into(),
+        gate_name: Some("derm-0123456789abcdef".into()),
     };
     for a in &rows {
         let writes = a.steps.iter().any(|s| !matches!(s, Step::Commands { .. }));
         if !writes {
             continue;
         }
-        let marker = a
-            .marker
-            .as_deref()
-            .unwrap_or_else(|| panic!("{}: no marker", a.agent));
+        assert!(!a.markers.is_empty(), "{}: no marker", a.agent);
         assert!(
             !a.installed_if.is_empty() || a.cli.is_some(),
             "{}: nothing tells whether it is installed",
             a.agent
         );
-        if a.command.is_some() {
-            assert!(a.hook_file.is_some(), "{}", a.agent);
+        let mut vars = vars.clone();
+        if let Some(t) = &a.command {
+            // Wave 5b lane 5bF: every command-hook row runs `derm hook`
+            // by derm's own path, with no hook file and no node.
+            assert!(t.starts_with("{derm} hook "), "{}: {t}", a.agent);
+            assert!(a.hook_file.is_none(), "{}", a.agent);
+            assert!(!t.contains("node") && !t.contains("{hook_file}"), "{t}");
+            vars.command = Some(t.replace("{derm}", "/opt/x/derm"));
+        }
+        if a.agent == "kilo" {
+            vars.hook_dir = Some("/h/derm/packages/derm-kilo-plugin".into());
         }
         for st in &a.steps {
             let v = match st {
@@ -124,14 +156,10 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
                 Step::OwnedFile { content, .. } => content,
                 _ => continue,
             };
-            let mut vars = vars.clone();
-            if a.agent == "kilo" {
-                vars.hook_dir = Some("/h/derm/packages/derm-kilo-plugin".into());
-            }
             let filled = gate::fill(v, &vars).unwrap();
             assert!(
-                json::compact(&filled).contains(marker),
-                "{}: its entry does not hold its marker",
+                json::compact(&filled).contains(a.markers[0].as_str()),
+                "{}: its entry does not hold its first marker",
                 a.agent
             );
         }
@@ -140,23 +168,17 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
 
 #[cfg(unix)]
 /// Lane N's `registration/mistral-vibe/hooks.toml` (85592cf), with the
-/// folder filled: derm writes exactly that table beside the user's own.
+/// command now `derm hook` by derm's path: derm writes exactly that table
+/// beside the user's own.
 #[test]
 fn vibe_gets_lane_ns_table_beside_its_own_and_once() {
     let home = scratch("gate-vibe");
-    let pkg = package(
-        &home,
-        "clone/packages/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
+    let derm = fake_derm(&home);
     let cfg = home.join(".vibe/hooks.toml");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     let mine = "# my hooks\n[[hooks]]\nname = \"lint\"\ntype = \"post_tool\"\ncommand = \"lint\"\n";
     fs::write(&cfg, mine).unwrap();
-    let r = go(
-        &home,
-        &["mistral-vibe", "--gate", "--hook", &pkg, "--write"],
-    );
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     // The user's text is kept as it was; derm's table holds exactly lane
     // N's keys and values (toml_edit may quote the command as a literal
@@ -179,15 +201,18 @@ fn vibe_gets_lane_ns_table_beside_its_own_and_once() {
             "description"
         ]
     );
-    assert_eq!(ours["name"].as_str(), Some("derm-gate"));
+    // BC-2: the name kept in ~/.derm/gate-name, never the fixed `derm-gate`.
+    let name = gate::read_gate_name(&home).unwrap().unwrap();
+    assert!(gate::valid_gate_name(&name), "{name}");
+    assert_eq!(ours["name"].as_str(), Some(name.as_str()));
     assert_eq!(ours["type"].as_str(), Some("pre_tool"));
     assert_eq!(
         ours["command"].as_str().unwrap(),
-        format!("node --no-warnings \"{pkg}/bin/derm-hook.mjs\" mistral-vibe")
+        format!("{derm} hook mistral-vibe pre")
     );
     assert_eq!(ours["timeout"].as_float(), Some(120.0));
     assert_eq!(ours["strict"].as_bool(), Some(true));
-    let r = go(&home, &["mistral-vibe", "--gate", "--hook", &pkg]);
+    let r = go(&home, &["mistral-vibe", "--gate"]);
     assert!(r.out.contains("already registered"), "{}", r.out);
     let r = go(&home, &["mistral-vibe", "--ungate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
@@ -200,11 +225,7 @@ fn vibe_gets_lane_ns_table_beside_its_own_and_once() {
 #[test]
 fn claude_format_list_beside_orcas_entry_and_out_again() {
     let home = scratch("gate-openclaude");
-    let pkg = package(
-        &home,
-        "c/packages/derm-hooks-claude-compat",
-        "@aetiusgular/derm-hooks-claude-compat",
-    );
+    let derm = fake_derm(&home);
     let cfg = home.join(".openclaude/settings.json");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     let before = r#"{
@@ -225,11 +246,16 @@ fn claude_format_list_beside_orcas_entry_and_out_again() {
 }
 "#;
     fs::write(&cfg, before).unwrap();
-    let r = go(&home, &["openclaude", "--gate", "--hook", &pkg]);
+    let r = go(&home, &["openclaude", "--gate"]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("dry run"), "{}", r.out);
+    assert!(
+        r.out.contains(&format!("gate:   {derm} hook openclaude")),
+        "{}",
+        r.out
+    );
     assert_eq!(read(&cfg), before, "a dry run writes nothing");
-    let r = go(&home, &["openclaude", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["openclaude", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let v = parse(&read(&cfg));
     let Some(Value::Array(groups)) = v.get_path(&["hooks", "PreToolUse"]) else {
@@ -239,12 +265,12 @@ fn claude_format_list_beside_orcas_entry_and_out_again() {
     assert!(json::compact(&groups[0]).contains("Orca.app"));
     let ours = json::compact(&groups[1]);
     assert!(
-        ours.contains(&format!("{pkg}/bin/derm-hook.mjs\\\" openclaude pre")),
+        ours.contains(&format!("\"command\": \"{derm} hook openclaude pre\"")),
         "{ours}"
     );
     assert!(ours.contains("\"timeout\": 120"), "{ours}");
     assert_eq!(v.get("model"), Some(&Value::Str("x".into())));
-    let r = go(&home, &["openclaude", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["openclaude", "--gate", "--write"]);
     assert!(r.out.contains("already registered"), "{}", r.out);
     let r = go(&home, &["openclaude", "--ungate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
@@ -252,49 +278,148 @@ fn claude_format_list_beside_orcas_entry_and_out_again() {
 }
 
 #[cfg(unix)]
-/// A hook folder moved since the last --gate: derm's entry is replaced,
-/// never doubled.
+/// derm moved since the last --gate: derm's entry is replaced, never
+/// doubled. And a wave 4 entry (`node ... derm-hook.mjs`) is replaced by
+/// `derm hook`, never left beside it to run a node from PATH (case 227).
 #[test]
-fn a_moved_package_replaces_derms_entry() {
+fn a_moved_derm_or_a_wave_4_node_entry_is_replaced() {
     let home = scratch("gate-move");
-    let one = package(
-        &home,
-        "a/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
-    let two = package(
-        &home,
-        "b/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
-    fs::create_dir_all(home.join(".config/crush")).unwrap();
-    assert_eq!(
-        go(&home, &["crush", "--gate", "--hook", &one, "--write"]).code,
-        0
-    );
-    let r = go(&home, &["crush", "--gate", "--hook", &two, "--write"]);
+    let cfg = home.join(".config/crush/crush.json");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    fs::write(
+        &cfg,
+        "{\"hooks\": {\"PreToolUse\": [{\"name\": \"derm-gate\", \"command\": \"node --no-warnings \\\"/old/derm-hooks-native/bin/derm-hook.mjs\\\" crush\", \"timeout\": 120}, {\"name\": \"mine\", \"command\": \"lint\"}]}}\n",
+    )
+    .unwrap();
+    let one = fake_derm_in(&home, "a");
+    let r = go(&home, &["crush", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    let v = parse(&read(&home.join(".config/crush/crush.json")));
+    let two = fake_derm_in(&home, "b");
+    assert_ne!(one, two);
+    let r = go(&home, &["crush", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let v = parse(&read(&cfg));
     let Some(Value::Array(list)) = v.get_path(&["hooks", "PreToolUse"]) else {
         panic!()
     };
-    assert_eq!(list.len(), 1);
-    assert!(json::compact(&list[0]).contains(&two));
+    assert_eq!(list.len(), 2, "{list:?}");
+    let all = json::compact(&v);
+    assert!(all.contains(&format!("{two} hook crush pre")), "{all}");
+    assert!(
+        !all.contains(&one) && !all.contains("derm-hook.mjs"),
+        "{all}"
+    );
+    // derm's entry kept the place the old one had; the user's stays second.
+    assert!(json::compact(&list[1]).contains("\"mine\""));
+}
+
+#[cfg(unix)]
+/// BW5B-1 (box test w5b, step 5): a `derm hook <id>` line with no path is
+/// derm's own entry too. `--gate --write` replaces it with derm's absolute
+/// path, never appends a second gate beside it; `--ungate` removes it; and
+/// doctor, whose advice was to run `--gate --write` again, is then quiet.
+#[test]
+fn bw5b_1_a_bare_derm_hook_line_is_derms_entry_to_connect_and_doctor() {
+    let home = scratch("gate-bare");
+    let derm = fake_derm(&home);
+    let cfg = home.join(".config/crush/crush.json");
+    fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    for bare in [
+        "derm hook crush pre",
+        "\\\"derm\\\" hook crush pre",
+        "./derm hook crush pre",
+    ] {
+        fs::write(
+            &cfg,
+            format!("{{\"hooks\": {{\"PreToolUse\": [{{\"name\": \"derm-gate\", \"command\": \"{bare}\", \"timeout\": 120}}, {{\"name\": \"mine\", \"command\": \"lint\"}}]}}}}\n"),
+        )
+        .unwrap();
+        let before = crate::doctor::stale_registrations("crush", &doctor_env(&home));
+        assert!(
+            before.iter().any(|p| p.contains("found on PATH")),
+            "{bare}: {before:?}"
+        );
+        let r = go(&home, &["crush", "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{bare}: {}{}", r.out, r.err);
+        let v = parse(&read(&cfg));
+        let Some(Value::Array(list)) = v.get_path(&["hooks", "PreToolUse"]) else {
+            panic!()
+        };
+        assert_eq!(list.len(), 2, "{bare}: {list:?}");
+        assert!(
+            json::compact(&list[0]).contains(&format!("{derm} hook crush pre")),
+            "{bare}: {list:?}"
+        );
+        assert!(
+            json::compact(&list[1]).contains("\"mine\""),
+            "{bare}: {list:?}"
+        );
+        let after = crate::doctor::stale_registrations("crush", &doctor_env(&home));
+        assert!(after.is_empty(), "{bare}: {after:?}");
+    }
+    // --ungate takes a bare line out as well.
+    fs::write(
+        &cfg,
+        "{\"hooks\": {\"PreToolUse\": [{\"name\": \"derm-gate\", \"command\": \"derm hook crush pre\"}, {\"name\": \"mine\", \"command\": \"lint\"}]}}\n",
+    )
+    .unwrap();
+    let r = go(&home, &["crush", "--ungate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let all = read(&cfg);
+    assert!(!all.contains("hook crush"), "{all}");
+    assert!(all.contains("\"mine\""), "{all}");
+    // A TOML row (Vibe) the same way.
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    let vibe = home.join(".vibe/hooks.toml");
+    fs::write(
+        &vibe,
+        "[[hooks]]\nname = \"x\"\ntype = \"pre_tool\"\ncommand = \"derm hook mistral-vibe pre\"\ntimeout = 120.0\nstrict = true\n",
+    )
+    .unwrap();
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&vibe).parse().unwrap();
+    let hooks = doc["hooks"].as_array_of_tables().unwrap();
+    assert_eq!(hooks.len(), 1, "{}", read(&vibe));
+    assert_eq!(
+        hooks.get(0).unwrap()["command"].as_str(),
+        Some(format!("{derm} hook mistral-vibe pre").as_str())
+    );
+    // Not derm: a program named otherwise, or a word that only ends in derm.
+    for other in [
+        "xderm hook crush pre",
+        "/opt/notderm hook crush pre",
+        "derm hooks crush pre",
+        // FP1-S3: a command that only mentions derm's line is not derm's.
+        "logger -t audit 'tool call seen before derm hook crush pre'",
+        "echo derm hook crush pre",
+    ] {
+        fs::write(
+            &cfg,
+            format!("{{\"hooks\": {{\"PreToolUse\": [{{\"name\": \"theirs\", \"command\": \"{other}\"}}]}}}}\n"),
+        )
+        .unwrap();
+        let r = go(&home, &["crush", "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{other}: {}{}", r.out, r.err);
+        let v = parse(&read(&cfg));
+        let Some(Value::Array(list)) = v.get_path(&["hooks", "PreToolUse"]) else {
+            panic!()
+        };
+        assert_eq!(list.len(), 2, "{other}: {list:?}");
+        assert!(json::compact(&list[0]).contains(other), "{other}: {list:?}");
+    }
 }
 
 #[cfg(unix)]
 /// Cursor: two lists in one new file that starts with `version: 1`, as lane
-/// N's `registration/cursor/hooks.json`.
+/// N's `registration/cursor/hooks.json`, each running `derm hook cursor pre`
+/// (the dialect reads which event from the input).
 #[test]
 fn cursor_gets_both_events_in_a_new_file() {
     let home = scratch("gate-cursor");
-    let pkg = package(
-        &home,
-        "n/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
+    let derm = fake_derm(&home);
     fs::create_dir_all(home.join(".cursor")).unwrap();
-    let r = go(&home, &["cursor", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["cursor", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let v = parse(&read(&home.join(".cursor/hooks.json")));
     assert_eq!(v.get("version"), Some(&Value::Number("1".into())));
@@ -303,9 +428,11 @@ fn cursor_gets_both_events_in_a_new_file() {
             panic!("{ev}")
         };
         assert_eq!(l.len(), 1, "{ev}");
+        let e = json::compact(&l[0]);
+        assert!(e.contains("\"failClosed\": true"), "{ev}");
         assert!(
-            json::compact(&l[0]).contains("\"failClosed\": true"),
-            "{ev}"
+            e.contains(&format!("\"command\": \"{derm} hook cursor pre\"")),
+            "{e}"
         );
     }
 }
@@ -316,25 +443,21 @@ fn cursor_gets_both_events_in_a_new_file() {
 #[test]
 fn antigravity_named_bundle_and_a_stranger_under_the_name() {
     let home = scratch("gate-ag");
-    let pkg = package(
-        &home,
-        "n/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
+    let derm = fake_derm(&home);
     let cfg = home.join(".gemini/config/hooks.json");
     fs::create_dir_all(cfg.parent().unwrap()).unwrap();
     fs::write(&cfg, "{\"orca\": {\"enabled\": true}}\n").unwrap();
-    let r = go(&home, &["antigravity", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["antigravity", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let v = parse(&read(&cfg));
     assert!(v.get("orca").is_some());
-    assert!(json::compact(v.get("derm").unwrap()).contains("derm-hook.mjs"));
+    assert!(json::compact(v.get("derm").unwrap()).contains(&format!("{derm} hook antigravity pre")));
     fs::write(
         &cfg,
         "{\"derm\": {\"enabled\": true, \"PreToolUse\": []}}\n",
     )
     .unwrap();
-    let r = go(&home, &["antigravity", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["antigravity", "--gate", "--write"]);
     assert_eq!(r.code, 1);
     assert!(r.err.contains("not derm's entry"), "{}", r.err);
 }
@@ -344,37 +467,42 @@ fn antigravity_named_bundle_and_a_stranger_under_the_name() {
 #[test]
 fn goose_plugin_folder_written_and_left_for_you_to_remove() {
     let home = scratch("gate-goose");
-    let pkg = package(
-        &home,
-        "n/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
+    let derm = fake_derm(&home);
     fs::create_dir_all(home.join(".config/goose")).unwrap();
-    let r = go(&home, &["goose", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["goose", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    let dir = home.join(".agents/plugins/derm");
+    // BC-1: the folder takes the name kept in ~/.derm/gate-name.
+    let name = gate::read_gate_name(&home).unwrap().unwrap();
+    let dir = home.join(".agents/plugins").join(&name);
     let plugin = parse(&read(&dir.join("plugin.json")));
-    assert_eq!(plugin.get("name"), Some(&Value::Str("derm".into())));
+    assert_eq!(plugin.get("name"), Some(&Value::Str(name.clone())));
     assert_eq!(
         plugin.get("version"),
         Some(&Value::Str(env!("CARGO_PKG_VERSION").into()))
     );
-    assert!(read(&dir.join("hooks/hooks.json")).contains("\"on_failure\": \"block\""));
+    let hooks = read(&dir.join("hooks/hooks.json"));
+    assert!(hooks.contains("\"on_failure\": \"block\""), "{hooks}");
+    assert!(hooks.contains(&format!("{derm} hook goose pre")), "{hooks}");
     let r = go(&home, &["goose", "--ungate", "--write"]);
     assert_eq!(r.code, 0);
     assert!(r.out.contains("remove the folder"), "{}", r.out);
     assert!(dir.join("hooks/hooks.json").exists());
     // A folder of that name that is not derm's is refused.
     let other = scratch("gate-goose2");
-    let pkg2 = package(
-        &other,
-        "n/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
-    fs::create_dir_all(other.join(".agents/plugins/derm")).unwrap();
-    fs::write(other.join(".agents/plugins/derm/plugin.json"), "{}").unwrap();
+    fake_derm(&other);
+    let taken = "derm-0123456789abcdef";
+    write_gate_name(&other, taken);
+    fs::create_dir_all(other.join(".agents/plugins").join(taken)).unwrap();
+    fs::write(
+        other
+            .join(".agents/plugins")
+            .join(taken)
+            .join("plugin.json"),
+        "{}",
+    )
+    .unwrap();
     fs::create_dir_all(other.join(".config/goose")).unwrap();
-    let r = go(&other, &["goose", "--gate", "--hook", &pkg2, "--write"]);
+    let r = go(&other, &["goose", "--gate", "--write"]);
     assert_eq!(r.code, 1);
     assert!(r.err.contains("is not derm's"), "{}", r.err);
 }
@@ -385,11 +513,7 @@ fn goose_plugin_folder_written_and_left_for_you_to_remove() {
 #[test]
 fn a_file_that_changes_before_the_write_stops_every_file() {
     let home = scratch("gate-race");
-    let pkg = package(
-        &home,
-        "c/derm-hooks-claude-compat",
-        "@aetiusgular/derm-hooks-claude-compat",
-    );
+    fake_derm(&home);
     let toml = home.join(".grok/config.toml");
     fs::create_dir_all(toml.parent().unwrap()).unwrap();
     fs::write(&toml, "model = \"grok\"\n").unwrap();
@@ -400,19 +524,14 @@ fn a_file_that_changes_before_the_write_stops_every_file() {
             fs::write(&t2, "model = \"other\"\n").unwrap()
         })),
     );
-    let r = go_with(
-        &home,
-        &env(&[]),
-        answer,
-        &["grok", "--gate", "--hook", &pkg, "--write"],
-    );
+    let r = go_with(&home, &env(&[]), answer, &["grok", "--gate", "--write"]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.err.contains("changed since the diff"), "{}", r.err);
     assert!(!home.join(".grok/hooks/derm.json").exists());
     assert_eq!(read(&toml), "model = \"other\"\n");
     // Without the race both are written, the compat switches off.
     fs::write(&toml, "model = \"grok\"\n").unwrap();
-    let r = go(&home, &["grok", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["grok", "--gate", "--write"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let t = read(&toml);
     assert!(t.contains("[compat.claude]\nhooks = false"), "{t}");
@@ -425,39 +544,98 @@ fn a_file_that_changes_before_the_write_stops_every_file() {
 #[test]
 fn an_agent_that_is_not_installed_gets_nothing_written() {
     let home = scratch("gate-absent");
-    let pkg = package(
-        &home,
-        "c/derm-hooks-claude-compat",
-        "@aetiusgular/derm-hooks-claude-compat",
-    );
-    let r = go(
-        &home,
-        &["command-code", "--gate", "--hook", &pkg, "--write"],
-    );
+    fake_derm(&home);
+    let r = go(&home, &["command-code", "--gate", "--write"]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.out.contains("does not look installed"), "{}", r.out);
     assert!(!home.join(".commandcode").exists());
 }
 
 #[cfg(unix)]
-/// The hook folder: absolute, no `..`, not a link, the right package, closed
-/// to others, with its hook file.
+/// Case 227: the derm a registration names. Its real path, links followed;
+/// refused when a hook line would have to quote it, when someone else may
+/// write it or its folder, or when it is not named `derm` (the markers that
+/// find derm's entry again end in `/derm hook <agent> `).
 #[test]
-fn hook_folder_checks() {
+fn the_derm_a_registration_names_is_checked() {
+    let home = scratch("gate-self");
+    fs::create_dir_all(home.join(".openclaude")).unwrap();
+    let derm = fake_derm(&home);
+    // A link to derm is registered by the real path it leads to.
+    let link_dir = home.join("links");
+    fs::create_dir_all(&link_dir).unwrap();
+    fs::set_permissions(&link_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(&derm, link_dir.join("derm")).unwrap();
+    set_self(&link_dir.join("derm"));
+    let r = go(&home, &["openclaude", "--gate"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(
+        r.out.contains(&format!("{derm} hook openclaude pre")),
+        "{}",
+        r.out
+    );
+    let bad = |path: &Path, why: &str| {
+        set_self(path);
+        let r = go(&home, &["openclaude", "--gate"]);
+        assert_eq!(r.code, 1, "{}: {}", path.display(), r.out);
+        assert!(r.err.contains(why), "{}: {}", path.display(), r.err);
+    };
+    // A space: a hook line would have to quote it.
+    let spaced = home.join("my tools");
+    fs::create_dir_all(&spaced).unwrap();
+    fs::set_permissions(&spaced, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::copy(&derm, spaced.join("derm")).unwrap();
+    bad(&spaced.join("derm"), "would have to quote");
+    // Writable by others, or in a folder others may write.
+    let open = fake_derm_in(&home, "open");
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    bad(Path::new(&open), "writable by others");
+    let open_dir = fake_derm_in(&home, "opendir");
+    fs::set_permissions(
+        Path::new(&open_dir).parent().unwrap(),
+        fs::Permissions::from_mode(0o777),
+    )
+    .unwrap();
+    bad(Path::new(&open_dir), "could be replaced");
+    // Not named derm.
+    let named = Path::new(&derm).with_file_name("derm-0.1.3");
+    fs::copy(&derm, &named).unwrap();
+    bad(&named, "named derm");
+    // Not there.
+    bad(&home.join("nowhere/derm"), "cannot read derm's own path");
+}
+
+#[cfg(unix)]
+/// `--hook` is not used for a `derm hook` row: it says so and checks
+/// nothing in it, so an old script still runs. In-process rows still need
+/// it, and a bad one is still refused.
+#[test]
+fn hook_folder_is_ignored_for_derm_hook_rows_and_checked_for_the_others() {
     let home = scratch("gate-hook");
     fs::create_dir_all(home.join(".openclaude")).unwrap();
+    fake_derm(&home);
+    let r = go(
+        &home,
+        &["openclaude", "--gate", "--hook", "/nowhere/at/all"],
+    );
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(
+        r.out.contains("--hook is not used for OpenClaude"),
+        "{}",
+        r.out
+    );
     let pkg = package(
         &home,
-        "c/derm-hooks-claude-compat",
-        "@aetiusgular/derm-hooks-claude-compat",
+        "c/derm-opencode-plugin",
+        "@aetiusgular/derm-opencode-plugin",
     );
     let bad = |hook: &str, why: &str| {
-        let r = go(&home, &["openclaude", "--gate", "--hook", hook]);
+        let r = go(&home, &["opencode", "--gate", "--hook", hook]);
         assert_eq!(r.code, 1, "{hook}: {}", r.out);
         assert!(r.err.contains(why), "{hook}: {}", r.err);
     };
     bad("relative/path", "absolute path");
-    bad(&format!("{pkg}/../derm-hooks-claude-compat"), "no `..`");
+    bad(&format!("{pkg}/../derm-opencode-plugin"), "no `..`");
     bad("/tmp/a\"b", "absolute path");
     let link = home.join("link");
     std::os::unix::fs::symlink(&pkg, &link).unwrap();
@@ -467,14 +645,12 @@ fn hook_folder_checks() {
         "w/derm-hooks-native",
         "@aetiusgular/derm-hooks-native",
     );
-    bad(&wrong, "not @aetiusgular/derm-hooks-claude-compat");
+    bad(&wrong, "not @aetiusgular/derm-opencode-plugin");
     fs::set_permissions(&pkg, fs::Permissions::from_mode(0o775)).unwrap();
     bad(&pkg, "writable by others");
     fs::set_permissions(&pkg, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::remove_file(format!("{pkg}/bin/derm-hook.mjs")).unwrap();
-    bad(&pkg, "derm-hook.mjs");
-    // --gate needs --hook for a writing row; --hook alone is refused.
-    let r = go(&home, &["openclaude", "--gate"]);
+    // --gate needs --hook for an in-process row; --hook alone is refused.
+    let r = go(&home, &["opencode", "--gate"]);
     assert!(r.err.contains("needs --hook"), "{}", r.err);
     let r = go(&home, &["openclaude", "--hook", "/x"]);
     assert_eq!(r.code, 2);
@@ -489,21 +665,17 @@ fn hook_folder_checks() {
 #[test]
 fn shadowing_files_and_folders_outside_home_are_refused() {
     let home = scratch("gate-droid");
-    let pkg = package(
-        &home,
-        "c/derm-hooks-claude-compat",
-        "@aetiusgular/derm-hooks-claude-compat",
-    );
+    fake_derm(&home);
     fs::create_dir_all(home.join(".factory")).unwrap();
     fs::write(home.join(".factory/hooks.json"), "{}").unwrap();
-    let r = go(&home, &["droid", "--gate", "--hook", &pkg]);
+    let r = go(&home, &["droid", "--gate"]);
     assert_eq!(r.code, 1);
     assert!(r.err.contains("hooks.json exists"), "{}", r.err);
     let r = go_with(
         &home,
         &env(&[("OPENCLAUDE_CONFIG_DIR", "/etc/openclaude")]),
         Answer(true, None),
-        &["openclaude", "--gate", "--hook", &pkg],
+        &["openclaude", "--gate"],
     );
     assert_eq!(r.code, 1);
     assert!(r.err.contains("outside your home"), "{}", r.err);
@@ -546,10 +718,12 @@ fn opencode_plugin_list_keeps_comments_and_refuses_one_inside_the_list() {
 
 #[cfg(unix)]
 /// Agents whose gate installs through their own command, and Kimi until its
-/// folder is settled: printed, never written.
+/// folder is settled: printed, never written. Kimi's lines name `derm hook`
+/// by derm's path.
 #[test]
 fn print_only_agents_print_and_write_nothing() {
     let home = scratch("gate-print");
+    let derm = fake_derm(&home);
     let r = go(&home, &["codex", "--gate"]);
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(
@@ -560,17 +734,10 @@ fn print_only_agents_print_and_write_nothing() {
         "{}",
         r.out
     );
-    let pkg = package(
-        &home,
-        "c/derm-hooks-claude-compat",
-        "@aetiusgular/derm-hooks-claude-compat",
-    );
-    let r = go(&home, &["kimi", "--gate", "--hook", &pkg, "--write"]);
+    let r = go(&home, &["kimi", "--gate", "--write"]);
     assert_eq!(r.code, 1);
     assert!(
-        r.out.contains(&format!(
-            "command = 'node --no-warnings \"{pkg}/bin/derm-hook.mjs\" kimi pre'"
-        )),
+        r.out.contains(&format!("command = '{derm} hook kimi pre'")),
         "{}",
         r.out
     );
@@ -580,23 +747,19 @@ fn print_only_agents_print_and_write_nothing() {
 }
 
 #[cfg(unix)]
-/// `--node` pins Node by absolute path.
+/// `--node` is still checked (it fills the print-only lines that run a
+/// node script, Gemini's policy writer), and changes nothing in a `derm
+/// hook` row. A file of derm's own name that is not derm's is refused.
 #[test]
-fn node_can_be_pinned() {
+fn node_is_checked_and_not_in_a_derm_hook_row() {
     let home = scratch("gate-node");
-    let pkg = package(
-        &home,
-        "n/derm-hooks-native",
-        "@aetiusgular/derm-hooks-native",
-    );
+    let derm = fake_derm(&home);
     fs::create_dir_all(home.join(".kiro")).unwrap();
     let r = go(
         &home,
         &[
             "kiro",
             "--gate",
-            "--hook",
-            &pkg,
             "--node",
             "/opt/node22/bin/node",
             "--write",
@@ -605,16 +768,104 @@ fn node_can_be_pinned() {
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
     let t = read(&home.join(".kiro/hooks/derm.json"));
     assert!(
-        t.contains("\"command\": \"/opt/node22/bin/node --no-warnings"),
+        t.contains(&format!("\"command\": \"{derm} hook kiro pre\"")),
         "{t}"
     );
-    let r = go(&home, &["kiro", "--gate", "--hook", &pkg, "--node", "node"]);
+    assert!(!t.contains("--no-warnings"), "{t}");
+    let r = go(&home, &["kiro", "--gate", "--node", "node"]);
     assert_eq!(r.code, 1);
-    // A file of derm's own name that is not derm's is refused.
     fs::write(home.join(".kiro/hooks/derm.json"), "{\"hooks\": []}\n").unwrap();
-    let r = go(&home, &["kiro", "--gate", "--hook", &pkg]);
+    let r = go(&home, &["kiro", "--gate"]);
     assert_eq!(r.code, 1);
     assert!(r.err.contains("not derm's"), "{}", r.err);
+}
+
+#[cfg(unix)]
+/// Hermes (lane 5bB's plugin; case 227): the printed lines copy and enable
+/// the plugin, and the write puts derm's absolute path in `derm-path` beside
+/// `derm_gate.py`, which the plugin runs as `derm hook hermes <event>`.
+/// Only into a plugin folder that exists, never over a file that is not
+/// derm's, and `--ungate` leaves it for you to remove.
+#[test]
+fn hermes_gets_derm_path_beside_its_plugin() {
+    let home = scratch("gate-hermes");
+    let derm = fake_derm(&home);
+    fs::create_dir_all(home.join(".hermes")).unwrap();
+    // Not installed yet: the lines, and nothing written.
+    let r = go(&home, &["hermes", "--gate", "--write"]);
+    assert_eq!(r.code, 1, "{}{}", r.out, r.err);
+    assert!(r.out.contains("hermes plugins enable derm"), "{}", r.out);
+    assert!(r.out.contains("first, run these yourself"), "{}", r.out);
+    let dir = home.join(".hermes/plugins/derm");
+    assert!(!dir.exists());
+    fs::create_dir_all(&dir).unwrap();
+    let r = go(&home, &["hermes", "--gate"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("dry run"), "{}", r.out);
+    assert!(!dir.join("derm-path").exists());
+    let r = go(&home, &["hermes", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let file = dir.join("derm-path");
+    assert_eq!(read(&file), format!("{derm}\n"));
+    let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode & 0o022,
+        0,
+        "derm_gate.py refuses a derm-path others may write: {mode:o}"
+    );
+    let r = go(&home, &["hermes", "--gate", "--write"]);
+    assert!(r.out.contains("already registered"), "{}", r.out);
+    let r = go(&home, &["hermes", "--ungate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("remove") && file.exists(), "{}", r.out);
+    // A derm-path that is not derm's is never replaced.
+    fs::write(&file, "#!/bin/sh\nexit 0\n").unwrap();
+    let r = go(&home, &["hermes", "--gate", "--write"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.err.contains("not derm's"), "{}", r.err);
+}
+
+#[cfg(unix)]
+/// The in-process plugins and the plugins' launcher find derm in its
+/// install folders (lane 5bC's `installCandidates`, `derm-gate.sh`): the
+/// output says which one answers, or that none does.
+#[test]
+fn route_says_where_a_plugin_finds_derm() {
+    let home = scratch("gate-route");
+    fake_derm(&home);
+    let r = go(&home, &["pi", "--gate"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("finds no derm in"), "{}", r.out);
+    let bin = home.join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let derm = fake_derm(&home);
+    std::os::unix::fs::symlink(&derm, bin.join("derm")).unwrap();
+    let r = go(&home, &["claude-code", "--gate"]);
+    assert!(
+        r.out
+            .contains(&format!("runs derm from {}", bin.join("derm").display())),
+        "{}",
+        r.out
+    );
+    // FP2-S1: a first derm that is there and refused is named; connect
+    // never says a later one answers, as the launcher would not run it.
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o777)).unwrap();
+    let r = go(&home, &["claude-code", "--gate"]);
+    assert!(
+        r.out.contains(&format!(
+            "stops at {}, which is there and not used: others may write",
+            bin.join("derm").display()
+        )),
+        "{}",
+        r.out
+    );
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // Another derm first: it decides, and connect says it is not this one.
+    fs::remove_file(bin.join("derm")).unwrap();
+    echo_derm(&bin);
+    let r = go(&home, &["pi", "--gate"]);
+    assert!(r.out.contains("which is not this derm"), "{}", r.out);
 }
 
 #[cfg(unix)]
@@ -1014,4 +1265,1446 @@ fn plugin_agents_print_the_marketplace_of_the_folder_given() {
         "{}",
         r.out
     );
+}
+
+// ---- Wave 5b lane 5bF: the plugins' launcher and hooks files ----
+//
+// Ports of `contracts/fixtures/hook-cases/manual.json`'s lane 5bF cases that
+// test plugin files and launchers (`contracts/hook-dialects.md` 9.4); the
+// status doc maps each TypeScript case to the test here that holds it.
+
+#[cfg(unix)]
+fn repo() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+#[cfg(unix)]
+const PLUGINS: [&str; 3] = [
+    "packages/derm-claude-plugin",
+    "packages/derm-codex-plugin",
+    "packages/derm-gemini-extension",
+];
+
+#[cfg(unix)]
+fn plugin_hooks(pkg: &str) -> serde_json::Value {
+    serde_json::from_str(&read(&repo().join(pkg).join("hooks/hooks.json"))).unwrap()
+}
+
+#[cfg(unix)]
+/// One launcher, three copies: a fix in one is a fix in all.
+#[test]
+fn the_three_plugins_carry_one_launcher() {
+    let one = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    for p in &PLUGINS[1..] {
+        assert_eq!(read(&repo().join(p).join("hooks/derm-gate.sh")), one, "{p}");
+    }
+    assert!(one.starts_with("#!/bin/sh\n"));
+}
+
+#[cfg(unix)]
+/// Case 112: the launcher, the in-process plugins (`installCandidates` in
+/// each `src/serve/client.ts`) and `derm connect`'s route line try the same
+/// folders in the same order.
+#[test]
+fn the_launcher_tries_the_folders_the_in_process_plugins_try() {
+    let sh = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let ts = read(&repo().join("packages/derm-pi/src/serve/client.ts"));
+    for (macos, darwin_sh) in [(true, "Darwin) brew="), (false, "*) brew=")] {
+        let want = gate::install_candidates(Path::new("/h"), macos);
+        let want: Vec<String> = want.iter().map(|p| p.display().to_string()).collect();
+        assert_eq!(want[0], "/h/.local/bin/derm");
+        // The shell's list: ${HOME%/}/.local/bin/derm, then the brew line,
+        // then /usr/bin/derm.
+        let line = sh
+            .lines()
+            .find(|l| l.trim_start().starts_with(darwin_sh))
+            .unwrap_or_else(|| panic!("{darwin_sh}"));
+        let brew: Vec<&str> = line.split('"').nth(1).unwrap().split(' ').collect();
+        assert_eq!(&want[1..3], brew.as_slice(), "{line}");
+        assert!(sh.contains("local_bin=${HOME%/}/.local/bin/derm"));
+        // The order: ~/.local/bin first, then the brew line, then /usr/bin,
+        // each a whole word (FP2-S2).
+        assert!(sh.contains("set -- $brew /usr/bin/derm\n"));
+        assert!(sh.contains("[ -n \"$local_bin\" ] && set -- \"$local_bin\" \"$@\"\n"));
+        assert!(sh.contains("for c in \"$@\"; do"));
+        assert_eq!(want[3], "/usr/bin/derm");
+        // The TypeScript's list, the same strings.
+        for w in &want[1..] {
+            assert!(ts.contains(&format!("\"{w}\"")), "{w} not in client.ts");
+        }
+        assert!(ts.contains("path.posix.join(home, \".local\", \"bin\", \"derm\")"));
+        let order = if macos {
+            "[\"/opt/homebrew/bin/derm\", \"/usr/local/bin/derm\"]"
+        } else {
+            "[\"/home/linuxbrew/.linuxbrew/bin/derm\", \"/usr/local/bin/derm\"]"
+        };
+        assert!(ts.contains(order), "{order}");
+        assert!(ts.contains("return [local, ...brew, \"/usr/bin/derm\"];"));
+    }
+}
+
+#[cfg(unix)]
+/// Ports `derm-claude-plugin` "plugin files" and BC-3: the hooks run
+/// /bin/sh by its absolute path in Claude Code's exec form (`command` plus
+/// `args`, no shell, `${CLAUDE_PLUGIN_ROOT}` replaced in both; note BC
+/// section 3, run), PreToolUse blocks on a failure, and nothing names
+/// `node` or anything else found on PATH.
+#[test]
+fn claude_codes_plugin_hooks_run_the_launcher_in_exec_form() {
+    let h = plugin_hooks(PLUGINS[0]);
+    for (event, arg, timeout) in [("PreToolUse", "pre", 120), ("PostToolUse", "post", 30)] {
+        let group = &h["hooks"][event][0];
+        assert_eq!(group["matcher"], "*", "{event}");
+        let hook = &group["hooks"][0];
+        assert_eq!(hook["type"], "command");
+        assert_eq!(hook["command"], "/bin/sh");
+        assert_eq!(
+            hook["args"],
+            serde_json::json!([
+                "${CLAUDE_PLUGIN_ROOT}/hooks/derm-gate.sh",
+                "claude-code",
+                arg
+            ])
+        );
+        assert_eq!(hook["timeout"], timeout);
+    }
+    assert_eq!(
+        h["hooks"]["PreToolUse"][0]["hooks"][0]["onFailure"],
+        "block"
+    );
+    assert!(!h["hooks"].to_string().contains("node"));
+}
+
+#[cfg(unix)]
+/// Ports `derm-codex-plugin` "plugin files > the launcher runs the hook":
+/// Codex runs a hook line with its shell (`$SHELL -lc`), `PLUGIN_ROOT` in
+/// the environment (`codex-rs/hooks/src/engine/command_runner.rs:444-517`
+/// at rust-v0.167.1, read by the base): the line names /bin/sh by its
+/// absolute path and the launcher by `$PLUGIN_ROOT`, which sh, bash, zsh
+/// and fish all expand inside double quotes.
+#[test]
+fn codexs_plugin_hooks_run_the_launcher() {
+    let h = plugin_hooks(PLUGINS[1]);
+    for (event, arg) in [("PreToolUse", "pre"), ("PostToolUse", "post")] {
+        let hook = &h["hooks"][event][0]["hooks"][0];
+        assert_eq!(
+            hook["command"],
+            format!("/bin/sh \"$PLUGIN_ROOT/hooks/derm-gate.sh\" codex {arg}")
+        );
+    }
+    assert_eq!(h["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 120);
+}
+
+#[cfg(unix)]
+/// Ports `derm-gemini-extension` "the extension's files": Gemini's shape,
+/// a timeout above the ask cap (90 s), and the manifest's name. Gemini
+/// 0.68.0 replaces `${extensionPath}` and `${/}` in every string of an
+/// extension's hooks/hooks.json when it loads it (`loadExtensionHooks` and
+/// `hydrateString`, bundle/chunk-ASDLQWJU.js:43548-43562 and 38340-38346 in
+/// the published package, read here) and runs the line with `bash -c`.
+#[test]
+fn geminis_extension_hooks_run_the_launcher() {
+    let h = plugin_hooks(PLUGINS[2]);
+    let gate = &h["hooks"]["BeforeTool"][0];
+    assert_eq!(gate["matcher"], ".*");
+    assert_eq!(gate["hooks"][0]["type"], "command");
+    assert_eq!(gate["hooks"][0]["name"], "derm-gate");
+    assert!(gate["hooks"][0]["timeout"].as_u64().unwrap() > 90_000);
+    assert_eq!(
+        gate["hooks"][0]["command"],
+        "/bin/sh \"${extensionPath}${/}hooks${/}derm-gate.sh\" gemini before"
+    );
+    assert_eq!(
+        h["hooks"]["AfterTool"][0]["hooks"][0]["command"],
+        "/bin/sh \"${extensionPath}${/}hooks${/}derm-gate.sh\" gemini after"
+    );
+    let manifest: serde_json::Value = serde_json::from_str(&read(
+        &repo().join(PLUGINS[2]).join("gemini-extension.json"),
+    ))
+    .unwrap();
+    assert_eq!(manifest["name"], "derm");
+}
+
+#[cfg(unix)]
+struct Launched {
+    code: Option<i32>,
+    out: String,
+    err: String,
+}
+
+#[cfg(unix)]
+/// Runs the launcher as the hooks files do, `/bin/sh <file> <agent>
+/// <event>`, from `cwd`, with only `env`.
+fn launch(cwd: &Path, env: &[(&str, &str)], args: &[&str], input: &str) -> Launched {
+    use std::io::Write;
+    let file = repo().join(PLUGINS[0]).join("hooks/derm-gate.sh");
+    let mut c = std::process::Command::new("/bin/sh");
+    c.arg(&file)
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    let mut child = c.spawn().unwrap();
+    // The launcher may exit before it reads (a refusal): a closed pipe is
+    // not the test's failure.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let o = child.wait_with_output().unwrap();
+    Launched {
+        code: o.status.code(),
+        out: String::from_utf8_lossy(&o.stdout).into(),
+        err: String::from_utf8_lossy(&o.stderr).into(),
+    }
+}
+
+#[cfg(unix)]
+/// A stand-in derm that prints its argv and its stdin, so a test sees what
+/// the launcher ran it with.
+fn echo_derm(dir: &Path) -> String {
+    fs::create_dir_all(dir).unwrap();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let f = dir.join("derm");
+    fs::write(
+        &f,
+        "#!/bin/sh\nprintf 'argv:%s\\n' \"$*\"\nprintf 'stdin:'\ncat\nexit 0\n",
+    )
+    .unwrap();
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+    f.display().to_string()
+}
+
+#[cfg(unix)]
+/// Ports "the launcher runs the hook" (Claude Code, Codex, Gemini, Hermes's
+/// decider, the compat and native launchers): `derm hook <agent> <event>`
+/// from `~/.local/bin`, the hook input passed on stdin untouched, a link
+/// followed to the derm it names.
+#[test]
+fn the_launcher_runs_derm_hook_from_its_install_folder() {
+    let home = scratch("launch-ok");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let real = echo_derm(&home.join("opt/derm-0.1.3"));
+    let bin = home.join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // A relative link, as Homebrew's.
+    std::os::unix::fs::symlink("../../opt/derm-0.1.3/derm", bin.join("derm")).unwrap();
+    let h = home.display().to_string();
+    for (agent, event) in [
+        ("claude-code", "pre"),
+        ("claude-code", "post"),
+        ("codex", "pre"),
+        ("gemini", "before"),
+        ("gemini", "after"),
+    ] {
+        let r = launch(&work, &[("HOME", &h)], &[agent, event], "{\"x\":1}");
+        assert_eq!(r.code, Some(0), "{agent} {event}: {}", r.err);
+        assert_eq!(
+            r.out,
+            format!("argv:hook {agent} {event}\nstdin:{{\"x\":1}}"),
+            "{agent} {event}"
+        );
+    }
+    let _ = real;
+}
+
+#[cfg(unix)]
+/// Case 227 and case 109's rule: no derm found on PATH, none someone else
+/// may write, none inside the session's folder. Each blocks in the agent's
+/// own form (exit 2 and `derm: ` on stderr; Gemini's JSON deny on stdout
+/// as well), and an unknown agent or event is refused before anything
+/// runs. Ports "fails closed when the hook cannot load" (Claude Code,
+/// Gemini, Hermes) and "an unknown agent exits 2 with the reason on stderr"
+/// (the compat and native launchers).
+#[test]
+fn the_launcher_blocks_without_a_derm_it_can_trust() {
+    let home = scratch("launch-no");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let h = home.display().to_string();
+    // On PATH only: never run.
+    let on_path = home.join("path-bin");
+    echo_derm(&on_path);
+    let p = on_path.display().to_string();
+    let r = launch(
+        &work,
+        &[("HOME", &h), ("PATH", &p)],
+        &["claude-code", "pre"],
+        "{}",
+    );
+    assert_eq!(r.code, Some(2));
+    assert!(r.out.is_empty(), "{}", r.out);
+    assert!(
+        r.err.starts_with("derm: no derm this hook can trust"),
+        "{}",
+        r.err
+    );
+    assert!(r.err.contains("never looked up on PATH"), "{}", r.err);
+    // Gemini reads its JSON on stdout as well.
+    let r = launch(&work, &[("HOME", &h)], &["gemini", "before"], "{}");
+    assert_eq!(r.code, Some(2));
+    let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+    assert_eq!(v["decision"], "deny");
+    assert!(v["reason"].as_str().unwrap().starts_with("derm: no derm"));
+    // Writable by others: refused, and said.
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o757)).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["codex", "pre"], "{}");
+    assert_eq!(r.code, Some(2));
+    assert!(r.err.contains("others may write it"), "{}", r.err);
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o777)).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["codex", "pre"], "{}");
+    assert!(r.err.contains("others may write"), "{}", r.err);
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // Inside the session's folder (a HOME a project chose): refused.
+    let r = launch(&home, &[("HOME", &h)], &["codex", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(r.err.contains("inside the session's folder"), "{}", r.err);
+    // A link that leads into a folder others may write.
+    let open = home.join("open");
+    echo_derm(&open);
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    fs::remove_file(&f).unwrap();
+    std::os::unix::fs::symlink(open.join("derm"), &f).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2));
+    assert!(r.err.contains("others may write"), "{}", r.err);
+    // A relative or missing HOME is not used.
+    let r = launch(&work, &[("HOME", "home")], &["claude-code", "pre"], "{}");
+    assert!(r.err.contains("no derm this hook can trust"), "{}", r.err);
+    // An agent or event it does not take: refused before anything runs,
+    // the input never printed.
+    for args in [&["frob", "pre"][..], &["claude-code", "before"], &[]] {
+        let r = launch(&work, &[("HOME", &h)], args, "{\"secret\":\"sk-x\"}");
+        assert_eq!(r.code, Some(2), "{args:?}");
+        assert!(r.err.starts_with("derm: derm-gate.sh takes"), "{}", r.err);
+        assert!(!r.err.contains("sk-x") && !r.out.contains("sk-x"));
+    }
+}
+
+/// WW5B-2 (Windows test w5b, step 3): on Windows the launcher plugins'
+/// `--gate` is refused with the reason, and the in-process plugins' note
+/// names DERM_BIN, not Unix folders.
+#[test]
+fn ww5b_2_on_windows_the_launcher_plugins_are_refused_with_the_reason() {
+    for a in ["claude-code", "codex", "gemini"] {
+        let Some(Err(why)) = gate::windows_gate(a) else {
+            panic!("{a}: not refused");
+        };
+        assert!(
+            why.contains("/bin/sh") && why.contains("nothing is registered"),
+            "{why}"
+        );
+        assert!(!why.contains("denies every call"), "{why}");
+    }
+    for a in ["pi", "oh-my-pi", "opencode", "kilo", "openclaw"] {
+        let Some(Ok(note)) = gate::windows_gate(a) else {
+            panic!("{a}: no note");
+        };
+        assert!(note.contains("DERM_BIN"), "{note}");
+        assert!(!note.contains("/usr/bin"), "{note}");
+    }
+    for a in ["crush", "goose", "hermes", "cursor"] {
+        assert!(gate::windows_gate(a).is_none(), "{a}");
+    }
+}
+
+/// WW5B-2 through `derm connect` on Windows: exit 1 with the reason, no
+/// route of Unix folders.
+#[cfg(windows)]
+#[test]
+fn ww5b_2_derm_connect_codex_gate_on_windows_exits_1_with_the_reason() {
+    let home = scratch("ww5b2");
+    for a in ["codex", "gemini", "claude-code"] {
+        let r = go(&home, &[a, "--gate"]);
+        assert_eq!(r.code, 1, "{a}: {} {}", r.out, r.err);
+        assert!(r.err.contains("/bin/sh"), "{a}: {}", r.err);
+        assert!(!r.out.contains("/usr/bin/derm"), "{a}: {}", r.out);
+    }
+}
+
+#[cfg(unix)]
+/// MW5B-6 (Mac test w5b retest, step 4): a derm Homebrew installed runs from
+/// `<prefix>/Cellar/<name>/<version>/bin/derm`, a folder `brew upgrade`
+/// removes (`brew cleanup` after an upgrade, `man brew` 7.0.12 lines 726-731
+/// and 1942), so a registration names it by Homebrew's `opt` link, "a
+/// stable path for this formula ... stable even when the software is
+/// updated" (Homebrew/brew 7.0.12 `formula.rb:1583-1599`), which `optlink`
+/// points at the current keg (`keg.rb:644-647`). Only when the link leads
+/// to this very derm and its folder is closed, as derm's own folder is;
+/// otherwise the keg path, as before.
+#[test]
+fn mw5b_6_a_homebrew_derm_registers_by_its_opt_link() {
+    // By its real path: on macOS the temp folder is under /var, a link to
+    // /private/var (case 111; CI's rust-macos, run 43156387323).
+    let prefix = fs::canonicalize(scratch("mw5b6")).unwrap();
+    let keg = prefix.join("Cellar/derm/1.2.3");
+    let real = fake_derm_in(&keg, "bin");
+    let opt = prefix.join("opt");
+    fs::create_dir_all(&opt).unwrap();
+    fs::set_permissions(&opt, fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("../Cellar/derm/1.2.3", opt.join("derm")).unwrap();
+    let want = opt.join("derm/bin/derm").display().to_string();
+    assert_eq!(gate::self_path(), Ok(want.clone()));
+    // The registered line still runs this derm.
+    assert_eq!(
+        fs::canonicalize(&want).unwrap(),
+        fs::canonicalize(&real).unwrap()
+    );
+    // An opt folder others may write: the link could be repointed, so the
+    // keg path, as before.
+    fs::set_permissions(&opt, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(gate::self_path(), Ok(real.clone()));
+    fs::set_permissions(&opt, fs::Permissions::from_mode(0o755)).unwrap();
+    // FP2-S11: a Cellar/<name> folder others may write: the keg path.
+    let name_dir = prefix.join("Cellar/derm");
+    fs::set_permissions(&name_dir, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(gate::self_path(), Ok(real.clone()));
+    fs::set_permissions(&name_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(gate::self_path(), Ok(want.clone()));
+    // A link to another version: the keg path.
+    fs::remove_file(opt.join("derm")).unwrap();
+    fs::create_dir_all(prefix.join("Cellar/derm/1.2.2/bin")).unwrap();
+    std::os::unix::fs::symlink("../Cellar/derm/1.2.2", opt.join("derm")).unwrap();
+    assert_eq!(gate::self_path(), Ok(real.clone()));
+    // No opt link at all (a derm built from a clone): the real path.
+    fs::remove_file(opt.join("derm")).unwrap();
+    assert_eq!(gate::self_path(), Ok(real));
+}
+
+#[cfg(unix)]
+/// The launcher with its Homebrew candidates moved into `brew` (a copy in a
+/// scratch folder): the candidate loop as written, run against folders a
+/// test can make. The real file's paths are the ones `install_candidates`
+/// holds equal (case 112).
+fn launch_with_brew(brew: &str, cwd: &Path, home: &str, args: &[&str]) -> Launched {
+    let text = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let linux = "brew=\"/home/linuxbrew/.linuxbrew/bin/derm /usr/local/bin/derm\"";
+    let mac = "brew=\"/opt/homebrew/bin/derm /usr/local/bin/derm\"";
+    assert!(text.contains(linux) && text.contains(mac));
+    let copy = text
+        .replace(linux, &format!("brew=\"{brew}\""))
+        .replace(mac, &format!("brew=\"{brew}\""));
+    let dir = scratch("launch-copy");
+    let file = dir.join("derm-gate.sh");
+    fs::write(&file, copy).unwrap();
+    let o = std::process::Command::new("/bin/sh")
+        .arg(&file)
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .env("HOME", home)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    Launched {
+        code: o.status.code(),
+        out: String::from_utf8_lossy(&o.stdout).into(),
+        err: String::from_utf8_lossy(&o.stderr).into(),
+    }
+}
+
+#[cfg(unix)]
+/// MW5B-5 (Mac test w5b retest), BW5B-R3 (box test w5b retest): a derm
+/// that is there and refused stops the launcher, which names it and why. It
+/// never goes on to the next folder's derm, which hid the refusal behind
+/// Homebrew's derm on an admin Mac and behind the published 0.1.3's usage
+/// line on the box. A candidate that is not there is passed over, as
+/// OpenSSH passes over a missing `~/.ssh/config` and stops at one with bad
+/// permissions (`readconf.c:2611-2622` at V_10_2_P1).
+#[test]
+fn mw5b_5_a_refused_derm_stops_the_launcher_and_is_named() {
+    let home = scratch("mw5b5");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let h = home.display().to_string();
+    let brew_bin = home.join("brew/bin");
+    let brew = echo_derm(&brew_bin);
+    // Only the Homebrew-like derm: it runs.
+    let r = launch_with_brew(&brew, &work, &h, &["claude-code", "pre"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    assert!(r.out.starts_with("argv:hook claude-code pre"), "{}", r.out);
+    // A ~/.local/bin/derm in a folder others may write: the launcher stops
+    // there, names it, and runs no other derm.
+    let local_bin = home.join(".local/bin");
+    let local = echo_derm(&local_bin);
+    fs::set_permissions(&local_bin, fs::Permissions::from_mode(0o777)).unwrap();
+    for (agent, event) in [
+        ("claude-code", "pre"),
+        ("codex", "pre"),
+        ("gemini", "before"),
+    ] {
+        let r = launch_with_brew(&brew, &work, &h, &[agent, event]);
+        assert_eq!(r.code, Some(2), "{agent}: {}", r.out);
+        assert!(
+            !r.out.contains("argv:"),
+            "{agent} ran another derm: {}",
+            r.out
+        );
+        assert!(r.err.contains(&local), "{agent}: {}", r.err);
+        assert!(r.err.contains("others may write"), "{agent}: {}", r.err);
+    }
+    // The same for the file itself.
+    fs::set_permissions(&local_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&local, fs::Permissions::from_mode(0o757)).unwrap();
+    let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(
+        r.err.contains(&local) && r.err.contains("others may write it"),
+        "{}",
+        r.err
+    );
+    // Put right: the first derm runs.
+    fs::set_permissions(&local, fs::Permissions::from_mode(0o755)).unwrap();
+    let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+}
+
+#[cfg(unix)]
+/// FP2-S2 (fix pass 2's review): the launcher split an unquoted HOME, so a
+/// home with a space became two candidates and, under MW5B-5's rule, the
+/// first fragment stopped the call. The TS client and Hermes read it whole.
+#[test]
+fn fp2_s2_a_home_with_a_space_is_one_candidate() {
+    let home = scratch("fp2 s2 *home");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    echo_derm(&home.join(".local/bin"));
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    assert!(r.out.starts_with("argv:hook claude-code pre"), "{}", r.out);
+}
+
+// ---- Wave 5b lane 5bF: registration ports ----
+//
+// `derm-hooks-claude-compat/src/registration.test.ts` and `security.test.ts`
+// held the TypeScript's `registrationFor` and `hookCommand`; since wave 5b
+// `gates.json` and `derm connect --gate` are the one registration.
+
+#[cfg(unix)]
+/// The rows that run `derm hook`, by agent.
+fn derm_hook_rows() -> Vec<gate::Agent> {
+    gate::table()
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.command.as_deref().is_some_and(|c| c.contains("{derm}")))
+        .collect()
+}
+
+#[cfg(unix)]
+/// Ports "covers every dialect": every command-hook agent `derm hook`
+/// answers but Claude Code, Codex, Gemini and Hermes (whose gates install
+/// through their own plugin files) has a row that runs `derm hook <agent>
+/// pre`, and `derm hook` answers each row's agent and event.
+#[test]
+fn every_command_hook_agent_has_a_derm_hook_row() {
+    let rows = derm_hook_rows();
+    for (agent, _, events) in crate::hook::AGENTS {
+        if ["claude-code", "codex", "gemini", "hermes"].contains(&agent) {
+            assert!(!rows.iter().any(|r| r.agent == agent), "{agent}");
+            continue;
+        }
+        let row = rows
+            .iter()
+            .find(|r| r.agent == agent)
+            .unwrap_or_else(|| panic!("{agent} has no derm hook row"));
+        assert_eq!(
+            row.command.as_deref(),
+            Some(format!("{{derm}} hook {agent} pre").as_str())
+        );
+        assert!(events.contains(&"pre"), "{agent}");
+        assert_eq!(row.markers[0], format!("/derm hook {agent} "));
+    }
+    assert_eq!(rows.len(), crate::hook::AGENTS.len() - 4);
+}
+
+#[cfg(unix)]
+/// Ports "waits longer than the gate's longest ask, so a slow ask is not a
+/// timeout (case 70)": every written entry's timeout is above the hook's
+/// ask cap plus 10 s, in the unit each agent reads.
+#[test]
+fn every_entry_waits_longer_than_the_longest_ask() {
+    let cap = u64::from(crate::gate::core::HOOK_ASK_CAP_SECONDS) + 10;
+    let text = include_str!("gates.json");
+    let v: serde_json::Value = serde_json::from_str(text).unwrap();
+    let mut seen = 0;
+    for row in v["agents"].as_array().unwrap() {
+        if !row["command"]
+            .as_str()
+            .is_some_and(|c| c.contains("{derm}"))
+        {
+            continue;
+        }
+        let s = row["steps"].to_string();
+        for (key, scale) in [("\"timeout\":", 1), ("\"timeoutSec\":", 1)] {
+            for part in s.split(key).skip(1) {
+                let n: f64 = part
+                    .trim_start()
+                    .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                // Auggie's timeout is in milliseconds (its row's note).
+                let secs = if row["agent"] == "auggie" {
+                    n / 1000.0
+                } else {
+                    n
+                } / f64::from(scale);
+                assert!(secs > cap as f64, "{}: {secs} s", row["agent"]);
+                seen += 1;
+            }
+        }
+        if row["agent"] == "kimi" {
+            assert!(s.contains("timeout = 120"), "{s}");
+        }
+    }
+    assert!(seen >= 13, "{seen}");
+}
+
+#[cfg(unix)]
+/// The keys of an object and of the first item of every array under it.
+fn shape(v: &serde_json::Value, at: &str, out: &mut Vec<String>) {
+    match v {
+        serde_json::Value::Array(a) => match a.first() {
+            Some(x) => shape(x, &format!("{at}[]"), out),
+            None => out.push(format!("{at}[]")),
+        },
+        serde_json::Value::Object(m) => {
+            for (k, x) in m {
+                out.push(format!("{at}.{k}"));
+                shape(x, &format!("{at}.{k}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(unix)]
+/// Ports "<agent>: the entry has the fixture's structure, with every tool
+/// matched": the file derm writes holds every key of the vendor's own
+/// example (`contracts/fixtures/hook-dialects/<agent>/register.json`), the
+/// command names `derm hook <agent> pre` by derm's absolute path where the
+/// example names `/ABSOLUTE/PATH/TO/derm-hook`, and no matcher narrows the
+/// gate to one tool.
+#[test]
+fn each_written_entry_has_its_vendors_structure() {
+    let skip = [
+        "name",
+        "description",
+        "sequential",
+        "matcher",
+        "failClosed",
+        "metadata",
+    ];
+    for (agent, file) in [
+        ("openclaude", ".openclaude/settings.json"),
+        ("qwen-code", ".qwen/settings.json"),
+        ("droid", ".factory/settings.json"),
+        ("command-code", ".commandcode/settings.json"),
+        ("auggie", ".augment/settings.json"),
+        ("copilot-cli", ".copilot/hooks/derm.json"),
+        ("grok", ".grok/hooks/derm.json"),
+    ] {
+        let home = scratch(&format!("shape-{agent}"));
+        let derm = fake_derm(&home);
+        let f = home.join(file);
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        if agent == "grok" {
+            fs::write(home.join(".grok/config.toml"), "").unwrap();
+        }
+        let r = go(&home, &[agent, "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{agent}: {}{}", r.out, r.err);
+        let got: serde_json::Value = serde_json::from_str(&read(&f)).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(&read(&repo().join(format!(
+            "contracts/fixtures/hook-dialects/{agent}/register.json"
+        ))))
+        .unwrap();
+        let (mut want, mut have) = (Vec::new(), Vec::new());
+        shape(&fixture, "", &mut want);
+        shape(&got, "", &mut have);
+        for p in want
+            .iter()
+            .filter(|p| !skip.iter().any(|k| p.contains(&format!(".{k}"))))
+        {
+            assert!(have.contains(p), "{agent}: {p} missing in {got}");
+        }
+        let text = got.to_string();
+        assert!(
+            text.contains(&format!("{derm} hook {agent} pre")),
+            "{agent}: {text}"
+        );
+        for narrow in [
+            "Bash",
+            "Execute",
+            "shell",
+            "launch-process",
+            "bash",
+            "^run_shell_command$",
+        ] {
+            assert!(
+                !text.contains(&format!("\"matcher\":\"{narrow}\"")),
+                "{agent}: {text}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+/// Ports "Kimi: exactly the keys Kimi accepts, since a fifth makes it drop
+/// the whole config": the printed table has only `event`, `matcher`,
+/// `command` and `timeout` (its fixture's keys), as one `[[hooks]]` table.
+#[test]
+fn kimis_printed_table_has_only_the_keys_kimi_accepts() {
+    let home = scratch("gate-kimi");
+    let derm = fake_derm(&home);
+    let r = go(&home, &["kimi", "--gate"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    let i = r.out.find("[[hooks]]").expect("the table");
+    let table: Vec<&str> = r.out[i..]
+        .lines()
+        .skip(1)
+        .take_while(|l| l.contains('='))
+        .collect();
+    let keys: Vec<&str> = table
+        .iter()
+        .map(|l| l.split('=').next().unwrap().trim())
+        .collect();
+    for k in &keys {
+        assert!(
+            ["event", "matcher", "command", "timeout"].contains(k),
+            "{k}"
+        );
+    }
+    assert!(
+        table.contains(&format!("  command = '{derm} hook kimi pre'").as_str()),
+        "{table:?}"
+    );
+    assert!(table.contains(&"  timeout = 120"), "{table:?}");
+}
+
+#[cfg(unix)]
+/// Ports "sets the fail-closed switch where the agent has one" and "Droid:
+/// never its hooks.json" (shown above in
+/// `shadowing_files_and_folders_outside_home_are_refused`), and "Grok:
+/// turns its Claude and Cursor hook imports off" (in
+/// `a_file_that_changes_before_the_write_stops_every_file`): Command Code,
+/// Grok and Cursor block on a failed gate; Droid's row writes settings.json
+/// and refuses while its hooks.json exists.
+#[test]
+fn the_fail_closed_switch_is_set_where_the_agent_has_one() {
+    for (agent, file, pre) in [
+        ("command-code", ".commandcode/settings.json", ""),
+        ("grok", ".grok/hooks/derm.json", ".grok/config.toml"),
+        ("cursor", ".cursor/hooks.json", ""),
+    ] {
+        let home = scratch(&format!("fc-{agent}"));
+        fake_derm(&home);
+        fs::create_dir_all(home.join(file).parent().unwrap()).unwrap();
+        if !pre.is_empty() {
+            fs::write(home.join(pre), "").unwrap();
+        }
+        let r = go(&home, &[agent, "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{agent}: {}{}", r.out, r.err);
+        assert!(
+            read(&home.join(file)).contains("\"failClosed\": true"),
+            "{agent}"
+        );
+    }
+    let droid = derm_hook_rows()
+        .into_iter()
+        .find(|a| a.agent == "droid")
+        .unwrap();
+    assert_eq!(
+        droid.refuse_if_exists,
+        ["~/.factory/hooks.json", "~/.factory/hooks/hooks.json"]
+    );
+}
+
+#[cfg(unix)]
+/// Ports "the command line it gives runs the hook": each row's line, as an
+/// agent's shell reads it (`/bin/sh -c`), runs `derm hook <agent> pre` with
+/// the hook input on stdin, and as the exec forms split it (whitespace),
+/// the same four words.
+#[test]
+fn each_registered_line_runs_derm_hook() {
+    let home = scratch("lines-run");
+    let derm = echo_derm(&home.join("bin"));
+    for row in derm_hook_rows() {
+        let line = row.command.as_deref().unwrap().replace("{derm}", &derm);
+        let o = std::process::Command::new("/bin/sh")
+            .args(["-c", &line])
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&o.stdout),
+            format!("argv:hook {} pre\nstdin:", row.agent),
+            "{}",
+            row.agent
+        );
+        let words: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(words, [derm.as_str(), "hook", row.agent.as_str(), "pre"]);
+    }
+}
+
+#[cfg(unix)]
+/// Ports "refuses a hook path a shell would read differently" and L-S8:
+/// a derm path with a quote, a `$`, a backtick, a backslash, a space, a
+/// control character or a line separator is never written into a line.
+#[test]
+fn a_derm_path_a_shell_would_read_differently_is_refused() {
+    for bad in [
+        "relative/derm",
+        "/a\"b/derm",
+        "/a$HOME/derm",
+        "/a`id`/derm",
+        "/a\\b/derm",
+        "/a b/derm",
+        "/a\nb/derm",
+        "/a\u{2028}b/derm",
+        "/a\u{7}b/derm",
+        "/a/../derm",
+        "/a/./derm",
+    ] {
+        assert!(!gate::plain_hook_path(bad), "{bad:?}");
+    }
+    for good in [
+        "/usr/bin/derm",
+        "/home/u/.local/bin/derm",
+        "/opt/homebrew/Cellar/derm/0.1.3/bin/derm",
+        "/x/a+b@c~d-e_f/derm",
+    ] {
+        assert!(gate::plain_hook_path(good), "{good}");
+    }
+}
+
+#[cfg(unix)]
+/// Ports L-S9 ("refuses an agent that is not one of the eight") and "an
+/// unknown agent exits 2": `derm connect` registers only an agent in its
+/// table, and the launcher only the three plugin agents
+/// (`the_launcher_blocks_without_a_derm_it_can_trust`).
+#[test]
+fn an_agent_with_no_row_is_refused() {
+    let home = scratch("no-row");
+    fake_derm(&home);
+    for bad in ["frob", "claude", "../crush", "crush;id"] {
+        let r = go(&home, &[bad, "--gate"]);
+        assert_ne!(r.code, 0, "{bad}");
+    }
+}
+
+#[cfg(unix)]
+/// Ports "a TOML basic string escapes control characters": the TOML rows
+/// (Vibe's table, Grok's switches) write through toml_edit, and the only
+/// text derm splices into them is a plain path; the written file parses
+/// back to the very line.
+#[test]
+fn toml_rows_write_a_line_toml_reads_back() {
+    let home = scratch("toml-line");
+    let derm = fake_derm(&home);
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&home.join(".vibe/hooks.toml")).parse().unwrap();
+    assert_eq!(
+        doc["hooks"][0]["command"].as_str(),
+        Some(format!("{derm} hook mistral-vibe pre").as_str())
+    );
+}
+
+#[cfg(unix)]
+/// Ports Hermes's "plugin.yaml names the two hooks register() wires" and
+/// "runs as derm_gate.py runs it": the plugin declares `pre_tool_call` and
+/// `transform_tool_result`, and it reads derm's path from the very file
+/// `derm connect hermes --gate` writes (`DERM_PATH_FILE = "derm-path"`,
+/// beside derm_gate.py), running `[derm, "hook", "hermes", event]`.
+#[test]
+fn hermes_plugin_reads_the_file_derm_connect_writes() {
+    let yaml = read(&repo().join("packages/derm-hermes-plugin/plugin.yaml"));
+    assert!(yaml.contains("  - pre_tool_call\n") && yaml.contains("  - transform_tool_result\n"));
+    let py = read(&repo().join("packages/derm-hermes-plugin/derm_gate.py"));
+    assert!(py.contains("DERM_PATH_FILE = \"derm-path\""));
+    assert!(py.contains("named = plugin_dir / DERM_PATH_FILE"));
+    assert!(!py.contains("shutil.which"));
+    let row = gate::table()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.agent == "hermes")
+        .unwrap();
+    let file = row.steps.iter().find_map(|s| match s {
+        Step::TextFile { at, .. } => Some(at.path.clone()),
+        _ => None,
+    });
+    assert_eq!(file.as_deref(), Some("~/.hermes/plugins/derm/derm-path"));
+}
+
+#[cfg(unix)]
+fn write_gate_name(home: &Path, name: &str) {
+    fs::create_dir_all(home.join(".derm")).unwrap();
+    let f = home.join(gate::GATE_NAME_FILE);
+    fs::write(&f, format!("{name}\n")).unwrap();
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[cfg(unix)]
+/// BC-1 and BC-2 (note BC; goose 1.59.0 `plugins/discovery.rs:62-101,
+/// 154-176`, Vibe 3.1.2 `hooks/config.py:94-113`): derm's goose folder and
+/// Vibe hook take one name drawn per user, kept in ~/.derm/gate-name (0600),
+/// written only after the yes, the same on every later `--gate`, and never
+/// the fixed `derm` or `derm-gate` a repository could take first. Failed on
+/// the code before the close (the folder was `derm`, the hook `derm-gate`).
+#[test]
+fn bc1_bc2_goose_and_vibe_take_a_name_a_repository_cannot_know() {
+    let home = scratch("gate-bc12");
+    fake_derm(&home);
+    fs::create_dir_all(home.join(".config/goose")).unwrap();
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    // A dry run draws a name and keeps nothing.
+    let r = go(&home, &["goose", "--gate"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(!home.join(gate::GATE_NAME_FILE).exists());
+    assert!(r.out.contains(gate::GATE_NAME_FILE), "{}", r.out);
+    let r = go(&home, &["goose", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let f = home.join(gate::GATE_NAME_FILE);
+    assert_eq!(
+        fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(home.join(".derm"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    let name = gate::read_gate_name(&home).unwrap().unwrap();
+    assert!(
+        gate::valid_gate_name(&name) && name != "derm" && name != "derm-gate",
+        "{name}"
+    );
+    assert!(home
+        .join(".agents/plugins")
+        .join(&name)
+        .join("hooks/hooks.json")
+        .is_file());
+    assert!(!home.join(".agents/plugins/derm").exists());
+    // Vibe takes the same name; a second --gate changes nothing.
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&home.join(".vibe/hooks.toml")).parse().unwrap();
+    assert_eq!(doc["hooks"][0]["name"].as_str(), Some(name.as_str()));
+    for agent in ["goose", "mistral-vibe"] {
+        let r = go(&home, &[agent, "--gate"]);
+        assert!(r.out.contains("already registered"), "{agent}: {}", r.out);
+    }
+    assert_eq!(gate::read_gate_name(&home).unwrap(), Some(name));
+    // Two users' draws differ.
+    let names: std::collections::HashSet<String> = (0..64).map(|_| gate::new_gate_name()).collect();
+    assert_eq!(names.len(), 64);
+    assert!(names.iter().all(|n| gate::valid_gate_name(n)));
+}
+
+#[cfg(unix)]
+/// The name file is refused when it is a link, writable by others or not a
+/// name derm drew: derm writes nothing then.
+#[test]
+fn a_gate_name_file_derm_did_not_write_is_refused() {
+    for (label, setup) in [
+        ("group-writable", 0u8),
+        ("a link", 1),
+        ("not a name derm drew", 2),
+    ] {
+        let home = scratch(&format!("gate-name-bad-{setup}"));
+        fake_derm(&home);
+        fs::create_dir_all(home.join(".config/goose")).unwrap();
+        let f = home.join(gate::GATE_NAME_FILE);
+        match setup {
+            0 => {
+                write_gate_name(&home, "derm-0123456789abcdef");
+                fs::set_permissions(&f, fs::Permissions::from_mode(0o620)).unwrap();
+            }
+            1 => {
+                write_gate_name(&home, "derm-0123456789abcdef");
+                let real = home.join("elsewhere");
+                fs::rename(&f, &real).unwrap();
+                std::os::unix::fs::symlink(&real, &f).unwrap();
+            }
+            _ => write_gate_name(&home, "derm"),
+        }
+        let r = go(&home, &["goose", "--gate", "--write"]);
+        assert_eq!(r.code, 1, "{label}: {}{}", r.out, r.err);
+        assert!(
+            r.err.contains("derm will not register under it"),
+            "{label}: {}",
+            r.err
+        );
+        assert!(!home.join(".agents/plugins").exists(), "{label}");
+    }
+}
+
+#[cfg(unix)]
+/// A goose folder an older derm wrote under the fixed name `derm` is named
+/// for removal by `--gate`, found by `--ungate` with no name file, and
+/// reported by `derm doctor`; a Vibe hook named `derm-gate` is renamed in
+/// place.
+#[test]
+fn an_older_derms_fixed_names_are_named_and_replaced() {
+    let home = scratch("gate-legacy");
+    let derm = fake_derm(&home);
+    fs::create_dir_all(home.join(".config/goose")).unwrap();
+    let old = home.join(".agents/plugins/derm");
+    fs::create_dir_all(old.join("hooks")).unwrap();
+    fs::write(old.join("plugin.json"), "{\"name\": \"derm\"}\n").unwrap();
+    let hooks = format!(
+        "{{\"hooks\": {{\"PreToolUse\": [{{\"matcher\": \".*\", \"hooks\": [{{\"type\": \"command\", \"command\": \"{derm} hook goose pre\", \"timeout\": 120, \"on_failure\": \"block\"}}]}}]}}}}\n"
+    );
+    fs::write(old.join("hooks/hooks.json"), &hooks).unwrap();
+    let r = go(&home, &["goose", "--ungate"]);
+    assert!(
+        r.out
+            .contains(&format!("remove the folder {}", old.display())),
+        "{}",
+        r.out
+    );
+    let doctor = crate::doctor::stale_registrations("goose", &doctor_env(&home));
+    assert!(doctor.iter().any(|p| p.contains("BC-1")), "{doctor:?}");
+    let r = go(&home, &["goose", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("left:   remove the folder"), "{}", r.out);
+    assert!(r.out.contains("BC-1"), "{}", r.out);
+    // Vibe: the old entry keeps its place and takes the new name.
+    fs::create_dir_all(home.join(".vibe")).unwrap();
+    let cfg = home.join(".vibe/hooks.toml");
+    fs::write(
+        &cfg,
+        format!("[[hooks]]\nname = \"derm-gate\"\ntype = \"pre_tool\"\ncommand = \"{derm} hook mistral-vibe pre\"\ntimeout = 120.0\nstrict = true\n"),
+    )
+    .unwrap();
+    let doctor = crate::doctor::stale_registrations("mistral-vibe", &doctor_env(&home));
+    assert!(doctor.iter().any(|p| p.contains("BC-2")), "{doctor:?}");
+    let r = go(&home, &["mistral-vibe", "--gate", "--write"]);
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    let doc: toml_edit::DocumentMut = read(&cfg).parse().unwrap();
+    let all = doc["hooks"].as_array_of_tables().unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        all.get(0).unwrap()["name"].as_str(),
+        gate::read_gate_name(&home).unwrap().as_deref()
+    );
+    let doctor = crate::doctor::stale_registrations("mistral-vibe", &doctor_env(&home));
+    assert!(!doctor.iter().any(|p| p.contains("BC-2")), "{doctor:?}");
+}
+
+#[cfg(unix)]
+fn doctor_env(home: &Path) -> crate::watch::status::Env {
+    crate::watch::status::Env {
+        home: Some(home.to_path_buf()),
+        path: String::new(),
+        vars: vec![],
+        cwd: Some(home.join("proj")),
+    }
+}
+
+// ---- Integration w5b fix pass 1: MW5B-1 and MW5B-2 ----
+
+/// MW5B-1: lines in the form Apple's `ls -lden` prints an access list
+/// (file_cmds-479 `ls/print.c:322-385`: ` <n>: <name>[ inherited] <type>
+/// <perm,...>`, the name a UUID under `-n`), read as macOS's checks read
+/// them. Any `allow` (or unknown) entry with a write-class permission
+/// (`ls/print.c:243-262`) is open, whoever it names; a deny never is; a
+/// line the reader cannot place is open (fails safe).
+#[cfg(unix)]
+#[test]
+fn mw5b_1_an_access_list_line_that_grants_write_is_read_as_open() {
+    let head = "-rwxr-xr-x@ 1 501 20 6840512 Nov 11 16:00 /Users/u/.local/bin/derm\n";
+    let uuid = "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEF12";
+    assert!(!gate::acl_grants_write(head));
+    assert!(!gate::acl_grants_write(""));
+    for (entry, open) in [
+        (format!(" 0: {uuid} allow write"), true),
+        (" 0: group:everyone allow write".to_string(), true),
+        (
+            format!(" 0: {uuid} inherited allow add_file,search,file_inherit,directory_inherit"),
+            true,
+        ),
+        (
+            format!(" 0: {uuid} allow read,execute,readattr,readextattr,readsecurity"),
+            false,
+        ),
+        (format!(" 0: {uuid} deny delete"), false),
+        (format!(" 0: {uuid} deny write,append,delete,chown"), false),
+        (
+            format!(" 0: {uuid} allow list,search,add_subdirectory"),
+            true,
+        ),
+        (format!(" 0: {uuid} allow delete_child"), true),
+        (format!(" 0: {uuid} allow writeattr"), true),
+        (format!(" 0: {uuid} allow writeextattr"), true),
+        (format!(" 0: {uuid} allow writesecurity"), true),
+        (format!(" 0: {uuid} allow chown"), true),
+        (format!(" 0: {uuid} allow append"), true),
+        (format!(" 0: {uuid} allow delete"), true),
+        (format!(" 0: {uuid} unknown write"), true),
+        (format!(" 0: {uuid} allow "), false),
+        ("garbage".to_string(), true),
+    ] {
+        let text = format!("{head}{entry}\n");
+        assert_eq!(gate::acl_grants_write(&text), open, "{entry}");
+    }
+    // A deny first and an allow after: the allow still opens it.
+    assert!(gate::acl_grants_write(&format!(
+        "{head} 0: {uuid} deny delete\n 1: {uuid} allow write\n"
+    )));
+}
+
+/// MW5B-2: a group write bit is trusted only on macOS, only for gid 80
+/// (`admin`, the group Homebrew's installer gives an admin's prefix,
+/// install.sh at 7986efa lines 182-192), and only when you are in it.
+#[cfg(unix)]
+#[test]
+fn mw5b_2_group_write_is_trusted_only_for_macos_admin_members() {
+    let member = Some(vec![20, 12, 61, 79, 80, 81]);
+    let not = Some(vec![20, 12, 61]);
+    assert!(gate::group_write_trusted(80, true, || member.clone()));
+    assert!(!gate::group_write_trusted(80, true, || not.clone()));
+    assert!(!gate::group_write_trusted(80, true, || None));
+    assert!(!gate::group_write_trusted(20, true, || member.clone()));
+    assert!(!gate::group_write_trusted(80, false, || member.clone()));
+    assert_eq!(gate::MACOS_ADMIN_GID, 80);
+    // `/usr/bin/id -G`'s output as the ports read it.
+    assert_eq!(
+        gate::parse_groups("20 12 61 79 80 81\n"),
+        Some(vec![20, 12, 61, 79, 80, 81])
+    );
+    assert_eq!(gate::parse_groups("20 x 80\n"), None);
+    assert_eq!(gate::parse_groups(""), None);
+}
+
+#[cfg(unix)]
+/// MW5B-2, off macOS: a folder with a group write bit is refused as before,
+/// by derm connect and by the launcher, whatever its group.
+#[test]
+fn mw5b_2_off_macos_a_group_write_bit_is_still_refused() {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    let home = scratch("mw5b2-linux");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o775)).unwrap();
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(r.err.contains("others may write"), "{}", r.err);
+    set_self(Path::new(&f));
+    assert!(gate::self_path().is_err());
+}
+
+#[cfg(target_os = "macos")]
+/// Whether this user is in macOS's `admin` group, as every port reads it.
+fn in_admin() -> bool {
+    let o = std::process::Command::new("/usr/bin/id")
+        .arg("-G")
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&o.stdout)
+        .split_whitespace()
+        .any(|g| g == "80")
+}
+
+#[cfg(target_os = "macos")]
+/// MW5B-2 on a real Mac (CI's `rust-macos`): a folder as Homebrew's
+/// installer leaves it, `g+rwx` with group `admin`, is trusted by derm
+/// connect and the launcher when this user is an admin, and refused when
+/// not; group `staff` (gid 20) is refused either way.
+#[test]
+fn mw5b_2_on_macos_a_homebrew_style_admin_folder_is_trusted_for_an_admin() {
+    use std::os::unix::fs::chown;
+    let home = scratch("mw5b2-mac");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    let h = home.display().to_string();
+    let admin = in_admin();
+    if admin {
+        chown(&bin, None, Some(80)).unwrap();
+    }
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o775)).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    set_self(Path::new(&f));
+    if admin {
+        assert_eq!(r.code, Some(0), "{}", r.err);
+        assert!(r.out.starts_with("argv:hook claude-code pre"), "{}", r.out);
+        assert!(gate::self_path().is_ok());
+    } else {
+        assert_eq!(r.code, Some(2), "{}", r.out);
+        assert!(gate::self_path().is_err());
+    }
+    // FP1-S8: Homebrew gives folders the group bit, never a file: a derm
+    // file writable by admin is refused.
+    if admin {
+        chown(&f, None, Some(80)).unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o775)).unwrap();
+        let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+        assert_eq!(r.code, Some(2), "{}", r.out);
+        assert!(gate::self_path().is_err());
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    // staff, which other accounts share: refused.
+    chown(&bin, None, Some(20)).unwrap();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(r.err.contains("others may write"), "{}", r.err);
+    assert!(gate::self_path().is_err());
+}
+
+#[cfg(target_os = "macos")]
+/// MW5B-1 on a real Mac: `chmod +a "group:everyone allow write"` on derm or
+/// its folder, with an extended attribute so `ls -l` shows `@` and not `+`:
+/// refused by derm connect and the launcher. A deny entry is not.
+#[test]
+fn mw5b_1_on_macos_an_access_list_that_lets_others_write_is_refused() {
+    let home = scratch("mw5b1-mac");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    let h = home.display().to_string();
+    let run = |args: &[&str]| {
+        let s = std::process::Command::new(args[0])
+            .args(&args[1..])
+            .status()
+            .unwrap();
+        assert!(s.success(), "{args:?}");
+    };
+    run(&["/usr/bin/xattr", "-w", "com.example.x", "1", &f]);
+    set_self(Path::new(&f));
+    let ok = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(ok.code, Some(0), "{}", ok.err);
+    assert!(gate::self_path().is_ok());
+    run(&["/bin/chmod", "+a", "group:everyone deny delete", &f]);
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(0), "deny entry: {}", r.err);
+    assert!(gate::self_path().is_ok());
+    for target in [f.clone(), bin.display().to_string()] {
+        run(&["/bin/chmod", "+a", "group:everyone allow write", &target]);
+        let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+        assert_eq!(r.code, Some(2), "{target}: {}", r.out);
+        assert!(r.err.contains("others may write"), "{target}: {}", r.err);
+        assert!(gate::self_path().is_err(), "{target}");
+        run(&["/bin/chmod", "-N", &target]);
+    }
+}
+
+#[cfg(unix)]
+/// Case 112 for MW5B-1 and MW5B-2: the launcher and the in-process clients
+/// name the same group, the same write-class permissions and the same two
+/// programs as derm connect's check.
+#[test]
+fn mw5b_the_launcher_and_the_clients_read_access_lists_and_groups_as_connect_does() {
+    let sh = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let ts = read(&repo().join("packages/derm-pi/src/serve/client.ts"));
+    // FP1-S1: Hermes's plugin is the fourth reader of the rule.
+    let py = read(&repo().join("packages/derm-hermes-plugin/derm_gate.py"));
+    for p in gate::ACL_WRITE_PERMS {
+        assert!(sh.contains(&format!("*,{p},*")), "{p} not in derm-gate.sh");
+        assert!(ts.contains(&format!("\"{p}\"")), "{p} not in client.ts");
+        assert!(py.contains(&format!("\"{p}\"")), "{p} not in derm_gate.py");
+    }
+    assert!(py.contains(&format!("MACOS_ADMIN_GID = {}", gate::MACOS_ADMIN_GID)));
+    assert!(py.contains("[\"/bin/ls\", \"-lden\", \"--\""));
+    assert!(py.contains("[\"/usr/bin/id\", \"-G\"]"));
+    // FP1-S2: each reader runs only a file named derm.
+    assert!(sh.contains("[ \"${f##*/}\" = derm ]"));
+    assert!(ts.contains("path.basename(file) !== \"derm\""));
+    assert!(py.contains("real.name != \"derm\""));
+    // MW5B-5: each reader that searches the install folders stops at the
+    // first derm that is there and refused, and says so in the same words.
+    // FP2-S9: Hermes searches the same folders.
+    for macos in [false, true] {
+        for c in gate::install_candidates(Path::new("/h"), macos)
+            .iter()
+            .skip(1)
+        {
+            assert!(
+                py.contains(&format!("\"{}\"", c.display())),
+                "{} not in derm_gate.py",
+                c.display()
+            );
+        }
+    }
+    // FP2-S1: derm connect's route note is the fourth reader.
+    let rs = read(&repo().join("crates/derm-cli/src/connect/gate.rs"));
+    for (name, text) in [
+        ("derm-gate.sh", &sh),
+        ("client.ts", &ts),
+        ("derm_gate.py", &py),
+        ("gate.rs", &rs),
+    ] {
+        assert!(text.contains("is there and not used"), "{name}");
+        assert!(
+            text.contains("stops at the first derm it finds rather than run another"),
+            "{name}"
+        );
+    }
+    assert!(sh.contains("/bin/ls -lden --"));
+    assert!(ts.contains("\"/bin/ls\", [\"-lden\", \"--\""));
+    assert!(sh.contains("/usr/bin/id -G"));
+    assert!(ts.contains("\"/usr/bin/id\", [\"-G\"]"));
+    assert!(sh.contains(&format!("\"{}\"", gate::MACOS_ADMIN_GID)));
+    assert!(ts.contains(&format!("MACOS_ADMIN_GID = {}", gate::MACOS_ADMIN_GID)));
+}
+
+#[cfg(unix)]
+/// Case 112 for MW5B-1: the launcher's own `acl_open`, cut from
+/// `derm-gate.sh` and fed each fixture in place of `/bin/ls -lden`, reads
+/// every line as `gate::acl_grants_write` does, here on any Unix.
+#[test]
+fn mw5b_1_the_launchers_access_list_reader_agrees_with_connects() {
+    let sh = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let start = sh.find("acl_open() {").unwrap();
+    let end = start + sh[start..].find("\n}\n").unwrap() + 3;
+    let func = sh[start..end].replace("/bin/ls -lden -- \"$1\"", "/bin/cat -- \"$1\"");
+    assert_ne!(
+        func,
+        sh[start..end],
+        "the reader no longer runs /bin/ls -lden"
+    );
+    let dir = scratch("mw5b1-sh");
+    let head = "drwxr-xr-x@ 3 501 80 96 Nov 11 16:00 /opt/homebrew/bin";
+    let u = "0D2F3A4B-1C2D-4E5F-8A9B-0C1D2E3F4A5B";
+    let lines = [
+        String::new(),
+        format!(" 0: {u} allow write"),
+        format!(" 0: {u} inherited allow add_file,search,file_inherit"),
+        format!(" 0: {u} allow read,execute,readattr"),
+        format!(" 0: {u} deny delete"),
+        format!(" 0: {u} deny write,chown"),
+        format!(" 0: {u} allow list,delete_child"),
+        format!(" 0: {u} unknown writesecurity"),
+        format!(" 0: {u} allow "),
+        format!(" 0: {u}"),
+        format!(" 0: {u} inherited"),
+        "garbage".to_string(),
+        format!(" 0: {u} deny delete\n 1: {u} allow chown"),
+        format!(" 0: {u} allow readextattr\n 1: {u} allow appendx"),
+    ];
+    for (i, l) in lines.iter().enumerate() {
+        let text = if l.is_empty() {
+            format!("{head}\n")
+        } else {
+            format!("{head}\n{l}\n")
+        };
+        let f = dir.join(format!("ls-{i}"));
+        fs::write(&f, &text).unwrap();
+        let o = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{func}\nacl_open \"$1\""))
+            .arg("sh")
+            .arg(&f)
+            .env_clear()
+            .output()
+            .unwrap();
+        let sh_open = o.status.code() == Some(0);
+        assert_eq!(sh_open, gate::acl_grants_write(&text), "line {i}: {l:?}");
+        // FP1-S4: the same under a shell that runs a pipeline's last part in
+        // the current shell (zsh, ksh; bash's lastpipe), where an `exit`
+        // there would leave the caller too.
+        // bash 4.2 added lastpipe; macOS's /bin/bash is 3.2 and refuses
+        // the option, so this half runs where a bash takes it (Linux CI).
+        let lastpipe = std::process::Command::new("/bin/bash")
+            .args(["-O", "lastpipe", "-c", "true"])
+            .env_clear()
+            .status()
+            .is_ok_and(|s| s.success());
+        if lastpipe {
+            let o = std::process::Command::new("/bin/bash")
+                .args(["-O", "lastpipe", "-c"])
+                .arg(format!("{func}\nset +m\nif acl_open \"$1\"; then echo open; else echo closed; fi; echo after"))
+                .arg("bash")
+                .arg(&f)
+                .env_clear()
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&o.stdout);
+            let want = if sh_open {
+                "open\nafter\n"
+            } else {
+                "closed\nafter\n"
+            };
+            assert_eq!(out, want, "lastpipe, line {i}: {l:?}");
+        }
+    }
+}
+
+#[cfg(unix)]
+/// FP1-S2 (the fix pass's review): a derm candidate whose links lead to a
+/// program not named derm is refused, as derm connect's `checked_self`
+/// refuses one; here a link to a root-owned program in a root-owned folder,
+/// which every other check passes.
+#[test]
+fn fp1_s2_the_launcher_runs_only_a_file_named_derm() {
+    let home = scratch("fp1-s2");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // /usr/bin/true is on Linux and macOS alike (macOS has no /bin/true).
+    let real_true = fs::canonicalize("/usr/bin/true").unwrap();
+    std::os::unix::fs::symlink(&real_true, bin.join("derm")).unwrap();
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}{}", r.out, r.err);
+    assert!(r.err.contains("not named derm"), "{}", r.err);
+}
+
+#[cfg(target_os = "linux")]
+/// FP1-S6: on Linux an access list's group bits are its mask (acl(5)), so
+/// the launcher reads the mode bits as derm connect and the clients do and
+/// does not refuse a file for having an access list (`+`). Needs setfacl.
+#[test]
+fn fp1_s6_on_linux_an_access_list_within_the_mask_is_read_by_its_mode() {
+    if !Path::new("/usr/bin/setfacl").exists() {
+        eprintln!("setfacl not installed; FP1-S6 not run here");
+        return;
+    }
+    let home = scratch("fp1-s6");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    let s = std::process::Command::new("/usr/bin/setfacl")
+        .args(["-m", "u:nobody:r-x", &f])
+        .status()
+        .unwrap();
+    assert!(s.success());
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    set_self(Path::new(&f));
+    assert!(gate::self_path().is_ok());
+    // A named entry with write raises the mask's write bit: refused by all.
+    let s = std::process::Command::new("/usr/bin/setfacl")
+        .args(["-m", "u:nobody:rwx", &f])
+        .status()
+        .unwrap();
+    assert!(s.success());
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(gate::self_path().is_err());
 }

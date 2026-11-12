@@ -30,14 +30,15 @@ import { dermClaudeChecks } from "./checks/dermClaude.mjs";
 import { dermCodexChecks } from "./checks/dermCodex.mjs";
 
 // [integration w1] Lane folders. Every .mjs file in checks/<LANE>/ (one
-// capital letter: I in wave 2; L, N, P, R in wave 4) exports `checks`, an
+// capital letter: I in wave 2; L, N, P, R in wave 4; S to X in wave 5; or
+// 5bA to 5bF in wave 5b, added at its phase merge) exports `checks`, an
 // array of { id, title, harness, run }. `run({ binPath, version, codexPath,
 // claudePath })` returns { status, finding }. The harness's CLI comes from
 // --cli <harness>=<path>, or --codex / --claude. Lanes add files, not lines.
 async function laneChecks() {
   const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "checks");
   const out = [];
-  for (const lane of readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && /^[A-Z]$/.test(d.name)).map((d) => d.name).sort()) {
+  for (const lane of readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && /^(?:[A-Z]|5b[A-F])$/.test(d.name)).map((d) => d.name).sort()) {
     for (const file of readdirSync(path.join(dir, lane)).filter((f) => f.endsWith(".mjs")).sort()) {
       const mod = await import(pathToFileURL(path.join(dir, lane, file)).href);
       if (!Array.isArray(mod.checks)) throw new Error(`checks/${lane}/${file} exports no checks array`);

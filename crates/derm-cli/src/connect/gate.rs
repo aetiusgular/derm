@@ -40,12 +40,112 @@ pub struct Agent {
     pub hook_file: Option<String>,
     pub command: Option<String>,
     pub source: String,
-    pub marker: Option<String>,
+    /// What finds derm's own entry: the first is in what derm writes now,
+    /// the rest in what an older derm wrote (wave 5b lane 5bF: the wave 4
+    /// node line), so a second `--gate` replaces either.
+    pub markers: Vec<String>,
     pub installed_if: Vec<String>,
     pub cli: Option<String>,
     pub refuse_if_exists: Vec<String>,
     pub steps: Vec<Step>,
     pub notes: Vec<String>,
+    /// The fixed name an older derm gave the entry that now takes
+    /// `{gatename}` (goose's plugin folder `derm`, Vibe's hook `derm-gate`),
+    /// so `--gate` names it for removal and `--ungate` and `derm doctor`
+    /// still find it (BC-1, BC-2; the wave 5b close).
+    pub legacy_name: Option<String>,
+}
+
+/// BC-1 and BC-2 (note BC sections 8 and 11, run by the wave 5b base): goose
+/// 1.59.0 lists a project's `.agents/plugins/` before the user's and keeps
+/// the first plugin of a name (`crates/goose/src/plugins/discovery.rs:62-101`),
+/// and reads a project's `.config/goose/settings.json` `disabledPlugins`
+/// before the user's (`is_enabled`, 154-176); Mistral Vibe 3.1.2 reads every
+/// project root's `.vibe/hooks.toml`, `--add-dir` folders included, before
+/// `VIBE_HOME`'s and drops a later hook of a name it has seen
+/// (`vibe/core/hooks/config.py:94-113`, `_harness_manager.py:121-143`). With
+/// derm's fixed names (`derm`, `derm-gate`) a repository could replace or
+/// switch off derm's gate. derm's entry takes a name a repository cannot know
+/// instead: drawn once per user, kept in this file, as derm keeps its pipe's
+/// name (rules case 136).
+pub const GATE_NAME_FILE: &str = ".derm/gate-name";
+
+/// `derm-` and 16 lowercase hex digits.
+pub fn valid_gate_name(n: &str) -> bool {
+    n.len() == 21
+        && n.starts_with("derm-")
+        && n[5..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A new name: the first 64 bits of SHA-256 over a version-4 UUID's 122
+/// random bits.
+pub fn new_gate_name() -> String {
+    use sha2::{Digest, Sha256};
+    let d = Sha256::digest(uuid::Uuid::new_v4().as_bytes());
+    let hex: String = d.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("derm-{hex}")
+}
+
+/// The name in `~/.derm/gate-name`, `None` when the file is absent. A link,
+/// anything but a small regular file, a file of another user or one others
+/// may write, or a malformed name is refused: derm would rather write
+/// nothing than register under a name someone else chose.
+pub fn read_gate_name(home: &Path) -> Result<Option<String>, String> {
+    let file = home.join(GATE_NAME_FILE);
+    let meta = match std::fs::symlink_metadata(&file) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let refuse = |why: &str| {
+        Err(format!(
+            "{} {why}; derm will not register under it. Remove it and run this again",
+            file.display()
+        ))
+    };
+    if !meta.file_type().is_file() || meta.len() > 64 {
+        return refuse("is not a small regular file");
+    }
+    #[cfg(unix)]
+    if meta.uid() != derm_core::platform::real_user() || meta.mode() & 0o022 != 0 {
+        return refuse("is not yours alone");
+    }
+    // Lane Z's rule, as the policy loader applies it (`gate/policy.rs`).
+    #[cfg(windows)]
+    if !derm_core::platform::windows::only_owner_writes(&file) {
+        return refuse("is not yours alone");
+    }
+    let text = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let name = text.trim_end_matches('\n');
+    if !valid_gate_name(name) {
+        return refuse("does not hold a name derm drew");
+    }
+    Ok(Some(name.to_string()))
+}
+
+/// Whether the row names its entry `{gatename}`.
+pub fn uses_gate_name(agent: &Agent) -> bool {
+    agent.steps.iter().any(Step::takes_gate_name)
+}
+
+impl Step {
+    /// Whether this step's folder or entry takes `{gatename}`.
+    pub fn takes_gate_name(&self) -> bool {
+        match self {
+            Step::PluginFolder { at, files } => {
+                at.path.contains("{gatename}")
+                    || files
+                        .iter()
+                        .any(|(_, v)| json::compact(v).contains("{gatename}"))
+            }
+            Step::TomlArrayEntry { entry, .. } => entry
+                .iter()
+                .any(|(_, v)| matches!(v, Value::Str(x) if x == "{gatename}")),
+            _ => false,
+        }
+    }
 }
 
 /// Where a file is: a `~/` path, moved by `homeEnv` (the variable replaces
@@ -101,6 +201,14 @@ pub enum Step {
     PluginFolder {
         at: Place,
         files: Vec<(String, Value)>,
+    },
+    /// One file of plain text derm owns alone (Hermes's `derm-path`, wave
+    /// 5b lane 5bF), written only into a folder that already exists when
+    /// `folder_must_exist`.
+    TextFile {
+        at: Place,
+        content: String,
+        folder_must_exist: bool,
     },
     Commands {
         commands: Vec<String>,
@@ -209,6 +317,11 @@ fn step(v: &Value) -> Result<Step, String> {
             at: place(v)?,
             files: members(v, "files")?,
         },
+        "text-file" => Step::TextFile {
+            at: place(v)?,
+            content: s(v, "content")?.to_string(),
+            folder_must_exist: matches!(v.get("folderMustExist"), Some(Value::Bool(true))),
+        },
         "commands" => Step::Commands {
             commands: strs(v, "commands")?,
             note: s(v, "note")?.to_string(),
@@ -242,12 +355,20 @@ pub fn table() -> Result<Vec<Agent>, String> {
                 hook_file: opt_s(r, "hookFile"),
                 command: opt_s(r, "command"),
                 source: s(r, "source")?.to_string(),
-                marker: opt_s(r, "marker"),
+                markers: {
+                    let mut m = strs(r, "markers")?;
+                    m.extend(opt_s(r, "marker"));
+                    if m.iter().any(|x| x.is_empty()) {
+                        return Err("gates.json: an empty marker would find every entry".into());
+                    }
+                    m
+                },
                 installed_if: strs(r, "installedIf")?,
                 cli: opt_s(r, "cli"),
                 refuse_if_exists: strs(r, "refuseIfExists")?,
                 steps,
                 notes: strs(r, "notes")?,
+                legacy_name: opt_s(r, "legacyName"),
             })
         })
         .collect()
@@ -259,10 +380,18 @@ pub struct Vars {
     pub command: Option<String>,
     pub hook_dir: Option<String>,
     pub version: String,
+    /// `{gatename}` ([`GATE_NAME_FILE`]).
+    pub gate_name: Option<String>,
 }
 
 /// Placeholders a whole string may be.
-const WHOLE: &[&str] = &["{command}", "{hook_url}", "{hook_dir}", "{version}"];
+const WHOLE: &[&str] = &[
+    "{command}",
+    "{hook_url}",
+    "{hook_dir}",
+    "{version}",
+    "{gatename}",
+];
 
 /// Fills whole-string placeholders in `v`. Any other `{`...`}` that names a
 /// placeholder is refused, so nothing is spliced into the middle of a value.
@@ -281,9 +410,16 @@ pub fn fill(v: &Value, vars: &Vars) -> Result<Value, String> {
                     need(&vars.hook_dir, "the hook folder")?
                 )),
                 "{version}" => Value::Str(vars.version.clone()),
+                "{gatename}" => Value::Str(
+                    vars.gate_name
+                        .clone()
+                        .ok_or("internal: derm's gate name is needed for this agent")?,
+                ),
                 other => {
                     if WHOLE.iter().any(|p| other.contains(p))
-                        || ["{node}", "{hook_file}"].iter().any(|p| other.contains(p))
+                        || ["{node}", "{hook_file}", "{derm}"]
+                            .iter()
+                            .any(|p| other.contains(p))
                     {
                         return Err(format!(
                             "gates.json: placeholder inside `{other}`; a placeholder must be the whole string"
@@ -323,24 +459,433 @@ fn plain_path(p: &str) -> bool {
             .any(|c| matches!(c, Component::ParentDir))
 }
 
-/// Fills a command template's `{node}`, `{hook_file}`, `{hook_dir}` and
-/// `{version}` (the only place text is spliced, from checked paths).
+/// A path a hook line names bare: absolute, letters, digits and `._/@+~-`
+/// only, no `.` or `..` part. With no space or quote, every agent's runner
+/// (a shell string in sh, bash, zsh, cmd or PowerShell, or an exec form)
+/// reads it as one word, and lane 5bA's `is_derm_rust_command` knows it as
+/// derm's (`hook/claude_format/marks.rs`, `plain`).
+pub fn plain_hook_path(p: &str) -> bool {
+    p.starts_with('/')
+        && p.len() <= 1024
+        && p.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'@' | b'+' | b'~' | b'-')
+        })
+        && !p.split('/').any(|c| c == "." || c == "..")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The derm a test registers, in place of the test binary itself.
+    pub static TEST_SELF: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// This derm, as a gate registration names it (wave 5b lane 5bF; rules case
+/// 227, `contracts/hook-dialects.md` 9.1): its real path, every link
+/// followed, as the agent's exec will follow them. Refused unless it is a
+/// plain path ([`plain_hook_path`]) to a regular file owned by you or root
+/// that no one else may write, in a folder of the same kind: a registration
+/// runs on every tool call, so a derm another user could replace would be a
+/// way around the gate (case 109's rule; rules section 5, item 4). dcg
+/// writes its own `current_exe()` the same way (note BC section 3).
+pub fn self_path() -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(p) = TEST_SELF.with(|t| t.borrow().clone()) {
+        return checked_self(&p);
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("cannot read derm's own path: {e}"))?;
+    checked_self(&exe)
+}
+
+#[cfg(windows)]
+fn checked_self(_exe: &Path) -> Result<String, String> {
+    Err("on Windows `derm connect --gate` does not register `derm hook` in this build (lane 5bF's Windows half: each agent's Windows line, contracts/hook-dialects.md 9.1)".into())
+}
+
+#[cfg(not(windows))]
+fn checked_self(exe: &Path) -> Result<String, String> {
+    let real = std::fs::canonicalize(exe)
+        .map_err(|e| format!("cannot read derm's own path {}: {e}", exe.display()))?;
+    let text = real
+        .to_str()
+        .filter(|t| plain_hook_path(t))
+        .ok_or_else(|| {
+            format!(
+                "derm is at {}, a path a hook line would have to quote; install derm under a path of letters, digits and ._/@+~- (~/.local/bin/derm, say)",
+                real.display()
+            )
+        })?
+        .to_string();
+    if real.file_name().and_then(|n| n.to_str()) != Some("derm") {
+        return Err(format!(
+            "{text} is not named derm; a registration names derm by a path ending in /derm, which is how derm finds its own entry again"
+        ));
+    }
+    let uid = derm_core::platform::real_user();
+    let meta = std::fs::metadata(&real).map_err(|e| format!("{text}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("{text} is not a regular file"));
+    }
+    if !closed(&real, &meta, uid) {
+        return Err(format!(
+            "{text} is owned by someone else or writable by others; a gate registered on it would run whatever is put there (chmod go-w)"
+        ));
+    }
+    let dir = real.parent().ok_or("derm has no folder")?;
+    let dm = std::fs::metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !closed(dir, &dm, uid) {
+        return Err(format!(
+            "{} is owned by someone else or writable by others; derm in it could be replaced (chmod go-w)",
+            dir.display()
+        ));
+    }
+    Ok(homebrew_opt(&real, uid).unwrap_or(text))
+}
+
+/// MW5B-6: for a derm Homebrew installed, `<prefix>/Cellar/<name>/<version>/
+/// bin/derm`, the same file by Homebrew's `opt` link,
+/// `<prefix>/opt/<name>/bin/derm`. `brew upgrade` removes the old version's
+/// folder (`man brew` 7.0.12, lines 726-731 and 1942), so a line naming the
+/// keg exits 127 after it; `opt_prefix` is "a stable path for this formula
+/// ... stable even when the software is updated" (Homebrew/brew 7.0.12
+/// `formula.rb:1583-1599`), which `optlink` points at the current keg
+/// (`keg.rb:644-647`), and Homebrew's own service file for derm names it
+/// (`sh.brew.derm.plist`, read on the Mac). Used only when the link leads to
+/// this very file, is a link in a real `opt` folder that is closed as derm's
+/// own folder is (one more place that decides which program runs), and the
+/// path is plain; otherwise `None`, and the keg path is registered.
+#[cfg(not(windows))]
+fn homebrew_opt(real: &Path, uid: derm_core::platform::UserId) -> Option<String> {
+    let bin = real.parent()?;
+    let version = bin.parent()?;
+    let name_dir = version.parent()?;
+    let cellar = name_dir.parent()?;
+    if bin.file_name()? != "bin" || cellar.file_name()? != "Cellar" {
+        return None;
+    }
+    let prefix = cellar.parent()?;
+    let name = name_dir.file_name()?;
+    let opt_dir = prefix.join("opt");
+    let link = opt_dir.join(name);
+    let opt = link.join("bin").join("derm");
+    let text = opt.to_str().filter(|t| plain_hook_path(t))?.to_string();
+    if !std::fs::symlink_metadata(&link)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
+    // FP2-S11: every folder the opt line goes through, not only `opt`: the
+    // prefix, `Cellar/<name>` and the version's folder too.
+    for dir in [&opt_dir, prefix, name_dir, version] {
+        let m = std::fs::symlink_metadata(dir).ok()?;
+        if !m.is_dir() || !closed(dir, &m, uid) {
+            return None;
+        }
+    }
+    (std::fs::canonicalize(&opt).ok()? == real).then_some(text)
+}
+
+/// Where derm's own installs put it, in the order the plugins' launcher
+/// (`packages/*/hooks/derm-gate.sh`) and the in-process plugins
+/// (`packages/*/src/serve/client.ts`, `installCandidates`) try them: one
+/// list, held equal by a test (case 112).
+pub fn install_candidates(home: &Path, macos: bool) -> Vec<PathBuf> {
+    let mut out = vec![home.join(".local/bin/derm")];
+    let brew: [&str; 2] = if macos {
+        ["/opt/homebrew/bin/derm", "/usr/local/bin/derm"]
+    } else {
+        ["/home/linuxbrew/.linuxbrew/bin/derm", "/usr/local/bin/derm"]
+    };
+    out.extend(brew.iter().map(PathBuf::from));
+    out.push(PathBuf::from("/usr/bin/derm"));
+    out
+}
+
+/// The agents whose gate finds derm in its install folders, not from a
+/// line `derm connect` writes: the plugins' launcher and the in-process
+/// plugins (lane 5bC).
+const FINDS_DERM: &[&str] = &[
+    "claude-code",
+    "codex",
+    "gemini",
+    "pi",
+    "oh-my-pi",
+    "opencode",
+    "kilo",
+    "openclaw",
+];
+
+/// WW5B-2 (Windows test w5b, step 3): on Windows the Claude Code, Codex and
+/// Gemini plugins' hooks start `/bin/sh` on their launcher (each hooks
+/// file at this build), which Windows does not have: Codex's line under
+/// `cmd /C` exited 1, Gemini's under PowerShell exited 1 ("'/bin/sh' is not
+/// recognized"), Claude Code's exec form failed with `spawn ENOENT` (run on
+/// the box). `derm connect --gate` printed a route of Unix folders and "or
+/// the gate denies every call", which is not what an agent does with a hook
+/// that cannot start (case 70: some let the call through). So on Windows
+/// `--gate` refuses those three with the reason, as it refuses the `{derm}`
+/// rows ([`checked_self`]); the in-process plugins take only the derm
+/// `DERM_BIN` names there (`src/serve/client.ts`, `locateDerm`), so their
+/// note says that. `None` for every other agent.
+pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
+    match agent {
+        "claude-code" | "codex" | "gemini" => Some(Err(format!(
+            "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
+        ))),
+        "pi" | "oh-my-pi" | "opencode" | "kilo" | "openclaw" => Some(Ok(format!(
+            "on Windows {agent}'s gate runs only the derm DERM_BIN names, which `derm run` sets to itself, and runs it without checking who may write it (Node cannot read that there; case 109 does not hold on Windows yet, FP2-S10); with no DERM_BIN it refuses every call (rules case 227)"
+        ))),
+        _ => None,
+    }
+}
+
+/// For an agent whose gate looks derm up in its install folders: which
+/// folder will answer, or that none will, so a chat is not a surprise deny
+/// (integration w5b's \"Look out for\": a plugin with no derm it can trust
+/// refuses every call).
+fn route_note(agent: &Agent, ctx: &mut Ctx) {
+    if !FINDS_DERM.contains(&agent.agent.as_str()) {
+        return;
+    }
+    if cfg!(windows) {
+        if let Some(Ok(note)) = windows_gate(&agent.agent) {
+            ctx.out.push_str(&format!("route:  {note}\n"));
+        }
+        return;
+    }
+    // FP2-S1 (fix pass 2's review): the first derm that is there decides,
+    // as the launcher and the in-process clients read it (MW5B-5; case 112).
+    let me = self_path().ok().and_then(|p| std::fs::canonicalize(p).ok());
+    let uid = derm_core::platform::real_user();
+    let candidates = install_candidates(&ctx.home, ctx.macos);
+    let first = candidates
+        .iter()
+        .find(|c| std::fs::symlink_metadata(c).is_ok());
+    let note = match first {
+        Some(c) => match refuse_candidate(c, uid) {
+            Some(why) => format!(
+                "route:  {}'s gate stops at {}, which is there and not used: {why}; derm stops at the first derm it finds rather than run another, so until that one is fixed or removed the gate denies every call (rules case 227)\n",
+                agent.name,
+                c.display()
+            ),
+            None if std::fs::canonicalize(c).ok() == me => format!(
+                "route:  {}'s gate runs derm from {} (this derm); it never looks derm up on PATH (rules case 227)\n",
+                agent.name,
+                c.display()
+            ),
+            None => format!(
+                "route:  {}'s gate runs derm from {}, which is not this derm; it is the first derm in {}, so that one decides (rules case 227)\n",
+                agent.name,
+                c.display(),
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+        None => format!(
+            "route:  {}'s gate finds no derm in {}; install this derm there, or the gate denies every call (rules case 227)\n",
+            agent.name,
+            candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    ctx.out.push_str(&note);
+}
+
+/// Why an install folder's derm would not be run by the launcher and the
+/// in-process clients, or `None` when it would (their `refuse` and
+/// `examine`, case 109's rule; FP2-S1): its real path a regular file named
+/// derm, owned by you or root and closed to others, in a closed folder, as
+/// is the folder the candidate is named in. Each link hop's folder is
+/// checked by the launcher and the clients; here the named folder and the
+/// real one, as [`checked_self`] checks this derm.
+fn refuse_candidate(c: &Path, uid: derm_core::platform::UserId) -> Option<String> {
+    let Ok(real) = std::fs::canonicalize(c) else {
+        return Some("a link leads nowhere, or its folder cannot be read".into());
+    };
+    if real.file_name().and_then(|n| n.to_str()) != Some("derm") {
+        return Some("not named derm".into());
+    }
+    let Ok(meta) = std::fs::metadata(&real) else {
+        return Some("cannot be read".into());
+    };
+    if !meta.is_file() {
+        return Some("not a regular file".into());
+    }
+    if !closed(&real, &meta, uid) {
+        return Some("owned by someone else, or others may write it".into());
+    }
+    let named = c.parent().and_then(|d| std::fs::canonicalize(d).ok());
+    for dir in [real.parent().map(Path::to_path_buf), named]
+        .into_iter()
+        .flatten()
+    {
+        match std::fs::metadata(&dir) {
+            Ok(m) if m.is_dir() && closed(&dir, &m, uid) => {}
+            _ => return Some(format!("others may write {}", dir.display())),
+        }
+    }
+    None
+}
+
+/// Fills a command template's `{node}`, `{hook_file}`, `{hook_dir}`,
+/// `{version}` and `{derm}` (the only place text is spliced, from checked
+/// paths).
 fn fill_text(
     t: &str,
     node: &str,
     hook_file: Option<&str>,
     hook_dir: Option<&str>,
     version: &str,
+    derm: &str,
 ) -> String {
-    let mut out = t.replace("{node}", node).replace("{version}", version);
+    let mut out = t
+        .replace("{node}", node)
+        .replace("{version}", version)
+        .replace("{derm}", derm);
     out = out.replace("{hook_file}", hook_file.unwrap_or("<the hook file>"));
     out.replace("{hook_dir}", hook_dir.unwrap_or("<the package folder>"))
 }
 
-/// Owned by you (or root) and not writable by group or others.
+/// Owned by you (or root), not writable by others, not writable by its
+/// group unless it is a folder whose group is macOS's `admin` and you are
+/// in it (MW5B-2; Homebrew gives the bit to folders only, FP1-S8),
+/// and on macOS no access list entry that lets anyone write (MW5B-1). The
+/// plugins' launcher (`hooks/derm-gate.sh`, `closed`) and the in-process
+/// clients (`src/serve/client.ts`, `refuseCandidate`) apply the same rule;
+/// a test holds the three to one list (case 112).
 #[cfg(unix)]
-fn closed(_path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
-    (meta.uid() == uid || meta.uid() == 0) && meta.mode() & 0o022 == 0
+fn closed(path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserId) -> bool {
+    let macos = cfg!(target_os = "macos");
+    (meta.uid() == uid || meta.uid() == 0)
+        && meta.mode() & 0o002 == 0
+        && (meta.mode() & 0o020 == 0
+            || meta.is_dir() && group_write_trusted(meta.gid(), macos, macos_groups))
+        && !(macos && macos_acl_grants_write(path))
+}
+
+/// macOS's `admin` group. Homebrew's installer gives its prefix folders
+/// (`bin`, `Cellar` and the rest) `g+rwx` with this group when you are in
+/// it, and otherwise your own group, dropping the group bit (`go-w`) when
+/// that is `staff`, \"Other standard macOS accounts also belong to staff\"
+/// (Homebrew/install `install.sh` at 7986efa, lines 164, 182-192, 697-701,
+/// 843-852). Any admin account can then replace derm there with no
+/// password, as it can every Homebrew tool (FP1-S9); `staff` would let every
+/// account write derm. Tony's call, 11 Nov: Homebrew stays.
+#[cfg(unix)]
+pub const MACOS_ADMIN_GID: u32 = 80;
+
+/// Whether a group write bit on a file of group `gid` lets in no one you do
+/// not already trust: only on macOS, only `admin`, only when you are in it
+/// (`groups` reads your groups as `/usr/bin/id -G` lists them). sudo trusts
+/// a group write bit the same way, for one group it names
+/// (`lib/util/secure_path.c:36-53` at 28079db); OpenSSH refuses every one
+/// (`misc.c` `safe_path`).
+#[cfg(unix)]
+pub fn group_write_trusted(
+    gid: u32,
+    macos: bool,
+    groups: impl FnOnce() -> Option<Vec<u32>>,
+) -> bool {
+    macos && gid == MACOS_ADMIN_GID && groups().is_some_and(|g| g.contains(&MACOS_ADMIN_GID))
+}
+
+/// `/usr/bin/id -G`'s groups, or `None` when a word is not a number.
+#[cfg(unix)]
+pub fn parse_groups(text: &str) -> Option<Vec<u32>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+    words.iter().map(|w| w.parse().ok()).collect()
+}
+
+/// Your groups on macOS, read as the launcher reads them: `/usr/bin/id -G`
+/// lists them through Directory Services' full membership
+/// (`getgrouplist_2`; Apple shell_cmds-329 `id/id.c:532-566`), not the
+/// process's `getgroups(2)`.
+#[cfg(unix)]
+fn macos_groups() -> Option<Vec<u32>> {
+    let o = std::process::Command::new("/usr/bin/id")
+        .arg("-G")
+        .env_clear()
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    parse_groups(&String::from_utf8_lossy(&o.stdout))
+}
+
+/// The permissions macOS's `ls -le` prints that let the one an entry names
+/// change a file or what a folder holds (Apple file_cmds-479
+/// `ls/print.c:243-262`, `chmod/chmod_acl.c:55-72`).
+#[cfg(unix)]
+pub const ACL_WRITE_PERMS: &[&str] = &[
+    "write",
+    "append",
+    "delete",
+    "add_file",
+    "add_subdirectory",
+    "delete_child",
+    "writeattr",
+    "writeextattr",
+    "writesecurity",
+    "chown",
+];
+
+/// Whether `ls -lden`'s output for one path holds an access list entry that
+/// lets anyone write (MW5B-1). macOS keeps access lists apart from the mode
+/// bits, and `ls -l` marks a file with extended attributes `@` and only
+/// otherwise one with an access list `+` (ls(1) on macOS 26.5.1), so the
+/// entries themselves are read. Each entry after the first line is
+/// ` <n>: <uuid>[ inherited] <allow|deny> <perm,...>` (file_cmds-479
+/// `ls/print.c:322-385`; the name is a UUID under `-n`). An entry that is
+/// not a deny and names a write-class permission is open, whoever it names;
+/// a line that cannot be placed is open too.
+#[cfg(unix)]
+pub fn acl_grants_write(ls: &str) -> bool {
+    ls.lines().skip(1).any(|line| {
+        let mut w = line.split_whitespace();
+        if !w.next().is_some_and(|n| n.ends_with(':')) {
+            return true;
+        }
+        let _who = w.next();
+        let mut kind = w.next();
+        if kind == Some("inherited") {
+            kind = w.next();
+        }
+        let Some(kind) = kind else {
+            return true;
+        };
+        kind != "deny"
+            && w.next()
+                .is_some_and(|p| p.split(',').any(|x| ACL_WRITE_PERMS.contains(&x)))
+    })
+}
+
+/// On macOS: whether `path`'s access list lets anyone write, read with
+/// `/bin/ls -lden` by its absolute path; a path `ls` cannot read counts as
+/// open (refused).
+#[cfg(unix)]
+fn macos_acl_grants_write(path: &Path) -> bool {
+    let o = std::process::Command::new("/bin/ls")
+        .arg("-lden")
+        .arg("--")
+        .arg(path)
+        .env_clear()
+        .output();
+    match o {
+        Ok(o) if o.status.success() => acl_grants_write(&String::from_utf8_lossy(&o.stdout)),
+        _ => true,
+    }
 }
 
 /// Windows (lane Z): owned by you and writable by no one else (SYSTEM and
@@ -503,7 +1048,7 @@ fn folders_closed(root: &Path, dir: &Path, file: &str, uid: derm_core::platform:
 pub fn resolve(at: &Place, home: &Path, env: &dyn Env) -> PathBuf {
     let rest = &at.path[2..];
     if let Some(var) = &at.home_env {
-        if let Some(dir) = env.var(var).filter(|d| d.starts_with('/')) {
+        if let Some(dir) = env.var(var).filter(|d| super::names::absolute(d)) {
             let tail = rest.split_once('/').map_or("", |(_, t)| t);
             return PathBuf::from(dir).join(tail);
         }
@@ -511,7 +1056,8 @@ pub fn resolve(at: &Place, home: &Path, env: &dyn Env) -> PathBuf {
     if at.xdg_config {
         if let (Some(tail), Some(x)) = (
             rest.strip_prefix(".config/"),
-            env.var("XDG_CONFIG_HOME").filter(|d| d.starts_with('/')),
+            env.var("XDG_CONFIG_HOME")
+                .filter(|d| super::names::absolute(d)),
         ) {
             return PathBuf::from(x).join(tail);
         }
@@ -562,20 +1108,90 @@ fn under_home(p: &Path, home: &Path) -> bool {
     p.starts_with(home) && !p.components().any(|c| matches!(c, Component::ParentDir))
 }
 
-fn has_marker(v: &Value, marker: &str) -> bool {
-    json::compact(v).contains(marker)
+/// Whether `text` holds any of the row's markers. A `derm hook <id>` row's
+/// marker (`/derm hook <id> `) also finds the line with no path (BW5B-1):
+/// connect and doctor read one rule, [`derm_hook_runs`].
+fn hit(text: &str, markers: &[String]) -> bool {
+    markers.iter().any(|m| {
+        text.contains(m.as_str())
+            || m.strip_prefix("/derm hook ")
+                .and_then(|r| r.strip_suffix(' '))
+                .is_some_and(|id| derm_hook_runs(text, id).contains(&false))
+    })
 }
 
-/// derm finds its own entry by the row's marker; an entry that does not hold
-/// it (a package folder renamed, say) could never be found again, and a
-/// second `--gate` would add a second gate.
-fn ensure_marker(v: &Value, marker: &str, what: &str) -> Result<(), String> {
-    if has_marker(v, marker) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{what} would not hold `{marker}`, which is how derm finds its own entry again; use the package folder under its own name"
-        ))
+/// Where `text` (a hooks file, or one entry of it, as written or as compact
+/// JSON) runs `derm hook <id> `: for each place, whether the program is
+/// named by an absolute path. The program is the word before ` hook <id> `,
+/// read back to a space, a quote or a JSON or TOML delimiter, with JSON's
+/// escapes and its quotes taken off; it is derm when its last path part is
+/// `derm` or `derm.exe`. `derm connect` takes every such line as its own
+/// entry (to replace or remove), and `derm doctor` names each one that is
+/// not absolute (case 227). One reader for both (BW5B-1; case 112's class).
+pub fn derm_hook_runs(text: &str, id: &str) -> Vec<bool> {
+    derm_hook_programs(text, id)
+        .into_iter()
+        .map(|p| {
+            let p = Path::new(&p);
+            p.is_absolute() || p.has_root()
+        })
+        .collect()
+}
+
+/// The program of each place `text` runs `derm hook <id> `, as
+/// [`derm_hook_runs`] reads it (one reader; MW5B-6: doctor names a
+/// registered derm that is not there any more).
+pub fn derm_hook_programs(text: &str, id: &str) -> Vec<String> {
+    let needle = format!(" hook {id} ");
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find(&needle) {
+        let at = from + i;
+        from = at + needle.len();
+        let start = text[..at]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| matches!(c, ' ' | '\t' | '\n' | '\'' | '[' | ',' | '=' | ':' | '{'))
+            .map_or(0, |(k, c)| k + c.len_utf8());
+        let raw = &text[start..at];
+        // FP1-S3: only where derm starts a command: at the start of a
+        // string value (JSON's or TOML's `"`, an escaped inner quote is
+        // `\"`), of a TOML literal string (`= '`), or after `&&`, `||`
+        // or `;`. A command that only mentions the line is not derm's.
+        let before = text[..start].trim_end();
+        let starts = raw.starts_with('"')
+            || before
+                .strip_suffix('\'')
+                .is_some_and(|b| b.trim_end().ends_with('='))
+            || ["&&", "||", ";"].iter().any(|s| before.ends_with(s));
+        if !starts {
+            continue;
+        }
+        let word = raw.trim_matches(|c| c == '"' || c == '\\');
+        let last = word.rsplit(['/', '\\']).next().unwrap_or(word);
+        if last != "derm" && last != "derm.exe" {
+            continue;
+        }
+        // Rooted is enough: a rooted path is not looked up on PATH.
+        out.push(word.to_string());
+    }
+    out
+}
+
+fn has_marker(v: &Value, markers: &[String]) -> bool {
+    hit(&json::compact(v), markers)
+}
+
+/// derm finds its own entry by the row's first marker; an entry that does
+/// not hold it (a package folder renamed, say) could never be found again,
+/// and a second `--gate` would add a second gate.
+fn ensure_marker(v: &Value, markers: &[String], what: &str) -> Result<(), String> {
+    match markers.first() {
+        Some(m) if json::compact(v).contains(m.as_str()) => Ok(()),
+        Some(m) => Err(format!(
+            "{what} would not hold `{m}`, which is how derm finds its own entry again; use the package folder under its own name"
+        )),
+        None => Err("gates.json: a writing row needs a marker".into()),
     }
 }
 
@@ -593,7 +1209,7 @@ pub fn add_to_array(
     jsonc: bool,
     array: &[String],
     entry: &Value,
-    marker: &str,
+    markers: &[String],
     create_with: Option<&Value>,
     remove: bool,
 ) -> Result<Outcome, String> {
@@ -620,7 +1236,7 @@ pub fn add_to_array(
     let mut new_items = Vec::new();
     let mut placed = false;
     for it in &items {
-        if has_marker(it, marker) {
+        if has_marker(it, markers) {
             if !remove && !placed {
                 new_items.push(entry.clone());
                 placed = true;
@@ -674,7 +1290,7 @@ pub fn set_named(
     object: &[String],
     name: &str,
     entry: &Value,
-    marker: &str,
+    markers: &[String],
     remove: bool,
 ) -> Result<Outcome, String> {
     let doc = json::parse(text, jsonc)
@@ -682,7 +1298,7 @@ pub fn set_named(
     let path: Vec<&str> = object.iter().map(String::as_str).collect();
     let current = doc.lookup(&path, name);
     if let Some(c) = &current {
-        if !has_marker(c, marker) {
+        if !has_marker(c, markers) {
             return Err(format!(
                 "`{name}` in the file is not derm's entry; derm will not replace it (rename it, or remove it yourself)"
             ));
@@ -740,7 +1356,7 @@ pub fn toml_array(
     text: &str,
     array: &str,
     entry: &[(String, Value)],
-    marker: &str,
+    markers: &[String],
     remove: bool,
 ) -> Result<Outcome, String> {
     let mut doc = parse_toml(text)?;
@@ -760,7 +1376,7 @@ pub fn toml_array(
         let ours: Vec<usize> = aot
             .iter()
             .enumerate()
-            .filter(|(_, t)| t.to_string().contains(marker))
+            .filter(|(_, t)| hit(&t.to_string(), markers))
             .map(|(i, _)| i)
             .collect();
         if remove && ours.is_empty() {
@@ -1069,14 +1685,14 @@ fn owned(
     text: &str,
     exists: bool,
     content: &Value,
-    marker: &str,
+    markers: &[String],
     remove: bool,
 ) -> Result<Option<String>, String> {
     let want = format!("{}\n", json::pretty(content, "  ", ""));
     if remove {
         return Ok(None);
     }
-    if exists && !text.contains(marker) {
+    if exists && !hit(text, markers) {
         return Err("the file exists and is not derm's; derm will not replace it".into());
     }
     if text == want {
@@ -1107,11 +1723,47 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     // `runtime::current_uid` is `platform::real_user` on Unix; the seam's
     // own name works on Windows too (lane Z).
     let uid = derm_core::platform::real_user();
+    let verb = if o.ungate { "--ungate" } else { "--gate" };
+    // Wave 5b lane 5bF: a row whose command or file names `{derm}` runs
+    // `derm hook` from this derm, by its absolute path (case 227), and
+    // needs no package folder.
+    let uses_derm = agent
+        .command
+        .as_deref()
+        .is_some_and(|t| t.contains("{derm}"))
+        || agent
+            .steps
+            .iter()
+            .any(|st| matches!(st, Step::TextFile { content, .. } if content.contains("{derm}")));
+    if cfg!(windows) && !o.ungate {
+        if let Some(Err(why)) = windows_gate(&agent.agent) {
+            return Err(why);
+        }
+    }
+    let derm = if uses_derm && !o.ungate {
+        Some(self_path()?)
+    } else {
+        None
+    };
+    let mut hook_ignored = false;
     let hook_file = match o.hook {
+        Some(_)
+            if agent.hook_file.is_none()
+                && agent
+                    .command
+                    .as_deref()
+                    .is_some_and(|t| t.contains("{derm}")) =>
+        {
+            hook_ignored = true;
+            None
+        }
         Some(dir) => check_hook(dir, agent, uid)?,
         None => None,
     };
-    let hook_dir = o.hook.map(|d| d.trim_end_matches('/').to_string());
+    let hook_dir = o
+        .hook
+        .filter(|_| !hook_ignored)
+        .map(|d| d.trim_end_matches('/').to_string());
     let node = match o.node {
         Some(n) => {
             if !plain_path(n) {
@@ -1122,21 +1774,61 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         None => "node".to_string(),
     };
     let version = env!("CARGO_PKG_VERSION").to_string();
+    let shown_derm = derm.as_deref().unwrap_or("<derm>");
     let command = agent.command.as_deref().and_then(|t| {
-        hook_file
-            .as_deref()
-            .map(|h| fill_text(t, &node, Some(h), hook_dir.as_deref(), &version))
+        if t.contains("{derm}") {
+            derm.as_deref()
+                .map(|d| fill_text(t, &node, None, None, &version, d))
+        } else {
+            hook_file
+                .as_deref()
+                .map(|h| fill_text(t, &node, Some(h), hook_dir.as_deref(), &version, shown_derm))
+        }
     });
+    // BC-1, BC-2: the name a repository cannot know. Drawn here when there
+    // is none yet, and kept only by the write below, after the yes; `--ungate`
+    // with none falls back to the old fixed name, which is all it can find.
+    let (gate_name, new_gate_name_drawn) = if uses_gate_name(agent) {
+        match read_gate_name(&ctx.home)? {
+            Some(n) => (Some(n), false),
+            None if o.ungate => (agent.legacy_name.clone(), false),
+            None => (Some(new_gate_name()), true),
+        }
+    } else {
+        (None, false)
+    };
     let vars = Vars {
         command,
         hook_dir: hook_dir.clone(),
         version: version.clone(),
+        gate_name: gate_name.clone(),
     };
-    let verb = if o.ungate { "--ungate" } else { "--gate" };
+    let gate_of = if agent
+        .command
+        .as_deref()
+        .is_some_and(|t| t.contains("{derm}"))
+    {
+        "derm hook".to_string()
+    } else {
+        format!("gate package {}", agent.package)
+    };
     ctx.out.push_str(&format!(
-        "derm connect {verb}: {} ({}), gate package {}\nsource: {}\n",
-        agent.name, agent.agent, agent.package, agent.source
+        "derm connect {verb}: {} ({}), {gate_of}\nsource: {}\n",
+        agent.name, agent.agent, agent.source
     ));
+    if let Some(d) = &derm {
+        ctx.out.push_str(&format!(
+            "gate:   {d} hook {} (this derm, by its absolute path; never looked up on PATH, rules case 227)\n",
+            agent.agent
+        ));
+    }
+    if hook_ignored {
+        ctx.out.push_str(&format!(
+            "note:   --hook is not used for {}: since wave 5b its gate is `derm hook`, run from derm itself\n",
+            agent.name
+        ));
+    }
+    route_note(agent, ctx);
 
     // Agents whose gate installs through their own command: print only.
     let printed: Vec<&Step> = agent
@@ -1144,6 +1836,12 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         .iter()
         .filter(|s| matches!(s, Step::Commands { .. }))
         .collect();
+    // A row with steps besides the printed lines (Hermes's derm-path) prints
+    // them and goes on to its writes.
+    let writes = agent
+        .steps
+        .iter()
+        .any(|s| !matches!(s, Step::Commands { .. }));
     if !printed.is_empty() {
         for st in printed {
             if let Step::Commands {
@@ -1176,10 +1874,14 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                         agent.name
                     ));
                 } else {
-                    ctx.out.push_str("print only: run these yourself\n\n");
+                    ctx.out.push_str(if writes {
+                        "first, run these yourself\n\n"
+                    } else {
+                        "print only: run these yourself\n\n"
+                    });
                     let cmd = vars.command.clone().unwrap_or_else(|| {
                         agent.command.as_deref().map_or(String::new(), |t| {
-                            fill_text(t, &node, None, hook_dir.as_deref(), &version)
+                            fill_text(t, &node, None, hook_dir.as_deref(), &version, shown_derm)
                         })
                     });
                     for c in commands {
@@ -1191,7 +1893,8 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                                 &node,
                                 hook_file.as_deref(),
                                 hook_dir.as_deref(),
-                                &version
+                                &version,
+                                shown_derm
                             )
                         ));
                     }
@@ -1199,26 +1902,30 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 ctx.out.push_str(&format!("\nnote:   {note}\n"));
             }
         }
-        if o.write {
+        if writes {
+            ctx.out.push('\n');
+        } else if o.write {
             ctx.err.push_str(&format!(
                 "derm connect: {} is print-only for {verb}; nothing written\n",
                 agent.name
             ));
             return Ok(1);
         }
-        return Ok(0);
+        if !writes {
+            return Ok(0);
+        }
     }
 
-    if !o.ungate && hook_dir.is_none() {
+    if !o.ungate && hook_dir.is_none() && !uses_derm {
         return Err(format!(
             "--gate for {} needs --hook <absolute folder of {}>",
             agent.name, agent.package
         ));
     }
-    let marker = agent
-        .marker
-        .as_deref()
-        .ok_or("gates.json: a writing row needs a marker")?;
+    if agent.markers.is_empty() {
+        return Err("gates.json: a writing row needs a marker".into());
+    }
+    let marker = &agent.markers;
     for r in &agent.refuse_if_exists {
         let p = resolve(
             &Place {
@@ -1241,6 +1948,17 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     // Plan every file before anything is written.
     let mut plans: Vec<FilePlan> = Vec::new();
     let mut leave: Vec<String> = Vec::new();
+    if let (true, Some(n)) = (new_gate_name_drawn, &gate_name) {
+        let path = ctx.home.join(GATE_NAME_FILE);
+        plans.push(FilePlan {
+            current: write::read_current(&path)?,
+            path,
+            new_text: format!("{n}\n"),
+        });
+    }
+    // A text file whose folder is not there yet (Hermes before its plugin
+    // is copied): nothing is registered, so nothing says it is.
+    let mut waiting = false;
     for st in &agent.steps {
         let mut targets: Vec<(PathBuf, Edit)> = Vec::new();
         match st {
@@ -1268,7 +1986,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                     .find(|(_, r)| r.get_path(parent).and_then(|o| o.get(last[0])).is_some())
                     .map(|(f, _)| f);
                 let (jsonc, array, cw) = (*jsonc, array.clone(), create_with.clone());
-                let (m, rm, name) = (marker.to_string(), o.ungate, agent.name.clone());
+                let (m, rm, name) = (marker.clone(), o.ungate, agent.name.clone());
                 targets.push((
                     target,
                     Box::new(move |t, _| {
@@ -1351,7 +2069,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                     ensure_marker(&entry, marker, "the entry")?;
                 }
                 let (jsonc, object, name) = (*jsonc, object.clone(), name.clone());
-                let (m, rm) = (marker.to_string(), o.ungate);
+                let (m, rm) = (marker.clone(), o.ungate);
                 targets.push((
                     resolve(at, &ctx.home, ctx.env),
                     Box::new(move |t, _| set_named(t, jsonc, &object, &name, &entry, &m, rm)),
@@ -1369,7 +2087,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 if !o.ungate {
                     ensure_marker(&Value::Object(entry.clone()), marker, "the table")?;
                 }
-                let (array, m, rm) = (array.clone(), marker.to_string(), o.ungate);
+                let (array, m, rm) = (array.clone(), marker.clone(), o.ungate);
                 targets.push((
                     resolve(at, &ctx.home, ctx.env),
                     Box::new(move |t, _| toml_array(t, &array, &entry, &m, rm)),
@@ -1403,7 +2121,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 }
                 let content = fill(content, &vars)?;
                 ensure_marker(&content, marker, "the file")?;
-                let m = marker.to_string();
+                let m = marker.clone();
                 targets.push((
                     p,
                     Box::new(move |t, exists| {
@@ -1415,7 +2133,35 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 ));
             }
             Step::PluginFolder { at, files } => {
-                let dir = resolve(at, &ctx.home, ctx.env);
+                let named = |name: &str| Place {
+                    path: at.path.replace("{gatename}", name),
+                    ..at.clone()
+                };
+                let dir = match &gate_name {
+                    Some(n) => resolve(&named(n), &ctx.home, ctx.env),
+                    None if at.path.contains("{gatename}") => continue,
+                    None => resolve(at, &ctx.home, ctx.env),
+                };
+                // An older derm's folder under the fixed name: derm's own
+                // when its hooks file carries derm's marker. derm never
+                // deletes a folder; it names it.
+                if let Some(old) = agent
+                    .legacy_name
+                    .as_deref()
+                    .filter(|_| at.path.contains("{gatename}"))
+                {
+                    let old_dir = resolve(&named(old), &ctx.home, ctx.env);
+                    let is_derms = files.iter().any(|(rel, _)| {
+                        std::fs::read_to_string(old_dir.join(rel)).is_ok_and(|t| hit(&t, marker))
+                    });
+                    if old_dir != dir && is_derms {
+                        leave.push(format!(
+                            "remove the folder {}: derm's gate under the fixed name `{old}`, which a repository's own folder of that name can replace or switch off (note BC, BC-1); until it goes, {} runs derm's gate twice",
+                            old_dir.display(),
+                            agent.name
+                        ));
+                    }
+                }
                 if o.ungate {
                     if dir.exists() {
                         leave.push(format!(
@@ -1430,8 +2176,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                 if std::fs::symlink_metadata(&dir).is_ok() {
                     let ours = files.iter().any(|(rel, content)| {
                         fill(content, &vars).is_ok_and(|c| has_marker(&c, marker))
-                            && std::fs::read_to_string(dir.join(rel))
-                                .is_ok_and(|t| t.contains(marker))
+                            && std::fs::read_to_string(dir.join(rel)).is_ok_and(|t| hit(&t, marker))
                     });
                     if !ours {
                         return Err(format!(
@@ -1445,7 +2190,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                         return Err(format!("gates.json: bad file name `{rel}`"));
                     }
                     let content = fill(content, &vars)?;
-                    let m = marker.to_string();
+                    let m = marker.clone();
                     // plugin.json carries no command; it is derm's when the
                     // folder's other file is.
                     let needs_marker = has_marker(&content, marker);
@@ -1467,6 +2212,56 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                         }),
                     ));
                 }
+            }
+            Step::TextFile {
+                at,
+                content,
+                folder_must_exist,
+            } => {
+                let p = resolve(at, &ctx.home, ctx.env);
+                if o.ungate {
+                    if p.exists() {
+                        leave.push(format!(
+                            "remove {} (derm never deletes a file)",
+                            p.display()
+                        ));
+                    }
+                    continue;
+                }
+                let d = derm
+                    .as_deref()
+                    .ok_or("internal: a text file names {derm} with no derm")?;
+                let want = content.replace("{derm}", d);
+                if want.contains('{') {
+                    return Err(format!("gates.json: a placeholder left in `{content}`"));
+                }
+                if *folder_must_exist && !p.parent().is_some_and(Path::is_dir) {
+                    waiting = true;
+                    leave.push(format!(
+                        "{} does not exist yet: run the lines above, then this again",
+                        p.parent().unwrap_or(&p).display()
+                    ));
+                    continue;
+                }
+                let m = marker.clone();
+                targets.push((
+                    p,
+                    Box::new(move |t, exists| {
+                        // derm's own: one line naming a derm. Anything else
+                        // is someone else's and is never replaced.
+                        if exists && !(t.lines().count() == 1 && t.starts_with('/') && hit(t, &m)) {
+                            return Err(
+                                "the file exists and is not derm's; derm will not replace it"
+                                    .into(),
+                            );
+                        }
+                        Ok(if t == want {
+                            Outcome::Same
+                        } else {
+                            Outcome::Changed(want.clone())
+                        })
+                    }),
+                ));
             }
             Step::Commands { .. } => {}
         }
@@ -1521,6 +2316,16 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         .collect();
     for l in &leave {
         ctx.out.push_str(&format!("left:   {l}\n"));
+    }
+    if changed.is_empty() && waiting {
+        ctx.out.push_str(
+            "nothing to write until that folder exists; derm's gate is not registered yet\n",
+        );
+        if o.write {
+            ctx.err.push_str("derm connect: nothing written\n");
+            return Ok(1);
+        }
+        return Ok(0);
     }
     if changed.is_empty() {
         ctx.out.push_str(if o.ungate {
@@ -1608,7 +2413,10 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             sha256_before: p.current.sha256.clone(),
             sha256_after: w.sha256_after.clone(),
             backup: w.backup.as_ref().map(|b| b.display().to_string()),
-            origin: format!("gate package {}", hook_dir.clone().unwrap_or_default()),
+            origin: match &derm {
+                Some(d) => format!("derm hook ({d})"),
+                None => format!("gate package {}", hook_dir.clone().unwrap_or_default()),
+            },
         };
         let logged = log::record(&socket, &ctx.home.join(".derm/connect.log"), &rec)
             .unwrap_or_else(|e| format!("nowhere ({e})"));

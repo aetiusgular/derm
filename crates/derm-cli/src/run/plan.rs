@@ -1718,12 +1718,13 @@ mod tests {
         // folder of the daemon's socket too, which srt opens by path (case
         // 174); a deny there is not run on a Mac yet, so it is not added
         // (the Mac half stays open; CI's `rust-macos` holds that it is not).
+        // Matched as the JSON string `deny` holds, so a `\` that Windows'
+        // `Path::join` puts in the folder is escaped as `deny`'s is.
+        let data = super::super::content_root("/home/u")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
-            deny.contains(
-                &super::super::content_root("/home/u")
-                    .to_string_lossy()
-                    .into_owned()
-            ),
+            deny.contains(&serde_json::Value::from(data).to_string()),
             !cfg!(target_os = "macos"),
             "allowWrite {allow}\ndenyWrite {deny}"
         );

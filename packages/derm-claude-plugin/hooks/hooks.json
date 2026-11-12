@@ -1,5 +1,5 @@
 {
-  "description": "derm policy gate. PreToolUse runs the policy and blocks when the hook fails or times out (onFailure block). PostToolUse redacts secret-like values in the result and records the call.",
+  "description": "derm policy gate. PreToolUse runs derm's gate (`derm hook claude-code pre`) and blocks when the hook fails or times out (onFailure block). PostToolUse redacts secret-like values in the result and records the call. Each runs /bin/sh by its absolute path in exec form (no shell, no PATH lookup) on hooks/derm-gate.sh, which runs derm from its install folders (contracts/hook-dialects.md 9.1; rules case 227).",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/bin/derm-hook.mjs\" pre",
+            "command": "/bin/sh",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/derm-gate.sh",
+              "claude-code",
+              "pre"
+            ],
             "timeout": 120,
             "onFailure": "block"
           }
@@ -20,7 +25,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node --no-warnings \"${CLAUDE_PLUGIN_ROOT}/bin/derm-hook.mjs\" post",
+            "command": "/bin/sh",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/derm-gate.sh",
+              "claude-code",
+              "post"
+            ],
             "timeout": 30
           }
         ]

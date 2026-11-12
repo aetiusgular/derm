@@ -1,0 +1,59 @@
+# Wave 5b lane 5bE's crate (the wave 5b base). The lane adds its
+# dependencies under its own marker, each pinned exactly with a reason in its
+# status doc (note BC pins `windows-service` 0.8.1 and `windows-sys` 0.61.2,
+# the version Cargo.lock already holds). Everything else changes only
+# through integration. scripts/lane-scope.mjs checks this.
+
+[package]
+name = "derm-sysmon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "derm-sysmon: the Windows service that reads Sysmon's channel for each user's derm daemon"
+
+[[bin]]
+name = "derm-sysmon"
+path = "src/main.rs"
+
+[features]
+# The wave 5b base's red test (`tests/contract.rs`) built only with this
+# feature until lane 5bE made it pass. Since the close (11 Nov) it always
+# builds; the feature is kept, empty, so recorded commands still run.
+w5b-red = []
+
+[[test]]
+name = "contract"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+# [lane-5bE]
+# The daemon's event shape and the argv shape (case 168).
+derm-core = { path = "../derm-core" }
+# Lane Z's Sysmon XML reader, its actions and the chat tree (`Feed`), shared
+# with the daemon's side so the service and the daemon read one way.
+derm-audit-windows = { path = "../derm-audit-windows" }
+
+[dev-dependencies]
+# [lane-5bE]
+
+[target.'cfg(windows)'.dependencies]
+# [lane-5bE]
+# The service, the channel reader, the pipe and the client checks. The same
+# windows-sys as derm-core's (=0.61.2, already in Cargo.lock); no new crate
+# (windows-service 0.8.1 was read as prior art and not taken: lane 5bE,
+# Decisions).
+windows-sys = { version = "=0.61.2", features = [
+    "Wdk_System_SystemInformation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_EventLog",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }

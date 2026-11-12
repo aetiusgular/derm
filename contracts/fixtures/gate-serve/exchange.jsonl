@@ -1,0 +1,12 @@
+{"dir":"in","line":{"id":0,"op":"hello","agent":"pi","protocol":1}}
+{"dir":"out","line":{"id":0,"ok":true,"protocol":1,"policy":{"loaded":true,"problem":null}}}
+{"dir":"in","line":{"id":1,"op":"decide","call":{"tool":"bash","input":{"command":"ls"},"chat":"c-1","toolUseId":"t1","fullAccess":false,"description":null}}}
+{"dir":"out","line":{"id":1,"ok":true,"action":"allow","normalizedTool":"bash","reason":"rule bash allow","updatedInput":null,"redacted":0,"askTimeoutSeconds":1}}
+{"dir":"in","line":{"id":2,"op":"decide","call":{"tool":"mcp__exa__search","input":{"q":"x","api_key":"abc"},"chat":"c-1","toolUseId":"t2"}}}
+{"dir":"out","line":{"id":2,"ok":true,"action":"allow","normalizedTool":"exa/search","reason":"rule exa/* allow; 1 secret-like value redacted","updatedInput":{"q":"x","api_key":"[redacted by derm]"},"redacted":1,"askTimeoutSeconds":1}}
+{"dir":"in","line":{"id":3,"op":"decide","call":{"tool":"write","input":{"path":"a"},"chat":"c-1","toolUseId":"t3"}}}
+{"dir":"out","line":{"id":3,"ok":true,"action":"ask","normalizedTool":"write","reason":"rule write ask","updatedInput":null,"redacted":0,"askTimeoutSeconds":1}}
+{"dir":"in","line":{"id":4,"op":"decide","call":{"tool":"mcp__my-server__drop","input":{},"chat":"c-1","toolUseId":"t4"}}}
+{"dir":"out","line":{"id":4,"ok":true,"action":"deny","normalizedTool":"my_server/drop","reason":"rule my_server/* deny","updatedInput":null,"redacted":0,"askTimeoutSeconds":1}}
+{"dir":"in","line":{"id":5,"op":"frobnicate"}}
+{"dir":"out","line":{"id":5,"ok":false,"error":"unknown op frobnicate"}}

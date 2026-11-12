@@ -97,6 +97,11 @@ jobs:
           node-version: "24"
       - run: npm ci --ignore-scripts
       - run: npx tsc --noEmit
+      # The in-process plugins decide through `derm gate serve` since wave 5b
+      # (lane 5bC); their tests that decide find target/debug/derm and skip
+      # without it, so the node job builds it first (lane 5bC's request 5).
+      # rust-toolchain.toml's 1.97.0 is installed by rustup on first use.
+      - run: cargo build -p derm-cli
       - run: npx vitest run
       - run: node scripts/lane-scope.test.mjs
       # The Rust fold's tables and contracts/fixtures/policy/fold.json come
@@ -108,6 +113,9 @@ jobs:
       # (lane I); its tests run here (integration w2, lane I's request 4).
       - run: python3 -m unittest discover -s packages/derm-hermes-plugin/tests
       - run: node tests/cli-contract/lib/procs.selftest.mjs
+      # A contract check's own predicate, against a reply recorded from the
+      # real Hermes (box test w5b retest, BW5B-R4).
+      - run: node tests/cli-contract/lib/ran.selftest.mjs
       # tests/cli-contract needs the real Claude Code and Codex CLIs; it runs
       # when they are installed (integration installs them under /tmp/cli).
       - name: cli contract

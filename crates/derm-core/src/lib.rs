@@ -22,5 +22,8 @@ pub mod platform;
 #[rustfmt::skip]
 mod fold_tables;
 pub mod policy;
+// The wave 5b base: one redactor and the trusted owners, for `derm hook`.
+pub mod owner;
+pub mod redact;
 pub mod runtime;
 pub mod token;

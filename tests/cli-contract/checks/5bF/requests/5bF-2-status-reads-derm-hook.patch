@@ -1,0 +1,78 @@
+diff --git a/crates/derm-cli/src/watch/register.rs b/crates/derm-cli/src/watch/register.rs
+index 401bb20..9a5f70c 100644
+--- a/crates/derm-cli/src/watch/register.rs
++++ b/crates/derm-cli/src/watch/register.rs
+@@ -266,7 +266,7 @@ fn cursor(home: &Path) -> Registered {
+         Ok(Some(v)) => v,
+         Ok(None) => {
+             return Registered::No(format!(
+-                "{} does not exist: derm connect cursor --gate --hook <derm-hooks-native folder> --write",
++                "{} does not exist: derm connect cursor --gate --write",
+                 file.display()
+             ))
+         }
+@@ -278,11 +278,23 @@ fn cursor(home: &Path) -> Registered {
+             .and_then(Value::as_array)
+             .into_iter()
+             .flatten()
+-            .filter(|e| is_derm_cursor_entry(e))
++            .filter(|e| {
++                // The node line derm connect wrote before wave 5b, or the
++                // line it writes since lane 5bF: this derm by its real path,
++                // `hook cursor pre` (`hook::claude_format::marks`).
++                is_derm_cursor_entry(e)
++                    || e.get("command").and_then(Value::as_str).is_some_and(|c| {
++                        crate::hook::claude_format::marks::is_derm_rust_command(
++                            c,
++                            "cursor",
++                            std::env::current_exe().ok().as_deref(),
++                        )
++                    })
++            })
+             .collect();
+         if ours.is_empty() {
+             return Registered::No(format!(
+-                "{} has no derm entry under hooks.{event}: derm connect cursor --gate --hook <derm-hooks-native folder> --write",
++                "{} has no derm entry under hooks.{event}: derm connect cursor --gate --write",
+                 file.display()
+             ));
+         }
+@@ -1243,6 +1255,38 @@ mod cursor_tests {
+         hook
+     }
+ 
++    #[cfg(unix)]
++    /// Lane 5bF's request 2: since wave 5b `derm connect cursor --gate`
++    /// writes this derm by its real path, `hook cursor pre`, on both events;
++    /// `derm status` reads that as derm's gate. A bare `derm hook` (found on
++    /// PATH, case 227) is not.
++    #[test]
++    fn cursor_reads_the_line_derm_connect_writes_since_wave_5b() {
++        let dir = std::env::temp_dir().join(format!(
++            "derm-reg-cursor5b-{}-{}",
++            std::process::id(),
++            uuid::Uuid::new_v4().simple()
++        ));
++        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
++        let env = env_in(&dir);
++        let file = dir.join(".cursor/hooks.json");
++        let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
++        for (line, want) in [
++            (format!("{} hook cursor pre", me.display()), "yes"),
++            ("derm hook cursor pre".to_string(), "no"),
++        ] {
++            let e = entry_for(&line, true);
++            std::fs::write(
++                &file,
++                format!(r#"{{"version":1,"hooks":{{"preToolUse":[{e}],"beforeMCPExecution":[{e}]}}}}"#),
++            )
++            .unwrap();
++            let r = check("cursor", &env);
++            assert_eq!(r.word(), want, "{line}: {:?}", r.detail());
++        }
++        let _ = std::fs::remove_dir_all(&dir);
++    }
++
+     #[cfg(unix)]
+     /// Mac test w4, 4.3 (lane Q's Q7, lane N's N4): Cursor showed `unknown`
+     /// after `derm connect cursor --gate --write`. derm's gate is its two

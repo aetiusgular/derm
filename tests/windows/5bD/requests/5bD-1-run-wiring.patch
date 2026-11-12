@@ -1,0 +1,195 @@
+diff --git a/crates/derm-cli/src/run/boundary/probe.rs b/crates/derm-cli/src/run/boundary/probe.rs
+index 20a30d3..d130b36 100644
+--- a/crates/derm-cli/src/run/boundary/probe.rs
++++ b/crates/derm-cli/src/run/boundary/probe.rs
+@@ -185,7 +185,11 @@ pub(crate) fn sbx_install_line() -> &'static str {
+ /// The line that installs srt (`@anthropic-ai/sandbox-runtime`; its README
+ /// names bubblewrap, socat and ripgrep on Linux and ripgrep on macOS).
+ pub(crate) fn srt_install_line() -> &'static str {
+-    if cfg!(target_os = "linux") {
++    // srt 0.0.82's README, "Windows (alpha)", "Setup": once per machine, and
++    // it asks to elevate (request 5bD-1).
++    if cfg!(windows) {
++        "npm install -g @anthropic-ai/sandbox-runtime, then once per machine: npx @anthropic-ai/sandbox-runtime windows-install (one elevation prompt)"
++    } else if cfg!(target_os = "linux") {
+         "npm install -g @anthropic-ai/sandbox-runtime, and the bubblewrap, socat and ripgrep packages"
+     } else {
+         "npm install -g @anthropic-ai/sandbox-runtime, and ripgrep"
+@@ -309,6 +313,12 @@ pub(crate) fn srt_probe(
+         Ok(d) => d,
+         Err(e) => return Err(reason(format!("no folder for srt's probe: {e}"), None)),
+     };
++    // srt on Windows (request 5bD-1): its own backend, loopback binding off
++    // as derm's chats run it (`windows_srt`), and a program cmd.exe has.
++    if cfg!(windows) {
++        settings["network"]["allowLocalBinding"] = serde_json::json!(false);
++        settings["windows"] = serde_json::json!({"backend": "srt-win"});
++    }
+     let file = dir.join("settings.json");
+     let written = write_private(&file, &settings.to_string());
+     let result = written
+@@ -319,13 +329,20 @@ pub(crate) fn srt_probe(
+             } else {
+                 "/bin/true"
+             };
++            // srt runs a `-c` string through `cmd.exe /d /s /c` on Windows
++            // (`windows_srt::command_string`), which has no `true`.
++            let program: [String; 2] = if cfg!(windows) {
++                ["-c".into(), "exit 0".into()]
++            } else {
++                ["--".into(), truth.into()]
++            };
+             run(
+                 &srt,
+                 &[
+                     "--settings".into(),
+                     file.to_string_lossy().into_owned(),
+-                    "--".into(),
+-                    truth.into(),
++                    program[0].clone(),
++                    program[1].clone(),
+                 ],
+                 SRT_LIMIT,
+             )
+@@ -506,16 +523,22 @@ mod tests {
+     use super::*;
+ 
+     /// FPW-S7 (the Windows fix pass's review): with no srt on PATH, the
+-    /// probe said "srt is not installed" and printed srt's install line on
+-    /// Windows, for a boundary derm then refuses there. Fails on `2ce607d`.
++    /// probe printed srt's install line on Windows for a boundary derm then
++    /// refused there. Since lane 5bD (request 5bD-1) derm starts srt on
++    /// Windows, so the install line is the right answer, and it is
++    /// Windows' own: no ripgrep, and srt's once-per-machine install.
+     #[cfg(windows)]
+     #[test]
+-    fn fpw_s7_on_windows_the_probe_names_the_refusal_not_an_install() {
++    fn fpw_s7_on_windows_the_probe_gives_windows_own_install_line() {
+         let h = harness::find("pi").unwrap();
+-        let never: Runner = &|_, _, _| panic!("nothing is run on Windows");
++        let never: Runner = &|_, _, _| panic!("nothing is run with no srt");
+         let r = srt_probe(h, "", None, None, false, r"C:\", never).unwrap_err();
+-        assert_eq!(r.why, preflight::SRT_ON_WINDOWS);
+-        assert!(r.install.is_none(), "{:?}", r.install);
++        assert!(r.why.contains("not installed"), "{}", r.why);
++        let line = r.install.unwrap();
++        assert!(
++            line.contains("windows-install") && !line.contains("ripgrep"),
++            "{line}"
++        );
+     }
+     #[cfg(unix)]
+     use std::os::unix::fs::PermissionsExt;
+diff --git a/crates/derm-cli/src/run/boundary/windows_srt/mod.rs b/crates/derm-cli/src/run/boundary/windows_srt/mod.rs
+index d5e508a..c859cb3 100644
+--- a/crates/derm-cli/src/run/boundary/windows_srt/mod.rs
++++ b/crates/derm-cli/src/run/boundary/windows_srt/mod.rs
+@@ -39,10 +39,9 @@
+ //! `tests/windows/5bD/requests/`). Until integration applies that request,
+ //! [`WIRED`] is false and srt stays refused on Windows, as on the base.
+ 
+-// `wire` and what it calls are reached from `run/mod.rs` once request 5bD-1
+-// is applied; until then only the tests reach part of them. Request 5bD-1
+-// removes this line.
+-#![allow(dead_code)]
++// Off Windows `wire` builds no session and the machine's lock is never
++// taken.
++#![cfg_attr(not(windows), allow(dead_code))]
+ 
+ mod files;
+ pub(crate) mod lock;
+@@ -61,7 +60,7 @@ use crate::run::plan::Plan;
+ pub(crate) use files::Session;
+ 
+ /// Whether `run/mod.rs` calls [`wire`]. Request 5bD-1 sets it with the call.
+-pub(crate) const WIRED: bool = false;
++pub(crate) const WIRED: bool = true;
+ 
+ /// Why derm does not start srt on Windows now, or `None` when it may.
+ pub(crate) fn refusal() -> Option<&'static str> {
+diff --git a/crates/derm-cli/src/run/boundary/windows_srt/tests.rs b/crates/derm-cli/src/run/boundary/windows_srt/tests.rs
+index 6c14bed..f12ab16 100644
+--- a/crates/derm-cli/src/run/boundary/windows_srt/tests.rs
++++ b/crates/derm-cli/src/run/boundary/windows_srt/tests.rs
+@@ -362,7 +362,7 @@ fn the_files_access_lists_give_the_sandbox_read_and_the_handoff_delete() {
+ }
+ 
+ #[test]
+-fn srt_stays_refused_until_run_calls_wire() {
+-    // Request 5bD-1 sets WIRED with the call in run/mod.rs.
+-    assert_eq!(refusal(), Some(crate::run::preflight::SRT_ON_WINDOWS));
++fn srt_is_refused_on_windows_only_while_another_chat_holds_the_lock() {
++    // Off Windows nothing is held; on Windows CI no other chat runs.
++    assert_eq!(refusal(), None);
+ }
+diff --git a/crates/derm-cli/src/run/mod.rs b/crates/derm-cli/src/run/mod.rs
+index f266f9e..5ce02df 100644
+--- a/crates/derm-cli/src/run/mod.rs
++++ b/crates/derm-cli/src/run/mod.rs
+@@ -1442,6 +1442,25 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
+             Err(e) => return Err((1, e)),
+         }
+     }
++    // Wave 5b lane 5bD (request 5bD-1): on Windows srt runs `derm enter`
++    // with the chat's handoff, written here as you; the session frees the
++    // machine's srt lock and removes the chat's files when this run returns
++    // (`run/boundary/windows_srt/`, `contracts/srt-windows.md`).
++    let _srt_windows = if cfg!(windows) && a.boundary == Boundary::Srt {
++        boundary::windows_srt::wire(
++            &mut p,
++            &chat,
++            a.harness,
++            &cwd,
++            &home,
++            token.as_deref(),
++            &policy_file,
++            policy_problem.as_deref(),
++            a.dry_run,
++        )?
++    } else {
++        None
++    };
+     if a.dry_run {
+         print!("{}", plan::describe(&p));
+         // BW5-5's rest: under sbx the plan's one-step argv is not what runs.
+diff --git a/crates/derm-cli/src/run/preflight.rs b/crates/derm-cli/src/run/preflight.rs
+index fb7ce65..ec72591 100644
+--- a/crates/derm-cli/src/run/preflight.rs
++++ b/crates/derm-cli/src/run/preflight.rs
+@@ -140,7 +140,11 @@ pub fn srt_with(
+     }
+     // srt 0.0.81 checks rg only on Linux (`sandbox-manager.ts:1641-1649`);
+     // its README still asks for it on macOS (line 732), so macOS keeps it.
+-    let needed: &[(&str, &str)] = if linux {
++    // On Windows srt 0.0.82 runs none of these (ripgrep "is Linux-only",
++    // `src/sandbox/sandbox-manager.ts:1895`; request 5bD-1).
++    let needed: &[(&str, &str)] = if cfg!(windows) {
++        &[]
++    } else if linux {
+         &[
+             ("bwrap", "bubblewrap"),
+             ("socat", "socat"),
+@@ -378,17 +382,16 @@ mod tests {
+ 
+     /// WW5-8 (Windows test w5, 4.2): `--boundary srt` stopped on Windows at
+     /// "srt needs rg", then at "a relative PATH entry" for every Windows
+-    /// entry. srt 0.0.81 needs no rg there, but it also runs the agent as
+-    /// its own account with none of the chat's variables, so derm refuses
+-    /// srt on Windows and says that. Fails on `2ce607d` on Windows.
++    /// entry. Fails on `2ce607d` on Windows. srt then stayed refused there
++    /// until lane 5bD built its Windows form (request 5bD-1): now the check
++    /// passes with no rg and the real PATH.
+     #[cfg(windows)]
+     #[test]
+-    fn ww5_8_srt_is_refused_on_windows_for_the_true_reason() {
++    fn ww5_8_srt_on_windows_needs_no_rg_and_reads_the_windows_path() {
+         let path = std::env::var("PATH").unwrap_or_default();
+         let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+-        let e = srt_with(&path, false, None, false, &[], &cwd).unwrap_err();
+-        assert_eq!(e, SRT_ON_WINDOWS);
+-        assert!(!e.contains("ripgrep") && !e.contains("relative"), "{e}");
++        let (_, tools) = srt_with(&path, false, None, false, &[], &cwd).unwrap();
++        assert!(tools.is_none());
+     }
+ 
+     /// WW5-8's PATH half: the companion's PATH was split on `:` and kept only

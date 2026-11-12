@@ -18,11 +18,19 @@
 //!   the row (cases 70, 71).
 //! - With `--run-gate`, the installed gate run once against a fixture: a
 //!   shell call under a policy that denies `bash`, for the agents whose
-//!   installed hook derm can find (Claude Code, Codex). The hook runs as you,
-//!   outside any sandbox, with no chat token, so it reaches no daemon. Only
-//!   the agent's own copy in its plugin cache is run, owned by you and
-//!   writable by no one else; without `--run-gate` the report names the file
-//!   and nothing runs it (security review L9).
+//!   installed hook derm can find (Claude Code, Codex, Gemini). Since wave
+//!   5b (lane 5bF) that is the plugin's launcher, `hooks/derm-gate.sh`, run
+//!   with /bin/sh as the agent runs it, so the Rust hook (`derm hook`) from
+//!   derm's install folders is what answers; a plugin from before wave 5b
+//!   is run with node as before, and named as a problem (case 227). The
+//!   hook runs as you, outside any sandbox, with no chat token, so it
+//!   reaches no daemon. Only the agent's own copy in its plugin cache is
+//!   run, owned by you and writable by no one else; without `--run-gate`
+//!   the report names the file and nothing runs it (security review L9).
+//! - Case 227: a registration in the agent's own files that runs derm's
+//!   gate through a program found on PATH (a wave 4 `node ...
+//!   derm-hook.mjs` line, or a bare `derm hook`), and a plugin whose hooks
+//!   file still runs `node`, are problems with the fix named.
 //! - `--live` (one canary call through the agent on your account) is not
 //!   built in this version, and says so.
 //!
@@ -285,12 +293,20 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         match installed_hook(&id, env) {
             Ok(h) => json!({
                 "state": "not run",
-                "why": format!("pass --run-gate to run {} once with node, as you, outside any sandbox", h.display()),
+                "why": format!(
+                    "pass --run-gate to run {} once with {}, as you, outside any sandbox",
+                    h.display(),
+                    if is_launcher(&h) { "/bin/sh, which runs derm hook from derm's install folders" } else { "node" }
+                ),
                 "hook": h.display().to_string(),
             }),
             Err(why) => json!({"state": "not run", "why": why}),
         }
     };
+    // Case 227: a registration that finds derm's gate, or the node that
+    // runs it, on PATH.
+    let stale = stale_registrations(&id, env);
+    problems.extend(stale.iter().cloned());
     match gate_run["state"].as_str() {
         Some("fail") => problems.push(format!(
             "the installed gate did not deny a denied call: {}",
@@ -326,6 +342,7 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         "failSwitch": row.pointer("/coverage/failSwitch").cloned().unwrap_or(Value::Null),
         "ask": s(row, "/coverage/ask"),
         "gateRun": gate_run,
+        "onPath": stale,
         "live": if live {
             json!("not built in this version: no canary call was made")
         } else {
@@ -457,6 +474,120 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
                 }
             }
         }
+        // BW5B-3, case 78. goose 1.59.0 loads hooks with the session folder
+        // as the project (`agents/services.rs:383`): every folder under its
+        // `.agents/plugins/` is a plugin, loaded with no prompt and ranked
+        // before yours, the first of a name kept (`plugins/discovery.rs:
+        // 52-101, 181-201`), unless the session folder is your home, whose
+        // folder is the same one; and `disabledPlugins` in the session
+        // folder's `.config/goose/settings.local.json` and `settings.json`
+        // and in your `~/.config/goose/settings.json` switches a plugin off
+        // by name (`discovery.rs:155-176, 203-250`), all at 5d03ef6.
+        "goose" => {
+            // derm's plugin: the drawn name, or with none drawn the older
+            // fixed name the row keeps (`legacyName`; FP1-S11).
+            let name = env
+                .home
+                .as_deref()
+                .and_then(|h| crate::connect::gate::read_gate_name(h).ok().flatten())
+                .or_else(|| {
+                    crate::connect::gate::table()
+                        .ok()?
+                        .into_iter()
+                        .find(|a| a.agent == "goose")?
+                        .legacy_name
+                });
+            let ours = |n: &str| name.as_deref() == Some(n);
+            let mut settings: Vec<(PathBuf, &str)> = Vec::new();
+            if let Some(cwd) = &env.cwd {
+                let project = cwd.join(".agents/plugins");
+                let yours = env.home.as_ref().map(|h| h.join(".agents/plugins"));
+                let same = yours.as_ref().is_some_and(|y| {
+                    y == &project
+                        || matches!(
+                            (std::fs::canonicalize(y), std::fs::canonicalize(&project)),
+                            (Ok(a), Ok(b)) if a == b
+                        )
+                });
+                if !same {
+                    // A repository decides how many folders this holds: read
+                    // at most 4,096 entries, name derm's own always, and at
+                    // most 32 others, then say how many more there are. A
+                    // name that is not UTF-8 is skipped, as goose skips it
+                    // (`discovery.rs:197`).
+                    let mut kids: Vec<(String, PathBuf)> = std::fs::read_dir(&project)
+                        .into_iter()
+                        .flatten()
+                        .take(4096)
+                        .flatten()
+                        .filter(|e| e.path().is_dir())
+                        .filter_map(|e| Some((e.file_name().to_str()?.to_string(), e.path())))
+                        .collect();
+                    kids.sort();
+                    let mut others = 0usize;
+                    for (n, p) in kids {
+                        if ours(&n) {
+                            seen(p, format!("a project plugin named `{n}`, derm's gate's own name, which goose keeps in place of yours: derm's gate does not run here"), true);
+                        } else if others < 32 {
+                            others += 1;
+                            seen(p, format!("a project plugin `{n}` that goose loads with no prompt, before yours: its hooks run the repository's commands before derm's on every call (a deny from either stops the call)"), false);
+                        } else {
+                            others += 1;
+                        }
+                    }
+                    if others > 32 {
+                        seen(
+                            project.clone(),
+                            format!("{} more project plugins here, not listed", others - 32),
+                            false,
+                        );
+                    }
+                }
+                settings.push((cwd.join(".config/goose/settings.local.json"), "local"));
+                settings.push((cwd.join(".config/goose/settings.json"), "project"));
+            }
+            if let Some(h) = &env.home {
+                settings.push((h.join(".config/goose/settings.json"), "user"));
+            }
+            // goose takes the first scope that lists a plugin, enabled or
+            // disabled, local, then project, then yours (`discovery.rs:
+            // 155-176`): only that scope decides derm's.
+            let mut done: Vec<PathBuf> = Vec::new();
+            let mut decided = false;
+            let names = |v: &Value, key: &str| -> Vec<String> {
+                v.get(key)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            };
+            for (path, scope) in settings {
+                if done.contains(&path) {
+                    continue;
+                }
+                done.push(path.clone());
+                if !path.exists() {
+                    continue;
+                }
+                let v = read_json_small(&path).unwrap_or(Value::Null);
+                let disabled = names(&v, "disabledPlugins");
+                let enabled = names(&v, "enabledPlugins");
+                if !decided {
+                    if let Some(n) = disabled.iter().find(|n| ours(n)) {
+                        decided = true;
+                        seen(path, format!("disabledPlugins in the {scope} settings names `{n}`, derm's gate: goose does not run it"), true);
+                        continue;
+                    }
+                    if enabled.iter().any(|n| ours(n)) {
+                        decided = true;
+                    }
+                }
+                if scope != "user" {
+                    seen(path, format!("the {scope} settings can switch plugins on or off by name (disabledPlugins: {})", if disabled.is_empty() { "none now".to_string() } else { disabled.join(", ") }), false);
+                }
+            }
+        }
         _ => {}
     }
     out
@@ -525,6 +656,21 @@ fn semver(name: &str) -> Option<(u64, u64, u64)> {
     it.next().is_none().then_some(v)
 }
 
+/// The hook an installed plugin copy runs: the wave 5b launcher
+/// (`hooks/derm-gate.sh`, run with /bin/sh), else a copy from before wave
+/// 5b (`bin/derm-hook.mjs`, run with node).
+fn plugin_hook(copy: &Path) -> Option<PathBuf> {
+    ["hooks/derm-gate.sh", "bin/derm-hook.mjs"]
+        .iter()
+        .map(|rel| copy.join(rel))
+        .find(|p| p.is_file())
+}
+
+/// Whether a hook is the wave 5b launcher.
+fn is_launcher(hook: &Path) -> bool {
+    hook.file_name().is_some_and(|n| n == "derm-gate.sh")
+}
+
 fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
     let home = env.home.as_ref().ok_or("HOME is not set")?;
     match id {
@@ -569,10 +715,9 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
             }
             let mut first_err = None;
             for p in ranked.into_iter().map(|(_, p)| p) {
-                let hook = PathBuf::from(p).join("bin/derm-hook.mjs");
-                if !hook.is_file() {
+                let Some(hook) = plugin_hook(&PathBuf::from(p)) else {
                     continue;
-                }
+                };
                 match checked_hook(&hook, &plugins) {
                     Ok(h) => return Ok(h),
                     Err(e) => {
@@ -580,8 +725,10 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
                     }
                 }
             }
-            Err(first_err
-                .unwrap_or_else(|| "no installed copy of derm@derm holds bin/derm-hook.mjs".into()))
+            Err(first_err.unwrap_or_else(|| {
+                "no installed copy of derm@derm holds hooks/derm-gate.sh or bin/derm-hook.mjs"
+                    .into()
+            }))
         }
         "codex" => {
             let codex = env
@@ -600,14 +747,242 @@ fn installed_hook(id: &str, env: &Env) -> Result<PathBuf, String> {
                     let name = e.file_name().to_string_lossy().into_owned();
                     semver(&name).map(|v| (v, e.path()))
                 })
-                .filter(|(_, p)| p.join("bin/derm-hook.mjs").is_file())
+                .filter_map(|(v, p)| plugin_hook(&p).map(|h| (v, h)))
                 .max_by_key(|(v, _)| *v)
                 .ok_or_else(|| format!("no installed copy under {}", dir.display()))?;
-            checked_hook(&best.1.join("bin/derm-hook.mjs"), &dir)
+            checked_hook(&best.1, &dir)
+        }
+        // Gemini installs an extension by copying it into
+        // `~/.gemini/extensions/<name>` (gemini-cli 0.68.0,
+        // `EXTENSIONS_DIRECTORY_NAME`, bundle/chunk-ASDLQWJU.js); derm's is
+        // named derm (`gemini-extension.json`).
+        "gemini" => {
+            let dir = home.join(".gemini/extensions");
+            let ext = dir.join("derm");
+            let hook = plugin_hook(&ext).ok_or_else(|| {
+                format!(
+                    "no derm extension under {} holds hooks/derm-gate.sh",
+                    dir.display()
+                )
+            })?;
+            checked_hook(&hook, &dir)
         }
         other => Err(format!("no fixture runner for {other} in this version")),
     }
 }
+
+/// `derm connect`'s view of doctor's environment (`connect::presets::Env`).
+struct ConnectEnv<'a>(&'a Env);
+
+impl crate::connect::presets::Env for ConnectEnv<'_> {
+    fn var(&self, key: &str) -> Option<String> {
+        self.0.var(key).map(str::to_string)
+    }
+}
+
+/// Case 227 (wave 5b lane 5bF): what in this agent's own files runs derm's
+/// gate through a program found on PATH. A plugin copy from before wave 5b
+/// runs `node` (note BC, BC-3, run: a project's `env.PATH` chose which
+/// node ran it); a registration `derm connect --gate` wrote before wave 5b
+/// runs `node ... derm-hook.mjs`; a line naming a bare `derm` runs
+/// whichever derm comes first on PATH. Each comes back as a problem that
+/// names the fix.
+pub fn stale_registrations(id: &str, env: &Env) -> Vec<String> {
+    let mut out = Vec::new();
+    if matches!(id, "claude-code" | "codex" | "gemini") {
+        if let Ok(h) = installed_hook(id, env) {
+            if !is_launcher(&h) {
+                out.push(format!(
+                    "the installed plugin's hook ({}) runs `node` found on PATH (rules case 227): install derm's plugin from this release, whose hooks file runs /bin/sh on hooks/derm-gate.sh",
+                    h.display()
+                ));
+            }
+        }
+    }
+    let Some(home) = env.home.as_deref() else {
+        return out;
+    };
+    let Ok(table) = crate::connect::gate::table() else {
+        return out;
+    };
+    let Some(row) = table.iter().find(|a| a.agent == id) else {
+        return out;
+    };
+    if !row.command.as_deref().is_some_and(|c| c.contains("{derm}")) {
+        return out;
+    }
+    use crate::connect::gate::{resolve, Place, Step};
+    let cenv = ConnectEnv(env);
+    let mut places: Vec<Place> = Vec::new();
+    let mut legacy: Vec<Place> = Vec::new();
+    for st in &row.steps {
+        let (at, chain): (&Place, &[String]) = match st {
+            Step::JsonArrayEntry { at, chain, .. } => (at, chain),
+            Step::JsonMember { at, .. }
+            | Step::TomlArrayEntry { at, .. }
+            | Step::OwnedFile { at, .. } => (at, &[]),
+            Step::PluginFolder { at, .. } => {
+                // BC-1: the folder takes the name in ~/.derm/gate-name; one
+                // still under the fixed name is a problem of its own.
+                let name = crate::connect::gate::read_gate_name(home).ok().flatten();
+                if let Some(n) = name
+                    .as_deref()
+                    .or((!at.path.contains("{gatename}")).then_some(""))
+                {
+                    places.push(Place {
+                        path: format!("{}/hooks/hooks.json", at.path.replace("{gatename}", n)),
+                        home_env: at.home_env.clone(),
+                        xdg_config: at.xdg_config,
+                    });
+                }
+                if let Some(old) = row
+                    .legacy_name
+                    .as_deref()
+                    .filter(|_| at.path.contains("{gatename}"))
+                {
+                    legacy.push(Place {
+                        path: format!("{}/hooks/hooks.json", at.path.replace("{gatename}", old)),
+                        home_env: at.home_env.clone(),
+                        xdg_config: at.xdg_config,
+                    });
+                }
+                continue;
+            }
+            _ => continue,
+        };
+        places.push(at.clone());
+        for c in chain {
+            places.push(Place {
+                path: c.clone(),
+                home_env: at.home_env.clone(),
+                xdg_config: at.xdg_config,
+            });
+        }
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for at in &places {
+        let file = resolve(at, home, &cenv);
+        if seen.contains(&file) {
+            continue;
+        }
+        seen.push(file.clone());
+        let Ok(m) = std::fs::metadata(&file) else {
+            continue;
+        };
+        if !m.is_file() || m.len() > 1024 * 1024 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let fix = format!("run `derm connect {id} --gate --write` again");
+        if text.contains("derm-hook.mjs") {
+            out.push(format!(
+                "{} registers derm's gate with the line from before wave 5b, which runs the `node` found on PATH (rules case 227): {fix}",
+                file.display()
+            ));
+        }
+        if bare_derm_hook(&text, id) {
+            out.push(format!(
+                "{} runs a `derm hook` found on PATH, not derm by its absolute path (rules case 227): {fix}",
+                file.display()
+            ));
+        }
+        // MW5B-6: a registered derm that is not there runs nothing (a
+        // Homebrew keg `brew upgrade` cleaned up, a moved build).
+        for gone in gone_derms(&text, id) {
+            out.push(format!(
+                "{} runs {gone} hook {id}, and {gone} is not there (removed, or an older Homebrew version `brew upgrade` cleaned up): the agent's gate runs nothing until {fix}",
+                file.display()
+            ));
+        }
+    }
+    // BC-1, BC-2: derm's gate under an older derm's fixed name, which a
+    // repository's own entry of that name replaces or switches off.
+    let fixed = |text: &str| row.markers.iter().any(|m| text.contains(m.as_str()));
+    for at in &legacy {
+        let file = resolve(at, home, &cenv);
+        if std::fs::read_to_string(&file).is_ok_and(|t| fixed(&t)) {
+            out.push(format!(
+                "{} is derm's gate under the fixed name `{}`, which a repository's own plugin of that name can replace or switch off (note BC, BC-1): run `derm connect {id} --gate --write` again, then remove that folder",
+                file.parent().and_then(Path::parent).unwrap_or(&file).display(),
+                row.legacy_name.as_deref().unwrap_or("")
+            ));
+        }
+    }
+    if let Some(old) = row.legacy_name.as_deref() {
+        for st in &row.steps {
+            let Step::TomlArrayEntry { at, .. } = st else {
+                continue;
+            };
+            if !st.takes_gate_name() {
+                continue;
+            }
+            let file = resolve(at, home, &cenv);
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+                continue;
+            };
+            let named_old = doc
+                .get("hooks")
+                .and_then(|h| h.as_array_of_tables())
+                .is_some_and(|aot| {
+                    aot.iter().any(|t| {
+                        t.get("name").and_then(|v| v.as_str()) == Some(old)
+                            && t.get("command").and_then(|v| v.as_str()).is_some_and(fixed)
+                    })
+                });
+            if named_old {
+                out.push(format!(
+                    "{} names derm's gate `{old}`, a name a project's own hooks.toml can take first (note BC, BC-2): run `derm connect {id} --gate --write` again",
+                    file.display()
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Whether `text` holds `hook <id> ` after a program that is not an
+/// absolute path (`derm hook crush pre`, `"derm" hook crush pre`).
+fn bare_derm_hook(text: &str, id: &str) -> bool {
+    // BW5B-1: the same reader `derm connect` finds its own entry with, so
+    // the fix this names (`--gate --write`) replaces what it names.
+    crate::connect::gate::derm_hook_runs(text, id).contains(&false)
+}
+
+/// Each absolute derm a `derm hook <id>` line in `text` names that is not
+/// there now (links followed: a dangling link counts), once each.
+fn gone_derms(text: &str, id: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in crate::connect::gate::derm_hook_programs(text, id) {
+        let path = Path::new(&p);
+        if (path.is_absolute() || path.has_root())
+            && std::fs::metadata(path).is_err()
+            && !out.contains(&p)
+        {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// What node needs from a cleared environment on Windows besides HOME and
+/// PATH. Without `SystemRoot`, node 24 aborts before any script runs, in
+/// `InitializeOncePerProcessInternal` (exit 134; CI's Windows job, node
+/// 24.22.2), where it checks that OpenSSL's CSPRNG seeds (`src/node.cc`,
+/// `CHECK(ncrypto::CSPRNG(nullptr, 0))`); Windows' crypto providers resolve
+/// their DLLs through `%SystemRoot%` ("Always, always include SystemRoot
+/// when passing a custom environment block to CreateProcess",
+/// https://jpassing.com/2009/12/28/the-hidden-danger-of-forgetting-to-specify-systemroot-in-a-custom-environment-block).
+/// `USERPROFILE` is Windows' HOME. srt's sandbox keeps the same two from the
+/// account's profile (`enter/handoff.rs`, `RESERVED`). From lane/windows-ci.
+#[cfg(windows)]
+const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
+#[cfg(not(windows))]
+const NODE_WINDOWS_ENV: &[&str] = &[];
 
 /// Runs the installed hook once on a shell call, under a policy that denies
 /// `bash`, from a folder of its own (the hook refuses a `DERM_POLICY` inside
@@ -617,9 +992,11 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
         Ok(h) => h,
         Err(why) => return json!({"state": "not run", "why": why}),
     };
-    let Some(node) = probes.node.clone() else {
+    let launcher = is_launcher(&hook);
+    let node = probes.node.clone();
+    if !launcher && node.is_none() {
         return json!({"state": "not run", "why": "node is not on PATH"});
-    };
+    }
     let scratch =
         std::env::temp_dir().join(format!("derm-doctor-{}", uuid::Uuid::new_v4().simple()));
     let result = (|| -> Result<Value, String> {
@@ -642,31 +1019,67 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             br#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,
         )
         .map_err(|e| e.to_string())?;
-        let input = json!({
-            "session_id": "derm-doctor",
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "rm -rf derm-doctor-canary"},
-            "tool_use_id": "derm-doctor-1",
-            "cwd": work,
-            "permission_mode": "default",
-        });
-        let mut cmd = Command::new(&node);
-        cmd.arg("--no-warnings")
-            .arg(&hook)
-            .arg("pre")
-            .current_dir(&work)
+        // The agent's own input for a shell call (contracts/fixtures/
+        // hook-dialects; Gemini's tool is `run_shell_command`).
+        let input = if id == "gemini" {
+            json!({
+                "session_id": "derm-doctor",
+                "hook_event_name": "BeforeTool",
+                "tool_name": "run_shell_command",
+                "tool_input": {"command": "rm -rf derm-doctor-canary"},
+                "cwd": work,
+                "timestamp": "2026-11-11T00:00:00.000Z",
+            })
+        } else {
+            json!({
+                "session_id": "derm-doctor",
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf derm-doctor-canary"},
+                "tool_use_id": "derm-doctor-1",
+                "cwd": work,
+                "permission_mode": "default",
+            })
+        };
+        let event = if id == "gemini" { "before" } else { "pre" };
+        let mut cmd = if launcher {
+            // As the agent runs it: /bin/sh by its absolute path on the
+            // launcher, which runs `derm hook <agent> <event>` from derm's
+            // install folders (never PATH).
+            let mut c = Command::new("/bin/sh");
+            c.arg(&hook).arg(id).arg(event);
+            c
+        } else {
+            let mut c = Command::new(node.as_ref().expect("checked above"));
+            c.arg("--no-warnings").arg(&hook).arg(event);
+            c
+        };
+        cmd.current_dir(&work)
             .env_clear()
             .env("DERM_POLICY", &policy)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for k in ["HOME", "PATH"] {
-            if let Some(v) = std::env::var_os(k) {
-                cmd.env(k, v);
+        // HOME is doctor's own (the launcher finds derm under it); PATH only
+        // for node, which the launcher never reads.
+        if let Some(h) = &env.home {
+            cmd.env("HOME", h);
+        }
+        if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher) {
+            cmd.env("PATH", v);
+        }
+        // An older plugin's node on Windows needs these too (lane/windows-ci,
+        // `NODE_WINDOWS_ENV`); the launcher never runs there.
+        if !launcher {
+            for k in NODE_WINDOWS_ENV {
+                if let Some(v) = std::env::var_os(k) {
+                    cmd.env(k, v);
+                }
             }
         }
-        let mut child = cmd.spawn().map_err(|e| format!("node: {e}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("{}: {e}", if launcher { "/bin/sh" } else { "node" }))?;
         if let Some(mut stdin) = child.stdin.take() {
             let _ = std::io::Write::write_all(&mut stdin, input.to_string().as_bytes());
         }
@@ -708,6 +1121,10 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
                         })
                         .unwrap_or(false)
             }
+            // Gemini: its JSON deny, on exit 0 or 2.
+            "gemini" => serde_json::from_str::<Value>(out.trim())
+                .ok()
+                .is_some_and(|v| v["decision"] == "deny" || v["decision"] == "block"),
             // Codex: exit 2 with a reason on stderr.
             _ => code == Some(2) && err.trim_start().starts_with("derm:"),
         };

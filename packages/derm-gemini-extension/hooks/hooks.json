@@ -7,9 +7,9 @@
           {
             "name": "derm-gate",
             "type": "command",
-            "command": "node --no-warnings \"${extensionPath}${/}bin${/}derm-hook.mjs\" before",
+            "command": "/bin/sh \"${extensionPath}${/}hooks${/}derm-gate.sh\" gemini before",
             "timeout": 120000,
-            "description": "derm policy gate. Gemini lets a call through when a hook fails or times out, so the hook never crashes on purpose and caps its own waits at 90 seconds, below this timeout."
+            "description": "derm policy gate: runs `derm hook gemini before` from derm's install folders through hooks/derm-gate.sh, never from PATH (rules case 227). Gemini lets a call through when a hook fails or times out, so the hook never crashes on purpose and caps its own waits at 90 seconds, below this timeout."
           }
         ]
       }
@@ -21,7 +21,7 @@
           {
             "name": "derm-record",
             "type": "command",
-            "command": "node --no-warnings \"${extensionPath}${/}bin${/}derm-hook.mjs\" after",
+            "command": "/bin/sh \"${extensionPath}${/}hooks${/}derm-gate.sh\" gemini after",
             "timeout": 30000,
             "description": "derm records the call (a hash, no content) and redacts secret-like values in the result."
           }

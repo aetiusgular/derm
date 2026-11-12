@@ -285,6 +285,13 @@ pub fn status() -> CollectorStatus {
         registered: super::registry::live_count(),
         ..CollectorStatus::default()
     };
+    // No collector socket is asked for off Unix, so say why rather than
+    // leave the page with no reason (the status's own contract: "without a
+    // collector says why").
+    #[cfg(not(unix))]
+    {
+        status.problem = Some("The activity collector runs on macOS only.".into());
+    }
     #[cfg(unix)]
     {
         match ask("{\"v\":1,\"op\":\"status\"}", READ_TIMEOUT) {

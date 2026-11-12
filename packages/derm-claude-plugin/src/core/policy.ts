@@ -608,6 +608,12 @@ export const CONTROL_PATHS = [
   // name too, for `cd /opt/derm-kit && touch sbx-vm`.
   "derm-kit/",
   "sbx-vm",
+  // Wave 5b's close (W5B-S1): derm's own program, now the gate for every
+  // agent, wherever the plugins' launcher and shims find it, and the
+  // variable the in-process plugins read it from.
+  "/bin/derm",
+  "cellar/derm/",
+  "derm_bin",
 ] as const;
 
 // A folder entry's bare name, for `mv ~/.derm old` and `cd ~/.derm && cp x

@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { goJsonLength } from "../mirror/canonical.ts";
 import type { FetchLike } from "../mirror/registry.ts";
@@ -291,8 +291,12 @@ describe("the pull request", () => {
     expect(branchFor(proof)).toBe("publish/weather-tool-1.0.0-build-.-x");
     const steps = prSteps({ clone: "/c", entryDir: "/in/weather-tool", manifestFile: "server.json", manifest: {}, proof, body: "b", headOwner: "alice" });
     const argvs = steps.filter((s) => "argv" in s).map((s) => (s as { argv: string[] }).argv);
-    expect(argvs.map((a) => a.slice(0, 4).join(" "))).toEqual(["git -C /c checkout", "git -C /c add", "git -C /c commit", "git -C /c push", "gh pr create --repo"]);
-    expect(argvs.find((a) => a[3] === "add")).toEqual(["git", "-C", "/c", "add", "--", "library/catalog/weather-tool"]);
+    // The clone as `prSteps` resolves it on this OS (`/c` is `D:\c` on a
+    // Windows runner, rooted on the current drive), and the entry joined
+    // the same way.
+    const c = resolve("/c");
+    expect(argvs.map((a) => a.slice(0, 4).join(" "))).toEqual([`git -C ${c} checkout`, `git -C ${c} add`, `git -C ${c} commit`, `git -C ${c} push`, "gh pr create --repo"]);
+    expect(argvs.find((a) => a[3] === "add")).toEqual(["git", "-C", c, "add", "--", join("library", "catalog", "weather-tool")]);
     expect(argvs.find((a) => a[0] === "gh")).toContain("alice:publish/weather-tool-1.0.0-build-.-x");
     expect(steps.map(describeStep).join("\n")).not.toMatch(/Co-Authored|Claude/);
   });

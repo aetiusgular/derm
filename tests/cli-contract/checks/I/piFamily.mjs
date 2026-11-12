@@ -21,6 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeMessages, toolUse, textBlock } from "../../lib/fakeMessages.mjs";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
+import { dermBinEnv } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-pi");
@@ -73,7 +74,7 @@ async function piRun(bin, { extension, command }) {
   writeFileSync(ext, extension);
   try {
     const argv = ["--offline", "-ne", "-ns", "-np", "-nc", "--no-session", "--no-mcp", "-e", PACKAGE, "-e", ext, "--model", "fake/fake-model", "--mode", "json", "run the step"];
-    const r = await run(bin, argv, { PATH: process.env.PATH, HOME: s.home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0", DERM_POLICY: s.policyFile }, s.work);
+    const r = await run(bin, argv, { ...dermBinEnv(), PATH: process.env.PATH, HOME: s.home, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: "1", PI_TELEMETRY: "0", DERM_POLICY: s.policyFile }, s.work);
     return { r, results: anthropicResults(fake) };
   } finally {
     await fake.close();
@@ -84,7 +85,7 @@ async function piRun(bin, { extension, command }) {
 async function ompRun(bin, { policy, script, extension }) {
   const fake = await startFakeChat({ script });
   const s = scratch(policy);
-  const env = { PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`, HOME: s.home, DERM_POLICY: s.policyFile, NO_COLOR: "1", PI_TELEMETRY: "0" };
+  const env = { ...dermBinEnv(), PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`, HOME: s.home, DERM_POLICY: s.policyFile, NO_COLOR: "1", PI_TELEMETRY: "0" };
   try {
     const install = await run(bin, ["install", PACKAGE], env, s.work, 120);
     const agent = path.join(s.home, ".omp", "agent");
@@ -155,7 +156,7 @@ export const checks = [
       const scoped = await ompRun(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "allow" }, { tool: "bash", harness: "oh-my-pi", action: "deny" }] }, script: ompBash("echo omp-scoped-ran") });
       const ran = JSON.stringify(allowed.results).includes("omp-allowed-ran");
       const scopedText = JSON.stringify(scoped.results);
-      const scopedBlocked = !scopedText.includes("omp-scoped-ran") && scopedText.includes("harness=oh-my-pi");
+      const scopedBlocked = !scopedText.includes("omp-scoped-ran") && scopedText.includes("for harness oh-my-pi") /* derm-core's wording since wave 5b (hook-dialects 9.3; lane 5bC request 6) */;
       return { status: ran && scopedBlocked ? "pass" : "fail", finding: `allowed ran ${ran}; oh-my-pi rule applied ${scopedBlocked}; ${scopedText.slice(0, 160)}` };
     },
   },

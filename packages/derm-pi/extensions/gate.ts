@@ -14,15 +14,34 @@
 // timer or socket started, and the environment is read on the first call.
 //
 // Wave 2 lane I: the same package runs in oh-my-pi (src/harness.ts: the
-// harness id, omp's MCP names), and an allowed call's input is frozen so a
-// later extension cannot change it after the gate (src/freeze.ts, BX9).
+// harness id), and an allowed call's input is frozen so a later extension
+// cannot change it after the gate (src/freeze.ts, BX9).
+//
+// Wave 5b lane 5bC: the policy's answer is `derm gate serve`'s
+// (contracts/gate-serve.md; one decide path with `derm hook`, case 229),
+// started at the first tool call, once per host process and folder, from
+// derm's absolute path (case 227; src/serve/client.ts). A co-process that is
+// not running blocks the call and says why (case 228); nothing is decided in
+// process. An ask goes to the derm daemon's approver first (`approve`, with
+// Pi's own prompt allowed): a yes or a no there answers it; with no approver,
+// or no daemon, Pi's own card asks, over the frozen input (case 88), as
+// before. Pi's records stay what they were: the decision notice the emitter
+// sends (DECISION_CHANNEL), not an adapter record, so the co-process is
+// asked with `record: false`. A secret-like value in an MCP or web tool's
+// input is rewritten in place, as the other plugins do (Pi: "tool_call (can
+// block or mutate input)", docs/extensions.md:364, 419 at 1.5.2). What stays
+// TypeScript here is Pi's glue: the memory index rule (Pi runs the memory
+// extension), the card, the freeze, the reject list for commands you type,
+// and the result redaction (src/redact.ts).
 
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { askUser, cardText } from "../src/ask.ts";
 import { deepFreeze, freezeEnabled } from "../src/freeze.ts";
-import { harnessId, OMP, ompToolName } from "../src/harness.ts";
+import { harnessId } from "../src/harness.ts";
 import { inputTextFor } from "../src/input-text.ts";
+import { ownedByTrusted } from "../src/owner.ts";
+import { approve, decide, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "../src/serve/client.ts";
 import {
   DECISION_CHANNEL,
   type DecisionNotice,
@@ -36,8 +55,7 @@ import {
   type UserBashEvent,
   type UserBashResult,
 } from "../src/pi-api.ts";
-import { evaluate, normalizeToolName, rejectKey, unquote, type PolicyFile } from "../src/policy.ts";
-import { PolicyStore, policyPath, type FsLike, realFs } from "../src/policy-store.ts";
+import { rejectKey, unquote } from "../src/policy.ts";
 import { redactDeep, redactText } from "../src/redact.ts";
 
 /** The harness this gate answers for: `pi`, or `oh-my-pi` when Bun runs it (src/harness.ts). */
@@ -47,11 +65,33 @@ const PREVIEW_CHARS = 1500;
 export interface GateOptions {
   /** The environment, read on first use. Defaults to `process.env`. */
   env?: () => Record<string, string | undefined>;
-  fs?: FsLike;
-  home?: () => string;
-  uid?: number;
   /** The harness id; defaults to the one detected at load. Tests set it. */
   harness?: string;
+  /** The co-process for a folder; tests pass their own. */
+  serve?: (env: Record<string, string | undefined>, cwd: string, harness: string) => GateServe;
+}
+
+/** The co-process this host process shares for `cwd` (src/serve/client.ts). */
+export function defaultServe(env: Record<string, string | undefined>, cwd: string, harness: string): GateServe {
+  return sharedServe({ agent: harness, env, cwd: () => cwd, trusted: ownedByTrusted });
+}
+
+function container(v: unknown): boolean {
+  return typeof v === "object" && v !== null;
+}
+
+/** Replaces the contents of `target` with `source`, keeping the same object (Pi runs the call with it). */
+function replaceInPlace(target: unknown, source: unknown): boolean {
+  if (!container(target) || !container(source)) return false;
+  if (Array.isArray(target) && Array.isArray(source)) {
+    target.splice(0, target.length, ...source);
+    return true;
+  }
+  if (Array.isArray(target) || Array.isArray(source)) return false;
+  const t = target as Record<string, unknown>;
+  for (const k of Object.keys(t)) delete t[k];
+  Object.assign(t, source);
+  return true;
 }
 
 function chatFor(env: Record<string, string | undefined>, ctx: PiContext): string | undefined {
@@ -121,12 +161,9 @@ const MEMORY_INDEXES = ["memory/index.md", "research/index.md", "refs/index.md"]
 
 export function createGate(options: GateOptions = {}) {
   return function gate(pi: PiApi): void {
-    let store: PolicyStore | undefined;
     let env: Record<string, string | undefined> | undefined;
 
     const environment = () => (env ??= { ...(options.env ? options.env() : process.env) });
-    const policyStore = () =>
-      (store ??= new PolicyStore(policyPath(environment(), options.home), options.fs ?? realFs, options.uid));
 
     const announce = (notice: DecisionNotice) => {
       try {
@@ -145,6 +182,7 @@ export function createGate(options: GateOptions = {}) {
     };
 
     const harness = options.harness ?? HARNESS;
+    const serveFor = options.serve ?? defaultServe;
 
     /** After an allow: freeze the input the gate saw, so it is the input that runs (BX9). */
     const sealed = (event: ToolCallEvent): ToolCallResult | undefined => {
@@ -156,31 +194,32 @@ export function createGate(options: GateOptions = {}) {
       const base = { toolName: event.toolName, toolCallId: event.toolCallId };
       let normalized = event.toolName;
       try {
-        const { policy, problem } = await policyStore().get();
-        const toolName = harness === OMP ? ompToolName(event.toolName, policy.servers) : event.toolName;
-        normalized = normalizeToolName(toolName, policy.servers, harness);
-        const inputText = inputTextFor(normalized, event.input);
-        const chat = chatFor(environment(), ctx);
-        let d = evaluate(
-          policy,
-          {
-            tool: toolName,
-            harness,
-            ...(chat !== undefined ? { chat } : {}),
-            description: () => describeTool(event.toolName),
-            inputText,
-          },
-          problem,
-        );
+        const e = environment();
+        const s = serveFor(e, cwdOf(ctx) ?? process.cwd(), harness);
+        const chat = chatFor(e, ctx);
+        const description = describeTool(event.toolName);
+        const call: Call = {
+          tool: event.toolName,
+          input: event.input ?? {},
+          ...(chat !== undefined ? { chat } : {}),
+          ...(typeof event.toolCallId === "string" && event.toolCallId !== "" ? { toolUseId: event.toolCallId } : {}),
+          ...(typeof description === "string" ? { description } : {}),
+        };
+        let d = await decide(s, call, false);
         normalized = d.normalizedTool;
+        const inputText = inputTextFor(normalized, event.input);
         // The memory extension's indexes change only through memory_propose's
         // card (case 48); an allowed write or edit of one asks too (lane K's
         // request 8, integration w2). Narrowing only, and only in Pi, where
         // the memory extension runs.
         const index =
           d.action === "allow" ? (memoryIndexPath(normalized, event.input, cwdOf(ctx)) ?? memoryIndexText(normalized, inputText)) : undefined;
-        if (index !== undefined) d = { ...d, action: "ask", reason: `${index} is the memory index: memory_propose writes it` };
+        if (index !== undefined) d = { ...d, action: "ask", reason: `${index} is the memory index: memory_propose writes it`, updatedInput: undefined };
         if (d.action === "allow") {
+          if (d.updatedInput !== undefined && !replaceInPlace(event.input, d.updatedInput)) {
+            announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "secret-like value in input that derm cannot rewrite" });
+            return block("secret-like value in input that derm cannot rewrite");
+          }
           announce({ ...base, toolNameNormalized: normalized, decision: "accept", reason: d.reason });
           return sealed(event);
         }
@@ -197,7 +236,17 @@ export function createGate(options: GateOptions = {}) {
           announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "input could not be held still" });
           return held;
         }
-        const outcome = await askUser(ctx, `derm: allow ${normalized}?`, cardMessage(event.toolName, d.reason, policy, inputText), policy.askTimeoutSeconds * 1000);
+        // The derm daemon's approver first; with none, Pi's own card.
+        const r = await approve(s, call, d, true, false);
+        if (r.kind !== "harness") {
+          if (r.kind === "allow" && inputTextFor(normalized, event.input) === inputText) {
+            announce({ ...base, toolNameNormalized: normalized, decision: "ask_accept", reason: r.reason });
+            return undefined;
+          }
+          announce({ ...base, toolNameNormalized: normalized, decision: "ask_reject", reason: r.reason });
+          return block(r.kind === "allow" ? "the input changed while you were asked, so the call is refused" : r.reason);
+        }
+        const outcome = await askUser(ctx, `derm: allow ${normalized}?`, cardMessage(event.toolName, d.reason, d.askTimeoutSeconds, inputText), d.askTimeoutSeconds * 1000);
         switch (outcome) {
           case "yes":
             // With the freeze off (DERM_PI_FREEZE_INPUT=0) the input could still
@@ -221,7 +270,11 @@ export function createGate(options: GateOptions = {}) {
             announce({ ...base, toolNameNormalized: normalized, decision: "ask_reject", reason: "not approved" });
             return block("not approved");
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof ServeUnavailable) {
+          announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "gate co-process not running" });
+          return block(unavailable(error));
+        }
         announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "gate error" });
         return block("the gate failed, so the call is refused");
       }
@@ -275,12 +328,12 @@ export function createGate(options: GateOptions = {}) {
   };
 }
 
-function cardMessage(toolName: string, reason: string, policy: PolicyFile, inputText: string): string {
+function cardMessage(toolName: string, reason: string, askTimeoutSeconds: number, inputText: string): string {
   const preview = cardText(redactText(inputText).text, PREVIEW_CHARS);
   return [
     `Tool: ${cardText(toolName, 200)}`,
     `Why derm asks: ${reason}`,
-    `No answer in ${policy.askTimeoutSeconds} s counts as no.`,
+    `No answer in ${askTimeoutSeconds} s counts as no.`,
     "",
     // An extension Pi runs before this one (a project's or the agent
     // folder's own files rank ahead of packages) may have changed it (box

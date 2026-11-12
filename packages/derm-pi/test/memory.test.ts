@@ -7,8 +7,19 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
+import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE_TYPE, openNoLink, readState, topicName, type MemoryApi, type MemoryCtx, type ToolDefinition } from "../extensions/memory.ts";
 import { FakeRpcClient, type Answer } from "./fake-pi.ts";
+import { GateServe } from "../src/serve/client.ts";
+import { DERM, removeRoot, stopServe } from "./serve/real.ts";
+
+// Every co-process a test starts, stopped and waited for before its folder
+// goes (WB-P1-1: on Windows a running process holds its working folder).
+const started: GateServe[] = [];
+
+// Wave 5b (lane 5bC): the approved-index record is kept by `derm gate serve`
+// (memory.check, memory.approve), so a host here gets a co-process from a
+// derm build, with the record where the test puts it.
+const UID = typeof process.getuid === "function" ? process.getuid() : -1;
 
 type Handler = (event: unknown, ctx: MemoryCtx) => unknown;
 
@@ -36,7 +47,18 @@ function host(answer: Answer | ((n: number) => Answer) = { confirmed: true }, op
   const client = new FakeRpcClient(() => (typeof answer === "function" ? answer(asked++) : answer));
   const notes: string[] = [];
   // The approved-index record lives in the scratch folder, never ~/.derm (W2-R3).
-  createMemory({ confirmMs: opts.confirmMs ?? 2_000, now: opts.now ?? (() => new Date("2026-10-28T12:00:00Z")), statePath: opts.statePath ?? path.join(root, "state", "memory-index.json") })(api);
+  const statePath = opts.statePath ?? path.join(root, "state", "memory-index.json");
+  const serves = new Map<string, GateServe>();
+  const serve = (cwd: string) => {
+    let s = serves.get(cwd);
+    if (s === undefined) {
+      s = new GateServe({ agent: "pi", env: { HOME: root, USERPROFILE: root, DERM_MEMORY_STATE: statePath }, cwd: () => cwd, trusted: (u) => u === UID, locate: () => (DERM ? { path: DERM } : { problem: "no derm build" }) });
+      serves.set(cwd, s);
+      started.push(s);
+    }
+    return s;
+  };
+  createMemory({ confirmMs: opts.confirmMs ?? 2_000, now: opts.now ?? (() => new Date("2026-10-28T12:00:00Z")), statePath, serve })(api);
   return {
     used,
     tools,
@@ -79,7 +101,10 @@ beforeEach(() => {
   project = path.join(root, "project");
   mkdirSync(project);
 });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(async () => {
+  for (const s of started.splice(0)) await stopServe(s);
+  removeRoot(root);
+});
 
 function put(rel: string, text: string) {
   const abs = path.join(project, rel);
@@ -209,6 +234,42 @@ describe("the index, injected as a message", () => {
     symlinkSync(path.join(elsewhere, "INDEX.md"), path.join(project, "refs", "INDEX.md"));
     const h = host();
     expect(await h.emit("before_agent_start", userRun, h.ctx(project))).toBeUndefined();
+  });
+
+  // WW5B-4 (Windows test w5b): Node on Windows has no O_NOFOLLOW
+  // (`constants.O_NOFOLLOW` is undefined there), so an index that is a link
+  // was opened through it and its target injected. Played here with the flag
+  // taken away: the open is kept only when the file it opened is the one the
+  // name holds, not followed (lstat, open, fstat; CPython 3.13.5
+  // Lib/shutil.py:660-675).
+  it("opens no file through a link when the system has no O_NOFOLLOW", async () => {
+    const elsewhere = path.join(root, "secrets");
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(path.join(elsewhere, "INDEX.md"), "- private key here\n");
+    const dir = path.join(root, "plain");
+    mkdirSync(dir);
+    const link = path.join(dir, "INDEX.md");
+    symlinkSync(path.join(elsewhere, "INDEX.md"), link);
+    const { constants } = await import("node:fs");
+    expect(await openNoLink(link, constants.O_RDONLY, undefined, 0)).toBeUndefined();
+    // A link to nothing is not followed into a new file either.
+    const dangling = path.join(dir, "new.md");
+    symlinkSync(path.join(elsewhere, "made-by-us.md"), dangling);
+    const h = await openNoLink(dangling, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o644, 0);
+    expect(h).toBeUndefined();
+    expect(existsSync(path.join(elsewhere, "made-by-us.md"))).toBe(false);
+    // FP2-S7: a hard link to a file outside is the same file to lstat and
+    // fstat; a file with a second name is refused, with or without the flag.
+    const { linkSync } = await import("node:fs");
+    writeFileSync(path.join(elsewhere, "precious"), "keep\n");
+    linkSync(path.join(elsewhere, "precious"), path.join(dir, "hard.md"));
+    expect(await openNoLink(path.join(dir, "hard.md"), constants.O_RDONLY, undefined, 0)).toBeUndefined();
+    expect(await openNoLink(path.join(dir, "hard.md"), constants.O_RDONLY)).toBeUndefined();
+    // A plain file opens.
+    writeFileSync(path.join(dir, "real.md"), "ok\n");
+    const ok = await openNoLink(path.join(dir, "real.md"), constants.O_RDONLY, undefined, 0);
+    expect(ok).toBeDefined();
+    await ok?.close();
   });
 
   it("context keeps only the newest copy, and leaves one copy alone", async () => {
@@ -400,7 +461,7 @@ describe("/memory", () => {
 // (FP1-S1) found that "first sight of a project takes what is there" let a
 // removed record, a renamed project or an unwritable record folder inject
 // anything with no card; now an index the record does not hold asks too.
-describe("an index changed outside the memory card (review W2-R3)", () => {
+describe.runIf(DERM !== undefined)("an index changed outside the memory card (review W2-R3; needs a derm build)", () => {
   const sh = (cmd: string) => execFileSync("sh", ["-c", cmd], { cwd: project });
   const titles = (h: ReturnType<typeof host>) => h.client.requests.map((r) => r.title);
   const CHANGED = "Use a changed derm memory index?";
@@ -463,22 +524,32 @@ describe("an index changed outside the memory card (review W2-R3)", () => {
 
   it("a record that cannot be written asks every session, and injects nothing it was not told to (FP1-S1)", async () => {
     put("memory/INDEX.md", "- [build](build.md): npm run check\n");
-    // The record's folder refuses writes (a chmod by someone else; the
-    // cloud runs tests as root, where a 0500 folder is still writable, so the
-    // refusal is made at the rename that would put the record in place).
-    const rename = vi.spyOn(fsp, "rename").mockRejectedValue(Object.assign(new Error("EACCES"), { code: "EACCES" }));
+    // The record's folder refuses writes (a chmod by someone else). The
+    // record is written by `derm gate serve` (wave 5b), so the refusal is
+    // made on disk: a 0500 folder, or, as root (the cloud), where a 0500
+    // folder is still writable, a record path whose folder is a file.
+    const dir = path.join(root, "state");
+    mkdirSync(dir, { recursive: true });
+    let blocked = statePath();
+    if (UID === 0) {
+      writeFileSync(path.join(root, "state-file"), "");
+      blocked = path.join(root, "state-file", "memory-index.json");
+    } else {
+      execFileSync("chmod", ["500", dir]);
+    }
     try {
-      const one = host({ confirmed: true });
+      const one = host({ confirmed: true }, { statePath: blocked });
       const a = (await one.emit("before_agent_start", userRun, one.ctx(project))) as { message: { content: string } };
       expect(titles(one)).toEqual([UNKNOWN]);
       expect(a.message.content).toContain("npm run check");
-      expect(existsSync(statePath())).toBe(false);
-      const two = host({ confirmed: false });
+      expect(existsSync(blocked)).toBe(false);
+      const two = host({ confirmed: false }, { statePath: blocked });
       const b = (await two.emit("before_agent_start", userRun, two.ctx(project))) as { message: { content: string } } | undefined;
       expect(titles(two)).toEqual([UNKNOWN]);
       expect(b?.message.content ?? "").not.toContain("npm run check");
     } finally {
-      rename.mockRestore();
+      execFileSync("chmod", ["700", dir]);
+      rmSync(path.join(root, "state-file"), { force: true });
     }
   });
 

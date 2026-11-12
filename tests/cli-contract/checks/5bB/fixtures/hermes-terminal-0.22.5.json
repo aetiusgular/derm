@@ -1,0 +1,5 @@
+{
+  "source": "Hermes v0.22.5 (bf0203a794a07aac3ff764972ab9087baa4e4f4e), its terminal tool's reply to `echo hermes-5bb-allowed` as the model got it, recorded on the box by the box test w5b retest (11 Nov 2026, item 6, ~/boxw5b-work/out/hermes-contract.txt). Built by tools/terminal_tool_result.py:241 (output.strip()) and :258 ({\"output\", \"exit_code\", \"error\"}) at that tag.",
+  "allowed": "{\"output\": \"hermes-5bb-allowed\", \"exit_code\": 0, \"error\": null}",
+  "denied": "{\"error\": \"derm: rule bash (also names terminal)\"}"
+}
