@@ -39,6 +39,9 @@ mod preflight;
 pub(crate) mod boundary; // lane T (pub(crate) for lane W's `derm setup sandbox`, request T-8)
 mod tap; // lane S
 mod user; // lane V
+          // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
+          // part 3): the Standard tier, lane 6A's. The stub changes nothing.
+mod standard; // lane 6A
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1363,6 +1366,10 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     } else {
         tap::environment(a.harness.id, &mut p)?
     };
+    // The Standard tier (lane 6A's seam; `contracts/sandbox.md`): the agent's
+    // own sandbox from derm's policy, as `detail.tier`. The base's stub
+    // returns none.
+    let tier_record = standard::environment(a.harness.id, a.boundary, &mut p)?;
     // Content capture's switch as the chat starts (lane S's request 3). It
     // replaced DERM_LOG_CONTENT (request 3's rest, integration w5): with it
     // on, the harness's own argument words and its OTel prompts go to
@@ -1724,6 +1731,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ("content", &content_record),
         ("agentUser", &agent_user),
         ("sbxKit", &sbx_kit),
+        // Wave 6 (`contracts/events.md` section 6.1).
+        ("tier", &tier_record),
     ] {
         if let Some(v) = record {
             base[key] = v.clone();

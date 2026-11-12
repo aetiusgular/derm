@@ -168,6 +168,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "derm-egress"
+version = "0.1.3"
+
+[[package]]
 name = "derm-sysmon"
 version = "0.1.3"
 dependencies = [

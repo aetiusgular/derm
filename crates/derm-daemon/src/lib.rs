@@ -31,6 +31,8 @@ pub mod content;
 pub mod installs;
 pub mod join;
 pub mod platform;
+// Wave 6 (the wave 6 base): `taint/`, lane 6D's, empty until the lane.
+pub mod taint;
 
 /// Where the daemon's socket lives, per OS (contract, section 1). The
 /// function only computes the path; it creates nothing. On Linux the folder

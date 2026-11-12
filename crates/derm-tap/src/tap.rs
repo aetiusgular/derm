@@ -441,7 +441,9 @@ fn handle(inner: &Inner, req: http::Request, w: &mut TcpStream, close: bool) -> 
         .uri(url.as_str());
     for (n, v) in &req.headers {
         if !hop_by_hop(n, &listed) {
-            builder = builder.header(n.as_str(), v.as_str());
+            // Wave 6's seam (lane 6C, `broker/`): the stub returns `v`.
+            let v = crate::broker::outbound_header(&chat.id, n, v);
+            builder = builder.header(n.as_str(), v.as_ref());
         }
     }
     builder = builder.header("accept-encoding", "identity");
@@ -711,6 +713,15 @@ fn record_results(
                 .map(|o| &o.value),
         );
         rec.content_kept = rec.content_kept || content_kept;
+        // Wave 6's seam (lane 6D, `results/`): taint's view of the result.
+        crate::results::observe(&crate::results::Observed {
+            chat: &chat.id,
+            harness: &chat.harness,
+            call_id: &call_id,
+            tool: &rec.tool,
+            value: &r.value,
+            is_error: r.is_error,
+        });
         events.push(rec.event(&chat.id, &chat.harness, at));
     }
     drop(chats);

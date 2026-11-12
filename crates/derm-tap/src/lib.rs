@@ -18,16 +18,21 @@
 //! - [`launch`]: what `derm run` adds to a harness's start;
 //! - [`settings`]: the tap's and content's keys in `~/.derm/settings.json`;
 //! - [`tap`]: the server.
+//! - [`results`] and [`broker`]: wave 6's seams (the wave 6 base): the
+//!   tool results taint reads (lane 6D) and provider keys the tap may inject
+//!   (lane 6C). Both are stubs that change nothing.
 //!
 //! What it does not do yet (lane S status doc, "Not built"): the Responses
 //! API over WebSocket (Codex is started with `supports_websockets = false`).
 
 pub mod apis;
+pub mod broker;
 pub mod content;
 pub mod fold;
 pub mod http;
 pub mod launch;
 pub mod record;
+pub mod results;
 pub mod route;
 pub mod settings;
 pub mod sse;

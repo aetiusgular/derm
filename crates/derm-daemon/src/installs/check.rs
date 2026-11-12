@@ -112,7 +112,15 @@ pub fn parse_settings(text: &str) -> Result<CheckSettings, String> {
     for k in obj.keys() {
         if !matches!(
             k.as_str(),
-            "version" | "boundary" | "tap" | "content" | "installs" | "computerUse"
+            "version"
+                | "boundary"
+                | "tap"
+                | "content"
+                | "installs"
+                | "computerUse"
+                // Wave 6 (the wave 6 base): lane 6A's and 6D's keys.
+                | "tier"
+                | "taint"
         ) {
             return Err(format!("has a key the schema does not name ({k})"));
         }

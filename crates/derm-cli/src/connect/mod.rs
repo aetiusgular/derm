@@ -45,8 +45,11 @@ pub(crate) mod presets;
 mod redact;
 mod render;
 mod rules;
+// Wave 6 (the wave 6 base): the Standard tier's writers, lane 6A's.
 #[cfg(test)]
 mod rules_tests;
+#[allow(dead_code)] // nothing calls the base's stub but its test
+mod sandbox;
 mod spec;
 mod tomlfile;
 mod write;

@@ -12,7 +12,8 @@ name = "derm-daemon"
 path = "src/main.rs"
 
 # Shared with lane K in wave 2 (scaffolded by integration w1), and with lanes
-# S, U, V, X, Y and Z in wave 5 (the wave 5 base): each lane edits only the
+# S, U, V, X, Y and Z in wave 5 (the wave 5 base), and with lane 6D in wave 6
+# (the wave 6 base): each lane edits only the
 # lines under its own `# [lane-<X>]` comment, in any table, and pins every
 # dependency to an exact version. scripts/lane-scope.mjs checks this.
 
@@ -31,6 +32,7 @@ computer-use = []
 # [lane-Y]
 # [lane-Z]
 # [lane-5bE]
+# [lane-6D]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -56,6 +58,7 @@ ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "pl
 # [lane-Y]
 # [lane-Z]
 # [lane-5bE]
+# [lane-6D]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # objc2 0.6.4 and objc2-foundation 0.3.2 were here for activity/collector.rs's
@@ -70,6 +73,7 @@ ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "pl
 # [lane-Y]
 # [lane-Z]
 # [lane-5bE]
+# [lane-6D]
 
 [dev-dependencies]
 # [lane-K]
@@ -80,12 +84,14 @@ ureq = { version = "=3.5.1", default-features = false, features = ["rustls", "pl
 # [lane-Y]
 # [lane-Z]
 # [lane-5bE]
+# [lane-6D]
 
 # Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
 
 [target.'cfg(windows)'.dependencies]
 # [lane-Z]
 # [lane-5bE]
+# [lane-6D]
 # The Sysmon service's client and the feed's logic (lane 5bE's own crate):
 # platform/windows/sysmon_feed/ drives it.
 derm-sysmon = { path = "../derm-sysmon" }

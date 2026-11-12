@@ -878,7 +878,11 @@ pub fn post_event(event: &AdapterEvent, env: &Env, cwd: &Path) -> bool {
         reply_timeout: Duration::from_millis(1500),
         cwd,
     };
-    matches!(exchange(&[line], &o), Ok(r) if r.first().and_then(|r| r.get("ok")) == Some(&Value::Bool(true)))
+    let posted = matches!(exchange(&[line], &o), Ok(r) if r.first().and_then(|r| r.get("ok")) == Some(&Value::Bool(true)));
+    // Wave 6's seam (lane 6B, `gate/locallog/`): the light tier's per-chat
+    // log. The base's stub writes nothing.
+    let _ = super::locallog::after_post(event, env, cwd, posted);
+    posted
 }
 
 /// JavaScript's `slice(0, 200)` cuts by UTF-16 code units; a cut through a

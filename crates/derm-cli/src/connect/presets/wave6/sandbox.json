@@ -1,0 +1,5 @@
+{
+  "$comment": "Wave 6 lane 6A's sibling table (the wave 6 base, plans/toolkit_wave6_plan.md section 2.0, part 3): how derm delivers the agent's own sandbox for the Standard tier, per agent (contracts/sandbox.md). Empty on the base; lane 6A fills a row per agent it writes for, each with the version it was verified at (case 81). presets.rs and contracts/presets.ts merge each value into its row as `sandbox`. Shape: contracts/harness-presets.schema.json, $defs.sandbox. Rows lane 6A starts from (note AZ section 5): claude-code (`--settings` file from derm run, 2.1.322), codex (`-c` pairs at its own level, 0.167.2), cursor (advisory: a repo .cursor/sandbox.json widens the user's, note AZ A6), gemini (optional, A11).",
+  "field": "sandbox",
+  "rows": {}
+}

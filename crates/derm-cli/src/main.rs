@@ -3,10 +3,15 @@
 //! section 2, point 5): `connect/` lane C, `run/` lane D, `watch/` lane J in
 //! wave 2; in wave 4 `connect/` is lane Q's, `run/`, `watch/`, `acp/` and
 //! `doctor/` lane R's (section 7a); in wave 5 `cu/` is lane U's, `setup/` lane
-//! W's and `platform/` lane Z's (section 7c). No lane edits this file during
-//! a wave; a new subcommand is a request for integration.
+//! W's and `platform/` lane Z's (section 7c); in wave 6 `init/` is lane 6B's,
+//! `audit/` lane 6E's and `secret/` lane 6C's (the wave 6 base's stubs). No
+//! lane edits this file during a wave; a new subcommand is a request for
+//! integration.
 
 mod acp;
+// Wave 6 (the wave 6 base): `audit/` lane 6E, `init/` lane 6B, `secret/`
+// lane 6C.
+mod audit;
 mod connect;
 // Wave 5 (the wave 5 base): `cu/` lane U, `setup/` lane W, `platform/` lane Z.
 mod cu;
@@ -17,8 +22,10 @@ mod doctor;
 mod enter;
 mod gate;
 mod hook;
+mod init;
 mod platform;
 mod run;
+mod secret;
 #[cfg(unix)]
 mod setup;
 mod watch;
@@ -76,12 +83,16 @@ fn dispatch(args: &[String]) -> u8 {
         Some("hook") => hook::main(&args[1..]),
         Some("gate") => gate::main(&args[1..]),
         Some("enter") => enter::main(&args[1..]),
+        // Wave 6 (the wave 6 base's stubs).
+        Some("init") => init::main(&args[1..]),
+        Some("audit") => audit::main(&args[1..]),
+        Some("secret") => secret::main(&args[1..]),
         Some("--version") => {
             println!("derm {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|init|audit|secret|--version> ...");
             2
         }
     }
@@ -115,6 +126,7 @@ mod tests {
         // integration w2). `watch::status` has its own tests on fixtures.
         for cmd in [
             "connect", "run", "watch", "cu", "acp", "doctor", "setup", "hook", "gate", "enter",
+            "init", "audit", "secret",
         ] {
             assert_eq!(dispatch(&s(&[cmd])), 2, "{cmd}");
         }

@@ -187,7 +187,9 @@ fn full_access(call: &GateCall, env: &Env) -> bool {
 
 /// `decideCall`: the policy's answer for one call, with full access applied.
 pub fn decide_call(loaded: &LoadedPolicy, call: &GateCall, env: &Env) -> GateAnswer {
-    let answer = decide_call_inner(loaded, call);
+    // Wave 6's seam (lane 6D, `gate/taint/`): taint may raise an answer,
+    // never lower it; the base's stub returns it unchanged.
+    let answer = super::taint::adjust(decide_call_inner(loaded, call), call, env);
     deny_ask_in_full_access(answer, call, env)
 }
 

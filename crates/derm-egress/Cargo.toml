@@ -1,0 +1,28 @@
+# Wave 6 lane 6C's crate (scaffolded by the wave 6 base,
+# plans/toolkit_wave6_plan.md section 2.0, part 3): derm-egress, the egress
+# proxy and the secrets broker for chats under the Standard tier or srt. Lane
+# 6C owns this whole folder but tests/contract.rs (the base's red test), its
+# manifest included, and pins every dependency to an exact version with a
+# reason in its status doc. Note AZ, C8: blocking std::net, rustls and rcgen
+# (OpenMoat's shape), not hudsucker; nothing is added on the base.
+
+[package]
+name = "derm-egress"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "derm's egress proxy and secrets broker"
+
+[features]
+default = []
+# The wave 6 base's red test (`tests/contract.rs`) builds only with this
+# feature while it fails on purpose; integration makes it default at the close.
+w6-red = []
+
+[dependencies]
+
+[[test]]
+name = "contract"
+required-features = ["w6-red"]
