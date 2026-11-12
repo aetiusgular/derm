@@ -296,6 +296,9 @@ type Pending = { id: number; resolve: (r: Reply) => void; reject: (e: Error) => 
 
 const MAX_STDERR = 2048;
 const MAX_LINE = 1024 * 1024;
+/** How long an input error waits for the exit, and the exit for `close` (BW5B-R2). */
+const INPUT_WAIT_MS = 1000;
+const CLOSE_WAIT_MS = 250;
 
 export class GateServe {
   readonly options: ServeOptions;
@@ -360,8 +363,25 @@ export class GateServe {
     this.buffered = "";
     this.stderr = "";
     child.on("error", (e: Error) => this.stop(`${prog}: ${e.message}`, child));
-    child.on("exit", (code, signal) => this.stop(`${prog} exited (${signal ?? code})${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`, child));
-    child.stdin?.on("error", () => this.stop(`${prog} closed its input`, child));
+    // BW5B-R2: the write of hello can fail before the exit is seen (an older
+    // derm prints its usage and exits 2 without reading), and the first
+    // handler to stop chose the reason. The exit's code and the last stderr
+    // line say which derm it was, so: an input error waits up to a second for
+    // the exit; the exit waits for `close`, which Node emits once the stdio
+    // streams have closed, so stderr is read whole (Node v22
+    // child_process, events 'exit' and 'close').
+    let exited: string | undefined;
+    const exitReason = () => `${exited}${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`;
+    child.on("exit", (code, signal) => {
+      exited = `${prog} exited (${signal ?? code})`;
+      setTimeout(() => this.stop(exitReason(), child), CLOSE_WAIT_MS).unref?.();
+    });
+    child.on("close", () => {
+      if (exited !== undefined) this.stop(exitReason(), child);
+    });
+    child.stdin?.on("error", () => {
+      setTimeout(() => this.stop(exited !== undefined ? exitReason() : `${prog} closed its input`, child), INPUT_WAIT_MS).unref?.();
+    });
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => this.onData(chunk, child));
     child.stderr?.setEncoding("utf8");

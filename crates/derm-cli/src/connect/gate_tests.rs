@@ -1664,10 +1664,18 @@ fn mw5b_5_a_refused_derm_stops_the_launcher_and_is_named() {
     let local_bin = home.join(".local/bin");
     let local = echo_derm(&local_bin);
     fs::set_permissions(&local_bin, fs::Permissions::from_mode(0o777)).unwrap();
-    for (agent, event) in [("claude-code", "pre"), ("codex", "pre"), ("gemini", "before")] {
+    for (agent, event) in [
+        ("claude-code", "pre"),
+        ("codex", "pre"),
+        ("gemini", "before"),
+    ] {
         let r = launch_with_brew(&brew, &work, &h, &[agent, event]);
         assert_eq!(r.code, Some(2), "{agent}: {}", r.out);
-        assert!(!r.out.contains("argv:"), "{agent} ran another derm: {}", r.out);
+        assert!(
+            !r.out.contains("argv:"),
+            "{agent} ran another derm: {}",
+            r.out
+        );
         assert!(r.err.contains(&local), "{agent}: {}", r.err);
         assert!(r.err.contains("others may write"), "{agent}: {}", r.err);
     }
@@ -1676,7 +1684,11 @@ fn mw5b_5_a_refused_derm_stops_the_launcher_and_is_named() {
     fs::set_permissions(&local, fs::Permissions::from_mode(0o757)).unwrap();
     let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
     assert_eq!(r.code, Some(2), "{}", r.out);
-    assert!(r.err.contains(&local) && r.err.contains("others may write it"), "{}", r.err);
+    assert!(
+        r.err.contains(&local) && r.err.contains("others may write it"),
+        "{}",
+        r.err
+    );
     // Put right: the first derm runs.
     fs::set_permissions(&local, fs::Permissions::from_mode(0o755)).unwrap();
     let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
@@ -2435,9 +2447,16 @@ fn mw5b_the_launcher_and_the_clients_read_access_lists_and_groups_as_connect_doe
     assert!(py.contains("real.name != \"derm\""));
     // MW5B-5: each reader that searches the install folders stops at the
     // first derm that is there and refused, and says so in the same words.
-    for (name, text) in [("derm-gate.sh", &sh), ("client.ts", &ts), ("derm_gate.py", &py)] {
+    for (name, text) in [
+        ("derm-gate.sh", &sh),
+        ("client.ts", &ts),
+        ("derm_gate.py", &py),
+    ] {
         assert!(text.contains("is there and not used"), "{name}");
-        assert!(text.contains("stops at the first derm it finds rather than run another"), "{name}");
+        assert!(
+            text.contains("stops at the first derm it finds rather than run another"),
+            "{name}"
+        );
     }
     assert!(sh.contains("/bin/ls -lden --"));
     assert!(ts.contains("\"/bin/ls\", [\"-lden\", \"--\""));

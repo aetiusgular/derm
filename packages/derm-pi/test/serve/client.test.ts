@@ -2,7 +2,9 @@
 // failing closed and starting again (case 228), and the real `derm gate
 // serve` when a build is there (target/debug/derm, or DERM_BIN).
 
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -86,6 +88,66 @@ describe("failing closed (case 228)", () => {
     expect(a.action).toBe("allow");
     expect(starts).toBe(2);
     s.close();
+  });
+
+  // BW5B-R2 (box test w5b retest, item 3): an older derm that has no
+  // `gate serve` prints its usage and exits 2 before it reads; the write of
+  // hello fails first, and the reason said only "closed its input", which
+  // does not say it was an older derm. The order the box saw, played back:
+  // the input's error, then the exit, the usage line on stderr, the close.
+  it("waits for the exit after the input closes, and gives its code and last stderr line", async () => {
+    const cwd = scratch();
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new Writable({ write: (_c, _e, cb) => cb(new Error("write EPIPE")) }),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: () => true,
+      unref: () => undefined,
+    });
+    child.stdin.on("error", () => undefined);
+    const s = new GateServe({
+      agent: "pi",
+      env: {},
+      cwd: () => cwd,
+      trusted: () => true,
+      startMs: 3000,
+      locate: () => ({ path: "/usr/bin/derm" }),
+      spawn: () => {
+        setTimeout(() => {
+          child.stderr.write("usage: derm <connect|run|watch|status|cu|acp|doctor|--version> ...\n");
+          child.exitCode = 2;
+          child.emit("exit", 2, null);
+          setTimeout(() => {
+            child.stdout.end();
+            child.stderr.end();
+            child.emit("close", 2, null);
+          }, 20);
+        }, 30);
+        return child as unknown as ChildProcess;
+      },
+    });
+    const r = s.request("decide", {});
+    await expect(r).rejects.toThrow("/usr/bin/derm gate serve exited (2): usage: derm <connect|run|watch|status|cu|acp|doctor|--version> ...");
+  });
+
+  it("still says the input closed when no exit follows", async () => {
+    const cwd = scratch();
+    const child = Object.assign(new EventEmitter(), {
+      stdin: new Writable({ write: (_c, _e, cb) => cb(new Error("write EPIPE")) }),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: () => true,
+      unref: () => undefined,
+    });
+    child.stdin.on("error", () => undefined);
+    const s = new GateServe({ agent: "pi", env: {}, cwd: () => cwd, trusted: () => true, startMs: 5000, locate: () => ({ path: "/usr/bin/derm" }), spawn: () => child as unknown as ChildProcess });
+    const t = Date.now();
+    await expect(s.request("decide", {})).rejects.toThrow("/usr/bin/derm gate serve closed its input");
+    expect(Date.now() - t).toBeLessThan(4000);
   });
 
   it("refuses a call it does not answer in time, or answers with garbage or out of order", async () => {
