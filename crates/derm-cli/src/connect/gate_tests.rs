@@ -1575,7 +1575,10 @@ fn ww5b_2_on_windows_the_launcher_plugins_are_refused_with_the_reason() {
         let Some(Err(why)) = gate::windows_gate(a) else {
             panic!("{a}: not refused");
         };
-        assert!(why.contains("/bin/sh") && why.contains("nothing is registered"), "{why}");
+        assert!(
+            why.contains("/bin/sh") && why.contains("nothing is registered"),
+            "{why}"
+        );
         assert!(!why.contains("denies every call"), "{why}");
     }
     for a in ["pi", "oh-my-pi", "opencode", "kilo", "openclaw"] {
