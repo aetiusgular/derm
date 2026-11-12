@@ -165,8 +165,14 @@ def trusted_file(path: Path, derm: bool = False) -> Optional[str]:
     return None
 
 
-def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None) -> str:
-    """derm's absolute path (case 227). Raises with the reason when none can be trusted."""
+def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None, system: Path = Path("/usr/bin/derm")) -> str:
+    """derm's absolute path (case 227). Raises with the reason when none can be trusted.
+
+    Without a derm-path file the first derm that is there decides: one that is
+    there and refused stops the search with its reason, as the plugins'
+    launcher and the in-process clients stop (MW5B-5, BW5B-R3). ``system`` is
+    the last folder's derm; tests pass their own.
+    """
     if os.name == "nt":
         # Python's standard library cannot read a file's access list, so the check
         # above cannot be made on Windows (I; open for lane 5bF).
@@ -186,16 +192,18 @@ def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None) -> str:
             raise RuntimeError(f"the derm {DERM_PATH_FILE} names is not used: {why}")
         return str(derm)
     home = home if home is not None else Path(os.path.expanduser("~"))
-    tried = []
-    for derm in (home / ".local" / "bin" / "derm", Path("/usr/bin/derm")):
+    for derm in (home / ".local" / "bin" / "derm", system):
         if not os.path.lexists(derm):
             continue
         why = trusted_file(derm, derm=True)
         if why is None:
             return str(derm)
-        tried.append(why)
-    found = f" ({'; '.join(tried)})" if tried else ""
-    raise RuntimeError(f"no derm found that only you can change{found}; run `derm connect hermes --gate`")
+        raise RuntimeError(
+            f"no derm found that only you can change: {derm} is there and not used ({why}); "
+            "derm stops at the first derm it finds rather than run another, so fix that one or "
+            "remove it, or run `derm connect hermes --gate`"
+        )
+    raise RuntimeError("no derm found that only you can change; run `derm connect hermes --gate`")
 
 
 def derm_runner(payload: dict[str, Any], *, derm: Optional[str] = None, timeout: float = DECIDE_TIMEOUT_SECONDS) -> dict[str, Any]:

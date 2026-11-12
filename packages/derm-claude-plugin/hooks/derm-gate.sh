@@ -184,13 +184,17 @@ fi
 local_bin=
 case "${HOME-}" in /?*) local_bin=${HOME%/}/.local/bin/derm ;; esac
 
-tried=
+# The first derm that is there decides. One that is there and refused stops
+# the call with its reason; the launcher never goes on to the next folder's
+# derm, which hid the refusal and ran a derm you did not mean (MW5B-5,
+# BW5B-R3), as ssh stops at a ~/.ssh/config with bad permissions and passes
+# over a missing one (OpenSSH readconf.c, read_config_file).
 for c in $local_bin $brew /usr/bin/derm; do
   res=$(refuse "$c")
   case "$res" in
     "ok "/*) exec "${res#ok }" hook "$agent" "$event" ;;
     "not there") ;;
-    *) tried="$tried; $c: $res" ;;
+    *) block "no derm this hook can trust: $c is there and not used: $res; derm stops at the first derm it finds rather than run another, so fix that one or remove it (rules case 227)" ;;
   esac
 done
-block "no derm this hook can trust${tried:+ (${tried#; })}: install derm in ~/.local/bin, Homebrew or /usr/bin (derm is never looked up on PATH, rules case 227)"
+block "no derm this hook can trust: none is in ~/.local/bin, Homebrew or /usr/bin; install derm there (derm is never looked up on PATH, rules case 227)"

@@ -184,7 +184,15 @@ function examine(candidate: string, d: LocateDeps): { file: string } | { why: st
     }
     real(file);
   } catch {
-    return { why: "not there" };
+    // Not there at all, or a name that is there and leads nowhere (a link
+    // to nothing, a folder that cannot be read): the launcher stops at the
+    // second (`refuse`), so the client does too (case 112).
+    try {
+      isLink(candidate);
+    } catch {
+      return { why: "not there" };
+    }
+    return { why: "a link leads nowhere, or its folder cannot be read" };
   }
   let cwdReal = d.cwd;
   try {
@@ -232,19 +240,38 @@ function examine(candidate: string, d: LocateDeps): { file: string } | { why: st
   return { file };
 }
 
-/** The derm to start, by its real path, or why none (case 227: never PATH). */
+/**
+ * The derm to start, by its real path, or why none (case 227: never PATH).
+ * `DERM_BIN` is a hint (`derm run` sets it): refused, it gives way to the
+ * install folders. In the install folders the first derm that is there
+ * decides: one that is there and refused stops the search with its reason,
+ * as the launcher stops (`hooks/derm-gate.sh`); going on to the next
+ * folder's derm hid the refusal and ran a derm you did not mean (MW5B-5,
+ * BW5B-R3; ssh stops at a `~/.ssh/config` with bad permissions and passes
+ * over a missing one, OpenSSH `readconf.c` `read_config_file`).
+ */
 export function locateDerm(d: LocateDeps): Located {
   const tried: string[] = [];
   const fromEnv = d.env.DERM_BIN?.trim();
-  const candidates = fromEnv ? [fromEnv] : [];
-  if (d.platform !== "win32") candidates.push(...installCandidates(d.platform, d.home));
+  if (fromEnv) {
+    const r = examine(fromEnv, d);
+    if ("file" in r) return { path: r.file };
+    tried.push(`DERM_BIN ${fromEnv}: ${r.why}`);
+  }
+  if (d.platform === "win32") {
+    if (tried.length === 0) return { problem: "no derm to run: DERM_BIN is not set (derm run sets it)" };
+    return { problem: `no derm this gate can trust: ${tried.join("; ")}` };
+  }
+  const candidates = installCandidates(d.platform, d.home);
   for (const c of candidates) {
     const r = examine(c, d);
     if ("file" in r) return { path: r.file };
-    tried.push(`${c}: ${r.why}`);
+    if (r.why === "not there") continue;
+    tried.push(`${c} is there and not used: ${r.why}`);
+    return { problem: `no derm this gate can trust: ${tried.join("; ")}; derm stops at the first derm it finds rather than run another, so fix that one or remove it (rules case 227)` };
   }
-  if (candidates.length === 0) return { problem: "no derm to run: DERM_BIN is not set (derm run sets it)" };
-  return { problem: `no derm derm can trust (${tried.join("; ")})` };
+  tried.push(`none is in ${candidates.join(", ")}`);
+  return { problem: `no derm this gate can trust: ${tried.join("; ")}` };
 }
 
 export interface ServeOptions {

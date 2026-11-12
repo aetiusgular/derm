@@ -1566,6 +1566,82 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
     }
 }
 
+#[cfg(unix)]
+/// The launcher with its Homebrew candidates moved into `brew` (a copy in a
+/// scratch folder): the candidate loop as written, run against folders a
+/// test can make. The real file's paths are the ones `install_candidates`
+/// holds equal (case 112).
+fn launch_with_brew(brew: &str, cwd: &Path, home: &str, args: &[&str]) -> Launched {
+    let text = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
+    let linux = "brew=\"/home/linuxbrew/.linuxbrew/bin/derm /usr/local/bin/derm\"";
+    let mac = "brew=\"/opt/homebrew/bin/derm /usr/local/bin/derm\"";
+    assert!(text.contains(linux) && text.contains(mac));
+    let copy = text
+        .replace(linux, &format!("brew=\"{brew}\""))
+        .replace(mac, &format!("brew=\"{brew}\""));
+    let dir = scratch("launch-copy");
+    let file = dir.join("derm-gate.sh");
+    fs::write(&file, copy).unwrap();
+    let o = std::process::Command::new("/bin/sh")
+        .arg(&file)
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .env("HOME", home)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    Launched {
+        code: o.status.code(),
+        out: String::from_utf8_lossy(&o.stdout).into(),
+        err: String::from_utf8_lossy(&o.stderr).into(),
+    }
+}
+
+#[cfg(unix)]
+/// MW5B-5 (Mac test w5b retest), BW5B-R3 (box test w5b retest): a derm
+/// that is there and refused stops the launcher, which names it and why. It
+/// never goes on to the next folder's derm, which hid the refusal behind
+/// Homebrew's derm on an admin Mac and behind the published 0.1.3's usage
+/// line on the box. A candidate that is not there is passed over, as
+/// OpenSSH passes over a missing `~/.ssh/config` and stops at one with bad
+/// permissions (`readconf.c:2611-2622` at V_10_2_P1).
+#[test]
+fn mw5b_5_a_refused_derm_stops_the_launcher_and_is_named() {
+    let home = scratch("mw5b5");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let h = home.display().to_string();
+    let brew_bin = home.join("brew/bin");
+    let brew = echo_derm(&brew_bin);
+    // Only the Homebrew-like derm: it runs.
+    let r = launch_with_brew(&brew, &work, &h, &["claude-code", "pre"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    assert!(r.out.starts_with("argv:hook claude-code pre"), "{}", r.out);
+    // A ~/.local/bin/derm in a folder others may write: the launcher stops
+    // there, names it, and runs no other derm.
+    let local_bin = home.join(".local/bin");
+    let local = echo_derm(&local_bin);
+    fs::set_permissions(&local_bin, fs::Permissions::from_mode(0o777)).unwrap();
+    for (agent, event) in [("claude-code", "pre"), ("codex", "pre"), ("gemini", "before")] {
+        let r = launch_with_brew(&brew, &work, &h, &[agent, event]);
+        assert_eq!(r.code, Some(2), "{agent}: {}", r.out);
+        assert!(!r.out.contains("argv:"), "{agent} ran another derm: {}", r.out);
+        assert!(r.err.contains(&local), "{agent}: {}", r.err);
+        assert!(r.err.contains("others may write"), "{agent}: {}", r.err);
+    }
+    // The same for the file itself.
+    fs::set_permissions(&local_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&local, fs::Permissions::from_mode(0o757)).unwrap();
+    let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(r.err.contains(&local) && r.err.contains("others may write it"), "{}", r.err);
+    // Put right: the first derm runs.
+    fs::set_permissions(&local, fs::Permissions::from_mode(0o755)).unwrap();
+    let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
+    assert_eq!(r.code, Some(0), "{}", r.err);
+}
+
 // ---- Wave 5b lane 5bF: registration ports ----
 //
 // `derm-hooks-claude-compat/src/registration.test.ts` and `security.test.ts`
@@ -2316,6 +2392,12 @@ fn mw5b_the_launcher_and_the_clients_read_access_lists_and_groups_as_connect_doe
     assert!(sh.contains("[ \"${f##*/}\" = derm ]"));
     assert!(ts.contains("path.basename(file) !== \"derm\""));
     assert!(py.contains("real.name != \"derm\""));
+    // MW5B-5: each reader that searches the install folders stops at the
+    // first derm that is there and refused, and says so in the same words.
+    for (name, text) in [("derm-gate.sh", &sh), ("client.ts", &ts), ("derm_gate.py", &py)] {
+        assert!(text.contains("is there and not used"), "{name}");
+        assert!(text.contains("stops at the first derm it finds rather than run another"), "{name}");
+    }
     assert!(sh.contains("/bin/ls -lden --"));
     assert!(ts.contains("\"/bin/ls\", [\"-lden\", \"--\""));
     assert!(sh.contains("/usr/bin/id -G"));

@@ -161,6 +161,22 @@ class FindDerm(unittest.TestCase):
         os.chmod(local / "derm", 0o755)
         self.assertEqual(derm_gate.find_derm(self.plugin, self.home), str(local / "derm"))
 
+    def test_a_refused_user_derm_stops_the_search_and_is_named(self):
+        # MW5B-5, BW5B-R3: the first derm that is there decides; one that is
+        # there and refused is named, never passed over for the system's.
+        local = self.home / ".local" / "bin"
+        local.mkdir(parents=True, mode=0o700)
+        (local / "derm").write_text("#!/bin/sh\n")
+        os.chmod(local / "derm", 0o757)
+        with self.assertRaises(RuntimeError) as e:
+            derm_gate.find_derm(self.plugin, self.home, system=self.derm)
+        self.assertIn(str(local / "derm"), str(e.exception))
+        self.assertIn("stops at the first derm", str(e.exception))
+        os.chmod(local / "derm", 0o755)
+        self.assertEqual(derm_gate.find_derm(self.plugin, self.home, system=self.derm), str(local / "derm"))
+        (local / "derm").unlink()
+        self.assertEqual(derm_gate.find_derm(self.plugin, self.home, system=self.derm), str(self.derm))
+
     def test_path_is_never_searched(self):
         old = os.environ.get("PATH", "")
         os.environ["PATH"] = str(self.bin)

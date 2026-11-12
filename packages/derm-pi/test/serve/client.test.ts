@@ -378,6 +378,71 @@ describe("the route to derm through links (FP1-S2, FP1-S8)", () => {
   });
 });
 
+// MW5B-5 (Mac test w5b retest, locate case c), MW5B-8 (case d), BW5B-R3:
+// a derm in an install folder that is there and refused stops the client,
+// which names it; it never goes on to Homebrew's or the system's derm, as
+// the launcher does not. One that is not there is passed over. DERM_BIN
+// stays a hint: refused, it gives way to the install folders, as before.
+describe("the first install folder's derm decides (MW5B-5)", () => {
+  // brewDeps with a missing file read as Node reads it: realpath and lstat
+  // throw ENOENT for a name that is not there.
+  const missingThrows = (d: LocateDeps, present: string[]): LocateDeps => {
+    const there = (p: string) => present.includes(p) || p.startsWith("/opt/homebrew/");
+    return {
+      ...d,
+      realpath: (p) => {
+        if (!there(p)) throw new Error("ENOENT");
+        return d.realpath!(p);
+      },
+      lstat: (p) => {
+        if (!there(p)) throw new Error("ENOENT");
+        return d.lstat!(p);
+      },
+    };
+  };
+  it.runIf(unix)("stops at a refused ~/.local/bin/derm and names it, never running Homebrew's", () => {
+    const base = missingThrows(brewDeps(), ["/Users/u/proj", "/Users/u/.local/bin"]);
+    const local = "/Users/u/.local/bin/derm";
+    const localBin = "/Users/u/.local/bin";
+    const d: LocateDeps = {
+      ...missingThrows(brewDeps(), ["/Users/u/proj", localBin, local]),
+      stat: (p) => {
+        if (p === local) return { uid: 501, gid: 20, mode: 0o100755, isFile: true, isDir: false };
+        if (p === localBin) return { uid: 501, gid: 20, mode: 0o40777, isFile: false, isDir: true };
+        return base.stat!(p);
+      },
+    };
+    expect(locateDerm(base)).toEqual({ path: "/opt/homebrew/Cellar/derm/0.1.3/bin/derm" });
+    const r = locateDerm(d);
+    expect("problem" in r).toBe(true);
+    const problem = "problem" in r ? r.problem : "";
+    expect(problem).toContain(`${local} is there and not used: others may write ${localBin}`);
+    expect(problem).toMatch(/^no derm this gate can trust/);
+    expect(problem).not.toContain("derm derm");
+    // Put right, the first folder's derm runs.
+    const ok: LocateDeps = { ...d, stat: (p) => (p === localBin ? { uid: 501, gid: 20, mode: 0o40755, isFile: false, isDir: true } : d.stat!(p)) };
+    expect(locateDerm(ok)).toEqual({ path: local });
+    // A refused DERM_BIN still gives way to the install folders.
+    expect(locateDerm({ ...base, env: { DERM_BIN: "/Users/u/proj/derm" }, stat: (p) => (p === "/Users/u/proj/derm" ? { uid: 501, gid: 20, mode: 0o100755, isFile: true, isDir: false } : base.stat!(p)) })).toEqual({ path: "/opt/homebrew/Cellar/derm/0.1.3/bin/derm" });
+  });
+
+  it.runIf(unix)("stops at a link that leads nowhere, as the launcher does", () => {
+    const base = brewDeps();
+    const local = "/Users/u/.local/bin/derm";
+    const d: LocateDeps = {
+      ...base,
+      realpath: (p) => {
+        if (p === local) throw new Error("ENOENT");
+        return base.realpath!(p);
+      },
+      lstat: (p) => ({ isLink: p === local || base.lstat!(p).isLink }),
+      readlink: (p) => (p === local ? "/Users/u/gone/derm" : base.readlink!(p)),
+    };
+    const r = locateDerm(d);
+    expect("problem" in r && r.problem).toContain(`${local} is there and not used`);
+  });
+});
+
 function brewDeps(): LocateDeps {
   const bin = "/opt/homebrew/bin";
   const keg = "/opt/homebrew/Cellar/derm/0.1.3/bin";
