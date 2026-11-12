@@ -205,16 +205,20 @@ function under(root: string, rel: string): string | undefined {
  * (`constants.O_NOFOLLOW` is undefined there), so an index that was a link
  * was opened through it and its target injected (WW5B-4, Windows test w5b;
  * `memory.test.ts` "reads no index through a link"). The name is read with
- * `lstat` before the open (a link, a junction or any reparse point is
- * refused: libuv v1.52.1 `src/win/fs.c:1940-1944` reports every reparse
- * point to lstat as a link) and again after it, and both must be the opened
- * file's device and inode (`fstat`; libuv `fs.c:1908, 1971`, the volume's
- * serial and the file id) — the lstat, open, fstat check CPython's rmtree
- * uses against link races (Lib/shutil.py:660-675 at v3.13.5). Where the
- * system has `O_NOFOLLOW` it is passed too. A name that was not there before
- * an `O_CREAT` open and is a link after it is refused, but the open may
- * have made the link's target (a race; Windows only). `nofollow` is for
- * tests that play Windows.
+ * `lstat` before the open and again after it: libuv v1.52.1 reports a
+ * symbolic link, a junction and an app-exec link to lstat as a link, and
+ * stats the target of any other reparse point (`src/win/fs.c:1791,
+ * 1875-1884, 1940-1944, 2249-2253`; FP2-S8 corrected this line). Both reads
+ * must be the opened file's device and inode (`fstat`; libuv `fs.c:1908,
+ * 1971`, the volume serial's low 32 bits and the 64-bit file id, which ReFS
+ * may not keep unique: inferred, not run) — the lstat, open, fstat check
+ * CPython's rmtree uses against link races (Lib/shutil.py:661-675 at
+ * v3.13.5). A regular file with more than one name is refused too: a hard
+ * link shares the device and inode of a file outside the project (FP2-S7).
+ * Where the system has `O_NOFOLLOW` it is passed too. A name that was not
+ * there before an `O_CREAT` open and is a link after it is refused, but the
+ * open may have made the link's target (a race; Windows only). `nofollow`
+ * is for tests that play Windows.
  */
 export async function openNoLink(abs: string, flags: number, mode?: number, nofollow: number = constants.O_NOFOLLOW ?? 0): Promise<FileHandle | undefined> {
   let before: import("node:fs").BigIntStats | undefined;
@@ -230,7 +234,7 @@ export async function openNoLink(abs: string, flags: number, mode?: number, nofo
     const st = await handle.stat({ bigint: true });
     const after = await fsp.lstat(abs, { bigint: true });
     const same = (x: { dev: bigint; ino: bigint }) => x.dev === st.dev && x.ino === st.ino;
-    if (after.isSymbolicLink() || !same(after) || (before !== undefined && !same(before))) {
+    if (after.isSymbolicLink() || !same(after) || (before !== undefined && !same(before)) || (st.isFile() && st.nlink !== 1n)) {
       await handle.close().catch(() => undefined);
       return undefined;
     }

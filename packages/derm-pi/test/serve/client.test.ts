@@ -132,6 +132,56 @@ describe("failing closed (case 228)", () => {
     await expect(r).rejects.toThrow("/usr/bin/derm gate serve exited (2): usage: derm <connect|run|watch|status|cu|acp|doctor|--version> ...");
   });
 
+  // FP2-S3 (fix pass 2's review): during the wait for 'close' after an
+  // exit, a new call found the dead child, was refused with no reason and
+  // started nothing. Now a call that finds it exited ends it with its
+  // reason and starts a new one.
+  it("a call during the wait after an exit starts a new co-process", async () => {
+    const cwd = scratch();
+    let starts = 0;
+    const dead = Object.assign(new EventEmitter(), {
+      stdin: new Writable({
+        write: (_c, _e, cb) => {
+          cb();
+          setTimeout(() => {
+            dead.stderr.write("fake derm dying\n");
+            dead.exitCode = 3;
+            dead.emit("exit", 3, null);
+            // No 'close': a grandchild holds stderr open.
+          }, 5);
+        },
+      }),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: () => true,
+      unref: () => undefined,
+    });
+    const s = new GateServe({
+      agent: "pi",
+      env: { PATH: process.env.PATH },
+      cwd: () => cwd,
+      trusted: () => true,
+      startMs: 3000,
+      requestMs: 3000,
+      locate: () => ({ path: process.execPath }),
+      spawn: (_c: string, args: string[], o: SpawnOptions) => {
+        starts += 1;
+        if (starts === 1) return dead as unknown as ChildProcess;
+        return spawn(process.execPath, [FAKE, ...args], { ...o, env: { ...o.env, FAKE_SERVE_MODE: "ok" } });
+      },
+    });
+    const a = s.request("decide", { call: { tool: "bash" } });
+    a.catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 60));
+    const b = await decide(s, { tool: "bash", input: {} });
+    expect(b.action).toBe("allow");
+    expect(starts).toBe(2);
+    await expect(a).rejects.toThrow(/exited \(3\): fake derm dying/);
+    s.close();
+  });
+
   it("still says the input closed when no exit follows", async () => {
     const cwd = scratch();
     const child = Object.assign(new EventEmitter(), {

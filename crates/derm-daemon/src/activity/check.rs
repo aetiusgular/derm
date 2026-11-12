@@ -193,7 +193,10 @@ pub fn inside_unix(path: &str, folder: &str) -> bool {
 /// path to use extended length path syntax"), and Sysmon names the same file
 /// `C:\...`, so a `\\?\` before a drive is read as the drive path, as
 /// `dunce::simplified` reads it (dunce 1.0.5 `src/lib.rs:53-60, 152-182`;
-/// other `\\?\` forms are compared as written). A path must be rooted
+/// other `\\?\` forms are compared as written). A folder NTFS keeps case
+/// sensitive (`fsutil file setCaseSensitiveInfo`, folders WSL makes) is still
+/// compared without ASCII case, so a write to a sibling that differs only in
+/// case is read as inside: open, low (FP2-S5). A path must be rooted
 /// (`C:\...`, `\\server\...` or `\...`), with no `..` part.
 pub fn inside_windows(path: &str, folder: &str) -> bool {
     fn plain(s: &str) -> String {
@@ -214,10 +217,28 @@ pub fn inside_windows(path: &str, folder: &str) -> bool {
         b.first() == Some(&b'\\')
             || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
     }
+    // FP2-S6 (fix pass 2's review): a folder in the `\\` namespace is a
+    // share only with a server and a share name; `\\?`, `\\.` or a bare
+    // `\\server` would hold every path under them.
+    fn share_or_drive(s: &str) -> bool {
+        match s.strip_prefix("\\\\") {
+            Some(rest) => {
+                let mut parts = rest.split('\\');
+                let server = parts.next().unwrap_or("");
+                let share = parts.next().unwrap_or("");
+                !server.is_empty() && server != "?" && server != "." && !share.is_empty()
+            }
+            None => true,
+        }
+    }
     let path = plain(path);
     let folder = plain(folder);
     let folder = folder.trim_end_matches('\\');
-    if folder.is_empty() || !rooted(&path) || !rooted(folder) || path.split('\\').any(|p| p == "..")
+    if folder.is_empty()
+        || !share_or_drive(folder)
+        || !rooted(&path)
+        || !rooted(folder)
+        || path.split('\\').any(|p| p == "..")
     {
         return false;
     }
@@ -1617,6 +1638,16 @@ mod tests {
         assert!(inside_windows(r"C:\a\b", r"C:\a\"));
         assert!(!inside_windows(r"C:\a\b", ""));
         assert!(!inside_windows(r"C:\a\b", r"C:\"));
+        // FP2-S6: no folder holds a whole namespace.
+        for (path, folder) in [
+            (r"\\?\UNC\evil\share\x", r"\\?\"),
+            (r"\\?\Volume{1234}\Users\x", r"\\?\"),
+            (r"\\.\PhysicalDrive0", r"\\.\"),
+            (r"\\otherhost\c$\Windows\x", r"\\otherhost\"),
+        ] {
+            assert!(!inside_windows(path, folder), "{path} in {folder}");
+        }
+        assert!(inside_windows(r"\\srv\share\p\x", r"\\srv\share\p"));
         // Names that differ outside ASCII are not folded together.
         assert!(!inside_windows("C:\\\u{e9}\\x", "C:\\\u{c9}"));
         // The Unix forms the rest of this file uses still read the same.

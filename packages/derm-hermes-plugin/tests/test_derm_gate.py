@@ -169,13 +169,25 @@ class FindDerm(unittest.TestCase):
         (local / "derm").write_text("#!/bin/sh\n")
         os.chmod(local / "derm", 0o757)
         with self.assertRaises(RuntimeError) as e:
-            derm_gate.find_derm(self.plugin, self.home, system=self.derm)
+            derm_gate.find_derm(self.plugin, self.home, candidates=[self.home / ".local" / "bin" / "derm", self.derm])
         self.assertIn(str(local / "derm"), str(e.exception))
         self.assertIn("stops at the first derm", str(e.exception))
         os.chmod(local / "derm", 0o755)
-        self.assertEqual(derm_gate.find_derm(self.plugin, self.home, system=self.derm), str(local / "derm"))
+        self.assertEqual(derm_gate.find_derm(self.plugin, self.home, candidates=[self.home / ".local" / "bin" / "derm", self.derm]), str(local / "derm"))
         (local / "derm").unlink()
-        self.assertEqual(derm_gate.find_derm(self.plugin, self.home, system=self.derm), str(self.derm))
+        self.assertEqual(derm_gate.find_derm(self.plugin, self.home, candidates=[self.home / ".local" / "bin" / "derm", self.derm]), str(self.derm))
+
+    def test_the_install_folders_are_the_launchers(self):
+        # FP2-S9: the same list, in the same order, as the launcher and the clients.
+        h = Path("/h")
+        self.assertEqual(
+            [str(p) for p in derm_gate.install_candidates(h, False)],
+            ["/h/.local/bin/derm", "/home/linuxbrew/.linuxbrew/bin/derm", "/usr/local/bin/derm", "/usr/bin/derm"],
+        )
+        self.assertEqual(
+            [str(p) for p in derm_gate.install_candidates(h, True)],
+            ["/h/.local/bin/derm", "/opt/homebrew/bin/derm", "/usr/local/bin/derm", "/usr/bin/derm"],
+        )
 
     def test_path_is_never_searched(self):
         old = os.environ.get("PATH", "")

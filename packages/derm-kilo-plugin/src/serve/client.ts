@@ -310,6 +310,8 @@ export class GateServe {
   stderr = "";
   /** Why the last co-process stopped, for the next deny. */
   lastProblem: string | undefined;
+  /** The running co-process's exit or closed input, once seen (FP2-S3). */
+  exitNote: (() => string) | undefined;
   /** The `hello` reply's policy object. */
   policy: unknown;
   closed = false;
@@ -332,10 +334,22 @@ export class GateServe {
   }
 
   private ensure(): Promise<ChildProcess> {
-    if (this.child !== undefined) return Promise.resolve(this.child);
-    this.starting ??= this.start().finally(() => {
+    // FP2-S3: a co-process that exited is ended now with its reason (its
+    // waiting calls rejected) and a new one started, not left in place for
+    // the wait after its exit (BW5B-R2), during which a call was refused
+    // with no reason and nothing started.
+    const c = this.child;
+    if (c !== undefined && (c.exitCode !== null || c.signalCode !== null)) {
+      this.stop(this.exitNote?.() ?? "derm gate serve exited", c);
       this.starting = undefined;
-    });
+    }
+    if (this.child !== undefined) return Promise.resolve(this.child);
+    if (this.starting === undefined) {
+      const p: Promise<ChildProcess> = this.start().finally(() => {
+        if (this.starting === p) this.starting = undefined;
+      });
+      this.starting = p;
+    }
     return this.starting;
   }
 
@@ -372,6 +386,7 @@ export class GateServe {
     // child_process, events 'exit' and 'close').
     let exited: string | undefined;
     const exitReason = () => `${exited}${this.stderr ? `: ${this.stderr.trim().split("\n").pop()}` : ""}`;
+    this.exitNote = () => (exited !== undefined ? exitReason() : `${prog} closed its input`);
     child.on("exit", (code, signal) => {
       exited = `${prog} exited (${signal ?? code})`;
       setTimeout(() => this.stop(exitReason(), child), CLOSE_WAIT_MS).unref?.();
@@ -408,7 +423,7 @@ export class GateServe {
     const id = this.nextId++;
     return new Promise<Reply>((resolve, reject) => {
       if (this.child !== child || child.stdin === null || child.stdin.destroyed) {
-        reject(new ServeUnavailable(this.lastProblem ?? "derm gate serve is not running"));
+        reject(new ServeUnavailable(this.child === child && this.exitNote ? this.exitNote() : (this.lastProblem ?? "derm gate serve is not running")));
         return;
       }
       const timer = setTimeout(() => this.stop(`derm gate serve did not answer ${op} within ${ms} ms`, child), ms);

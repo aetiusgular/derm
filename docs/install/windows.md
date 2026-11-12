@@ -29,7 +29,7 @@ The Windows test runs on the box's Windows 11 drive before any of this is releas
 ## The gates on Windows (Windows test w5b, 11 Nov 2026)
 
 - **The Claude Code, Codex and Gemini plugins** start `/bin/sh` on their launcher, which Windows does not have, so their gate cannot run there in this build, and an agent may run a call whose hook cannot start. `derm connect claude-code|codex|gemini --gate` says so and registers nothing.
-- **Pi, oh-my-pi, OpenCode, Kilo Code and OpenClaw** run only the derm `DERM_BIN` names, which `derm run` sets to itself; started outside `derm run` they refuse every call.
+- **Pi, oh-my-pi, OpenCode, Kilo Code and OpenClaw** run only the derm `DERM_BIN` names, which `derm run` sets to itself, and run it without checking who may write it, since Node cannot read that on Windows: any `DERM_BIN` in your environment is run as derm. With no `DERM_BIN` they refuse every call.
 - **Crush, goose, Hermes and the other `derm hook` lines** are not registered on Windows in this build either: `derm connect <agent> --gate` refuses with the reason.
 
 ## srt on Windows (wave 5b, lane 5bD; not released, not yet run on a Windows machine)

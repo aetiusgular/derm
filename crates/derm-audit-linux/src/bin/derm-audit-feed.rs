@@ -403,7 +403,11 @@ fn cmd_run(args: &[String]) -> u8 {
         return 1;
     };
     // BW5B-R1: every rotated file that opens, `<log>.1` first.
-    let rotated = open_rotated(&log, &open);
+    let place = match &loaded {
+        resume::Loaded::Kept(p) => Some((p.dev, p.inode)),
+        _ => None,
+    };
+    let rotated = open_rotated(&log, &open, place);
     let found: Vec<resume::Found> = rotated.iter().map(|r| r.1).collect();
     // FP13RR-4: whether an earlier run started here is the feed's own
     // marker; made now if this is the first start.
@@ -583,18 +587,29 @@ fn post_or_stop(poster: &mut Client, socket: &Path, token: &str, e: &Event) -> b
 
 /// Every rotated log that opens, `<log>.1`, `<log>.2` and on, stopping at
 /// the first that does not (ausearch's walk, audit 4.1.2
-/// `src/ausearch.c:270-310`; BW5B-R1), opened now and held so a rotation
-/// before the read is read through.
+/// `src/ausearch.c:266-303`; BW5B-R1), opened now and held so a rotation
+/// before the read is read through. It stops at the kept place's file too,
+/// as ausearch stops at its checkpoint's, so no older file is held open
+/// (FP2-S4: up to 999 descriptors); and a file met twice (auditd renamed it
+/// one place up during the walk, `src/auditd-event.c:1261-1279`) is kept once.
 #[cfg(unix)]
 fn open_rotated(
     log: &Path,
     open: &dyn Fn(&Path) -> Option<(File, resume::Found)>,
+    place: Option<(u64, u64)>,
 ) -> Vec<(File, resume::Found)> {
-    let mut out = Vec::new();
+    let mut out: Vec<(File, resume::Found)> = Vec::new();
     for n in 1..=resume::ROTATED_MAX {
-        match open(&resume::rotated_path_n(log, n)) {
-            Some(f) => out.push(f),
-            None => break,
+        let Some(f) = open(&resume::rotated_path_n(log, n)) else {
+            break;
+        };
+        let id = (f.1.dev, f.1.inode);
+        if out.iter().any(|(_, g)| (g.dev, g.inode) == id) {
+            continue;
+        }
+        out.push(f);
+        if Some(id) == place {
+            break;
         }
     }
     out
@@ -870,7 +885,9 @@ mod tests {
             ))
         };
         let (log_file, cur) = open(&log).unwrap();
-        let rotated = open_rotated(&log, &open);
+        // An older file beyond the place's is not opened (FP2-S4).
+        std::fs::write(dir.join("audit.log.3"), line(0)).unwrap();
+        let rotated = open_rotated(&log, &open, Some((pos.dev, pos.inode)));
         assert_eq!(rotated.len(), 2);
         let found: Vec<resume::Found> = rotated.iter().map(|r| r.1).collect();
         let (start, gap) = resume::decide(
@@ -901,6 +918,36 @@ mod tests {
         assert_eq!(next_line(&rx).0, line(4));
         assert_eq!(next_line(&rx).0, line(5));
         drop(rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FP2-S4: a file met twice in the walk (auditd renamed it one place
+    /// up meanwhile; played with a hard link) is opened once, so its lines
+    /// are not posted twice.
+    #[test]
+    fn fp2_s4_a_rotated_file_met_twice_is_kept_once() {
+        let dir = std::env::temp_dir().join(format!("derm-fp2s4-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("audit.log");
+        std::fs::write(&log, "c\n").unwrap();
+        std::fs::write(dir.join("audit.log.1"), "b\n").unwrap();
+        std::fs::hard_link(dir.join("audit.log.1"), dir.join("audit.log.2")).unwrap();
+        std::fs::write(dir.join("audit.log.3"), "a\n").unwrap();
+        let open = |p: &Path| -> Option<(File, resume::Found)> {
+            let f = File::open(p).ok()?;
+            let m = f.metadata().ok()?;
+            Some((
+                f,
+                resume::Found {
+                    dev: m.dev(),
+                    inode: m.ino(),
+                    len: m.len(),
+                },
+            ))
+        };
+        let got = open_rotated(&log, &open, None);
+        assert_eq!(got.len(), 2, "the hard link is the same file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

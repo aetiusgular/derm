@@ -835,7 +835,7 @@ fn route_says_where_a_plugin_finds_derm() {
     fake_derm(&home);
     let r = go(&home, &["pi", "--gate"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert!(r.out.contains("this derm is in none of them"), "{}", r.out);
+    assert!(r.out.contains("finds no derm in"), "{}", r.out);
     let bin = home.join(".local/bin");
     fs::create_dir_all(&bin).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
@@ -848,6 +848,24 @@ fn route_says_where_a_plugin_finds_derm() {
         "{}",
         r.out
     );
+    // FP2-S1: a first derm that is there and refused is named; connect
+    // never says a later one answers, as the launcher would not run it.
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o777)).unwrap();
+    let r = go(&home, &["claude-code", "--gate"]);
+    assert!(
+        r.out.contains(&format!(
+            "stops at {}, which is there and not used: others may write",
+            bin.join("derm").display()
+        )),
+        "{}",
+        r.out
+    );
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // Another derm first: it decides, and connect says it is not this one.
+    fs::remove_file(bin.join("derm")).unwrap();
+    echo_derm(&bin);
+    let r = go(&home, &["pi", "--gate"]);
+    assert!(r.out.contains("which is not this derm"), "{}", r.out);
 }
 
 #[cfg(unix)]
@@ -1304,7 +1322,11 @@ fn the_launcher_tries_the_folders_the_in_process_plugins_try() {
         let brew: Vec<&str> = line.split('"').nth(1).unwrap().split(' ').collect();
         assert_eq!(&want[1..3], brew.as_slice(), "{line}");
         assert!(sh.contains("local_bin=${HOME%/}/.local/bin/derm"));
-        assert!(sh.contains("for c in $local_bin $brew /usr/bin/derm; do"));
+        // The order: ~/.local/bin first, then the brew line, then /usr/bin,
+        // each a whole word (FP2-S2).
+        assert!(sh.contains("set -- $brew /usr/bin/derm\n"));
+        assert!(sh.contains("[ -n \"$local_bin\" ] && set -- \"$local_bin\" \"$@\"\n"));
+        assert!(sh.contains("for c in \"$@\"; do"));
         assert_eq!(want[3], "/usr/bin/derm");
         // The TypeScript's list, the same strings.
         for w in &want[1..] {
@@ -1638,6 +1660,12 @@ fn mw5b_6_a_homebrew_derm_registers_by_its_opt_link() {
     fs::set_permissions(&opt, fs::Permissions::from_mode(0o777)).unwrap();
     assert_eq!(gate::self_path(), Ok(real.clone()));
     fs::set_permissions(&opt, fs::Permissions::from_mode(0o755)).unwrap();
+    // FP2-S11: a Cellar/<name> folder others may write: the keg path.
+    let name_dir = prefix.join("Cellar/derm");
+    fs::set_permissions(&name_dir, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(gate::self_path(), Ok(real.clone()));
+    fs::set_permissions(&name_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(gate::self_path(), Ok(want.clone()));
     // A link to another version: the keg path.
     fs::remove_file(opt.join("derm")).unwrap();
     fs::create_dir_all(prefix.join("Cellar/derm/1.2.2/bin")).unwrap();
@@ -1734,6 +1762,22 @@ fn mw5b_5_a_refused_derm_stops_the_launcher_and_is_named() {
     fs::set_permissions(&local, fs::Permissions::from_mode(0o755)).unwrap();
     let r = launch_with_brew(&brew, &work, &h, &["codex", "pre"]);
     assert_eq!(r.code, Some(0), "{}", r.err);
+}
+
+#[cfg(unix)]
+/// FP2-S2 (fix pass 2's review): the launcher split an unquoted HOME, so a
+/// home with a space became two candidates and, under MW5B-5's rule, the
+/// first fragment stopped the call. The TS client and Hermes read it whole.
+#[test]
+fn fp2_s2_a_home_with_a_space_is_one_candidate() {
+    let home = scratch("fp2 s2 *home");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    echo_derm(&home.join(".local/bin"));
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    assert!(r.out.starts_with("argv:hook claude-code pre"), "{}", r.out);
 }
 
 // ---- Wave 5b lane 5bF: registration ports ----
@@ -2488,10 +2532,26 @@ fn mw5b_the_launcher_and_the_clients_read_access_lists_and_groups_as_connect_doe
     assert!(py.contains("real.name != \"derm\""));
     // MW5B-5: each reader that searches the install folders stops at the
     // first derm that is there and refused, and says so in the same words.
+    // FP2-S9: Hermes searches the same folders.
+    for macos in [false, true] {
+        for c in gate::install_candidates(Path::new("/h"), macos)
+            .iter()
+            .skip(1)
+        {
+            assert!(
+                py.contains(&format!("\"{}\"", c.display())),
+                "{} not in derm_gate.py",
+                c.display()
+            );
+        }
+    }
+    // FP2-S1: derm connect's route note is the fourth reader.
+    let rs = read(&repo().join("crates/derm-cli/src/connect/gate.rs"));
     for (name, text) in [
         ("derm-gate.sh", &sh),
         ("client.ts", &ts),
         ("derm_gate.py", &py),
+        ("gate.rs", &rs),
     ] {
         assert!(text.contains("is there and not used"), "{name}");
         assert!(

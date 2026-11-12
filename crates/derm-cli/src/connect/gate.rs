@@ -576,9 +576,13 @@ fn homebrew_opt(real: &Path, uid: derm_core::platform::UserId) -> Option<String>
     {
         return None;
     }
-    let om = std::fs::symlink_metadata(&opt_dir).ok()?;
-    if !om.is_dir() || !closed(&opt_dir, &om, uid) {
-        return None;
+    // FP2-S11: every folder the opt line goes through, not only `opt`: the
+    // prefix, `Cellar/<name>` and the version's folder too.
+    for dir in [&opt_dir, prefix, name_dir, version] {
+        let m = std::fs::symlink_metadata(dir).ok()?;
+        if !m.is_dir() || !closed(dir, &m, uid) {
+            return None;
+        }
     }
     (std::fs::canonicalize(&opt).ok()? == real).then_some(text)
 }
@@ -631,7 +635,7 @@ pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
             "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
         ))),
         "pi" | "oh-my-pi" | "opencode" | "kilo" | "openclaw" => Some(Ok(format!(
-            "on Windows {agent}'s gate runs only the derm DERM_BIN names, which `derm run` sets to itself; started outside `derm run` it refuses every call (rules case 227)"
+            "on Windows {agent}'s gate runs only the derm DERM_BIN names, which `derm run` sets to itself, and runs it without checking who may write it (Node cannot read that there; case 109 does not hold on Windows yet, FP2-S10); with no DERM_BIN it refuses every call (rules case 227)"
         ))),
         _ => None,
     }
@@ -651,30 +655,84 @@ fn route_note(agent: &Agent, ctx: &mut Ctx) {
         }
         return;
     }
+    // FP2-S1 (fix pass 2's review): the first derm that is there decides,
+    // as the launcher and the in-process clients read it (MW5B-5; case 112).
     let me = self_path().ok().and_then(|p| std::fs::canonicalize(p).ok());
-    let found = install_candidates(&ctx.home, ctx.macos)
-        .into_iter()
-        .find(|c| {
-            std::fs::canonicalize(c)
-                .ok()
-                .is_some_and(|r| Some(&r) == me.as_ref())
-        });
-    let tried = install_candidates(&ctx.home, ctx.macos)
+    let uid = derm_core::platform::real_user();
+    let candidates = install_candidates(&ctx.home, ctx.macos);
+    let first = candidates
         .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    ctx.out.push_str(&match found {
-        Some(c) => format!(
-            "route:  {}'s gate runs derm from {} (this derm); it never looks derm up on PATH (rules case 227)\n",
-            agent.name,
-            c.display()
-        ),
+        .find(|c| std::fs::symlink_metadata(c).is_ok());
+    let note = match first {
+        Some(c) => match refuse_candidate(c, uid) {
+            Some(why) => format!(
+                "route:  {}'s gate stops at {}, which is there and not used: {why}; derm stops at the first derm it finds rather than run another, so until that one is fixed or removed the gate denies every call (rules case 227)\n",
+                agent.name,
+                c.display()
+            ),
+            None if std::fs::canonicalize(c).ok() == me => format!(
+                "route:  {}'s gate runs derm from {} (this derm); it never looks derm up on PATH (rules case 227)\n",
+                agent.name,
+                c.display()
+            ),
+            None => format!(
+                "route:  {}'s gate runs derm from {}, which is not this derm; it is the first derm in {}, so that one decides (rules case 227)\n",
+                agent.name,
+                c.display(),
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
         None => format!(
-            "route:  {}'s gate runs derm from the first of {tried} that only you or root can write; this derm is in none of them, so install it there, or the gate denies every call (rules case 227)\n",
-            agent.name
+            "route:  {}'s gate finds no derm in {}; install this derm there, or the gate denies every call (rules case 227)\n",
+            agent.name,
+            candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
-    });
+    };
+    ctx.out.push_str(&note);
+}
+
+/// Why an install folder's derm would not be run by the launcher and the
+/// in-process clients, or `None` when it would (their `refuse` and
+/// `examine`, case 109's rule; FP2-S1): its real path a regular file named
+/// derm, owned by you or root and closed to others, in a closed folder, as
+/// is the folder the candidate is named in. Each link hop's folder is
+/// checked by the launcher and the clients; here the named folder and the
+/// real one, as [`checked_self`] checks this derm.
+fn refuse_candidate(c: &Path, uid: derm_core::platform::UserId) -> Option<String> {
+    let Ok(real) = std::fs::canonicalize(c) else {
+        return Some("a link leads nowhere, or its folder cannot be read".into());
+    };
+    if real.file_name().and_then(|n| n.to_str()) != Some("derm") {
+        return Some("not named derm".into());
+    }
+    let Ok(meta) = std::fs::metadata(&real) else {
+        return Some("cannot be read".into());
+    };
+    if !meta.is_file() {
+        return Some("not a regular file".into());
+    }
+    if !closed(&real, &meta, uid) {
+        return Some("owned by someone else, or others may write it".into());
+    }
+    let named = c.parent().and_then(|d| std::fs::canonicalize(d).ok());
+    for dir in [real.parent().map(Path::to_path_buf), named]
+        .into_iter()
+        .flatten()
+    {
+        match std::fs::metadata(&dir) {
+            Ok(m) if m.is_dir() && closed(&dir, &m, uid) => {}
+            _ => return Some(format!("others may write {}", dir.display())),
+        }
+    }
+    None
 }
 
 /// Fills a command template's `{node}`, `{hook_file}`, `{hook_dir}`,

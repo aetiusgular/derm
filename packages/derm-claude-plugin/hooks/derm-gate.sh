@@ -189,7 +189,12 @@ case "${HOME-}" in /?*) local_bin=${HOME%/}/.local/bin/derm ;; esac
 # derm, which hid the refusal and ran a derm you did not mean (MW5B-5,
 # BW5B-R3), as ssh stops at a ~/.ssh/config with bad permissions and passes
 # over a missing one (OpenSSH readconf.c, read_config_file).
-for c in $local_bin $brew /usr/bin/derm; do
+# The candidates as whole words: HOME may hold a space or a glob character
+# (FP2-S2), and $brew is fixed text with none.
+# shellcheck disable=SC2086
+set -- $brew /usr/bin/derm
+[ -n "$local_bin" ] && set -- "$local_bin" "$@"
+for c in "$@"; do
   res=$(refuse "$c")
   case "$res" in
     "ok "/*) exec "${res#ok }" hook "$agent" "$event" ;;

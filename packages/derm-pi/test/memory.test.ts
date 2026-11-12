@@ -258,6 +258,13 @@ describe("the index, injected as a message", () => {
     const h = await openNoLink(dangling, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT, 0o644, 0);
     expect(h).toBeUndefined();
     expect(existsSync(path.join(elsewhere, "made-by-us.md"))).toBe(false);
+    // FP2-S7: a hard link to a file outside is the same file to lstat and
+    // fstat; a file with a second name is refused, with or without the flag.
+    const { linkSync } = await import("node:fs");
+    writeFileSync(path.join(elsewhere, "precious"), "keep\n");
+    linkSync(path.join(elsewhere, "precious"), path.join(dir, "hard.md"));
+    expect(await openNoLink(path.join(dir, "hard.md"), constants.O_RDONLY, undefined, 0)).toBeUndefined();
+    expect(await openNoLink(path.join(dir, "hard.md"), constants.O_RDONLY)).toBeUndefined();
     // A plain file opens.
     writeFileSync(path.join(dir, "real.md"), "ok\n");
     const ok = await openNoLink(path.join(dir, "real.md"), constants.O_RDONLY, undefined, 0);

@@ -165,13 +165,21 @@ def trusted_file(path: Path, derm: bool = False) -> Optional[str]:
     return None
 
 
-def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None, system: Path = Path("/usr/bin/derm")) -> str:
+def install_candidates(home: Path, macos: bool) -> list:
+    """Where derm's own installs put it, in the order the plugins' launcher,
+    the in-process clients and derm connect try them (one list, case 112;
+    FP2-S9: Hermes had ~/.local/bin and /usr/bin only)."""
+    brew = ["/opt/homebrew/bin/derm", "/usr/local/bin/derm"] if macos else ["/home/linuxbrew/.linuxbrew/bin/derm", "/usr/local/bin/derm"]
+    return [home / ".local" / "bin" / "derm"] + [Path(b) for b in brew] + [Path("/usr/bin/derm")]
+
+
+def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None, candidates: Optional[list] = None) -> str:
     """derm's absolute path (case 227). Raises with the reason when none can be trusted.
 
     Without a derm-path file the first derm that is there decides: one that is
     there and refused stops the search with its reason, as the plugins'
-    launcher and the in-process clients stop (MW5B-5, BW5B-R3). ``system`` is
-    the last folder's derm; tests pass their own.
+    launcher and the in-process clients stop (MW5B-5, BW5B-R3). ``candidates``
+    replaces the install folders' list in tests.
     """
     if os.name == "nt":
         # Python's standard library cannot read a file's access list, so the check
@@ -192,7 +200,9 @@ def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None, system: Path
             raise RuntimeError(f"the derm {DERM_PATH_FILE} names is not used: {why}")
         return str(derm)
     home = home if home is not None else Path(os.path.expanduser("~"))
-    for derm in (home / ".local" / "bin" / "derm", system):
+    if candidates is None:
+        candidates = install_candidates(home, sys.platform == "darwin")
+    for derm in candidates:
         if not os.path.lexists(derm):
             continue
         why = trusted_file(derm, derm=True)
