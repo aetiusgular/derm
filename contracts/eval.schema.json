@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aetiusgular/derm/contracts/eval.schema.json",
+  "title": "derm eval scenarios and results",
+  "description": "contracts/eval.md (the wave 6 base, 12 Nov 2026): a scenario (section 1) or a result (section 2).",
+  "oneOf": [{ "$ref": "#/$defs/scenario" }, { "$ref": "#/$defs/result" }],
+  "$defs": {
+    "answer": { "enum": ["allow", "ask", "deny", "defer", "error"] },
+    "scenario": {
+      "type": "object",
+      "required": ["suite", "id", "source", "split", "steps"],
+      "properties": {
+        "suite": { "enum": ["moatbench", "matrix", "effects", "overhead", "join", "hsb", "terminal-bench", "oas"] },
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,95}$" },
+        "source": {
+          "type": "object",
+          "required": ["name"],
+          "properties": { "name": { "type": "string" }, "version": { "type": "string" }, "path": { "type": "string" }, "licence": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "split": { "enum": ["dev", "heldout"] },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["kind", "input"],
+            "properties": {
+              "kind": { "enum": ["shell", "read", "write", "edit", "mcp", "fetch"] },
+              "input": { "type": "object" },
+              "expect": { "enum": ["allow", "ask", "deny", "defer"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "targets": { "type": "array", "items": { "type": "string" } },
+        "excludedWhy": { "type": "string" },
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["what"],
+            "properties": {
+              "what": { "enum": ["read", "write", "connect", "exec", "fork"] },
+              "path": { "type": "string" },
+              "host": { "type": "string" },
+              "after": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["scenario", "arm", "machine", "steps"],
+      "properties": {
+        "scenario": { "type": "string", "pattern": "^[a-z-]+/[a-z0-9][a-z0-9-]{0,95}$" },
+        "arm": {
+          "type": "object",
+          "required": ["tool", "version", "setting", "boundary", "host"],
+          "properties": {
+            "tool": { "type": "string" },
+            "version": { "type": "string" },
+            "setting": { "type": "string" },
+            "boundary": { "enum": ["none", "srt", "sbx"] },
+            "tier": { "enum": ["standard", "whole", null] },
+            "host": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "machine": {
+          "type": "object",
+          "required": ["name", "os"],
+          "properties": { "name": { "type": "string" }, "os": { "type": "string" }, "kernel": { "type": "string" }, "cpu": { "type": "string" }, "ram": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["answer"],
+            "properties": { "answer": { "$ref": "#/$defs/answer" }, "msPerCall": { "type": "number", "minimum": 0 }, "errno": { "type": ["string", "null"] } },
+            "additionalProperties": false
+          }
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["seenByTruth", "seenByTool"],
+            "properties": { "seenByTruth": { "type": "boolean" }, "seenByTool": { "type": "boolean" }, "credited": { "type": ["string", "null"] }, "correct": { "type": ["boolean", "null"] } },
+            "additionalProperties": false
+          }
+        },
+        "excluded": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

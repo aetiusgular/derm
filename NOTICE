@@ -62,3 +62,11 @@ Third-party schema, added by the wave 5 base (4 Nov 2026):
 | crates/derm-daemon/src/computer_use/tool.rs (its hard blocks: the blocked key combos and shell patterns; the sticky target and `app=` guard; the window match; the action-to-tool map; the verdict ladder and its texts; at-most-once on a timeout or a lost transport) | Rules ported by hand from Hermes Agent's computer-use tool (wave 5 lane U) | NousResearch/hermes-agent at tag v2026.9.24 (f97608f178d1ffeca59860195ab7da295f7c8e5f), tools/computer_use/ (tool.py, cua_backend_capture.py, cua_backend_input.py, cua_backend_session.py, cua_backend_parse.py) | MIT, Copyright (c) 2025 Nous Research, LICENSES/MIT-Nous-Research.txt |
 
 LICENSES/MIT-Nous-Research.txt is that repository's LICENSE at the same tag.
+
+Third-party scenarios, added by the wave 6 base (12 Nov 2026):
+
+| Here | What | Source | Licence |
+|---|---|---|---|
+| contracts/fixtures/eval/moatbench-e0-allowed.json (each scenario's `id`, `threat` and `steps`) | 17 MoatBench scenarios, copied unchanged, for the red tests that replay the steps derm 0.1.3 allowed in E0 | the crates.io package openmoat 0.19.0 (.cargo_vcs_info.json sha1 483d740e1db4e55a747238795f49f2f678c2b6a7, path crates/openmoat-cli), moatbench/*.yaml | MIT OR Apache-2.0; derm takes it under MIT, Copyright (c) 2026 Crocodile Labs and OpenMoat contributors, LICENSES/MIT-OpenMoat.txt |
+
+LICENSES/MIT-OpenMoat.txt is that package's LICENSE file.

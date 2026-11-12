@@ -83,3 +83,46 @@ Every record keeps hashes, sizes, paths, package names and versions, and never c
 | `harnessExe`, `harnessChildExe` | integration w5's fix passes 3 and 7, `run/mod.rs` | The program `derm run` started by its real path (for a `#!` script, its interpreter), and the binary a launcher script starts as the harness (Codex's npm launcher's native binary, found as `bin/codex.js` finds it), each null when not resolved. The join finds the harness under a boundary's wrappers by the first (MW5-16), takes the launcher's child that execs the second while no call runs as the harness too (MW5-28), and places a child the harness runs either one in again, while a call runs, by that process's next exec (MW5-29) |
 
 The user's switches for all of this are one file, `~/.derm/settings.json` (`settings.schema.json`): lane W's `derm setup` writes it, behind a question per switch; lanes S, T, U and X read their own key. `~/.derm/` is a control path (`policy.md`, section 4, step 7a), so a gated agent's write to it asks and srt denies it.
+
+## 6. Wave 6's records (the wave 6 base, 12 Nov 2026)
+
+Written by the wave 6 base from `plans/toolkit_wave6_plan.md` sections 2.1 and 2.2 and note AZ (rows in brackets); nothing here is built yet. The same rules as section 5: hashes, sizes, names and paths, never content, a header or a token; a lane that needs a field not here asks integration. Fixtures: `fixtures/audit/` (6.4), `fixtures/hook-w6/claude-code-2.1.322.json` (the hook inputs 6B and 6D read, recorded from the real CLI).
+
+### 6.1 `run.start`'s `tier` (lane 6A)
+
+| Field | Shape |
+|---|---|
+| `tier` | `standard` or `whole`; `asked` (what `--tier` or the setting said), `why` when they differ (an agent with no sandbox row, srt with `standard`: `contracts/sandbox.md` section 1); `via` (the row's: `settings-flag`, `config-override`, `advisory`, `none`); `vendorVersion` (the agent's version as read); `pinSha256` (section 6 of `sandbox.md`); `vendorUnderSbx` (`on` when the vendor sandbox runs inside sbx) |
+
+Set only by `run/standard/`; the base's stub sets none, so a chat reads as before wave 6.
+
+### 6.2 Taint (lane 6D)
+
+| `kind` | `source` | What it says |
+|---|---|---|
+| `taint.mark` | `adapter` (the gate, light tier or daemon) or `derm` (the daemon from the tap) | A chat became tainted: `reason` (`untrusted-content`: a fetch, a web search, an MCP result, an unknown tool; `secret-read`: a read of a secret path), `toolUseId` of the call that brought it, `via` (`tap`, `hook`, `both`), and for a result the tap saw, its sha256 and size; never the result. Id `<harness>-<tool_use_id>-taint` |
+| `taint.review` | `adapter` | A call taint raised to `ask` (or `deny` where `taint.verdict` says so): the call's `toolUseId`, `rule` (`new-host`, `protected-write`, `install`, `push`, `session-written-code`, `named-in-result`), and the `taint.mark` ids it rests on. A call taint did not change gets no record |
+
+`derm status` says "taint from hooks only" for a chat whose tap is off (case 219). Taint follows files the chat wrote (OpenMoat ADR-029): a write by a tainted chat is recorded by path in the chat's taint state, not as a record of its own.
+
+### 6.3 Egress and the broker (lane 6C)
+
+| `kind` | `source` | What it says |
+|---|---|---|
+| `egress.connect` | `derm` (derm-egress through the daemon) | One connection through derm-egress: CONNECT host and port, SNI, whether they matched, bytes each way, the verdict (`forwarded`, `blocked`), a `reason` when blocked |
+| `secret.inject` | `derm` | A placeholder swapped for its secret: the secret's `id` and the host; never the value |
+| `secret.block` | `derm` | A placeholder or a secret's value bound for a host the secret does not name (case 217): the secret's `id`, the host, where it sat (`header`, `body`, `url`, `dns`), never the value |
+
+Under sbx derm brokers no provider credential (case 218); `run.start`'s `tap.reason: sbx-credential` already says so.
+
+### 6.4 The light tier's per-chat log (lane 6B; the line format for 6E)
+
+- **Where.** With no daemon reachable (`gate/daemon.rs` `post_event` returned false), the gate appends the adapter record to `~/.derm/local/<chat>.jsonl`: the folder 0700, the file 0600, `<chat>` the chat id cleaned as `daemon::decision_id` cleans a call id (ASCII letters, digits, `_ . : -`; others `_`; at most 128), with `_` put in front of a cleaned id that is empty or starts with `.`, so no id names `.`, `..` or a hidden file (rules section 5, item 3). A taint state for the chat sits beside it as `<chat>.taint.json`. Under srt `~/.derm` is denied to the harness (B8), so the light tier is the path without `derm run`.
+- **One line per record**, the chain v2 format (below), written with a single `write` call (B5: `writeln!` on an unbuffered file makes several and tears lines), under `File::lock` taken with `try_lock` and a deadline below the hook's registered timeout (B4: 30 to 120 s registered; Grok's 5 s and Cline's 3 s are the tight ones); a pre event whose append fails is a deny. On Windows the file is opened read plus append, never append-only (`lock` fails with error 5), and a sharing violation (error 32) is retried within the deadline (AZ-8); readers open it with `FileShare.ReadWrite | Delete`.
+- **Chain v2** (`derm_core::audit_chain`, the reference, which the base wrote so 6B and 6E build against one format): `{"v":2,"seq":<n>,"prev":"<hex64>","kind":"<kind>","hash":"<hex64>","record":<object>}`, `hash` = SHA-256 over `derm-chain-v2\n<seq>\n<prev>\n<kind>\n<record as serde_json::to_string>`, keys sorted (serde_json without `preserve_order`), no floating-point number in a record (E2), `prev` of the first line 64 zeros, `seq` from 0. It fixes AZ-1: v1 hashed neither `seq` nor the key, so a relabel or a consistent renumber verified (B6). `verify` takes the start (`seq` and `prev`, for a file that does not begin a chain) and the anchored end; a tail cut or a whole rewrite shows only against an anchor (case 216). `kind` is the record's `kind` (`approval`, `tool.call`, `install.call`, `taint.mark`, `taint.review`). Fixtures: `fixtures/audit/chain-v2.jsonl` and `tampered.json`, written by a second implementation and held to the Rust one.
+- **Concurrent writers.** A Claude Code subagent's calls carry the parent's `session_id` (plus `agent_id`, `agent_type`) and run in the background, so main and subagent appends to one file overlap (B3, run): the lock is what keeps the chain whole.
+- **Not covered.** Calls decided outside `crates/derm-cli/src/gate/` reach neither this log nor taint: Amp's plugin, the sbx kit's embedded Claude Code hook, and gates registered from the compat and native packages' own template files (note AZ, S1). `derm status` and `derm init` name them per agent until the switch-over's rest moves them to Rust.
+
+### 6.5 `derm audit export` (lane 6E)
+
+JSON Lines, one chain v2 line per record, the daemon's v1 log converted on export (`v: 1` lines carried as they are, with the v1 rule, `crates/derm-daemon/src/activity/chain.rs`), content excluded unless the content switch kept it and the person asks (E1). `derm audit verify <file> [--start <seq>:<prev>] [--anchor <seq>:<hash>]` exits 0 when the chain holds and 1 with the first broken line; it needs no daemon (E2). `derm audit anchor` records a head (`seq` and `hash`) in a git repository or a file the person names, from a terminal only (E3, OpenMoat's `refs/moat/anchors` as prior art). An OCSF 1.9.0 mapping is optional (E4: classes 1007, 1001, 4001, 6003, 2004). Case 221: an export with content off holds no content; `verify` fails on an edited line, a cut and a reordering.

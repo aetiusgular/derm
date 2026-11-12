@@ -1,0 +1,47 @@
+# Contract: the Standard tier (the agent's own sandbox from derm's policy)
+
+Written by the wave 6 base, 12 Nov 2026, from `plans/toolkit_wave6_plan.md` section 2.1 (lane 6A) and note AZ (`research-notes/AZ_wave6_base_research.md`, the rows named in brackets). Filled by lane 6A (`crates/derm-cli/src/run/standard/`, `connect/sandbox/`, `connect/presets/wave6/sandbox.json`); read by 6B (`derm init` writes the tier where 6A supports it), 6C (the proxy port) and 6F (the matrix's Standard column). Nothing here is built on the base. A change is a request for integration. Labels: V read at the pin or run, I inference, NF not found.
+
+Pins: Claude Code 2.1.322, Codex 0.167.2 (`rust-v0.167.2` = `ce21072`), Cursor CLI 2026.11.11-b912975, Gemini CLI 0.68.0, srt 0.0.82, sbx 0.53.0 (note AZ section 1). A row of `presets/wave6/sandbox.json` records the version it was verified at; `derm doctor` compares it with the installed one (case 81).
+
+## 1. Tiers and the flag
+
+- **Standard**: the agent's own per-command sandbox, written from derm's policy and delivered by `derm run`; the harness's tools gated by derm's hooks. **Whole**: srt or sbx around the agent (wave 5). A chat runs one tier and `derm run` says which and why.
+- `derm run <harness> --tier standard|whole`. With no `--tier`, `~/.derm/settings.json`'s `tier.default` (`settings.schema.json`), whose default is `standard` (the plan's call 4 as recommended; Tony's call stands open). `standard` for an agent whose sandbox row is null or `none` runs the Whole tier and says why.
+- `--tier standard` with `--boundary srt`: the vendor's sandbox does not start inside srt (A8: Codex's Seatbelt refused with `sandbox_apply: Operation not permitted`; Claude Code's Bash fails closed per call, and srt's `TMPDIR` is missing, AZ-5), so derm runs srt with the vendor sandbox off (case 195) and says "one tier: whole (srt)" (case 215). With `--boundary sbx`, both vendors' sandboxes start and hold inside the VM (A8, run on sbx 0.53.0): derm keeps the vendor sandbox on there and says so. With `--boundary none`, the Standard tier alone.
+- `run.start`'s `detail.tier` (`events.md` section 6.1) records the tier, how it was delivered and the vendor version.
+
+## 2. Claude Code (`via: settings-flag`)
+
+- **Delivery.** derm's block goes in its own file, passed with `--settings <file>` by `derm run`; never only in the user's settings (A2). A project's `sandbox.enabled:false`, `filesystem.allowRead`, `filesystem.allowWrite` or `excludedCommands` beats the user's settings even with the user's `allowUnsandboxedCommands:false`; `--settings` held against each (A2, run on Linux and macOS). The block is never in a file with other settings, since one mistyped value drops the whole file, its hooks included ("These settings files did not load, so nothing in them is in effect, including hooks and permission rules", A10; `fixtures/sandbox/claude-code-2.1.322.json` `badType`, recorded here). `--setting-sources user` where the run allows it (A2).
+- **The block** (keys V at 2.1.322, A1): `sandbox.enabled: true`, `sandbox.failIfUnavailable: true`, `sandbox.allowUnsandboxedCommands: false`, `sandbox.autoAllowBashIfSandboxed: true`, `sandbox.filesystem.denyRead` (derm's secret paths, the control paths of policy.md section 4, step 7a, and `~/.derm`), `sandbox.filesystem.allowWrite` (the chat's folders), `sandbox.network.allowedDomains`, `sandbox.network.httpProxyPort` when lane 6C's proxy runs (C1: with it Claude Code no longer applies `allowedDomains`, so derm-egress filters alone), and `permissions.blockReadsOutsideWorkingDirectories: true`. `allowUnixSockets` is macOS only (A1). derm never writes `excludedCommands` (AZ-7).
+- **Refusals at start** (case 214): the effective settings (every source Claude Code reads: managed, `--settings`, user, project, local) hold `allowUnsandboxedCommands: true`, `dangerouslyDisableSandbox`, or any `excludedCommands`: `excludedCommands` runs a command outside the sandbox whatever `allowUnsandboxedCommands` says, where an approval path exists (AZ-7, run on macOS with `--allowedTools Bash`; `excludedCommands` inside a `--settings` block not run).
+- **Unavailable sandbox.** With bubblewrap missing, Claude Code refuses to start (exit 1, "sandbox required but unavailable ... refusing to start without a working sandbox": `fixtures/sandbox/claude-code-2.1.322.json` `missingDeps`, recorded here on Linux). Inside srt it starts and each Bash fails closed (A9): derm cannot read the outcome from the exit code, which is one reason section 1 never nests under srt.
+- **What it covers.** Bash, PowerShell and Monitor only; file tools, MCP servers, hooks and WebFetch run outside it (A7). The gate covers those; `covers` in the sandbox row says so.
+- **Run here (V, Linux, bubblewrap and socat):** with the block by `--settings`, a Bash that reads a `denyRead` file got "No such file or directory", a write outside the project did not reach the host, a write inside it did; with an empty settings file all three went through (`fixtures/sandbox/claude-code-2.1.322.json`).
+
+## 3. Codex (`via: config-override`)
+
+- **Delivery.** A named profile and `default_permissions = "derm"`, passed by `derm run` as `-c` pairs on one side of the subcommand (case 184), since a trusted project's layer (25) outranks the user's (20, 21) and session flags (30) outrank both (A4; `config/src/config_layer_source.rs:33-50`).
+- **The profile** (V at `ce21072`): `[permissions.derm]` with `extends = ":workspace"` (or `":read-only"`; `protocol/src/models.rs:414-417`), `description`, `[permissions.derm.filesystem]` mapping a path to `read`, `write` or `deny` (`protocol/src/permissions.rs:120`), `[permissions.derm.network]` (`config/src/permissions_toml.rs`, `NetworkToml`: `enabled`, `mode`, `domains`, `allow_upstream_proxy`, `allow_local_binding`, `mitm`).
+- **Typos are silent.** A profile key Codex does not know is accepted with no word (`fixtures/sandbox/codex-0.167.2.json` `unknownKey`, run here): lane 6A tests the effective behaviour, never only that Codex took the text.
+- **Network.** Codex's network proxy chains upstream by the proxy process's `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` (CONNECT) and ignores `NO_PROXY`; `allow_upstream_proxy` is a bool, default true; the `network_proxy` feature is experimental and off (A5, C3, run on the box). It resolves an allowed host itself and refuses one that is not public before chaining, unless `allow_local_binding` (AZ-11).
+- **Sign-in stores** stay as cases 186 and 190 say.
+- **Run here (V, Linux, bubblewrap):** `codex sandbox --permission-profile derm` with a `deny` path: the denied read got "Permission denied", a write outside the workspace "Read-only file system", a write inside it went through (`fixtures/sandbox/codex-0.167.2.json`).
+
+## 4. Cursor CLI (`via: advisory`)
+
+The CLI merges `~/.cursor/sandbox.json` with the workspace's `.cursor/sandbox.json` (and team settings): booleans OR, read paths last-defined, write paths and network allow lists union (A6, read in the 2026.11.11 bundle, not run). A repository file can widen what the user's file allows, and no flag that loads a settings layer was found (NF), so derm cannot hold the tier for Cursor: its row is `advisory`, `derm doctor` names a repository `sandbox.json` that widens, and `derm run --tier standard` for Cursor says the tier is not held and offers the Whole tier.
+
+## 5. Gemini CLI
+
+A whole-process sandbox and an off-by-default per-tool one (A11, I). A writer is optional for lane 6A; its row is null until verified.
+
+## 6. Drift (case 213)
+
+What derm wrote is pinned: the sha256 of the block or the profile text, kept in `~/.derm/` beside the policy. Before a chat starts, `derm run` reads the effective settings again; a difference from the pin, a project file that weakens a key (section 2's list, a Codex project profile), or an agent update that moved a key's meaning stops the chat with the key named, and `derm doctor` names it too (OpenMoat ADR-006, note AX).
+
+## 7. Fixtures and red tests
+
+- `fixtures/sandbox/claude-code-2.1.322.json`, `fixtures/sandbox/codex-0.167.2.json`: recorded from the real CLIs by the wave 6 base (each file's `$comment` says how).
+- `crates/derm-cli/tests/contracts_w6.rs`, lane 6A's tests (`--features w6-red`): the `--tier` flag, Claude Code's `--settings` block, Codex's `-c` profile, the refusal of `excludedCommands` (case 214), one tier under srt (case 215).

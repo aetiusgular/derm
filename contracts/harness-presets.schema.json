@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/aetiusgular/derm/contracts/harness-presets.schema.json",
   "title": "derm harness presets",
-  "description": "The preset table, assembled from one file per agent in crates/derm-cli/src/connect/presets/ (index.json names the lists and their order; integration w2). `harnesses` are the rows derm connect writes for (lane C's fields, not all listed here); `planned` are agents derm does not cover yet. Every row carries `coverage` (integration w1, note AQ section 4). Wave 5 (the wave 5 base): `tap`, `kit` and `executables` are merged into rows from the sibling tables in presets/wave5/, one lane's each (S, T, W).",
+  "description": "The preset table, assembled from one file per agent in crates/derm-cli/src/connect/presets/ (index.json names the lists and their order; integration w2). `harnesses` are the rows derm connect writes for (lane C's fields, not all listed here); `planned` are agents derm does not cover yet. Every row carries `coverage` (integration w1, note AQ section 4). Wave 5 (the wave 5 base): `tap`, `kit` and `executables` are merged into rows from the sibling tables in presets/wave5/, one lane's each (S, T, W). Wave 6 (the wave 6 base): `sandbox` is merged from presets/wave6/sandbox.json (lane 6A).",
   "type": "object",
   "required": ["version", "harnesses", "planned"],
   "properties": {
@@ -52,6 +52,20 @@
       "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$" },
       "uniqueItems": true
     },
+    "sandbox": {
+      "description": "How derm run delivers the agent's own sandbox for the Standard tier (wave 6 lane 6A; contracts/sandbox.md; note AZ section 5). `via`: `settings-flag` passes derm's block as its own settings file on the command line (Claude Code `--settings`, note AZ A2 and A10); `config-override` passes it as configuration overrides at the agent's own level (Codex `-c`, A4); `advisory` writes or checks a user file the project can widen (Cursor's sandbox.json, A6), so the tier is not held; `none` where the agent has no sandbox of its own. `underSrt` and `underSbx`: whether the vendor sandbox stays on inside derm's Whole tier (A8: off under srt, on under sbx). null until verified.",
+      "type": ["object", "null"],
+      "required": ["via", "verifiedAt"],
+      "properties": {
+        "via": { "enum": ["settings-flag", "config-override", "advisory", "none"] },
+        "covers": { "description": "The agent's tools the vendor sandbox covers, by derm's normalized names (A7: Claude Code's covers bash and monitor only).", "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$" }, "uniqueItems": true },
+        "underSrt": { "enum": ["off", "on"] },
+        "underSbx": { "enum": ["off", "on"] },
+        "verifiedAt": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "harness": {
       "type": "object",
       "required": ["id", "name", "cli", "configFiles", "format", "write", "verified", "sources", "coverage"],
@@ -67,6 +81,7 @@
         "tap": { "$ref": "#/$defs/tap" },
         "kit": { "$ref": "#/$defs/kit" },
         "executables": { "$ref": "#/$defs/executables" },
+        "sandbox": { "$ref": "#/$defs/sandbox" },
         "coverage": { "$ref": "#/$defs/coverage" }
       }
     },
@@ -83,6 +98,7 @@
         "tap": { "$ref": "#/$defs/tap" },
         "kit": { "$ref": "#/$defs/kit" },
         "executables": { "$ref": "#/$defs/executables" },
+        "sandbox": { "$ref": "#/$defs/sandbox" },
         "coverage": { "$ref": "#/$defs/coverage" }
       },
       "additionalProperties": false

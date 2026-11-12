@@ -9,6 +9,9 @@
 // Wave 5 (the wave 5 base): the sibling tables in presets/wave5/ (`tap`, lane
 // S; `kit`, lane T; `executables`, lane W) are merged into the rows by
 // `mergeWave5`, with the same refusals as presets.rs's `merge_wave5`.
+//
+// Wave 6 (the wave 6 base): presets/wave6/sandbox.json (lane 6A) is merged
+// the same way, after wave 5's tables.
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -21,6 +24,11 @@ export type PresetTable = { $comment?: string; version: number; harnesses: Recor
 /** Wave 5's sibling tables, in the order presets.rs merges them. */
 export const WAVE5_FIELDS = ["tap", "kit", "executables"] as const;
 
+/** Wave 6's sibling tables (presets/wave6/), merged after wave 5's. */
+export const WAVE6_FIELDS = ["sandbox"] as const;
+
+const folderOf = (field: string): string => ((WAVE6_FIELDS as readonly string[]).includes(field) ? "wave6" : "wave5");
+
 /**
  * Merges each sibling table's values into the rows as its field. Refuses a
  * table whose `field` is not its name, an id the index does not name, a row
@@ -28,15 +36,16 @@ export const WAVE5_FIELDS = ["tap", "kit", "executables"] as const;
  */
 export function mergeWave5(table: PresetTable, tables: { field: string; text: string }[]): void {
   for (const { field, text } of tables) {
+    const folder = folderOf(field);
     const t = JSON.parse(text) as { field?: unknown; rows?: unknown };
-    if (t.field !== field) throw new Error(`wave5/${field}.json: its field is not ${field}`);
-    if (typeof t.rows !== "object" || t.rows === null || Array.isArray(t.rows)) throw new Error(`wave5/${field}.json: no rows object`);
+    if (t.field !== field) throw new Error(`${folder}/${field}.json: its field is not ${field}`);
+    if (typeof t.rows !== "object" || t.rows === null || Array.isArray(t.rows)) throw new Error(`${folder}/${field}.json: no rows object`);
     for (const [id, value] of Object.entries(t.rows as Record<string, unknown>)) {
       const shapeOk = field === "executables" ? Array.isArray(value) && value.every((v) => typeof v === "string") : value === null || (typeof value === "object" && !Array.isArray(value));
-      if (!shapeOk) throw new Error(`wave5/${field}.json: ${id}'s value is not a ${field}`);
+      if (!shapeOk) throw new Error(`${folder}/${field}.json: ${id}'s value is not a ${field}`);
       const row = [...table.harnesses, ...table.planned].find((r) => r.id === id);
-      if (row === undefined) throw new Error(`wave5/${field}.json names ${id}, which index.json does not`);
-      if (Object.hasOwn(row, field)) throw new Error(`${id}.json sets ${field}, which wave5/${field}.json owns`);
+      if (row === undefined) throw new Error(`${folder}/${field}.json names ${id}, which index.json does not`);
+      if (Object.hasOwn(row, field)) throw new Error(`${id}.json sets ${field}, which ${folder}/${field}.json owns`);
       row[field] = value;
     }
   }
@@ -65,6 +74,14 @@ export function loadPresetTable(dir: string = PRESETS_DIR): PresetTable {
   mergeWave5(
     table,
     WAVE5_FIELDS.filter((f) => present.includes(`${f}.json`)).map((field) => ({ field, text: readFileSync(join(wave5, `${field}.json`), "utf8") })),
+  );
+  const wave6 = join(dir, "wave6");
+  const present6 = existsSync(wave6) ? readdirSync(wave6).filter((f) => f.endsWith(".json")).sort() : [];
+  const known6 = WAVE6_FIELDS.map((f) => `${f}.json`);
+  for (const f of present6) if (!known6.includes(f)) throw new Error(`wave6/${f} is not a wave 6 table`);
+  mergeWave5(
+    table,
+    WAVE6_FIELDS.filter((f) => present6.includes(`${f}.json`)).map((field) => ({ field, text: readFileSync(join(wave6, `${field}.json`), "utf8") })),
   );
   return table;
 }

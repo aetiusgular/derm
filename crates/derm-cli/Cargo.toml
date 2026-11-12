@@ -3,6 +3,7 @@
 # U, V, W and Z in wave 5 (sections and the Windows table added by the wave 5
 # base).
 # Wave 5b (the wave 5b base): sections for lanes 5bA to 5bD.
+# Wave 6 (the wave 6 base): sections for lanes 6A to 6E.
 # Each lane edits only the lines under its own `# [lane-X]` comment, in any
 # table, and pins every dependency to an exact version
 # (plans/parallel_build_tk.md, section 2, point 5). A section ends at the
@@ -29,6 +30,10 @@ default = []
 # purpose. Since the close (11 Nov) they pass and always build; the feature
 # is kept, empty, so the lanes' recorded commands still run.
 w5b-red = []
+# The wave 6 base's red tests (`tests/contracts_w6.rs`), built only with this
+# feature while they fail on purpose; integration makes them always build at
+# the close, as it did for w5b-red.
+w6-red = []
 # [lane-C]
 # [lane-D]
 # [lane-J]
@@ -44,6 +49,11 @@ w5b-red = []
 # [lane-5bB]
 # [lane-5bC]
 # [lane-5bD]
+# [lane-6A]
+# [lane-6B]
+# [lane-6C]
+# [lane-6D]
+# [lane-6E]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -83,6 +93,11 @@ derm-tap = { path = "../derm-tap" }
 # [lane-5bB]
 # [lane-5bC]
 # [lane-5bD]
+# [lane-6A]
+# [lane-6B]
+# [lane-6C]
+# [lane-6D]
+# [lane-6E]
 
 [[test]]
 name = "hook_cases_5bA"
@@ -92,6 +107,10 @@ name = "hook_cases_5bB"
 
 [[test]]
 name = "contracts_w5b"
+
+[[test]]
+name = "contracts_w6"
+required-features = ["w6-red"]
 
 [dev-dependencies]
 # [lane-C]
@@ -114,6 +133,11 @@ derm-daemon = { path = "../derm-daemon" }
 # [lane-5bB]
 # [lane-5bC]
 # [lane-5bD]
+# [lane-6A]
+# [lane-6B]
+# [lane-6C]
+# [lane-6D]
+# [lane-6E]
 
 # Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
 

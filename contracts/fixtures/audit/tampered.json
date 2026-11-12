@@ -1,0 +1,87 @@
+{
+ "$comment": "Chain v2 (contracts/events.md section 6.4): tampered copies of chain-v2.jsonl and the line where derm_core::audit_chain::verify breaks when given the untouched chain's head as the anchor (`end`) and no start. Written by the wave 6 base with a second implementation of the hash (Python's json.dumps with sorted keys and compact separators, which matches serde_json for integers and strings, note AZ E2); crates/derm-core/src/audit_chain.rs's test holds both to each other. Case 221.",
+ "cases": [
+  {
+   "name": "untouched",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"tool.call\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}",
+    "{\"hash\":\"aefa525305272825a8a6f336c34c9266f98fc97cf3cbf6c430fc4163ab3c171a\",\"kind\":\"approval\",\"prev\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"record\":{\"at\":1762934403000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"tainted session: push after untrusted content\",\"tool\":\"bash\",\"toolUseId\":\"toolu_4\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_4-decision-a2b9\"},\"seq\":4,\"v\":2}"
+   ],
+   "breaksAt": null
+  },
+  {
+   "name": "an edited decision",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"tool.call\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}",
+    "{\"hash\":\"aefa525305272825a8a6f336c34c9266f98fc97cf3cbf6c430fc4163ab3c171a\",\"kind\":\"approval\",\"prev\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"record\":{\"at\":1762934403000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"tainted session: push after untrusted content\",\"tool\":\"bash\",\"toolUseId\":\"toolu_4\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_4-decision-a2b9\"},\"seq\":4,\"v\":2}"
+   ],
+   "breaksAt": 3
+  },
+  {
+   "name": "a dropped middle line",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"tool.call\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}",
+    "{\"hash\":\"aefa525305272825a8a6f336c34c9266f98fc97cf3cbf6c430fc4163ab3c171a\",\"kind\":\"approval\",\"prev\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"record\":{\"at\":1762934403000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"tainted session: push after untrusted content\",\"tool\":\"bash\",\"toolUseId\":\"toolu_4\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_4-decision-a2b9\"},\"seq\":4,\"v\":2}"
+   ],
+   "breaksAt": 3
+  },
+  {
+   "name": "two lines swapped",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"tool.call\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}",
+    "{\"hash\":\"aefa525305272825a8a6f336c34c9266f98fc97cf3cbf6c430fc4163ab3c171a\",\"kind\":\"approval\",\"prev\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"record\":{\"at\":1762934403000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"tainted session: push after untrusted content\",\"tool\":\"bash\",\"toolUseId\":\"toolu_4\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_4-decision-a2b9\"},\"seq\":4,\"v\":2}"
+   ],
+   "breaksAt": 2
+  },
+  {
+   "name": "a relabelled kind",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"approval\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}",
+    "{\"hash\":\"aefa525305272825a8a6f336c34c9266f98fc97cf3cbf6c430fc4163ab3c171a\",\"kind\":\"approval\",\"prev\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"record\":{\"at\":1762934403000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"tainted session: push after untrusted content\",\"tool\":\"bash\",\"toolUseId\":\"toolu_4\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_4-decision-a2b9\"},\"seq\":4,\"v\":2}"
+   ],
+   "breaksAt": 2
+  },
+  {
+   "name": "a tail cut (seen only against the anchored head)",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"tool.call\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}"
+   ],
+   "breaksAt": 3
+  },
+  {
+   "name": "a whole-file rewrite with a fresh chain, one line dropped (seen only against the anchored head)",
+   "lines": [
+    "{\"hash\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"kind\":\"approval\",\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"record\":{\"at\":1762934400000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"allow\",\"reason\":\"rule bash allow\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-decision-0f3a\"},\"seq\":0,\"v\":2}",
+    "{\"hash\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"kind\":\"tool.call\",\"prev\":\"9e212d158aeddb618300e52ce740d6f2a443e9aa9aad79be81c4f4fdb40822e6\",\"record\":{\"at\":1762934400350,\"chatId\":\"s-1\",\"detail\":{\"resultBytes\":4,\"resultSha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"tool\":\"bash\",\"toolUseId\":\"toolu_1\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_1-post\"},\"seq\":1,\"v\":2}",
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}"
+   ],
+   "breaksAt": 4
+  },
+  {
+   "name": "a head cut read as a chain from genesis",
+   "lines": [
+    "{\"hash\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"kind\":\"approval\",\"prev\":\"c2bf572c9ac10e13d6e657fb1feede7796c5b01ce0bb19de0f1dab4f5846671c\",\"record\":{\"at\":1762934401000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"rule bash git push ask\",\"tool\":\"bash\",\"toolUseId\":\"toolu_2\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_2-decision-77c1\"},\"seq\":2,\"v\":2}",
+    "{\"hash\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"kind\":\"taint.mark\",\"prev\":\"2576775b35ebf7e0ed125db857a8f4a2566effac743a6928b2209fe1f2be1614\",\"record\":{\"at\":1762934402000,\"chatId\":\"s-1\",\"detail\":{\"source\":\"webfetch\",\"toolUseId\":\"toolu_3\",\"trust\":\"client\",\"via\":\"hook\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_3-taint\"},\"seq\":3,\"v\":2}",
+    "{\"hash\":\"aefa525305272825a8a6f336c34c9266f98fc97cf3cbf6c430fc4163ab3c171a\",\"kind\":\"approval\",\"prev\":\"38a9168406b9d281ab05a5c5c15963b9112ec030883eb93674124aa3370eb25f\",\"record\":{\"at\":1762934403000,\"chatId\":\"s-1\",\"detail\":{\"decision\":\"ask\",\"reason\":\"tainted session: push after untrusted content\",\"tool\":\"bash\",\"toolUseId\":\"toolu_4\",\"trust\":\"client\"},\"harness\":\"claude-code\",\"id\":\"claude-code-toolu_4-decision-a2b9\"},\"seq\":4,\"v\":2}"
+   ],
+   "breaksAt": 1
+  }
+ ]
+}

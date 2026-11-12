@@ -1,0 +1,42 @@
+{
+ "$comment": "Hook inputs recorded from the real Claude Code 2.1.322 (npm @anthropic-ai/claude-code@2.1.322, native binary) on 12 Nov 2026 by the wave 6 base, in the cloud (Linux), with a PreToolUse and a PostToolUse hook that copied stdin to a file, one Bash call, `-p` against tests/cli-contract/lib/fakeMessages.mjs (a hand-written stand-in for the Messages API: this records Claude Code's hook inputs, not its API client). Paths replaced: {WORK} the project folder, {CONFIG} CLAUDE_CONFIG_DIR, {T} the scratch root. The command's secret is a scratch file's fake text. PostToolUse carries `tool_response` in the tool's own shape (note AZ, D2) and `duration_ms`; both carry `prompt_id`. For lanes 6B and 6D.",
+ "claude-code": "2.1.322",
+ "inputs": [
+  {
+   "session_id": "82caee7b-1bd7-4840-a08c-99c2e156e486",
+   "transcript_path": "{CONFIG}/projects/-root-rec-cc-proj/82caee7b-1bd7-4840-a08c-99c2e156e486.jsonl",
+   "cwd": "{WORK}",
+   "prompt_id": "95ab2b10-571a-4ed9-8615-464ecb12778f",
+   "permission_mode": "default",
+   "hook_event_name": "PreToolUse",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "cat {T}/secret/key; echo read=$?; echo x > {T}/cc_outside; echo outw=$?; echo y > inproj; echo inw=$?",
+    "description": "probe"
+   },
+   "tool_use_id": "toolu_derm_w6_probe"
+  },
+  {
+   "session_id": "82caee7b-1bd7-4840-a08c-99c2e156e486",
+   "transcript_path": "{CONFIG}/projects/-root-rec-cc-proj/82caee7b-1bd7-4840-a08c-99c2e156e486.jsonl",
+   "cwd": "{WORK}",
+   "prompt_id": "95ab2b10-571a-4ed9-8615-464ecb12778f",
+   "permission_mode": "default",
+   "hook_event_name": "PostToolUse",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "cat {T}/secret/key; echo read=$?; echo x > {T}/cc_outside; echo outw=$?; echo y > inproj; echo inw=$?",
+    "description": "probe"
+   },
+   "tool_response": {
+    "stdout": "s3cret\nread=0\noutw=0\ninw=0",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+   },
+   "tool_use_id": "toolu_derm_w6_probe",
+   "duration_ms": 36
+  }
+ ]
+}

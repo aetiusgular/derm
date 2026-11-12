@@ -28,6 +28,9 @@ function validator() {
     "wave5-records.schema.json",
     "settings.schema.json",
     "cu-tool.schema.json",
+    // Wave 6 (the wave 6 base).
+    "secrets.schema.json",
+    "eval.schema.json",
   ]) {
     ajv.addSchema(read(p) as object);
   }
@@ -337,5 +340,48 @@ describe("wave 5 preset tables", () => {
     expect(check("harness-presets.schema.json", { ...t, harnesses: [row, ...t.harnesses.slice(1)] })).toEqual([]);
     const bad = { ...row, tap: { ...row.tap, name: "anthropic_base_url" } };
     expect(check("harness-presets.schema.json", { ...t, harnesses: [bad, ...t.harnesses.slice(1)] })).not.toEqual([]);
+  });
+});
+
+// Wave 6 (the wave 6 base): the new contracts' fixtures validate, and the
+// settings file takes lane 6A's and 6D's keys.
+describe("wave 6 contracts", () => {
+  it("the secrets example validates, and a value or a wildcard host does not", () => {
+    expect(check("secrets.schema.json", read("fixtures/secrets/secrets.example.json"))).toEqual([]);
+    expect(check("secrets.schema.json", { version: 1, secrets: [{ id: "x", hosts: ["a.example"], from: { env: "X" }, value: "s" }] })).not.toEqual([]);
+    expect(check("secrets.schema.json", { version: 1, secrets: [{ id: "x", hosts: ["*.example.com"], from: { env: "X" } }] })).not.toEqual([]);
+    expect(check("secrets.schema.json", { version: 1, secrets: [{ id: "x", hosts: ["a.example:443"], from: { env: "X" } }] })).not.toEqual([]);
+  });
+
+  it("the eval examples validate as a scenario and a result", () => {
+    expect(check("eval.schema.json", read("fixtures/eval/scenario.example.json"))).toEqual([]);
+    expect(check("eval.schema.json", read("fixtures/eval/result.example.json"))).toEqual([]);
+    expect(check("eval.schema.json", { suite: "moatbench", id: "x", source: { name: "derm" }, split: "both", steps: [] })).not.toEqual([]);
+  });
+
+  it("every E0 scenario fixture has an allowed step, an owner and OpenMoat's source", () => {
+    const f = read("fixtures/eval/moatbench-e0-allowed.json") as { source: string; scenarios: { id: string; steps: unknown[]; e0Allowed: number[]; owner: string }[] };
+    expect(f.source).toBe("openmoat 0.19.0 moatbench");
+    expect(f.scenarios.length).toBe(17);
+    expect(f.scenarios.reduce((n, s) => n + s.e0Allowed.length, 0)).toBe(18);
+    for (const s of f.scenarios) {
+      expect(["gate", "6D"]).toContain(s.owner);
+      for (const i of s.e0Allowed) expect(s.steps[i]).toBeDefined();
+    }
+  });
+
+  it("settings take tier and taint, and refuse an unknown verdict", () => {
+    expect(check("settings.schema.json", { version: 1, tier: { default: "whole" }, taint: { verdict: "record" } })).toEqual([]);
+    expect(check("settings.schema.json", { version: 1, taint: { verdict: "allow" } })).not.toEqual([]);
+  });
+
+  it("the wave 6 sandbox table merges and its schema takes a full row", () => {
+    const t = loadPresetTable();
+    expect(t.harnesses.every((r) => !("sandbox" in r) || r.sandbox === null || typeof r.sandbox === "object")).toBe(true);
+    const row = { id: "claude-code", name: "Claude Code", cli: "claude", configFiles: {}, format: "json", write: "write", verified: "2026-11-12", sources: ["x"], coverage: {}, sandbox: { via: "settings-flag", covers: ["bash", "monitor"], underSrt: "off", underSbx: "on", verifiedAt: "2.1.322" } };
+    const ajv = validator();
+    const v = ajv.getSchema(base + "harness-presets.schema.json#/$defs/sandbox");
+    expect(v?.(row.sandbox)).toBe(true);
+    expect(v?.({ via: "user-file", verifiedAt: "x" })).toBe(false);
   });
 });
