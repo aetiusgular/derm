@@ -100,7 +100,8 @@ pub struct Found {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Which {
     Log,
-    Rotated,
+    /// `<log>.<n>`, `n` from 1 (the newest rotated file).
+    Rotated(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,9 +110,11 @@ pub enum Start {
     End,
     Beginning,
     At(u64),
-    /// The place is in the rotated file: read it on from `offset`, then the
-    /// log from its beginning.
+    /// The place is in `<log>.<file>`: read it on from `offset`, then each
+    /// newer rotated file from its beginning (`<log>.<file - 1>` down to
+    /// `<log>.1`), then the log (BW5B-R1).
     Rotated {
+        file: usize,
         offset: u64,
     },
 }
@@ -123,16 +126,20 @@ pub struct Gap {
     pub reason: String,
 }
 
-/// Where to start. `rotated` is `<log>.1` when there is one; `line_at`
-/// reads the whole line starting at an offset of one of the two files and
-/// returns where it ends and its event's `(time, serial)`. `ran_before`
+/// Where to start. `rotated` holds `<log>.1`, `<log>.2` and on, as far as
+/// they open (BW5B-R1: the place was looked for in `<log>.1` only, so a place
+/// two rotations back was read as a gap and the rest of its file skipped;
+/// ausearch walks `"%s.%d"` while each file can be read and matches its
+/// checkpoint by `st_dev` and `st_ino`, audit 4.1.2 `src/ausearch.c:270-310`).
+/// `line_at` reads the whole line starting at an offset of one of the files
+/// and returns where it ends and its event's `(time, serial)`. `ran_before`
 /// says an earlier run of the feed started here (`STARTED_FILE`): a missing
 /// place is then a gap, not a first start (FP13R-17, FP13RR-4).
 pub fn decide(
     loaded: &Loaded,
     log: &Path,
     cur: Found,
-    rotated: Option<Found>,
+    rotated: &[Found],
     from_start: bool,
     ran_before: bool,
     line_at: &dyn Fn(Which, u64) -> Option<(u64, (i64, u64))>,
@@ -140,11 +147,13 @@ pub fn decide(
     if from_start {
         return (Start::Beginning, None);
     }
+    // On a gap what is still there is read from `<log>.1` and the log, as
+    // before: older files are not read again (a gap is named either way).
     let rest = || {
-        if rotated.is_some() {
-            Start::Rotated { offset: 0 }
-        } else {
+        if rotated.is_empty() {
             Start::Beginning
+        } else {
+            Start::Rotated { file: 1, offset: 0 }
         }
     };
     let p = match loaded {
@@ -186,15 +195,21 @@ pub fn decide(
     if holds(cur, Which::Log) {
         return (Start::At(p.offset), None);
     }
-    if let Some(r) = rotated {
-        if holds(r, Which::Rotated) {
-            return (Start::Rotated { offset: p.offset }, None);
+    for (i, r) in rotated.iter().enumerate() {
+        if holds(*r, Which::Rotated(i + 1)) {
+            return (
+                Start::Rotated {
+                    file: i + 1,
+                    offset: p.offset,
+                },
+                None,
+            );
         }
     }
     let same_file = (cur.dev, cur.inode) == (p.dev, p.inode);
     let reason = if same_file && p.offset > cur.len {
         "the audit log was cut shorter than the feed's place"
-    } else if same_file || rotated.is_some_and(|r| (r.dev, r.inode) == (p.dev, p.inode)) {
+    } else if same_file || rotated.iter().any(|r| (r.dev, r.inode) == (p.dev, p.inode)) {
         "the line at the feed's place is not the one it kept (the file was rewritten, or its inode reused)"
     } else {
         "the audit log rotated past the feed's place while it was down"
@@ -210,10 +225,21 @@ pub fn decide(
 
 /// `<log>.1`, the newest rotated log.
 pub fn rotated_path(log: &Path) -> PathBuf {
+    rotated_path_n(log, 1)
+}
+
+/// `<log>.<n>`: auditd's `rotate_logs` renames `<log>.<n-1>` to `<log>.<n>`,
+/// so higher numbers are older (`src/auditd-event.c`, `docs/auditd.conf.5`).
+pub fn rotated_path_n(log: &Path, n: usize) -> PathBuf {
     let mut s = log.as_os_str().to_os_string();
-    s.push(".1");
+    s.push(format!(".{n}"));
     PathBuf::from(s)
 }
+
+/// auditd keeps at most 999 rotated logs (`num_logs` "must be 999 or
+/// less", `docs/auditd.conf.5:80`, `src/auditd-config.c:720`); with
+/// `keep_logs` there can be more, which the feed does not look through.
+pub const ROTATED_MAX: usize = 999;
 
 /// Reads a kept place: a regular file of this user's, private, small, never
 /// through a link, and never blocking on a FIFO or device (opened
@@ -498,7 +524,7 @@ mod tests {
             &Loaded::Kept(pos(7, 500)),
             Path::new(LOG),
             found(7, 900),
-            None,
+            &[],
             false,
             true,
             &same,
@@ -509,18 +535,89 @@ mod tests {
 
     #[test]
     fn bw5r4_1_a_place_in_the_rotated_log_is_read_on_there_first() {
-        let only_rotated = |w: Which, start: u64| (w == Which::Rotated).then_some((start + 40, K));
+        let only_rotated =
+            |w: Which, start: u64| (w == Which::Rotated(1)).then_some((start + 40, K));
         let (s, g) = decide(
             &Loaded::Kept(pos(7, 500)),
             Path::new(LOG),
             found(8, 40),
-            Some(found(7, 600)),
+            &[found(7, 600)],
             false,
             true,
             &only_rotated,
         );
-        assert_eq!(s, Start::Rotated { offset: 500 });
+        assert_eq!(
+            s,
+            Start::Rotated {
+                file: 1,
+                offset: 500
+            }
+        );
         assert!(g.is_none());
+    }
+
+    /// BW5B-R1 (box test w5b retest, item 5): two rotations while the feed
+    /// was down left its place in `<log>.2`, still on disk; it was read as
+    /// "rotated past" and the feed began at `<log>.1`, skipping the rest of
+    /// `.2`. Every rotated file that opens is looked through, as ausearch
+    /// walks them.
+    #[test]
+    fn bw5b_r1_a_place_two_rotations_back_is_read_on_there() {
+        let only = |n: usize| {
+            move |w: Which, start: u64| (w == Which::Rotated(n)).then_some((start + 40, K))
+        };
+        let (s, g) = decide(
+            &Loaded::Kept(pos(7, 500)),
+            Path::new(LOG),
+            found(9, 40),
+            &[found(8, 900), found(7, 600)],
+            false,
+            true,
+            &only(2),
+        );
+        assert_eq!(
+            s,
+            Start::Rotated {
+                file: 2,
+                offset: 500
+            }
+        );
+        assert!(g.is_none());
+        // Three back.
+        let (s, g) = decide(
+            &Loaded::Kept(pos(7, 500)),
+            Path::new(LOG),
+            found(10, 40),
+            &[found(9, 900), found(8, 900), found(7, 600)],
+            false,
+            true,
+            &only(3),
+        );
+        assert_eq!(
+            s,
+            Start::Rotated {
+                file: 3,
+                offset: 500
+            }
+        );
+        assert!(g.is_none());
+        // The inode in `.2` with another line there: a rewritten file, and
+        // the gap says so rather than "rotated past".
+        let (s, g) = decide(
+            &Loaded::Kept(pos(7, 500)),
+            Path::new(LOG),
+            found(9, 40),
+            &[found(8, 900), found(7, 600)],
+            false,
+            true,
+            &other,
+        );
+        assert_eq!(s, Start::Rotated { file: 1, offset: 0 });
+        assert!(g.unwrap().reason.contains("inode reused"));
+        assert_eq!(
+            rotated_path_n(Path::new(LOG), 12),
+            Path::new(&format!("{LOG}.12"))
+        );
     }
 
     #[test]
@@ -531,12 +628,12 @@ mod tests {
             &Loaded::Kept(pos(7, 500)),
             Path::new(LOG),
             found(9, 40),
-            Some(found(8, 600)),
+            &[found(8, 600)],
             false,
             true,
             &same,
         );
-        assert_eq!(s, Start::Rotated { offset: 0 });
+        assert_eq!(s, Start::Rotated { file: 1, offset: 0 });
         let g = g.unwrap();
         assert_eq!(g.from_ms, Some(1_000));
         // Cut shorter than the place.
@@ -544,7 +641,7 @@ mod tests {
             &Loaded::Kept(pos(7, 500)),
             Path::new(LOG),
             found(7, 100),
-            None,
+            &[],
             false,
             true,
             &same,
@@ -560,7 +657,7 @@ mod tests {
                 l,
                 Path::new(log),
                 found(7, 900),
-                None,
+                &[],
                 from_start,
                 false,
                 &same,
@@ -585,7 +682,7 @@ mod tests {
             &Loaded::Missing,
             Path::new(LOG),
             found(7, 900),
-            None,
+            &[],
             false,
             true,
             &same,
@@ -596,12 +693,12 @@ mod tests {
             &Loaded::Refused("it is not a regular file"),
             Path::new(LOG),
             found(7, 900),
-            Some(found(6, 10)),
+            &[found(6, 10)],
             false,
             false,
             &same,
         );
-        assert_eq!(s, Start::Rotated { offset: 0 });
+        assert_eq!(s, Start::Rotated { file: 1, offset: 0 });
         assert!(g.unwrap().reason.contains("not a regular file"));
     }
 
@@ -613,12 +710,12 @@ mod tests {
             &Loaded::Kept(pos(7, 500)),
             Path::new(LOG),
             found(7, 800),
-            Some(found(8, 700)),
+            &[found(8, 700)],
             false,
             true,
             &other,
         );
-        assert_eq!(s, Start::Rotated { offset: 0 });
+        assert_eq!(s, Start::Rotated { file: 1, offset: 0 });
         assert!(g.unwrap().reason.contains("inode reused"));
         // Another device with the same inode number is not the file either.
         let mut p = pos(7, 500);
@@ -627,7 +724,7 @@ mod tests {
             &Loaded::Kept(p),
             Path::new(LOG),
             found(7, 800),
-            None,
+            &[],
             false,
             true,
             &same,
