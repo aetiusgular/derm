@@ -22,7 +22,7 @@ const ownership = JSON.parse(readFileSync(new URL("./lane-ownership.json", impor
 
 function usage(message) {
   console.error(`lane-scope: ${message}`);
-  console.error("usage: node scripts/lane-scope.mjs <lane: a letter, or 5bA to 5bF> [--base <commit>]");
+  console.error("usage: node scripts/lane-scope.mjs <lane: a letter, 5bA to 5bF, or 6A to 6F> [--base <commit>]");
   process.exit(2);
 }
 
@@ -31,7 +31,8 @@ function git(args) {
 }
 
 const args = process.argv.slice(2);
-// Wave 5b's lanes have digits in their names (`5bA`): taken as written;
+// Wave 5b's and wave 6's lanes have digits in their names (`5bA`, `6A`):
+// taken as written;
 // the single letters of the earlier waves in any case.
 const lane = Object.hasOwn(ownership.lanes, args[0] ?? "") ? args[0] : (args[0] ?? "").toUpperCase();
 if (!ownership.lanes[lane]) usage(`unknown lane ${JSON.stringify(args[0] ?? "")}`);
@@ -95,7 +96,7 @@ function sections(text) {
   const byLane = new Map();
   let current = null;
   for (const line of text.split("\n")) {
-    const marker = /^# \[lane-([A-Z]|[0-9][a-z][A-Z])\]\s*$/.exec(line);
+    const marker = /^# \[lane-([A-Z]|[0-9][a-z][A-Z]|[0-9][A-Z])\]\s*$/.exec(line);
     if (marker) {
       current = marker[1];
       if (!byLane.has(current)) byLane.set(current, []);
