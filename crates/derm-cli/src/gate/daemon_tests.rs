@@ -16,6 +16,12 @@ mod unix {
         safe: PathBuf,
         project: PathBuf,
         token_file: PathBuf,
+        // Every test with a tree holds the owners lock for its whole run:
+        // `trusted_owners` is process-wide, and two tests here set it, so a
+        // test that reads a token or a policy while they ran saw another
+        // user's owners (the wave 6 base, finding W6B-1: 5 of 40 runs of
+        // this module failed at 8 threads on `main` at 4dbb2fa).
+        _owners: std::sync::MutexGuard<'static, ()>,
     }
     impl Drop for Tree {
         fn drop(&mut self) {
@@ -48,6 +54,7 @@ mod unix {
             safe,
             project,
             token_file,
+            _owners: lock(),
         }
     }
     fn opts<'a>(env: &'a Env, cwd: &'a Path) -> Opts<'a> {
@@ -289,7 +296,6 @@ mod unix {
 
     #[test]
     fn under_an_agents_user_the_persons_files_are_trusted_and_the_agents_are_not() {
-        let _g = lock();
         let t = tree();
         mode(&t.root, 0o711);
         let token = t.root.join("chat.token");
@@ -329,7 +335,6 @@ mod unix {
 
     #[test]
     fn a_policy_owned_by_the_agent_is_refused_and_the_persons_is_read() {
-        let _g = lock();
         let t = tree();
         let policy = t.safe.join("policy.json");
         std::fs::write(&policy, r#"{"version":1,"rules":[]}"#).unwrap();
@@ -550,11 +555,22 @@ mod unix {
         assert!(listener.accept().is_err(), "the listener was never asked");
     }
 
-    fn http_server(status: u16) -> (u16, std::sync::mpsc::Receiver<(String, String, String)>) {
+    /// A one-shot HTTP server for two requests. Its thread drops the
+    /// listener when it ends; a test that then needs "nothing listening"
+    /// joins it first (the wave 6 base, finding W6B-2: a third connection
+    /// made before the thread ended sat in the listener's backlog and got
+    /// "daemon reply failed", 4 of 40 runs on `main` at 4dbb2fa).
+    fn http_server(
+        status: u16,
+    ) -> (
+        u16,
+        std::sync::mpsc::Receiver<(String, String, String)>,
+        std::thread::JoinHandle<()>,
+    ) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let server = std::thread::spawn(move || {
             for s in listener.incoming().take(2) {
                 let Ok(mut s) = s else { return };
                 // Read the head, then the body by its Content-Length.
@@ -600,12 +616,12 @@ mod unix {
                 let _ = tx.send((path, token, body));
             }
         });
-        (port, rx)
+        (port, rx, server)
     }
 
     #[test]
     fn post_vm_sends_each_op_to_its_route_with_the_chat_token() {
-        let (port, rx) = http_server(200);
+        let (port, rx, server) = http_server(200);
         let url = VmUrl {
             host: "127.0.0.1".into(),
             port,
@@ -645,7 +661,8 @@ mod unix {
             post_vm(&url, &chat, &json!({"op": "tail"}), Duration::from_secs(1)).unwrap_err(),
             "no route for tail from a VM"
         );
-        // Nothing listening any more.
+        // Nothing listening any more, once the server's thread has ended.
+        server.join().unwrap();
         let dead = post_vm(
             &url,
             &chat,
@@ -661,7 +678,7 @@ mod unix {
 
     #[test]
     fn a_status_other_than_200_is_not_a_reply() {
-        let (port, _rx) = http_server(401);
+        let (port, _rx, _server) = http_server(401);
         let url = VmUrl {
             host: "127.0.0.1".into(),
             port,
