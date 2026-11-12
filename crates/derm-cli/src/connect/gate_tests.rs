@@ -390,6 +390,9 @@ fn bw5b_1_a_bare_derm_hook_line_is_derms_entry_to_connect_and_doctor() {
         "xderm hook crush pre",
         "/opt/notderm hook crush pre",
         "derm hooks crush pre",
+        // FP1-S3: a command that only mentions derm's line is not derm's.
+        "logger -t audit 'tool call seen before derm hook crush pre'",
+        "echo derm hook crush pre",
     ] {
         fs::write(
             &cfg,
@@ -2235,6 +2238,16 @@ fn mw5b_2_on_macos_a_homebrew_style_admin_folder_is_trusted_for_an_admin() {
         assert_eq!(r.code, Some(2), "{}", r.out);
         assert!(gate::self_path().is_err());
     }
+    // FP1-S8: Homebrew gives folders the group bit, never a file: a derm
+    // file writable by admin is refused.
+    if admin {
+        chown(&f, None, Some(80)).unwrap();
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o775)).unwrap();
+        let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+        assert_eq!(r.code, Some(2), "{}", r.out);
+        assert!(gate::self_path().is_err());
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     // staff, which other accounts share: refused.
     chown(&bin, None, Some(20)).unwrap();
     let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
@@ -2289,10 +2302,20 @@ fn mw5b_1_on_macos_an_access_list_that_lets_others_write_is_refused() {
 fn mw5b_the_launcher_and_the_clients_read_access_lists_and_groups_as_connect_does() {
     let sh = read(&repo().join(PLUGINS[0]).join("hooks/derm-gate.sh"));
     let ts = read(&repo().join("packages/derm-pi/src/serve/client.ts"));
+    // FP1-S1: Hermes's plugin is the fourth reader of the rule.
+    let py = read(&repo().join("packages/derm-hermes-plugin/derm_gate.py"));
     for p in gate::ACL_WRITE_PERMS {
         assert!(sh.contains(&format!("*,{p},*")), "{p} not in derm-gate.sh");
         assert!(ts.contains(&format!("\"{p}\"")), "{p} not in client.ts");
+        assert!(py.contains(&format!("\"{p}\"")), "{p} not in derm_gate.py");
     }
+    assert!(py.contains(&format!("MACOS_ADMIN_GID = {}", gate::MACOS_ADMIN_GID)));
+    assert!(py.contains("[\"/bin/ls\", \"-lden\", \"--\""));
+    assert!(py.contains("[\"/usr/bin/id\", \"-G\"]"));
+    // FP1-S2: each reader runs only a file named derm.
+    assert!(sh.contains("[ \"${f##*/}\" = derm ]"));
+    assert!(ts.contains("path.basename(file) !== \"derm\""));
+    assert!(py.contains("real.name != \"derm\""));
     assert!(sh.contains("/bin/ls -lden --"));
     assert!(ts.contains("\"/bin/ls\", [\"-lden\", \"--\""));
     assert!(sh.contains("/usr/bin/id -G"));
@@ -2353,5 +2376,82 @@ fn mw5b_1_the_launchers_access_list_reader_agrees_with_connects() {
             .unwrap();
         let sh_open = o.status.code() == Some(0);
         assert_eq!(sh_open, gate::acl_grants_write(&text), "line {i}: {l:?}");
+        // FP1-S4: the same under a shell that runs a pipeline's last part in
+        // the current shell (zsh, ksh; bash's lastpipe), where an `exit`
+        // there would leave the caller too.
+        if Path::new("/bin/bash").exists() {
+            let o = std::process::Command::new("/bin/bash")
+                .args(["-O", "lastpipe", "-c"])
+                .arg(format!("{func}\nset +m\nif acl_open \"$1\"; then echo open; else echo closed; fi; echo after"))
+                .arg("bash")
+                .arg(&f)
+                .env_clear()
+                .output()
+                .unwrap();
+            let out = String::from_utf8_lossy(&o.stdout);
+            let want = if sh_open {
+                "open\nafter\n"
+            } else {
+                "closed\nafter\n"
+            };
+            assert_eq!(out, want, "lastpipe, line {i}: {l:?}");
+        }
     }
+}
+
+#[cfg(unix)]
+/// FP1-S2 (the fix pass's review): a derm candidate whose links lead to a
+/// program not named derm is refused, as derm connect's `checked_self`
+/// refuses one; here a link to a root-owned program in a root-owned folder,
+/// which every other check passes.
+#[test]
+fn fp1_s2_the_launcher_runs_only_a_file_named_derm() {
+    let home = scratch("fp1-s2");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let real_true = fs::canonicalize("/bin/true").unwrap();
+    std::os::unix::fs::symlink(&real_true, bin.join("derm")).unwrap();
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}{}", r.out, r.err);
+    assert!(r.err.contains("not named derm"), "{}", r.err);
+}
+
+#[cfg(target_os = "linux")]
+/// FP1-S6: on Linux an access list's group bits are its mask (acl(5)), so
+/// the launcher reads the mode bits as derm connect and the clients do and
+/// does not refuse a file for having an access list (`+`). Needs setfacl.
+#[test]
+fn fp1_s6_on_linux_an_access_list_within_the_mask_is_read_by_its_mode() {
+    if !Path::new("/usr/bin/setfacl").exists() {
+        eprintln!("setfacl not installed; FP1-S6 not run here");
+        return;
+    }
+    let home = scratch("fp1-s6");
+    let work = home.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let bin = home.join(".local/bin");
+    let f = echo_derm(&bin);
+    let s = std::process::Command::new("/usr/bin/setfacl")
+        .args(["-m", "u:nobody:r-x", &f])
+        .status()
+        .unwrap();
+    assert!(s.success());
+    let h = home.display().to_string();
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(0), "{}", r.err);
+    set_self(Path::new(&f));
+    assert!(gate::self_path().is_ok());
+    // A named entry with write raises the mask's write bit: refused by all.
+    let s = std::process::Command::new("/usr/bin/setfacl")
+        .args(["-m", "u:nobody:rwx", &f])
+        .status()
+        .unwrap();
+    assert!(s.success());
+    let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
+    assert_eq!(r.code, Some(2), "{}", r.out);
+    assert!(gate::self_path().is_err());
 }

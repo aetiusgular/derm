@@ -626,7 +626,8 @@ fn fill_text(
 }
 
 /// Owned by you (or root), not writable by others, not writable by its
-/// group unless that group is macOS's `admin` and you are in it (MW5B-2),
+/// group unless it is a folder whose group is macOS's `admin` and you are
+/// in it (MW5B-2; Homebrew gives the bit to folders only, FP1-S8),
 /// and on macOS no access list entry that lets anyone write (MW5B-1). The
 /// plugins' launcher (`hooks/derm-gate.sh`, `closed`) and the in-process
 /// clients (`src/serve/client.ts`, `refuseCandidate`) apply the same rule;
@@ -636,7 +637,8 @@ fn closed(path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserI
     let macos = cfg!(target_os = "macos");
     (meta.uid() == uid || meta.uid() == 0)
         && meta.mode() & 0o002 == 0
-        && (meta.mode() & 0o020 == 0 || group_write_trusted(meta.gid(), macos, macos_groups))
+        && (meta.mode() & 0o020 == 0
+            || meta.is_dir() && group_write_trusted(meta.gid(), macos, macos_groups))
         && !(macos && macos_acl_grants_write(path))
 }
 
@@ -645,8 +647,9 @@ fn closed(path: &Path, meta: &std::fs::Metadata, uid: derm_core::platform::UserI
 /// it, and otherwise your own group, dropping the group bit (`go-w`) when
 /// that is `staff`, \"Other standard macOS accounts also belong to staff\"
 /// (Homebrew/install `install.sh` at 7986efa, lines 164, 182-192, 697-701,
-/// 843-852). An admin can already change any file with sudo; `staff` would
-/// let every account write derm. Tony's call, 11 Nov: Homebrew stays.
+/// 843-852). Any admin account can then replace derm there with no
+/// password, as it can every Homebrew tool (FP1-S9); `staff` would let every
+/// account write derm. Tony's call, 11 Nov: Homebrew stays.
 #[cfg(unix)]
 pub const MACOS_ADMIN_GID: u32 = 80;
 
@@ -1002,15 +1005,26 @@ pub fn derm_hook_runs(text: &str, id: &str) -> Vec<bool> {
     while let Some(i) = text[from..].find(&needle) {
         let at = from + i;
         from = at + needle.len();
-        let word: String = text[..at]
-            .chars()
+        let start = text[..at]
+            .char_indices()
             .rev()
-            .take_while(|c| !matches!(c, ' ' | '\t' | '\n' | '\'' | '[' | ',' | '=' | ':' | '{'))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let word = word.trim_matches(|c| c == '"' || c == '\\');
+            .find(|(_, c)| matches!(c, ' ' | '\t' | '\n' | '\'' | '[' | ',' | '=' | ':' | '{'))
+            .map_or(0, |(k, c)| k + c.len_utf8());
+        let raw = &text[start..at];
+        // FP1-S3: only where derm starts a command: at the start of a
+        // string value (JSON's or TOML's `"`, an escaped inner quote is
+        // `\"`), of a TOML literal string (`= '`), or after `&&`, `||`
+        // or `;`. A command that only mentions the line is not derm's.
+        let before = text[..start].trim_end();
+        let starts = raw.starts_with('"')
+            || before
+                .strip_suffix('\'')
+                .is_some_and(|b| b.trim_end().ends_with('='))
+            || ["&&", "||", ";"].iter().any(|s| before.ends_with(s));
+        if !starts {
+            continue;
+        }
+        let word = raw.trim_matches(|c| c == '"' || c == '\\');
         let last = word.rsplit(['/', '\\']).next().unwrap_or(word);
         if last != "derm" && last != "derm.exe" {
             continue;

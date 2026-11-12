@@ -37,6 +37,7 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -54,12 +55,93 @@ def _block(reason: str) -> dict[str, str]:
     return {"action": "block", "message": f"derm: {text}"}
 
 
-def _private(st: os.stat_result) -> bool:
-    """Owned by you or root, and no group or other write bit."""
-    return st.st_uid in (os.getuid(), 0) and st.st_mode & 0o022 == 0
+#: macOS's ``admin`` group: Homebrew's installer gives its prefix folders, never a
+#: file, ``g+rwx`` with it for an admin (Homebrew/install install.sh at 7986efa,
+#: lines 182-192, 843-852). derm connect, the plugins' launcher and the in-process
+#: clients read the same rule (MW5B-2, FP1-S8; case 112).
+MACOS_ADMIN_GID = 80
+
+#: The permissions macOS's ``ls -le`` prints that let their holder change a file or
+#: a folder (Apple file_cmds-479, ls/print.c:243-262).
+ACL_WRITE_PERMS = ("write", "append", "delete", "add_file", "add_subdirectory", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown")
 
 
-def trusted_file(path: Path) -> Optional[str]:
+def acl_grants_write(ls: str) -> bool:
+    """Whether ``ls -lden``'s output for one path holds an access list entry that
+    lets anyone write (MW5B-1): each line after the first is
+    `` <n>: <uuid>[ inherited] <allow|deny> <perm,...>`` (file_cmds-479,
+    ls/print.c:322-385). An entry that is not a deny and names a write-class
+    permission is open, whoever it names; a line that cannot be placed is open."""
+    lines = ls.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    for line in lines[1:]:
+        w = line.split()
+        if not w or not w[0].endswith(":"):
+            return True
+        i = 2
+        kind = w[i] if len(w) > i else None
+        if kind == "inherited":
+            i += 1
+            kind = w[i] if len(w) > i else None
+        if kind is None:
+            return True
+        if kind == "deny":
+            continue
+        perms = w[i + 1] if len(w) > i + 1 else None
+        if perms is not None and any(p in ACL_WRITE_PERMS for p in perms.split(",")):
+            return True
+    return False
+
+
+def parse_groups(text: str) -> Optional[list[int]]:
+    """``/usr/bin/id -G``'s groups, or None when a word is not a number."""
+    words = text.split()
+    if not words or not all(w.isascii() and w.isdigit() for w in words):
+        return None
+    return [int(w) for w in words]
+
+
+def group_write_trusted(gid: int, is_dir: bool, macos: bool, groups: Callable[[], Optional[list[int]]]) -> bool:
+    """A group write bit lets in no one you do not already trust: only on a macOS
+    folder whose group is ``admin``, when you are in it."""
+    if not (macos and is_dir and gid == MACOS_ADMIN_GID):
+        return False
+    g = groups()
+    return g is not None and MACOS_ADMIN_GID in g
+
+
+def _macos_groups() -> Optional[list[int]]:
+    try:
+        r = subprocess.run(["/usr/bin/id", "-G"], env={}, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_groups(r.stdout) if r.returncode == 0 else None
+
+
+def _macos_acl_open(path: Path) -> bool:
+    try:
+        r = subprocess.run(["/bin/ls", "-lden", "--", str(path)], env={}, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return r.returncode != 0 or acl_grants_write(r.stdout)
+
+
+def _private(st: os.stat_result, path: Optional[Path] = None) -> bool:
+    """Owned by you or root, no other write bit, no group write bit unless on a
+    macOS folder of the admin group you are in, and on macOS no access list entry
+    that lets anyone write (FP1-S1: the rule the other three readers apply)."""
+    macos = sys.platform == "darwin"
+    if st.st_uid not in (os.getuid(), 0) or st.st_mode & 0o002:
+        return False
+    if st.st_mode & 0o020 and not group_write_trusted(st.st_gid, stat.S_ISDIR(st.st_mode), macos, _macos_groups):
+        return False
+    if macos and path is not None and _macos_acl_open(path):
+        return False
+    return True
+
+
+def trusted_file(path: Path, derm: bool = False) -> Optional[str]:
     """None when ``path`` is a regular file of yours or root's that no one else may
     write, in a folder no one else may write (links followed, as the agent's exec
     follows them); else why not."""
@@ -73,9 +155,12 @@ def trusted_file(path: Path) -> Optional[str]:
         return f"{path} cannot be read ({exc.strerror or exc})"
     if not stat.S_ISREG(st.st_mode):
         return f"{path} is not a regular file"
-    if not _private(st):
+    if derm and real.name != "derm":
+        # FP1-S2: a link may lead anywhere; only a file named derm runs.
+        return f"{path} is not named derm"
+    if not _private(st, real):
         return f"someone other than you may write {path}"
-    if not _private(folder):
+    if not _private(folder, real.parent):
         return f"someone other than you may write the folder of {path}"
     return None
 
@@ -96,7 +181,7 @@ def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None) -> str:
         except (OSError, UnicodeDecodeError) as exc:
             raise RuntimeError(f"{DERM_PATH_FILE} cannot be read ({exc})") from exc
         derm = Path(text)
-        why = trusted_file(derm)
+        why = trusted_file(derm, derm=True)
         if why is not None:
             raise RuntimeError(f"the derm {DERM_PATH_FILE} names is not used: {why}")
         return str(derm)
@@ -105,7 +190,7 @@ def find_derm(plugin_dir: Path = HERE, home: Optional[Path] = None) -> str:
     for derm in (home / ".local" / "bin" / "derm", Path("/usr/bin/derm")):
         if not os.path.lexists(derm):
             continue
-        why = trusted_file(derm)
+        why = trusted_file(derm, derm=True)
         if why is None:
             return str(derm)
         tried.append(why)

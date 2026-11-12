@@ -30,7 +30,7 @@
 // the copies stay byte-equal; the plugin passes its trusted-owner rule in.
 
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -59,6 +59,9 @@ export interface LocateDeps {
   trusted: (uid: number) => boolean;
   stat?: (p: string) => { uid: number; gid?: number; mode: number; isFile: boolean; isDir: boolean };
   realpath?: (p: string) => string;
+  /** Whether a path is itself a link, not followed (FP1-S2). */
+  lstat?: (p: string) => { isLink: boolean };
+  readlink?: (p: string) => string;
   /** macOS: your groups as `/usr/bin/id -G` lists them (MW5B-2). */
   groups?: () => number[] | undefined;
   /** macOS: `/bin/ls -lden` of a path, or undefined when it cannot be read (MW5B-1). */
@@ -145,14 +148,43 @@ function inside(file: string, folder: string): boolean {
  * folder.
  */
 export function refuseCandidate(candidate: string, d: LocateDeps): string | undefined {
+  const r = examine(candidate, d);
+  return "why" in r ? r.why : undefined;
+}
+
+/**
+ * The file `candidate` leads to, or why it may not run. Each link is
+ * followed one hop at a time, at most 8, and each hop's real folder is held
+ * to the rule, as the launcher holds it (`hooks/derm-gate.sh`, `refuse`;
+ * FP1-S2); the file it ends at must be named derm, as derm connect
+ * registers only one, and that real path is the one started, so nothing
+ * between the check and the start re-reads the links.
+ */
+function examine(candidate: string, d: LocateDeps): { file: string } | { why: string } {
   const stat = d.stat ?? realStat;
   const real = d.realpath ?? ((p: string) => realpathSync(p));
-  if (!path.isAbsolute(candidate)) return "not an absolute path";
+  const isLink = d.lstat ?? ((p: string) => ({ isLink: lstatSync(p).isSymbolicLink() }));
+  const readlink = d.readlink ?? ((p: string) => readlinkSync(p));
+  if (!path.isAbsolute(candidate)) return { why: "not an absolute path" };
   let file: string;
+  const folders: string[] = [];
   try {
-    file = real(candidate);
+    let cur = candidate;
+    for (let hops = 0; ; hops++) {
+      const dir = real(path.dirname(cur));
+      if (!folders.includes(dir)) folders.push(dir);
+      const at = path.join(dir, path.basename(cur));
+      if (!isLink(at).isLink) {
+        file = at;
+        break;
+      }
+      if (hops >= 8) return { why: "too many links" };
+      const to = readlink(at);
+      cur = path.isAbsolute(to) ? to : path.join(dir, to);
+    }
+    real(file);
   } catch {
-    return "not there";
+    return { why: "not there" };
   }
   let cwdReal = d.cwd;
   try {
@@ -160,8 +192,8 @@ export function refuseCandidate(candidate: string, d: LocateDeps): string | unde
   } catch {
     // The session's folder as written.
   }
-  if (inside(candidate, d.cwd) || inside(file, cwdReal)) return "inside the session's folder, which a project can write";
-  if (d.platform === "win32") return undefined;
+  if (inside(candidate, d.cwd) || inside(file, cwdReal)) return { why: "inside the session's folder, which a project can write" };
+  if (d.platform === "win32") return { file: candidate };
   const owned = (uid: number) => uid === 0 || d.trusted(uid);
   const macos = d.platform === "darwin";
   let groups: number[] | undefined | null = null;
@@ -169,13 +201,14 @@ export function refuseCandidate(candidate: string, d: LocateDeps): string | unde
     if (groups === null) groups = (d.groups ?? idGroups)();
     return groups !== undefined && groups.includes(MACOS_ADMIN_GID);
   };
-  // No other write bit; a group write bit only for macOS's admin group when
-  // you are in it (MW5B-2); on macOS no access list entry that lets anyone
-  // write (MW5B-1). On Linux the group bits are an access list's mask
-  // (acl(5)), so the mode bits bound it.
-  const open = (p: string, s: { gid?: number; mode: number }) => {
+  // No other write bit; a group write bit only on a folder whose group is
+  // macOS's admin when you are in it (MW5B-2; Homebrew gives the bit to
+  // folders only, FP1-S8); on macOS no access list entry that lets anyone
+  // write (MW5B-1), read on the same real path as the mode. On Linux the
+  // group bits are an access list's mask (acl(5)), so the mode bits bound it.
+  const open = (p: string, s: { gid?: number; mode: number; isDir: boolean }) => {
     if ((s.mode & 0o002) !== 0) return true;
-    if ((s.mode & 0o020) !== 0 && !(macos && s.gid === MACOS_ADMIN_GID && inAdmin())) return true;
+    if ((s.mode & 0o020) !== 0 && !(s.isDir && macos && s.gid === MACOS_ADMIN_GID && inAdmin())) return true;
     if (macos) {
       const ls = (d.acl ?? lsAcl)(p);
       if (ls === undefined || aclGrantsWrite(ls)) return true;
@@ -184,30 +217,31 @@ export function refuseCandidate(candidate: string, d: LocateDeps): string | unde
   };
   try {
     const f = stat(file);
-    if (!f.isFile) return "not a regular file";
-    if ((f.mode & 0o111) === 0) return "not executable";
-    if (!owned(f.uid)) return "owned by someone derm does not trust";
-    if (open(file, f)) return "others may write it";
-    for (const folder of new Set([path.dirname(file), path.dirname(candidate)])) {
+    if (!f.isFile) return { why: "not a regular file" };
+    if (path.basename(file) !== "derm") return { why: "not named derm" };
+    if ((f.mode & 0o111) === 0) return { why: "not executable" };
+    if (!owned(f.uid)) return { why: "owned by someone derm does not trust" };
+    if (open(file, f)) return { why: "others may write it" };
+    for (const folder of folders) {
       const s = stat(folder);
-      if (!s.isDir || !owned(s.uid) || open(folder, s)) return `others may write ${folder}`;
+      if (!s.isDir || !owned(s.uid) || open(folder, s)) return { why: `others may write ${folder}` };
     }
   } catch {
-    return "cannot be read";
+    return { why: "cannot be read" };
   }
-  return undefined;
+  return { file };
 }
 
-/** The derm to start, or why none (case 227: never PATH). */
+/** The derm to start, by its real path, or why none (case 227: never PATH). */
 export function locateDerm(d: LocateDeps): Located {
   const tried: string[] = [];
   const fromEnv = d.env.DERM_BIN?.trim();
   const candidates = fromEnv ? [fromEnv] : [];
   if (d.platform !== "win32") candidates.push(...installCandidates(d.platform, d.home));
   for (const c of candidates) {
-    const why = refuseCandidate(c, d);
-    if (why === undefined) return { path: c };
-    tried.push(`${c}: ${why}`);
+    const r = examine(c, d);
+    if ("file" in r) return { path: r.file };
+    tried.push(`${c}: ${r.why}`);
   }
   if (candidates.length === 0) return { problem: "no derm to run: DERM_BIN is not set (derm run sets it)" };
   return { problem: `no derm derm can trust (${tried.join("; ")})` };

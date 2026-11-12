@@ -66,10 +66,12 @@ mode_owner() {
 # ls/print.c:322-385). An entry that is not a deny and names a permission
 # that lets its holder change the file or what a folder holds is open,
 # whoever it names; a line that cannot be placed is open; so is a path ls
-# cannot read. Returns 0 when open.
+# cannot read. Returns 0 when open. The loop runs in an explicit subshell:
+# a shell that runs a pipeline's last part in the current shell (zsh, ksh)
+# would otherwise leave the caller at its `exit` (FP1-S4).
 acl_open() {
   lines=$(/bin/ls -lden -- "$1" 2>/dev/null) || return 0
-  printf '%s\n' "$lines" | {
+  printf '%s\n' "$lines" | (
     read -r _first
     while read -r n _who t1 t2 rest; do
       case "$n" in *:) ;; *) exit 0 ;; esac
@@ -87,17 +89,19 @@ acl_open() {
       esac
     done
     exit 1
-  }
+  )
 }
 
-# Owned by you or root, no other write bit, no group write bit unless the
-# group is macOS's admin and you are in it (MW5B-2: Homebrew's installer
-# gives its prefix folders g+rwx with group admin for an admin, install.sh
-# at 7986efa lines 182-192; an admin can already sudo, and staff, which
-# every account shares, stays refused). On macOS no access list entry that
-# lets anyone write (MW5B-1); elsewhere no access list at all ("+"; on Linux
-# the group bits are the list's mask, acl(5), so this is stricter than it
-# needs to be).
+# Owned by you or root, no other write bit, no group write bit unless it
+# is a folder whose group is macOS's admin and you are in it (MW5B-2:
+# Homebrew's installer gives its prefix folders, never a file, g+rwx with
+# group admin for an admin, install.sh at 7986efa lines 182-192 and
+# 843-852; any admin account can then change them without a password, as it
+# can every Homebrew tool; staff, which every account shares, stays
+# refused; FP1-S8). On macOS no access list entry that lets anyone write
+# (MW5B-1). On Linux an access list's named entries are bounded by its mask,
+# which the group bits show (acl(5)), so the mode bits decide there, as in
+# derm connect and the in-process clients (FP1-S6).
 closed() {
   mo=$(mode_owner "$1") || return 1
   mode=${mo%% *}
@@ -107,12 +111,11 @@ closed() {
   case "$uid" in "$me" | 0) ;; *) return 1 ;; esac
   case "$mode" in ????????w*) return 1 ;; esac
   case "$mode" in
-    ?????w*) { [ -n "$admin" ] && [ "$gid" = "$admin_gid" ]; } || return 1 ;;
+    d????w*) { [ -n "$admin" ] && [ "$gid" = "$admin_gid" ]; } || return 1 ;;
+    ?????w*) return 1 ;;
   esac
   if [ "$sys" = Darwin ]; then
     acl_open "$1" && return 1
-  else
-    case "$mode" in *+) return 1 ;; esac
   fi
   return 0
 }
@@ -146,6 +149,9 @@ refuse() {
     f=$dir/${to##*/}
   done
   [ -f "$f" ] || { echo "not a regular file"; return; }
+  # A link may lead anywhere, a root-owned shell too (FP1-S2): run only a
+  # file named derm, as derm connect registers only one.
+  [ "${f##*/}" = derm ] || { echo "not named derm"; return; }
   [ -x "$f" ] || { echo "not executable"; return; }
   closed "$f" || { echo "owned by someone else, or others may write it"; return; }
   if [ -n "$here" ] && [ "$here" != / ]; then
@@ -167,8 +173,13 @@ esac
 # id/id.c:532-566); never on another system.
 admin_gid="80"
 admin=
-if [ "$sys" = Darwin ] && [ -x /usr/bin/id ]; then
-  case " $(/usr/bin/id -G 2>/dev/null) " in *" $admin_gid "*) admin=1 ;; esac
+# Only a list id printed whole, every word a number (FP1-S7), as derm
+# connect and the clients read it.
+if [ "$sys" = Darwin ] && [ -x /usr/bin/id ] && groups=$(/usr/bin/id -G 2>/dev/null); then
+  case "$groups" in
+    *[!0-9\ ]* | "") ;;
+    *) case " $groups " in *" $admin_gid "*) admin=1 ;; esac ;;
+  esac
 fi
 local_bin=
 case "${HOME-}" in /?*) local_bin=${HOME%/}/.local/bin/derm ;; esac

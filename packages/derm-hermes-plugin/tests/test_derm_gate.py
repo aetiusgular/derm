@@ -134,6 +134,18 @@ class FindDerm(unittest.TestCase):
             derm_gate.find_derm(self.plugin, self.home)
         self.assertIn("derm-path not used", str(e.exception))
 
+    def test_a_derm_path_that_leads_to_another_program_is_refused(self):
+        # The fix pass's review, FP1-S2: only a file named derm runs.
+        other = self.bin / "sh"
+        other.write_text("#!/bin/sh\n")
+        os.chmod(other, 0o755)
+        f = self.plugin / "derm-path"
+        f.write_text(str(other))
+        os.chmod(f, 0o600)
+        with self.assertRaises(RuntimeError) as e:
+            derm_gate.find_derm(self.plugin, self.home)
+        self.assertIn("not named derm", str(e.exception))
+
     def test_a_relative_path_is_refused(self):
         f = self.plugin / "derm-path"
         f.write_text("derm")
@@ -243,3 +255,47 @@ class Register(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhoElseMayWrite(unittest.TestCase):
+    """FP1-S1: the fourth reader of derm's rule (derm connect, the launcher and
+    the in-process clients are the others) reads macOS's access lists and
+    Homebrew's admin group the same way (MW5B-1, MW5B-2)."""
+
+    U = "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEF12"
+    HEAD = "-rwxr-xr-x@ 1 501 20 6840512 Nov 11 16:00 /Users/u/.local/bin/derm\n"
+
+    def test_an_access_list_line_is_read_as_the_other_readers_read_it(self):
+        u = self.U
+        cases = [
+            (f" 0: {u} allow write", True),
+            (" 0: group:everyone allow write", True),
+            (f" 0: {u} inherited allow add_file,search,file_inherit", True),
+            (f" 0: {u} allow read,execute,readattr,readextattr,readsecurity", False),
+            (f" 0: {u} deny delete", False),
+            (f" 0: {u} deny write,append,delete,chown", False),
+            (f" 0: {u} unknown write", True),
+            (f" 0: {u} allow ", False),
+            (f" 0: {u}", True),
+            (f" 0: {u} inherited", True),
+            ("garbage", True),
+        ]
+        cases += [(f" 0: {u} allow {p}", True) for p in derm_gate.ACL_WRITE_PERMS]
+        self.assertFalse(derm_gate.acl_grants_write(self.HEAD))
+        for line, want in cases:
+            self.assertEqual(derm_gate.acl_grants_write(f"{self.HEAD}{line}\n"), want, line)
+        self.assertEqual(len(derm_gate.ACL_WRITE_PERMS), 10)
+        # A blank line inside the list cannot be placed: open, as in Rust and TS.
+        self.assertTrue(derm_gate.acl_grants_write(f"{self.HEAD}\n 0: {self.U} deny delete\n"))
+
+    def test_the_admin_group_is_trusted_only_on_a_macos_folder_for_a_member(self):
+        t = derm_gate.group_write_trusted
+        self.assertTrue(t(80, True, True, lambda: [20, 80]))
+        self.assertFalse(t(80, False, True, lambda: [20, 80]))
+        self.assertFalse(t(80, True, True, lambda: [20]))
+        self.assertFalse(t(80, True, True, lambda: None))
+        self.assertFalse(t(20, True, True, lambda: [20, 80]))
+        self.assertFalse(t(80, True, False, lambda: [20, 80]))
+        self.assertEqual(derm_gate.parse_groups("20 12 80\n"), [20, 12, 80])
+        self.assertIsNone(derm_gate.parse_groups("20 x"))
+        self.assertIsNone(derm_gate.parse_groups(""))

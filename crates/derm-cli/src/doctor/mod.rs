@@ -484,10 +484,19 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
         // and in your `~/.config/goose/settings.json` switches a plugin off
         // by name (`discovery.rs:155-176, 203-250`), all at 5d03ef6.
         "goose" => {
+            // derm's plugin: the drawn name, or with none drawn the older
+            // fixed name the row keeps (`legacyName`; FP1-S11).
             let name = env
                 .home
                 .as_deref()
-                .and_then(|h| crate::connect::gate::read_gate_name(h).ok().flatten());
+                .and_then(|h| crate::connect::gate::read_gate_name(h).ok().flatten())
+                .or_else(|| {
+                    crate::connect::gate::table()
+                        .ok()?
+                        .into_iter()
+                        .find(|a| a.agent == "goose")?
+                        .legacy_name
+                });
             let ours = |n: &str| name.as_deref() == Some(n);
             let mut settings: Vec<(PathBuf, &str)> = Vec::new();
             if let Some(cwd) = &env.cwd {
@@ -521,7 +530,7 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
                             seen(p, format!("a project plugin named `{n}`, derm's gate's own name, which goose keeps in place of yours: derm's gate does not run here"), true);
                         } else if others < 32 {
                             others += 1;
-                            seen(p, format!("a project plugin `{n}` that goose loads with no prompt, before yours; its hooks run beside derm's (a deny from either stops the call)"), false);
+                            seen(p, format!("a project plugin `{n}` that goose loads with no prompt, before yours: its hooks run the repository's commands before derm's on every call (a deny from either stops the call)"), false);
                         } else {
                             others += 1;
                         }
@@ -540,7 +549,19 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
             if let Some(h) = &env.home {
                 settings.push((h.join(".config/goose/settings.json"), "user"));
             }
+            // goose takes the first scope that lists a plugin, enabled or
+            // disabled, local, then project, then yours (`discovery.rs:
+            // 155-176`): only that scope decides derm's.
             let mut done: Vec<PathBuf> = Vec::new();
+            let mut decided = false;
+            let names = |v: &Value, key: &str| -> Vec<String> {
+                v.get(key)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            };
             for (path, scope) in settings {
                 if done.contains(&path) {
                     continue;
@@ -549,17 +570,21 @@ pub fn shadows(id: &str, row: &Value, env: &Env) -> Vec<Value> {
                 if !path.exists() {
                     continue;
                 }
-                let listed: Vec<String> = read_json_small(&path)
-                    .and_then(|v| v.get("disabledPlugins").cloned())
-                    .and_then(|v| v.as_array().cloned())
-                    .unwrap_or_default()
-                    .iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect();
-                if let Some(n) = listed.iter().find(|n| ours(n)) {
-                    seen(path, format!("disabledPlugins in the {scope} settings names `{n}`, derm's gate: goose does not run it"), true);
-                } else if scope != "user" {
-                    seen(path, format!("the {scope} settings can switch plugins off by name (disabledPlugins: {})", if listed.is_empty() { "none now".to_string() } else { listed.join(", ") }), false);
+                let v = read_json_small(&path).unwrap_or(Value::Null);
+                let disabled = names(&v, "disabledPlugins");
+                let enabled = names(&v, "enabledPlugins");
+                if !decided {
+                    if let Some(n) = disabled.iter().find(|n| ours(n)) {
+                        decided = true;
+                        seen(path, format!("disabledPlugins in the {scope} settings names `{n}`, derm's gate: goose does not run it"), true);
+                        continue;
+                    }
+                    if enabled.iter().any(|n| ours(n)) {
+                        decided = true;
+                    }
+                }
+                if scope != "user" {
+                    seen(path, format!("the {scope} settings can switch plugins on or off by name (disabledPlugins: {})", if disabled.is_empty() { "none now".to_string() } else { disabled.join(", ") }), false);
                 }
             }
         }

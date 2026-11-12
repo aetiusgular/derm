@@ -649,7 +649,9 @@ fn bw5b_3_goose_project_plugins_and_disabled_plugins_are_named() {
         .filter(|v| v["turnsOff"] == json!(true))
         .map(|v| v["path"].as_str().unwrap())
         .collect();
-    assert_eq!(off.len(), 3, "{s:?}");
+    // goose stops at the first scope that lists derm's (local), so your own
+    // settings do not decide here (FP1-S11).
+    assert_eq!(off.len(), 2, "{s:?}");
     assert!(
         off.iter()
             .any(|p| p.ends_with(&format!(".agents/plugins/{name}"))),
@@ -661,7 +663,7 @@ fn bw5b_3_goose_project_plugins_and_disabled_plugins_are_named() {
         "{off:?}"
     );
     assert!(
-        off.iter()
+        !off.iter()
             .any(|p| p.ends_with("home/.config/goose/settings.json")),
         "{off:?}"
     );
@@ -711,6 +713,52 @@ fn bw5b_3_a_project_with_many_goose_plugins_is_listed_in_bounds() {
     assert!(
         s.iter()
             .any(|v| v["what"].as_str().unwrap().starts_with("68 more")),
+        "{s:?}"
+    );
+}
+
+/// FP1-S11 (the fix pass's review): goose decides a plugin by the first
+/// scope that lists it, local, then project, then yours, `enabledPlugins` as
+/// well as `disabledPlugins` (`plugins/discovery.rs:155-176` at 5d03ef6);
+/// with no drawn name, derm's gate is under the older fixed name `derm`.
+#[test]
+fn fp1_s11_goose_scopes_decide_in_order_and_the_old_name_counts() {
+    let h = home("goose-scopes");
+    let e = env(&h);
+    let row = find_row("goose").unwrap();
+    // No ~/.derm/gate-name: derm's plugin is the one named `derm`.
+    put(&h.root.join("proj/.agents/plugins/derm/plugin.json"), "{}");
+    put(
+        &h.root.join("home/.config/goose/settings.json"),
+        "{\"disabledPlugins\": [\"derm\"]}",
+    );
+    let off = |s: &Vec<serde_json::Value>| {
+        s.iter()
+            .filter(|v| v["turnsOff"] == json!(true))
+            .map(|v| v["path"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let s = shadows("goose", &row, &e);
+    let o = off(&s);
+    assert!(
+        o.iter().any(|p| p.ends_with("proj/.agents/plugins/derm")),
+        "{s:?}"
+    );
+    assert!(
+        o.iter()
+            .any(|p| p.ends_with("home/.config/goose/settings.json")),
+        "{s:?}"
+    );
+    // The session folder's local settings enable it: your disable no longer counts.
+    put(
+        &h.root.join("proj/.config/goose/settings.local.json"),
+        "{\"enabledPlugins\": [\"derm\"]}",
+    );
+    let s = shadows("goose", &row, &e);
+    assert!(
+        !off(&s)
+            .iter()
+            .any(|p| p.ends_with("home/.config/goose/settings.json")),
         "{s:?}"
     );
 }

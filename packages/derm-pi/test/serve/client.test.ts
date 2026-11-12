@@ -273,7 +273,7 @@ describe("who else may write, on macOS (MW5B-1, MW5B-2)", () => {
     expect(MACOS_ADMIN_GID).toBe(80);
   });
 
-  // A Homebrew layout: /opt/homebrew/bin (g+rwx, group admin) links into a
+  // A Homebrew layout (also brewDeps below): /opt/homebrew/bin (g+rwx, group admin) links into a
   // keg whose folders are 0755 (the Mac test w5b, step 2).
   function brew(over: Partial<LocateDeps> & { binGid?: number; binMode?: number } = {}): LocateDeps {
     const bin = "/opt/homebrew/bin";
@@ -285,6 +285,8 @@ describe("who else may write, on macOS (MW5B-1, MW5B-2)", () => {
       home: "/Users/u",
       trusted: (x) => x === 501,
       realpath: (p) => (p === `${bin}/derm` ? `${keg}/derm` : p),
+      lstat: (p) => ({ isLink: p === `${bin}/derm` }),
+      readlink: () => "../Cellar/derm/0.1.3/bin/derm",
       stat: (p) => {
         if (p === `${keg}/derm`) return { uid: 501, gid: 80, mode: 0o100755, isFile: true, isDir: false };
         if (p === keg) return { uid: 501, gid: 80, mode: 0o40755, isFile: false, isDir: true };
@@ -319,3 +321,74 @@ describe("who else may write, on macOS (MW5B-1, MW5B-2)", () => {
     expect(refuseCandidate("/opt/homebrew/bin/derm", brew({ platform: "linux", binMode: 0o40755, acl: () => undefined }))).toBeUndefined();
   });
 });
+
+// The fix pass's review (FP1-S2, FP1-S8): every link hop's real folder is
+// checked, as the launcher checks it; only a file named derm runs, and the
+// client starts its real path; Homebrew's group bit is trusted on folders,
+// never on the derm file.
+describe("the route to derm through links (FP1-S2, FP1-S8)", () => {
+  function chain(): { root: string; home: string; bin: string; x: string; y: string; d: LocateDeps } {
+    const root = scratch();
+    const home = path.join(root, "home");
+    const bin = path.join(home, ".local", "bin");
+    const x = path.join(root, "x");
+    const y = path.join(root, "y");
+    for (const f of [bin, x, y]) mkdirSync(f, { recursive: true });
+    for (const f of [bin, path.dirname(bin), home, x, y]) chmodSync(f, 0o755);
+    writeFileSync(path.join(y, "derm"), "#!/bin/sh\n");
+    chmodSync(path.join(y, "derm"), 0o755);
+    symlinkSync(path.join(y, "derm"), path.join(x, "derm"));
+    symlinkSync(path.join(x, "derm"), path.join(bin, "derm"));
+    const cwd = path.join(root, "project");
+    mkdirSync(cwd);
+    return { root, home, bin, x, y, d: { env: {}, cwd, platform: "linux", home, trusted: (u) => u === uid } };
+  }
+
+  it.runIf(unix)("refuses a chain through a folder others may write, as the launcher does", () => {
+    const t = chain();
+    expect(refuseCandidate(path.join(t.bin, "derm"), t.d)).toBeUndefined();
+    chmodSync(t.x, 0o777);
+    expect(refuseCandidate(path.join(t.bin, "derm"), t.d)).toMatch(new RegExp(`others may write ${t.x}`));
+  });
+
+  it.runIf(unix)("runs only a file named derm, and starts its real path", () => {
+    const t = chain();
+    expect(locateDerm(t.d)).toEqual({ path: path.join(t.y, "derm") });
+    rmSync(path.join(t.x, "derm"));
+    symlinkSync(realpathSync("/bin/sh"), path.join(t.x, "derm"));
+    expect(refuseCandidate(path.join(t.bin, "derm"), t.d)).toBe("not named derm");
+  });
+
+  it("trusts Homebrew's admin group on a folder, never on the derm file", () => {
+    const base = brewDeps();
+    const file = (p: string) => p.endsWith("/derm");
+    const stat = (p: string) => {
+      const s = base.stat!(p);
+      return file(p) ? { ...s, mode: 0o100775 } : s;
+    };
+    expect(refuseCandidate("/opt/homebrew/bin/derm", { ...base, stat })).toBe("others may write it");
+  });
+});
+
+function brewDeps(): LocateDeps {
+  const bin = "/opt/homebrew/bin";
+  const keg = "/opt/homebrew/Cellar/derm/0.1.3/bin";
+  return {
+    env: {},
+    cwd: "/Users/u/proj",
+    platform: "darwin",
+    home: "/Users/u",
+    trusted: (x) => x === 501,
+    realpath: (p) => (p === `${bin}/derm` ? `${keg}/derm` : p),
+    lstat: (p) => ({ isLink: p === `${bin}/derm` }),
+    readlink: () => "../Cellar/derm/0.1.3/bin/derm",
+    stat: (p) => {
+      if (p === `${keg}/derm`) return { uid: 501, gid: 80, mode: 0o100755, isFile: true, isDir: false };
+      if (p === keg) return { uid: 501, gid: 80, mode: 0o40755, isFile: false, isDir: true };
+      if (p === bin) return { uid: 501, gid: 80, mode: 0o40775, isFile: false, isDir: true };
+      throw new Error("no such file");
+    },
+    groups: () => [20, 80],
+    acl: (p) => `d 1 501 80 0 Nov 11 16:00 ${p}\n`,
+  };
+}
