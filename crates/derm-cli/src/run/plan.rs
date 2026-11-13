@@ -1641,6 +1641,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn srts_deny_read_names_a_secrets_value_file_as_written_and_by_its_real_path() {
         // Integration w6's re-review, W6C-R9: the srt half of W6C-S1 had no
         // test, and the broker's test named a file through a final link,
