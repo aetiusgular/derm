@@ -19,7 +19,10 @@ use derm_egress::{http, Config, Egress, Secret};
 #[derive(Debug)]
 struct One(Arc<rustls::sign::CertifiedKey>);
 impl rustls::server::ResolvesServerCert for One {
-    fn resolve(&self, _: rustls::server::ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
+    fn resolve(
+        &self,
+        _: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         Some(self.0.clone())
     }
 }
@@ -51,16 +54,25 @@ fn main() {
                         }
                     };
                     let name = a.client_hello().server_name().unwrap_or("none").to_string();
-                    let mut cfg = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                        .with_safe_default_protocol_versions()
-                        .unwrap()
-                        .with_no_client_auth()
-                        .with_cert_resolver(Arc::new(One(ca.leaf(&name).unwrap())));
+                    let mut cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
+                        rustls::crypto::ring::default_provider(),
+                    ))
+                    .with_safe_default_protocol_versions()
+                    .unwrap()
+                    .with_no_client_auth()
+                    .with_cert_resolver(Arc::new(One(ca.leaf(&name).unwrap())));
                     cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-                    let Ok(c) = a.into_connection(Arc::new(cfg)) else { return };
+                    let Ok(c) = a.into_connection(Arc::new(cfg)) else {
+                        return;
+                    };
                     let mut s = BufReader::new(rustls::StreamOwned::new(c, tcp));
-                    let Ok(Some(h)) = http::read_head(&mut s) else { return };
-                    let body = http::request_framing(&h).ok().and_then(|f| http::read_body(&mut s, f).ok()).unwrap_or_default();
+                    let Ok(Some(h)) = http::read_head(&mut s) else {
+                        return;
+                    };
+                    let body = http::request_framing(&h)
+                        .ok()
+                        .and_then(|f| http::read_body(&mut s, f).ok())
+                        .unwrap_or_default();
                     let auth = h.get("authorization").unwrap_or("");
                     let b = String::from_utf8_lossy(&body);
                     let reply = serde_json::json!({
@@ -88,7 +100,11 @@ fn main() {
     let ca_path = dir.join("ca.pem");
     std::fs::write(&ca_path, ca.cert_pem()).unwrap();
     let mut bundle = String::new();
-    for p in ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"] {
+    for p in [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ] {
         if let Ok(r) = std::fs::read_to_string(p) {
             bundle = r;
             break;
@@ -115,11 +131,13 @@ fn main() {
     let mut cfg = Config::new("dev-chat", "dev", secrets, ca, sink).unwrap();
     let mut roots = rustls::RootCertStore::empty();
     roots.add(up_ca.cert_der().clone()).unwrap();
-    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     tls.alpn_protocols = vec![b"http/1.1".to_vec()];
     cfg.upstream_tls = Arc::new(tls);
     cfg.resolve = Arc::new(move |_, _| Ok(vec![up_addr]));
