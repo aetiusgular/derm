@@ -39,8 +39,8 @@ use super::plan::Plan;
 
 // The writers live in `connect/sandbox/` (lane 6A's too), which `connect`
 // keeps private; until integration makes it `pub(crate)` (request 6A-1) the
-// same file is compiled here as well.
-#[allow(dead_code)]
+// same file is compiled here as well, and this allow goes with it.
+#[allow(dead_code, clippy::duplicate_mod)]
 #[path = "../../connect/sandbox/mod.rs"]
 mod writers;
 
@@ -651,10 +651,12 @@ fn codex_refusals(words: &[String], i: &Inputs, home: &str, cwd: &str) -> Result
         };
         let doc: toml_edit::DocumentMut = match text.parse() {
             Ok(d) => d,
-            Err(_) => return refuse(format!(
+            Err(_) => {
+                return refuse(format!(
                 "{} is not TOML derm can read, so derm cannot tell whether it widens its profile",
                 file.display()
-            )),
+            ))
+            }
         };
         let names = doc
             .get("permissions")
