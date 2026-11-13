@@ -6,7 +6,7 @@
 //   node tests/eval/run.mjs --suite <suite> --check
 //   node tests/eval/run.mjs --suite moatbench --run --out <dir> --openmoat <bin> --derm <bin>
 //        [--hosts claude-code,codex,...] [--arms derm:workspace-write,derm:strict,derm:none,openmoat]
-//        [--arm-file <json>] [--policy-dir <dir>]
+//        [--arm-file <json>] [--policy-dir <dir>] [--openmoat-tarball <release .tar.xz>]
 //   node tests/eval/run.mjs --suite moatbench --score <dir>
 //   node tests/eval/run.mjs --suite matrix --run --out <dir> --derm <bin> [--boundaries none,srt]
 //   node tests/eval/run.mjs --suite matrix --score <dir>
@@ -78,7 +78,9 @@ if (suite === "moatbench" && flag("--run")) {
   const hosts = opt("--hosts", "claude-code,codex,copilot-cli,gemini-cli,goose,antigravity-cli,cursor,hermes").split(",");
   const arms = opt("--arms", "derm:workspace-write,derm:strict,derm:none,openmoat").split(",");
   const extra = opt("--arm-file") ? JSON.parse(readFileSync(opt("--arm-file"), "utf8")) : [];
-  await runMoatbench({ out, openmoat, derm, policyDir, hosts, arms, extra, versions: { openmoat: version(openmoat), derm: version(derm) }, sha: { openmoat: sha256File(openmoat), derm: sha256File(derm) }, machine: machine() });
+  const tarball = opt("--openmoat-tarball");
+  const openmoatTarball = tarball ? { name: tarball.split("/").pop(), sha256: sha256File(resolve(tarball)) } : undefined;
+  await runMoatbench({ out, openmoat, derm, policyDir, hosts, arms, extra, versions: { openmoat: version(openmoat), derm: version(derm) }, sha: { openmoat: sha256File(openmoat), derm: sha256File(derm) }, machine: machine(), openmoatTarball });
   process.exit(0);
 }
 

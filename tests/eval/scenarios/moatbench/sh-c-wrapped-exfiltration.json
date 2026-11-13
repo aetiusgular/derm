@@ -7,7 +7,7 @@
     "licence": "MIT OR Apache-2.0",
     "path": "moatbench/obfuscation.yaml"
   },
-  "split": "heldout",
+  "split": "dev",
   "steps": [
     {
       "kind": "shell",

@@ -1,0 +1,95 @@
+{
+ "started": "2026-11-13T00:27:54.952Z",
+ "machine": {
+  "name": "cloud",
+  "os": "Ubuntu 24.04.5 LTS",
+  "kernel": "6.18.44-fc-v445",
+  "cpu": "2 x Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "ram": "8 GB"
+ },
+ "versions": {
+  "openmoat": "openmoat 0.19.0 (OpenMoat)",
+  "derm": "derm 0.1.3"
+ },
+ "sha256": {
+  "openmoat": "c0ad06df3bccf1f84fac24b9b5b3b784548085b9c18d8d06665442a078ae3b17",
+  "derm": "6e92fe7e2541f168f5e1111caebc5b916130bc8bad0679d1f93e3ecf0241358b"
+ },
+ "openmoatTarball": {
+  "name": "openmoat-x86_64-unknown-linux-gnu.tar.xz",
+  "sha256": "d24761fb2fc32849a550e4e11acaa202087bac7a5dd3e31025cf823054ab90ad"
+ },
+ "arms": [
+  {
+   "tool": "derm",
+   "version": "0.1.3",
+   "setting": "workspace-write",
+   "commands": {
+    "claude-code": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook claude-code pre --host claude-code --format json",
+    "codex": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook codex pre --host codex --format json",
+    "copilot-cli": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook copilot-cli pre --host copilot-cli --format json",
+    "gemini-cli": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook gemini before --host gemini-cli --format json",
+    "goose": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook goose pre --host goose --format json",
+    "antigravity-cli": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook antigravity pre --host antigravity-cli --format json",
+    "cursor": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook cursor pre --host cursor --format json",
+    "hermes": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/workspace-write.json' '/opt/e1/bin/derm' hook hermes pre --host hermes --format json"
+   }
+  },
+  {
+   "tool": "derm",
+   "version": "0.1.3",
+   "setting": "strict",
+   "commands": {
+    "claude-code": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook claude-code pre --host claude-code --format json",
+    "codex": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook codex pre --host codex --format json",
+    "copilot-cli": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook copilot-cli pre --host copilot-cli --format json",
+    "gemini-cli": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook gemini before --host gemini-cli --format json",
+    "goose": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook goose pre --host goose --format json",
+    "antigravity-cli": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook antigravity pre --host antigravity-cli --format json",
+    "cursor": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook cursor pre --host cursor --format json",
+    "hermes": "openmoat bench --hook DERM_POLICY='/opt/e1/policy/strict.json' '/opt/e1/bin/derm' hook hermes pre --host hermes --format json"
+   }
+  },
+  {
+   "tool": "derm",
+   "version": "0.1.3",
+   "setting": "none",
+   "commands": {
+    "claude-code": "openmoat bench --hook '/opt/e1/bin/derm' hook claude-code pre --host claude-code --format json",
+    "codex": "openmoat bench --hook '/opt/e1/bin/derm' hook codex pre --host codex --format json",
+    "copilot-cli": "openmoat bench --hook '/opt/e1/bin/derm' hook copilot-cli pre --host copilot-cli --format json",
+    "gemini-cli": "openmoat bench --hook '/opt/e1/bin/derm' hook gemini before --host gemini-cli --format json",
+    "goose": "openmoat bench --hook '/opt/e1/bin/derm' hook goose pre --host goose --format json",
+    "antigravity-cli": "openmoat bench --hook '/opt/e1/bin/derm' hook antigravity pre --host antigravity-cli --format json",
+    "cursor": "openmoat bench --hook '/opt/e1/bin/derm' hook cursor pre --host cursor --format json",
+    "hermes": "openmoat bench --hook '/opt/e1/bin/derm' hook hermes pre --host hermes --format json"
+   }
+  },
+  {
+   "tool": "openmoat",
+   "version": "0.19.0",
+   "setting": "default",
+   "commands": {
+    "claude-code": "openmoat bench --host claude-code --format json",
+    "codex": "openmoat bench --host codex --format json",
+    "copilot-cli": "openmoat bench --host copilot-cli --format json",
+    "gemini-cli": "openmoat bench --host gemini-cli --format json",
+    "goose": "openmoat bench --host goose --format json",
+    "antigravity-cli": "openmoat bench --host antigravity-cli --format json",
+    "cursor": "openmoat bench --host cursor --format json",
+    "hermes": "openmoat bench --host hermes --format json"
+   }
+  }
+ ],
+ "sandboxedHosts": {
+  "claude-code": true,
+  "codex": true,
+  "copilot-cli": false,
+  "gemini-cli": false,
+  "goose": false,
+  "antigravity-cli": false,
+  "cursor": true,
+  "hermes": false
+ },
+ "finished": "2026-11-13T00:28:35.224Z"
+}

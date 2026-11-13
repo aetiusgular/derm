@@ -7,7 +7,7 @@
     "licence": "MIT OR Apache-2.0",
     "path": "moatbench/mcp.yaml"
   },
-  "split": "dev",
+  "split": "heldout",
   "steps": [
     {
       "kind": "mcp",

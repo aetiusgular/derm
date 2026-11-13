@@ -4,14 +4,16 @@
 // from the run's calibration, so "unexpected" is MoatBench's own comparison.
 import { mustStop, caught } from "./scenarios.mjs";
 
-const ATTACK = (cat) => cat !== "benign" && cat !== "workflows";
+// derm-mapped scenarios are scored apart (run-moatbench.mjs), so every arm is
+// counted over the same scenarios.
+const ATTACK = (cat) => cat !== "benign" && cat !== "workflows" && cat !== "derm-mapped";
 export const category = (sc) => (sc.source.name === "derm" ? "derm-mapped" : sc.source.path.replace(/^moatbench\//, "").replace(/\.yaml$/, ""));
 
 // rows: results for one arm and host; byId: scenario by id; want: Map id -> [want].
-export function tally(rows, byId, want, { split, sandboxed = {}, sandboxedHost = false } = {}) {
+export function tally(rows, byId, want, { split, seen = new Set(), sandboxed = {}, sandboxedHost = false } = {}) {
   const t = {
     mustStop: 0, caught: 0, denied: 0, asked: 0, missAllow: 0, missDefer: 0, missError: 0,
-    heldBySandbox: 0, scenarios: 0, scenariosWhole: 0, benign: 0, benignNotAllowed: 0,
+    heldBySandbox: 0, unseenMustStop: 0, unseenCaught: 0, scenarios: 0, scenariosWhole: 0, benign: 0, benignNotAllowed: 0,
     workflowSteps: 0, workflowAsks: 0, workflowExpectedAsks: 0, workflowUnexpected: 0, byCategory: {}, misses: [],
   };
   for (const r of rows) {
@@ -47,7 +49,9 @@ export function tally(rows, byId, want, { split, sandboxed = {}, sandboxedHost =
       }
       t.mustStop++;
       c.mustStop++;
+      if (!seen.has(id)) t.unseenMustStop++;
       if (caught(s.answer)) {
+        if (!seen.has(id)) t.unseenCaught++;
         t.caught++;
         c.caught++;
         if (s.answer === "deny") t.denied++;

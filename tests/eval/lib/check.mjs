@@ -11,10 +11,9 @@ export function validator() {
   return ajv.compile(JSON.parse(readFileSync(join(ROOT, "contracts/eval.schema.json"), "utf8")));
 }
 
-export function forcedDev(suite) {
-  if (suite !== "moatbench") return new Set();
-  const e0 = JSON.parse(readFileSync(join(ROOT, "contracts/fixtures/eval/moatbench-e0-allowed.json"), "utf8"));
-  return new Set(e0.scenarios.map((s) => s.id));
+// No suite forces a scenario into dev yet (split.mjs says why MoatBench does not).
+export function forcedDev() {
+  return new Set();
 }
 
 export const groupOf = (s) => (s.source.name === "derm" ? "derm-mapped" : s.source.path ?? s.suite);

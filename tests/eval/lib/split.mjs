@@ -1,20 +1,22 @@
 // The dev and held-out split (plans/toolkit_wave6_plan.md section 3: "Every corpus
 // is split into a dev half and a held-out half before derm is tuned against it").
 //
-// The rule, fixed 12 Nov 2026 by lane 6F before any wave 6 fix ran against the
-// suite, and the same for every suite:
-//   1. A scenario derm has already been tuned against goes to `dev`, whatever its
-//      hash. For MoatBench that is the 17 scenarios of
-//      contracts/fixtures/eval/moatbench-e0-allowed.json: the base wrote red tests
-//      from them, and integration's gate fixes (R-E0-1 to R-E0-5) and lane 6D's
-//      first tests (R-E0-6) are written against them.
-//   2. Within each group (MoatBench: the source file, so every category keeps both
-//      halves), the other scenarios are ordered by the SHA-256 of `<suite>/<id>`.
-//   3. The first floor(n/2) of the group go to `heldout`, or fewer when rule 1 has
-//      already put more than half of the group in `dev`; the rest go to `dev`.
+// The rule, fixed 12 Nov 2026 by lane 6F, the same for every suite:
+//   1. Within each group (MoatBench: the source file, so every category keeps both
+//      halves), scenarios are ordered by the SHA-256 of `<suite>/<id>`.
+//   2. The first floor(n/2) of the group go to `heldout`, the rest to `dev`.
 // The split is written into each scenario file and never recomputed after: a
 // scenario added later gets its half from this rule once, and a test holds the
 // committed files to the rule (tests/eval/eval.test.ts).
+//
+// `forcedDev` exists for a later suite whose scenarios are seen before the split.
+// MoatBench does not use it. Every MoatBench scenario was seen in E0, and the 17 it
+// missed were written into red tests before this lane started (the base's
+// contracts_w6.rs; integration's R-E0-1 to R-E0-5, lane 6D's R-E0-6). Forcing those
+// 17 into dev would leave a held-out half of scenarios derm already passed, a biased
+// sample that overstates derm; a split that ignores them keeps the held-out half a
+// fair sample of the set, and the scorecard says which held-out scenarios were seen
+// (tests/eval/lib/score.mjs, `seen`). Decided by lane 6F (tk_lane_6F.md, Decisions).
 import { createHash } from "node:crypto";
 
 export function hashOf(suite, id) {
@@ -22,7 +24,7 @@ export function hashOf(suite, id) {
 }
 
 // items: [{ id, group }]; forcedDev: Set of ids. Returns Map id -> "dev"|"heldout".
-export function split(suite, items, forcedDev) {
+export function split(suite, items, forcedDev = new Set()) {
   const groups = new Map();
   for (const it of items) {
     if (!groups.has(it.group)) groups.set(it.group, []);

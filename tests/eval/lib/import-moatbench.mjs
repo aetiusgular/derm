@@ -78,11 +78,9 @@ export function importDir(dir) {
       all.push({ file: f, sc });
     }
   }
-  const e0 = JSON.parse(readFileSync(join(root, "contracts/fixtures/eval/moatbench-e0-allowed.json"), "utf8"));
-  const forced = new Set(e0.scenarios.map((s) => s.id));
   const items = all.map(({ file, sc }) => ({ id: sc.id, group: `moatbench/${file}` }));
   for (const d of DERM_MAPPED) items.push({ id: d.id, group: "derm-mapped" });
-  const halves = split("moatbench", items, forced);
+  const halves = split("moatbench", items);
   const out = [];
   for (const { file, sc } of all) {
     const o = {
