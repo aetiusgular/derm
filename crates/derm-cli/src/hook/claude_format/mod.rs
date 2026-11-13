@@ -50,7 +50,7 @@ pub type LoadPolicy<'a> = Box<dyn Fn(&Env, &Path) -> LoadedPolicy + 'a>;
 /// How a dialect asks the daemon's approver.
 pub type Approve<'a> = Box<dyn Fn(&ApproveRequest, &Env, &Path) -> ApproveOutcome + 'a>;
 /// How a dialect posts a record; true when the daemon took it.
-pub type Post<'a> = Box<dyn Fn(&AdapterEvent, &Env, &Path) -> bool + 'a>;
+pub type Post<'a> = Box<dyn Fn(&AdapterEvent, &Env, &Path) -> daemon::Posted + 'a>;
 
 /// What a dialect reaches outside itself: the environment, the policy, the
 /// daemon. The real ones in [`Deps::real`]; tests pass their own (the
@@ -74,7 +74,7 @@ impl<'a> Deps<'a> {
                 LoadedPolicy { policy, problem }
             }),
             approve: Box::new(daemon::approve),
-            post: Box::new(daemon::post_event),
+            post: Box::new(daemon::post_event_kept),
         }
     }
 
@@ -90,6 +90,14 @@ impl<'a> Deps<'a> {
 
     pub fn post(&self, e: &AdapterEvent) {
         let _ = (self.post)(e, &self.env, &self.cwd);
+    }
+
+    /// Posts a pre event's decision record; the deny reason when neither the
+    /// daemon nor the light tier kept it in a hook with no chat token
+    /// (`daemon::lost_deny`): a call is not run unrecorded.
+    pub fn post_decision(&self, e: &AdapterEvent) -> Option<String> {
+        let posted = (self.post)(e, &self.env, &self.cwd);
+        daemon::lost_deny(&posted, &self.env, &self.cwd)
     }
 
     pub fn approver(&self) -> impl Fn(&ApproveRequest) -> ApproveOutcome + '_ {

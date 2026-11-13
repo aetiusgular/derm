@@ -65,7 +65,7 @@ pub fn main(args: &[String]) -> u8 {
     };
     let env = Env::process();
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let post = |e: &AdapterEvent| daemon::post_event(e, &env, &cwd);
+    let post = |e: &AdapterEvent| daemon::post_event_kept(e, &env, &cwd);
     let approve = |r: &ApproveRequest| daemon::approve(r, &env, &cwd);
     // Records a plugin does not wait for (`"wait": false`) go to the daemon
     // from a thread of their own, so a slow daemon never holds the next reply
@@ -145,7 +145,8 @@ pub(crate) struct Ctx<'a> {
     pub env: Env,
     pub cwd: PathBuf,
     pub memory_state: Option<PathBuf>,
-    pub post: &'a dyn Fn(&AdapterEvent) -> bool,
+    /// Posts a record now: where it went (`daemon::Posted`).
+    pub post: &'a dyn Fn(&AdapterEvent) -> daemon::Posted,
     /// Queues a record without waiting for the daemon; false when dropped.
     pub post_later: &'a dyn Fn(AdapterEvent) -> bool,
     pub approve: &'a dyn Fn(&ApproveRequest) -> ApproveOutcome,
@@ -424,9 +425,13 @@ fn op_decide(ctx: &Ctx, id: &Value, r: &Value) -> Value {
     if call.harness == "oh-my-pi" {
         call.tool = omp_tool_name(&call.tool, &policy.servers);
     }
-    let answer = gate::decide_call(&LoadedPolicy { policy, problem }, &call, &ctx.env);
+    let mut answer = gate::decide_call(&LoadedPolicy { policy, problem }, &call, &ctx.env);
     if record && answer.action != Action::Ask {
-        post_outcome(ctx, &call, &answer, answer.action, None, true, false);
+        let (_, lost) = post_outcome(ctx, &call, &answer, answer.action, None, true, false);
+        // The light tier fails closed: a decision no one recorded is a deny.
+        if let Some(why) = lost.filter(|_| answer.action != Action::Deny) {
+            (answer.action, answer.reason, answer.updated_input) = (Action::Deny, why, None);
+        }
     }
     answer_json(id, &answer)
 }
@@ -511,7 +516,9 @@ fn with_description(
 
 /// The approval record for one call's outcome, then, with `installs`, its
 /// install records: what the TypeScript adapters posted after `decideCall`
-/// (`opencode.ts`, `openclaw.ts`, `cline.ts`).
+/// (`opencode.ts`, `openclaw.ts`, `cline.ts`). How many the daemon took, and,
+/// for an approval record posted now, the light tier's deny reason when no
+/// one kept it (`daemon::lost_deny`).
 fn post_outcome(
     ctx: &Ctx,
     call: &GateCall,
@@ -520,12 +527,17 @@ fn post_outcome(
     extra: Option<&Extra>,
     installs: bool,
     later: bool,
-) -> usize {
-    let send = |e: &AdapterEvent| {
+) -> (usize, Option<String>) {
+    let mut lost = None;
+    let mut send = |e: &AdapterEvent, approval: bool| {
         if later {
             (ctx.post_later)(e.clone())
         } else {
-            (ctx.post)(e)
+            let p = (ctx.post)(e);
+            if approval {
+                lost = daemon::lost_deny(&p, &ctx.env, &ctx.cwd);
+            }
+            p.by_daemon()
         }
     };
     let chat = call.chat.clone().unwrap_or_default();
@@ -556,17 +568,17 @@ fn post_outcome(
         summary: format!("{} {}", answer.normalized_tool, action_word(outcome)),
         detail,
     };
-    if send(&record) {
+    if send(&record, true) {
         posted += 1;
     }
     if installs {
         for e in gate::install_events(call, answer, outcome, &chat) {
-            if send(&e) {
+            if send(&e, false) {
                 posted += 1;
             }
         }
     }
-    posted
+    (posted, lost)
 }
 
 /// What a plugin adds to its own record (`record`).
@@ -600,7 +612,7 @@ fn op_approve(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         Err(e) => return refuse(id, &e),
     };
     let resolved = gate::resolve_ask(&answer, &call, can_ask, &ctx.env, ctx.approve);
-    let (kind, reason, outcome) = match resolved {
+    let (mut kind, mut reason, outcome) = match resolved {
         AskResolution::Allow(why) => ("allow", why, Some(Action::Allow)),
         AskResolution::Deny(why) => ("deny", why, Some(Action::Deny)),
         AskResolution::Harness(why) => ("harness", why, None),
@@ -611,7 +623,11 @@ fn op_approve(ctx: &Ctx, id: &Value, r: &Value) -> Value {
             via: None,
             reason: Some(reason.clone()),
         };
-        post_outcome(ctx, &call, &answer, outcome, Some(&extra), true, false);
+        let (_, lost) = post_outcome(ctx, &call, &answer, outcome, Some(&extra), true, false);
+        // The light tier fails closed: an allow no one recorded is a deny.
+        if let Some(why) = lost.filter(|_| outcome != Action::Deny) {
+            (kind, reason) = ("deny", why);
+        }
     }
     json!({"id": id, "ok": true, "kind": kind, "reason": reason})
 }
@@ -656,7 +672,7 @@ fn op_record(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         Ok(w) => !w,
         Err(e) => return refuse(id, &e),
     };
-    let posted = post_outcome(
+    let (posted, _) = post_outcome(
         ctx,
         &call,
         &answer,
@@ -704,7 +720,7 @@ fn op_event(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         detail,
     };
     let posted = match waits(r) {
-        Ok(true) => (ctx.post)(&event),
+        Ok(true) => (ctx.post)(&event).by_daemon(),
         Ok(false) => (ctx.post_later)(event),
         Err(e) => return refuse(id, &e),
     };

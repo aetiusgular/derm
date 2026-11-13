@@ -77,7 +77,7 @@ pub fn handle_pre(input: &Map<String, Value>, deps: &Deps) -> Reply {
         reason = "secret-like value in input of a tool derm cannot rewrite on Codex".into();
     }
     let chat_s = chat.unwrap_or_default();
-    deps.post(
+    let lost = deps.post_decision(
         &Decision {
             harness: HARNESS,
             id_part: call.tool_use_id.as_deref(),
@@ -91,6 +91,10 @@ pub fn handle_pre(input: &Map<String, Value>, deps: &Deps) -> Reply {
         }
         .event(),
     );
+    // The light tier fails closed: a decision no one recorded is a deny.
+    if let Some(why) = lost.filter(|_| action != Action::Deny) {
+        (action, reason) = (Action::Deny, why);
+    }
     for e in install_events(&call, &answer, action, &chat_s) {
         deps.post(&e);
     }

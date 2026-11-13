@@ -100,7 +100,6 @@ pub fn after_post(event: &AdapterEvent, env: &Env, _cwd: &Path, posted: bool) ->
 /// under srt `~/.derm` is denied to its hooks (note AZ B8), and a daemon
 /// restart kills the chat's token (case 86), so failing closed there would
 /// deny every call of a chat whose daemon restarted.
-#[allow(dead_code)] // integration wires it into the dialects' pre events (request)
 pub fn denies(outcome: &Outcome, env: &Env, cwd: &Path) -> Option<String> {
     match outcome {
         Outcome::Failed(why) if super::daemon::chat_token(env, cwd).is_none() => Some(format!(

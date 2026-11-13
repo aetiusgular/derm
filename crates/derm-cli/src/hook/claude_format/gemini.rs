@@ -164,7 +164,7 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
     let key = call_key(input);
     let shown = if gemini_asks { Action::Ask } else { action };
     let chat_s = chat.unwrap_or_default();
-    deps.post(
+    let lost = deps.post_decision(
         &Decision {
             harness: HARNESS,
             id_part: Some(&key),
@@ -178,6 +178,14 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
         }
         .event(),
     );
+    // The light tier fails closed: a decision no one recorded is a deny.
+    let shown = match lost {
+        Some(why) if shown != Action::Deny => {
+            (action, gemini_asks, reason) = (Action::Deny, false, why);
+            Action::Deny
+        }
+        _ => shown,
+    };
     // Gemini gives no call id: the install record joins by the call key.
     let install_call = GateCall {
         tool_use_id: Some(key.clone()),

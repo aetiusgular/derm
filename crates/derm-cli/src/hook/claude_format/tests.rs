@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::gate::core::LoadedPolicy;
-use crate::gate::daemon::{AdapterEvent, ApproveOutcome, ApproveRequest, By, Env};
+use crate::gate::daemon::{AdapterEvent, ApproveOutcome, ApproveRequest, By, Env, Posted};
 
 fn presets() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/connect/presets")
@@ -31,7 +31,7 @@ fn no_daemon<'a>(p: LoadedPolicy, env: Env) -> Deps<'a> {
         cwd: PathBuf::from("/"),
         load_policy: Box::new(move |_, _| p.clone()),
         approve: Box::new(|_, _, _| ApproveOutcome::Unreachable("no daemon (test)".into())),
-        post: Box::new(|_, _, _| false),
+        post: Box::new(|_, _, _| Posted::Light),
     }
 }
 
@@ -183,7 +183,7 @@ fn command_code_finds_its_stripped_token_from_the_chat_id_and_the_socket() {
             cwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             load_policy: Box::new(move |_, _| p.clone()),
             approve: Box::new(crate::gate::daemon::approve),
-            post: Box::new(crate::gate::daemon::post_event),
+            post: Box::new(crate::gate::daemon::post_event_kept),
         }
     };
     let cc = compat::dialect("command-code").unwrap();
@@ -368,7 +368,7 @@ fn on_codex_only_an_approvers_yes_allows_an_ask() {
             cwd: PathBuf::from("/"),
             load_policy: Box::new(move |_, _| p.clone()),
             approve: Box::new(move |_: &ApproveRequest, _: &Env, _: &Path| o.clone()),
-            post: Box::new(|_: &AdapterEvent, _: &Env, _: &Path| true),
+            post: Box::new(|_: &AdapterEvent, _: &Env, _: &Path| Posted::Daemon),
         };
         let r = codex::run("pre", input.as_bytes(), deps);
         assert_eq!(r.exit, exit, "{outcome:?}");
@@ -430,7 +430,7 @@ fn claude_codes_hook_run_by_grok_blocks_or_defers_and_never_decides() {
             approve: Box::new(|_, _, _| ApproveOutcome::Unreachable("test".into())),
             post: Box::new(move |_, _, _| {
                 n.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                true
+                Posted::Daemon
             }),
         }
     };

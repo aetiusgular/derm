@@ -88,7 +88,7 @@ pub fn handle_pre(input: &Map<String, Value>, deps: &Deps) -> Reply {
         a => (super::action_str(a), answer.reason.clone()),
     };
     let chat_s = chat.unwrap_or_default();
-    deps.post(
+    let lost = deps.post_decision(
         &Decision {
             harness: HARNESS,
             id_part: call.tool_use_id.as_deref(),
@@ -102,6 +102,11 @@ pub fn handle_pre(input: &Map<String, Value>, deps: &Deps) -> Reply {
         }
         .event(),
     );
+    // The light tier fails closed: a decision no one recorded is a deny.
+    let (decision, reason) = match lost {
+        Some(why) if decision != "deny" => ("deny", why),
+        _ => (decision, reason),
+    };
     for e in install_events(&call, &answer, parse_action(decision), &chat_s) {
         deps.post(&e);
     }

@@ -93,6 +93,13 @@ pub trait Io {
     fn load_policy(&self) -> LoadedPolicy;
     fn approve(&self, r: &ApproveRequest) -> ApproveOutcome;
     fn post(&self, e: &AdapterEvent);
+    /// Posts a pre event's decision record; the deny reason when no one
+    /// kept it in a hook with no chat token (`daemon::lost_deny`). A fake
+    /// that keeps every record answers `None`.
+    fn post_decision(&self, e: &AdapterEvent) -> Option<String> {
+        self.post(e);
+        None
+    }
 }
 
 /// The real environment, policy and daemon.
@@ -123,6 +130,10 @@ impl Io for Real {
     }
     fn post(&self, e: &AdapterEvent) {
         let _ = daemon::post_event(e, &self.env, &self.cwd);
+    }
+    fn post_decision(&self, e: &AdapterEvent) -> Option<String> {
+        let posted = daemon::post_event_kept(e, &self.env, &self.cwd);
+        daemon::lost_deny(&posted, &self.env, &self.cwd)
     }
 }
 
@@ -412,7 +423,7 @@ pub fn handle_pre(d: &Dialect, input: &Input, io: &dyn Io) -> Result<Reply, Stri
     if let Some(id) = &read.call_id {
         detail.insert("toolUseId".into(), id.clone().into());
     }
-    io.post(&AdapterEvent {
+    let lost = io.post_decision(&AdapterEvent {
         id: daemon::decision_id(d.id, read.call_id.as_deref()),
         chat_id: read.chat.clone().unwrap_or_default(),
         harness: d.id.to_string(),
@@ -424,6 +435,13 @@ pub fn handle_pre(d: &Dialect, input: &Input, io: &dyn Io) -> Result<Reply, Stri
         ),
         detail,
     });
+    // The light tier fails closed: a decision no one recorded is a deny,
+    // a deferral included (it lets the call through when nothing denies).
+    let mut out = out;
+    let mut deferred = deferred;
+    if let Some(why) = lost.filter(|_| out.decision != Action::Deny) {
+        (out.decision, out.reason, deferred) = (Action::Deny, why, false);
+    }
     // A deferral decides nothing (Cursor's preToolUse for an MCP call), so it
     // records no install; the hook that decides does.
     if !deferred {

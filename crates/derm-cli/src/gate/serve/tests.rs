@@ -102,7 +102,7 @@ fn run_text(se: &Session, agent: &str, input: &[u8], approver: ApproveOutcome) -
     let asked = RefCell::new(Vec::new());
     let post = |e: &AdapterEvent| {
         posted.borrow_mut().push(e.clone());
-        true
+        crate::gate::daemon::Posted::Daemon
     };
     let later = RefCell::new(Vec::new());
     let post_later = |e: AdapterEvent| {

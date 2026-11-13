@@ -846,8 +846,46 @@ pub struct AdapterEvent {
     pub detail: Map<String, Value>,
 }
 
-/// Posts one adapter record (`postEvent`). Best effort; never panics.
+/// What became of one adapter record: the daemon took it, the light tier's
+/// per-chat log kept it (`gate/locallog/`), or neither did, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Posted {
+    Daemon,
+    Light,
+    Lost(String),
+}
+
+impl Posted {
+    /// Whether the daemon took the record (what [`post_event`] returns).
+    pub fn by_daemon(&self) -> bool {
+        matches!(self, Posted::Daemon)
+    }
+}
+
+/// The reason a pre event's decision becomes a deny after its record was
+/// `posted`, or `None`: only a record neither the daemon nor the light tier
+/// kept, in a hook with no chat token (`locallog::denies`; lane 6B's request
+/// 1, wired at the wave 6 phase 1 merge). With a chat token the record is the
+/// daemon's to keep, and a daemon restart (case 86) or srt's deny of
+/// `~/.derm` (note AZ B8) must not deny every call.
+pub fn lost_deny(posted: &Posted, env: &Env, cwd: &Path) -> Option<String> {
+    match posted {
+        Posted::Lost(why) => {
+            super::locallog::denies(&super::locallog::Outcome::Failed(why.clone()), env, cwd)
+        }
+        _ => None,
+    }
+}
+
+/// Posts one adapter record (`postEvent`). Best effort; never panics. True
+/// when the daemon took it; a record it did not take goes to the light tier
+/// ([`post_event_kept`] says which).
 pub fn post_event(event: &AdapterEvent, env: &Env, cwd: &Path) -> bool {
+    post_event_kept(event, env, cwd).by_daemon()
+}
+
+/// [`post_event`], saying where the record went.
+pub fn post_event_kept(event: &AdapterEvent, env: &Env, cwd: &Path) -> Posted {
     let mut detail = Map::new();
     detail.insert("trust".into(), json!("client"));
     for (k, v) in &event.detail {
@@ -880,9 +918,13 @@ pub fn post_event(event: &AdapterEvent, env: &Env, cwd: &Path) -> bool {
     };
     let posted = matches!(exchange(&[line], &o), Ok(r) if r.first().and_then(|r| r.get("ok")) == Some(&Value::Bool(true)));
     // Wave 6's seam (lane 6B, `gate/locallog/`): the light tier's per-chat
-    // log. The base's stub writes nothing.
-    let _ = super::locallog::after_post(event, env, cwd, posted);
-    posted
+    // log keeps what the daemon did not take.
+    match super::locallog::after_post(event, env, cwd, posted) {
+        _ if posted => Posted::Daemon,
+        super::locallog::Outcome::Appended { .. } => Posted::Light,
+        super::locallog::Outcome::Failed(why) => Posted::Lost(why),
+        super::locallog::Outcome::Skipped => Posted::Lost("not recorded".into()),
+    }
 }
 
 /// JavaScript's `slice(0, 200)` cuts by UTF-16 code units; a cut through a
