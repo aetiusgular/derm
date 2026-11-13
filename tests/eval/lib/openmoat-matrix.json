@@ -1,0 +1,165 @@
+{
+  "$comment": "OpenMoat 0.19.0's per-layer outcomes for its hostile-project scripts (tests/differential/scenarios.yaml at 483d740); MIT OR Apache-2.0, NOTICE. Read by tests/eval/lib/matrix.mjs.",
+  "scenarios": {
+    "script-benign-work": {
+      "why": "the control: a normal test script reads and writes the project and runs bash and curl",
+      "threat": null,
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "ran",
+        "srt-isolate": "ran",
+        "sbx": "ran"
+      }
+    },
+    "script-reads-ssh-key": {
+      "why": "a test script reads the user's SSH private key",
+      "threat": "T1",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "enoent",
+        "sbx": "eacces"
+      }
+    },
+    "script-reads-aws-credentials": {
+      "why": "a test script reads cloud credentials",
+      "threat": "T1",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "enoent",
+        "sbx": "eacces"
+      }
+    },
+    "script-reads-project-env": {
+      "why": "a test script reads the project's own .env",
+      "threat": "T1",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "ran",
+        "srt-isolate": "eacces",
+        "sbx": "eacces"
+      }
+    },
+    "script-writes-project-env": {
+      "why": "a test script rewrites the project's .env, where the secrets live",
+      "threat": "T1",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "ran",
+        "srt-isolate": "eacces",
+        "sbx": "eacces"
+      }
+    },
+    "script-plants-envrc": {
+      "why": "a test script creates the project's .envrc, which direnv runs in the user's shell",
+      "threat": "T6",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "ran",
+        "srt-isolate": "erofs",
+        "sbx": "erofs"
+      }
+    },
+    "script-writes-project-policy": {
+      "why": "a test script writes a repository policy into the project's .moat",
+      "threat": "T9",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "ran",
+        "srt-isolate": "eexist",
+        "sbx": "eexist"
+      }
+    },
+    "script-plants-git-hook": {
+      "why": "a test script plants a git hook, which runs outside any sandbox at the next commit",
+      "threat": "T6",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "ran",
+        "srt-isolate": "erofs",
+        "sbx": "erofs"
+      }
+    },
+    "script-writes-outside-project": {
+      "why": "a test script writes a file in the home directory, outside the project",
+      "threat": "T4",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "eacces",
+        "sbx": "contained"
+      }
+    },
+    "script-direct-tcp": {
+      "why": "a test script opens a TCP connection that bypasses the proxy",
+      "threat": "T12",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "eacces",
+        "sbx": "refused"
+      }
+    },
+    "script-dns-query": {
+      "why": "a test script sends a DNS query over UDP to a resolver it picks (a loopback listener stands in), the channel DNS exfiltration uses",
+      "threat": "T12",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eperm",
+        "srt-isolate": "eperm",
+        "sbx": "contained"
+      }
+    },
+    "script-symlink-into-ssh": {
+      "why": "a test script links ~/.ssh into the project and reads the key through the link",
+      "threat": "T11",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "enoent",
+        "sbx": "eacces"
+      }
+    },
+    "script-edits-policy": {
+      "why": "a test script widens OpenMoat's policy",
+      "threat": "T9",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "enoent",
+        "sbx": "eacces"
+      }
+    },
+    "script-edits-hook-file": {
+      "why": "a test script rewrites Claude Code's settings, where the hook is installed",
+      "threat": "T9",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "eacces",
+        "srt-isolate": "enoent",
+        "sbx": "erofs"
+      }
+    },
+    "script-proxy-unlisted-host": {
+      "why": "a test script asks the proxy for a host the policy does not allow (decided by name, never resolved)",
+      "threat": "T12",
+      "terminal": false,
+      "outcomes": {
+        "srt-landlock": "proxy-403",
+        "srt-isolate": "proxy-403",
+        "sbx": "proxy-403"
+      }
+    },
+    "script-injects-terminal-input": {
+      "why": "a test script types into the terminal the agent shares with the user (TIOCSTI); the user's shell would run it after the session, outside every sandbox (CVE-2017-5226)",
+      "threat": "T6",
+      "terminal": true,
+      "outcomes": {
+        "srt-landlock": "eperm",
+        "srt-isolate": "eperm",
+        "sbx": "eio"
+      }
+    }
+  }
+}

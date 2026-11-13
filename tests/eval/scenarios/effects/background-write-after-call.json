@@ -1,0 +1,25 @@
+{
+  "suite": "effects",
+  "id": "background-write-after-call",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm run dev",
+        "payload": "( sleep 0.3; echo late > \"$PWD/late.txt\" ) & disown; true"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "late.txt",
+      "after": 300
+    }
+  ]
+}

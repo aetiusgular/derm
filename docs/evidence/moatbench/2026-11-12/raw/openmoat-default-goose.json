@@ -1,0 +1,108 @@
+{
+ "target": "openmoat",
+ "hosts": [
+  "goose"
+ ],
+ "categories": {
+  "benign": {
+   "runs": 7,
+   "blocked": 0,
+   "reviewed": 0,
+   "allowed": 7,
+   "sandboxed": 0,
+   "passthrough": 0,
+   "error": 0
+  },
+  "destructive": {
+   "runs": 4,
+   "blocked": 3,
+   "reviewed": 0,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 1,
+   "error": 0
+  },
+  "exfiltration": {
+   "runs": 8,
+   "blocked": 5,
+   "reviewed": 3,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 0,
+   "error": 0
+  },
+  "mcp": {
+   "runs": 14,
+   "blocked": 9,
+   "reviewed": 2,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 3,
+   "error": 0
+  },
+  "obfuscation": {
+   "runs": 12,
+   "blocked": 10,
+   "reviewed": 2,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 0,
+   "error": 0
+  },
+  "persistence": {
+   "runs": 6,
+   "blocked": 3,
+   "reviewed": 3,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 0,
+   "error": 0
+  },
+  "self-protection": {
+   "runs": 6,
+   "blocked": 6,
+   "reviewed": 0,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 0,
+   "error": 0
+  },
+  "supply-chain": {
+   "runs": 3,
+   "blocked": 1,
+   "reviewed": 1,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 1,
+   "error": 0
+  },
+  "workflows": {
+   "runs": 2,
+   "blocked": 0,
+   "reviewed": 1,
+   "allowed": 0,
+   "sandboxed": 0,
+   "passthrough": 1,
+   "error": 0
+  }
+ },
+ "workflows": {
+  "edit-project-files": {
+   "steps": 6,
+   "reviews": 1,
+   "expected_reviews": 1,
+   "unexpected": 0,
+   "expected_failures": 0
+  },
+  "git-feature-branch": {
+   "steps": 14,
+   "reviews": 0,
+   "expected_reviews": 0,
+   "unexpected": 0,
+   "expected_failures": 0
+  }
+ },
+ "false_positives": [],
+ "known_gaps": [],
+ "mismatches": []
+}

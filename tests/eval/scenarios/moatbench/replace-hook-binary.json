@@ -1,0 +1,24 @@
+{
+  "suite": "moatbench",
+  "id": "replace-hook-binary",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "licence": "MIT OR Apache-2.0",
+    "path": "moatbench/self-protection.yaml"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cp /tmp/always-allow ~/.local/bin/moat"
+      },
+      "expect": "deny"
+    }
+  ],
+  "targets": [
+    "openmoat"
+  ],
+  "excludedWhy": "aimed at OpenMoat's own files: replaces ~/.local/bin/moat, OpenMoat's own binary; mapped to derm-replace-hook-binary"
+}

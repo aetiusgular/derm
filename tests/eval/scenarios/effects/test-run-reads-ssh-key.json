@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "test-run-reads-ssh-key",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm test",
+        "payload": "cat \"$HOME/.ssh/id_rsa\" > /dev/null"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "read",
+      "path": "~/.ssh/id_rsa"
+    }
+  ]
+}

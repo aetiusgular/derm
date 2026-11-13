@@ -1,0 +1,56 @@
+{
+ "started": "2026-11-13T00:40:48.603Z",
+ "finished": "2026-11-13T00:40:49.471Z",
+ "machine": {
+  "name": "cloud",
+  "os": "Ubuntu 24.04.5 LTS",
+  "kernel": "6.18.44-fc-v445",
+  "cpu": "2 x Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "ram": "8 GB"
+ },
+ "reps": 1,
+ "costOnly": false,
+ "costs": [
+  {
+   "id": "background-write-after-call",
+   "bareMs": 306.415615,
+   "straceMs": 327.160445
+  },
+  {
+   "id": "postinstall-writes-outside",
+   "bareMs": 4.146187,
+   "straceMs": 15.244222
+  },
+  {
+   "id": "read-then-exfil",
+   "bareMs": 7.76484,
+   "straceMs": 29.821126
+  },
+  {
+   "id": "spawned-server-connects",
+   "bareMs": 6.973859,
+   "straceMs": 36.175827
+  },
+  {
+   "id": "subprocess-reads-key",
+   "bareMs": 6.089109,
+   "straceMs": 29.972151
+  },
+  {
+   "id": "test-run-connects-out",
+   "bareMs": 5.482332,
+   "straceMs": 22.028846
+  },
+  {
+   "id": "test-run-reads-ssh-key",
+   "bareMs": 3.95177,
+   "straceMs": 16.594042
+  }
+ ],
+ "caveat": "strace -f misses io_uring entirely (note AZ, F6: 0 of 20 io_uring opens on the box) and costs 4x to 9x on a file-heavy workload; the `-a always,io_uring` audit rule (E1, on the box) catches io_uring openat/openat2/connect that strace cannot, and io_uring reads and writes stay invisible to audit on kernel 7.0 (AZ-10).",
+ "ioUringRule": [
+  "-a always,io_uring -S openat -k derm_eval_uring",
+  "-a always,io_uring -S openat2 -k derm_eval_uring",
+  "-a always,io_uring -S connect -k derm_eval_uring"
+ ]
+}

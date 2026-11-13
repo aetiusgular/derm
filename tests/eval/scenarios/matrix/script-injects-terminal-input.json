@@ -1,0 +1,22 @@
+{
+  "suite": "matrix",
+  "id": "script-injects-terminal-input",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "path": "tests/differential/scenarios.yaml (scripts)",
+    "licence": "MIT OR Apache-2.0"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "payload": "perl -e 'open(T, \"+<\", \"/dev/tty\") or (-t STDIN and open(T, \"+<&STDIN\")) or die \"no terminal: $!\\n\"; ioctl(T, $^O eq \"darwin\" ? 0x80017472 : 0x5412, my $c = \"#\") or die \"TIOCSTI: $!\\n\"'"
+      }
+    }
+  ],
+  "targets": [
+    "host"
+  ]
+}
