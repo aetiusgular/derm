@@ -26,6 +26,7 @@
 
 pub mod hosts;
 pub mod kinds;
+pub mod state;
 pub mod verdict;
 
 use std::collections::{BTreeSet, VecDeque};

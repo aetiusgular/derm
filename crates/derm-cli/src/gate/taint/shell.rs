@@ -322,7 +322,7 @@ fn expand(mut words: Vec<String>, depth: usize, out: &mut Vec<Cmd>, outs: &mut V
             if !w.starts_with('-') {
                 break;
             }
-            let takes = values.iter().any(|v| *v == w);
+            let takes = values.contains(&w);
             j += if takes { 2 } else { 1 };
         }
         if head == "timeout" && j < words.len() {

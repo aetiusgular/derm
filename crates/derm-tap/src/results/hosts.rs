@@ -148,9 +148,7 @@ pub fn rfc3986(url: &str) -> Option<String> {
     let (_scheme, rest) = split_scheme(url.trim())?;
     let after = rest.strip_prefix('/')?;
     let after = after.trim_start_matches('/');
-    let end = after
-        .find(|c: char| matches!(c, '/' | '?' | '#'))
-        .unwrap_or(after.len());
+    let end = after.find(['/', '?', '#']).unwrap_or(after.len());
     let authority = &after[..end];
     if authority.matches('@').count() > 1 {
         return None;

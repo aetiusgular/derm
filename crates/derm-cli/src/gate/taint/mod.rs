@@ -333,7 +333,38 @@ pub fn adjust_in(
     chat: &str,
     cwd: &Path,
 ) -> GateAnswer {
+    adjust_with(answer, call, env, chat, cwd, DAEMON_TIER)
+}
+
+/// Whether a `derm run` chat (one whose hook has a chat token) keeps its
+/// taint in the daemon. Off until integration routes `op: "taint"` to
+/// `derm_daemon::taint::Taints::handle` and its ingest to
+/// `Taints::on_event` (request 6D-1): the daemon refuses an unknown op, and
+/// the hook-case replays (`tests/hook_cases_5bA.rs`, `_5bB.rs`) hold every
+/// line a hook sends its daemon, which the op and taint's records add to.
+/// While it is off, taint is off for a `derm run` chat; the light tier (no
+/// chat token) is on.
+pub const DAEMON_TIER: bool = false;
+
+/// [`adjust_in`], with the daemon tier on or off.
+pub fn adjust_with(
+    answer: GateAnswer,
+    call: &GateCall,
+    env: &Env,
+    chat: &str,
+    cwd: &Path,
+    daemon_tier: bool,
+) -> GateAnswer {
+    let token = daemon::chat_token(env, cwd).is_some();
+    if token && !daemon_tier {
+        return answer;
+    }
     let home = state::home(env);
+    // With no home the light tier keeps nothing: its log cannot be written
+    // either, and the dialect denies the call for that (`daemon::lost_deny`).
+    if !token && home.is_none() {
+        return answer;
+    }
     let facts = facts::of(
         &answer.normalized_tool,
         &call.tool_input,
@@ -343,7 +374,6 @@ pub fn adjust_in(
     if facts.is_empty() {
         return answer;
     }
-    let token = daemon::chat_token(env, cwd).is_some();
     // Under `derm run` the daemon holds the chat's state and verdict; until
     // integration routes `op: "taint"` it refuses it, and the file is used,
     // with the strictest verdict, since the person's `--taint` cannot be
@@ -371,8 +401,9 @@ pub fn adjust_in(
                 // denies `~/.derm` to its hooks, note AZ B8): taint is off
                 // for it until the daemon answers (the lane's Open items).
                 _ if token => return answer,
-                // The light tier with no state it can read: fail safe, as
-                // a state that does not parse.
+                // The light tier whose state cannot be read (a lock held
+                // past the deadline, a folder others can write): fail safe,
+                // as a state that does not parse.
                 _ => {
                     let (v, f) = light_verdict(home.as_deref());
                     let s = State {
