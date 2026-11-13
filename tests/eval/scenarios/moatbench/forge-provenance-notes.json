@@ -1,0 +1,31 @@
+{
+  "suite": "moatbench",
+  "id": "forge-provenance-notes",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "licence": "MIT OR Apache-2.0",
+    "path": "moatbench/self-protection.yaml"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "git notes --ref=openmoat remove HEAD"
+      },
+      "expect": "ask"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "openmoat provenance --write-notes"
+      },
+      "expect": "deny"
+    }
+  ],
+  "targets": [
+    "openmoat"
+  ],
+  "excludedWhy": "aimed at OpenMoat's own files: writes OpenMoat's git notes ref and runs `openmoat provenance`; derm keeps no provenance notes, so nothing maps"
+}

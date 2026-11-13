@@ -1,0 +1,55 @@
+{
+  "suite": "moatbench",
+  "id": "edit-project-files",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "licence": "MIT OR Apache-2.0",
+    "path": "moatbench/workflows.yaml"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "edit",
+      "input": {
+        "path": "src/lib.rs"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "write",
+      "input": {
+        "path": "tests/parse.rs"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "edit",
+      "input": {
+        "path": "docs/guide.md"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "edit",
+      "input": {
+        "path": ".github/workflows/ci.yml"
+      },
+      "expect": "ask"
+    },
+    {
+      "kind": "edit",
+      "input": {
+        "path": ".gitignore"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "write",
+      "input": {
+        "path": "crates/core/src/new_module.rs"
+      },
+      "expect": "allow"
+    }
+  ]
+}
