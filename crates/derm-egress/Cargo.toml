@@ -22,6 +22,31 @@ default = []
 w6-red = []
 
 [dependencies]
+# Records go out as the daemon's own events (`source: derm`), as the tap's do.
+derm-core = { path = "../derm-core" }
+serde.workspace = true
+serde_json.workspace = true
+# Opening the secrets file without following a link or blocking on a FIFO.
+libc.workspace = true
+# The scan's base64 forms of a secret's value (already in the workspace).
+base64.workspace = true
+# Substring search over a request body up to the inspection limit; already
+# locked at this version (through the workspace's other crates).
+memchr = "=2.8.3"
+# TLS on both legs (note AZ C8): the locked version, `ring` as the provider
+# (already locked through ureq), no default features, HTTP/1.1 only.
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# The upstream leg checks the server against the OS trust store, as derm-tap's
+# ureq does (already locked at this version).
+rustls-platform-verifier = "=0.7.1"
+# Random bytes for the per-chat placeholder hex and the leaf serials (already
+# locked through rustls).
+ring = "=0.17.14"
+# The local CA and the leaves it signs per host (C8: 8 new crates in the build;
+# measured by the lane's research, plans/parallel/tk_lane_6C.md).
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem"] }
+
+[dev-dependencies]
 
 [[test]]
 name = "contract"
