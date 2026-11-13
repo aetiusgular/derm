@@ -1405,6 +1405,33 @@
         "tool": "bash",
         "command": [
           "derm",
+          "secret",
+          "add"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "secret",
+          "remove"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "secret",
+          "ca"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
           "watch",
           "approve"
         ],

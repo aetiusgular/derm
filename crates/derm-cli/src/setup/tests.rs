@@ -206,6 +206,50 @@ fn every_preset_denies_derm_init_beside_derm_setup() {
     }
 }
 
+/// Lane 6C's request R4 (integration w6, phase 2): the verbs of `derm
+/// secret` that write a secret or derm's local CA are denied to agents
+/// beside `derm setup` and `derm init` (case 147); `list` and `check`,
+/// which print no value, are left to the rest of the policy.
+#[test]
+fn every_preset_denies_derm_secrets_writing_verbs() {
+    use crate::gate::core::{decide_call, GateCall, LoadedPolicy};
+    use derm_core::policy::Action;
+    for name in ["workspace-write", "strict", "read-only"] {
+        let p = presets::find(name).unwrap().policy;
+        for w in [
+            &["derm", "secret", "add"][..],
+            &["derm", "secret", "remove"],
+            &["derm", "secret", "ca"],
+        ] {
+            assert_eq!(
+                command_action(&p, w).as_deref(),
+                Some("deny"),
+                "{name}: {w:?}"
+            );
+        }
+        let loaded = LoadedPolicy {
+            policy: derm_core::policy::parse(&p.to_string()).unwrap(),
+            problem: None,
+        };
+        for cmd in [
+            "derm secret add gh --host api.github.com --env GH_TOKEN",
+            "derm secret remove gh",
+            "derm secret ca create",
+            "derm secret ca remove",
+            "env derm secret add x --host a.test --file /tmp/x",
+        ] {
+            let call = GateCall {
+                harness: "claude-code".into(),
+                tool: "Bash".into(),
+                tool_input: serde_json::json!({"command": cmd}),
+                ..GateCall::default()
+            };
+            let a = decide_call(&loaded, &call, &crate::gate::daemon::Env::of(&[]));
+            assert_eq!(a.action, Action::Deny, "{name}: {cmd}: {}", a.reason);
+        }
+    }
+}
+
 #[test]
 fn strict_denies_where_the_plan_says_strict_and_read_only_asks_for_writes() {
     let s = presets::find("strict").unwrap().policy;

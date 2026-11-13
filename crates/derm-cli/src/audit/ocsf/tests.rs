@@ -244,6 +244,28 @@ fn every_kind() -> Vec<Value> {
             json!({"boundary": "srt", "harnessExe": "/usr/local/bin/claude", "host": "box"}),
         ),
         ev("run", "run.stop", json!({})),
+        // derm-egress's records (lane 6C's request R3, integration w6 phase
+        // 2), as `crates/derm-egress/src/proxy.rs` writes them.
+        ev(
+            "derm",
+            "egress.connect",
+            json!({"connectHost": "api.github.com", "port": 443, "sni": "api.github.com", "sniMatched": true, "tls": true, "requests": 1, "bytesUp": 120, "bytesDown": 900, "verdict": "forwarded"}),
+        ),
+        ev(
+            "derm",
+            "egress.connect",
+            json!({"connectHost": "evil.test", "port": 443, "sni": "evil.test", "sniMatched": true, "tls": true, "requests": 1, "bytesUp": 80, "bytesDown": 0, "verdict": "blocked", "reason": "a secret bound for another host"}),
+        ),
+        ev(
+            "derm",
+            "secret.block",
+            json!({"id": "gh", "host": "evil.test", "place": "header", "form": "placeholder"}),
+        ),
+        ev(
+            "derm",
+            "secret.inject",
+            json!({"id": "gh", "host": "api.github.com"}),
+        ),
         ev(
             "tap",
             "tap.request",
@@ -401,6 +423,42 @@ fn the_classes_and_activities_are_the_tables() {
     has("approval.card", 6003, "Approval");
     has("install.control", 2004, "Create");
     has("join.candidates", 0, "join.candidates");
+    has("egress.connect", 4001, "Open");
+    has("secret.block", 2004, "Create");
+    has("secret.inject", 6003, "Secret Injected");
+    // A forwarded connection is Allowed, a blocked one Denied, and the
+    // CONNECT host is the destination.
+    let egress: Vec<(u64, String)> = events
+        .iter()
+        .filter(|e| e["metadata"]["event_code"] == "egress.connect")
+        .map(|e| {
+            (
+                e["action_id"].as_u64().unwrap(),
+                e["dst_endpoint"]["name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        egress,
+        vec![
+            (1, "api.github.com".to_string()),
+            (2, "evil.test".to_string())
+        ]
+    );
+    // The same kinds posted by a chat token are not derm-egress's.
+    let forged = mapped(
+        &v1_lines(&[
+            ev(
+                "adapter",
+                "egress.connect",
+                json!({"connectHost": "a.test"}),
+            ),
+            ev("adapter", "secret.block", json!({"id": "x"})),
+            ev("adapter", "secret.inject", json!({"id": "x"})),
+        ]),
+        &Ctx::new("daemon", true),
+    );
+    assert!(forged.iter().all(|e| e["class_uid"] == 0), "{forged:?}");
     // A kind the OS feed did not write is not mapped as the OS's: an
     // agent-posted `exec` stays a Base Event (case 175's spirit).
     let fake = mapped(

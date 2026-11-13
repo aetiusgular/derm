@@ -10,9 +10,9 @@
 //! |---|---|---|
 //! | `exec`, `exit`, `fork` (auditd, eslogger); `run.start`, `run.stop` | 1007 Process Activity | Launch, Terminate, Other "Fork" |
 //! | `create`, `write`, `truncate`, `open`, `rename`, `unlink`; `link`, `copyfile`, `clone`, `exchangedata` | 1001 File System Activity | Create, Update, Update, Open, Rename, Delete; Other |
-//! | `net.connect` | 4001 Network Activity | Open |
-//! | `tap.request`, `tap.call`, `approval` (a gate's decision), `tool.call`, `install.call`, an approval card (v1 `approval` key) | 6003 API Activity | Other, with the label |
-//! | `gate.conflict`, `install.control`, `agent.unregistered`, `taint.review`, `taint.mark` | 2004 Detection Finding | Create |
+//! | `net.connect`; derm-egress's `egress.connect` (source `derm`; Allowed or Denied by its verdict) | 4001 Network Activity | Open |
+//! | `tap.request`, `tap.call`, `approval` (a gate's decision), `tool.call`, `install.call`, an approval card (v1 `approval` key), derm-egress's `secret.inject` (source `derm`) | 6003 API Activity | Other, with the label |
+//! | `gate.conflict`, `install.control`, `agent.unregistered`, `taint.review`, `taint.mark`, derm-egress's `secret.block` (source `derm`) | 2004 Detection Finding | Create |
 //! | anything else (`join.candidates`, `feed.gap`, `content.purge`, `cu.action`, a harness's own telemetry, a withheld line) | 0 Base Event | Other, with the kind |
 //!
 //! `class_uid` is the category's uid times 1000 plus the class's, and
@@ -158,6 +158,11 @@ fn class_of(r: &R) -> (u64, u64, Option<&'static str>) {
         (true, "clone") => (1001, 99, Some("Clone")),
         (true, "exchangedata") => (1001, 99, Some("Exchange Data")),
         (true, "net.connect") => (4001, 1, None),
+        // derm-egress's records (lane 6C's request R3): only the daemon
+        // writes source `derm`, so a chat token's copy stays a Base Event.
+        (false, "egress.connect") if r.source == "derm" => (4001, 1, None),
+        (false, "secret.inject") if r.source == "derm" => (6003, 99, Some("Secret Injected")),
+        (false, "secret.block") if r.source == "derm" => (2004, 1, None),
         (false, "tap.request") => (6003, 99, Some("Model Request")),
         (false, "tap.call") => (6003, 99, Some("Tool Call")),
         (false, "approval") => (6003, 99, Some("Tool Decision")),
@@ -313,7 +318,9 @@ pub fn map(text: &str, link: &Read, version: Version, ctx: &Ctx) -> Value {
                 Some(ip) => dst.insert("ip".into(), json!(ip)),
                 None => dst.insert(
                     "name".into(),
-                    json!(s_at(r.detail, "host").unwrap_or("unknown")),
+                    json!(s_at(r.detail, "host")
+                        .or_else(|| s_at(r.detail, "connectHost"))
+                        .unwrap_or("unknown")),
                 ),
             };
             if let Some(port) = r.detail.get("port").and_then(Value::as_u64) {
@@ -325,6 +332,17 @@ pub fn map(text: &str, link: &Read, version: Version, ctx: &Ctx) -> Value {
             profiles.push("host");
             e.insert("actor".into(), actor_of(&r));
             e.insert("device".into(), ctx.device.clone());
+            // derm-egress decided the connection: Allowed or Denied, through
+            // the `security_control` profile, as a gate's decision is.
+            if r.kind == "egress.connect" {
+                let id = match s_at(r.detail, "verdict") {
+                    Some("forwarded") => 1,
+                    Some("blocked") => 2,
+                    _ => 0,
+                };
+                profiles.push("security_control");
+                e.insert("action_id".into(), json!(id));
+            }
         }
         6003 => {
             e.insert("actor".into(), actor_of(&r));
@@ -348,6 +366,10 @@ pub fn map(text: &str, link: &Read, version: Version, ctx: &Ctx) -> Value {
             let mut api = json!({"operation": if operation.is_empty() { "unknown".to_string() } else { operation }});
             if let Some(up) = s_at(r.detail, "upstream") {
                 api["service"] = json!({"name": up});
+            } else if r.kind == "secret.inject" {
+                if let Some(host) = s_at(r.detail, "host") {
+                    api["service"] = json!({"name": host});
+                }
             }
             e.insert("api".into(), api);
             if r.source == "tap" {
