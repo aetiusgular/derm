@@ -17,12 +17,16 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 const TOOL = { shell: "Bash", read: "Read", write: "Write", edit: "Edit", fetch: "WebFetch" };
 
 export function payload(step, { home, project, session, i }) {
-  const abs = (p) => (p.startsWith("~/") ? join(home, p.slice(2)) : p.startsWith("/") ? p : join(project, p));
+  // MoatBench's payloads, and the recorded run they are held to, are POSIX
+  // paths; `abs` reads a step's path the POSIX way, so it joins the POSIX
+  // way too (case 224: on Windows `join` gives `\\`). Integration w6, phase 1.
+  const abs = (p) =>
+    p.startsWith("~/") ? posix.join(home, p.slice(2)) : p.startsWith("/") ? p : posix.join(project, p);
   let tool_input;
   switch (step.kind) {
     case "shell": tool_input = { command: step.input.command }; break;
