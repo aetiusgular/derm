@@ -238,7 +238,7 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
     if matches!(e.from, From::Env(_)) {
         let _ = writeln!(
             ctx.out,
-            "note: a value from the environment stays in the start environment of the process that reads it, which any process of yours can read outside a sandbox (/proc on Linux, ps on macOS); --file keeps it out of every environment, and srt and the Standard tier hide that file from the agent's commands; a --keychain value is as safe as the sandbox's reach into your keychain, which derm does not change"
+            "note: a value from the environment stays in the start environment of the process that reads it, which any process of yours can read outside a sandbox (/proc on Linux, ps on macOS); --file keeps it out of every environment, and srt and the Standard tier hide that file from the agent's commands in chats started after this (a chat already running keeps its sandbox until it restarts); a --keychain value is as safe as the sandbox's reach into your keychain, which derm does not change"
         );
     }
     Ok(())

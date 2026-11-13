@@ -237,8 +237,10 @@ fn the_file_a_secret_is_read_from_is_hidden_by_every_sandbox_derm_writes() {
     // sandboxed `cat`. srt's `denyRead` and the Standard tier's denies now
     // name it, as written and by its real path.
     let (h, _t, v) = home("hide");
-    let link = h.join("gh-link");
-    std::os::unix::fs::symlink(&v, &link).unwrap();
+    // The value file through a linked folder (the broker refuses a final
+    // link, so a file named through one could not start a chat; W6C-R9).
+    std::os::unix::fs::symlink(v.parent().unwrap(), h.join("keys")).unwrap();
+    let link = h.join("keys").join(v.file_name().unwrap());
     secrets_file(
         &h,
         vec![entry("gh", From::File(link.to_string_lossy().into_owned()))],

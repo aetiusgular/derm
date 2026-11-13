@@ -96,7 +96,7 @@ pub fn wire(
             .flatten()
             .map(|ca| ca.fingerprint())
             .unwrap_or_else(|| "(none yet: derm secret ca create)".into());
-        let trust = c.temp.join(format!("derm-trust-{}", c.chat));
+        let trust = c.temp.join(format!("derm-trust-{}-<random>", c.chat));
         let ca_file = trust.join("derm-ca.pem").to_string_lossy().into_owned();
         let bundle_file = trust.join("derm-bundle.pem").to_string_lossy().into_owned();
         let url = "http://127.0.0.1:<port at the start>";

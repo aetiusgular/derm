@@ -74,6 +74,32 @@ pub fn parent(pid: u32) -> Option<u32> {
     os::parent(pid)
 }
 
+/// The value of `name` in the environment a process was started with (its
+/// exec-time block, not what it set later), when the OS lets this process
+/// read it. Linux: `/proc/<pid>/environ` (proc(5): "the initial environment
+/// that was set when the currently executing program was started via
+/// execve(2)"). macOS: `sysctl` `KERN_PROCARGS2` (libc 0.2.189: 49), whose
+/// buffer is the argument count, the exec path, NUL padding, the arguments
+/// and then the environment, as `ps -E` and psutil read it. Readable for a
+/// process of the same user (integration w6's re-review, W6C-R6).
+pub fn environ_var(pid: u32, name: &str) -> Option<String> {
+    let block = os::environ(pid)?;
+    environ_lookup(&block, name)
+}
+
+/// `name`'s value in a NUL-separated `KEY=value` block; the first wins, as
+/// getenv(3) reads it.
+pub fn environ_lookup(block: &[u8], name: &str) -> Option<String> {
+    block
+        .split(|b| *b == 0)
+        .filter_map(|kv| std::str::from_utf8(kv).ok())
+        .find_map(|kv| {
+            kv.split_once('=')
+                .filter(|(k, _)| *k == name)
+                .map(|(_, v)| v.to_string())
+        })
+}
+
 /// Ancestors of `pid`, nearest first, without `pid` itself, up to 256.
 pub fn ancestors(pid: u32) -> Vec<u32> {
     let mut out = Vec::new();
@@ -142,6 +168,10 @@ mod os {
         std::fs::read_link(format!("/proc/{pid}/exe")).ok()
     }
 
+    pub fn environ(pid: u32) -> Option<Vec<u8>> {
+        std::fs::read(format!("/proc/{pid}/environ")).ok()
+    }
+
     /// Field 4 of `/proc/<pid>/stat`. The second field is the program name
     /// in parentheses and may itself hold spaces and parentheses, so the
     /// fields are read after the last `)` (proc(5)).
@@ -200,6 +230,36 @@ mod os {
         };
         r == 0
     }
+}
+
+/// The environment part of a `KERN_PROCARGS2` buffer: an `int` argument
+/// count, the exec path, NUL padding, the arguments, then `KEY=value`
+/// strings up to an empty one. Written for every target so its tests run on
+/// Linux as well.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn procargs2_environ(buf: &[u8]) -> Option<&[u8]> {
+    let n = std::mem::size_of::<i32>();
+    let argc = i32::from_ne_bytes(buf.get(..n)?.try_into().ok()?);
+    let mut i = n;
+    // The exec path, then its padding.
+    i += buf.get(i..)?.iter().position(|b| *b == 0)?;
+    while buf.get(i) == Some(&0) {
+        i += 1;
+    }
+    for _ in 0..argc.max(0) {
+        i += buf.get(i..)?.iter().position(|b| *b == 0)? + 1;
+    }
+    let start = i;
+    // The block ends at the first empty string.
+    let mut end = start;
+    while end < buf.len() && buf[end] != 0 {
+        end += buf[end..]
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(buf.len() - end)
+            + 1;
+    }
+    buf.get(start..end.min(buf.len()))
 }
 
 #[cfg(target_os = "macos")]
@@ -269,6 +329,48 @@ mod os {
         Some(PathBuf::from(String::from_utf8_lossy(&buf).into_owned()))
     }
 
+    /// The environment block of `KERN_PROCARGS2`'s buffer: after the
+    /// argument count (an `int`), the exec path and its NUL padding, and
+    /// `argc` arguments.
+    pub fn environ(pid: u32) -> Option<Vec<u8>> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        let mut argmax: libc::c_int = 0;
+        let mut size = std::mem::size_of::<libc::c_int>();
+        // SAFETY: `argmax` is a c_int and `size` its length.
+        let r = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                2,
+                (&mut argmax as *mut libc::c_int).cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r != 0 || argmax <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; argmax as usize];
+        let mut len = buf.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+        // SAFETY: the buffer is `len` bytes; sysctl writes at most that.
+        let r = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                3,
+                buf.as_mut_ptr().cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r != 0 {
+            return None;
+        }
+        buf.truncate(len);
+        super::procargs2_environ(&buf).map(<[u8]>::to_vec)
+    }
+
     pub fn parent(pid: u32) -> Option<u32> {
         // SAFETY: a zeroed proc_bsdinfo is valid; proc_pidinfo writes at most
         // `size` bytes.
@@ -321,6 +423,52 @@ mod tests {
         let p = of(&a).expect("peer credentials");
         assert_eq!(p.uid, me());
         assert_eq!(p.pid, Some(std::process::id()));
+    }
+
+    #[test]
+    fn a_childs_start_environment_is_read_by_name() {
+        // W6C-R6: read the exec-time environment of another process of this
+        // user; run here on Linux and on CI's macOS job.
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .env("DERM_PEER_ENV_TEST", "fake-secret-value-not-a-token-0000")
+            .spawn()
+            .unwrap();
+        // Give exec a moment to replace the forked image.
+        let mut got = None;
+        for _ in 0..50 {
+            got = environ_var(child.id(), "DERM_PEER_ENV_TEST");
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let none = environ_var(child.id(), "DERM_PEER_ENV_NOT_SET");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(got.as_deref(), Some("fake-secret-value-not-a-token-0000"));
+        assert_eq!(none, None);
+    }
+
+    #[test]
+    fn an_environment_block_is_read_as_getenv_reads_it() {
+        let b = b"A=1\0DERM_X=two=2\0DERM_X=3\0B\0";
+        assert_eq!(environ_lookup(b, "DERM_X").as_deref(), Some("two=2"));
+        assert_eq!(environ_lookup(b, "A").as_deref(), Some("1"));
+        assert_eq!(environ_lookup(b, "B"), None);
+        assert_eq!(environ_lookup(b, "DERM"), None);
+    }
+
+    #[test]
+    fn a_procargs2_buffer_gives_its_environment() {
+        let mut b = 2i32.to_ne_bytes().to_vec();
+        b.extend_from_slice(b"/bin/sleep\0\0\0\0sleep\x005\0K=v\0L=w\0\0\0junk");
+        assert_eq!(procargs2_environ(&b), Some(&b"K=v\0L=w\0"[..]));
+        assert_eq!(
+            environ_lookup(procargs2_environ(&b).unwrap(), "L").as_deref(),
+            Some("w")
+        );
+        assert_eq!(procargs2_environ(&b[..2]), None);
     }
 
     #[test]

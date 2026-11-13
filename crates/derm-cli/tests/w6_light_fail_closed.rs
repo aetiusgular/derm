@@ -154,27 +154,19 @@ fn a_chat_token_with_no_derm_run_above_it_is_still_the_light_tier() {
     assert!(text(&o).contains(MARK), "{}", text(&o));
 }
 
-#[test]
-fn under_derm_run_a_chat_token_keeps_a_lost_record_from_denying() {
-    // Case 86: a `derm run` chat whose daemon went away. The hook runs under
-    // a real `derm run` (here `--no-daemon`, its token set by the shell, as
-    // the dead daemon's token would be), so the record was the daemon's and
-    // its loss denies nothing.
-    let broken = home("ccrun", true);
+/// Runs `derm hook claude-code pre` as `sh -c <inner>` under a real
+/// `derm run --no-daemon`, its input the Claude Code call.
+fn under_derm_run(broken: &Path, inner: &str) -> Output {
     let derm = env!("CARGO_BIN_EXE_derm");
-    let inner = format!(
-        "DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} exec {derm} hook claude-code pre",
-        broken.join("no-daemon.sock").display()
-    );
     let mut child = Command::new(derm)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("HOME", &broken)
-        .env("XDG_RUNTIME_DIR", &broken)
+        .env("HOME", broken)
+        .env("XDG_RUNTIME_DIR", broken)
         .env("DERM_POLICY", broken.join("policy.json"))
         .current_dir(broken.join("work"))
         .args(["run", "--boundary", "none", "--no-daemon", "--no-tap", "--"])
-        .args(["sh", "-c", &inner])
+        .args(["sh", "-c", inner])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -184,11 +176,66 @@ fn under_derm_run_a_chat_token_keeps_a_lost_record_from_denying() {
         .stdin
         .take()
         .unwrap()
-        .write_all(claude_pre(&broken).as_bytes())
+        .write_all(claude_pre(broken).as_bytes())
         .unwrap();
-    let o = child.wait_with_output().unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn a_project_set_token_under_a_derm_run_that_gave_none_is_still_the_light_tier() {
+    // Integration w6's re-review, W6C-R6: `derm run --no-daemon` gives no
+    // token, so a token set below it (as a project's settings set one, case
+    // 227) is not the run's. Before the fix a `derm run` ancestor alone was
+    // enough, and this call ran unrecorded.
+    let broken = home("ccrun", true);
+    let inner = format!(
+        "DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} exec {} hook claude-code pre",
+        broken.join("no-daemon.sock").display(),
+        env!("CARGO_BIN_EXE_derm")
+    );
+    let o = under_derm_run(&broken, &inner);
+    assert_eq!(claude_decision(&o), "deny", "{}", text(&o));
+    assert!(text(&o).contains(MARK), "{}", text(&o));
+}
+
+#[test]
+fn a_token_derm_runs_child_was_started_with_keeps_a_lost_record_from_denying() {
+    // Case 86: a `derm run` chat whose daemon went away. The process `derm
+    // run` started (here `sh`, through `env`, which execs it in its own pid)
+    // was started with the token, as a harness is when the daemon gives one,
+    // so the record was the daemon's and its loss denies nothing.
+    let broken = home("ccgave", true);
+    let inner = format!("{} hook claude-code pre", env!("CARGO_BIN_EXE_derm"));
+    let o = under_derm_run(
+        &broken,
+        &format!(
+            "exec env DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} sh -c '{inner}'",
+            broken.join("no-daemon.sock").display()
+        ),
+    );
     assert_eq!(claude_decision(&o), "allow", "{}", text(&o));
     assert!(!text(&o).contains(MARK), "{}", text(&o));
+}
+
+#[test]
+fn a_token_other_than_the_one_derm_run_gave_is_still_the_light_tier() {
+    // W6C-R6: a project's settings replace the token in a real `derm run`
+    // chat (case 227). The hook's token is not the one the run gave.
+    let broken = home("ccother", true);
+    let other = "3".repeat(64);
+    let inner = format!(
+        "DERM_CHAT_TOKEN={other} exec {} hook claude-code pre",
+        env!("CARGO_BIN_EXE_derm")
+    );
+    let o = under_derm_run(
+        &broken,
+        &format!(
+            "exec env DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} sh -c '{inner}'",
+            broken.join("no-daemon.sock").display()
+        ),
+    );
+    assert_eq!(claude_decision(&o), "deny", "{}", text(&o));
+    assert!(text(&o).contains(MARK), "{}", text(&o));
 }
 
 #[test]

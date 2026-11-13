@@ -64,7 +64,7 @@ pub fn command_problem(words: &[String]) -> Option<String> {
 const WRAPPERS: &[&str] = &[
     "sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic",
     "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox",
-    "parallel",
+    "parallel", "setsid", "flock", "unshare", "run0",
 ];
 const SHELLS: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash",
@@ -189,6 +189,13 @@ fn read(input: &[String], heads: &[&str], depth: usize, out: &mut Vec<Vec<String
             walk(&rest.join(" "), heads, depth + 1, out);
             return;
         }
+        // GNU parallel runs its command words and its `:::` arguments
+        // through a shell (`parallel ::: 'git push --force'`; W6C-R3).
+        if head == "parallel" {
+            for w in rest.iter().filter(|w| !w.starts_with('-')) {
+                walk(w, heads, depth + 1, out);
+            }
+        }
         if SHELLS.contains(&head.as_str()) {
             if let Some(c) = shell_command_string(&rest) {
                 walk(&c, heads, depth + 1, out);
@@ -223,30 +230,129 @@ struct Feed {
     process: bool,
 }
 
+impl Feed {
+    /// A command fed either way is fed.
+    fn or(self, o: Feed) -> Feed {
+        Feed {
+            piped: self.piped || o.piped,
+            here_string: self.here_string || o.here_string,
+            here_doc: self.here_doc || o.here_doc,
+            process: self.process || o.process,
+        }
+    }
+}
+
+/// Words that open a compound command whose inner commands share the input
+/// it was given (`curl x | if true; then sh; fi`), and the words that close
+/// one (integration w6's re-review, W6C-R1).
+const OPENERS: &[&str] = &["if", "while", "until", "for", "case", "select"];
+const CLOSERS: &[&str] = &["fi", "done", "esac"];
+/// Reserved words a simple command may start with before its program:
+/// `then sh` runs `sh`.
+const RESERVED: &[&str] = &[
+    "if", "then", "else", "elif", "do", "while", "until", "!", "{", "coproc",
+];
+
+/// An open `(`: a subshell or group whose commands share `Feed`, or a
+/// process substitution inside a command, with that command's words and
+/// feed so far.
+enum Frame {
+    Group(Feed),
+    Process(Vec<String>, Feed),
+}
+
+/// The splitter's state for [`fed_commands`].
+struct Split {
+    out: Vec<(Vec<String>, Feed)>,
+    words: Vec<String>,
+    word: String,
+    in_word: bool,
+    skip_next: bool,
+    feed: Feed,
+    /// What the whole text is fed (the outer command's feed for a `-c`,
+    /// `env -S` or `eval` string, W6C-R1).
+    base: Feed,
+    frames: Vec<Frame>,
+    compounds: Vec<Feed>,
+}
+
+impl Split {
+    fn end_word(&mut self) {
+        if self.in_word {
+            if self.skip_next {
+                self.skip_next = false;
+            } else {
+                self.words.push(std::mem::take(&mut self.word));
+            }
+        }
+        self.word.clear();
+        self.in_word = false;
+    }
+
+    /// The feed every command inside the open groups and compounds shares.
+    fn shared(&self) -> Feed {
+        let mut f = self.base;
+        for fr in &self.frames {
+            if let Frame::Group(g) = fr {
+                f = f.or(*g);
+            }
+        }
+        for c in &self.compounds {
+            f = f.or(*c);
+        }
+        f
+    }
+
+    fn end_command(&mut self, piped_next: bool) {
+        self.end_word();
+        if !self.words.is_empty() {
+            let first = self
+                .words
+                .iter()
+                .map(String::as_str)
+                .find(|w| !matches!(*w, "!" | "{" | "then" | "else" | "do"))
+                .unwrap_or("");
+            if CLOSERS.contains(&self.words[0].as_str()) {
+                self.compounds.pop();
+            } else if OPENERS.contains(&first) {
+                self.compounds.push(self.feed);
+            }
+            self.out.push((std::mem::take(&mut self.words), self.feed));
+        }
+        self.skip_next = false;
+        let shared = self.shared();
+        self.feed = if piped_next {
+            Feed {
+                piped: true,
+                ..Feed::default()
+            }
+            .or(shared)
+        } else {
+            shared
+        };
+    }
+}
+
 /// Simple commands of folded shell text with what feeds each: the same
 /// splitting as `installs::parse::commands` (quotes, `#`, separators, a
 /// redirect's target dropped), keeping the pipe and redirect forms it drops.
-fn fed_commands(text: &str) -> Vec<(Vec<String>, Feed)> {
+/// A subshell or compound command right after a pipe passes the pipe's input
+/// to every command inside it, and a process substitution feeds the command
+/// it sits in, before or after its program word (W6C-R1).
+fn fed_commands(text: &str, base: Feed) -> Vec<(Vec<String>, Feed)> {
     let chars: Vec<char> = text.chars().collect();
-    let mut out = Vec::new();
-    let mut words: Vec<String> = Vec::new();
-    let mut word = String::new();
-    let mut in_word = false;
+    let mut s = Split {
+        out: Vec::new(),
+        words: Vec::new(),
+        word: String::new(),
+        in_word: false,
+        skip_next: false,
+        feed: base,
+        base,
+        frames: Vec::new(),
+        compounds: Vec::new(),
+    };
     let mut quote: Option<char> = None;
-    let mut skip_next = false;
-    let mut feed = Feed::default();
-    let end_word =
-        |words: &mut Vec<String>, word: &mut String, in_word: &mut bool, skip_next: &mut bool| {
-            if *in_word {
-                if *skip_next {
-                    *skip_next = false;
-                } else {
-                    words.push(std::mem::take(word));
-                }
-            }
-            word.clear();
-            *in_word = false;
-        };
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
@@ -254,44 +360,21 @@ fn fed_commands(text: &str) -> Vec<(Vec<String>, Feed)> {
             if ch == q {
                 quote = None;
             } else {
-                word.push(ch);
+                s.word.push(ch);
             }
             i += 1;
             continue;
         }
-        let mut end_command = |piped_next: bool,
-                               words: &mut Vec<String>,
-                               word: &mut String,
-                               in_word: &mut bool,
-                               skip_next: &mut bool,
-                               feed: &mut Feed| {
-            end_word(words, word, in_word, skip_next);
-            if !words.is_empty() {
-                out.push((std::mem::take(words), *feed));
-            }
-            *skip_next = false;
-            *feed = Feed {
-                piped: piped_next,
-                ..Feed::default()
-            };
-        };
         match ch {
             '\'' | '"' => {
                 quote = Some(ch);
-                in_word = true;
+                s.in_word = true;
             }
-            '#' if !in_word => {
+            '#' if !s.in_word => {
                 while i < chars.len() && chars[i] != '\n' {
                     i += 1;
                 }
-                end_command(
-                    false,
-                    &mut words,
-                    &mut word,
-                    &mut in_word,
-                    &mut skip_next,
-                    &mut feed,
-                );
+                s.end_command(false);
                 continue;
             }
             '|' => {
@@ -300,68 +383,80 @@ fn fed_commands(text: &str) -> Vec<(Vec<String>, Feed)> {
                 if or || chars.get(i + 1) == Some(&'&') {
                     i += 1;
                 }
-                end_command(
-                    !or,
-                    &mut words,
-                    &mut word,
-                    &mut in_word,
-                    &mut skip_next,
-                    &mut feed,
-                );
+                s.end_command(!or);
             }
-            // A subshell or group right after a pipe takes the pipe's input
-            // (`curl x | (sh)`; integration w6's review, W6C-S2).
-            '(' if words.is_empty() && !in_word => {}
-            ';' | '&' | '(' | ')' | '\n' | '\r' => {
-                end_command(
-                    false,
-                    &mut words,
-                    &mut word,
-                    &mut in_word,
-                    &mut skip_next,
-                    &mut feed,
-                );
-            }
-            '<' | '>' => {
-                if in_word && !word.is_empty() && word.chars().all(|c| c.is_ascii_digit()) {
-                    word.clear();
-                    in_word = false;
+            // A subshell or group: right after a pipe it takes the pipe's
+            // input (`curl x | (true; sh)`; W6C-S2, W6C-R1).
+            '(' => {
+                if s.words.is_empty() && !s.in_word {
+                    let f = s.feed;
+                    s.frames.push(Frame::Group(f));
+                } else {
+                    s.end_command(false);
+                    s.frames.push(Frame::Group(Feed::default()));
+                    s.feed = s.shared();
                 }
-                end_word(&mut words, &mut word, &mut in_word, &mut skip_next);
+            }
+            ')' => {
+                s.end_command(false);
+                match s.frames.pop() {
+                    // The command a process substitution sat in goes on,
+                    // fed by it (`< <(curl x) sh`, `bash <(curl x)`).
+                    Some(Frame::Process(words, feed)) => {
+                        s.words = words;
+                        s.feed = Feed {
+                            process: true,
+                            ..feed
+                        };
+                    }
+                    _ => s.feed = s.shared(),
+                }
+            }
+            ';' | '&' | '\n' | '\r' => s.end_command(false),
+            '<' | '>' => {
+                if s.in_word && !s.word.is_empty() && s.word.chars().all(|c| c.is_ascii_digit()) {
+                    s.word.clear();
+                    s.in_word = false;
+                }
+                s.end_word();
+                if ch == '<' && chars.get(i + 1) == Some(&'(') {
+                    // `<(` opens a command of its own; the command around it
+                    // is held until its `)`.
+                    let words = std::mem::take(&mut s.words);
+                    let feed = s.feed;
+                    s.frames.push(Frame::Process(words, feed));
+                    s.feed = s.shared();
+                    s.skip_next = false;
+                    i += 2;
+                    continue;
+                }
                 if ch == '<' {
                     let run = chars[i..].iter().take_while(|c| **c == '<').count();
                     match run {
-                        1 if chars.get(i + 1) == Some(&'(') => feed.process = true,
-                        2 => feed.here_doc = true,
-                        n if n >= 3 => feed.here_string = true,
+                        2 => s.feed.here_doc = true,
+                        n if n >= 3 => s.feed.here_string = true,
                         _ => {}
                     }
-                }
-                // `<(` opens a command of its own: `(` splits next round.
-                if ch == '<' && chars.get(i + 1) == Some(&'(') {
-                    i += 1;
-                    continue;
                 }
                 while i + 1 < chars.len() && matches!(chars[i + 1], '>' | '<' | '&' | '|' | '-') {
                     i += 1;
                 }
-                skip_next = true;
+                s.skip_next = true;
             }
-            ' ' | '\t' | '\u{b}' | '\u{c}' => {
-                end_word(&mut words, &mut word, &mut in_word, &mut skip_next);
-            }
+            ' ' | '\t' | '\u{b}' | '\u{c}' => s.end_word(),
             _ => {
-                word.push(ch);
-                in_word = true;
+                s.word.push(ch);
+                s.in_word = true;
             }
         }
         i += 1;
     }
-    end_word(&mut words, &mut word, &mut in_word, &mut skip_next);
-    if !words.is_empty() {
-        out.push((words, feed));
+    s.end_word();
+    if !s.words.is_empty() {
+        let (w, f) = (std::mem::take(&mut s.words), s.feed);
+        s.out.push((w, f));
     }
-    out
+    s.out
 }
 
 /// Interpreters that run a program from their input when the line gives
@@ -381,20 +476,43 @@ fn python(base: &str) -> bool {
     base.starts_with("python") || base.starts_with("pypy")
 }
 
-/// Paths a program reads its own standard input through, after `//` and
-/// `/./` collapse as the kernel reads them (`/dev//stdin`; W6C-S2).
+/// Paths a program reads its own standard input through, read lexically as
+/// the kernel resolves them: `//`, `/./` and `..` (`/dev/../dev/stdin`),
+/// and under `/proc/self/root` (W6C-S2, W6C-R2). A relative path whose last
+/// part is `stdin` or `fd/0` counts too, since a `cd` may have put it under
+/// `/dev` (`cd /dev && bash ./stdin`).
 fn stdin_path(w: &str) -> bool {
-    let mut p = w.to_string();
-    loop {
-        let next = p.replace("//", "/").replace("/./", "/");
-        if next == p {
-            break;
+    if w == "-" {
+        return true;
+    }
+    let abs = w.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for p in w.split('/') {
+        match p {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            x => parts.push(x),
         }
-        p = next;
+    }
+    if !abs {
+        return parts.last() == Some(&"stdin") || parts.ends_with(&["fd", "0"]);
+    }
+    let mut rest: &[&str] = &parts;
+    while rest.len() > 3
+        && rest[0] == "proc"
+        && matches!(rest[1], "self" | "thread-self")
+        && rest[2] == "root"
+    {
+        rest = &rest[3..];
     }
     matches!(
-        p.as_str(),
-        "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0" | "/proc/thread-self/fd/0"
+        rest,
+        ["dev", "stdin"]
+            | ["dev", "fd", "0"]
+            | ["proc", "self", "fd", "0"]
+            | ["proc", "thread-self", "fd", "0"]
     )
 }
 
@@ -560,18 +678,20 @@ fn reads_its_input(program: &str, args: &[String]) -> bool {
 pub fn stdin_program(folded: &str) -> Option<String> {
     let plain = folded.replace('\\', "");
     for text in [folded, plain.as_str()] {
-        if let Some(p) = stdin_walk(&text.replace('`', "\n"), 0) {
+        if let Some(p) = stdin_walk(&text.replace('`', "\n"), 0, Feed::default()) {
             return Some(p);
         }
     }
     None
 }
 
-fn stdin_walk(text: &str, depth: usize) -> Option<String> {
+/// `base` is what feeds the whole text: a `-c`, `env -S` or `eval` string
+/// is read by commands that take the outer command's input (W6C-R1).
+fn stdin_walk(text: &str, depth: usize, base: Feed) -> Option<String> {
     if depth > MAX_DEPTH {
         return None;
     }
-    for (words, feed) in fed_commands(text) {
+    for (words, feed) in fed_commands(text, base) {
         if let Some(p) = stdin_read(&words, feed, depth) {
             return Some(p);
         }
@@ -579,11 +699,46 @@ fn stdin_walk(text: &str, depth: usize) -> Option<String> {
     None
 }
 
+/// The words xargs fills from its input in a command it runs: `-I x`,
+/// `-ix`, `-i` (`{}`), `--replace[=x]`; `{}` always, which only asks more.
+fn xargs_tokens(args: &[String]) -> Vec<String> {
+    let mut out = vec!["{}".to_string()];
+    let mut i = 0;
+    while i < args.len() {
+        let w = args[i].as_str();
+        if !w.starts_with('-') {
+            break;
+        }
+        if w == "-i" || w == "--replace" {
+            // `{}` is already there.
+        } else if w == "-I" || w == "-i" {
+            if let Some(v) = args.get(i + 1) {
+                out.push(v.clone());
+            }
+            i += 1;
+        } else if let Some(v) = w.strip_prefix("--replace=") {
+            out.push(v.to_string());
+        } else if let Some(v) = w.strip_prefix("-I").or_else(|| w.strip_prefix("-i")) {
+            if !v.is_empty() {
+                out.push(v.to_string());
+            }
+        }
+        i += 1;
+    }
+    out.retain(|t| !t.is_empty());
+    out
+}
+
 fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
     let mut words: Vec<String> = input.to_vec();
-    let mut xargs = false;
+    // `Some(tokens)` behind xargs or parallel: the words it fills from its
+    // input in the command it runs.
+    let mut xargs: Option<Vec<String>> = None;
     for _ in 0..16 {
-        while words.first().is_some_and(|w| is_assignment(w)) {
+        while words
+            .first()
+            .is_some_and(|w| is_assignment(w) || RESERVED.contains(&w.as_str()))
+        {
             words.remove(0);
         }
         let first = words.first()?;
@@ -597,25 +752,35 @@ fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
                     Some(v) => Some(v.to_string()),
                     None => rest.get(i + 1).cloned(),
                 };
-                return s.and_then(|s| stdin_walk(&s, depth + 1));
+                return s.and_then(|s| stdin_walk(&s, depth + 1, feed));
             }
         }
         if head == "eval" {
-            return stdin_walk(&rest.join(" "), depth + 1);
+            return stdin_walk(&rest.join(" "), depth + 1, feed);
         }
         let program = SHELLS.contains(&head.as_str())
             || matches!(head.as_str(), "source" | ".")
             || interpreter(&head);
         if program {
             if SHELLS.contains(&head.as_str()) {
-                // Behind xargs a shell's `-c` takes its string from the
-                // input when the line gives none, or a placeholder the input
-                // fills (`xargs -i% sh -c %`; W6C-S2).
-                if xargs && has_c_flag(&rest) {
-                    return Some(head);
+                // Behind xargs or parallel a shell's `-c` takes its string
+                // from the input when the line gives none, or when the
+                // string holds a word the input fills (`xargs -i% sh -c %`;
+                // W6C-S2); a fixed string only gets the input as arguments
+                // (W6C-R5).
+                if let Some(tokens) = &xargs {
+                    if has_c_flag(&rest) {
+                        match shell_command_string(&rest) {
+                            None => return Some(head),
+                            Some(c) if tokens.iter().any(|t| c.contains(t.as_str())) => {
+                                return Some(head)
+                            }
+                            Some(_) => {}
+                        }
+                    }
                 }
                 if let Some(c) = shell_command_string(&rest) {
-                    return stdin_walk(&c, depth + 1);
+                    return stdin_walk(&c, depth + 1, feed);
                 }
             }
             let shellish =
@@ -623,15 +788,35 @@ fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
             let fed = feed.piped
                 || feed.here_string
                 || feed.process
-                || xargs
+                || xargs.is_some()
                 || (feed.here_doc && !shellish);
             return (fed && reads_its_input(&head, &rest)).then_some(head);
+        }
+        if head == "parallel" {
+            // GNU parallel runs each input line as a command when its line
+            // names none, and runs its command words and `:::` arguments
+            // through a shell (GNU parallel 20231122, run; W6C-R3).
+            let fed = feed.piped || feed.here_string || feed.process;
+            let command = rest
+                .iter()
+                .take_while(|w| *w != ":::" && *w != "::::")
+                .any(|w| !w.starts_with('-') && !w.chars().all(|c| c.is_ascii_digit()));
+            if fed && !command && !rest.iter().any(|w| w == ":::" || w == "::::") {
+                return Some(head);
+            }
+            for w in rest.iter().filter(|w| !w.starts_with('-')) {
+                if let Some(p) = stdin_walk(w, depth + 1, Feed::default()) {
+                    return Some(p);
+                }
+            }
         }
         if !WRAPPERS.contains(&head.as_str()) {
             return None;
         }
-        if matches!(head.as_str(), "xargs" | "parallel") {
-            xargs = true;
+        if head == "xargs" {
+            xargs = Some(xargs_tokens(&rest));
+        } else if head == "parallel" {
+            xargs = Some(vec!["{".to_string()]);
         }
         let next = rest.iter().position(|w| {
             let b = command_base(w);
@@ -647,10 +832,25 @@ fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
 }
 
 /// Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)?
+/// The values of `-o`, `+o`, `--rcfile` and `--init-file` are skipped, as
+/// [`shell_command_string`] skips them (W6C-R3).
 fn has_c_flag(args: &[String]) -> bool {
-    args.iter()
-        .take_while(|w| w.starts_with('-') || w.starts_with('+'))
-        .any(|w| w.starts_with('-') && !w.starts_with("--") && w[1..].contains('c'))
+    let mut i = 0;
+    while i < args.len() {
+        let w = args[i].as_str();
+        if w == "--" || !(w.starts_with('-') || w.starts_with('+')) {
+            return false;
+        }
+        if matches!(w, "-o" | "+o" | "--rcfile" | "--init-file") {
+            i += 2;
+            continue;
+        }
+        if w.starts_with('-') && !w.starts_with("--") && w[1..].contains('c') {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Does a command's flag word meet a rule's flag word? `-f` also meets `-fu`.

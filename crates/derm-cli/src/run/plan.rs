@@ -1641,6 +1641,66 @@ mod tests {
     }
 
     #[test]
+    fn srts_deny_read_names_a_secrets_value_file_as_written_and_by_its_real_path() {
+        // Integration w6's re-review, W6C-R9: the srt half of W6C-S1 had no
+        // test, and the broker's test named a file through a final link,
+        // which the broker itself refuses. Here the value file sits in a
+        // linked folder, as a real setup may have it.
+        use derm_egress::secrets::{Entry, File, From};
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("dplan-r9-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let real_dir = root.join("vault");
+        std::fs::create_dir_all(home.join(".derm")).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+        for d in [&root, &home, &home.join(".derm"), &real_dir] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::os::unix::fs::symlink(&real_dir, home.join("keys")).unwrap();
+        let value = real_dir.join("gh");
+        std::fs::write(&value, "fake-secret-value-not-a-token-0000\n").unwrap();
+        std::fs::set_permissions(&value, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let written = home.join("keys").join("gh");
+        derm_egress::secrets::save(
+            &derm_egress::secrets::path_for(&home),
+            &File {
+                version: 1,
+                secrets: vec![Entry {
+                    id: "gh".into(),
+                    hosts: vec!["api.github.com".into()],
+                    from: From::File(written.to_string_lossy().into_owned()),
+                    placement: None,
+                    note: None,
+                }],
+            },
+        )
+        .unwrap();
+        let args = a(&["pi", "--boundary", "srt", "--", "-c"]);
+        let mut i = inputs(&args);
+        i.home = home.to_string_lossy().into_owned();
+        let p = build(&i).unwrap();
+        let s: serde_json::Value =
+            serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+        let deny: Vec<String> = s["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let real = std::fs::canonicalize(&value).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            deny.contains(&written.to_string_lossy().into_owned()),
+            "{deny:?}"
+        );
+        assert!(
+            deny.contains(&real.to_string_lossy().into_owned()),
+            "{deny:?}"
+        );
+    }
+
+    #[test]
     fn srt_puts_the_separator_before_the_harness_and_allows_only_named_hosts() {
         let args = a(&[
             "pi",

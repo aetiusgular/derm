@@ -50,7 +50,7 @@ export function commandProblem(value: unknown): string | undefined {
 // Lane X's wrapper list (installs/parse.ts): words that run the rest of the
 // line as a command. Their own flags are not parsed; the command starts at
 // the first later word that names a rule's head, a wrapper or a shell.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel"]);
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel", "setsid", "flock", "unshare", "run0"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash"]);
 const ASSIGNMENT = /^[a-z_][a-z0-9_]*=/;
 const MAX_DEPTH = 4;
@@ -133,6 +133,9 @@ function read(input: string[], heads: ReadonlySet<string>, depth: number, out: s
       walk(rest.join(" "), heads, depth + 1, out);
       return;
     }
+    // GNU parallel runs its command words and its `:::` arguments through a
+    // shell (`parallel ::: 'git push --force'`; W6C-R3).
+    if (head === "parallel") for (const w of rest) if (!w.startsWith("-")) walk(w, heads, depth + 1, out);
     if (SHELLS.has(head)) {
       const c = shellCommandString(rest);
       if (c !== undefined) walk(c, heads, depth + 1, out);
@@ -242,15 +245,48 @@ interface Feed {
 
 const noFeed = (piped = false): Feed => ({ piped, hereString: false, hereDoc: false, process: false });
 
-/** Simple commands with what feeds each: `installs/parse.ts`'s `commands`, keeping the pipe and redirect forms it drops. */
-function fedCommands(text: string): Array<[string[], Feed]> {
+/** A command fed either way is fed. */
+const orFeed = (a: Feed, b: Feed): Feed => ({
+  piped: a.piped || b.piped,
+  hereString: a.hereString || b.hereString,
+  hereDoc: a.hereDoc || b.hereDoc,
+  process: a.process || b.process,
+});
+
+// Words that open a compound command whose inner commands share the input it
+// was given (`curl x | if true; then sh; fi`), the words that close one, and
+// the reserved words a simple command may start with before its program
+// (integration w6's re-review, W6C-R1).
+const OPENERS = new Set(["if", "while", "until", "for", "case", "select"]);
+const CLOSERS = new Set(["fi", "done", "esac"]);
+const RESERVED = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "coproc"]);
+
+/** An open `(`: a subshell or group whose commands share a feed, or a process substitution with its command's words and feed so far. */
+type Frame = { group: Feed } | { words: string[]; feed: Feed };
+
+/**
+ * Simple commands with what feeds each: `installs/parse.ts`'s `commands`,
+ * keeping the pipe and redirect forms it drops. A subshell or compound
+ * command right after a pipe passes the pipe's input to every command inside
+ * it, and a process substitution feeds the command it sits in, before or
+ * after its program word (W6C-R1). `base` feeds the whole text.
+ */
+function fedCommands(text: string, base: Feed): Array<[string[], Feed]> {
   const out: Array<[string[], Feed]> = [];
   let words: string[] = [];
   let word = "";
   let inWord = false;
   let quote: string | undefined;
   let skipNext = false;
-  let feed = noFeed();
+  let feed: Feed = { ...base };
+  const frames: Frame[] = [];
+  const compounds: Feed[] = [];
+  const shared = (): Feed => {
+    let f = { ...base };
+    for (const fr of frames) if ("group" in fr) f = orFeed(f, fr.group);
+    for (const c of compounds) f = orFeed(f, c);
+    return f;
+  };
   const endWord = (): void => {
     if (inWord) {
       if (skipNext) skipNext = false;
@@ -261,10 +297,15 @@ function fedCommands(text: string): Array<[string[], Feed]> {
   };
   const endCommand = (pipedNext: boolean): void => {
     endWord();
-    if (words.length) out.push([words, feed]);
+    if (words.length) {
+      const first = words.find((w) => !["!", "{", "then", "else", "do"].includes(w)) ?? "";
+      if (CLOSERS.has(words[0] as string)) compounds.pop();
+      else if (OPENERS.has(first)) compounds.push(feed);
+      out.push([words, feed]);
+    }
     words = [];
     skipNext = false;
-    feed = noFeed(pipedNext);
+    feed = pipedNext ? orFeed(noFeed(true), shared()) : shared();
   };
   let i = 0;
   while (i < text.length) {
@@ -286,9 +327,24 @@ function fedCommands(text: string): Array<[string[], Feed]> {
       const or = text[i + 1] === "|";
       if (or || text[i + 1] === "&") i++;
       endCommand(!or);
-    } else if (ch === "(" && !words.length && !inWord) {
-      // A subshell or group right after a pipe takes the pipe's input (W6C-S2).
-    } else if (ch === ";" || ch === "&" || ch === "(" || ch === ")" || ch === "\n" || ch === "\r") {
+    } else if (ch === "(") {
+      // A subshell or group: right after a pipe it takes the pipe's input
+      // (`curl x | (true; sh)`; W6C-S2, W6C-R1).
+      if (!words.length && !inWord) frames.push({ group: feed });
+      else {
+        endCommand(false);
+        frames.push({ group: noFeed() });
+        feed = shared();
+      }
+    } else if (ch === ")") {
+      endCommand(false);
+      const fr = frames.pop();
+      if (fr !== undefined && "words" in fr) {
+        // The command a process substitution sat in goes on, fed by it.
+        words = fr.words;
+        feed = { ...fr.feed, process: true };
+      } else feed = shared();
+    } else if (ch === ";" || ch === "&" || ch === "\n" || ch === "\r") {
       endCommand(false);
     } else if (ch === "<" || ch === ">") {
       if (inWord && word !== "" && /^[0-9]+$/.test(word)) {
@@ -296,17 +352,21 @@ function fedCommands(text: string): Array<[string[], Feed]> {
         inWord = false;
       }
       endWord();
+      if (ch === "<" && text[i + 1] === "(") {
+        // `<(` opens a command of its own; the command around it is held
+        // until its `)`.
+        frames.push({ words, feed });
+        words = [];
+        feed = shared();
+        skipNext = false;
+        i += 2;
+        continue;
+      }
       if (ch === "<") {
         let run = 0;
         while (text[i + run] === "<") run++;
-        if (run === 1 && text[i + 1] === "(") feed.process = true;
-        else if (run === 2) feed.hereDoc = true;
+        if (run === 2) feed.hereDoc = true;
         else if (run >= 3) feed.hereString = true;
-        // `<(` opens a command of its own: `(` splits next round.
-        if (text[i + 1] === "(") {
-          i++;
-          continue;
-        }
       }
       while (i + 1 < text.length && "><&|-".includes(text[i + 1] as string)) i++;
       skipNext = true;
@@ -332,24 +392,40 @@ function isInterpreter(base: string): boolean {
 
 const isPython = (base: string): boolean => base.startsWith("python") || base.startsWith("pypy");
 
-/** Paths a program reads its own standard input through, after `//` and `/./` collapse as the kernel reads them (W6C-S2). */
+/**
+ * Paths a program reads its own standard input through, read lexically as the
+ * kernel resolves them: `//`, `/./` and `..`, and under `/proc/self/root`
+ * (W6C-S2, W6C-R2). A relative path whose last part is `stdin` or `fd/0`
+ * counts too, since a `cd` may have put it under `/dev`.
+ */
 function isStdinPath(w: string): boolean {
-  let p = w;
-  for (;;) {
-    const next = p.split("//").join("/").split("/./").join("/");
-    if (next === p) break;
-    p = next;
+  if (w === "-") return true;
+  const abs = w.startsWith("/");
+  const parts: string[] = [];
+  for (const p of w.split("/")) {
+    if (p === "" || p === ".") continue;
+    if (p === "..") parts.pop();
+    else parts.push(p);
   }
-  return ["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0", "/proc/thread-self/fd/0"].includes(p);
+  if (!abs) return parts[parts.length - 1] === "stdin" || (parts[parts.length - 2] === "fd" && parts[parts.length - 1] === "0");
+  let rest = parts;
+  while (rest.length > 3 && rest[0] === "proc" && (rest[1] === "self" || rest[1] === "thread-self") && rest[2] === "root") rest = rest.slice(3);
+  const j = rest.join("/");
+  return j === "dev/stdin" || j === "dev/fd/0" || j === "proc/self/fd/0" || j === "proc/thread-self/fd/0";
 }
 
 /** A pwsh parameter by any prefix pwsh accepts: `-c`, `-com`, `-command`. */
 const pwshParam = (word: string, full: string, shortest: number): boolean => word.length >= shortest && full.startsWith(word);
 
-/** Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)? */
+/** Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)? The values of `-o`, `+o`, `--rcfile` and `--init-file` are skipped (W6C-R3). */
 function hasCFlag(args: readonly string[]): boolean {
-  for (const w of args) {
-    if (!w.startsWith("-") && !w.startsWith("+")) return false;
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i] as string;
+    if (w === "--" || (!w.startsWith("-") && !w.startsWith("+"))) return false;
+    if (w === "-o" || w === "+o" || w === "--rcfile" || w === "--init-file") {
+      i++;
+      continue;
+    }
     if (w.startsWith("-") && !w.startsWith("--") && w.slice(1).includes("c")) return true;
   }
   return false;
@@ -474,26 +550,47 @@ const isProgram = (b: string): boolean => SHELLS.has(b) || b === "source" || b =
  */
 export function stdinProgram(folded: string): string | undefined {
   for (const text of [folded, folded.replace(/\\/g, "")]) {
-    const p = stdinWalk(text.replace(/`/g, "\n"), 0);
+    const p = stdinWalk(text.replace(/`/g, "\n"), 0, noFeed());
     if (p !== undefined) return p;
   }
   return undefined;
 }
 
-function stdinWalk(text: string, depth: number): string | undefined {
+/** `base` feeds the whole text: a `-c`, `env -S` or `eval` string is read by commands that take the outer command's input (W6C-R1). */
+function stdinWalk(text: string, depth: number, base: Feed): string | undefined {
   if (depth > MAX_DEPTH) return undefined;
-  for (const [words, feed] of fedCommands(text)) {
+  for (const [words, feed] of fedCommands(text, base)) {
     const p = stdinRead(words, feed, depth);
     if (p !== undefined) return p;
   }
   return undefined;
 }
 
+/** The words xargs fills from its input in a command it runs: `-I x`, `-ix`, `-i` (`{}`), `--replace[=x]`; `{}` always. */
+function xargsTokens(args: readonly string[]): string[] {
+  const out = ["{}"];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i] as string;
+    if (!w.startsWith("-")) break;
+    if (w === "-i" || w === "--replace") continue;
+    if (w === "-I") {
+      const v = args[i + 1];
+      if (v !== undefined) out.push(v);
+      i++;
+    } else if (w.startsWith("--replace=")) out.push(w.slice("--replace=".length));
+    else if (w.startsWith("-I") || w.startsWith("-i")) {
+      if (w.length > 2) out.push(w.slice(2));
+    }
+  }
+  return out.filter((t) => t !== "");
+}
+
 function stdinRead(input: string[], feed: Feed, depth: number): string | undefined {
   let words = input;
-  let xargs = false;
+  // Behind xargs or parallel: the words it fills from its input.
+  let xargs: string[] | undefined;
   for (let guard = 0; guard < 16; guard++) {
-    while (words.length && ASSIGNMENT.test(words[0] as string)) words = words.slice(1);
+    while (words.length && (ASSIGNMENT.test(words[0] as string) || RESERVED.has(words[0] as string))) words = words.slice(1);
     if (!words.length) return undefined;
     const head = commandBase(words[0] as string);
     const rest = words.slice(1);
@@ -502,23 +599,48 @@ function stdinRead(input: string[], feed: Feed, depth: number): string | undefin
       if (split >= 0) {
         const w = rest[split] as string;
         const s = w.startsWith("--split-string=") ? w.slice("--split-string=".length) : rest[split + 1];
-        return s === undefined ? undefined : stdinWalk(s, depth + 1);
+        return s === undefined ? undefined : stdinWalk(s, depth + 1, feed);
       }
     }
-    if (head === "eval") return stdinWalk(rest.join(" "), depth + 1);
+    if (head === "eval") return stdinWalk(rest.join(" "), depth + 1, feed);
     if (isProgram(head)) {
       if (SHELLS.has(head)) {
-        // Behind xargs a shell's `-c` takes its string from the input (W6C-S2).
-        if (xargs && hasCFlag(rest)) return head;
+        // Behind xargs or parallel a shell's `-c` takes its string from the
+        // input when the line gives none, or when the string holds a word the
+        // input fills (W6C-S2); a fixed string only gets the input as
+        // arguments (W6C-R5).
+        if (xargs !== undefined && hasCFlag(rest)) {
+          const s = shellCommandString(rest);
+          if (s === undefined || xargs.some((t) => s.includes(t))) return head;
+        }
         const c = shellCommandString(rest);
-        if (c !== undefined) return stdinWalk(c, depth + 1);
+        if (c !== undefined) return stdinWalk(c, depth + 1, feed);
       }
       const shellish = SHELLS.has(head) || head === "source" || head === ".";
-      const fed = feed.piped || feed.hereString || feed.process || xargs || (feed.hereDoc && !shellish);
+      const fed = feed.piped || feed.hereString || feed.process || xargs !== undefined || (feed.hereDoc && !shellish);
       return fed && readsItsInput(head, rest) ? head : undefined;
     }
+    if (head === "parallel") {
+      // GNU parallel runs each input line as a command when its line names
+      // none, and runs its command words and `:::` arguments through a shell
+      // (GNU parallel 20231122, run; W6C-R3).
+      const fed = feed.piped || feed.hereString || feed.process;
+      const before = [];
+      for (const w of rest) {
+        if (w === ":::" || w === "::::") break;
+        before.push(w);
+      }
+      const command = before.some((w) => !w.startsWith("-") && !/^[0-9]+$/.test(w));
+      if (fed && !command && !rest.some((w) => w === ":::" || w === "::::")) return head;
+      for (const w of rest) {
+        if (w.startsWith("-")) continue;
+        const p = stdinWalk(w, depth + 1, noFeed());
+        if (p !== undefined) return p;
+      }
+    }
     if (!WRAPPERS.has(head)) return undefined;
-    if (head === "xargs" || head === "parallel") xargs = true;
+    if (head === "xargs") xargs = xargsTokens(rest);
+    else if (head === "parallel") xargs = ["{"];
     const next = rest.findIndex((w) => {
       const b = commandBase(w);
       return !ASSIGNMENT.test(w) && (WRAPPERS.has(b) || isProgram(b) || b === "eval");

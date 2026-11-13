@@ -384,9 +384,10 @@ pub fn adjust_with(
         (None, false)
     };
     // A token alone may be a project's (case 227): only a hook whose daemon
-    // took its token, or that runs under a real `derm run`, skips the light
-    // tier's fail-safe rules (integration w6's review, W6C-S4).
-    let run_chat = token && (accepted || daemon::under_derm_run());
+    // took its token, or whose token a real `derm run` above it gave, skips
+    // the light tier's fail-safe rules (integration w6's review, W6C-S4;
+    // re-review W6C-R6).
+    let run_chat = token && (accepted || daemon::derm_run_chat(env, cwd));
     let (st, verdict, from, named, store) = match from_daemon {
         Some(d) => (d.state, d.verdict, d.from, d.named, Store::Daemon),
         None => {

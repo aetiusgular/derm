@@ -862,27 +862,31 @@ impl Posted {
     }
 }
 
-/// The reason a pre event's decision becomes a deny after its record was
-/// `posted`, or `None`: only a record neither the daemon nor the light tier
-/// kept, in a hook with no chat token (`locallog::denies`; lane 6B's request
-/// 1, wired at the wave 6 phase 1 merge). With a chat token the record is the
-/// daemon's to keep, and a daemon restart (case 86) or srt's deny of
-/// `~/.derm` (note AZ B8) must not deny every call.
 /// Is this hook part of a `derm run` chat, whose records are the daemon's?
-/// Only when it has a chat token and a `derm run` of this same program is
-/// one of its ancestors: a project's settings can set `DERM_CHAT_TOKEN`
-/// (case 227), never the hook's ancestry, so a token alone no longer turns
-/// the light tier's fail-closed rules off (integration w6's review,
-/// W6C-S4). Under srt on Linux the sandbox's own PID namespace hides
-/// `derm run`, so there a record the daemon did not take denies the call
-/// (a daemon restart, case 86, stops such a chat until it starts again).
+/// Only when its chat token is the one a `derm run` of this same program
+/// gave the chain the hook runs in: a project's settings can set
+/// `DERM_CHAT_TOKEN` in a hook's environment (case 227), never the start
+/// environment of the process `derm run` started, so neither a token alone
+/// (integration w6's review, W6C-S4) nor a token under a `derm run` that gave
+/// none (`--no-daemon`) or gave another (re-review W6C-R6) turns the light
+/// tier's fail-closed rules off. Where the hook cannot see that `derm run`
+/// (srt's PID namespace on Linux; srt's Seatbelt profile on macOS, read and
+/// not run, W6C-R8) or cannot read another process's start environment
+/// (Windows), the answer is no, and a record nothing kept denies the call.
+/// Under srt on Linux that is not what holds today: srt refuses a Unix
+/// socket, so no hook reaches the daemon, and srt's `denyRead` of `~/.derm`
+/// is a writable tmpfs, so the light log's append succeeds into a folder
+/// that goes with the sandbox and nothing denies (re-review W6C-R7, run;
+/// open).
 pub fn derm_run_chat(env: &Env, cwd: &Path) -> bool {
-    chat_token(env, cwd).is_some() && under_derm_run()
+    chat_token(env, cwd).is_some_and(|t| run_gave(&t))
 }
 
-/// Whether a process running this same program (by its real path) is one
-/// of this process's ancestors.
-pub fn under_derm_run() -> bool {
+/// Whether a process running this same program (by its real path) is one of
+/// this process's ancestors, and the process it started on the way down to
+/// this one (itself an ancestor) was started with `DERM_CHAT_TOKEN` equal to
+/// `token`.
+pub fn run_gave(token: &str) -> bool {
     #[cfg(test)]
     if let Some(v) = UNDER_DERM_RUN.with(std::cell::Cell::get) {
         return v;
@@ -894,20 +898,34 @@ pub fn under_derm_run() -> bool {
     else {
         return false;
     };
-    peer::ancestors(std::process::id()).into_iter().any(|p| {
+    // The hook itself never counts as the process `derm run` started: a
+    // shell that execs the hook hands it whatever start environment its
+    // line set, a project's token included. A harness starts its hooks as
+    // children, so the process below `derm run` is an ancestor.
+    let chain = peer::ancestors(std::process::id());
+    chain.windows(2).any(|w| {
+        let (below, p) = (w[0], w[1]);
         peer::program(p)
             .and_then(|x| std::fs::canonicalize(x).ok())
             .is_some_and(|x| x == me)
+            && peer::environ_var(below, "DERM_CHAT_TOKEN").as_deref() == Some(token)
     })
 }
 
 #[cfg(test)]
 thread_local! {
-    /// A unit test's stand-in for a `derm run` above it (a test runs under
-    /// cargo, never under `derm run`); `None` reads the real ancestry.
+    /// A unit test's stand-in for a `derm run` above it that gave the hook's
+    /// token (a test runs under cargo, never under `derm run`); `None` reads
+    /// the real ancestry.
     pub static UNDER_DERM_RUN: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
+/// The reason a pre event's decision becomes a deny after its record was
+/// `posted`, or `None`: only a record neither the daemon nor the light tier
+/// kept, in a hook that is not part of a `derm run` chat
+/// (`locallog::denies`; lane 6B's request 1, wired at the wave 6 phase 1
+/// merge). In a `derm run` chat ([`derm_run_chat`]) the record is the
+/// daemon's, and a daemon restart (case 86) must not deny every call.
 pub fn lost_deny(posted: &Posted, env: &Env, cwd: &Path) -> Option<String> {
     match posted {
         Posted::Lost(why) => {
