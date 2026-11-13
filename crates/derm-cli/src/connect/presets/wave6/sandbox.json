@@ -1,5 +1,27 @@
 {
-  "$comment": "Wave 6 lane 6A's sibling table (the wave 6 base, plans/toolkit_wave6_plan.md section 2.0, part 3): how derm delivers the agent's own sandbox for the Standard tier, per agent (contracts/sandbox.md). Empty on the base; lane 6A fills a row per agent it writes for, each with the version it was verified at (case 81). presets.rs and contracts/presets.ts merge each value into its row as `sandbox`. Shape: contracts/harness-presets.schema.json, $defs.sandbox. Rows lane 6A starts from (note AZ section 5): claude-code (`--settings` file from derm run, 2.1.322), codex (`-c` pairs at its own level, 0.167.2), cursor (advisory: a repo .cursor/sandbox.json widens the user's, note AZ A6), gemini (optional, A11).",
+  "$comment": "Wave 6 lane 6A's sibling table (the wave 6 base, plans/toolkit_wave6_plan.md section 2.0, part 3): how derm delivers the agent's own sandbox for the Standard tier, per agent (contracts/sandbox.md). presets.rs and contracts/presets.ts merge each value into its row as `sandbox`. Shape: contracts/harness-presets.schema.json, $defs.sandbox. Each row was run at its verifiedAt in the cloud on 12 Nov 2026 (Linux, bubblewrap 0.9.0 and socat; plans/parallel/tk_lane_6A.md, Research) except cursor, read in its bundle on the Mac by the wave 6 base (note AZ 8.3) and not run. gemini has no row: its per-tool sandbox is not verified (note AZ A11).",
   "field": "sandbox",
-  "rows": {}
+  "rows": {
+    "claude-code": {
+      "via": "settings-flag",
+      "covers": ["bash", "powershell", "monitor"],
+      "underSrt": "off",
+      "underSbx": "on",
+      "verifiedAt": "2.1.322",
+      "note": "derm's block is the last --settings of the command line (Claude Code reads only the last); file tools, MCP servers and hooks run outside the sandbox, under derm's gate (note AZ A7). A user or managed file's sandbox keys merge with the block, so derm refuses them."
+    },
+    "codex": {
+      "via": "config-override",
+      "covers": ["bash"],
+      "underSrt": "off",
+      "underSbx": "on",
+      "verifiedAt": "0.167.2",
+      "note": "default_permissions=\"derm\" and permissions.derm as -c pairs at derm's own -c level (case 184); a config layer that defines [permissions.derm] merges into it, so derm refuses one. Run with codex exec on Linux; macOS's Seatbelt under this profile is a Mac test step."
+    },
+    "cursor": {
+      "via": "advisory",
+      "verifiedAt": "2026.11.11-b912975",
+      "note": "Cursor's CLI merges ~/.cursor/sandbox.json with a repository's .cursor/sandbox.json, and no flag loads a settings layer derm could own (note AZ A6, read, not run), so derm cannot hold the tier: derm run --tier standard says so and runs the Whole tier."
+    }
+  }
 }
