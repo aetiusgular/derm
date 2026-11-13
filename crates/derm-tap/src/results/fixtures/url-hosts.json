@@ -1,0 +1,173 @@
+{
+ "$comment": "Recorded 12 Nov 2026 in the cloud by lane 6D (plans/parallel/tk_lane_6D.md, Research) from the real tools, for the taint host reader (rules section 9, item 12). whatwg: the url crate 2.5.8 with idna 1.1.0, `url::Url::parse(u).host_str()` (scratch project /tmp/urlrec, `cargo run < corpus.txt`). curl: curl 8.5.0 (Ubuntu 24.04, libcurl/8.5.0 OpenSSL/3.0.13 libidn2/2.3.7), `curl -s -o /dev/null --connect-timeout 1 -w '%{url.host}' <u>` with no proxy variables; curlExit 3 means curl refused the URL (host null), 6 or 7 that it tried that host. Note AZ D5 and section 8.6 (Apple curl 8.7.1 and git 2.50.1 on the Mac) read the backslash and double-@ forms the same way.",
+ "cases": [
+  {
+   "url": "https://example.test/a",
+   "whatwg": "example.test",
+   "curl": "example.test",
+   "curlExit": 6
+  },
+  {
+   "url": "https://Example.TEST./x",
+   "whatwg": "example.test.",
+   "curl": "Example.TEST.",
+   "curlExit": 6
+  },
+  {
+   "url": "https://evil.com\\@good.com/",
+   "whatwg": "evil.com",
+   "curl": "good.com",
+   "curlExit": 6
+  },
+  {
+   "url": "https://user@good.com@evil.com/",
+   "whatwg": "evil.com",
+   "curl": null,
+   "curlExit": 3
+  },
+  {
+   "url": "http://a.test\\@b.test/",
+   "whatwg": "a.test",
+   "curl": "b.test",
+   "curlExit": 6
+  },
+  {
+   "url": "http://a.test%5C@b.test/",
+   "whatwg": "b.test",
+   "curl": "b.test",
+   "curlExit": 6
+  },
+  {
+   "url": "http://a.test\\b.test/",
+   "whatwg": "a.test",
+   "curl": null,
+   "curlExit": 3
+  },
+  {
+   "url": "http://user@a.test@b.test/",
+   "whatwg": "b.test",
+   "curl": null,
+   "curlExit": 3
+  },
+  {
+   "url": "http://0x7f.1/",
+   "whatwg": "127.0.0.1",
+   "curl": "127.0.0.1",
+   "curlExit": 7
+  },
+  {
+   "url": "http://127.1/",
+   "whatwg": "127.0.0.1",
+   "curl": "127.0.0.1",
+   "curlExit": 7
+  },
+  {
+   "url": "http://0177.0.0.1/",
+   "whatwg": "127.0.0.1",
+   "curl": "127.0.0.1",
+   "curlExit": 7
+  },
+  {
+   "url": "http://2130706433/",
+   "whatwg": "127.0.0.1",
+   "curl": "127.0.0.1",
+   "curlExit": 7
+  },
+  {
+   "url": "https://ｅｘａｍｐｌｅ.test/",
+   "whatwg": "example.test",
+   "curl": null,
+   "curlExit": 3
+  },
+  {
+   "url": "https://exa%6Dple.test/",
+   "whatwg": "example.test",
+   "curl": "example.test",
+   "curlExit": 6
+  },
+  {
+   "url": "https://[::1]:8080/",
+   "whatwg": "[::1]",
+   "curl": "[::1]",
+   "curlExit": 7
+  },
+  {
+   "url": "https://host.test:443/p?q#f",
+   "whatwg": "host.test",
+   "curl": "host.test",
+   "curlExit": 6
+  },
+  {
+   "url": "https://host.test?x=1",
+   "whatwg": "host.test",
+   "curl": "host.test",
+   "curlExit": 6
+  },
+  {
+   "url": "https://host.test#frag",
+   "whatwg": "host.test",
+   "curl": "host.test",
+   "curlExit": 6
+  },
+  {
+   "url": "ftp://files.test/x",
+   "whatwg": "files.test",
+   "curl": "files.test",
+   "curlExit": 6
+  },
+  {
+   "url": "ws://sock.test/",
+   "whatwg": "sock.test",
+   "curl": "sock.test",
+   "curlExit": 1
+  },
+  {
+   "url": "git://git.test/repo",
+   "whatwg": "git.test",
+   "curl": "git.test",
+   "curlExit": 1
+  },
+  {
+   "url": "ssh://git@ssh.test/repo",
+   "whatwg": "ssh.test",
+   "curl": "ssh.test",
+   "curlExit": 1
+  },
+  {
+   "url": "https:\\\\back.test\\x",
+   "whatwg": "back.test",
+   "curl": null,
+   "curlExit": 3
+  },
+  {
+   "url": "https:/one.test/",
+   "whatwg": "one.test",
+   "curl": "one.test",
+   "curlExit": 6
+  },
+  {
+   "url": "HTTPS://UPPER.TEST/",
+   "whatwg": "upper.test",
+   "curl": "UPPER.TEST",
+   "curlExit": 6
+  },
+  {
+   "url": "https://a.test:80@b.test/",
+   "whatwg": "b.test",
+   "curl": "b.test",
+   "curlExit": 6
+  },
+  {
+   "url": "https://xn--bcher-kva.test/",
+   "whatwg": "xn--bcher-kva.test",
+   "curl": "xn--bcher-kva.test",
+   "curlExit": 6
+  },
+  {
+   "url": "https://bücher.test/",
+   "whatwg": "xn--bcher-kva.test",
+   "curl": null,
+   "curlExit": 3
+  }
+ ]
+}
