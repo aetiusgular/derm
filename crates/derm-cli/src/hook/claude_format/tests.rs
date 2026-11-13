@@ -97,17 +97,23 @@ fn geminis_tool_aliases_equal_its_preset_row_and_reach_the_gate_by_the_policys_n
     for (raw, policy) in super::gemini::TOOL_ALIASES {
         let input = json!({"tool_name": raw, "tool_input": {}});
         assert_eq!(
+            super::gemini::policy_name(input.as_object().unwrap()),
+            Some(*policy)
+        );
+        // The name recorded and matched first stays Gemini's own.
+        assert_eq!(
             super::gemini::tool_for_gate(input.as_object().unwrap()),
-            *policy
+            *raw
         );
     }
-    // An MCP call keeps its server, whatever its tool is called.
-    let mcp = json!({"tool_name": "read_file",
-        "mcp_context": {"server_name": "fs", "tool_name": "read_file"}});
-    assert_eq!(
-        super::gemini::tool_for_gate(mcp.as_object().unwrap()),
-        "mcp__fs__read_file"
-    );
+    // A call with any MCP context is an MCP tool's, whatever it is called.
+    for ctx in [
+        json!({"server_name": "fs", "tool_name": "read_file"}),
+        json!({"server_name": "", "tool_name": "x"}),
+    ] {
+        let mcp = json!({"tool_name": "read_file", "mcp_context": ctx});
+        assert_eq!(super::gemini::policy_name(mcp.as_object().unwrap()), None);
+    }
 }
 
 /// manual.json: "plugin files > decide denies anything that is not a tool

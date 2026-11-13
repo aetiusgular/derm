@@ -969,16 +969,10 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   const texts = withCollapsedSlashes([folded, unquoted]);
   const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
   if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
-  // Step 7a's other lists (integration w6's close, E0's R-E0-2, 3 and 5).
-  const more = moreStep7a(texts);
-  if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
   // On the folded text, so `＄HOME` asks: stricter than the raw input, the
   // side that fails safe (integration w1; derm-core and derm-pi do the same).
   const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
   if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
-  // A shell or interpreter that reads its program from its input (step 7b; R-E0-1).
-  const fed = isShellTool(normalizedTool) ? stdinProgram(folded) : undefined;
-  if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
   // Package installs (contracts/policy.md section 6; lane X's seam). An
   // install's ask or deny names its packages, so it comes first.
   const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;
@@ -987,5 +981,12 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   // after an install the lockfile vouches for (installDecision keeps the allow by answering nothing).
   const unplain = (POWERSHELL_TOOLS as readonly string[]).includes(normalizedTool) ? powershellUnplain(folded) : undefined;
   if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
+  // Step 7d (integration w6's close, E0's R-E0-1, 2, 3 and 5), last, so an
+  // earlier step's reason stands where both apply: step 7a's other lists for
+  // every tool, then a shell or interpreter that reads its program from its input.
+  const more = moreStep7a(texts);
+  if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
+  const fed = isShellTool(normalizedTool) ? stdinProgram(folded) : undefined;
+  if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
   return { action: "allow", normalizedTool, reason };
 }

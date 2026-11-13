@@ -127,7 +127,7 @@
         "ask": { "enum": ["own-prompt", "approver-or-deny", "unknown"] },
         "shellAliases": { "type": "array", "items": { "type": "string" } },
         "toolAliases": {
-          "description": "An agent's own tools under the built-in names the policy's rules use (`read`, `write`, `edit`, `ls`, `grep`, `webfetch`, `websearch`, `todowrite`), mapped by the agent's hook before the matcher, as `shellAliases` maps shells to `bash` (integration w6's close, E0's R-E0-4; rules case 243).",
+          "description": "An agent's own tools under the built-in names the policy's rules use (`read`, `write`, `edit`, `ls`, `grep`, `webfetch`, `websearch`, `todowrite`, and `bash` for a shell also in `shellAliases`). The agent's hook decides on the agent's own name first and on this name only when no rule names the agent's (integration w6's close, E0's R-E0-4; rules case 243).",
           "type": "object",
           "additionalProperties": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
         },

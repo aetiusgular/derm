@@ -1430,20 +1430,6 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
             format!("input names a control file ({control})"),
         );
     }
-    // Step 7a's other lists (integration w6's close, E0's R-E0-2, 3 and 5):
-    // secret material, files run later, cloud metadata addresses.
-    for (list, what) in [
-        (SECRET_PATHS, "a secret path"),
-        (RUNS_LATER_PATHS, "a file that runs later"),
-        (METADATA_ADDRESSES, "a cloud metadata address"),
-    ] {
-        if let Some(entry) = list
-            .iter()
-            .find(|e| texts.iter().any(|t| names_entry(t, e)))
-        {
-            return decide(Action::Ask, format!("input names {what} ({entry})"));
-        }
-    }
     // On the folded, escape-decoded text: stricter than the raw input
     // (`＄HOME` asks), the side that fails safe (rules section 9, item 7).
     if SHELL_TOOLS.contains(&normalized) {
@@ -1459,12 +1445,6 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
                 ),
             );
         }
-        // A shell or interpreter that reads its program from its input: a
-        // pipe, a here-string, a process substitution or xargs, so the line
-        // does not show what runs (step 7b; E0's R-E0-1).
-        if let Some(program) = crate::command::stdin_program(folded) {
-            return decide(Action::Ask, format!("program read from input: `{program}`"));
-        }
         // Package installs (contract section 6; wave 5 lane X's seam). An
         // install's ask or deny names its packages, so it comes first.
         if let Some(install) = crate::installs::check(normalized, folded) {
@@ -1477,6 +1457,29 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
             if let Some(c) = powershell_unplain(folded) {
                 return decide(Action::Ask, powershell_reason(c));
             }
+        }
+    }
+    // Step 7d (integration w6's close, E0's R-E0-1, 2, 3 and 5), last, so an
+    // earlier step's reason stands where both apply: secret material, files
+    // run later and cloud metadata addresses for every tool; then a shell or
+    // interpreter that reads its program from its input (a pipe, a
+    // here-string, a process substitution or xargs), so the line does not
+    // show what runs.
+    for (list, what) in [
+        (SECRET_PATHS, "a secret path"),
+        (RUNS_LATER_PATHS, "a file that runs later"),
+        (METADATA_ADDRESSES, "a cloud metadata address"),
+    ] {
+        if let Some(entry) = list
+            .iter()
+            .find(|e| texts.iter().any(|t| names_entry(t, e)))
+        {
+            return decide(Action::Ask, format!("input names {what} ({entry})"));
+        }
+    }
+    if SHELL_TOOLS.contains(&normalized) {
+        if let Some(program) = crate::command::stdin_program(folded) {
+            return decide(Action::Ask, format!("program read from input: `{program}`"));
         }
     }
     decide(Action::Allow, reason)
@@ -1874,7 +1877,7 @@ mod tests {
             "echo $HOME",
             "echo `id`",
             "ls *(e:x:)",
-            "cat ~/notes.txt",
+            "cat ~/.ssh/id_ed25519",
             "echo \u{FF04}HOME",
             "a \\\n b",
             "!!",
@@ -1889,9 +1892,12 @@ mod tests {
                 d.reason
             );
         }
-        // A `~` path that names a secret meets step 7a first (integration
-        // w6's close, R-E0-2): still an ask, with that reason.
-        let d = evaluate(&p, &call("bash", "claude-code", "cat ~/.ssh/id_ed25519"));
+        // A secret path with no other step's text asks by step 7d
+        // (integration w6's close, R-E0-2).
+        let d = evaluate(
+            &p,
+            &call("bash", "claude-code", "cat /home/u/.ssh/id_ed25519"),
+        );
         assert_eq!(d.action, Action::Ask);
         assert_eq!(d.reason, "input names a secret path (.ssh/)");
         // The reason names the token, and calls a glob one (Mac test w1, M9);
