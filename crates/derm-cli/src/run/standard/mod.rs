@@ -673,5 +673,7 @@ fn codex_refusals(words: &[String], i: &Inputs, home: &str, cwd: &str) -> Result
     Ok(())
 }
 
-#[cfg(test)]
+// The tier refuses Windows before it reads a path (`Inputs::windows`, which
+// the Unix tests set to hold that refusal); the rest read Unix paths.
+#[cfg(all(test, unix))]
 mod tests;
