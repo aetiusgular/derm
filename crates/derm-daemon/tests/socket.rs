@@ -1695,3 +1695,60 @@ fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
     let quiet = d.ask(json!({"op": "report", "chat": "chat-none", "since": 0, "until": i64::MAX}));
     assert!(quiet["report"]["check"].get("flagsOmitted").is_none());
 }
+
+/// Lane 6D's request 6D-1 (integration w6, phase 2): `taint` is routed to
+/// the daemon's store, the verdict comes from `derm run`'s own `run.start`,
+/// a chat token names only its own chat, and what it sends only adds.
+#[test]
+fn taint_is_routed_and_a_chat_token_names_only_its_own_chat_and_only_adds() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    // The store is the process's one; the chat ids are this test's own.
+    let own = format!("taint-a-{}", &derm_core::token::mint().unwrap()[..8]);
+    let other = format!("taint-b-{}", &derm_core::token::mint().unwrap()[..8]);
+    let token = mint(&mut d, &own, "claude-code");
+    let (mut c, _) = Client::hello(&f, &token);
+    // Before any run.start: the default verdict.
+    let r = c.ask(json!({"op": "taint", "chat": own, "hosts": []}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["verdict"], "ask", "{r}");
+    assert_eq!(r["from"], "default", "{r}");
+    // A chat token cannot name the verdict: its run.start is refused, and a
+    // run.start it could not post never reaches the store.
+    let forged = c.ask(json!({"op": "event", "event": {
+        "id": "forged-start", "at": 0, "chatId": own, "harness": "claude-code",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"taint": {"verdict": "record", "from": "flag"}}
+    }}));
+    assert_eq!(forged["ok"], false, "{forged}");
+    // derm run's own start names it.
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": format!("run-start-{own}"), "at": 0, "chatId": own, "harness": "claude-code",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"taint": {"verdict": "deny", "from": "flag"}}
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    let r = c.ask(json!({"op": "taint", "chat": own}));
+    assert_eq!(
+        (r["verdict"].clone(), r["from"].clone()),
+        (json!("deny"), json!("flag")),
+        "{r}"
+    );
+    // Another chat: refused.
+    let r = c.ask(json!({"op": "taint", "chat": other, "hosts": []}));
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["error"], "a chat token names only its own chat", "{r}");
+    // A field the op does not have: refused, as every op's.
+    let r = c.ask(json!({"op": "taint", "chat": own, "verdict": "record"}));
+    assert_eq!(r["ok"], false, "{r}");
+    // A mark added by the chat token stays, and an empty add removes nothing.
+    let mark = json!({"v": 1, "marks": [{"id": "m-1", "reason": "untrusted-content",
+        "kind": "web", "tool": "webfetch"}]});
+    let r = c.ask(json!({"op": "taint", "chat": own, "hosts": [], "add": mark}));
+    assert_eq!(r["ok"], true, "{r}");
+    let r = c.ask(json!({"op": "taint", "chat": own, "add": {"v": 1}}));
+    assert_eq!(r["state"]["marks"][0]["id"], "m-1", "{r}");
+    // The daemon scope reads it too.
+    let r = d.ask(json!({"op": "taint", "chat": own}));
+    assert_eq!(r["state"]["marks"].as_array().map(Vec::len), Some(1), "{r}");
+}

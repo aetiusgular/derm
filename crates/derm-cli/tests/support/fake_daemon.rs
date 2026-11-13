@@ -4,6 +4,10 @@
 //! socket in a fresh 0700 folder, a `daemon.token` beside it, every client
 //! line recorded. Used by `gate/`'s unit tests (through `#[path]`) and by
 //! the `derm hook` red tests in `tests/`. Unix only, as the TypeScript's.
+//! Since integration w6's phase 2 merge it answers `taint` with the real
+//! daemon's store (`derm_daemon::taint::Taints`, no settings), one per fake,
+//! with the chat the token holds as its scope (case 112: the value one side
+//! sends is checked by the real counterpart).
 #![cfg(unix)]
 #![allow(dead_code)]
 
@@ -80,6 +84,7 @@ impl FakeDaemon {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let behaviour = Arc::new(Mutex::new(approve));
         let stop = Arc::new(AtomicBool::new(false));
+        let taints = Arc::new(derm_daemon::taint::Taints::new(None));
         let (l2, b2, s2) = (lines.clone(), behaviour.clone(), stop.clone());
         std::thread::spawn(move || {
             let mut conns = 0;
@@ -91,9 +96,9 @@ impl FakeDaemon {
                         // listener's O_NONBLOCK; Linux does not (accept(2),
                         // VERSIONS, man7.org). The connection reads blocking.
                         let _ = stream.set_nonblocking(false);
-                        let (l3, b3) = (l2.clone(), b2.clone());
+                        let (l3, b3, t3) = (l2.clone(), b2.clone(), taints.clone());
                         let conn = conns;
-                        std::thread::spawn(move || serve(stream, conn, l3, b3));
+                        std::thread::spawn(move || serve(stream, conn, l3, b3, t3));
                     }
                     Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
                 }
@@ -158,7 +163,9 @@ fn serve(
     conn: usize,
     lines: Arc<Mutex<Vec<(usize, Value)>>>,
     behaviour: Arc<Mutex<Approve>>,
+    taints: Arc<derm_daemon::taint::Taints>,
 ) {
+    let mut scope: Option<&str> = None;
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
         Err(_) => return,
@@ -183,7 +190,10 @@ fn serve(
                 Some(DAEMON_TOKEN) => send(
                     json!({"ok": true, "scope": "daemon", "daemon": {"version": "0.0.0-fake", "pid": std::process::id(), "protocol": 1}}),
                 ),
-                Some(CHAT_TOKEN) => send(json!({"ok": true, "scope": "chat", "chat": "chat-fake"})),
+                Some(CHAT_TOKEN) => {
+                    scope = Some("chat-fake");
+                    send(json!({"ok": true, "scope": "chat", "chat": "chat-fake"}))
+                }
                 _ => {
                     send(json!({"ok": false, "error": "bad token"}));
                     return;
@@ -194,6 +204,7 @@ fn serve(
         }
         match line["op"].as_str() {
             Some("event") => send(json!({"ok": true, "id": line["event"]["id"]})),
+            Some("taint") => send(taints.handle(scope, &line)),
             Some("approve") => {
                 let id = line["request"]["id"].clone();
                 match *behaviour.lock().unwrap() {

@@ -300,6 +300,18 @@ fn one(call: &Value) -> Result<(), String> {
             .into_iter()
             .map(|(_, l)| l)
             .filter(|l| l["op"] != "hello")
+            // Taint (wave 6, lane 6D) came after these recordings: the
+            // TypeScript hooks had none, so its op and its records are left
+            // out of the comparison, and `gate::taint`'s tests hold them
+            // (integration w6, phase 2, request 6D-1). Its verdict still
+            // reaches the reply, which is compared whole above.
+            .filter(|l| {
+                l["op"] != "taint"
+                    && !(l["op"] == "event"
+                        && l["event"]["kind"]
+                            .as_str()
+                            .is_some_and(|k| k.starts_with("taint.")))
+            })
             .map(|l| match l["op"].as_str() {
                 Some("event") => serde_json::json!({"op": "event", "kind": l["event"]["kind"], "harness": l["event"]["harness"], "decision": l["event"]["detail"]["decision"], "tool": l["event"]["detail"]["tool"]}),
                 Some("approve") => serde_json::json!({"op": "approve", "harness": l["request"]["harness"], "tool": l["request"]["tool"]}),

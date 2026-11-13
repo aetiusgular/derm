@@ -11,9 +11,11 @@
 //!   agent's under one `session_id` (note AZ B3); read and rewritten in one
 //!   write under the lock.
 //! - **Under `derm run`** (a chat token): the daemon's op `taint`
-//!   ([`daemon_get`], [`daemon_add`]; `crates/derm-daemon/src/taint/`). Until
-//!   integration routes that op the daemon refuses it ("unknown op"), and the
-//!   gate falls back to the file.
+//!   ([`daemon_get`], [`daemon_add`]; `crates/derm-daemon/src/taint/`, routed
+//!   since integration w6's phase 2 merge). When the daemon refuses it (an
+//!   older daemon's "unknown op", a chat id the token does not hold, the
+//!   sbx VM's HTTP route, which carries no `taint`) the gate falls back to
+//!   the file.
 //!
 //! What it holds: hashes, paths and ids, never a result (`contracts/events.md`
 //! section 6). Every list only grows ([`State::merge`]): a writer that lost

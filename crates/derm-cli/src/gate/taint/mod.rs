@@ -337,14 +337,13 @@ pub fn adjust_in(
 }
 
 /// Whether a `derm run` chat (one whose hook has a chat token) keeps its
-/// taint in the daemon. Off until integration routes `op: "taint"` to
-/// `derm_daemon::taint::Taints::handle` and its ingest to
-/// `Taints::on_event` (request 6D-1): the daemon refuses an unknown op, and
-/// the hook-case replays (`tests/hook_cases_5bA.rs`, `_5bB.rs`) hold every
-/// line a hook sends its daemon, which the op and taint's records add to.
-/// While it is off, taint is off for a `derm run` chat; the light tier (no
-/// chat token) is on.
-pub const DAEMON_TIER: bool = false;
+/// taint in the daemon. On since integration w6's phase 2 merge routed
+/// `op: "taint"` to `derm_daemon::taint::Taints::handle` and its ingest to
+/// `Taints::on_event` (lane 6D's request 6D-1). The hook-case replays
+/// (`tests/hook_cases_5bA.rs`, `_5bB.rs`) compare the daemon lines a hook
+/// sends with the TypeScript's, which had no taint: they leave taint's own
+/// lines out (`tests/support/replay.rs`), and taint's tests hold them.
+pub const DAEMON_TIER: bool = true;
 
 /// [`adjust_in`], with the daemon tier on or off.
 pub fn adjust_with(
@@ -374,10 +373,11 @@ pub fn adjust_with(
     if facts.is_empty() {
         return answer;
     }
-    // Under `derm run` the daemon holds the chat's state and verdict; until
-    // integration routes `op: "taint"` it refuses it, and the file is used,
-    // with the strictest verdict, since the person's `--taint` cannot be
-    // read (rules section 9, item 7: fail safe).
+    // Under `derm run` the daemon holds the chat's state and verdict; when
+    // it refuses `op: "taint"` (an older daemon, a chat id the token does
+    // not hold, the sbx VM's route) the file is used, with the strictest
+    // verdict, since the person's `--taint` cannot be read (rules section 9,
+    // item 7: fail safe).
     let from_daemon = if token {
         state::daemon_get(env, cwd, chat, &facts.hosts).ok()
     } else {

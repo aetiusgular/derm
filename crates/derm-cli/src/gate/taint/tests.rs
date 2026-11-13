@@ -667,7 +667,9 @@ mod daemon_tier {
 
     #[test]
     fn a_daemon_that_refuses_the_op_falls_back_to_the_file_with_deny() {
-        // The real daemon until integration routes `taint`: "unknown op".
+        // A daemon that refuses `taint`: here the real store's check, since
+        // the fake's token holds `chat-fake`, not `c-1` (an older daemon's
+        // "unknown op" is the same refusal).
         let h = Home::new("dt-refuse");
         let fake = crate::gate::fake_daemon::FakeDaemon::start(
             crate::gate::fake_daemon::Approve::None,
@@ -706,8 +708,12 @@ mod daemon_tier {
     }
 
     #[test]
-    fn while_the_daemon_tier_is_off_a_derm_run_chat_sends_nothing() {
-        let h = Home::new("dt-off");
+    fn the_daemon_tier_is_on_so_a_derm_run_chat_asks_its_daemon() {
+        // Request 6D-1 (integration w6, phase 2): `adjust_in` takes the
+        // daemon tier, so a hook with a chat token sends `op: "taint"`. The
+        // fake's token holds `chat-fake`, not `c-1`, so the real store's
+        // check refuses it, and the file is used with deny (fail safe).
+        let h = Home::new("dt-on");
         let fake = crate::gate::fake_daemon::FakeDaemon::start(
             crate::gate::fake_daemon::Approve::None,
             None,
@@ -718,8 +724,14 @@ mod daemon_tier {
         }
         let c = call("webfetch", json!({"url": "https://a.test/"}), 0);
         let r = adjust_in(allow("webfetch"), &c, &e, "c-1", &h.work());
-        assert_eq!(r, allow("webfetch"));
-        assert!(fake.lines().is_empty(), "{:?}", fake.lines());
-        assert!(!h.0.join(".derm").exists());
+        assert_eq!(r.action, Action::Allow, "{}", r.reason);
+        let ops: Vec<String> = fake
+            .lines()
+            .into_iter()
+            .filter_map(|(_, l)| l["op"].as_str().map(str::to_string))
+            .collect();
+        assert!(ops.iter().any(|o| o == "taint"), "{ops:?}");
+        // The fetch marked the chat in the file the gate fell back to.
+        assert!(h.0.join(".derm/local").exists());
     }
 }

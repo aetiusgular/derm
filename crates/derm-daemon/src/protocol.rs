@@ -56,6 +56,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         proof: Option<Proof>,
     },
+    /// A chat's taint (wave 6, lane 6D's request 6D-1;
+    /// `contracts/daemon-protocol.md` section 2): read it, ask which of
+    /// `hosts` an untrusted result in the chat named, and add to it. A chat
+    /// token names only its own chat and only adds
+    /// (`crate::taint::Taints::handle`, which checks every field again).
+    Taint {
+        chat: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hosts: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        add: Option<serde_json::Value>,
+    },
     /// Mint a chat token. Needs the daemon scope.
     #[serde(rename = "token.mint")]
     TokenMint { chat: String, harness: String },

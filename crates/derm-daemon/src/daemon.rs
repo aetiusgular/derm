@@ -1601,6 +1601,10 @@ impl Daemon {
             if let Ok(mut watchers) = self.run_watchers.lock() {
                 watchers.retain(|w| w.send(event.clone()).is_ok());
             }
+            // The chat's taint verdict from `run.start`, dropped at
+            // `run.stop` (lane 6D's request 6D-1). Only `derm run`'s own
+            // records name it: a chat token posts no `run` record.
+            crate::taint::global().on_event(&event);
         }
         // Install records (lane X's request 4, integration w5 continue): the
         // control-path flags and the lockfile diffs read every event, the
@@ -1734,6 +1738,9 @@ impl Daemon {
             }
             Request::TokenMint { chat, harness } => {
                 out.send(&self.op_mint(who, &chat, &harness));
+            }
+            Request::Taint { chat, hosts, add } => {
+                out.send(&self.op_taint(who, chat, hosts, add));
             }
             Request::Cu { action, chat, app } => {
                 out.send(&op_cu(who, action, chat.as_deref(), app.as_deref()));
@@ -2523,6 +2530,41 @@ impl Daemon {
             pid: None,
             approval_id: Some(request.id.clone()),
         });
+    }
+
+    /// `taint` (lane 6D's request 6D-1): answered by the daemon's one taint
+    /// store, which checks every field and the chat again. A chat token's
+    /// requests come out of its chat's share of the socket, as its events
+    /// do (re-review W5R-3): what it adds is bounded per request, not per
+    /// second.
+    fn op_taint(
+        &self,
+        who: &Who,
+        chat: String,
+        hosts: Option<Vec<String>>,
+        add: Option<Value>,
+    ) -> Value {
+        let mut line = json!({"op": "taint", "chat": chat});
+        if let Some(h) = hosts {
+            line["hosts"] = json!(h);
+        }
+        if let Some(a) = add {
+            line["add"] = a;
+        }
+        let scope = match who {
+            Who::Daemon => None,
+            Who::Chat { chat: own, .. } => {
+                let bytes = serde_json::to_vec(&line).map(|v| v.len()).unwrap_or(0);
+                if let Err(why) =
+                    self.take_chat_quota(own, bytes, now_ms(), std::time::Instant::now())
+                {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return json!({"ok": false, "error": why});
+                }
+                Some(own.as_str())
+            }
+        };
+        crate::taint::global().handle(scope, &line)
     }
 
     fn op_mint(&self, who: &Who, chat: &str, harness: &str) -> Reply {
