@@ -276,7 +276,9 @@ fn event_id() -> String {
 }
 
 /// Whether an address is not globally reachable, so no brokered request may
-/// dial it (review W6C-S5, note BD).
+/// dial it (review W6C-S5, note BD). Like srt 0.0.82's list, it does not
+/// catch ISATAP, a network-specific NAT64 prefix, or a public address that
+/// reaches this host through 1:1 NAT (re-review W6F-9, open).
 ///
 /// IPv4 by the IANA IPv4 special-purpose registry (every range not globally
 /// reachable, plus multicast and `240.0.0.0/4`) and Azure's WireServer

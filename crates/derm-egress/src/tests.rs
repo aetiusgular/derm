@@ -680,3 +680,81 @@ fn a_body_that_reads_two_ways_never_swaps() {
         }
     }
 }
+
+/// The re-review of the W6F fixes (W6G-3, W6G-4, W6G-5): a `%` escape that
+/// is not two hex digits, a field name written with an escape, and a
+/// `Content-Type` that names another charset or a list each left a copy of
+/// the placeholder the counts did not see, or a field the host may name
+/// differently.
+#[test]
+fn a_field_is_named_as_written_and_read_in_one_charset() {
+    let one = vec![two().remove(0)];
+    let body_pol = Policy {
+        swap_body: vec![("github".into(), "token".into())],
+        ..Policy::default()
+    };
+    let query_pol = Policy {
+        swap_query: vec![("github".into(), "token".into())],
+        ..Policy::default()
+    };
+    let form = h(&[("content-type", "application/x-www-form-urlencoded")]);
+    let plus = PH_A.replacen('d', "%+d%65", 1).replacen("%65e", "%65", 1);
+    let kept = |hd: &[(String, String)], body: String| {
+        let d = decide_with(
+            &out("api.github.com", "/x", hd, body.as_bytes()),
+            &one,
+            &body_pol,
+        );
+        match d.verdict {
+            Verdict::Forward { body: got, .. } => assert_eq!(got, body.as_bytes(), "{body}"),
+            v => panic!("{v:?}"),
+        }
+        assert!(d.injected.is_empty(), "{body}");
+    };
+    kept(&form, format!("token={PH_A}&note={plus}"));
+    kept(&form, format!("%74oken={PH_A}"));
+    kept(
+        &h(&[("content-type", "application/json; charset=utf-16")]),
+        format!("{{\"token\":\"{PH_A}\"}}"),
+    );
+    kept(
+        &h(&[(
+            "content-type",
+            "application/json;, application/x-www-form-urlencoded",
+        )]),
+        format!("{{\"token\":\"{PH_A}\"}}"),
+    );
+    kept(
+        &h(&[(
+            "content-type",
+            "application/x-www-form-urlencoded; charset=utf-7",
+        )]),
+        format!("token={PH_A}"),
+    );
+    for target in [
+        format!("/x?%74oken={PH_A}"),
+        format!("/x?token={PH_A}&n={plus}"),
+    ] {
+        let d = decide_with(&out("api.github.com", &target, &[], b""), &one, &query_pol);
+        assert!(d.injected.is_empty(), "{target}");
+    }
+    // A utf-8 charset is still read.
+    match decide_with(
+        &out(
+            "api.github.com",
+            "/x",
+            &h(&[("content-type", "application/json; charset=UTF-8")]),
+            format!("{{\"token\":\"{PH_A}\"}}").as_bytes(),
+        ),
+        &one,
+        &body_pol,
+    )
+    .verdict
+    {
+        Verdict::Forward { body, .. } => assert_eq!(
+            String::from_utf8(body).unwrap(),
+            format!("{{\"token\":\"{VAL_A}\"}}")
+        ),
+        v => panic!("{v:?}"),
+    }
+}

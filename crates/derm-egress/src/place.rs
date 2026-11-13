@@ -104,8 +104,14 @@ fn pct_decode(v: &str) -> Option<Vec<u8>> {
     while i < b.len() {
         match b[i] {
             b'%' => {
-                let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
-                out.push(u8::from_str_radix(hex, 16).ok()?);
+                // Two hex digits, or no decode: `u8::from_str_radix` alone
+                // takes `+d` as 13, where a WHATWG decoder keeps `%+d` as it
+                // is (W6G-3).
+                let hex = b.get(i + 1..i + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
+                out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
                 i += 3;
             }
             b'+' => {
@@ -182,9 +188,11 @@ pub fn swap_pairs(text: &str, wants: &[Want<'_>]) -> (Option<String>, Vec<usize>
         let hits: Vec<usize> = pairs
             .iter()
             .enumerate()
-            .filter(|(i, p)| {
-                let v = p.split_once('=').map_or("", |(_, v)| v);
-                decoded[*i].0 == want.field.as_bytes() && v == want.placeholder
+            .filter(|(_, p)| {
+                // The name as written, not as decoded: a host that does not
+                // decode names would store `%74oken` apart (W6G-4).
+                let (k, v) = p.split_once('=').unwrap_or((p, ""));
+                k == want.field && v == want.placeholder
             })
             .map(|(i, _)| i)
             .collect();
@@ -210,7 +218,7 @@ pub fn swap_pairs(text: &str, wants: &[Want<'_>]) -> (Option<String>, Vec<usize>
 
 /// A form body as text, when every byte is one a form serializer writes
 /// (WHATWG `application/x-www-form-urlencoded`: ASCII letters and digits,
-/// `*-._`, `%` escapes, `+` for a space, and the `&` and `=` that join the
+/// `*-._`, and `~` that other serializers leave as RFC 3986 does, `%` escapes, `+` for a space, and the `&` and `=` that join the
 /// pairs). Anything else is a body that only claims to be a form (W6F-2: a
 /// JSON body sent as a form), and is not swapped.
 pub fn form_body(body: &[u8]) -> Option<&str> {
@@ -370,7 +378,9 @@ pub enum BodyKind {
 }
 
 /// `Other` when the request carries no `Content-Type` or more than one (W6F-2:
-/// two headers name two parsers, and the host may read either).
+/// two headers name two parsers, and the host may read either), when its
+/// value holds a `,` (a list of types), or when it names a charset other than
+/// UTF-8 (W6G-5).
 pub fn body_kind(headers: &[(String, String)]) -> BodyKind {
     let mut types = headers
         .iter()
@@ -379,13 +389,24 @@ pub fn body_kind(headers: &[(String, String)]) -> BodyKind {
     if types.next().is_some() {
         return BodyKind::Other;
     }
-    let ct = first.map(|(_, v)| {
-        v.split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase()
-    });
+    let Some((_, value)) = first else {
+        return BodyKind::Other;
+    };
+    if value.contains(',') {
+        return BodyKind::Other;
+    }
+    let mut parts = value.split(';');
+    let ct = parts.next().map(|t| t.trim().to_ascii_lowercase());
+    for param in parts {
+        let (name, val) = param.split_once('=').unwrap_or((param, ""));
+        let val = val.trim().trim_matches('"');
+        if name.trim().eq_ignore_ascii_case("charset")
+            && !val.eq_ignore_ascii_case("utf-8")
+            && !val.eq_ignore_ascii_case("utf8")
+        {
+            return BodyKind::Other;
+        }
+    }
     match ct.as_deref() {
         Some("application/json") => BodyKind::Json,
         Some(t) if t.starts_with("application/") && t.ends_with("+json") => BodyKind::Json,
