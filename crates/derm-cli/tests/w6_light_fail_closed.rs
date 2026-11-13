@@ -205,7 +205,10 @@ fn a_token_derm_runs_child_was_started_with_keeps_a_lost_record_from_denying() {
     // was started with the token, as a harness is when the daemon gives one,
     // so the record was the daemon's and its loss denies nothing.
     let broken = home("ccgave", true);
-    let inner = format!("{} hook claude-code pre", env!("CARGO_BIN_EXE_derm"));
+    // `; true` keeps `sh` from exec'ing the hook in its own pid (bash, as
+    // macOS's `/bin/sh`, does that for a lone command), so the hook stays a
+    // child of the process `derm run` started, as a harness's hooks are.
+    let inner = format!("{} hook claude-code pre; true", env!("CARGO_BIN_EXE_derm"));
     let o = under_derm_run(
         &broken,
         &format!(
@@ -224,7 +227,7 @@ fn a_token_other_than_the_one_derm_run_gave_is_still_the_light_tier() {
     let broken = home("ccother", true);
     let other = "3".repeat(64);
     let inner = format!(
-        "DERM_CHAT_TOKEN={other} exec {} hook claude-code pre",
+        "DERM_CHAT_TOKEN={other} {} hook claude-code pre; true",
         env!("CARGO_BIN_EXE_derm")
     );
     let o = under_derm_run(
