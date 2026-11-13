@@ -117,8 +117,7 @@ pub fn untrusted(normalized: &str) -> Option<&'static str> {
     if FETCH_TOOLS.contains(&normalized) {
         return Some("web");
     }
-    if derm_core::policy::SHELL_TOOLS.contains(&normalized) || LOCAL_TOOLS.contains(&normalized)
-    {
+    if derm_core::policy::SHELL_TOOLS.contains(&normalized) || LOCAL_TOOLS.contains(&normalized) {
         return None;
     }
     Some("unknown-tool")
@@ -135,7 +134,14 @@ mod tests {
         assert_eq!(untrusted("playwright/browser_navigate"), Some("mcp"));
         assert_eq!(untrusted("readmcpresourcetool"), Some("mcp"));
         assert_eq!(untrusted("someones_new_tool"), Some("unknown-tool"));
-        for local in ["bash", "read", "write", "edit", "run_shell_command", "todowrite"] {
+        for local in [
+            "bash",
+            "read",
+            "write",
+            "edit",
+            "run_shell_command",
+            "todowrite",
+        ] {
             assert_eq!(untrusted(local), None, "{local}");
         }
         assert_eq!(untrusted("claude_in_chrome/tabs_context_mcp"), None);

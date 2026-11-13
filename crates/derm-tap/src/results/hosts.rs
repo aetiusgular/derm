@@ -32,8 +32,23 @@
 /// Schemes whose URLs reach a host over the network. A `c:\path` or a
 /// `key:value` is never read as one.
 const SCHEMES: &[&str] = &[
-    "http", "https", "ws", "wss", "ftp", "ftps", "sftp", "ssh", "git", "git+ssh", "git+https",
-    "ssh+git", "rsync", "telnet", "smb", "ldap", "ldaps",
+    "http",
+    "https",
+    "ws",
+    "wss",
+    "ftp",
+    "ftps",
+    "sftp",
+    "ssh",
+    "git",
+    "git+ssh",
+    "git+https",
+    "ssh+git",
+    "rsync",
+    "telnet",
+    "smb",
+    "ldap",
+    "ldaps",
 ];
 
 /// WHATWG's special schemes (the URL Standard, "special scheme").
@@ -42,7 +57,8 @@ const SPECIAL: &[&str] = &["http", "https", "ws", "wss", "ftp", "file"];
 /// Every host the URLs in `text` can be read as, canonical, each once.
 pub fn url_hosts(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for token in text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>'))
+    for token in
+        text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '<' | '>'))
     {
         for start in url_starts(token) {
             let url = &token[start..];
@@ -395,11 +411,25 @@ mod tests {
     #[test]
     fn bare_host_words_are_read_and_file_names_are_not() {
         assert_eq!(host_word("example.test/x").as_deref(), Some("example.test"));
-        assert_eq!(host_word("git@code.test:me/r.git").as_deref(), Some("code.test"));
+        assert_eq!(
+            host_word("git@code.test:me/r.git").as_deref(),
+            Some("code.test")
+        );
         assert_eq!(host_word("host.test:/tmp").as_deref(), Some("host.test"));
         assert_eq!(host_word("10.0.0.1").as_deref(), Some("10.0.0.1"));
-        assert_eq!(host_word("ＥＸＡＭＰＬＥ.test").as_deref(), Some("example.test"));
-        for not in ["run.sh", "diag.py", "out.json", "-o", "localhost", "a..b", "file"] {
+        assert_eq!(
+            host_word("ＥＸＡＭＰＬＥ.test").as_deref(),
+            Some("example.test")
+        );
+        for not in [
+            "run.sh",
+            "diag.py",
+            "out.json",
+            "-o",
+            "localhost",
+            "a..b",
+            "file",
+        ] {
             assert_eq!(host_word(not), None, "{not}");
         }
     }
