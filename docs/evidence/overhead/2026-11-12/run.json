@@ -1,0 +1,55 @@
+{
+ "started": "2026-11-13T00:31:34.471Z",
+ "finished": "2026-11-13T00:31:49.118Z",
+ "machine": {
+  "name": "cloud",
+  "os": "Ubuntu 24.04.5 LTS",
+  "kernel": "6.18.44-fc-v445",
+  "cpu": "2 x Intel(R) Xeon(R) Processor @ 2.30GHz",
+  "ram": "8 GB"
+ },
+ "reps": 3,
+ "payloads": 161,
+ "summary": [
+  {
+   "name": "noop:sh:none",
+   "command": "cat >/dev/null",
+   "setup": null,
+   "n": 483,
+   "median": 2.167967,
+   "p95": 2.4630585,
+   "min": 2.023316,
+   "max": 6.091325
+  },
+  {
+   "name": "derm:0.1.3:workspace-write",
+   "command": "DERM_POLICY=/opt/e1/policy/workspace-write.json /opt/e1/bin/derm hook claude-code pre",
+   "setup": null,
+   "n": 483,
+   "median": 2.838797,
+   "p95": 3.9659867,
+   "min": 2.488878,
+   "max": 5.103549
+  },
+  {
+   "name": "derm:0.1.3:none",
+   "command": "/opt/e1/bin/derm hook claude-code pre",
+   "setup": null,
+   "n": 483,
+   "median": 2.566451,
+   "p95": 3.0319736,
+   "min": 2.177407,
+   "max": 3.882752
+  },
+  {
+   "name": "openmoat:0.19.0:default",
+   "command": "/opt/e1/bin/openmoat guard --host claude-code",
+   "setup": "/opt/e1/bin/openmoat init --yes >/dev/null 2>&1",
+   "n": 483,
+   "median": 21.493553,
+   "p95": 29.888578299999995,
+   "min": 16.383029,
+   "max": 57.297737
+  }
+ ]
+}
