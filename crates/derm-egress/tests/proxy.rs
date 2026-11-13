@@ -436,20 +436,20 @@ fn a_kept_alive_tunnel_decides_each_request_and_counts_them() {
 #[test]
 fn a_chunked_body_is_swapped_and_sent_with_a_length_and_a_chunked_reply_is_relayed_whole() {
     let reply: &'static [u8] = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-    // A body swap needs the body in the secret's placement (decision 2,
-    // integration w6's close).
+    // A body swap needs the field in the secret's placement (decision 2;
+    // review W6C-S8), and a body typed JSON or form.
     let r = rig(
         reply,
         true,
         Policy {
-            swap_body: vec!["github".into()],
+            swap_body: vec![("github".into(), "k".into())],
             ..Policy::default()
         },
     );
     let mut s = tunnel(&r, "api.github.com", "api.github.com").unwrap();
     let chunk = format!("{{\"k\":\"{PH}\"}}");
     let req = format!(
-        "POST /x HTTP/1.1\r\nHost: api.github.com\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{chunk}\r\n0\r\n\r\n",
+        "POST /x HTTP/1.1\r\nHost: api.github.com\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{chunk}\r\n0\r\n\r\n",
         chunk.len()
     );
     let resp = ask(&mut s, &req);
@@ -513,7 +513,7 @@ fn on_the_wire_the_value_goes_only_where_the_secrets_placement_says() {
         b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
         true,
         Policy {
-            swap_query: vec!["github".into()],
+            swap_query: vec![("github".into(), "t".into())],
             ..Policy::default()
         },
     );

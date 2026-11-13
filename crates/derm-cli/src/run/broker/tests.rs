@@ -219,13 +219,14 @@ fn a_missing_ca_or_an_unreadable_value_refuses_the_start_and_leaves_nothing() {
 #[test]
 fn the_policy_carries_the_model_hosts_and_each_secrets_placement() {
     let mut a = entry("gh", From::File("/x".into()));
-    a.placement = Some(vec!["query".into()]);
+    a.placement = Some(vec!["query:key".into()]);
     let mut b = entry("npm", From::File("/y".into()));
-    b.placement = Some(vec!["body".into(), "query".into()]);
+    b.placement = Some(vec!["body:auth.token".into(), "query:t".into()]);
     let c = entry("plain", From::File("/z".into()));
     let pol = policy_for(&[a, b, c]);
-    assert_eq!(pol.swap_body, vec!["npm".to_string()]);
-    assert_eq!(pol.swap_query, vec!["gh".to_string(), "npm".to_string()]);
+    let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+    assert_eq!(pol.swap_body, vec![pair("npm", "auth.token")]);
+    assert_eq!(pol.swap_query, vec![pair("gh", "key"), pair("npm", "t")]);
     assert!(pol.model_hosts.iter().any(|h| h == "api.anthropic.com"));
     assert!(pol.allow.is_none());
 }

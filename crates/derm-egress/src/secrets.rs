@@ -52,8 +52,9 @@ pub struct Entry {
     pub hosts: Vec<String>,
     pub from: From,
     /// Where else the value goes toward the secret's own hosts, beside
-    /// headers: `body`, `query` (decision 2, item 2; integration w6's close).
-    /// Absent is headers only.
+    /// headers: one named field each, `body:<path>` or `query:<param>`
+    /// (decision 2, item 2; review W6C-S8, Tony's call of 13 Nov). Absent is
+    /// headers only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,11 +62,13 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Whether the value is also swapped into `place` (`body` or `query`).
-    pub fn placed(&self, place: &str) -> bool {
+    /// The fields the value is also swapped into (a load has checked each).
+    pub fn spots(&self) -> Vec<crate::place::Spot> {
         self.placement
-            .as_ref()
-            .is_some_and(|p| p.iter().any(|x| x == place))
+            .iter()
+            .flatten()
+            .filter_map(|x| crate::place::spot(x))
+            .collect()
     }
 }
 
@@ -176,13 +179,14 @@ impl File {
             }
             if let Some(p) = &e.placement {
                 let mut seen: Vec<&str> = Vec::new();
-                if p.is_empty() || p.len() > 2 {
-                    return Err(format!("secret {}: placement holds 1 or 2 places", e.id));
+                if p.is_empty() || p.len() > 8 {
+                    return Err(format!("secret {}: placement holds 1 to 8 fields", e.id));
                 }
                 for x in p {
-                    if !matches!(x.as_str(), "body" | "query") || seen.contains(&x.as_str()) {
+                    if crate::place::spot(x).is_none() || seen.contains(&x.as_str()) {
                         return Err(format!(
-                            "secret {}: placement {x:?} is not body or query, once each",
+                            "secret {}: placement {x:?} is not body:<path> or query:<param>, \
+                             once each",
                             e.id
                         ));
                     }

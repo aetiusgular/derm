@@ -23,6 +23,7 @@
 
 pub mod ca;
 pub mod http;
+pub mod place;
 pub mod proxy;
 mod scan;
 pub mod secrets;
@@ -157,14 +158,16 @@ pub struct Policy {
     /// hold a placeholder the agent printed. The value still blocks there.
     /// Empty by default; the chain sets it (Decisions in the lane doc).
     pub model_hosts: Vec<String>,
-    /// Secrets whose value is also swapped into a request's body toward
-    /// their own host (`secrets.json`'s `placement: ["body"]`). By default a
-    /// value goes into headers only (decision 2, item 2, Tony's call of 12
-    /// Nov: OpenShell and Google's agent credentials do the same).
-    pub swap_body: Vec<String>,
-    /// Secrets whose value is also swapped into a request's query (after
-    /// `?`) toward their own host (`placement: ["query"]`).
-    pub swap_query: Vec<String>,
+    /// Secrets whose value is also swapped into one field of a request's
+    /// body toward their own host, as `(id, path)` (`secrets.json`'s
+    /// `placement: ["body:<path>"]`). By default a value goes into headers
+    /// only (decision 2, item 2, Tony's call of 12 Nov: OpenShell and
+    /// Google's agent credentials do the same); a body field is named, and
+    /// written for its place (review W6C-S8, Tony's call of 13 Nov).
+    pub swap_body: Vec<(String, String)>,
+    /// Secrets whose value is also swapped into one query parameter toward
+    /// their own host, as `(id, param)` (`placement: ["query:<param>"]`).
+    pub swap_query: Vec<(String, String)>,
 }
 
 /// The whole outcome of [`decide_with`]: the verdict, the secrets swapped in,
@@ -299,40 +302,54 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
             }
         }
     }
-    // Swap for this host's own secrets: every header value; the body only for
-    // a secret whose placement names it, when the proxy can read the body and
-    // nothing signs it (both vendors skip an encoded body or one with a
-    // digest; srt `body-substitution.js:44-56`, Codex
-    // `secret_substitution.rs:37-60`); the query only for a secret whose
-    // placement names it (decision 2, item 2: NVIDIA OpenShell swaps
-    // `Authorization` only by default and Google's agent credentials only at
-    // the declared `injection_location`). A placeholder left in place is the
+    // Swap for this host's own secrets: every header value; a body field or a
+    // query parameter only where the secret's placement names it (decision
+    // 2, item 2: NVIDIA OpenShell swaps `Authorization` only by default and
+    // Google's agent credentials only at the declared `injection_location`),
+    // written for its place (review W6C-S8: percent-encoded in a query or a
+    // form, JSON-escaped in JSON; place.rs). A body is read only when the
+    // proxy can read it and nothing signs it: srt 0.0.82 skips an encoded
+    // body (`body-substitution.js:49-58`); Codex 0.167.2's list of signed
+    // bodies (`secret_substitution.rs`) is `signed` below (W6C-S13: that file
+    // was not in the review's local copy). A placeholder left in place is the
     // useless fake: authentication fails and nothing leaks.
-    let pairs_of = |only: Option<&[String]>| -> Vec<(&[u8], &[u8])> {
-        own.iter()
-            .filter(|s| only.is_none_or(|ids| ids.contains(&s.id)))
-            .map(|s| (s.placeholder.as_bytes(), s.value.as_bytes()))
+    let pairs: Vec<(&[u8], &[u8])> = own
+        .iter()
+        .map(|s| (s.placeholder.as_bytes(), s.value.as_bytes()))
+        .collect();
+    fn wants<'a>(
+        list: &'a [(String, String)],
+        own: &[&'a Secret],
+    ) -> Vec<(String, place::Want<'a>)> {
+        list.iter()
+            .filter_map(|(id, field)| {
+                let s = own.iter().find(|s| &s.id == id)?;
+                Some((
+                    id.clone(),
+                    place::Want {
+                        placeholder: &s.placeholder,
+                        value: &s.value,
+                        field,
+                    },
+                ))
+            })
             .collect()
-    };
-    let pairs = pairs_of(None);
-    let body_pairs = pairs_of(Some(&policy.swap_body));
-    let query_pairs = pairs_of(Some(&policy.swap_query));
+    }
     let mut injected: Vec<String> = Vec::new();
-    let note = |s: &[u8], ids: Option<&[String]>, list: &mut Vec<String>| {
-        for x in &own {
-            if ids.is_none_or(|ids| ids.contains(&x.id))
-                && memchr::memmem::find(s, x.placeholder.as_bytes()).is_some()
-                && !list.contains(&x.id)
-            {
-                list.push(x.id.clone());
-            }
+    let mark = |id: &str, list: &mut Vec<String>| {
+        if !list.iter().any(|x| x == id) {
+            list.push(id.to_string());
         }
     };
     let mut headers: Vec<(String, String)> = Vec::with_capacity(o.headers.len());
     for (k, v) in o.headers {
         match scan::swap(v.as_bytes(), &pairs) {
             Some(new) => {
-                note(v.as_bytes(), None, &mut injected);
+                for x in &own {
+                    if memchr::memmem::find(v.as_bytes(), x.placeholder.as_bytes()).is_some() {
+                        mark(&x.id, &mut injected);
+                    }
+                }
                 // The value came from a str and the placeholder is ASCII, so
                 // the result is UTF-8; a value with a line break would split
                 // the header, so such a value is refused at load.
@@ -342,9 +359,21 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
         }
     }
     let mut body = o.body.to_vec();
-    if !encoded && !signed(o.headers) && !body_pairs.is_empty() {
-        if let Some(new) = scan::swap(o.body, &body_pairs) {
-            note(o.body, Some(&policy.swap_body), &mut injected);
+    let body_wants = wants(&policy.swap_body, &own);
+    if !encoded && !signed(o.headers) && !body_wants.is_empty() && !o.body.is_empty() {
+        let ws: Vec<place::Want<'_>> = body_wants.iter().map(|(_, w)| *w).collect();
+        let swapped = match place::body_kind(o.headers) {
+            place::BodyKind::Json => place::swap_json(o.body, &ws),
+            place::BodyKind::Form => std::str::from_utf8(o.body).ok().and_then(|t| {
+                let (new, done) = place::swap_pairs(t, &ws);
+                new.map(|n| (n.into_bytes(), done))
+            }),
+            place::BodyKind::Other => None,
+        };
+        if let Some((new, done)) = swapped.filter(|(_, d)| !d.is_empty()) {
+            for i in done {
+                mark(&body_wants[i].0, &mut injected);
+            }
             body = new;
             for (k, v) in headers.iter_mut() {
                 if k.eq_ignore_ascii_case("content-length") {
@@ -353,15 +382,17 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
             }
         }
     }
-    // The query: only after the first `?`, so a placeholder in the path stays.
+    // The query: after the first `?`, one named parameter per secret, so a
+    // placeholder in the path stays.
     let mut target = None;
-    if let Some(q) = o.target.find('?').filter(|_| !query_pairs.is_empty()) {
-        let query = &o.target.as_bytes()[q + 1..];
-        if let Some(new) = scan::swap(query, &query_pairs) {
-            note(query, Some(&policy.swap_query), &mut injected);
-            let mut t = o.target.as_bytes()[..=q].to_vec();
-            t.extend_from_slice(&new);
-            target = String::from_utf8(t).ok();
+    let query_wants = wants(&policy.swap_query, &own);
+    if let Some(q) = o.target.find('?').filter(|_| !query_wants.is_empty()) {
+        let ws: Vec<place::Want<'_>> = query_wants.iter().map(|(_, w)| *w).collect();
+        if let (Some(new), done) = place::swap_pairs(&o.target[q + 1..], &ws) {
+            for i in done {
+                mark(&query_wants[i].0, &mut injected);
+            }
+            target = Some(format!("{}{new}", &o.target[..=q]));
         }
     }
     Decision {

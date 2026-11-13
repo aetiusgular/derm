@@ -71,9 +71,11 @@ fn add_parses_every_source_and_refuses_two() {
     assert!(parse_add(&s(&["gh", "--host"])).is_err());
 }
 
-/// Decision 2, item 2 (integration w6's close): `--in body` and `--in query`
-/// set the entry's placement, once each; anything else is refused; with no
-/// `--in` the value goes into headers only and the file holds no placement.
+/// Decision 2, item 2 (integration w6's close), with review W6C-S8 (Tony's
+/// call of 13 Nov): `--in body:<path>` and `--in query:<param>` name one
+/// field each and set the entry's placement, once each; bare `body` and
+/// `query` and anything else are refused; with no `--in` the value goes into
+/// headers only and the file holds no placement.
 #[test]
 fn add_takes_a_placement_for_the_body_or_the_query() {
     let e = parse_add(&s(&[
@@ -83,31 +85,43 @@ fn add_takes_a_placement_for_the_body_or_the_query() {
         "--file",
         "/x",
         "--in",
-        "body",
+        "body:auth.token",
         "--in",
-        "query",
+        "query:key",
     ]))
     .unwrap();
     assert_eq!(
         e.placement,
-        Some(vec!["body".to_string(), "query".to_string()])
+        Some(vec!["body:auth.token".to_string(), "query:key".to_string()])
     );
-    assert!(e.placed("body") && e.placed("query"));
+    assert_eq!(
+        e.spots(),
+        vec![
+            derm_egress::place::Spot::Body("auth.token".into()),
+            derm_egress::place::Spot::Query("key".into())
+        ]
+    );
     let plain = parse_add(&s(&["gh", "--host", "api.github.com", "--file", "/x"])).unwrap();
     assert_eq!(plain.placement, None);
-    assert!(!plain.placed("body"));
+    assert!(plain.spots().is_empty());
     assert!(!secrets::render(&secrets::File {
         version: 1,
         secrets: vec![plain]
     })
     .contains("placement"));
-    for bad in [["--in", "header"], ["--in", "url"]] {
+    for bad in [
+        ["--in", "header"],
+        ["--in", "url"],
+        ["--in", "body"],
+        ["--in", "query"],
+        ["--in", "body:a b"],
+    ] {
         let mut a = s(&["gh", "--host", "a.b", "--file", "/x"]);
         a.extend(s(&bad));
         assert!(parse_add(&a).is_err(), "{bad:?}");
     }
     assert!(parse_add(&s(&[
-        "gh", "--host", "a.b", "--file", "/x", "--in", "body", "--in", "body"
+        "gh", "--host", "a.b", "--file", "/x", "--in", "body:t", "--in", "body:t"
     ]))
     .is_err());
     // The file's own check refuses what the schema refuses.
@@ -116,6 +130,13 @@ fn add_takes_a_placement_for_the_body_or_the_query() {
     e.placement = Some(vec!["header".into()]);
     f.secrets.push(e);
     assert!(f.check().is_err());
+    for bad in ["body", "query", "query:a&b"] {
+        let mut f = secrets::File::default();
+        let mut e = entry("gh", From::File("/x".into()));
+        e.placement = Some(vec![bad.into()]);
+        f.secrets.push(e);
+        assert!(f.check().is_err(), "{bad}");
+    }
 }
 
 #[test]

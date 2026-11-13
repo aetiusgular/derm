@@ -116,7 +116,7 @@ Set only by `run/standard/`; the base's stub sets none, so a chat reads as befor
 
 Under sbx derm brokers no provider credential (case 218); `run.start`'s `tap.reason: sbx-credential` already says so.
 
-`run.start`'s `broker` (integration w6's close, lane 6C's R1): `{"ids": [...], "brokered": true, "port": <derm-egress's loopback port>, "caSha256": <derm's CA>}` for a brokered chat; `{"ids": [...], "brokered": false}` for a chat with secrets that is not brokered (sbx, or neither the Standard tier nor srt), whose env-sourced variables are left out of the harness's environment; absent with no secrets. A secret's value goes into a request's headers only unless its `placement` names the body or the query (decision 2); a foreign placeholder toward a model host passes in the body only.
+`run.start`'s `broker` (integration w6's close, lane 6C's R1): `{"ids": [...], "brokered": true, "port": <derm-egress's loopback port>, "caSha256": <derm's CA>}` for a brokered chat; `{"ids": [...], "brokered": false}` for a chat with secrets that is not brokered (sbx, or neither the Standard tier nor srt), whose env-sourced variables are left out of the harness's environment; absent with no secrets. A secret's value goes into a request's headers only unless its `placement` names a body field or a query parameter (decision 2; review W6C-S8); a foreign placeholder toward a model host passes in the body only.
 
 ### 6.4 The light tier's per-chat log (lane 6B; the line format for 6E)
 

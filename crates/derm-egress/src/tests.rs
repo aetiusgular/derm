@@ -62,8 +62,8 @@ fn with_no_secrets_a_request_is_forwarded_unchanged() {
 
 #[test]
 fn a_body_swap_recomputes_content_length_and_names_the_secret() {
-    // A body swap needs the secret's placement to name the body (decision 2,
-    // item 2, integration w6's close); this test sets it.
+    // A body swap needs the secret's placement to name the field (decision
+    // 2, item 2; review W6C-S8); this test sets it.
     let body = format!("{{\"token\":\"{PH_A}\"}}");
     let hd = h(&[
         ("content-type", "application/json"),
@@ -73,7 +73,7 @@ fn a_body_swap_recomputes_content_length_and_names_the_secret() {
         &out("api.github.com", "/x", &hd, body.as_bytes()),
         &two(),
         &Policy {
-            swap_body: vec!["github".into()],
+            swap_body: vec![("github".into(), "token".into())],
             ..Policy::default()
         },
     );
@@ -398,15 +398,18 @@ fn a_model_host_takes_a_foreign_placeholder_in_the_body_only() {
 }
 
 /// Item 2: the value goes into headers only, unless the secret's placement
-/// names the body or the query (`Policy::swap_body`, `swap_query`; `derm
-/// secret add --in body|query`). So a placeholder that reached a body toward
-/// its own host (a model key's placeholder in a transcript) leaves as the
-/// placeholder.
+/// names a body field or a query parameter (`Policy::swap_body`,
+/// `swap_query`; `derm secret add --in body:<path>|query:<param>`). So a
+/// placeholder that reached a body toward its own host (a model key's
+/// placeholder in a transcript) leaves as the placeholder.
 #[test]
 fn a_secret_is_swapped_into_headers_only_unless_its_placement_names_the_body_or_the_query() {
     let one = vec![two().remove(0)];
     let auth = format!("token {PH_A}");
-    let hd = h(&[("authorization", &auth)]);
+    let hd = h(&[
+        ("authorization", &auth),
+        ("content-type", "application/x-www-form-urlencoded"),
+    ]);
     let body = format!("token={PH_A}");
     let d = decide_with(
         &out("api.github.com", "/x", &hd, body.as_bytes()),
@@ -422,17 +425,17 @@ fn a_secret_is_swapped_into_headers_only_unless_its_placement_names_the_body_or_
     }
     assert_eq!(d.injected, vec!["github".to_string()]);
     assert!(d.target.is_none());
-    // With the body in its placement, the body is swapped too.
+    // With the field in its placement, the body is swapped too.
     let p = Policy {
-        swap_body: vec!["github".into()],
+        swap_body: vec![("github".into(), "token".into())],
         ..Policy::default()
     };
     match decide_with(&out("api.github.com", "/x", &hd, body.as_bytes()), &one, &p).verdict {
         Verdict::Forward { body: b, .. } => assert_eq!(b, format!("token={VAL_A}").as_bytes()),
         v => panic!("{v:?}"),
     }
-    // The query: swapped only after `?`, and only with the query in its
-    // placement; the path keeps a placeholder.
+    // The query: swapped only after `?`, and only into the parameter its
+    // placement names; the path keeps a placeholder.
     let target = format!("/{PH_A}/x?t={PH_A}&a=1");
     assert!(decide_with(
         &out("api.github.com", &target, &[], b""),
@@ -442,7 +445,7 @@ fn a_secret_is_swapped_into_headers_only_unless_its_placement_names_the_body_or_
     .target
     .is_none());
     let q = Policy {
-        swap_query: vec!["github".into()],
+        swap_query: vec![("github".into(), "t".into())],
         ..Policy::default()
     };
     let d = decide_with(&out("api.github.com", &target, &[], b""), &one, &q);
@@ -477,4 +480,114 @@ fn a_host_with_userinfo_or_a_space_is_no_host_of_the_tunnel() {
         .blocked,
         Some(Blocked::HostMismatch)
     );
+}
+
+/// Review W6C-S8 (note BD): a swapped value is written for its place. Before
+/// the fix the raw value went into the query and the body, and a value with
+/// `&`, `=`, `"` or `\\` changed the request's structure (run first: the
+/// query came out `t=a&b=c "d\\&a=1`).
+#[test]
+fn a_swapped_value_is_encoded_for_its_place() {
+    let mut s = two().remove(0);
+    s.value = "a&b=c \"d\\".into();
+    let one = vec![s];
+    let q = Policy {
+        swap_query: vec![("github".into(), "t".into())],
+        ..Policy::default()
+    };
+    let target = format!("/x?t={PH_A}&a=1");
+    let d = decide_with(&out("api.github.com", &target, &[], b""), &one, &q);
+    assert_eq!(d.target, Some("/x?t=a%26b%3Dc%20%22d%5C&a=1".to_string()));
+    let b = Policy {
+        swap_body: vec![("github".into(), "t".into())],
+        ..Policy::default()
+    };
+    let hd = h(&[("content-type", "application/json; charset=utf-8")]);
+    let body = format!("{{\"t\":\"{PH_A}\"}}");
+    match decide_with(&out("api.github.com", "/x", &hd, body.as_bytes()), &one, &b).verdict {
+        Verdict::Forward { body: got, .. } => {
+            assert_eq!(
+                String::from_utf8(got).unwrap(),
+                "{\"t\":\"a&b=c \\\"d\\\\\"}"
+            )
+        }
+        v => panic!("{v:?}"),
+    }
+    let hf = h(&[("content-type", "application/x-www-form-urlencoded")]);
+    let form = format!("t={PH_A}&n=1");
+    match decide_with(&out("api.github.com", "/x", &hf, form.as_bytes()), &one, &b).verdict {
+        Verdict::Forward { body: got, .. } => {
+            assert_eq!(got, b"t=a%26b%3Dc%20%22d%5C&n=1".to_vec())
+        }
+        v => panic!("{v:?}"),
+    }
+}
+
+/// Review W6C-S8: the value goes only into the field its placement names. A
+/// copy of the placeholder in any other field, in a key, in an escaped
+/// spelling, or in a body that is not JSON or a form leaves every copy as the
+/// fake: an agent cannot steer a token into a field the host publishes.
+#[test]
+fn a_placeholder_outside_the_named_field_is_never_swapped() {
+    let one = vec![two().remove(0)];
+    let b = Policy {
+        swap_body: vec![("github".into(), "auth.token".into())],
+        ..Policy::default()
+    };
+    let json = h(&[("content-type", "application/json")]);
+    let kept = |hd: &[(String, String)], body: String| {
+        let d = decide_with(&out("api.github.com", "/x", hd, body.as_bytes()), &one, &b);
+        match d.verdict {
+            Verdict::Forward { body: got, .. } => assert_eq!(got, body.as_bytes(), "{body}"),
+            v => panic!("{v:?}"),
+        }
+        assert!(d.injected.is_empty(), "{body}");
+    };
+    kept(
+        &json,
+        format!("{{\"auth\":{{\"token\":\"{PH_A}\"}},\"issue\":\"{PH_A}\"}}"),
+    );
+    kept(&json, format!("{{\"issue\":\"{PH_A}\"}}"));
+    kept(&json, format!("{{\"auth\":{{\"{PH_A}\":\"{PH_A}\"}}}}"));
+    let escaped = PH_A.replacen('d', "\\u0064", 1);
+    kept(&json, format!("{{\"auth\":{{\"token\":\"{escaped}\"}}}}"));
+    kept(&json, format!("{{\"auth\":{{\"token\":\"{PH_A}\"}}"));
+    kept(
+        &h(&[("content-type", "text/plain")]),
+        format!("auth.token={PH_A}"),
+    );
+    kept(&[], format!("{{\"auth\":{{\"token\":\"{PH_A}\"}}}}"));
+    // The named field alone is swapped, at a nested path and an index.
+    let p = Policy {
+        swap_body: vec![("github".into(), "items[1].k".into())],
+        ..Policy::default()
+    };
+    let body = format!("{{\"items\":[{{\"k\":\"x\"}},{{\"k\":\"Bearer {PH_A}\"}}]}}");
+    match decide_with(
+        &out("api.github.com", "/x", &json, body.as_bytes()),
+        &one,
+        &p,
+    )
+    .verdict
+    {
+        Verdict::Forward { body: got, .. } => assert_eq!(
+            String::from_utf8(got).unwrap(),
+            format!("{{\"items\":[{{\"k\":\"x\"}},{{\"k\":\"Bearer {VAL_A}\"}}]}}")
+        ),
+        v => panic!("{v:?}"),
+    }
+    // A query: another parameter, or a placeholder inside a longer value,
+    // leaves it.
+    let q = Policy {
+        swap_query: vec![("github".into(), "key".into())],
+        ..Policy::default()
+    };
+    for target in [
+        format!("/x?key={PH_A}&note={PH_A}"),
+        format!("/x?note={PH_A}"),
+        format!("/x?key=pre{PH_A}"),
+    ] {
+        let d = decide_with(&out("api.github.com", &target, &[], b""), &one, &q);
+        assert!(d.target.is_none(), "{target}");
+    }
 }

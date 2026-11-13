@@ -3,7 +3,7 @@
 //! local CA it terminates TLS with.
 //!
 //! ```text
-//! derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body|query]... [--note <text>]
+//! derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body:<path>|query:<param>]... [--note <text>]
 //! derm secret list
 //! derm secret check
 //! derm secret remove <id>
@@ -30,7 +30,7 @@ use derm_egress::ca::{self, Ca};
 use derm_egress::secrets::{self, Entry, From};
 
 pub const USAGE: &str = "usage: derm secret <add|list|check|remove|ca> ...
-  derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body|query]... [--note <text>]
+  derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body:<path>|query:<param>]... [--note <text>]
   derm secret list
   derm secret check
   derm secret remove <id>
@@ -147,9 +147,10 @@ fn file_path(ctx: &Ctx<'_>) -> PathBuf {
     secrets::path_for(&ctx.home)
 }
 
-/// `add <id> --host <h>... (--env|--file|--keychain) [--in body|query]...
-/// [--note]`. `--in` puts the value into a request's body or query too,
-/// beside its headers (decision 2, integration w6's close).
+/// `add <id> --host <h>... (--env|--file|--keychain) [--in
+/// body:<path>|query:<param>]... [--note]`. `--in` puts the value into one
+/// named body field or query parameter too, beside its headers (decision 2,
+/// integration w6's close; review W6C-S8, Tony's call of 13 Nov).
 pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
     let id = args
         .first()
@@ -181,10 +182,15 @@ pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
             "--file" => set(&mut from, From::File(val))?,
             "--keychain" => set(&mut from, From::Keychain(val))?,
             "--note" => note = Some(val),
-            "--in" if matches!(val.as_str(), "body" | "query") && !placement.contains(&val) => {
+            "--in" if derm_egress::place::spot(&val).is_some() && !placement.contains(&val) => {
                 placement.push(val)
             }
-            "--in" => return Err(format!("--in takes body or query, once each, not {val:?}")),
+            "--in" => {
+                return Err(format!(
+                    "--in names one field, once each: body:<path> (a JSON path such as \
+                     auth.token, or a form field) or query:<param>; not {val:?}"
+                ))
+            }
             other => return Err(format!("unknown flag {other}")),
         }
         i += 2;
@@ -228,11 +234,9 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
         ctx.out,
         "the agent sees a placeholder in {}; the value goes into a request's headers{}",
         secrets::variable(&e),
-        match (e.placed("body"), e.placed("query")) {
-            (true, true) => ", body and query",
-            (true, false) => " and body",
-            (false, true) => " and query",
-            (false, false) => " only",
+        match e.placement.as_deref().unwrap_or_default() {
+            [] => " only".to_string(),
+            fields => format!(" and {}", fields.join(", ")),
         }
     );
     if matches!(e.from, From::Env(_)) {

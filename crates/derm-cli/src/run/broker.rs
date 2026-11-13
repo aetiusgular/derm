@@ -186,21 +186,25 @@ pub fn wire(
 /// derm-egress's rules for the chat: the tap's model hosts (decision 2's
 /// body-only pass) and each secret's placement (decision 2, item 2).
 pub fn policy_for(entries: &[Entry]) -> Policy {
-    let placed = |place: &str| -> Vec<String> {
-        entries
-            .iter()
-            .filter(|e| e.placed(place))
-            .map(|e| e.id.clone())
-            .collect()
-    };
+    use derm_egress::place::Spot;
+    let mut swap_body = Vec::new();
+    let mut swap_query = Vec::new();
+    for e in entries {
+        for s in e.spots() {
+            match s {
+                Spot::Body(p) => swap_body.push((e.id.clone(), p)),
+                Spot::Query(q) => swap_query.push((e.id.clone(), q)),
+            }
+        }
+    }
     Policy {
         allow: None,
         model_hosts: derm_tap::upstream::builtin()
             .values()
             .map(|u| u.host())
             .collect(),
-        swap_body: placed("body"),
-        swap_query: placed("query"),
+        swap_body,
+        swap_query,
     }
 }
 
