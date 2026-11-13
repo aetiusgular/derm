@@ -386,9 +386,12 @@ function fedCommands(text: string, base: Feed): Array<[string[], Feed]> {
 /** Interpreters that run a program from their input when the line gives none. */
 function isInterpreter(base: string): boolean {
   // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
-  if (isPython(base)) return true;
-  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "pwsh", "powershell"].includes(base);
+  if (isPython(base) || isPwsh(base)) return true;
+  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "powershell"].includes(base);
 }
+
+/** pwsh by name: `pwsh`, and the channel builds `pwsh-preview` and `pwsh-lts` (review W6F-8). */
+const isPwsh = (base: string): boolean => base === "pwsh" || base.startsWith("pwsh-");
 
 const isPython = (base: string): boolean => base.startsWith("python") || base.startsWith("pypy");
 
@@ -414,8 +417,8 @@ function isStdinPath(w: string): boolean {
   return j === "dev/stdin" || j === "dev/fd/0" || j === "proc/self/fd/0" || j === "proc/thread-self/fd/0";
 }
 
-/** What a PowerShell switch does with the words after it. */
-type Pwsh = "flag" | "value" | "command" | "file";
+/** What a PowerShell switch does with the words after it; `serve` is a server mode, read as fed (W6F-5). */
+type Pwsh = "flag" | "value" | "command" | "file" | "serve";
 
 /**
  * pwsh's switches in the order its parser tries them, each with the shortest
@@ -433,11 +436,11 @@ const PWSH: ReadonlyArray<readonly [string, string, Pwsh]> = [
   ["noprofile", "nop", "flag"],
   ["nologo", "nol", "flag"],
   ["noninteractive", "noni", "flag"],
-  ["socketservermode", "so", "flag"],
-  ["v2socketservermode", "v2so", "flag"],
-  ["servermode", "s", "flag"],
-  ["namedpipeservermode", "nam", "flag"],
-  ["sshservermode", "sshs", "flag"],
+  ["socketservermode", "so", "serve"],
+  ["v2socketservermode", "v2so", "serve"],
+  ["servermode", "s", "serve"],
+  ["namedpipeservermode", "nam", "serve"],
+  ["sshservermode", "sshs", "serve"],
   ["noprofileloadtime", "noprofileloadtime", "flag"],
   ["interactive", "i", "flag"],
   ["configurationfile", "configurationfile", "value"],
@@ -469,7 +472,7 @@ const PWSH: ReadonlyArray<readonly [string, string, Pwsh]> = [
   ["utctimestamp", "utc", "value"],
 ];
 
-/** Windows PowerShell 5.1's switches (`about_PowerShell_exe`; prefix rules inferred, read so more reads as fed). */
+/** Windows PowerShell 5.1's switches (`about_PowerShell_exe`; prefix rules inferred, read so more reads as fed; its hidden `-servermode` before `-sta`, and a switch it does not list is skipped as a flag, W6F-4). */
 const POWERSHELL: ReadonlyArray<readonly [string, string, Pwsh]> = [
   ["command", "c", "command"],
   ["encodedcommand", "e", "command"],
@@ -487,6 +490,7 @@ const POWERSHELL: ReadonlyArray<readonly [string, string, Pwsh]> = [
   ["ep", "ep", "value"],
   ["nologo", "n", "flag"],
   ["noexit", "n", "flag"],
+  ["servermode", "s", "serve"],
   ["sta", "s", "flag"],
   ["mta", "m", "flag"],
   ["noprofile", "n", "flag"],
@@ -496,7 +500,8 @@ const POWERSHELL: ReadonlyArray<readonly [string, string, Pwsh]> = [
 /**
  * Does pwsh (or Windows PowerShell) read its program from its input? A switch
  * starts with a dash (`-`, U+2013, U+2014 or U+2015) or `/` on every system,
- * a doubled first character is dropped, and the first word that is no switch,
+ * a doubled dash is dropped (derm drops a doubled `/` too, which pwsh does
+ * not, and which only reads more as fed), and the first word that is no switch,
  * or a switch it does not know, is the script (`GetSwitchKey`, `:710-738`;
  * `IsDash`, `CharTraits.cs:255-261`). `-command -` and `-file -` read the
  * input, and so does a line with neither.
@@ -511,8 +516,13 @@ function pwshReadsInput(program: string, args: readonly string[]): boolean {
     let key = w.slice(1);
     if (key.startsWith(first)) key = key.slice(1);
     const hit = table.find(([full, shortest]) => key.length >= shortest.length && full.startsWith(key));
-    if (hit === undefined) return isStdinPath(w);
+    if (hit === undefined) {
+      if (program !== "powershell") return isStdinPath(w);
+      i += 1;
+      continue;
+    }
     const kind = hit[2];
+    if (kind === "serve") return true;
     if (kind === "flag") i += 1;
     else if (kind === "value") i += 2;
     else {
@@ -546,7 +556,7 @@ function hasCFlag(args: readonly string[]): boolean {
  * that takes none, it is read as valued, which only reads more as fed.
  */
 function readsItsInput(program: string, args: readonly string[]): boolean {
-  if (program === "pwsh" || program === "powershell") return pwshReadsInput(program, args);
+  if (isPwsh(program) || program === "powershell") return pwshReadsInput(program, args);
   const shell = SHELLS.has(program);
   const source = program === "source" || program === ".";
   let programLetters = "";

@@ -465,10 +465,17 @@ fn fed_commands(text: &str, base: Feed) -> Vec<(Vec<String>, Feed)> {
 fn interpreter(base: &str) -> bool {
     // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
     python(base)
+        || pwsh(base)
         || matches!(
             base,
-            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "pwsh" | "powershell"
+            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "powershell"
         )
+}
+
+/// pwsh by name: `pwsh`, and the channel builds that install beside it as
+/// `pwsh-preview` and `pwsh-lts` (review W6F-8).
+fn pwsh(base: &str) -> bool {
+    base == "pwsh" || base.starts_with("pwsh-")
 }
 
 /// A Python by name: `python*` and `pypy*`.
@@ -526,6 +533,9 @@ enum Pwsh {
     Command,
     /// `-file`: the script is the next word, or the input for `-`.
     File,
+    /// A server mode (`-servermode`, `-sshservermode` and the rest): pwsh
+    /// runs the commands a client sends it, so it is read as fed (W6F-5).
+    Serve,
 }
 
 /// pwsh's switches in the order its parser tries them, each with the
@@ -544,11 +554,11 @@ const PWSH: &[(&str, &str, Pwsh)] = &[
     ("noprofile", "nop", Pwsh::Flag),
     ("nologo", "nol", Pwsh::Flag),
     ("noninteractive", "noni", Pwsh::Flag),
-    ("socketservermode", "so", Pwsh::Flag),
-    ("v2socketservermode", "v2so", Pwsh::Flag),
-    ("servermode", "s", Pwsh::Flag),
-    ("namedpipeservermode", "nam", Pwsh::Flag),
-    ("sshservermode", "sshs", Pwsh::Flag),
+    ("socketservermode", "so", Pwsh::Serve),
+    ("v2socketservermode", "v2so", Pwsh::Serve),
+    ("servermode", "s", Pwsh::Serve),
+    ("namedpipeservermode", "nam", Pwsh::Serve),
+    ("sshservermode", "sshs", Pwsh::Serve),
     ("noprofileloadtime", "noprofileloadtime", Pwsh::Flag),
     ("interactive", "i", Pwsh::Flag),
     ("configurationfile", "configurationfile", Pwsh::Value),
@@ -586,7 +596,9 @@ const PWSH: &[(&str, &str, Pwsh)] = &[
 
 /// Windows PowerShell 5.1's switches (`about_PowerShell_exe`'s syntax; its
 /// source is not public, so how it takes a prefix is inferred). Read so that
-/// more reads as fed: the program kinds first, then the rest, any prefix.
+/// more reads as fed: the program kinds first, then the rest, any prefix;
+/// its hidden `-servermode` before `-sta`, and a switch it does not list is
+/// skipped as a flag (review W6F-4).
 const POWERSHELL: &[(&str, &str, Pwsh)] = &[
     ("command", "c", Pwsh::Command),
     ("encodedcommand", "e", Pwsh::Command),
@@ -604,6 +616,7 @@ const POWERSHELL: &[(&str, &str, Pwsh)] = &[
     ("ep", "ep", Pwsh::Value),
     ("nologo", "n", Pwsh::Flag),
     ("noexit", "n", Pwsh::Flag),
+    ("servermode", "s", Pwsh::Serve),
     ("sta", "s", Pwsh::Flag),
     ("mta", "m", Pwsh::Flag),
     ("noprofile", "n", Pwsh::Flag),
@@ -612,7 +625,8 @@ const POWERSHELL: &[(&str, &str, Pwsh)] = &[
 
 /// Does pwsh (or Windows PowerShell) read its program from its input? A
 /// switch starts with a dash (`-`, U+2013, U+2014 or U+2015) or `/`, on
-/// every system, and a doubled first character is dropped (`--command`);
+/// every system, and a doubled dash is dropped (`--command`; derm drops a
+/// doubled `/` too, which pwsh does not, and which only reads more as fed);
 /// the first word that is no switch, or a switch it does not know, is the
 /// script (PowerShell `v7.6.10` `GetSwitchKey`, `:710-738`; `IsDash`,
 /// `CharTraits.cs:255-261`). `-command -` and `-file -` read the input
@@ -644,6 +658,8 @@ fn pwsh_reads_input(program: &str, args: &[String]) -> bool {
             Some(Pwsh::Command) | Some(Pwsh::File) => {
                 return args.get(i + 1).is_some_and(|v| stdin_path(v.trim()));
             }
+            Some(Pwsh::Serve) => return true,
+            None if program == "powershell" => i += 1,
             None => return stdin_path(w),
         }
     }
@@ -657,7 +673,7 @@ fn pwsh_reads_input(program: &str, args: &[String]) -> bool {
 /// `-E` reads as `-e` and `-X` as `-x`; where that joins a valued flag and
 /// one that takes none, it is read as valued, which only reads more as fed.
 fn reads_its_input(program: &str, args: &[String]) -> bool {
-    if matches!(program, "pwsh" | "powershell") {
+    if pwsh(program) || program == "powershell" {
         return pwsh_reads_input(program, args);
     }
     let shell = SHELLS.contains(&program);
