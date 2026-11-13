@@ -172,6 +172,40 @@ fn workspace_write_is_quiet_inside_and_strict_at_the_edges() {
     assert_eq!(tool_action(&p, "webfetch").as_deref(), Some("ask"));
 }
 
+/// Case 147: an agent reconfiguring derm. `derm init` (wave 6, lane 6B)
+/// registers gates and writes a policy as `derm setup` does, so every preset
+/// denies it beside `derm setup` (lane 6B's request 7, wave 6 phase 1 merge).
+#[test]
+fn every_preset_denies_derm_init_beside_derm_setup() {
+    use crate::gate::core::{decide_call, GateCall, LoadedPolicy};
+    use derm_core::policy::Action;
+    for name in ["workspace-write", "strict", "read-only"] {
+        let p = presets::find(name).unwrap().policy;
+        for w in [&["derm", "setup"][..], &["derm", "init"]] {
+            assert_eq!(
+                command_action(&p, w).as_deref(),
+                Some("deny"),
+                "{name}: {w:?}"
+            );
+        }
+        // Through the gate itself, with a flag after the rule's words.
+        let loaded = LoadedPolicy {
+            policy: derm_core::policy::parse(&p.to_string()).unwrap(),
+            problem: None,
+        };
+        for cmd in ["derm init", "derm init --dry-run", "derm setup"] {
+            let call = GateCall {
+                harness: "claude-code".into(),
+                tool: "Bash".into(),
+                tool_input: serde_json::json!({"command": cmd}),
+                ..GateCall::default()
+            };
+            let a = decide_call(&loaded, &call, &crate::gate::daemon::Env::of(&[]));
+            assert_eq!(a.action, Action::Deny, "{name}: {cmd}: {}", a.reason);
+        }
+    }
+}
+
 #[test]
 fn strict_denies_where_the_plan_says_strict_and_read_only_asks_for_writes() {
     let s = presets::find("strict").unwrap().policy;

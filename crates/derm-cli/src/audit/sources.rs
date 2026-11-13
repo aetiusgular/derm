@@ -90,38 +90,12 @@ pub fn light_dir() -> Option<PathBuf> {
 /// and `_` in front of a cleaned id that is empty or starts with `.`. On
 /// Windows also as lane 6B's `gate/locallog/name.rs` (on `wip/6B-light`,
 /// read 12 Nov): `:` becomes `_` and a device name (CON, PRN, AUX, NUL,
-/// COM0-9, LPT0-9) gets `_` in front. Two copies of one rule: integration
-/// keeps one (a request in lane 6E's status doc).
+/// COM0-9, LPT0-9) gets `_` in front. The rule is the writer's
+/// (`gate::locallog::file_name`, lane 6B), called here so the two cannot
+/// drift (lane 6E's request 2, wave 6 phase 1 merge).
 pub fn light_name(chat: &str) -> String {
-    let windows = cfg!(windows);
-    let mut s: String = chat
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') || (c == ':' && !windows) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(128)
-        .collect();
-    if s.is_empty() || s.starts_with('.') || (windows && device_name(&s)) {
-        s.insert(0, '_');
-    }
-    s
-}
-
-fn device_name(s: &str) -> bool {
-    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-    match stem.as_str() {
-        "CON" | "PRN" | "AUX" | "NUL" => true,
-        _ => {
-            let b = stem.as_bytes();
-            b.len() == 4
-                && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                && b[3].is_ascii_digit()
-        }
-    }
+    let file = crate::gate::locallog::file_name(chat);
+    file.strip_suffix(".jsonl").unwrap_or(&file).to_string()
 }
 
 /// The light-tier file of `chat`.

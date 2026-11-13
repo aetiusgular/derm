@@ -449,7 +449,13 @@ fn the_standard_tier_gives_claude_code_its_block_by_settings_flag() {
 }
 
 /// Owner: lane 6A (`contracts/sandbox.md` section 3). Codex's profile goes
-/// in by `-c` pairs before its subcommand (case 184).
+/// in by `-c` pairs at derm's own `-c` level: right after a leading session
+/// subcommand, beside the tap's and the export's pairs (`run/args.rs`
+/// `codex_config_split`), so every flag derm adds sits on one side of it
+/// (case 184). Corrected at the wave 6 phase 1 merge (lane 6A's request
+/// 6A-3): the base asked for before `exec`, which on Codex 0.163.0 would let
+/// clap drop the root's copy when the tap's pairs follow `exec`; Codex
+/// 0.167.2 keeps both sides (lane 6A, run).
 #[test]
 fn the_standard_tier_gives_codex_its_profile_by_config_overrides() {
     let dir = scratch("std-codex");
@@ -479,12 +485,20 @@ fn the_standard_tier_gives_codex_its_profile_by_config_overrides() {
         .find_map(|l| l.strip_prefix("argv: "))
         .unwrap_or_default();
     let words: Vec<String> = serde_json::from_str(argv).unwrap_or_default();
-    let exec = words.iter().position(|w| w == "exec").unwrap_or(0);
-    assert!(
-        words[..exec]
-            .iter()
-            .any(|w| w == "default_permissions=\"derm\""),
+    let exec = words
+        .iter()
+        .position(|w| w == "exec")
+        .expect("the argv holds exec");
+    assert_eq!(
+        words.get(exec + 1..exec + 3),
+        Some(&["-c".to_string(), "default_permissions=\"derm\"".to_string()][..]),
         "{all}"
+    );
+    assert!(
+        !words[..exec]
+            .iter()
+            .any(|w| w.contains("default_permissions")),
+        "nothing of derm's before exec: {all}"
     );
 }
 

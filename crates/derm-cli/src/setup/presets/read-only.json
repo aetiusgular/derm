@@ -1397,6 +1397,14 @@
         "tool": "bash",
         "command": [
           "derm",
+          "init"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
           "watch",
           "approve"
         ],

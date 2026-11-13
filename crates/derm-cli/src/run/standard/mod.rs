@@ -37,12 +37,8 @@ use serde_json::{json, Value};
 use super::args::{Boundary, Tier};
 use super::plan::Plan;
 
-// The writers live in `connect/sandbox/` (lane 6A's too), which `connect`
-// keeps private; until integration makes it `pub(crate)` (request 6A-1) the
-// same file is compiled here as well, and this allow goes with it.
-#[allow(dead_code, clippy::duplicate_mod)]
-#[path = "../../connect/sandbox/mod.rs"]
-mod writers;
+// The writers live in `connect/sandbox/` (lane 6A's too).
+use crate::connect::sandbox as writers;
 
 use writers::Context;
 

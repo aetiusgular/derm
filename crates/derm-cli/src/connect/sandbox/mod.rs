@@ -190,6 +190,7 @@ pub fn pin(text: &str) -> String {
 
 /// The settings for `agent` as `derm connect` would print them, or `None`
 /// where derm writes no Standard tier for it.
+#[allow(dead_code)] // for `derm doctor` and `derm connect` (lane 6A request 6A-8, not built yet)
 pub(crate) fn fragment(agent: &str, c: &Context) -> Option<Value> {
     match agent {
         "claude-code" => Some(claude_block(c)),

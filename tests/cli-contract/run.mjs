@@ -38,7 +38,7 @@ import { dermCodexChecks } from "./checks/dermCodex.mjs";
 async function laneChecks() {
   const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "checks");
   const out = [];
-  for (const lane of readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && /^(?:[A-Z]|5b[A-F])$/.test(d.name)).map((d) => d.name).sort()) {
+  for (const lane of readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && /^(?:[A-Z]|5b[A-F]|6[A-F])$/.test(d.name)).map((d) => d.name).sort()) {
     for (const file of readdirSync(path.join(dir, lane)).filter((f) => f.endsWith(".mjs")).sort()) {
       const mod = await import(pathToFileURL(path.join(dir, lane, file)).href);
       if (!Array.isArray(mod.checks)) throw new Error(`checks/${lane}/${file} exports no checks array`);
