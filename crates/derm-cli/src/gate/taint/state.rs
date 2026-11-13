@@ -399,6 +399,7 @@ mod tests {
     use super::*;
     use derm_tap::results::state::{MAX_HOSTS, MAX_WRITTEN};
 
+    #[cfg(unix)]
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("dtaint-s-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
