@@ -387,7 +387,7 @@ function fedCommands(text: string, base: Feed): Array<[string[], Feed]> {
 function isInterpreter(base: string): boolean {
   // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
   if (isPython(base)) return true;
-  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "pwsh"].includes(base);
+  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "pwsh", "powershell"].includes(base);
 }
 
 const isPython = (base: string): boolean => base.startsWith("python") || base.startsWith("pypy");
@@ -414,8 +414,114 @@ function isStdinPath(w: string): boolean {
   return j === "dev/stdin" || j === "dev/fd/0" || j === "proc/self/fd/0" || j === "proc/thread-self/fd/0";
 }
 
-/** A pwsh parameter by any prefix pwsh accepts: `-c`, `-com`, `-command`. */
-const pwshParam = (word: string, full: string, shortest: number): boolean => word.length >= shortest && full.startsWith(word);
+/** What a PowerShell switch does with the words after it. */
+type Pwsh = "flag" | "value" | "command" | "file";
+
+/**
+ * pwsh's switches in the order its parser tries them, each with the shortest
+ * form it takes (PowerShell `v7.6.10`, `16ac95d`,
+ * `CommandLineParameterParser.cs:914-1290`; `MatchSwitch` at `:798-806`).
+ * `-version` and `-help` are read as flags, which only reads more as fed
+ * (review W6C-R4, note BD).
+ */
+const PWSH: ReadonlyArray<readonly [string, string, Pwsh]> = [
+  ["version", "v", "flag"],
+  ["help", "h", "flag"],
+  ["?", "?", "flag"],
+  ["login", "l", "flag"],
+  ["noexit", "noe", "flag"],
+  ["noprofile", "nop", "flag"],
+  ["nologo", "nol", "flag"],
+  ["noninteractive", "noni", "flag"],
+  ["socketservermode", "so", "flag"],
+  ["v2socketservermode", "v2so", "flag"],
+  ["servermode", "s", "flag"],
+  ["namedpipeservermode", "nam", "flag"],
+  ["sshservermode", "sshs", "flag"],
+  ["noprofileloadtime", "noprofileloadtime", "flag"],
+  ["interactive", "i", "flag"],
+  ["configurationfile", "configurationfile", "value"],
+  ["configurationname", "config", "value"],
+  ["custompipename", "cus", "value"],
+  ["commandwithargs", "commandwithargs", "command"],
+  ["cwa", "cwa", "command"],
+  ["command", "c", "command"],
+  ["windowstyle", "w", "value"],
+  ["file", "f", "file"],
+  ["isswait", "isswait", "flag"],
+  ["outputformat", "o", "value"],
+  ["of", "o", "value"],
+  ["inputformat", "inp", "value"],
+  ["if", "if", "value"],
+  ["executionpolicy", "ex", "value"],
+  ["ep", "ep", "value"],
+  ["encodedcommand", "e", "command"],
+  ["ec", "e", "command"],
+  ["encodedarguments", "encodeda", "value"],
+  ["ea", "ea", "value"],
+  ["settingsfile", "settings", "value"],
+  ["sta", "sta", "flag"],
+  ["mta", "mta", "flag"],
+  ["workingdirectory", "wo", "value"],
+  ["wd", "wd", "value"],
+  ["removeworkingdirectorytrailingcharacter", "removeworkingdirectorytrailingcharacter", "flag"],
+  ["token", "to", "value"],
+  ["utctimestamp", "utc", "value"],
+];
+
+/** Windows PowerShell 5.1's switches (`about_PowerShell_exe`; prefix rules inferred, read so more reads as fed). */
+const POWERSHELL: ReadonlyArray<readonly [string, string, Pwsh]> = [
+  ["command", "c", "command"],
+  ["encodedcommand", "e", "command"],
+  ["ec", "ec", "command"],
+  ["file", "f", "file"],
+  ["psconsolefile", "p", "value"],
+  ["version", "v", "value"],
+  ["inputformat", "i", "value"],
+  ["outputformat", "o", "value"],
+  ["windowstyle", "w", "value"],
+  ["encodedarguments", "e", "value"],
+  ["ea", "ea", "value"],
+  ["configurationname", "c", "value"],
+  ["executionpolicy", "e", "value"],
+  ["ep", "ep", "value"],
+  ["nologo", "n", "flag"],
+  ["noexit", "n", "flag"],
+  ["sta", "s", "flag"],
+  ["mta", "m", "flag"],
+  ["noprofile", "n", "flag"],
+  ["noninteractive", "n", "flag"],
+];
+
+/**
+ * Does pwsh (or Windows PowerShell) read its program from its input? A switch
+ * starts with a dash (`-`, U+2013, U+2014 or U+2015) or `/` on every system,
+ * a doubled first character is dropped, and the first word that is no switch,
+ * or a switch it does not know, is the script (`GetSwitchKey`, `:710-738`;
+ * `IsDash`, `CharTraits.cs:255-261`). `-command -` and `-file -` read the
+ * input, and so does a line with neither.
+ */
+function pwshReadsInput(program: string, args: readonly string[]): boolean {
+  const table = program === "powershell" ? POWERSHELL : PWSH;
+  const dash = (c: string): boolean => c === "-" || c === "\u2013" || c === "\u2014" || c === "\u2015";
+  for (let i = 0; i < args.length; ) {
+    const w = (args[i] as string).trim();
+    const first = w[0];
+    if (first === undefined || !(dash(first) || first === "/")) return isStdinPath(w);
+    let key = w.slice(1);
+    if (key.startsWith(first)) key = key.slice(1);
+    const hit = table.find(([full, shortest]) => key.length >= shortest.length && full.startsWith(key));
+    if (hit === undefined) return isStdinPath(w);
+    const kind = hit[2];
+    if (kind === "flag") i += 1;
+    else if (kind === "value") i += 2;
+    else {
+      const value = args[i + 1];
+      return value !== undefined && isStdinPath(value.trim());
+    }
+  }
+  return true;
+}
 
 /** Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)? The values of `-o`, `+o`, `--rcfile` and `--init-file` are skipped (W6C-R3). */
 function hasCFlag(args: readonly string[]): boolean {
@@ -440,6 +546,7 @@ function hasCFlag(args: readonly string[]): boolean {
  * that takes none, it is read as valued, which only reads more as fed.
  */
 function readsItsInput(program: string, args: readonly string[]): boolean {
+  if (program === "pwsh" || program === "powershell") return pwshReadsInput(program, args);
   const shell = SHELLS.has(program);
   const source = program === "source" || program === ".";
   let programLetters = "";
@@ -469,10 +576,6 @@ function readsItsInput(program: string, args: readonly string[]): boolean {
   } else if (program === "php") {
     programLetters = "rf";
     valuedLetters = "cdz";
-  } else if (program === "pwsh") {
-    programLetters = "cfe";
-    programLong = ["-command", "-file", "-encodedcommand", "-ec"];
-    valuedLong = ["-executionpolicy", "-ep", "-ex", "-workingdirectory", "-wd", "-configurationname", "-settingsfile"];
   }
   const operands: string[] = [];
   for (let i = 0; i < args.length; ) {
@@ -488,29 +591,7 @@ function readsItsInput(program: string, args: readonly string[]): boolean {
       continue;
     }
     const name = w.split("=")[0] as string;
-    // pwsh takes one-dash long names by prefix and has no letter bundles (W6C-S2).
-    if (program === "pwsh" && w.startsWith("-") && !w.startsWith("--")) {
-      const command = pwshParam(name, "-command", 2) || pwshParam(name, "-file", 2) || pwshParam(name, "-encodedcommand", 2) || name === "-ec";
-      if (command) {
-        const value = args[i + 1];
-        return value !== undefined && isStdinPath(value);
-      }
-      const valued =
-        pwshParam(name, "-executionpolicy", 3) ||
-        pwshParam(name, "-workingdirectory", 3) ||
-        pwshParam(name, "-configurationname", 4) ||
-        pwshParam(name, "-settingsfile", 3) ||
-        name === "-ep" ||
-        name === "-ex" ||
-        name === "-wd";
-      i += valued ? 2 : 1;
-      continue;
-    }
-    if (programLong.includes(name)) {
-      // pwsh's `-command -` reads the command from its input.
-      const value = w.includes("=") ? w.slice(w.indexOf("=") + 1) : args[i + 1];
-      return program === "pwsh" && value !== undefined && isStdinPath(value);
-    }
+    if (programLong.includes(name)) return false;
     if (valuedLong.includes(name)) {
       i += w.includes("=") ? 1 : 2;
       continue;

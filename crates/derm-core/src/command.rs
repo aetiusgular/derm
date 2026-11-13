@@ -467,7 +467,7 @@ fn interpreter(base: &str) -> bool {
     python(base)
         || matches!(
             base,
-            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "pwsh"
+            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "pwsh" | "powershell"
         )
 }
 
@@ -516,9 +516,138 @@ fn stdin_path(w: &str) -> bool {
     )
 }
 
-/// A pwsh parameter by any prefix pwsh accepts: `-c`, `-com`, `-command`.
-fn pwsh_param(word: &str, full: &str, shortest: usize) -> bool {
-    word.len() >= shortest && full.starts_with(word)
+/// What a PowerShell switch does with the words after it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pwsh {
+    Flag,
+    Value,
+    /// `-command`, `-commandwithargs`, `-encodedcommand`: the program is the
+    /// next word, or the input when that word is `-`.
+    Command,
+    /// `-file`: the script is the next word, or the input for `-`.
+    File,
+}
+
+/// pwsh's switches in the order its parser tries them, each with the
+/// shortest form it takes (PowerShell `v7.6.10`, `16ac95d`,
+/// `CommandLineParameterParser.cs:914-1290`; `MatchSwitch` at `:798-806`
+/// takes a word at least the shortest form's length that the full name
+/// starts with, and the first match wins). `-version` stops the parse and
+/// `-help` aborts the start; both are read as flags here, which only reads
+/// more as fed (review W6C-R4, note BD).
+const PWSH: &[(&str, &str, Pwsh)] = &[
+    ("version", "v", Pwsh::Flag),
+    ("help", "h", Pwsh::Flag),
+    ("?", "?", Pwsh::Flag),
+    ("login", "l", Pwsh::Flag),
+    ("noexit", "noe", Pwsh::Flag),
+    ("noprofile", "nop", Pwsh::Flag),
+    ("nologo", "nol", Pwsh::Flag),
+    ("noninteractive", "noni", Pwsh::Flag),
+    ("socketservermode", "so", Pwsh::Flag),
+    ("v2socketservermode", "v2so", Pwsh::Flag),
+    ("servermode", "s", Pwsh::Flag),
+    ("namedpipeservermode", "nam", Pwsh::Flag),
+    ("sshservermode", "sshs", Pwsh::Flag),
+    ("noprofileloadtime", "noprofileloadtime", Pwsh::Flag),
+    ("interactive", "i", Pwsh::Flag),
+    ("configurationfile", "configurationfile", Pwsh::Value),
+    ("configurationname", "config", Pwsh::Value),
+    ("custompipename", "cus", Pwsh::Value),
+    ("commandwithargs", "commandwithargs", Pwsh::Command),
+    ("cwa", "cwa", Pwsh::Command),
+    ("command", "c", Pwsh::Command),
+    ("windowstyle", "w", Pwsh::Value),
+    ("file", "f", Pwsh::File),
+    ("isswait", "isswait", Pwsh::Flag),
+    ("outputformat", "o", Pwsh::Value),
+    ("of", "o", Pwsh::Value),
+    ("inputformat", "inp", Pwsh::Value),
+    ("if", "if", Pwsh::Value),
+    ("executionpolicy", "ex", Pwsh::Value),
+    ("ep", "ep", Pwsh::Value),
+    ("encodedcommand", "e", Pwsh::Command),
+    ("ec", "e", Pwsh::Command),
+    ("encodedarguments", "encodeda", Pwsh::Value),
+    ("ea", "ea", Pwsh::Value),
+    ("settingsfile", "settings", Pwsh::Value),
+    ("sta", "sta", Pwsh::Flag),
+    ("mta", "mta", Pwsh::Flag),
+    ("workingdirectory", "wo", Pwsh::Value),
+    ("wd", "wd", Pwsh::Value),
+    (
+        "removeworkingdirectorytrailingcharacter",
+        "removeworkingdirectorytrailingcharacter",
+        Pwsh::Flag,
+    ),
+    ("token", "to", Pwsh::Value),
+    ("utctimestamp", "utc", Pwsh::Value),
+];
+
+/// Windows PowerShell 5.1's switches (`about_PowerShell_exe`'s syntax; its
+/// source is not public, so how it takes a prefix is inferred). Read so that
+/// more reads as fed: the program kinds first, then the rest, any prefix.
+const POWERSHELL: &[(&str, &str, Pwsh)] = &[
+    ("command", "c", Pwsh::Command),
+    ("encodedcommand", "e", Pwsh::Command),
+    ("ec", "ec", Pwsh::Command),
+    ("file", "f", Pwsh::File),
+    ("psconsolefile", "p", Pwsh::Value),
+    ("version", "v", Pwsh::Value),
+    ("inputformat", "i", Pwsh::Value),
+    ("outputformat", "o", Pwsh::Value),
+    ("windowstyle", "w", Pwsh::Value),
+    ("encodedarguments", "e", Pwsh::Value),
+    ("ea", "ea", Pwsh::Value),
+    ("configurationname", "c", Pwsh::Value),
+    ("executionpolicy", "e", Pwsh::Value),
+    ("ep", "ep", Pwsh::Value),
+    ("nologo", "n", Pwsh::Flag),
+    ("noexit", "n", Pwsh::Flag),
+    ("sta", "s", Pwsh::Flag),
+    ("mta", "m", Pwsh::Flag),
+    ("noprofile", "n", Pwsh::Flag),
+    ("noninteractive", "n", Pwsh::Flag),
+];
+
+/// Does pwsh (or Windows PowerShell) read its program from its input? A
+/// switch starts with a dash (`-`, U+2013, U+2014 or U+2015) or `/`, on
+/// every system, and a doubled first character is dropped (`--command`);
+/// the first word that is no switch, or a switch it does not know, is the
+/// script (PowerShell `v7.6.10` `GetSwitchKey`, `:710-738`; `IsDash`,
+/// `CharTraits.cs:255-261`). `-command -` and `-file -` read the input
+/// (`:1414-1425`, `:1587-1600`), and so does a line with neither.
+fn pwsh_reads_input(program: &str, args: &[String]) -> bool {
+    let table = if program == "powershell" {
+        POWERSHELL
+    } else {
+        PWSH
+    };
+    let dash = |c: char| matches!(c, '-' | '\u{2013}' | '\u{2014}' | '\u{2015}');
+    let mut i = 0;
+    while i < args.len() {
+        let w = args[i].trim();
+        let Some(first) = w.chars().next().filter(|c| dash(*c) || *c == '/') else {
+            return stdin_path(w);
+        };
+        let mut key = &w[first.len_utf8()..];
+        if key.starts_with(first) {
+            key = &key[first.len_utf8()..];
+        }
+        let kind = table
+            .iter()
+            .find(|(full, shortest, _)| key.len() >= shortest.len() && full.starts_with(key))
+            .map(|(_, _, k)| *k);
+        match kind {
+            Some(Pwsh::Flag) => i += 1,
+            Some(Pwsh::Value) => i += 2,
+            Some(Pwsh::Command) | Some(Pwsh::File) => {
+                return args.get(i + 1).is_some_and(|v| stdin_path(v.trim()));
+            }
+            None => return stdin_path(w),
+        }
+    }
+    true
 }
 
 /// Does `program`, run with `args`, read its program from its input? A shell
@@ -528,6 +657,9 @@ fn pwsh_param(word: &str, full: &str, shortest: usize) -> bool {
 /// `-E` reads as `-e` and `-X` as `-x`; where that joins a valued flag and
 /// one that takes none, it is read as valued, which only reads more as fed.
 fn reads_its_input(program: &str, args: &[String]) -> bool {
+    if matches!(program, "pwsh" | "powershell") {
+        return pwsh_reads_input(program, args);
+    }
     let shell = SHELLS.contains(&program);
     let source = matches!(program, "source" | ".");
     // (letters that put the program on the line, short flags that take a
@@ -565,21 +697,6 @@ fn reads_its_input(program: &str, args: &[String]) -> bool {
         ("e", "ric", &[], &[])
     } else if program == "php" {
         ("rf", "cdz", &[], &[])
-    } else if program == "pwsh" {
-        (
-            "cfe",
-            "",
-            &["-command", "-file", "-encodedcommand", "-ec"],
-            &[
-                "-executionpolicy",
-                "-ep",
-                "-ex",
-                "-workingdirectory",
-                "-wd",
-                "-configurationname",
-                "-settingsfile",
-            ],
-        )
     } else {
         ("", "", &[], &[])
     };
@@ -599,33 +716,8 @@ fn reads_its_input(program: &str, args: &[String]) -> bool {
             continue;
         }
         let name = w.split('=').next().unwrap_or(w);
-        // pwsh takes one-dash long names by prefix and has no letter
-        // bundles: `-noprofile` is no `-n -o -p ...` (W6C-S2).
-        if program == "pwsh" && w.starts_with('-') && !w.starts_with("--") {
-            let command = pwsh_param(name, "-command", 2)
-                || pwsh_param(name, "-file", 2)
-                || pwsh_param(name, "-encodedcommand", 2)
-                || name == "-ec";
-            if command {
-                let value = args.get(i + 1).map(String::as_str);
-                return value.is_some_and(stdin_path);
-            }
-            let valued = pwsh_param(name, "-executionpolicy", 3)
-                || pwsh_param(name, "-workingdirectory", 3)
-                || pwsh_param(name, "-configurationname", 4)
-                || pwsh_param(name, "-settingsfile", 3)
-                || matches!(name, "-ep" | "-ex" | "-wd");
-            i += if valued { 2 } else { 1 };
-            continue;
-        }
         if program_long.contains(&name) {
-            // pwsh's `-command -` reads the command from its input.
-            let value = if w.contains('=') {
-                w.split_once('=').map(|(_, v)| v)
-            } else {
-                args.get(i + 1).map(String::as_str)
-            };
-            return program == "pwsh" && value.is_some_and(stdin_path);
+            return false;
         }
         if valued_long.contains(&name) {
             i += if w.contains('=') { 1 } else { 2 };
