@@ -449,3 +449,32 @@ fn a_secret_is_swapped_into_headers_only_unless_its_placement_names_the_body_or_
     assert_eq!(d.target, Some(format!("/{PH_A}/x?t={VAL_A}&a=1")));
     assert_eq!(d.injected, vec!["github".to_string()]);
 }
+
+#[test]
+fn a_host_with_userinfo_or_a_space_is_no_host_of_the_tunnel() {
+    // Integration w6's review, W6C-S11: `Host: evil.test@api.github.com`
+    // passed the host check, and the secret was swapped in.
+    for bad in ["evil.test@api.github.com", "api.github.com evil.test"] {
+        let hd = h(&[("host", bad)]);
+        assert_eq!(
+            decide_with(
+                &out("api.github.com", "/", &hd, b""),
+                &two(),
+                &Policy::default()
+            )
+            .blocked,
+            Some(Blocked::HostMismatch),
+            "{bad}"
+        );
+    }
+    let hd = h(&[("host", "api.github.com")]);
+    assert_eq!(
+        decide_with(
+            &out("api.github.com", "https://u@api.github.com/x", &hd, b""),
+            &two(),
+            &Policy::default()
+        )
+        .blocked,
+        Some(Blocked::HostMismatch)
+    );
+}

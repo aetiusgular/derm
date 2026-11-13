@@ -238,7 +238,7 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
     if matches!(e.from, From::Env(_)) {
         let _ = writeln!(
             ctx.out,
-            "note: a value from the environment stays in the start environment of the process that reads it, which any process of yours can read outside a sandbox (/proc on Linux, ps on macOS); --file or --keychain keeps it out"
+            "note: a value from the environment stays in the start environment of the process that reads it, which any process of yours can read outside a sandbox (/proc on Linux, ps on macOS); --file keeps it out of every environment, and srt and the Standard tier hide that file from the agent's commands; a --keychain value is as safe as the sandbox's reach into your keychain, which derm does not change"
         );
     }
     Ok(())
@@ -378,6 +378,29 @@ fn ca_verb(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
         }
         _ => Err(USAGE.into()),
     }
+}
+
+/// The files the person's secrets are read from (`--file`), each as written
+/// and by its real path. Every sandbox derm writes hides them from the
+/// agent's commands, so a brokered value is not read back from where it
+/// lives (integration w6's review, W6C-S1). A secrets file that cannot be
+/// read names none: `derm run` refuses to start a chat on it anyway.
+pub fn value_files(home: &Path) -> Vec<String> {
+    let Ok(file) = secrets::load(&secrets::path_for(home)) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in &file.secrets {
+        if let From::File(p) = &e.from {
+            out.push(p.clone());
+            if let Ok(real) = std::fs::canonicalize(p) {
+                out.push(real.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 #[cfg(test)]

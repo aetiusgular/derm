@@ -841,10 +841,23 @@ pub const RUNS_LATER_PATHS: &[&str] = &[
 /// `cloud-metadata` (`policies/default-v1.yaml:659-664`). Matched by
 /// `names_entry`, so `10.169.254.1` is not `169.254.`.
 pub const METADATA_ADDRESSES: &[&str] = &[
+    // srt 0.0.82's cloud metadata list (`resolved-address-guard.js:37-47`)
+    // and 169.254.169.254 in its decimal, hex and octal forms (W6C-S3).
+    // Advisory: other spellings exist; a boundary blocks the address itself.
     "169.254.",
     "fe80:",
-    "fd00:ec2::254",
+    "fd00:ec2:",
     "100.100.100.200",
+    "168.63.129.16",
+    "192.0.0.192",
+    "fd20:ce::254",
+    "fd00:c1::a9fe:a9fe",
+    "fd00:42::42",
+    "fd00:a9fe:a9fe::1",
+    "fd00:100::100:200",
+    "2852039166",
+    "0xa9fea9fe",
+    "0251.0376.0251.0376",
     "metadata.google.internal",
     "metadata.goog",
 ];
@@ -879,8 +892,17 @@ pub fn names_entry(text: &str, entry: &str) -> bool {
         let prev = text[..i].chars().next_back();
         let next = after.chars().next();
         let left_ok = suffix || prev.is_none_or(|c| !(name(c) || c == '.'));
-        let right_ok = !ends_in_name || next.is_none_or(|c| !name(c));
-        let template = base == ".env" && ENV_TEMPLATES.iter().any(|t| after.starts_with(t));
+        // `.env-production` and `.env_local` are `.env` files too (W6C-S3).
+        let right_ok = !ends_in_name
+            || next.is_none_or(|c| !name(c))
+            || (base == ".env" && matches!(next, Some('-' | '_')));
+        // A template only when the whole name ends in its suffix:
+        // `.env.example` and `.env.local.example`, not `.env.example.local`.
+        let tail: String = after
+            .chars()
+            .take_while(|c| name(*c) || *c == '.')
+            .collect();
+        let template = base == ".env" && ENV_TEMPLATES.iter().any(|t| tail.ends_with(t));
         if left_ok && right_ok && !template {
             return true;
         }

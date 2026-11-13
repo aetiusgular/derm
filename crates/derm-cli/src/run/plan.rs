@@ -990,6 +990,9 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             if !cfg!(target_os = "macos") {
                 deny_read.push(super::content_root(&i.home).to_string_lossy().into_owned());
             }
+            // The files brokered secrets are read from, as written and by
+            // their real paths (integration w6's review, W6C-S1).
+            deny_read.extend(crate::secret::value_files(std::path::Path::new(&i.home)));
             deny_read.sort();
             deny_read.dedup();
             // The gate's policy file, re-opened read-only inside the hidden

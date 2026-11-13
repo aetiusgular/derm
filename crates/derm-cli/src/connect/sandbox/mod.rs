@@ -75,6 +75,8 @@ pub fn denied_reads(c: &Context) -> Vec<String> {
     if let Some(d) = &c.data_dir {
         out.push(d.clone());
     }
+    // The files brokered secrets are read from (W6C-S1).
+    out.extend(crate::secret::value_files(std::path::Path::new(home)));
     out.retain(|p| p.starts_with('/'));
     out.sort();
     out.dedup();

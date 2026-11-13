@@ -50,8 +50,8 @@ export function commandProblem(value: unknown): string | undefined {
 // Lane X's wrapper list (installs/parse.ts): words that run the rest of the
 // line as a command. Their own flags are not parsed; the command starts at
 // the first later word that names a rule's head, a wrapper or a shell.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox"]);
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"]);
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash"]);
 const ASSIGNMENT = /^[a-z_][a-z0-9_]*=/;
 const MAX_DEPTH = 4;
 
@@ -286,6 +286,8 @@ function fedCommands(text: string): Array<[string[], Feed]> {
       const or = text[i + 1] === "|";
       if (or || text[i + 1] === "&") i++;
       endCommand(!or);
+    } else if (ch === "(" && !words.length && !inWord) {
+      // A subshell or group right after a pipe takes the pipe's input (W6C-S2).
     } else if (ch === ";" || ch === "&" || ch === "(" || ch === ")" || ch === "\n" || ch === "\r") {
       endCommand(false);
     } else if (ch === "<" || ch === ">") {
@@ -323,11 +325,35 @@ function fedCommands(text: string): Array<[string[], Feed]> {
 
 /** Interpreters that run a program from their input when the line gives none. */
 function isInterpreter(base: string): boolean {
-  if (base.startsWith("python") && /^[0-9.]*$/.test(base.slice("python".length))) return true;
+  // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
+  if (isPython(base)) return true;
   return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "pwsh"].includes(base);
 }
 
-const isStdinPath = (w: string): boolean => w === "-" || w === "/dev/stdin" || w === "/dev/fd/0" || w === "/proc/self/fd/0";
+const isPython = (base: string): boolean => base.startsWith("python") || base.startsWith("pypy");
+
+/** Paths a program reads its own standard input through, after `//` and `/./` collapse as the kernel reads them (W6C-S2). */
+function isStdinPath(w: string): boolean {
+  let p = w;
+  for (;;) {
+    const next = p.split("//").join("/").split("/./").join("/");
+    if (next === p) break;
+    p = next;
+  }
+  return ["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0", "/proc/thread-self/fd/0"].includes(p);
+}
+
+/** A pwsh parameter by any prefix pwsh accepts: `-c`, `-com`, `-command`. */
+const pwshParam = (word: string, full: string, shortest: number): boolean => word.length >= shortest && full.startsWith(word);
+
+/** Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)? */
+function hasCFlag(args: readonly string[]): boolean {
+  for (const w of args) {
+    if (!w.startsWith("-") && !w.startsWith("+")) return false;
+    if (w.startsWith("-") && !w.startsWith("--") && w.slice(1).includes("c")) return true;
+  }
+  return false;
+}
 
 /**
  * Does `program`, run with `args`, read its program from its input? A shell
@@ -350,7 +376,7 @@ function readsItsInput(program: string, args: readonly string[]): boolean {
     valuedLong = ["--rcfile", "--init-file"];
   } else if (source) {
     // none
-  } else if (program.startsWith("python")) {
+  } else if (isPython(program)) {
     programLetters = "cm";
     valuedLetters = "wx";
     valuedLong = ["--check-hash-based-pycs"];
@@ -386,6 +412,24 @@ function readsItsInput(program: string, args: readonly string[]): boolean {
       continue;
     }
     const name = w.split("=")[0] as string;
+    // pwsh takes one-dash long names by prefix and has no letter bundles (W6C-S2).
+    if (program === "pwsh" && w.startsWith("-") && !w.startsWith("--")) {
+      const command = pwshParam(name, "-command", 2) || pwshParam(name, "-file", 2) || pwshParam(name, "-encodedcommand", 2) || name === "-ec";
+      if (command) {
+        const value = args[i + 1];
+        return value !== undefined && isStdinPath(value);
+      }
+      const valued =
+        pwshParam(name, "-executionpolicy", 3) ||
+        pwshParam(name, "-workingdirectory", 3) ||
+        pwshParam(name, "-configurationname", 4) ||
+        pwshParam(name, "-settingsfile", 3) ||
+        name === "-ep" ||
+        name === "-ex" ||
+        name === "-wd";
+      i += valued ? 2 : 1;
+      continue;
+    }
     if (programLong.includes(name)) {
       // pwsh's `-command -` reads the command from its input.
       const value = w.includes("=") ? w.slice(w.indexOf("=") + 1) : args[i + 1];
@@ -464,6 +508,8 @@ function stdinRead(input: string[], feed: Feed, depth: number): string | undefin
     if (head === "eval") return stdinWalk(rest.join(" "), depth + 1);
     if (isProgram(head)) {
       if (SHELLS.has(head)) {
+        // Behind xargs a shell's `-c` takes its string from the input (W6C-S2).
+        if (xargs && hasCFlag(rest)) return head;
         const c = shellCommandString(rest);
         if (c !== undefined) return stdinWalk(c, depth + 1);
       }
@@ -472,7 +518,7 @@ function stdinRead(input: string[], feed: Feed, depth: number): string | undefin
       return fed && readsItsInput(head, rest) ? head : undefined;
     }
     if (!WRAPPERS.has(head)) return undefined;
-    if (head === "xargs") xargs = true;
+    if (head === "xargs" || head === "parallel") xargs = true;
     const next = rest.findIndex((w) => {
       const b = commandBase(w);
       return !ASSIGNMENT.test(w) && (WRAPPERS.has(b) || isProgram(b) || b === "eval");

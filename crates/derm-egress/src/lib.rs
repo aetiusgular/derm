@@ -212,6 +212,24 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
             return block(Blocked::SniMismatch);
         }
     }
+    // A `Host` or an absolute target with userinfo or a space names two
+    // hosts at once (`evil.test@api.github.com`); none is taken (review
+    // W6C-S11).
+    let odd = |a: &str| a.contains('@') || a.trim().contains(char::is_whitespace);
+    let target_authority = ["http://", "https://"].iter().find_map(|p| {
+        let t = o.target.get(..p.len())?;
+        t.eq_ignore_ascii_case(p).then(|| {
+            let rest = &o.target[p.len()..];
+            &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]
+        })
+    });
+    if o.headers
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("host") && odd(v))
+        || target_authority.is_some_and(odd)
+    {
+        return block(Blocked::HostMismatch);
+    }
     let named = o
         .headers
         .iter()

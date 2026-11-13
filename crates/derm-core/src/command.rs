@@ -64,8 +64,11 @@ pub fn command_problem(words: &[String]) -> Option<String> {
 const WRAPPERS: &[&str] = &[
     "sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic",
     "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox",
+    "parallel",
 ];
-const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
+const SHELLS: &[&str] = &[
+    "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash",
+];
 const MAX_DEPTH: usize = 4;
 
 fn is_assignment(w: &str) -> bool {
@@ -306,6 +309,9 @@ fn fed_commands(text: &str) -> Vec<(Vec<String>, Feed)> {
                     &mut feed,
                 );
             }
+            // A subshell or group right after a pipe takes the pipe's input
+            // (`curl x | (sh)`; integration w6's review, W6C-S2).
+            '(' if words.is_empty() && !in_word => {}
             ';' | '&' | '(' | ')' | '\n' | '\r' => {
                 end_command(
                     false,
@@ -362,18 +368,39 @@ fn fed_commands(text: &str) -> Vec<(Vec<String>, Feed)> {
 /// none (OpenMoat 0.19.0's `pipe-to-shell`, `policies/default-v1.yaml:258-
 /// 270`: `{python*,node,perl,ruby,php,deno,bun,pwsh}`).
 fn interpreter(base: &str) -> bool {
-    let py = base
-        .strip_prefix("python")
-        .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'));
-    py || matches!(
-        base,
-        "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "pwsh"
+    // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
+    python(base)
+        || matches!(
+            base,
+            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "pwsh"
+        )
+}
+
+/// A Python by name: `python*` and `pypy*`.
+fn python(base: &str) -> bool {
+    base.starts_with("python") || base.starts_with("pypy")
+}
+
+/// Paths a program reads its own standard input through, after `//` and
+/// `/./` collapse as the kernel reads them (`/dev//stdin`; W6C-S2).
+fn stdin_path(w: &str) -> bool {
+    let mut p = w.to_string();
+    loop {
+        let next = p.replace("//", "/").replace("/./", "/");
+        if next == p {
+            break;
+        }
+        p = next;
+    }
+    matches!(
+        p.as_str(),
+        "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0" | "/proc/thread-self/fd/0"
     )
 }
 
-/// Paths a program reads its own standard input through.
-fn stdin_path(w: &str) -> bool {
-    matches!(w, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+/// A pwsh parameter by any prefix pwsh accepts: `-c`, `-com`, `-command`.
+fn pwsh_param(word: &str, full: &str, shortest: usize) -> bool {
+    word.len() >= shortest && full.starts_with(word)
 }
 
 /// Does `program`, run with `args`, read its program from its input? A shell
@@ -397,7 +424,7 @@ fn reads_its_input(program: &str, args: &[String]) -> bool {
         ("c", "o", &[], &["--rcfile", "--init-file"])
     } else if source {
         ("", "", &[], &[])
-    } else if program.starts_with("python") {
+    } else if python(program) {
         ("cm", "wx", &[], &["--check-hash-based-pycs"])
     } else if matches!(program, "node" | "nodejs" | "bun") {
         (
@@ -454,6 +481,25 @@ fn reads_its_input(program: &str, args: &[String]) -> bool {
             continue;
         }
         let name = w.split('=').next().unwrap_or(w);
+        // pwsh takes one-dash long names by prefix and has no letter
+        // bundles: `-noprofile` is no `-n -o -p ...` (W6C-S2).
+        if program == "pwsh" && w.starts_with('-') && !w.starts_with("--") {
+            let command = pwsh_param(name, "-command", 2)
+                || pwsh_param(name, "-file", 2)
+                || pwsh_param(name, "-encodedcommand", 2)
+                || name == "-ec";
+            if command {
+                let value = args.get(i + 1).map(String::as_str);
+                return value.is_some_and(stdin_path);
+            }
+            let valued = pwsh_param(name, "-executionpolicy", 3)
+                || pwsh_param(name, "-workingdirectory", 3)
+                || pwsh_param(name, "-configurationname", 4)
+                || pwsh_param(name, "-settingsfile", 3)
+                || matches!(name, "-ep" | "-ex" | "-wd");
+            i += if valued { 2 } else { 1 };
+            continue;
+        }
         if program_long.contains(&name) {
             // pwsh's `-command -` reads the command from its input.
             let value = if w.contains('=') {
@@ -562,6 +608,12 @@ fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
             || interpreter(&head);
         if program {
             if SHELLS.contains(&head.as_str()) {
+                // Behind xargs a shell's `-c` takes its string from the
+                // input when the line gives none, or a placeholder the input
+                // fills (`xargs -i% sh -c %`; W6C-S2).
+                if xargs && has_c_flag(&rest) {
+                    return Some(head);
+                }
                 if let Some(c) = shell_command_string(&rest) {
                     return stdin_walk(&c, depth + 1);
                 }
@@ -578,7 +630,7 @@ fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
         if !WRAPPERS.contains(&head.as_str()) {
             return None;
         }
-        if head == "xargs" {
+        if matches!(head.as_str(), "xargs" | "parallel") {
             xargs = true;
         }
         let next = rest.iter().position(|w| {
@@ -592,6 +644,13 @@ fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
         words = rest[next..].to_vec();
     }
     None
+}
+
+/// Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)?
+fn has_c_flag(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|w| w.starts_with('-') || w.starts_with('+'))
+        .any(|w| w.starts_with('-') && !w.starts_with("--") && w[1..].contains('c'))
 }
 
 /// Does a command's flag word meet a rule's flag word? `-f` also meets `-fu`.

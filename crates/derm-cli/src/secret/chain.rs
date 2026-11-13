@@ -118,7 +118,11 @@ pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
         p.env.push((secrets::variable(e), ph.clone()));
     }
     if i.boundary == "srt" {
-        p.srt_network = Some(json!({"parentProxy": {"http": url, "https": url}}));
+        // `noProxy` empty, not left out: srt 0.0.82 falls back to its own
+        // `NO_PROXY`, which a person's shell may set, and hosts there would
+        // skip derm-egress (`dist/sandbox/parent-proxy.js:54`; review
+        // W6C-S6). Loopback never goes to a parent (`:137-142`, AZ-4).
+        p.srt_network = Some(json!({"parentProxy": {"http": url, "https": url, "noProxy": ""}}));
     } else {
         for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
             p.env.push((k.into(), url.into()));

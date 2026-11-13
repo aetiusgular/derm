@@ -3,8 +3,9 @@
 //! `derm run` and no daemon) a decision record neither the daemon nor the
 //! per-chat log kept is a deny: a call is not run unrecorded
 //! (`gate::locallog::denies`, `gate::daemon::lost_deny`). With a chat token
-//! the record is the daemon's, and a lost one denies nothing (case 86; note
-//! AZ B8: under srt a chat's hooks cannot write `~/.derm`).
+//! and a real `derm run` above the hook the record is the daemon's, and a
+//! lost one denies nothing (case 86; note AZ B8: under srt a chat's hooks
+//! cannot write `~/.derm`); a token alone does not count (W6C-S4).
 //!
 //! Each dialect family is driven through the real binary: Claude Code, Codex
 //! and Gemini (the Claude-format dialects), Cursor (the native runner) and
@@ -138,7 +139,10 @@ fn claude_code_denies_a_call_its_light_tier_log_could_not_keep() {
 }
 
 #[test]
-fn with_a_chat_token_a_lost_record_denies_nothing() {
+fn a_chat_token_with_no_derm_run_above_it_is_still_the_light_tier() {
+    // Integration w6's review, W6C-S4: a project's settings can set
+    // `DERM_CHAT_TOKEN` (case 227), so a token alone does not make a chat
+    // `derm run`'s. Before the fix this call was allowed and ran unrecorded.
     let broken = home("cctoken", true);
     let o = run(
         &broken,
@@ -146,6 +150,43 @@ fn with_a_chat_token_a_lost_record_denies_nothing() {
         &claude_pre(&broken),
         true,
     );
+    assert_eq!(claude_decision(&o), "deny", "{}", text(&o));
+    assert!(text(&o).contains(MARK), "{}", text(&o));
+}
+
+#[test]
+fn under_derm_run_a_chat_token_keeps_a_lost_record_from_denying() {
+    // Case 86: a `derm run` chat whose daemon went away. The hook runs under
+    // a real `derm run` (here `--no-daemon`, its token set by the shell, as
+    // the dead daemon's token would be), so the record was the daemon's and
+    // its loss denies nothing.
+    let broken = home("ccrun", true);
+    let derm = env!("CARGO_BIN_EXE_derm");
+    let inner = format!(
+        "DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} exec {derm} hook claude-code pre",
+        broken.join("no-daemon.sock").display()
+    );
+    let mut child = Command::new(derm)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &broken)
+        .env("XDG_RUNTIME_DIR", &broken)
+        .env("DERM_POLICY", broken.join("policy.json"))
+        .current_dir(broken.join("work"))
+        .args(["run", "--boundary", "none", "--no-daemon", "--no-tap", "--"])
+        .args(["sh", "-c", &inner])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(claude_pre(&broken).as_bytes())
+        .unwrap();
+    let o = child.wait_with_output().unwrap();
     assert_eq!(claude_decision(&o), "allow", "{}", text(&o));
     assert!(!text(&o).contains(MARK), "{}", text(&o));
 }

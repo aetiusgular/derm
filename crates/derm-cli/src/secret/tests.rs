@@ -264,6 +264,12 @@ fn under_srt_derm_egress_is_srts_parent_proxy_and_the_harness_trusts_derms_ca() 
         p.srt_network.as_ref().unwrap()["parentProxy"]["https"],
         "http://127.0.0.1:41000"
     );
+    // W6C-S6: an empty list, so srt does not fall back to the shell's
+    // NO_PROXY and send those hosts around derm-egress.
+    assert_eq!(
+        p.srt_network.as_ref().unwrap()["parentProxy"]["noProxy"],
+        ""
+    );
     assert!(
         get(&p, "HTTPS_PROXY").is_none(),
         "srt sets the harness's proxy to its own"

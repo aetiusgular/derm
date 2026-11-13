@@ -95,14 +95,15 @@ pub fn after_post(event: &AdapterEvent, env: &Env, _cwd: &Path, posted: bool) ->
 }
 
 /// The reason a pre event must be denied after `outcome`, or `None`. Only in
-/// the light tier proper: a hook with no chat token, so no `derm run` and no
-/// daemon will hold the record. A `derm run` chat's record is the daemon's:
-/// under srt `~/.derm` is denied to its hooks (note AZ B8), and a daemon
-/// restart kills the chat's token (case 86), so failing closed there would
-/// deny every call of a chat whose daemon restarted.
+/// the light tier: a hook that is not part of a `derm run` chat
+/// (`daemon::derm_run_chat`: a chat token and a real `derm run` above it).
+/// A `derm run` chat's record is the daemon's: under srt `~/.derm` is denied
+/// to its hooks (note AZ B8), and a daemon restart kills the chat's token
+/// (case 86). A token with no `derm run` above it is the light tier's, since
+/// a project can set the variable (integration w6's review, W6C-S4).
 pub fn denies(outcome: &Outcome, env: &Env, cwd: &Path) -> Option<String> {
     match outcome {
-        Outcome::Failed(why) if super::daemon::chat_token(env, cwd).is_none() => Some(format!(
+        Outcome::Failed(why) if !super::daemon::derm_run_chat(env, cwd) => Some(format!(
             "{why}; with no daemon a call is not run unrecorded (derm's light tier fails closed)"
         )),
         _ => None,

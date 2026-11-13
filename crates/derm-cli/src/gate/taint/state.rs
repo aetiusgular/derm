@@ -11,7 +11,7 @@
 //!   agent's under one `session_id` (note AZ B3); read and rewritten in one
 //!   write under the lock.
 //! - **Under `derm run`** (a chat token): the daemon's op `taint`
-//!   ([`daemon_get`], [`daemon_add`]; `crates/derm-daemon/src/taint/`, routed
+//!   ([`daemon_ask`], [`daemon_add`]; `crates/derm-daemon/src/taint/`, routed
 //!   since integration w6's phase 2 merge). When the daemon refuses it (an
 //!   older daemon's "unknown op", a chat id the token does not hold, the
 //!   sbx VM's HTTP route, which carries no `taint`) the gate falls back to
@@ -329,19 +329,27 @@ fn opts<'a>(env: &'a Env, cwd: &'a Path) -> Opts<'a> {
     }
 }
 
-/// The chat's state, verdict and named hosts from the daemon, or why not.
-pub fn daemon_get(
+/// The chat's state, verdict and named hosts from the daemon, and whether
+/// a daemon took the hook's chat token
+/// (its hello passed), which a token a project set cannot do with derm's
+/// daemon (W6C-S4).
+pub fn daemon_ask(
     env: &Env,
     cwd: &Path,
     chat: &str,
     hosts: &[String],
-) -> Result<FromDaemon, String> {
+) -> (Option<FromDaemon>, bool) {
     let req = json!({"op": "taint", "chat": chat, "hosts": hosts});
-    let reply = daemon::exchange(&[req], &opts(env, cwd))?
-        .into_iter()
-        .next()
-        .ok_or("no reply")?;
-    parse_reply(&reply)
+    match daemon::exchange(&[req], &opts(env, cwd)) {
+        Err(_) => (None, false),
+        Ok(replies) => (
+            replies
+                .into_iter()
+                .next()
+                .and_then(|r| parse_reply(&r).ok()),
+            true,
+        ),
+    }
 }
 
 /// Adds to the chat's state in the daemon.

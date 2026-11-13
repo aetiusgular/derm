@@ -130,8 +130,15 @@ pub fn wire(
         );
     }
     let values = secrets::for_chat(&file, env)?;
-    let trust = c.temp.join(format!("derm-trust-{}", c.chat));
+    // A name no one can make first (review W6C-S9), removed again on any
+    // error below, since `make_trust_dir` refuses a folder already there.
+    let trust = c.temp.join(format!(
+        "derm-trust-{}-{}",
+        c.chat,
+        uuid::Uuid::new_v4().simple()
+    ));
     make_trust_dir(&trust)?;
+    let mut guard = RemoveOnError(Some(trust.clone()));
     let (ca_file, bundle_file) = chain::write_trust(&trust, &ca.cert_pem()).inspect_err(|_| {
         let _ = std::fs::remove_dir_all(&trust);
     })?;
@@ -163,6 +170,7 @@ pub fn wire(
         fingerprint: &fingerprint,
     })?;
     apply(p, &plan)?;
+    guard.0 = None;
     Ok(Broker {
         record: Some(json!({
             "ids": ids,
@@ -225,6 +233,17 @@ fn apply(p: &mut Plan, plan: &chain::Plan) -> Result<(), String> {
         p.notes.push(format!("derm run: {line}"));
     }
     Ok(())
+}
+
+/// Removes a folder when dropped, unless taken back first.
+struct RemoveOnError(Option<PathBuf>);
+
+impl Drop for RemoveOnError {
+    fn drop(&mut self) {
+        if let Some(p) = self.0.take() {
+            let _ = std::fs::remove_dir_all(p);
+        }
+    }
 }
 
 /// A new folder for the chat's public trust files: made fresh (never one

@@ -329,7 +329,14 @@ fn denies_only_a_failed_append_in_the_light_tier() {
     assert!(denies(&failed, &Env::of(&[]), cwd).is_some_and(|w| w.contains("fails closed")));
     let token = "a".repeat(64);
     let in_a_run = Env::of(&[("DERM_CHAT_TOKEN", token.as_str())]);
+    // A token under a real `derm run`: the record was the daemon's.
+    crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(Some(true)));
     assert_eq!(denies(&failed, &in_a_run, cwd), None);
+    // The same token with no `derm run` above the hook, as a project's
+    // settings can set it (W6C-S4): still the light tier.
+    crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(Some(false)));
+    assert!(denies(&failed, &in_a_run, cwd).is_some_and(|w| w.contains("fails closed")));
+    crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(None));
     assert_eq!(
         denies(&Outcome::Appended { seq: 0 }, &Env::of(&[]), cwd),
         None

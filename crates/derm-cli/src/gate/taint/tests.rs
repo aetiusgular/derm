@@ -703,8 +703,26 @@ mod daemon_tier {
             e = e.with(&k, &v);
         }
         let c = call("bash", json!({"command": "echo x > z.sh; sh z.sh"}), 0);
+        crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(Some(true)));
         let r = adjust_with(allow("bash"), &c, &e, "c-1", Path::new("/tmp"), true);
+        crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(None));
         assert_eq!(r.action, Action::Allow, "{}", r.reason);
+    }
+
+    #[test]
+    fn a_chat_token_with_no_derm_run_above_it_keeps_the_light_tiers_fail_safe() {
+        // Integration w6's review, W6C-S4: a project's settings can set
+        // `DERM_CHAT_TOKEN` (case 227). With no `derm run` above the hook,
+        // no daemon that takes the token and no store, taint is not
+        // switched off: before the fix this call was allowed.
+        let e = Env::default()
+            .with("DERM_CHAT_TOKEN", TOKEN)
+            .with("DERM_DAEMON_SOCKET", "/nonexistent/derm.sock");
+        let c = call("bash", json!({"command": "echo x > z.sh; sh z.sh"}), 0);
+        crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(Some(false)));
+        let r = adjust_with(allow("bash"), &c, &e, "c-1", Path::new("/tmp"), true);
+        crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(None));
+        assert_ne!(r.action, Action::Allow, "{}", r.reason);
     }
 
     #[test]

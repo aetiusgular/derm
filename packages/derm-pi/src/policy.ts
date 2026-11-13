@@ -653,7 +653,7 @@ export const RUNS_LATER_PATHS = [
  * OpenMoat 0.19.0's `cloud-metadata` (:659-664). Matched by `namesEntry`, so
  * `10.169.254.1` is not `169.254.`.
  */
-export const METADATA_ADDRESSES = ["169.254.", "fe80:", "fd00:ec2::254", "100.100.100.200", "metadata.google.internal", "metadata.goog"] as const;
+export const METADATA_ADDRESSES = ["169.254.", "fe80:", "fd00:ec2:", "100.100.100.200", "168.63.129.16", "192.0.0.192", "fd20:ce::254", "fd00:c1::a9fe:a9fe", "fd00:42::42", "fd00:a9fe:a9fe::1", "fd00:100::100:200", "2852039166", "0xa9fea9fe", "0251.0376.0251.0376", "metadata.google.internal", "metadata.goog"] as const;
 
 // `.env` followed by one of these is a committed template with no values
 // (OpenMoat 0.19.0's `.env.example` exception and its siblings, :61-67).
@@ -677,8 +677,15 @@ export function namesEntry(text: string, entry: string): boolean {
     const after = text.slice(i + base.length);
     const next = after[0];
     const leftOk = suffix || prev === undefined || !LEFT_NAME_CHAR.test(prev);
-    const rightOk = !endsInName || next === undefined || !NAME_CHAR.test(next);
-    const template = base === ".env" && ENV_TEMPLATES.some((t) => after.startsWith(t));
+    // `.env-production` and `.env_local` are `.env` files too (W6C-S3).
+    const rightOk = !endsInName || next === undefined || !NAME_CHAR.test(next) || (base === ".env" && (next === "-" || next === "_"));
+    // A template only when the whole name ends in its suffix: `.env.example`, not `.env.example.local`.
+    let tail = "";
+    for (const c of after) {
+      if (!NAME_CHAR.test(c) && c !== ".") break;
+      tail += c;
+    }
+    const template = base === ".env" && ENV_TEMPLATES.some((t) => tail.endsWith(t));
     if (leftOk && rightOk && !template) return true;
   }
   return false;

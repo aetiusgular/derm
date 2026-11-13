@@ -154,7 +154,12 @@ fn a_dry_run_reads_no_value_and_starts_nothing() {
         .notes
         .iter()
         .any(|n| n.contains("brokered by derm-egress")));
-    assert!(!t.join("derm-trust-derm-broker1").exists());
+    // The trust folder's name carries a random part (W6C-S9): none is left.
+    assert!(std::fs::read_dir(&t).unwrap().all(|e| !e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("derm-trust-")));
 }
 
 #[test]
@@ -203,7 +208,12 @@ fn a_missing_ca_or_an_unreadable_value_refuses_the_start_and_leaves_nothing() {
         .err()
         .unwrap();
     assert!(e.contains("secret gh"), "{e}");
-    assert!(!t.join("derm-trust-derm-broker1").exists());
+    // The trust folder's name carries a random part (W6C-S9): none is left.
+    assert!(std::fs::read_dir(&t).unwrap().all(|e| !e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("derm-trust-")));
 }
 
 #[test]
@@ -218,4 +228,44 @@ fn the_policy_carries_the_model_hosts_and_each_secrets_placement() {
     assert_eq!(pol.swap_query, vec!["gh".to_string(), "npm".to_string()]);
     assert!(pol.model_hosts.iter().any(|h| h == "api.anthropic.com"));
     assert!(pol.allow.is_none());
+}
+
+#[test]
+fn the_file_a_secret_is_read_from_is_hidden_by_every_sandbox_derm_writes() {
+    // Integration w6's review, W6C-S1: `derm secret add --file` kept the
+    // value out of the environment but left the file readable to a
+    // sandboxed `cat`. srt's `denyRead` and the Standard tier's denies now
+    // name it, as written and by its real path.
+    let (h, _t, v) = home("hide");
+    let link = h.join("gh-link");
+    std::os::unix::fs::symlink(&v, &link).unwrap();
+    secrets_file(
+        &h,
+        vec![entry("gh", From::File(link.to_string_lossy().into_owned()))],
+    );
+    let files = crate::secret::value_files(&h);
+    let real = std::fs::canonicalize(&v).unwrap();
+    assert!(
+        files.contains(&link.to_string_lossy().into_owned()),
+        "{files:?}"
+    );
+    assert!(
+        files.contains(&real.to_string_lossy().into_owned()),
+        "{files:?}"
+    );
+    let ctx = crate::connect::sandbox::Context {
+        home: h.to_string_lossy().into_owned(),
+        folders: vec![h.join("work").to_string_lossy().into_owned()],
+        daemon_dir: None,
+        data_dir: None,
+    };
+    let denied = crate::connect::sandbox::denied_reads(&ctx);
+    assert!(
+        denied.contains(&real.to_string_lossy().into_owned()),
+        "{denied:?}"
+    );
+    // Codex's profile carries the same denies.
+    assert!(
+        crate::connect::sandbox::codex_profile(&ctx).contains(&real.to_string_lossy().into_owned())
+    );
 }

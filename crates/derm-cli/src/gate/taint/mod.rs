@@ -378,11 +378,15 @@ pub fn adjust_with(
     // not hold, the sbx VM's route) the file is used, with the strictest
     // verdict, since the person's `--taint` cannot be read (rules section 9,
     // item 7: fail safe).
-    let from_daemon = if token {
-        state::daemon_get(env, cwd, chat, &facts.hosts).ok()
+    let (from_daemon, accepted) = if token {
+        state::daemon_ask(env, cwd, chat, &facts.hosts)
     } else {
-        None
+        (None, false)
     };
+    // A token alone may be a project's (case 227): only a hook whose daemon
+    // took its token, or that runs under a real `derm run`, skips the light
+    // tier's fail-safe rules (integration w6's review, W6C-S4).
+    let run_chat = token && (accepted || daemon::under_derm_run());
     let (st, verdict, from, named, store) = match from_daemon {
         Some(d) => (d.state, d.verdict, d.from, d.named, Store::Daemon),
         None => {
@@ -400,7 +404,7 @@ pub fn adjust_with(
                 // A `derm run` chat whose daemon and file both refused (srt
                 // denies `~/.derm` to its hooks, note AZ B8): taint is off
                 // for it until the daemon answers (the lane's Open items).
-                _ if token => return answer,
+                _ if run_chat => return answer,
                 // The light tier whose state cannot be read (a lock held
                 // past the deadline, a folder others can write): fail safe,
                 // as a state that does not parse.
@@ -489,7 +493,7 @@ pub fn adjust_with(
         // or a later call would not know.
         if let Err(why) = kept {
             let carries = !add.marks.is_empty() || !add.written.is_empty();
-            if !token && carries && out.action != Action::Deny {
+            if !run_chat && carries && out.action != Action::Deny {
                 out.action = Action::Deny;
                 out.reason = format!(
                     "derm's taint state: {why}; with no daemon a call that taints the chat or writes a file is not run unkept (the light tier fails closed)"
