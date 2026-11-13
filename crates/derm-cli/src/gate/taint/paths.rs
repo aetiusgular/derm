@@ -335,18 +335,30 @@ mod tests {
 
     #[test]
     fn taints_protected_list_names_paths_no_control_entry_names() {
-        // `.husky/` and `Makefile` are taint's own: step 7a's control paths
-        // name neither, so a control-path ask is never counted as taint's.
-        for k in [
-            "/w/.husky/pre-commit",
-            "/w/makefile",
-            "/w/app.code-workspace",
-        ] {
+        // `Makefile`, `conftest.py` and `build.rs` are taint's own: step 7a's
+        // control paths and step 7d's lists (integration w6's close) name
+        // none of them, so a policy ask is never counted as taint's.
+        let step7d = |k: &str| {
+            [
+                derm_core::policy::SECRET_PATHS,
+                derm_core::policy::RUNS_LATER_PATHS,
+                derm_core::policy::METADATA_ADDRESSES,
+            ]
+            .iter()
+            .any(|l| l.iter().any(|e| derm_core::policy::names_entry(k, e)))
+        };
+        for k in ["/w/makefile", "/w/conftest.py", "/w/build.rs"] {
             assert!(protected(k).is_some(), "{k}");
             assert!(
                 !CONTROL_PATHS.iter().any(|e| names_control_path(k, e)),
                 "{k} is a control path"
             );
+            assert!(!step7d(k), "{k} is named by step 7d");
+        }
+        // Since the close these are the policy's too (step 7d asks first).
+        for k in ["/w/.husky/pre-commit", "/w/app.code-workspace"] {
+            assert!(protected(k).is_some(), "{k}");
+            assert!(step7d(k), "{k}");
         }
         for k in [
             "/w/.github/workflows/release.yml",
