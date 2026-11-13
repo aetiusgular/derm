@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "postinstall-writes-outside",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm install",
+        "payload": "echo x > \"$HOME/outside.txt\""
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "outside.txt"
+    }
+  ]
+}

@@ -143,6 +143,59 @@ describe("the scenario files (contracts/eval.md section 1)", () => {
   });
 });
 
+describe("the ground-truth recorder (tests/eval/lib/truth.mjs)", () => {
+  it("parses a read, a write, a connect, an exec and a fork from strace -f output", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { parse } = await import("./lib/truth.mjs");
+    const text = [
+      '[pid 10] openat(AT_FDCWD</p>, "/home/u/.ssh/id_rsa", O_RDONLY) = 5</home/u/.ssh/id_rsa>',
+      '[pid 10] openat(AT_FDCWD</p>, "./env.txt", O_WRONLY|O_CREAT|O_APPEND, 0666) = 3',
+      'connect(5<socket:[1]>, {sa_family=AF_INET, sin_port=htons(80), sin_addr=inet_addr("1.2.3.4")}, 16) = 0',
+      '[pid 10] execve("/bin/sh", ["sh"], 0x0 /* 1 var */) = 0',
+      'clone(child_stack=NULL, flags=CLONE_CHILD) = 4242',
+    ].join("\n");
+    const e = parse(text);
+    expect(e).toContainEqual({ what: "read", path: "/home/u/.ssh/id_rsa", pid: 10 });
+    expect(e).toContainEqual({ what: "write", path: "./env.txt", pid: 10 });
+    expect(e).toContainEqual({ what: "connect", host: "1.2.3.4", pid: null });
+    expect(e).toContainEqual({ what: "exec", path: "/bin/sh", pid: 10 });
+    expect(e.find((x: { what: string }) => x.what === "fork")).toBeDefined();
+  });
+
+  it("cover() marks a declared effect seen when the recorder matched it", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { cover } = await import("./lib/truth.mjs");
+    const declared = [{ what: "read", path: "~/.ssh/id_rsa" }, { what: "connect", host: "evil.test" }];
+    const observed = [{ what: "read", path: "/home/u/.ssh/id_rsa" }];
+    const c = cover(declared, observed);
+    expect(c[0].seenByTruth).toBe(true);
+    expect(c[1].seenByTruth).toBe(false);
+  });
+});
+
+describe("the matrix sidecar (tests/eval/lib/matrix.mjs)", () => {
+  it("every matrix scenario has OpenMoat's per-layer outcome", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { sidecar } = await import("./lib/matrix.mjs");
+    const side = sidecar();
+    for (const sc of load("matrix")) {
+      expect(side[sc.id], sc.id).toBeDefined();
+      expect(side[sc.id].outcomes["srt-landlock"]).toBeTruthy();
+    }
+  });
+});
+
+describe("the HSB licence gate (tests/eval/lib/hsb.mjs)", () => {
+  it("refuses to run HSB without the licence confirmation", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { hsbGate } = await import("./lib/hsb.mjs");
+    const saved = process.env.DERM_HSB_LICENCE_OK;
+    delete process.env.DERM_HSB_LICENCE_OK;
+    expect(() => hsbGate()).toThrow(/no repository licence/);
+    if (saved) process.env.DERM_HSB_LICENCE_OK = saved;
+  });
+});
+
 describe("results files under docs/evidence (contracts/eval.md section 2)", () => {
   it("every committed result line validates", () => {
     const v = validator();

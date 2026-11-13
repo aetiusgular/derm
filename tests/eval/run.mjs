@@ -110,6 +110,26 @@ if (suite === "matrix" && opt("--score")) {
   process.exit(0);
 }
 
+if (suite === "join" && opt("--score")) {
+  const { scoreJoin } = await import("./lib/join.mjs");
+  const dir = resolve(opt("--score"));
+  writeFileSync(join(dir, "README.md"), scoreJoin(dir));
+  console.log(`wrote ${join(dir, "README.md")}`);
+  process.exit(0);
+}
+
+if (suite === "effects" && (flag("--run") || opt("--score"))) {
+  const { runEffects, scoreEffects } = await import("./lib/effects.mjs");
+  if (opt("--score")) {
+    const dir = resolve(opt("--score"));
+    writeFileSync(join(dir, "README.md"), scoreEffects(dir));
+    console.log(`wrote ${join(dir, "README.md")}`);
+  } else {
+    await runEffects({ out: resolve(opt("--out") ?? die("--out <dir> is required")), machine: machine(), reps: Number(opt("--reps", "1")) });
+  }
+  process.exit(0);
+}
+
 if (suite === "overhead" && flag("--run")) {
   const { runOverhead } = await import("./lib/overhead.mjs");
   const out = resolve(opt("--out") ?? die("--out <dir> is required"));

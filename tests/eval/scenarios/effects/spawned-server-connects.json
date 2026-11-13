@@ -1,0 +1,27 @@
+{
+  "suite": "effects",
+  "id": "spawned-server-connects",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm run serve",
+        "payload": "bash -c 'printf x | socat - TCP:127.0.0.1:{PORT},connect-timeout=2 2>/dev/null || true'"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "fork"
+    },
+    {
+      "what": "connect",
+      "host": "127.0.0.1"
+    }
+  ]
+}

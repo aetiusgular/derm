@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "two-calls-distinct-writes",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo a > a.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo b > b.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "a.txt"
+    },
+    {
+      "what": "write",
+      "path": "b.txt"
+    }
+  ]
+}
