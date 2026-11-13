@@ -71,8 +71,21 @@
     "failMode": "open",
     "failSwitch": null,
     "ask": "own-prompt",
-    "shellAliases": [],
+    "shellAliases": [
+      "run_shell_command"
+    ],
+    "toolAliases": {
+      "read_file": "read",
+      "read_many_files": "read",
+      "list_directory": "ls",
+      "grep_search": "grep",
+      "write_file": "write",
+      "replace": "edit",
+      "web_fetch": "webfetch",
+      "google_web_search": "websearch",
+      "write_todos": "todowrite"
+    },
     "verifiedAt": "0.66.0, run",
-    "note": "killed, crashed, hung and timed out hooks all let the call through, run on 0.66.0 and 0.65.0; the extension's policies/derm.toml and the printed user-tier TOML are what hold without the hook; a hook cannot approve; headless, Gemini's own prompt does not pass; under security.environmentVariableRedaction or GITHUB_SHA the hook loses TOKEN-named variables, so derm run also sets GEMINI_CLI_DERM_CHAT_TOKEN_FILE (lane I, applied by integration w2)"
+    "note": "killed, crashed, hung and timed out hooks all let the call through, run on 0.66.0 and 0.65.0; the extension's policies/derm.toml and the printed user-tier TOML are what hold without the hook; a hook cannot approve; headless, Gemini's own prompt does not pass; under security.environmentVariableRedaction or GITHUB_SHA the hook loses TOKEN-named variables, so derm run also sets GEMINI_CLI_DERM_CHAT_TOKEN_FILE (lane I, applied by integration w2); Gemini CLI 0.68.0's own tool names (`@google/gemini-cli-core@0.68.0` `dist/src/tools/definitions/base-declarations.js`) map to the policy's names before the gate (integration w6's close, E0's R-E0-4)"
   }
 }

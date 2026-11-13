@@ -69,6 +69,47 @@ fn each_dialects_shell_aliases_equal_its_preset_rows_coverage_shell_aliases() {
     }
 }
 
+/// Integration w6's close (E0's R-E0-4): Gemini's `TOOL_ALIASES` are its
+/// preset row's `coverage.shellAliases` (to `bash`) and `toolAliases`, and
+/// the gate meets each under the policy's name, so the default preset's
+/// read, write and shell rules apply to Gemini CLI 0.68.0's own tools.
+#[test]
+fn geminis_tool_aliases_equal_its_preset_row_and_reach_the_gate_by_the_policys_name() {
+    let row: Value =
+        serde_json::from_str(&std::fs::read_to_string(presets().join("gemini.json")).unwrap())
+            .unwrap();
+    let mut want: Vec<(String, String)> = row["coverage"]["shellAliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v.as_str().unwrap().to_string(), "bash".to_string()))
+        .collect();
+    for (k, v) in row["coverage"]["toolAliases"].as_object().unwrap() {
+        want.push((k.clone(), v.as_str().unwrap().to_string()));
+    }
+    let mut got: Vec<(String, String)> = super::gemini::TOOL_ALIASES
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    want.sort();
+    got.sort();
+    assert_eq!(got, want);
+    for (raw, policy) in super::gemini::TOOL_ALIASES {
+        let input = json!({"tool_name": raw, "tool_input": {}});
+        assert_eq!(
+            super::gemini::tool_for_gate(input.as_object().unwrap()),
+            *policy
+        );
+    }
+    // An MCP call keeps its server, whatever its tool is called.
+    let mcp = json!({"tool_name": "read_file",
+        "mcp_context": {"server_name": "fs", "tool_name": "read_file"}});
+    assert_eq!(
+        super::gemini::tool_for_gate(mcp.as_object().unwrap()),
+        "mcp__fs__read_file"
+    );
+}
+
 /// manual.json: "plugin files > decide denies anything that is not a tool
 /// call" (Codex's `decide`): `{}` and `null` block, under an allow-all
 /// policy too.

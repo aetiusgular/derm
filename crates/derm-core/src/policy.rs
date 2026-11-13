@@ -732,6 +732,163 @@ pub const CONTROL_PATHS: &[&str] = &[
     "derm_bin",
 ];
 
+/// Secret material (contract, section 4, step 7a; integration w6's close,
+/// E0's R-E0-2): keys, cloud, registry and database credentials, password
+/// stores, shell history and `.env` files. An `allow` whose folded input names
+/// one is `Ask` (Tony's call of 12 Nov on R-E0-7: ask, not deny), for every
+/// tool, so a file tool and a shell read it alike. From OpenMoat 0.19.0's
+/// `secrets-paths` (`policies/default-v1.yaml:17-75`) and its key-file names
+/// (`:1336-1338`). Matched by `names_entry`. The hook core's `SECRET_PATHS`
+/// and derm-pi's are the same list.
+pub const SECRET_PATHS: &[&str] = &[
+    ".ssh/",
+    ".aws/",
+    ".gnupg/",
+    ".config/gh/",
+    ".netrc",
+    ".authinfo",
+    ".docker/config.json",
+    ".config/containers/auth.json",
+    ".config/doctl/",
+    ".kube/",
+    ".config/gcloud/",
+    ".azure/",
+    ".git-credentials",
+    ".pypirc",
+    ".cargo/credentials",
+    ".gem/credentials",
+    ".pgpass",
+    ".my.cnf",
+    ".mylogin.cnf",
+    ".vault-token",
+    ".terraform.d/credentials",
+    ".config/op/",
+    ".password-store/",
+    ".local/share/keyrings/",
+    "library/keychains/",
+    ".zsh_history",
+    ".bash_history",
+    ".env",
+    ".envrc",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+];
+
+/// Files that something runs later, outside the call (step 7a; R-E0-2's
+/// start-up half and R-E0-3): CI and commit hooks, editor run configurations,
+/// package-manager configuration that runs code, agent skill, hook and MCP
+/// files, and every shell's start-up files with curl's and wget's. From
+/// OpenMoat 0.19.0's `runs-later` (`policies/default-v1.yaml:1152-1230`) and
+/// `shell-rc` (`:645-658`). A leading `*` matches a suffix (`*.run.xml`).
+/// Matched by `names_entry`; the hook core's and derm-pi's `RUNS_LATER_PATHS`.
+pub const RUNS_LATER_PATHS: &[&str] = &[
+    ".github/workflows/",
+    ".github/agents/",
+    ".github/hooks/",
+    ".github/mcp.json",
+    ".gitlab-ci.yml",
+    ".circleci/",
+    "azure-pipelines.yml",
+    "jenkinsfile",
+    ".buildkite/",
+    ".husky/",
+    ".pre-commit-config.yaml",
+    "lefthook.yml",
+    ".lefthook.yml",
+    ".githooks/",
+    ".git-hooks/",
+    "githooks/",
+    "git-hooks/",
+    ".vscode/",
+    "*.code-workspace",
+    ".idea/",
+    "*.run.xml",
+    ".npmrc",
+    ".yarnrc",
+    ".cargo/config",
+    "bunfig.toml",
+    ".mcp.json",
+    ".agents/",
+    ".opencode/",
+    ".continue/",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish/",
+    ".login",
+    ".cshrc",
+    ".tcshrc",
+    ".kshrc",
+    ".mkshrc",
+    ".curlrc",
+    "_curlrc",
+    ".config/curlrc",
+    ".wgetrc",
+    ".config/wget/",
+];
+
+/// Cloud instance metadata and link-local addresses, which hand out the
+/// machine's cloud credentials (step 7a; R-E0-5). From OpenMoat 0.19.0's
+/// `cloud-metadata` (`policies/default-v1.yaml:659-664`). Matched by
+/// `names_entry`, so `10.169.254.1` is not `169.254.`.
+pub const METADATA_ADDRESSES: &[&str] = &[
+    "169.254.",
+    "fe80:",
+    "fd00:ec2::254",
+    "100.100.100.200",
+    "metadata.google.internal",
+    "metadata.goog",
+];
+
+/// `.env` followed by one of these is a committed template with no values
+/// (OpenMoat 0.19.0's `!**/.env.example` and its siblings, `:61-67`).
+const ENV_TEMPLATES: &[&str] = &[".example", ".sample", ".template", ".dist"];
+
+/// Whether folded `text` names `entry` of the lists above as a whole name:
+/// no name character (`a-z`, `0-9`, `_`, `-`, or `.`) runs into it on the
+/// left, and, when it ends in a name character, none on the right (a `.` on
+/// the right is allowed, so `.env.local` is `.env`). A folder entry (`/` at
+/// the end) also matches its bare name (`tar czf k.tgz ~/.ssh`). A leading
+/// `*` drops the left check (`my.code-workspace`). `.env` followed by a
+/// template's suffix is not the file. The hook core's and derm-pi's
+/// `namesEntry`; the policy fixtures hold the three equal.
+pub fn names_entry(text: &str, entry: &str) -> bool {
+    let (suffix, entry) = match entry.strip_prefix('*') {
+        Some(e) => (true, e),
+        None => (false, entry),
+    };
+    let base = entry.strip_suffix('/').unwrap_or(entry);
+    if base.is_empty() {
+        return false;
+    }
+    let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
+    let ends_in_name = base.chars().next_back().is_some_and(name);
+    let mut from = 0;
+    while let Some(off) = text[from..].find(base) {
+        let i = from + off;
+        let after = &text[i + base.len()..];
+        let prev = text[..i].chars().next_back();
+        let next = after.chars().next();
+        let left_ok = suffix || prev.is_none_or(|c| !(name(c) || c == '.'));
+        let right_ok = !ends_in_name || next.is_none_or(|c| !name(c));
+        let template = base == ".env" && ENV_TEMPLATES.iter().any(|t| after.starts_with(t));
+        if left_ok && right_ok && !template {
+            return true;
+        }
+        from = i + text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// The path the shell opens is the same with `//` or `/./` in it, so a
 /// control path is also looked for in the text with those collapsed to `/`
 /// (review W4-S5). Only ever adds an ask; the hook core's
@@ -1273,6 +1430,20 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
             format!("input names a control file ({control})"),
         );
     }
+    // Step 7a's other lists (integration w6's close, E0's R-E0-2, 3 and 5):
+    // secret material, files run later, cloud metadata addresses.
+    for (list, what) in [
+        (SECRET_PATHS, "a secret path"),
+        (RUNS_LATER_PATHS, "a file that runs later"),
+        (METADATA_ADDRESSES, "a cloud metadata address"),
+    ] {
+        if let Some(entry) = list
+            .iter()
+            .find(|e| texts.iter().any(|t| names_entry(t, e)))
+        {
+            return decide(Action::Ask, format!("input names {what} ({entry})"));
+        }
+    }
     // On the folded, escape-decoded text: stricter than the raw input
     // (`＄HOME` asks), the side that fails safe (rules section 9, item 7).
     if SHELL_TOOLS.contains(&normalized) {
@@ -1287,6 +1458,12 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
                     if glob { " (a glob)" } else { "" }
                 ),
             );
+        }
+        // A shell or interpreter that reads its program from its input: a
+        // pipe, a here-string, a process substitution or xargs, so the line
+        // does not show what runs (step 7b; E0's R-E0-1).
+        if let Some(program) = crate::command::stdin_program(folded) {
+            return decide(Action::Ask, format!("program read from input: `{program}`"));
         }
         // Package installs (contract section 6; wave 5 lane X's seam). An
         // install's ask or deny names its packages, so it comes first.
@@ -1697,7 +1874,7 @@ mod tests {
             "echo $HOME",
             "echo `id`",
             "ls *(e:x:)",
-            "cat ~/.ssh/id_ed25519",
+            "cat ~/notes.txt",
             "echo \u{FF04}HOME",
             "a \\\n b",
             "!!",
@@ -1712,6 +1889,11 @@ mod tests {
                 d.reason
             );
         }
+        // A `~` path that names a secret meets step 7a first (integration
+        // w6's close, R-E0-2): still an ask, with that reason.
+        let d = evaluate(&p, &call("bash", "claude-code", "cat ~/.ssh/id_ed25519"));
+        assert_eq!(d.action, Action::Ask);
+        assert_eq!(d.reason, "input names a secret path (.ssh/)");
         // The reason names the token, and calls a glob one (Mac test w1, M9);
         // the same text as the hook core and derm-pi.
         assert_eq!(

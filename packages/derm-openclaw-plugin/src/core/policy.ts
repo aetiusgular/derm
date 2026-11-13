@@ -11,7 +11,7 @@ import { decodeEscapes, fold } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, section 6.
 import { installDecision, parseInstalls } from "./installs/index.ts";
 // Wave 5 lane W: command rules, section 7.
-import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands } from "./command.ts";
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram } from "./command.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -673,6 +673,93 @@ export function namesControlPath(text: string, entry: string): boolean {
 }
 
 /**
+ * Secret material (contracts/policy.md section 4, step 7a; integration w6's
+ * close, E0's R-E0-2): keys, cloud, registry and database credentials,
+ * password stores, shell history and `.env` files, for every tool. From
+ * OpenMoat 0.19.0's `secrets-paths` (policies/default-v1.yaml:17-75) and its
+ * key-file names (:1336-1338). Matched by `namesEntry`; derm-core's
+ * `SECRET_PATHS` and derm-pi's are the same list.
+ */
+export const SECRET_PATHS = [
+  ".ssh/", ".aws/", ".gnupg/", ".config/gh/", ".netrc", ".authinfo", ".docker/config.json",
+  ".config/containers/auth.json", ".config/doctl/", ".kube/", ".config/gcloud/", ".azure/",
+  ".git-credentials", ".pypirc", ".cargo/credentials", ".gem/credentials", ".pgpass", ".my.cnf",
+  ".mylogin.cnf", ".vault-token", ".terraform.d/credentials", ".config/op/", ".password-store/",
+  ".local/share/keyrings/", "library/keychains/", ".zsh_history", ".bash_history", ".env", ".envrc",
+  "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+] as const;
+
+/**
+ * Files something runs later, outside the call (step 7a; R-E0-2's start-up
+ * half and R-E0-3): CI and commit hooks, editor run configurations, package
+ * manager configuration that runs code, agent skill, hook and MCP files, and
+ * every shell's start-up files with curl's and wget's. From OpenMoat 0.19.0's
+ * `runs-later` (:1152-1230) and `shell-rc` (:645-658). A leading `*` matches
+ * a suffix. Matched by `namesEntry`; derm-core's and derm-pi's list.
+ */
+export const RUNS_LATER_PATHS = [
+  ".github/workflows/", ".github/agents/", ".github/hooks/", ".github/mcp.json", ".gitlab-ci.yml", ".circleci/",
+  "azure-pipelines.yml", "jenkinsfile", ".buildkite/", ".husky/", ".pre-commit-config.yaml", "lefthook.yml",
+  ".lefthook.yml", ".githooks/", ".git-hooks/", "githooks/", "git-hooks/", ".vscode/", "*.code-workspace",
+  ".idea/", "*.run.xml", ".npmrc", ".yarnrc", ".cargo/config", "bunfig.toml", ".mcp.json", ".agents/",
+  ".opencode/", ".continue/", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
+  ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".config/fish/", ".login", ".cshrc", ".tcshrc",
+  ".kshrc", ".mkshrc", ".curlrc", "_curlrc", ".config/curlrc", ".wgetrc", ".config/wget/",
+] as const;
+
+/**
+ * Cloud instance metadata and link-local addresses (step 7a; R-E0-5), from
+ * OpenMoat 0.19.0's `cloud-metadata` (:659-664). Matched by `namesEntry`, so
+ * `10.169.254.1` is not `169.254.`.
+ */
+export const METADATA_ADDRESSES = ["169.254.", "fe80:", "fd00:ec2::254", "100.100.100.200", "metadata.google.internal", "metadata.goog"] as const;
+
+// `.env` followed by one of these is a committed template with no values
+// (OpenMoat 0.19.0's `.env.example` exception and its siblings, :61-67).
+const ENV_TEMPLATES = [".example", ".sample", ".template", ".dist"] as const;
+
+/**
+ * Whether folded `text` names `entry` of the lists above as a whole name: no
+ * name character runs into it on the left (`.` counts there), and, when it
+ * ends in a name character, none on the right. A folder entry also matches
+ * its bare name; a leading `*` drops the left check; `.env` followed by a
+ * template's suffix is not the file. derm-core's `names_entry`.
+ */
+export function namesEntry(text: string, entry: string): boolean {
+  const suffix = entry.startsWith("*");
+  const e = suffix ? entry.slice(1) : entry;
+  const base = e.endsWith("/") ? e.slice(0, -1) : e;
+  if (base === "") return false;
+  const endsInName = NAME_CHAR.test(base[base.length - 1] as string);
+  for (let i = text.indexOf(base); i >= 0; i = text.indexOf(base, i + 1)) {
+    const prev = i === 0 ? undefined : text[i - 1];
+    const after = text.slice(i + base.length);
+    const next = after[0];
+    const leftOk = suffix || prev === undefined || !LEFT_NAME_CHAR.test(prev);
+    const rightOk = !endsInName || next === undefined || !NAME_CHAR.test(next);
+    const template = base === ".env" && ENV_TEMPLATES.some((t) => after.startsWith(t));
+    if (leftOk && rightOk && !template) return true;
+  }
+  return false;
+}
+
+/** Step 7a's other lists and the reason each gives (integration w6's close). */
+export const MORE_STEP_7A_LISTS: ReadonlyArray<[readonly string[], string]> = [
+  [SECRET_PATHS, "a secret path"],
+  [RUNS_LATER_PATHS, "a file that runs later"],
+  [METADATA_ADDRESSES, "a cloud metadata address"],
+];
+
+/** The first entry of step 7a's other lists that `texts` name, with its reason. */
+export function moreStep7a(texts: readonly string[]): string | undefined {
+  for (const [list, what] of MORE_STEP_7A_LISTS) {
+    const entry = list.find((e) => texts.some((t) => namesEntry(t, e)));
+    if (entry !== undefined) return `input names ${what} (${entry})`;
+  }
+  return undefined;
+}
+
+/**
  * Shell text the matcher cannot read: expansions, history, braces, tilde,
  * zsh glob qualifiers, a backslash, and (integration w1, finding S1) the glob
  * characters `*`, `?` and `[`, which name files the matcher never sees.
@@ -882,10 +969,16 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   const texts = withCollapsedSlashes([folded, unquoted]);
   const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
   if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
+  // Step 7a's other lists (integration w6's close, E0's R-E0-2, 3 and 5).
+  const more = moreStep7a(texts);
+  if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
   // On the folded text, so `＄HOME` asks: stricter than the raw input, the
   // side that fails safe (integration w1; derm-core and derm-pi do the same).
   const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
   if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
+  // A shell or interpreter that reads its program from its input (step 7b; R-E0-1).
+  const fed = isShellTool(normalizedTool) ? stdinProgram(folded) : undefined;
+  if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
   // Package installs (contracts/policy.md section 6; lane X's seam). An
   // install's ask or deny names its packages, so it comes first.
   const install = isShellTool(normalizedTool) ? installDecision(normalizedTool, folded) : undefined;

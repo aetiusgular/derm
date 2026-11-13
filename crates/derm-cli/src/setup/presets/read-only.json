@@ -21,8 +21,7 @@
   "gaps": [
     "Shell text with `$`, a backtick, `!`, braces, `~`, a backslash or a glob asks under every preset (step 7b), so in the sbx VM it is denied: the agent must spell commands plainly.",
     "A command reached through a script, a Makefile target, an alias or `find -exec` is not read (policy.md section 7, known limits); a force push by refspec (`git push origin +main`) has no flag to meet.",
-    "Hosts: the presets do not ask about curl or wget. The boundary's network rules decide which hosts a chat reaches (srt's allowlist on the host, sbx's policy in the VM).",
-    "CI workflow folders (`.github/workflows/`) are not a control path of step 7a yet: lane W's request W-3."
+    "Hosts: the presets do not ask about curl or wget. The boundary's network rules decide which hosts a chat reaches (srt's allowlist on the host, sbx's policy in the VM)."
   ],
   "policy": {
     "version": 1,

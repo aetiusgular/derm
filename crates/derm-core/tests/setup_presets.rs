@@ -26,7 +26,7 @@ const CASES: &str = include_str!("../../../tests/cli-contract/checks/W/preset-ca
 fn every_preset_parses_and_answers_its_cases() {
     let cases: Value = serde_json::from_str(CASES).unwrap();
     let cases = cases["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 28);
+    assert_eq!(cases.len(), 36);
     for (name, text) in PRESETS {
         let doc: Value = serde_json::from_str(text).unwrap();
         let policy = parse(&doc["policy"].to_string()).unwrap_or_else(|e| panic!("{name}: {e}"));

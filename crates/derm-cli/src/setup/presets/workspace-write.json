@@ -21,8 +21,8 @@
   "gaps": [
     "Shell text with `$`, a backtick, `!`, braces, `~`, a backslash or a glob asks under every preset (step 7b), so in the sbx VM it is denied: the agent must spell commands plainly.",
     "A command reached through a script, a Makefile target, an alias or `find -exec` is not read (policy.md section 7, known limits); a force push by refspec (`git push origin +main`) has no flag to meet.",
-    "Hosts: the presets do not ask about curl or wget. The boundary's network rules decide which hosts a chat reaches (srt's allowlist on the host, sbx's policy in the VM).",
-    "CI workflow folders (`.github/workflows/`) are not a control path of step 7a yet: lane W's request W-3."
+    "Hosts: the presets do not ask about curl or wget, except a cloud metadata or link-local address, which asks under every policy (step 7a, E0's R-E0-5). The boundary's network rules decide which hosts a chat reaches (srt's allowlist on the host, sbx's policy in the VM).",
+    "Interpreter code on the command line (`python3 -c`, `node -e`, `perl -e` and their siblings) asks; a versioned name (`python3.12 -c`) is not met, and a script's own `-c` or `-e` flag asks too (integration w6's close, E0's R-E0-2)."
   ],
   "policy": {
     "version": 1,
@@ -1733,6 +1733,110 @@
         "tool": "bash",
         "command": [
           "telnet"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "python",
+          "-c"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "python3",
+          "-c"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "node",
+          "-e"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "node",
+          "--eval"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "node",
+          "-p"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "node",
+          "--print"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "perl",
+          "-e"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ruby",
+          "-e"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "php",
+          "-r"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "deno",
+          "eval"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "bun",
+          "-e"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "bun",
+          "--eval"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "pwsh",
+          "-c"
         ],
         "action": "ask"
       }

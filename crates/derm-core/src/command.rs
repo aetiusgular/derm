@@ -205,6 +205,395 @@ fn read(input: &[String], heads: &[&str], depth: usize, out: &mut Vec<Vec<String
     }
 }
 
+// --- A program read from input (contract section 4, step 7b; E0's R-E0-1) --
+
+/// What feeds a simple command's standard input, as the line shows it.
+#[derive(Clone, Copy, Default)]
+struct Feed {
+    /// After `|` or `|&` (not `||`).
+    piped: bool,
+    /// `<<<`: a here-string, which the splitter keeps as one quoted word.
+    here_string: bool,
+    /// `<<` or `<<-`: a here-document, whose lines follow as lines.
+    here_doc: bool,
+    /// `<(`: a process substitution as an operand or input.
+    process: bool,
+}
+
+/// Simple commands of folded shell text with what feeds each: the same
+/// splitting as `installs::parse::commands` (quotes, `#`, separators, a
+/// redirect's target dropped), keeping the pipe and redirect forms it drops.
+fn fed_commands(text: &str) -> Vec<(Vec<String>, Feed)> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut skip_next = false;
+    let mut feed = Feed::default();
+    let end_word =
+        |words: &mut Vec<String>, word: &mut String, in_word: &mut bool, skip_next: &mut bool| {
+            if *in_word {
+                if *skip_next {
+                    *skip_next = false;
+                } else {
+                    words.push(std::mem::take(word));
+                }
+            }
+            word.clear();
+            *in_word = false;
+        };
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            } else {
+                word.push(ch);
+            }
+            i += 1;
+            continue;
+        }
+        let mut end_command = |piped_next: bool,
+                               words: &mut Vec<String>,
+                               word: &mut String,
+                               in_word: &mut bool,
+                               skip_next: &mut bool,
+                               feed: &mut Feed| {
+            end_word(words, word, in_word, skip_next);
+            if !words.is_empty() {
+                out.push((std::mem::take(words), *feed));
+            }
+            *skip_next = false;
+            *feed = Feed {
+                piped: piped_next,
+                ..Feed::default()
+            };
+        };
+        match ch {
+            '\'' | '"' => {
+                quote = Some(ch);
+                in_word = true;
+            }
+            '#' if !in_word => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                end_command(
+                    false,
+                    &mut words,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_next,
+                    &mut feed,
+                );
+                continue;
+            }
+            '|' => {
+                // `||` is a list operator; `|` and `|&` pipe.
+                let or = chars.get(i + 1) == Some(&'|');
+                if or || chars.get(i + 1) == Some(&'&') {
+                    i += 1;
+                }
+                end_command(
+                    !or,
+                    &mut words,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_next,
+                    &mut feed,
+                );
+            }
+            ';' | '&' | '(' | ')' | '\n' | '\r' => {
+                end_command(
+                    false,
+                    &mut words,
+                    &mut word,
+                    &mut in_word,
+                    &mut skip_next,
+                    &mut feed,
+                );
+            }
+            '<' | '>' => {
+                if in_word && !word.is_empty() && word.chars().all(|c| c.is_ascii_digit()) {
+                    word.clear();
+                    in_word = false;
+                }
+                end_word(&mut words, &mut word, &mut in_word, &mut skip_next);
+                if ch == '<' {
+                    let run = chars[i..].iter().take_while(|c| **c == '<').count();
+                    match run {
+                        1 if chars.get(i + 1) == Some(&'(') => feed.process = true,
+                        2 => feed.here_doc = true,
+                        n if n >= 3 => feed.here_string = true,
+                        _ => {}
+                    }
+                }
+                // `<(` opens a command of its own: `(` splits next round.
+                if ch == '<' && chars.get(i + 1) == Some(&'(') {
+                    i += 1;
+                    continue;
+                }
+                while i + 1 < chars.len() && matches!(chars[i + 1], '>' | '<' | '&' | '|' | '-') {
+                    i += 1;
+                }
+                skip_next = true;
+            }
+            ' ' | '\t' | '\u{b}' | '\u{c}' => {
+                end_word(&mut words, &mut word, &mut in_word, &mut skip_next);
+            }
+            _ => {
+                word.push(ch);
+                in_word = true;
+            }
+        }
+        i += 1;
+    }
+    end_word(&mut words, &mut word, &mut in_word, &mut skip_next);
+    if !words.is_empty() {
+        out.push((words, feed));
+    }
+    out
+}
+
+/// Interpreters that run a program from their input when the line gives
+/// none (OpenMoat 0.19.0's `pipe-to-shell`, `policies/default-v1.yaml:258-
+/// 270`: `{python*,node,perl,ruby,php,deno,bun,pwsh}`).
+fn interpreter(base: &str) -> bool {
+    let py = base
+        .strip_prefix("python")
+        .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    py || matches!(
+        base,
+        "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "pwsh"
+    )
+}
+
+/// Paths a program reads its own standard input through.
+fn stdin_path(w: &str) -> bool {
+    matches!(w, "-" | "/dev/stdin" | "/dev/fd/0" | "/proc/self/fd/0")
+}
+
+/// Does `program`, run with `args`, read its program from its input? A shell
+/// does with `-s`, a stdin path, or no operand and no `-c`; `source` and `.`
+/// with a stdin path or no operand; an interpreter with a stdin path, or no
+/// operand and none of its program flags. Folded text is lowercase, so
+/// `-E` reads as `-e` and `-X` as `-x`; where that joins a valued flag and
+/// one that takes none, it is read as valued, which only reads more as fed.
+fn reads_its_input(program: &str, args: &[String]) -> bool {
+    let shell = SHELLS.contains(&program);
+    let source = matches!(program, "source" | ".");
+    // (letters that put the program on the line, short flags that take a
+    // value, long flags that put the program on the line, long flags that
+    // take a value)
+    let (program_letters, valued_letters, program_long, valued_long): (
+        &str,
+        &str,
+        &[&str],
+        &[&str],
+    ) = if shell {
+        ("c", "o", &[], &["--rcfile", "--init-file"])
+    } else if source {
+        ("", "", &[], &[])
+    } else if program.starts_with("python") {
+        ("cm", "wx", &[], &["--check-hash-based-pycs"])
+    } else if matches!(program, "node" | "nodejs" | "bun") {
+        (
+            "ep",
+            "rc",
+            &["--eval", "--print"],
+            &[
+                "--require",
+                "--import",
+                "--loader",
+                "--experimental-loader",
+                "--conditions",
+                "--input-type",
+                "--title",
+            ],
+        )
+    } else if program == "perl" {
+        ("e", "", &[], &[])
+    } else if program == "ruby" {
+        ("e", "ric", &[], &[])
+    } else if program == "php" {
+        ("rf", "cdz", &[], &[])
+    } else if program == "pwsh" {
+        (
+            "cfe",
+            "",
+            &["-command", "-file", "-encodedcommand", "-ec"],
+            &[
+                "-executionpolicy",
+                "-ep",
+                "-ex",
+                "-workingdirectory",
+                "-wd",
+                "-configurationname",
+                "-settingsfile",
+            ],
+        )
+    } else {
+        ("", "", &[], &[])
+    };
+    let mut i = 0;
+    let mut operands: Vec<&str> = Vec::new();
+    while i < args.len() {
+        let w = args[i].as_str();
+        if w == "--" {
+            operands.extend(args[i + 1..].iter().map(String::as_str));
+            break;
+        }
+        let flag =
+            (w.starts_with('-') && w.len() > 1) || (shell && w.starts_with('+') && w.len() > 1);
+        if !flag {
+            operands.push(w);
+            i += 1;
+            continue;
+        }
+        let name = w.split('=').next().unwrap_or(w);
+        if program_long.contains(&name) {
+            // pwsh's `-command -` reads the command from its input.
+            let value = if w.contains('=') {
+                w.split_once('=').map(|(_, v)| v)
+            } else {
+                args.get(i + 1).map(String::as_str)
+            };
+            return program == "pwsh" && value.is_some_and(stdin_path);
+        }
+        if valued_long.contains(&name) {
+            i += if w.contains('=') { 1 } else { 2 };
+            continue;
+        }
+        if w.starts_with("--") {
+            i += 1;
+            continue;
+        }
+        let letters = &w[1..];
+        if shell && letters.contains('s') && w.starts_with('-') {
+            return true;
+        }
+        if letters.chars().any(|c| program_letters.contains(c)) {
+            return false;
+        }
+        // A short flag that takes a value consumes the next word unless
+        // the value is attached (`-oerrexit` reads as one word).
+        if letters.len() == 1 && valued_letters.contains(letters) {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    match operands.first() {
+        None => true,
+        Some(first) => {
+            if stdin_path(first) {
+                return true;
+            }
+            // deno and bun name a subcommand first: `deno run -`, bare
+            // `deno run` with nothing after it.
+            if matches!(program, "deno" | "bun") && *first == "run" {
+                return operands.get(1).is_none_or(|w| stdin_path(w));
+            }
+            false
+        }
+    }
+}
+
+/// The program name of a shell or interpreter in folded shell text that
+/// reads its program from its input, fed by a pipe, a here-string, a process
+/// substitution or xargs, or (an interpreter only) a here-document; `None`
+/// when there is none. A shell's here-document is not counted: its lines are
+/// on the line, and the matcher reads them as commands. Read as written and
+/// with every backslash removed, inside `-c`, `eval` and `env -S` strings to
+/// the same depth as the command rules (E0's R-E0-1; OpenMoat 0.19.0's
+/// `pipe-to-shell` and `opaque-code`'s `<shell> @stdin`, read in
+/// `src/shell/tests/stdin.rs`).
+pub fn stdin_program(folded: &str) -> Option<String> {
+    let plain = folded.replace('\\', "");
+    for text in [folded, plain.as_str()] {
+        if let Some(p) = stdin_walk(&text.replace('`', "\n"), 0) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn stdin_walk(text: &str, depth: usize) -> Option<String> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    for (words, feed) in fed_commands(text) {
+        if let Some(p) = stdin_read(&words, feed, depth) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn stdin_read(input: &[String], feed: Feed, depth: usize) -> Option<String> {
+    let mut words: Vec<String> = input.to_vec();
+    let mut xargs = false;
+    for _ in 0..16 {
+        while words.first().is_some_and(|w| is_assignment(w)) {
+            words.remove(0);
+        }
+        let first = words.first()?;
+        let head = command_base(first).to_string();
+        let rest: Vec<String> = words[1..].to_vec();
+        if head == "env" {
+            if let Some(i) = rest.iter().position(|w| {
+                w == "-s" || w == "--split-string" || w.starts_with("--split-string=")
+            }) {
+                let s = match rest[i].strip_prefix("--split-string=") {
+                    Some(v) => Some(v.to_string()),
+                    None => rest.get(i + 1).cloned(),
+                };
+                return s.and_then(|s| stdin_walk(&s, depth + 1));
+            }
+        }
+        if head == "eval" {
+            return stdin_walk(&rest.join(" "), depth + 1);
+        }
+        let program = SHELLS.contains(&head.as_str())
+            || matches!(head.as_str(), "source" | ".")
+            || interpreter(&head);
+        if program {
+            if SHELLS.contains(&head.as_str()) {
+                if let Some(c) = shell_command_string(&rest) {
+                    return stdin_walk(&c, depth + 1);
+                }
+            }
+            let shellish =
+                SHELLS.contains(&head.as_str()) || matches!(head.as_str(), "source" | ".");
+            let fed = feed.piped
+                || feed.here_string
+                || feed.process
+                || xargs
+                || (feed.here_doc && !shellish);
+            return (fed && reads_its_input(&head, &rest)).then_some(head);
+        }
+        if !WRAPPERS.contains(&head.as_str()) {
+            return None;
+        }
+        if head == "xargs" {
+            xargs = true;
+        }
+        let next = rest.iter().position(|w| {
+            let b = command_base(w);
+            !is_assignment(w)
+                && (WRAPPERS.contains(&b)
+                    || SHELLS.contains(&b)
+                    || interpreter(b)
+                    || matches!(b, "source" | "." | "eval"))
+        })?;
+        words = rest[next..].to_vec();
+    }
+    None
+}
+
 /// Does a command's flag word meet a rule's flag word? `-f` also meets `-fu`.
 fn flag_meets(word: &str, flag: &str) -> bool {
     if word == flag

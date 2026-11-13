@@ -221,3 +221,264 @@ export function commandAllows(rule: readonly string[], folded: string): boolean 
 export function commandReason(rule: readonly string[]): string {
   return `rule bash ${rule.join(" ")}`;
 }
+
+// --- A program read from input (policy.md section 4, step 7b; E0's R-E0-1) --
+//
+// A shell or interpreter whose program comes from its input (a pipe, a
+// here-string, a process substitution or xargs; an interpreter's
+// here-document too) runs text the line does not show. The same reading as
+// derm-core's `stdin_program` (crates/derm-core/src/command.rs) and
+// OpenMoat 0.19.0's `pipe-to-shell` and `<shell> @stdin`
+// (policies/default-v1.yaml:258-270, src/shell/tests/stdin.rs). A shell's
+// here-document is not counted: its lines are on the line, and the matcher
+// reads them as commands.
+
+interface Feed {
+  piped: boolean;
+  hereString: boolean;
+  hereDoc: boolean;
+  process: boolean;
+}
+
+const noFeed = (piped = false): Feed => ({ piped, hereString: false, hereDoc: false, process: false });
+
+/** Simple commands with what feeds each: `installs/parse.ts`'s `commands`, keeping the pipe and redirect forms it drops. */
+function fedCommands(text: string): Array<[string[], Feed]> {
+  const out: Array<[string[], Feed]> = [];
+  let words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: string | undefined;
+  let skipNext = false;
+  let feed = noFeed();
+  const endWord = (): void => {
+    if (inWord) {
+      if (skipNext) skipNext = false;
+      else words.push(word);
+    }
+    word = "";
+    inWord = false;
+  };
+  const endCommand = (pipedNext: boolean): void => {
+    endWord();
+    if (words.length) out.push([words, feed]);
+    words = [];
+    skipNext = false;
+    feed = noFeed(pipedNext);
+  };
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i] as string;
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      else word += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+    } else if (ch === "#" && !inWord) {
+      while (i < text.length && text[i] !== "\n") i++;
+      endCommand(false);
+      continue;
+    } else if (ch === "|") {
+      const or = text[i + 1] === "|";
+      if (or || text[i + 1] === "&") i++;
+      endCommand(!or);
+    } else if (ch === ";" || ch === "&" || ch === "(" || ch === ")" || ch === "\n" || ch === "\r") {
+      endCommand(false);
+    } else if (ch === "<" || ch === ">") {
+      if (inWord && word !== "" && /^[0-9]+$/.test(word)) {
+        word = "";
+        inWord = false;
+      }
+      endWord();
+      if (ch === "<") {
+        let run = 0;
+        while (text[i + run] === "<") run++;
+        if (run === 1 && text[i + 1] === "(") feed.process = true;
+        else if (run === 2) feed.hereDoc = true;
+        else if (run >= 3) feed.hereString = true;
+        // `<(` opens a command of its own: `(` splits next round.
+        if (text[i + 1] === "(") {
+          i++;
+          continue;
+        }
+      }
+      while (i + 1 < text.length && "><&|-".includes(text[i + 1] as string)) i++;
+      skipNext = true;
+    } else if (ch === " " || ch === "\t" || ch === "\v" || ch === "\f") {
+      endWord();
+    } else {
+      word += ch;
+      inWord = true;
+    }
+    i++;
+  }
+  endWord();
+  if (words.length) out.push([words, feed]);
+  return out;
+}
+
+/** Interpreters that run a program from their input when the line gives none. */
+function isInterpreter(base: string): boolean {
+  if (base.startsWith("python") && /^[0-9.]*$/.test(base.slice("python".length))) return true;
+  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "pwsh"].includes(base);
+}
+
+const isStdinPath = (w: string): boolean => w === "-" || w === "/dev/stdin" || w === "/dev/fd/0" || w === "/proc/self/fd/0";
+
+/**
+ * Does `program`, run with `args`, read its program from its input? A shell
+ * does with `-s`, a stdin path, or no operand and no `-c`; `source` and `.`
+ * with a stdin path or no operand; an interpreter with a stdin path, or no
+ * operand and none of its program flags. Folded text is lowercase, so `-E`
+ * reads as `-e` and `-X` as `-x`; where that joins a valued flag and one
+ * that takes none, it is read as valued, which only reads more as fed.
+ */
+function readsItsInput(program: string, args: readonly string[]): boolean {
+  const shell = SHELLS.has(program);
+  const source = program === "source" || program === ".";
+  let programLetters = "";
+  let valuedLetters = "";
+  let programLong: readonly string[] = [];
+  let valuedLong: readonly string[] = [];
+  if (shell) {
+    programLetters = "c";
+    valuedLetters = "o";
+    valuedLong = ["--rcfile", "--init-file"];
+  } else if (source) {
+    // none
+  } else if (program.startsWith("python")) {
+    programLetters = "cm";
+    valuedLetters = "wx";
+    valuedLong = ["--check-hash-based-pycs"];
+  } else if (program === "node" || program === "nodejs" || program === "bun") {
+    programLetters = "ep";
+    valuedLetters = "rc";
+    programLong = ["--eval", "--print"];
+    valuedLong = ["--require", "--import", "--loader", "--experimental-loader", "--conditions", "--input-type", "--title"];
+  } else if (program === "perl") {
+    programLetters = "e";
+  } else if (program === "ruby") {
+    programLetters = "e";
+    valuedLetters = "ric";
+  } else if (program === "php") {
+    programLetters = "rf";
+    valuedLetters = "cdz";
+  } else if (program === "pwsh") {
+    programLetters = "cfe";
+    programLong = ["-command", "-file", "-encodedcommand", "-ec"];
+    valuedLong = ["-executionpolicy", "-ep", "-ex", "-workingdirectory", "-wd", "-configurationname", "-settingsfile"];
+  }
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; ) {
+    const w = args[i] as string;
+    if (w === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    const flag = (w.startsWith("-") && w.length > 1) || (shell && w.startsWith("+") && w.length > 1);
+    if (!flag) {
+      operands.push(w);
+      i++;
+      continue;
+    }
+    const name = w.split("=")[0] as string;
+    if (programLong.includes(name)) {
+      // pwsh's `-command -` reads the command from its input.
+      const value = w.includes("=") ? w.slice(w.indexOf("=") + 1) : args[i + 1];
+      return program === "pwsh" && value !== undefined && isStdinPath(value);
+    }
+    if (valuedLong.includes(name)) {
+      i += w.includes("=") ? 1 : 2;
+      continue;
+    }
+    if (w.startsWith("--")) {
+      i++;
+      continue;
+    }
+    const letters = w.slice(1);
+    if (shell && w.startsWith("-") && letters.includes("s")) return true;
+    if ([...letters].some((c) => programLetters.includes(c))) return false;
+    // A short flag that takes a value consumes the next word unless it is attached.
+    if (letters.length === 1 && valuedLetters.includes(letters)) {
+      i += 2;
+      continue;
+    }
+    i++;
+  }
+  const first = operands[0];
+  if (first === undefined) return true;
+  if (isStdinPath(first)) return true;
+  // deno and bun name a subcommand first: `deno run -`, bare `deno run`.
+  if ((program === "deno" || program === "bun") && first === "run") {
+    const second = operands[1];
+    return second === undefined || isStdinPath(second);
+  }
+  return false;
+}
+
+const isProgram = (b: string): boolean => SHELLS.has(b) || b === "source" || b === "." || isInterpreter(b);
+
+/**
+ * The program name of a shell or interpreter in folded shell text that
+ * reads its program from its input, or undefined. Read as written and with
+ * every backslash removed, inside `-c`, `eval` and `env -S` strings to the
+ * same depth as the command rules.
+ */
+export function stdinProgram(folded: string): string | undefined {
+  for (const text of [folded, folded.replace(/\\/g, "")]) {
+    const p = stdinWalk(text.replace(/`/g, "\n"), 0);
+    if (p !== undefined) return p;
+  }
+  return undefined;
+}
+
+function stdinWalk(text: string, depth: number): string | undefined {
+  if (depth > MAX_DEPTH) return undefined;
+  for (const [words, feed] of fedCommands(text)) {
+    const p = stdinRead(words, feed, depth);
+    if (p !== undefined) return p;
+  }
+  return undefined;
+}
+
+function stdinRead(input: string[], feed: Feed, depth: number): string | undefined {
+  let words = input;
+  let xargs = false;
+  for (let guard = 0; guard < 16; guard++) {
+    while (words.length && ASSIGNMENT.test(words[0] as string)) words = words.slice(1);
+    if (!words.length) return undefined;
+    const head = commandBase(words[0] as string);
+    const rest = words.slice(1);
+    if (head === "env") {
+      const split = rest.findIndex((w) => w === "-s" || w === "--split-string" || w.startsWith("--split-string="));
+      if (split >= 0) {
+        const w = rest[split] as string;
+        const s = w.startsWith("--split-string=") ? w.slice("--split-string=".length) : rest[split + 1];
+        return s === undefined ? undefined : stdinWalk(s, depth + 1);
+      }
+    }
+    if (head === "eval") return stdinWalk(rest.join(" "), depth + 1);
+    if (isProgram(head)) {
+      if (SHELLS.has(head)) {
+        const c = shellCommandString(rest);
+        if (c !== undefined) return stdinWalk(c, depth + 1);
+      }
+      const shellish = SHELLS.has(head) || head === "source" || head === ".";
+      const fed = feed.piped || feed.hereString || feed.process || xargs || (feed.hereDoc && !shellish);
+      return fed && readsItsInput(head, rest) ? head : undefined;
+    }
+    if (!WRAPPERS.has(head)) return undefined;
+    if (head === "xargs") xargs = true;
+    const next = rest.findIndex((w) => {
+      const b = commandBase(w);
+      return !ASSIGNMENT.test(w) && (WRAPPERS.has(b) || isProgram(b) || b === "eval");
+    });
+    if (next < 0) return undefined;
+    words = rest.slice(next);
+  }
+  return undefined;
+}

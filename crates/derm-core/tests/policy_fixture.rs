@@ -44,8 +44,8 @@ fn fixture_has_thirteen_rules_and_fifty_three_cases() {
     );
     assert_eq!(
         cases.len(),
-        119,
-        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3), 22 from wave 5 lane W (command rules), 10 from integration w5's close (review W5-S1, S3, S4), 3 from its fix pass (W5R-7(a), W5R2-3)"
+        152,
+        "45 to integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5 (PowerShell, lane Z's request 3), 22 from wave 5 lane W (command rules), 10 from integration w5's close (review W5-S1, S3, S4), 3 from its fix pass (W5R-7(a), W5R2-3), 33 from integration w6's close (E0's R-E0-1, 2, 3, 5)"
     );
 }
 
@@ -65,21 +65,18 @@ fn every_case_normalizes_to_the_expected_tool() {
 #[test]
 fn every_case_gets_the_expected_decision() {
     let (policy, cases) = load();
+    // Every case is checked and every miss listed, so one run shows them all.
+    let mut misses = Vec::new();
     for case in cases {
         let d = evaluate(&policy, &case.call);
-        assert_eq!(
-            d.action, case.expect.action,
-            "case {}: {}",
-            case.id, d.reason
-        );
-        assert!(
-            d.reason.starts_with(&case.expect.reason_prefix),
-            "case {}: reason {:?} does not start with {:?}",
-            case.id,
-            d.reason,
-            case.expect.reason_prefix
-        );
+        if d.action != case.expect.action || !d.reason.starts_with(&case.expect.reason_prefix) {
+            misses.push(format!(
+                "case {}: got {:?} {:?}, want {:?} {:?}",
+                case.id, d.action, d.reason, case.expect.action, case.expect.reason_prefix
+            ));
+        }
     }
+    assert!(misses.is_empty(), "{misses:#?}");
 }
 
 /// Wave 5 lane W: every command shape the schema refuses is refused here too

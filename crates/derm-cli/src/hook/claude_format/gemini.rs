@@ -101,9 +101,30 @@ fn record_id(input: &Map<String, Value>) -> String {
     format!("{HARNESS}-{}-{at}", call_key(input))
 }
 
+/// Gemini CLI 0.68.0's own tools under the names the policy's rules use
+/// (integration w6's close, E0's R-E0-4; rules cases 82 and 243):
+/// `run_shell_command` is a shell (`coverage.shellAliases`), the rest its
+/// file, search and fetch tools (`coverage.toolAliases`). Names from
+/// `@google/gemini-cli-core@0.68.0` `dist/src/tools/definitions/
+/// base-declarations.js:25-75` (read). Held equal to the preset row by a
+/// test. E0 found every call of these asking under the default preset.
+pub const TOOL_ALIASES: &[(&str, &str)] = &[
+    ("run_shell_command", "bash"),
+    ("read_file", "read"),
+    ("read_many_files", "read"),
+    ("list_directory", "ls"),
+    ("grep_search", "grep"),
+    ("write_file", "write"),
+    ("replace", "edit"),
+    ("web_fetch", "webfetch"),
+    ("google_web_search", "websearch"),
+    ("write_todos", "todowrite"),
+];
+
 /// The name the gate matches (`toolForGate`): `mcp__<server>__<tool>` from
 /// `mcp_context` when it names both, since `mcp_<server>_<tool>` misreads a
-/// server whose name holds `_`; else the tool's own name.
+/// server whose name holds `_`; else the policy's name for one of Gemini's
+/// own tools (`TOOL_ALIASES`); else the tool's own name.
 pub fn tool_for_gate(input: &Map<String, Value>) -> String {
     let name = input
         .get("tool_name")
@@ -117,7 +138,10 @@ pub fn tool_for_gate(input: &Map<String, Value>) -> String {
     };
     match (part("server_name"), part("tool_name")) {
         (Some(s), Some(t)) => format!("mcp__{s}__{t}"),
-        _ => name,
+        _ => TOOL_ALIASES
+            .iter()
+            .find(|(raw, _)| *raw == name)
+            .map_or(name.clone(), |(_, policy)| (*policy).to_string()),
     }
 }
 
