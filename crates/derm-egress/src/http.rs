@@ -295,8 +295,7 @@ pub fn response_framing(method: &str, h: &Head) -> Result<Framing, Bad> {
             .iter()
             .flat_map(|v| v.split(','))
             .map(|c| c.trim().to_ascii_lowercase())
-            .filter(|c| !c.is_empty())
-            .last();
+            .rfind(|c| !c.is_empty());
         return Ok(if last.as_deref() == Some("chunked") {
             Framing::Chunked
         } else {
