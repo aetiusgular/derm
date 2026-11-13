@@ -18,6 +18,7 @@
 //! - every text a record carries is shown with its control characters
 //!   removed and cut to the screen's width, and the source of each line is
 //!   named, so the agent's own words never pass as derm's.
+//!
 //! Its output is one screen: each part is cut to a few lines with how many
 //! it left out (`--all` lifts the cut; case 185's rule for replies that grow
 //! with the data).

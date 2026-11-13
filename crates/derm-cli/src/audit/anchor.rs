@@ -436,6 +436,9 @@ mod tests {
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     }
 
+    /// Unix only: `core.hooksPath=/dev/null` under Git for Windows is not
+    /// verified (lane 6E's status doc).
+    #[cfg(unix)]
     #[test]
     fn a_git_place_commits_on_its_ref_and_runs_no_repository_hook() {
         let d = std::env::temp_dir().join(format!("da-git-{}", std::process::id()));
