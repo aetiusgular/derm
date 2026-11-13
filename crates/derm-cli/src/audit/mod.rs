@@ -3,18 +3,21 @@
 //!
 //! - `verify`: checks a chain with no daemon: the daemon's log (v1), a
 //!   light-tier log or an export (v2), against a start and anchors;
-//! - `export`: a chain as JSON Lines, content left out unless asked for;
+//! - `export`: a chain as JSON Lines, content left out unless asked for,
+//!   or as OCSF 1.9.0 events (`--ocsf`);
 //! - `anchor`: records a chain's head in a file or on a git ref the person
 //!   names, from a terminal only;
 //! - `why <call>`: one call's intent, decision and effects on one screen.
 //!
 //! The line formats are the references': `derm_core::audit_chain` (v2) and
 //! `derm_daemon::activity::chain` (v1); nothing here hashes a line itself.
-//! The OCSF 1.9.0 mapping (E4) is not built.
+//! `export --ocsf` writes OCSF 1.9.0 events (E4; `ocsf/`), and `verify
+//! --ocsf` checks them.
 
 mod anchor;
 mod chains;
 mod export;
+mod ocsf;
 mod sources;
 mod verify;
 mod why;
@@ -24,7 +27,7 @@ mod tests;
 
 use sources::Source;
 
-pub const USAGE: &str = "usage: derm audit <verify|export|anchor|why> ...\n  derm audit verify [<file>... | --light <chat>] [--data-dir <dir>] [--start <seq>:<prev>] [--anchor <seq>:<hash>]... [--anchors <file|git repo> [--chain <label>]] [--json]\n  derm audit export [<file>... | --light <chat>] [--data-dir <dir>] [--out <file>] [--content]\n  derm audit anchor (--file <path> | --git <repo>) [<file>... | --light <chat>] [--data-dir <dir>]\n  derm audit why <call id> [--chat <chat>] [--data-dir <dir>] [--all] [--json]";
+pub const USAGE: &str = "usage: derm audit <verify|export|anchor|why> ...\n  derm audit verify [<file>... | --light <chat>] [--data-dir <dir>] [--start <seq>:<prev>] [--anchor <seq>:<hash>]... [--anchors <file|git repo> [--chain <label>]] [--ocsf] [--json]\n  derm audit export [<file>... | --light <chat>] [--data-dir <dir>] [--out <file>] [--content] [--ocsf]\n  derm audit anchor (--file <path> | --git <repo>) [<file>... | --light <chat>] [--data-dir <dir>]\n  derm audit why <call id> [--chat <chat>] [--data-dir <dir>] [--all] [--json]";
 
 pub fn main(args: &[String]) -> u8 {
     match args.first().map(String::as_str) {

@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 
 use super::anchor::{Place, Record};
 use super::chains::{self, Report, Version};
+use super::ocsf;
 use super::sources::{self, Line, Source};
 
 /// What one chain's check found.
@@ -67,6 +68,22 @@ impl Outcome {
 
 /// Checks `src` from `start` (or genesis) against `anchors`.
 pub fn check(src: &Source, start: Option<(u64, String)>, anchors: &[Record]) -> Outcome {
+    check_with(src, start, anchors, false)
+}
+
+/// As [`check`], for an OCSF export (`--ocsf`): the chain is read through
+/// each event's `raw_data`, and each event must be what
+/// [`ocsf::map`] makes of its `raw_data`, so an edited OCSF field shows.
+pub fn check_ocsf(src: &Source, start: Option<(u64, String)>, anchors: &[Record]) -> Outcome {
+    check_with(src, start, anchors, true)
+}
+
+fn check_with(
+    src: &Source,
+    start: Option<(u64, String)>,
+    anchors: &[Record],
+    is_ocsf: bool,
+) -> Outcome {
     let files = sources::files_of(src);
     let mut out = Outcome {
         label: src.label(),
@@ -80,6 +97,32 @@ pub fn check(src: &Source, start: Option<(u64, String)>, anchors: &[Record]) -> 
             out.failure = Some((0, e));
             return out;
         }
+    };
+    let mut events: Vec<(Value, ocsf::Ctx)> = Vec::new();
+    let lines = if is_ocsf {
+        let mut raw = Vec::new();
+        for (i, l) in lines.iter().enumerate() {
+            let got = serde_json::from_str::<Value>(&l.text)
+                .map_err(|e| format!("not JSON: {e}"))
+                .and_then(|e| ocsf::unmap(&e).map(|(r, c)| (e, r, c)));
+            match got {
+                Ok((e, r, c)) => {
+                    raw.push(Line {
+                        text: r,
+                        ..l.clone()
+                    });
+                    events.push((e, c));
+                }
+                Err(why) => {
+                    out.lines = lines.clone();
+                    out.failure = Some((i + 1, format!("not an OCSF event of derm's: {why}")));
+                    return out;
+                }
+            }
+        }
+        raw
+    } else {
+        lines
     };
     out.lines = lines;
     if out.lines.is_empty() {
@@ -133,6 +176,21 @@ pub fn check(src: &Source, start: Option<(u64, String)>, anchors: &[Record]) -> 
         out.failure = Some((b.line, b.why.clone()));
         return out;
     }
+    if is_ocsf {
+        if let Some(fail) = ocsf_fields(&out, &events) {
+            out.failure = Some(fail);
+            return out;
+        }
+        if events
+            .iter()
+            .any(|(_, c)| c.product_version != env!("CARGO_PKG_VERSION"))
+        {
+            out.notes.push(format!(
+                "events made by another derm version: only their chain and raw_data_hash were checked, not their OCSF fields (this is derm {})",
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
+    }
     for (i, a) in anchors.iter().enumerate() {
         if let Some(fail) = anchor_fails(&out.report, a, &mut out.notes) {
             out.failure = Some((0, format!("anchor {}: {fail}", i + 1)));
@@ -140,6 +198,35 @@ pub fn check(src: &Source, start: Option<(u64, String)>, anchors: &[Record]) -> 
         }
     }
     out
+}
+
+/// The first OCSF event whose `raw_data_hash` or fields are not what this
+/// derm makes of its `raw_data`.
+fn ocsf_fields(out: &Outcome, events: &[(Value, ocsf::Ctx)]) -> Option<(usize, String)> {
+    let v = out.report.version?;
+    for (i, ((e, ctx), link)) in events.iter().zip(&out.report.links).enumerate() {
+        let raw = &out.lines[i].text;
+        let mut want = ocsf::map(raw, link, v, ctx);
+        if e.get("raw_data_hash") != want.get("raw_data_hash") {
+            return Some((i + 1, "raw_data_hash is not the SHA-256 of raw_data".into()));
+        }
+        if ctx.product_version != env!("CARGO_PKG_VERSION") {
+            continue;
+        }
+        if let (Some(w), Some(d)) = (want.as_object_mut(), e.get("device")) {
+            if w.contains_key("device") {
+                w.insert("device".into(), d.clone());
+            }
+        }
+        if &want != e {
+            return Some((
+                i + 1,
+                "the OCSF fields are not what derm makes of this event's raw_data: an edited field"
+                    .into(),
+            ));
+        }
+    }
+    None
 }
 
 /// Why anchor `a` no longer matches the chain read, or `None`.
@@ -209,7 +296,7 @@ pub fn anchors_for(place: &Place, label: &str) -> Result<Vec<Record>, String> {
     Ok(mine)
 }
 
-pub const USAGE: &str = "usage: derm audit verify [<file>... | --light <chat>] [--data-dir <dir>] [--start <seq>:<prev>] [--anchor <seq>:<hash>]... [--anchors <file|git repo> [--chain <label>]] [--json]";
+pub const USAGE: &str = "usage: derm audit verify [<file>... | --light <chat>] [--data-dir <dir>] [--start <seq>:<prev>] [--anchor <seq>:<hash>]... [--anchors <file|git repo> [--chain <label>]] [--ocsf] [--json]";
 
 pub fn main(args: &[String]) -> u8 {
     let mut files = Vec::new();
@@ -220,6 +307,7 @@ pub fn main(args: &[String]) -> u8 {
     let mut place: Option<String> = None;
     let mut chain: Option<String> = None;
     let mut as_json = false;
+    let mut is_ocsf = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = |name: &str| match it.next() {
@@ -235,6 +323,7 @@ pub fn main(args: &[String]) -> u8 {
                 "--anchors" => place = Some(value("--anchors")?),
                 "--chain" => chain = Some(value("--chain")?),
                 "--json" => as_json = true,
+                "--ocsf" => is_ocsf = true,
                 "-h" | "--help" => return Err(String::new()),
                 s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
                 s => files.push(std::path::PathBuf::from(s)),
@@ -282,6 +371,10 @@ pub fn main(args: &[String]) -> u8 {
         );
         v
     };
+    if is_ocsf && !matches!(srcs.as_slice(), [Source::Files(_)]) {
+        eprintln!("derm audit verify: --ocsf reads an OCSF export: name its file\n{USAGE}");
+        return 2;
+    }
     if srcs.len() > 1 && (start.is_some() || !marks.is_empty()) {
         eprintln!(
             "derm audit verify: --start and --anchor name one chain: give a file or --light\n{USAGE}"
@@ -317,7 +410,11 @@ pub fn main(args: &[String]) -> u8 {
                 }
             }
         }
-        let mut o = check(src, start.clone(), &anchors);
+        let mut o = if is_ocsf {
+            check_ocsf(src, start.clone(), &anchors)
+        } else {
+            check(src, start.clone(), &anchors)
+        };
         o.notes.extend(missing);
         if !o.holds() {
             code = 1;

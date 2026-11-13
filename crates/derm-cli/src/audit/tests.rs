@@ -659,7 +659,114 @@ fn the_dispatch_answers_usage_for_nothing_and_an_unknown_verb() {
     assert_eq!(super::main(&[]), 2);
     assert_eq!(super::main(&["nope".to_string()]), 2);
     assert_eq!(
-        super::main(&["export".to_string(), "--ocsf".to_string()]),
+        super::main(&["export".to_string(), "--bogus".to_string()]),
         2
     );
+}
+
+// --- OCSF -----------------------------------------------------------------
+
+fn ocsf_export(src: &Source, content: bool) -> Vec<String> {
+    let mut out = Vec::new();
+    export::export_as(src, content, true, &mut out).unwrap();
+    String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+/// E4 and case 221 for the OCSF form: the export verifies through its
+/// `raw_data`, an edited OCSF field or `raw_data` shows, content stays out,
+/// and the daemon's anchors check it with `--chain daemon`.
+#[test]
+fn an_ocsf_export_verifies_and_an_edited_field_shows() {
+    let d = scratch("ocsf");
+    let mut evs = plain(4, T0);
+    evs[1].detail = json!({"attributes": {"prompt": "my secret plan", "tool_use_id": "t1"}});
+    evs[1].source = Src::Otel;
+    evs[2] = ev(
+        "auditd-1-1",
+        T0 + 2000,
+        Src::Auditd,
+        "write",
+        "write /w/a",
+        json!({"path": "/w/a", "ppid": 3}),
+    );
+    write_log(&d, &evs);
+    let src = Source::Daemon(d.clone());
+    let lines = ocsf_export(&src, false);
+    assert_eq!(lines.len(), 4);
+    assert!(!lines.join("\n").contains("my secret plan"));
+    let parsed: Vec<Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(parsed[2]["class_uid"], 1001);
+    assert_eq!(parsed[2]["file"]["path"], "/w/a");
+    assert_eq!(parsed[1]["activity_name"], "Withheld");
+    for e in &parsed {
+        assert!(super::ocsf::validate_for_tests(e).is_empty());
+    }
+    let f = d.join("ocsf.jsonl");
+    fs::write(&f, lines.join("\n") + "\n").unwrap();
+    let fsrc = Source::Files(vec![f.clone()]);
+    let o = verify::check_ocsf(&fsrc, None, &[]);
+    assert!(o.holds(), "{:?}", o.failure);
+    assert_eq!(o.report.withheld, 1);
+    // The daemon's anchor checks the OCSF export.
+    let place = Place::File(d.join("anchors.jsonl"));
+    assert_eq!(super::anchor_source(&src, &place, 0), 0);
+    let anchors = verify::anchors_for(&place, "daemon").unwrap();
+    assert!(verify::check_ocsf(&fsrc, None, &anchors).holds());
+    // An edited OCSF field.
+    let mut e = parsed.clone();
+    e[2]["file"]["path"] = json!("/w/innocent");
+    let edited: Vec<String> = e.iter().map(Value::to_string).collect();
+    fs::write(&f, edited.join("\n") + "\n").unwrap();
+    let o = verify::check_ocsf(&fsrc, None, &[]);
+    let (n, why) = o.failure.unwrap();
+    assert_eq!(n, 3);
+    assert!(why.contains("edited field"), "{why}");
+    // An edited raw_data breaks the chain (or its hash).
+    let mut r = parsed.clone();
+    r[2]["raw_data"] = json!(r[2]["raw_data"].as_str().unwrap().replace("/w/a", "/w/b"));
+    fs::write(
+        &f,
+        r.iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    assert_eq!(verify::check_ocsf(&fsrc, None, &[]).failure.unwrap().0, 3);
+    // A cut at the end shows against the anchor.
+    fs::write(&f, lines[..3].join("\n") + "\n").unwrap();
+    assert!(verify::check_ocsf(&fsrc, None, &[]).holds());
+    assert!(verify::check_ocsf(&fsrc, None, &anchors).failure.is_some());
+    // A plain chain file is not an OCSF export.
+    let plain_file = d.join("plain.jsonl");
+    let (pl, _) = export_to_vec(&src, false);
+    fs::write(&plain_file, pl.join("\n") + "\n").unwrap();
+    let o = verify::check_ocsf(&Source::Files(vec![plain_file]), None, &[]);
+    assert!(o.failure.unwrap().1.contains("not an OCSF event"));
+    let _ = fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_ocsf_flags_are_wired_to_the_commands() {
+    let d = scratch("ocsfmain");
+    write_log(&d, &plain(2, T0));
+    let out = d.join("o.jsonl");
+    let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let (dd, oo) = (d.to_str().unwrap(), out.to_str().unwrap());
+    assert_eq!(
+        export::main(&a(&["--data-dir", dd, "--out", oo, "--ocsf"])),
+        0
+    );
+    assert_eq!(verify::main(&a(&[oo, "--ocsf"])), 0);
+    // --ocsf needs the export's file.
+    assert_eq!(verify::main(&a(&["--data-dir", dd, "--ocsf"])), 2);
+    let _ = fs::remove_dir_all(&d);
 }

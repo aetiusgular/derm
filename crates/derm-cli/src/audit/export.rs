@@ -25,10 +25,11 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use super::chains::{self, Version};
+use super::ocsf;
 use super::sources::{self, Source};
 use super::verify;
 
-pub const USAGE: &str = "usage: derm audit export [<file>... | --light <chat>] [--data-dir <dir>] [--out <file>] [--content]";
+pub const USAGE: &str = "usage: derm audit export [<file>... | --light <chat>] [--data-dir <dir>] [--out <file>] [--content] [--ocsf]";
 
 /// What an export wrote.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -42,7 +43,20 @@ pub struct Summary {
 }
 
 /// Writes `src`'s chain to `out`.
+#[cfg(test)]
 pub fn export(src: &Source, content: bool, out: &mut dyn Write) -> Result<Summary, String> {
+    export_as(src, content, false, out)
+}
+
+/// Writes `src`'s chain to `out`, as chain lines or, with `as_ocsf`, as one
+/// OCSF 1.9.0 event per chain line (`ocsf::map`), each carrying the line.
+pub fn export_as(
+    src: &Source,
+    content: bool,
+    as_ocsf: bool,
+    out: &mut dyn Write,
+) -> Result<Summary, String> {
+    let ctx = ocsf::Ctx::new(&src.label(), !matches!(src, Source::Files(_)));
     let o = verify::check(src, None, &[]);
     if o.lines.is_empty() {
         if let Some((_, why)) = &o.failure {
@@ -85,6 +99,15 @@ pub fn export(src: &Source, content: bool, out: &mut dyn Write) -> Result<Summar
                 }
             }
         };
+        let line = if as_ocsf {
+            // The exported line, read back, so the event's `raw_data` is
+            // exactly what `verify --ocsf` checks.
+            let back = chains::read(&[line.as_str()], Some((link.seq, link.prev.as_str())));
+            let read = back.links.first().unwrap_or(link);
+            ocsf::map(&line, read, version, &ctx).to_string()
+        } else {
+            line
+        };
         out.write_all(line.as_bytes())
             .and_then(|()| out.write_all(b"\n"))
             .map_err(|e| format!("writing: {e}"))?;
@@ -100,6 +123,7 @@ pub fn main(args: &[String]) -> u8 {
     let mut data: Option<String> = None;
     let mut out_path: Option<PathBuf> = None;
     let mut content = false;
+    let mut as_ocsf = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let r: Result<(), String> = match a.as_str() {
@@ -119,7 +143,8 @@ pub fn main(args: &[String]) -> u8 {
                 Ok(())
             }
             "--ocsf" => {
-                Err("--ocsf: the OCSF 1.9.0 mapping is not built (lane 6E's status doc)".into())
+                as_ocsf = true;
+                Ok(())
             }
             "-h" | "--help" => Err(String::new()),
             s if s.starts_with('-') => Err(format!("unknown flag {s}")),
@@ -161,13 +186,13 @@ pub fn main(args: &[String]) -> u8 {
     };
     let result = match &out_path {
         Some(p) => match create_private(p) {
-            Ok(f) => export(&src, content, &mut BufWriter::new(f)),
+            Ok(f) => export_as(&src, content, as_ocsf, &mut BufWriter::new(f)),
             Err(e) => Err(e),
         },
         None => {
             let stdout = std::io::stdout();
             let mut lock = stdout.lock();
-            export(&src, content, &mut lock)
+            export_as(&src, content, as_ocsf, &mut lock)
         }
     };
     let s = match result {
@@ -194,6 +219,9 @@ pub fn main(args: &[String]) -> u8 {
     }
     if s.with_content > 0 {
         eprintln!("  {} line(s) hold content (--content)", s.with_content);
+    }
+    if as_ocsf {
+        eprintln!("  as OCSF 1.9.0 events; check it with derm audit verify --ocsf");
     }
     if let Some((seq, prev)) = &s.start {
         eprintln!("  it does not begin a chain: verify it with --start {seq}:{prev}");
