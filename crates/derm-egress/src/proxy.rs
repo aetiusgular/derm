@@ -26,7 +26,9 @@
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -273,37 +275,129 @@ fn event_id() -> String {
     format!("egress-{hex}")
 }
 
-/// Whether an address is not on the public internet (loopback, private,
-/// shared, link-local, unspecified, multicast, broadcast, documentation).
+/// Whether an address is not globally reachable, so no brokered request may
+/// dial it (review W6C-S5, note BD).
+///
+/// IPv4 by the IANA IPv4 special-purpose registry (every range not globally
+/// reachable, plus multicast and `240.0.0.0/4`) and Azure's WireServer
+/// `168.63.129.16`, which srt 0.0.82 refuses too
+/// (`resolved-address-guard.js`, `CLOUD_METADATA_ADDRESSES`). IPv6: a form
+/// that carries an IPv4 address is judged by that address (mapped,
+/// compatible, translated, NAT64 `64:ff9b::/96`, 6to4; srt's `embeddedIPv4`),
+/// so NAT64 toward a public host passes and toward a private one does not;
+/// anything else must be global unicast (`2000::/3`) outside the IETF
+/// protocol block `2001::/23` (Teredo among it), documentation
+/// (`2001:db8::/32`, `3fff::/20`); and the NAT64 local-use prefix
+/// `64:ff9b:1::/48` is refused whole, since where it carries its IPv4
+/// address cannot be told from the address (RFC 6052 section 2.2).
 pub fn non_public(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v) => {
-            let o = v.octets();
-            v.is_loopback()
-                || v.is_private()
-                || v.is_link_local()
-                || v.is_unspecified()
-                || v.is_broadcast()
-                || v.is_multicast()
-                || v.is_documentation()
-                || o[0] == 0
-                || (o[0] == 100 && (64..128).contains(&o[1]))
-                || (o[0] == 198 && (o[1] == 18 || o[1] == 19))
-                || o[0] >= 240
-        }
+        IpAddr::V4(v) => v4_refused(v),
         IpAddr::V6(v) => {
-            if let Some(m) = v.to_ipv4_mapped() {
-                return non_public(IpAddr::V4(m));
+            if let Some(e) = embedded_v4(v) {
+                return v4_refused(e);
             }
             let s = v.segments();
-            v.is_loopback()
-                || v.is_unspecified()
-                || v.is_multicast()
-                || (s[0] & 0xfe00) == 0xfc00
-                || (s[0] & 0xffc0) == 0xfe80
+            let global_unicast = (s[0] & 0xe000) == 0x2000;
+            !global_unicast
+                || (s[0] == 0x2001 && s[1] < 0x0200)
                 || (s[0] == 0x2001 && s[1] == 0x0db8)
-                || (s[0] == 0x64 && s[1] == 0xff9b)
+                || (s[0] == 0x3fff && (s[1] & 0xf000) == 0)
         }
+    }
+}
+
+fn v4_refused(v: Ipv4Addr) -> bool {
+    let o = v.octets();
+    match o[0] {
+        0 | 10 | 127 => true,
+        100 => (64..128).contains(&o[1]),
+        169 => o[1] == 254,
+        172 => (16..32).contains(&o[1]),
+        168 => o == [168, 63, 129, 16],
+        192 => (o[1] == 0 && (o[2] == 0 || o[2] == 2)) || (o[1] == 88 && o[2] == 99) || o[1] == 168,
+        198 => o[1] == 18 || o[1] == 19 || (o[1] == 51 && o[2] == 100),
+        203 => o[1] == 0 && o[2] == 113,
+        x => x >= 224,
+    }
+}
+
+/// The IPv4 address an IPv6 address carries in a form a network delivers to
+/// that IPv4 address (srt 0.0.82 `address.js` `embeddedIPv4`).
+fn embedded_v4(v: Ipv6Addr) -> Option<Ipv4Addr> {
+    let s = v.segments();
+    let low = || Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8);
+    let zero = |a: usize, b: usize| s[a..b].iter().all(|x| *x == 0);
+    if s[0] == 0x2002 {
+        return Some(Ipv4Addr::new(
+            (s[1] >> 8) as u8,
+            s[1] as u8,
+            (s[2] >> 8) as u8,
+            s[2] as u8,
+        ));
+    }
+    if s[0] == 0x64 && s[1] == 0xff9b && zero(2, 6) {
+        return Some(low());
+    }
+    if zero(0, 5) && (s[5] == 0 || s[5] == 0xffff) {
+        return Some(low());
+    }
+    if zero(0, 4) && s[4] == 0xffff && s[5] == 0 {
+        return Some(low());
+    }
+    None
+}
+
+/// Whether a dial to `ip` is refused: not globally reachable, or one of this
+/// host's own addresses (`own`) in any form that carries it (srt 0.0.82
+/// refuses its host's interface addresses: a service bound to `0.0.0.0`
+/// answers on them as on loopback).
+pub fn refused(ip: IpAddr, own: &[IpAddr]) -> bool {
+    if non_public(ip) {
+        return true;
+    }
+    let carried = match ip {
+        IpAddr::V6(v) => embedded_v4(v).map(IpAddr::V4),
+        IpAddr::V4(_) => None,
+    };
+    own.iter().any(|o| *o == ip || Some(*o) == carried)
+}
+
+/// The addresses on this host's network interfaces (`getifaddrs`); empty
+/// where they cannot be read, so the fixed ranges still hold.
+pub fn own_addresses() -> Vec<IpAddr> {
+    #[cfg(unix)]
+    {
+        let mut out = Vec::new();
+        let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+        // SAFETY: getifaddrs fills `head` with a list freed by freeifaddrs.
+        if unsafe { libc::getifaddrs(&mut head) } != 0 {
+            return out;
+        }
+        let mut cur = head;
+        while !cur.is_null() {
+            // SAFETY: `cur` is a node of the list getifaddrs returned.
+            let ifa = unsafe { &*cur };
+            if !ifa.ifa_addr.is_null() {
+                // SAFETY: the family says which sockaddr type the address is.
+                let family = unsafe { (*ifa.ifa_addr).sa_family } as i32;
+                if family == libc::AF_INET {
+                    let sa = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
+                    out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr))));
+                } else if family == libc::AF_INET6 {
+                    let sa = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in6) };
+                    out.push(IpAddr::V6(Ipv6Addr::from(sa.sin6_addr.s6_addr)));
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        // SAFETY: `head` came from getifaddrs and is freed once.
+        unsafe { libc::freeifaddrs(head) };
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        Vec::new()
     }
 }
 
@@ -709,8 +803,13 @@ impl Shared {
             .iter()
             .any(|(h, p)| normal_host(h) == t.host && *p == t.port);
         let mut last = format!("{} has no address", t.host);
+        let own = if admitted {
+            Vec::new()
+        } else {
+            own_addresses()
+        };
         for a in addrs {
-            if non_public(a.ip()) && !admitted {
+            if !admitted && refused(a.ip(), &own) {
                 last = format!("{} resolves to a non-public address", t.host);
                 continue;
             }
@@ -845,6 +944,66 @@ mod tests {
         for a in ["140.82.112.6", "2606:4700::1111", "::ffff:1.1.1.1"] {
             assert!(!non_public(a.parse().unwrap()), "{a}");
         }
+    }
+
+    /// Review W6C-S5 and note BD: every IPv6 form that carries an IPv4 address
+    /// is judged by that address (srt 0.0.82 `address.js` `embeddedIPv4`; the
+    /// CVE-2026-79913 and CVE-2026-53754 probes), the IANA special-purpose
+    /// ranges are refused, and NAT64 or 6to4 toward a public host still
+    /// passes (an IPv6-only network with DNS64 reaches every IPv4 host so).
+    #[test]
+    fn every_form_that_carries_a_refused_ipv4_address_is_refused() {
+        for a in [
+            "2002:a9fe:a9fe::",
+            "2002:7f00:1::",
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a00:1",
+            "::a9fe:a9fe",
+            "::7f00:1",
+            "::ffff:0:a9fe:a9fe",
+            "::ffff:100.64.0.1",
+            "64:ff9b:1::a9fe:a9fe",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "2001:db8::1",
+            "3fff::1",
+            "5f00::1",
+            "100::1",
+            "fec0::1",
+            "::",
+            "168.63.129.16",
+            "192.0.0.192",
+            "192.88.99.1",
+            "100.100.100.200",
+            "198.51.100.7",
+            "203.0.113.9",
+            "240.0.0.1",
+            "255.255.255.255",
+            "fd00:ec2::254",
+        ] {
+            assert!(non_public(a.parse().unwrap()), "{a} should be refused");
+        }
+        for a in [
+            "64:ff9b::808:808",
+            "2002:808:808::",
+            "2606:4700::1111",
+            "1.1.1.1",
+            "::ffff:1.1.1.1",
+        ] {
+            assert!(!non_public(a.parse().unwrap()), "{a} should pass");
+        }
+    }
+
+    /// srt 0.0.82 refuses this host's own interface addresses: a service bound
+    /// to 0.0.0.0 answers on them as on loopback (`resolved-address-guard.js`
+    /// `localInterfaceAddresses`).
+    #[test]
+    fn an_address_of_this_host_is_refused_in_every_form() {
+        let own: Vec<IpAddr> = vec!["52.1.2.3".parse().unwrap()];
+        for a in ["52.1.2.3", "::ffff:52.1.2.3", "2002:3401:203::"] {
+            assert!(refused(a.parse().unwrap(), &own), "{a}");
+        }
+        assert!(!refused("52.1.2.4".parse().unwrap(), &own));
     }
 
     #[test]
