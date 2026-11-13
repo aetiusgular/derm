@@ -591,3 +591,92 @@ fn a_placeholder_outside_the_named_field_is_never_swapped() {
         assert!(d.target.is_none(), "{target}");
     }
 }
+
+/// The re-review of the S8 fix (W6F-1, W6F-2, W6F-3): duplicate JSON keys
+/// with an escaped copy at the path, a JSON body labelled as a form, two
+/// `Content-Type` headers, a JSON string at the path holding more than the
+/// placeholder, and a percent-encoded copy in another form field each left
+/// the value in a field the placement does not name (the reviewer's probes,
+/// run first against `726089a`).
+#[test]
+fn a_body_that_reads_two_ways_never_swaps() {
+    let one = vec![two().remove(0)];
+    let pol = |field: &str| Policy {
+        swap_body: vec![("github".into(), field.into())],
+        ..Policy::default()
+    };
+    let json = h(&[("content-type", "application/json")]);
+    let form = h(&[("content-type", "application/x-www-form-urlencoded")]);
+    let both = h(&[
+        ("content-type", "application/x-www-form-urlencoded"),
+        ("content-type", "application/json"),
+    ]);
+    let escaped = PH_A.replacen('d', "\\u0064", 1);
+    let pct = PH_A.replacen('d', "%64", 1);
+    let kept = |hd: &[(String, String)], field: &str, body: String| {
+        let d = decide_with(
+            &out("api.github.com", "/x", hd, body.as_bytes()),
+            &one,
+            &pol(field),
+        );
+        match d.verdict {
+            Verdict::Forward { body: got, .. } => assert_eq!(got, body.as_bytes(), "{body}"),
+            v => panic!("{v:?}"),
+        }
+        assert!(d.injected.is_empty(), "{body}");
+    };
+    kept(
+        &json,
+        "token",
+        format!("{{\"public\":\"{PH_A}\",\"public\":\"x\",\"token\":\"{escaped}\"}}"),
+    );
+    kept(
+        &json,
+        "auth.token",
+        format!("{{\"auth\":{{\"public\":\"{PH_A}\"}},\"auth\":{{\"token\":\"{escaped}\"}}}}"),
+    );
+    kept(
+        &form,
+        "token",
+        format!("{{\"comment\":\"&token={PH_A}&\"}}"),
+    );
+    kept(&both, "token", format!("token={PH_A}"));
+    kept(
+        &json,
+        "token",
+        format!("{{\"token\":\"&publish={PH_A}&\"}}"),
+    );
+    kept(&form, "token", format!("token={PH_A}&note={pct}"));
+    // The plain forms still swap.
+    for (hd, field, body, want) in [
+        (
+            &json,
+            "token",
+            format!("{{\"token\":\"{PH_A}\"}}"),
+            format!("{{\"token\":\"{VAL_A}\"}}"),
+        ),
+        (
+            &json,
+            "token",
+            format!("{{\"token\":\"Bearer {PH_A}\"}}"),
+            format!("{{\"token\":\"Bearer {VAL_A}\"}}"),
+        ),
+        (
+            &form,
+            "token",
+            format!("token={PH_A}&n=1"),
+            format!("token={VAL_A}&n=1"),
+        ),
+    ] {
+        match decide_with(
+            &out("api.github.com", "/x", hd, body.as_bytes()),
+            &one,
+            &pol(field),
+        )
+        .verdict
+        {
+            Verdict::Forward { body: got, .. } => assert_eq!(String::from_utf8(got).unwrap(), want),
+            v => panic!("{v:?}"),
+        }
+    }
+}

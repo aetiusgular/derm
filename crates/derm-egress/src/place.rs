@@ -12,6 +12,10 @@
 //! that secret is swapped: the placeholder stays the useless fake, and
 //! nothing leaks.
 
+use std::collections::HashSet;
+use std::fmt;
+
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
 
 /// One place a secret's value may go.
@@ -149,27 +153,42 @@ fn count(hay: &[u8], needle: &[u8]) -> usize {
 
 /// The `&`-joined pairs of a query or form body with each wanted secret's
 /// value written into its named field, percent-encoded. A secret is swapped
-/// only when every copy of its placeholder in `text` is the whole value of
-/// its named field; the returned indices name the swapped wants.
+/// only when every copy of its placeholder is the whole value of its named
+/// field, counted both as written and as the host decodes it (W6F-3: a
+/// `%`-encoded copy in another field stops the swap); a pair that does not
+/// decode stops every swap. The returned indices name the swapped wants.
 pub fn swap_pairs(text: &str, wants: &[Want<'_>]) -> (Option<String>, Vec<usize>) {
     let pairs: Vec<&str> = text.split('&').collect();
+    let mut decoded: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(pairs.len());
+    for p in &pairs {
+        let (k, v) = p.split_once('=').unwrap_or((p, ""));
+        match (pct_decode(k), pct_decode(v)) {
+            (Some(k), Some(v)) => decoded.push((k, v)),
+            _ => return (None, Vec::new()),
+        }
+    }
     let mut done = Vec::new();
     let mut fields: Vec<Option<String>> = vec![None; pairs.len()];
     for (w, want) in wants.iter().enumerate() {
-        let total = count(text.as_bytes(), want.placeholder.as_bytes());
-        if total == 0 {
+        let needle = want.placeholder.as_bytes();
+        let total = count(text.as_bytes(), needle);
+        let seen: usize = decoded
+            .iter()
+            .map(|(k, v)| count(k, needle) + count(v, needle))
+            .sum();
+        if total == 0 && seen == 0 {
             continue;
         }
         let hits: Vec<usize> = pairs
             .iter()
             .enumerate()
-            .filter(|(_, p)| {
-                let (k, v) = p.split_once('=').unwrap_or((p, ""));
-                pct_decode(k).as_deref() == Some(want.field.as_bytes()) && v == want.placeholder
+            .filter(|(i, p)| {
+                let v = p.split_once('=').map_or("", |(_, v)| v);
+                decoded[*i].0 == want.field.as_bytes() && v == want.placeholder
             })
             .map(|(i, _)| i)
             .collect();
-        if hits.len() != total {
+        if hits.len() != total || hits.len() != seen {
             continue;
         }
         for i in hits {
@@ -189,16 +208,94 @@ pub fn swap_pairs(text: &str, wants: &[Want<'_>]) -> (Option<String>, Vec<usize>
     (Some(out.join("&")), done)
 }
 
-/// Every place a JSON string holds `needle`: the count in string values at
-/// `steps` (`at`), and in any string or key anywhere (`all`).
+/// A form body as text, when every byte is one a form serializer writes
+/// (WHATWG `application/x-www-form-urlencoded`: ASCII letters and digits,
+/// `*-._`, `%` escapes, `+` for a space, and the `&` and `=` that join the
+/// pairs). Anything else is a body that only claims to be a form (W6F-2: a
+/// JSON body sent as a form), and is not swapped.
+pub fn form_body(body: &[u8]) -> Option<&str> {
+    body.iter()
+        .all(|b| b.is_ascii_alphanumeric() || b"*-._~%+&=".contains(b))
+        .then(|| std::str::from_utf8(body).ok())
+        .flatten()
+}
+
+/// Whether a JSON string at a placement's path is exactly the placeholder, or
+/// one scheme word and a space before it (`Bearer <placeholder>`). Any other
+/// text around it may be a second field the host parses out of the string
+/// (W6F-2: `"&publish=<placeholder>&"`), so it is not swapped.
+fn whole(s: &str, needle: &str) -> bool {
+    match s.strip_suffix(needle) {
+        Some("") => true,
+        Some(pre) => pre.strip_suffix(' ').is_some_and(|w| {
+            (1..=16).contains(&w.len()) && w.bytes().all(|b| b.is_ascii_alphabetic())
+        }),
+        None => false,
+    }
+}
+
+/// A JSON document read only to find a key written twice in one object.
+/// serde_json keeps the last of two equal keys, a host's parser may keep the
+/// first, so a body with one is read two ways and is not swapped (W6F-1).
+struct NoDuplicate;
+
+impl<'de> Deserialize<'de> for NoDuplicate {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(NoDuplicate)
+    }
+}
+
+impl<'de> Visitor<'de> for NoDuplicate {
+    type Value = NoDuplicate;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("JSON")
+    }
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_u64<E: de::Error>(self, _: u64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_f64<E: de::Error>(self, _: f64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_str<E: de::Error>(self, _: &str) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_unit<E: de::Error>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<NoDuplicate>()?.is_some() {}
+        Ok(self)
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        let mut seen = HashSet::new();
+        while let Some(k) = map.next_key::<String>()? {
+            if !seen.insert(k) {
+                return Err(de::Error::custom("a key written twice"));
+            }
+            map.next_value::<NoDuplicate>()?;
+        }
+        Ok(self)
+    }
+}
+
+/// Every place a JSON string holds `needle`: the count in a string at `steps`
+/// that is the placeholder whole (`at`, see `whole`), and in any string or
+/// key anywhere (`all`).
 fn json_counts(v: &Value, steps: Option<&[Step]>, needle: &str, at: &mut usize, all: &mut usize) {
     let here = steps.is_some_and(|s| s.is_empty());
     match v {
         Value::String(s) => {
             let n = s.matches(needle).count();
             *all += n;
-            if here {
-                *at += n;
+            if here && n == 1 && whole(s, needle) {
+                *at += 1;
             }
         }
         Value::Array(items) => {
@@ -227,9 +324,12 @@ fn json_counts(v: &Value, steps: Option<&[Step]>, needle: &str, at: &mut usize, 
 /// A JSON body with each wanted secret's value written, JSON-escaped, into
 /// the string at its path. A secret is swapped only when every copy of its
 /// placeholder in the raw body is a literal copy inside the string at its
-/// path (none escaped, none in a key or another field); the returned indices
-/// name the swapped wants. `None` for a body that is not JSON.
+/// path (none escaped, none in a key or another field), that string is the
+/// placeholder whole, and no object writes a key twice; the returned indices
+/// name the swapped wants. `None` for a body that is not JSON or that writes
+/// a key twice.
 pub fn swap_json(body: &[u8], wants: &[Want<'_>]) -> Option<(Vec<u8>, Vec<usize>)> {
+    serde_json::from_slice::<NoDuplicate>(body).ok()?;
     let parsed: Value = serde_json::from_slice(body).ok()?;
     let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut done = Vec::new();
@@ -269,17 +369,23 @@ pub enum BodyKind {
     Other,
 }
 
+/// `Other` when the request carries no `Content-Type` or more than one (W6F-2:
+/// two headers name two parsers, and the host may read either).
 pub fn body_kind(headers: &[(String, String)]) -> BodyKind {
-    let ct = headers
+    let mut types = headers
         .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-        .map(|(_, v)| {
-            v.split(';')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase()
-        });
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+    let first = types.next();
+    if types.next().is_some() {
+        return BodyKind::Other;
+    }
+    let ct = first.map(|(_, v)| {
+        v.split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+    });
     match ct.as_deref() {
         Some("application/json") => BodyKind::Json,
         Some(t) if t.starts_with("application/") && t.ends_with("+json") => BodyKind::Json,

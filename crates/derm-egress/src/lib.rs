@@ -364,7 +364,7 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
         let ws: Vec<place::Want<'_>> = body_wants.iter().map(|(_, w)| *w).collect();
         let swapped = match place::body_kind(o.headers) {
             place::BodyKind::Json => place::swap_json(o.body, &ws),
-            place::BodyKind::Form => std::str::from_utf8(o.body).ok().and_then(|t| {
+            place::BodyKind::Form => place::form_body(o.body).and_then(|t| {
                 let (new, done) = place::swap_pairs(t, &ws);
                 new.map(|n| (n.into_bytes(), done))
             }),
