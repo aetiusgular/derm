@@ -111,7 +111,10 @@ fn a_dry_run_says_the_plan_and_writes_nothing() {
     assert!(r.asked.is_empty());
     assert!(r.connected.is_empty());
     assert!(!home.join(".derm").exists());
+    #[cfg(unix)]
     assert!(r.said.contains("the workspace-write preset"), "{}", r.said);
+    #[cfg(not(unix))]
+    assert!(r.said.contains("none written"), "{}", r.said);
     assert!(
         r.said.contains(
             "claude plugin marketplace add aetiusgular/derm && claude plugin install derm@derm"
@@ -149,6 +152,7 @@ fn a_dry_run_says_the_plan_and_writes_nothing() {
     assert!(r.said.contains("A dry run"), "{}", r.said);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_yes_writes_the_default_policy_and_registers_each_gate_through_connect() {
     let home = scratch("yes");
@@ -227,6 +231,7 @@ fn a_policy_you_have_is_kept() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_policy_that_appears_after_the_plan_is_not_written_over() {
     let home = scratch("race");
@@ -385,7 +390,10 @@ fn the_standard_tier_is_named_as_derm_run_s_never_written() {
     // Nothing of a vendor's settings is written: only derm's own policy.
     let mut names: Vec<String> = walk(&home);
     names.sort();
+    #[cfg(unix)]
     assert_eq!(names, [".derm", ".derm/policy.json"]);
+    #[cfg(not(unix))]
+    assert!(names.is_empty(), "{names:?}");
 }
 
 fn walk(root: &std::path::Path) -> Vec<String> {

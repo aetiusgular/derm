@@ -331,6 +331,47 @@ fn ask_word(agent: &Value) -> &'static str {
     }
 }
 
+/// The policy `derm init` would write: the default preset's name, summary
+/// and text, already read back by this derm's matcher.
+#[cfg_attr(not(unix), allow(dead_code))]
+struct PolicyPlan {
+    name: String,
+    summary: String,
+    text: String,
+}
+
+/// Why no policy is offered where none is written.
+#[cfg(unix)]
+const NO_POLICY: &str = "no preset could be read; with no policy every call asks";
+/// `derm setup`, whose presets and private-file writes these are, is built
+/// for Unix only (`main.rs`; its Windows form, ACLs through
+/// `derm_core::platform`, is not built, docs/install/windows.md), and the
+/// Windows gate takes a policy only when its access list lets no one else
+/// write it (`gate/policy.rs` `policy_file_private`).
+#[cfg(not(unix))]
+const NO_POLICY: &str = "derm init writes no policy on Windows yet (derm setup's private files are Unix only); with no policy every call asks";
+
+#[cfg(unix)]
+fn default_preset() -> Option<PolicyPlan> {
+    let p = crate::setup::presets::all()
+        .ok()?
+        .into_iter()
+        .find(|p| p.default)?;
+    let text = crate::setup::presets::policy_text(&p);
+    // A policy this derm's matcher refuses would make every call ask.
+    crate::setup::presets::matcher_reads(&text).ok()?;
+    Some(PolicyPlan {
+        name: p.name,
+        summary: p.summary,
+        text,
+    })
+}
+
+#[cfg(not(unix))]
+fn default_preset() -> Option<PolicyPlan> {
+    None
+}
+
 /// The whole of `derm init` after its checks. Returns the exit code.
 pub fn run(ctx: &mut Ctx) -> u8 {
     let installed: Vec<Value> = ctx
@@ -341,13 +382,7 @@ pub fn run(ctx: &mut Ctx) -> u8 {
         .collect();
     let policy_path = ctx.home.join(".derm").join("policy.json");
     let have_policy = std::fs::symlink_metadata(&policy_path).is_ok();
-    let preset = if have_policy {
-        None
-    } else {
-        crate::setup::presets::all()
-            .ok()
-            .and_then(|all| all.into_iter().find(|p| p.default))
-    };
+    let preset = if have_policy { None } else { default_preset() };
 
     // The plan.
     let mut plan = vec!["derm init: the light tier (no daemon, no root)".to_string()];
@@ -361,10 +396,7 @@ pub fn run(ctx: &mut Ctx) -> u8 {
             p.name,
             p.summary
         )),
-        (None, false) => plan.push(format!(
-            "  none, and no preset could be read: with no {} every call asks",
-            policy_path.display()
-        )),
+        (None, false) => plan.push(format!("  none written: {NO_POLICY}")),
     }
     plan.push(String::new());
     let mut gates: Vec<(String, Gate)> = Vec::new();
@@ -454,10 +486,7 @@ pub fn run(ctx: &mut Ctx) -> u8 {
     let mut changed: Vec<String> = Vec::new();
     let mut problems = 0u8;
     if let Some(p) = preset {
-        let text = crate::setup::presets::policy_text(&p);
-        match crate::setup::presets::matcher_reads(&text)
-            .and_then(|()| write_new_private(&policy_path, &text))
-        {
+        match write_new_private(&policy_path, &p.text) {
             Ok(()) => changed.push(format!("{}: the {} preset", policy_path.display(), p.name)),
             Err(e) => {
                 problems += 1;
@@ -492,17 +521,17 @@ pub fn run(ctx: &mut Ctx) -> u8 {
 /// Writes `text` to `path`, which must not exist yet, 0600, in a `~/.derm`
 /// of yours that no one else can write (made 0700). Never over a file and
 /// never through a link.
+#[cfg(unix)]
 fn write_new_private(path: &Path, text: &str) -> Result<(), String> {
     use std::io::Write;
     let dir = path.parent().ok_or("no folder")?;
     own_derm_folder(dir)?;
+    use std::os::unix::fs::OpenOptionsExt;
     let mut o = std::fs::OpenOptions::new();
-    o.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
+    o.write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW);
     let mut f = o
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -543,18 +572,6 @@ fn own_derm_folder(dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn own_derm_folder(dir: &Path) -> Result<(), String> {
-    match std::fs::create_dir(dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let m =
-                std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-            if m.is_dir() && !m.file_type().is_symlink() {
-                Ok(())
-            } else {
-                Err(format!("{} is not a folder", dir.display()))
-            }
-        }
-        Err(e) => Err(format!("{}: {e}", dir.display())),
-    }
+fn write_new_private(path: &Path, _text: &str) -> Result<(), String> {
+    Err(format!("{}: {NO_POLICY}", path.display()))
 }
