@@ -217,8 +217,11 @@ fn a_held_lock_fails_at_the_deadline_and_writes_nothing() {
         .append(true)
         .open(&path)
         .unwrap();
-    holder.lock().unwrap();
+    // Read before the lock: on Windows the lock is mandatory, and another
+    // handle's read fails with error 33 while it is held (CI's Windows job,
+    // run 43340976574; `a_plain_reader_meets_error_33_while_a_hook_holds_the_lock`).
     let before = std::fs::read(&path).unwrap();
+    holder.lock().unwrap();
     let t = std::time::Instant::now();
     let r = append(
         &home,
@@ -233,7 +236,9 @@ fn a_held_lock_fails_at_the_deadline_and_writes_nothing() {
     );
     assert!(took >= Duration::from_millis(150), "{took:?}");
     assert!(took < Duration::from_millis(1500), "{took:?}");
+    holder.unlock().unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    holder.lock().unwrap();
     // Released inside the deadline, the append goes through.
     let h = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
@@ -586,6 +591,27 @@ mod windows {
             after_post(&event("s-1", "tool.call", 1), &env, &home, false),
             Outcome::Appended { seq: 1 }
         );
+    }
+
+    /// For `derm audit` (lane 6E): `LockFileEx` locks are mandatory, so a
+    /// reader that opens the log while a hook holds its lock gets error 33
+    /// (ERROR_LOCK_VIOLATION) and must retry; a hook holds it for
+    /// milliseconds (note AZ B4: 10.9 ms on average on NTFS).
+    #[test]
+    fn a_plain_reader_meets_error_33_while_a_hook_holds_the_lock() {
+        let home = scratch("win33");
+        after_post(&event("s-1", "approval", 0), &env_home(&home), &home, false);
+        let p = log_path(&home, "s-1");
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&p)
+            .unwrap();
+        holder.lock().unwrap();
+        let e = std::fs::read(&p).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(33), "{e}");
+        holder.unlock().unwrap();
+        assert!(!std::fs::read(&p).unwrap().is_empty());
     }
 
     #[test]

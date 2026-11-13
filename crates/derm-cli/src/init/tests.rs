@@ -143,7 +143,8 @@ fn a_dry_run_says_the_plan_and_writes_nothing() {
         "{}",
         r.said
     );
-    assert!(r.said.contains(".derm/local/<chat>.jsonl"), "{}", r.said);
+    let log = locallog::folder(&home).join("<chat>.jsonl");
+    assert!(r.said.contains(&log.display().to_string()), "{}", r.said);
     assert!(
         r.said.contains("shows only against an anchor"),
         "{}",
