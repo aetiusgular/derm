@@ -96,6 +96,10 @@ derm-tap = { path = "../derm-tap" }
 # [lane-6A]
 # [lane-6B]
 # [lane-6C]
+# `derm secret` and the chain per tier read and write derm-egress's own files
+# (secrets.json, the local CA). A path crate of this workspace; its own
+# third-party code is pinned in its manifest (plans/parallel/tk_lane_6C.md).
+derm-egress = { path = "../derm-egress" }
 # [lane-6D]
 # [lane-6E]
 
