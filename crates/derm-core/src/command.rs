@@ -466,9 +466,10 @@ fn interpreter(base: &str) -> bool {
     // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
     python(base)
         || pwsh(base)
+        || powershell(base)
         || matches!(
             base,
-            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun" | "powershell"
+            "node" | "nodejs" | "perl" | "ruby" | "php" | "deno" | "bun"
         )
 }
 
@@ -476,6 +477,14 @@ fn interpreter(base: &str) -> bool {
 /// `pwsh-preview` and `pwsh-lts` (review W6F-8).
 fn pwsh(base: &str) -> bool {
     base == "pwsh" || base.starts_with("pwsh-")
+}
+
+/// `powershell` by name: Windows PowerShell 5.1 on Windows, and pwsh 7 where
+/// the PowerShell snap installs it as `powershell` and `powershell-preview`
+/// (`PowerShell/PowerShell-Snap`, `stable/snap/snapcraft.yaml`, whose wrapper
+/// execs pwsh; review W6G-1, W6G-2). Read with both switch tables.
+fn powershell(base: &str) -> bool {
+    base == "powershell" || base.starts_with("powershell-")
 }
 
 /// A Python by name: `python*` and `pypy*`.
@@ -632,11 +641,16 @@ const POWERSHELL: &[(&str, &str, Pwsh)] = &[
 /// `CharTraits.cs:255-261`). `-command -` and `-file -` read the input
 /// (`:1414-1425`, `:1587-1600`), and so does a line with neither.
 fn pwsh_reads_input(program: &str, args: &[String]) -> bool {
-    let table = if program == "powershell" {
-        POWERSHELL
-    } else {
-        PWSH
-    };
+    if powershell(program) {
+        return table_reads_input(POWERSHELL, true, args) || table_reads_input(PWSH, false, args);
+    }
+    table_reads_input(PWSH, false, args)
+}
+
+/// One switch table's reading of the words; `skip_unknown` reads a switch the
+/// table does not list as a flag (Windows PowerShell, W6F-4) instead of as
+/// the script (pwsh).
+fn table_reads_input(table: &[(&str, &str, Pwsh)], skip_unknown: bool, args: &[String]) -> bool {
     let dash = |c: char| matches!(c, '-' | '\u{2013}' | '\u{2014}' | '\u{2015}');
     let mut i = 0;
     while i < args.len() {
@@ -659,7 +673,7 @@ fn pwsh_reads_input(program: &str, args: &[String]) -> bool {
                 return args.get(i + 1).is_some_and(|v| stdin_path(v.trim()));
             }
             Some(Pwsh::Serve) => return true,
-            None if program == "powershell" => i += 1,
+            None if skip_unknown => i += 1,
             None => return stdin_path(w),
         }
     }
@@ -673,7 +687,7 @@ fn pwsh_reads_input(program: &str, args: &[String]) -> bool {
 /// `-E` reads as `-e` and `-X` as `-x`; where that joins a valued flag and
 /// one that takes none, it is read as valued, which only reads more as fed.
 fn reads_its_input(program: &str, args: &[String]) -> bool {
-    if pwsh(program) || program == "powershell" {
+    if pwsh(program) || powershell(program) {
         return pwsh_reads_input(program, args);
     }
     let shell = SHELLS.contains(&program);

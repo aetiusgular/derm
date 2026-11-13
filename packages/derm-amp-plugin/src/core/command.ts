@@ -386,12 +386,15 @@ function fedCommands(text: string, base: Feed): Array<[string[], Feed]> {
 /** Interpreters that run a program from their input when the line gives none. */
 function isInterpreter(base: string): boolean {
   // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
-  if (isPython(base) || isPwsh(base)) return true;
-  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun", "powershell"].includes(base);
+  if (isPython(base) || isPwsh(base) || isPowershell(base)) return true;
+  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun"].includes(base);
 }
 
 /** pwsh by name: `pwsh`, and the channel builds `pwsh-preview` and `pwsh-lts` (review W6F-8). */
 const isPwsh = (base: string): boolean => base === "pwsh" || base.startsWith("pwsh-");
+
+/** `powershell` by name: Windows PowerShell 5.1, or pwsh 7 as the PowerShell snap installs it (`powershell`, `powershell-preview`); read with both tables (W6G-1, W6G-2). */
+const isPowershell = (base: string): boolean => base === "powershell" || base.startsWith("powershell-");
 
 const isPython = (base: string): boolean => base.startsWith("python") || base.startsWith("pypy");
 
@@ -507,7 +510,12 @@ const POWERSHELL: ReadonlyArray<readonly [string, string, Pwsh]> = [
  * input, and so does a line with neither.
  */
 function pwshReadsInput(program: string, args: readonly string[]): boolean {
-  const table = program === "powershell" ? POWERSHELL : PWSH;
+  if (isPowershell(program)) return tableReadsInput(POWERSHELL, true, args) || tableReadsInput(PWSH, false, args);
+  return tableReadsInput(PWSH, false, args);
+}
+
+/** One switch table's reading; `skipUnknown` reads a switch the table does not list as a flag (Windows PowerShell, W6F-4), not as the script. */
+function tableReadsInput(table: ReadonlyArray<readonly [string, string, Pwsh]>, skipUnknown: boolean, args: readonly string[]): boolean {
   const dash = (c: string): boolean => c === "-" || c === "\u2013" || c === "\u2014" || c === "\u2015";
   for (let i = 0; i < args.length; ) {
     const w = (args[i] as string).trim();
@@ -517,7 +525,7 @@ function pwshReadsInput(program: string, args: readonly string[]): boolean {
     if (key.startsWith(first)) key = key.slice(1);
     const hit = table.find(([full, shortest]) => key.length >= shortest.length && full.startsWith(key));
     if (hit === undefined) {
-      if (program !== "powershell") return isStdinPath(w);
+      if (!skipUnknown) return isStdinPath(w);
       i += 1;
       continue;
     }
@@ -556,7 +564,7 @@ function hasCFlag(args: readonly string[]): boolean {
  * that takes none, it is read as valued, which only reads more as fed.
  */
 function readsItsInput(program: string, args: readonly string[]): boolean {
-  if (isPwsh(program) || program === "powershell") return pwshReadsInput(program, args);
+  if (isPwsh(program) || isPowershell(program)) return pwshReadsInput(program, args);
   const shell = SHELLS.has(program);
   const source = program === "source" || program === ".";
   let programLetters = "";
