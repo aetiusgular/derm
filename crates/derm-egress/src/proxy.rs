@@ -663,6 +663,10 @@ impl Shared {
             );
         }
         head.headers = headers;
+        // A value swapped into the query (a secret placed there, decision 2).
+        if let Some(target) = d.target {
+            head.line[1] = target;
+        }
         for h in HOP_BY_HOP {
             head.remove(h);
         }

@@ -10,9 +10,9 @@
 //! |---|---|---|
 //! | `exec`, `exit`, `fork` (auditd, eslogger); `run.start`, `run.stop` | 1007 Process Activity | Launch, Terminate, Other "Fork" |
 //! | `create`, `write`, `truncate`, `open`, `rename`, `unlink`; `link`, `copyfile`, `clone`, `exchangedata` | 1001 File System Activity | Create, Update, Update, Open, Rename, Delete; Other |
-//! | `net.connect`; derm-egress's `egress.connect` (source `derm`; Allowed or Denied by its verdict) | 4001 Network Activity | Open |
-//! | `tap.request`, `tap.call`, `approval` (a gate's decision), `tool.call`, `install.call`, an approval card (v1 `approval` key), derm-egress's `secret.inject` (source `derm`) | 6003 API Activity | Other, with the label |
-//! | `gate.conflict`, `install.control`, `agent.unregistered`, `taint.review`, `taint.mark`, derm-egress's `secret.block` (source `derm`) | 2004 Detection Finding | Create |
+//! | `net.connect`; derm-egress's `egress.connect` (source `run`, posted by `derm run`; Allowed or Denied by its verdict) | 4001 Network Activity | Open |
+//! | `tap.request`, `tap.call`, `approval` (a gate's decision), `tool.call`, `install.call`, an approval card (v1 `approval` key), derm-egress's `secret.inject` (source `run`) | 6003 API Activity | Other, with the label |
+//! | `gate.conflict`, `install.control`, `agent.unregistered`, `taint.review`, `taint.mark`, derm-egress's `secret.block` (source `run`) | 2004 Detection Finding | Create |
 //! | anything else (`join.candidates`, `feed.gap`, `content.purge`, `cu.action`, a harness's own telemetry, a withheld line) | 0 Base Event | Other, with the kind |
 //!
 //! `class_uid` is the category's uid times 1000 plus the class's, and
@@ -160,9 +160,9 @@ fn class_of(r: &R) -> (u64, u64, Option<&'static str>) {
         (true, "net.connect") => (4001, 1, None),
         // derm-egress's records (lane 6C's request R3): only the daemon
         // writes source `derm`, so a chat token's copy stays a Base Event.
-        (false, "egress.connect") if r.source == "derm" => (4001, 1, None),
-        (false, "secret.inject") if r.source == "derm" => (6003, 99, Some("Secret Injected")),
-        (false, "secret.block") if r.source == "derm" => (2004, 1, None),
+        (false, "egress.connect") if r.source == "run" => (4001, 1, None),
+        (false, "secret.inject") if r.source == "run" => (6003, 99, Some("Secret Injected")),
+        (false, "secret.block") if r.source == "run" => (2004, 1, None),
         (false, "tap.request") => (6003, 99, Some("Model Request")),
         (false, "tap.call") => (6003, 99, Some("Tool Call")),
         (false, "approval") => (6003, 99, Some("Tool Decision")),

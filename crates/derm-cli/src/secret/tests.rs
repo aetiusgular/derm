@@ -71,6 +71,53 @@ fn add_parses_every_source_and_refuses_two() {
     assert!(parse_add(&s(&["gh", "--host"])).is_err());
 }
 
+/// Decision 2, item 2 (integration w6's close): `--in body` and `--in query`
+/// set the entry's placement, once each; anything else is refused; with no
+/// `--in` the value goes into headers only and the file holds no placement.
+#[test]
+fn add_takes_a_placement_for_the_body_or_the_query() {
+    let e = parse_add(&s(&[
+        "gh",
+        "--host",
+        "api.github.com",
+        "--file",
+        "/x",
+        "--in",
+        "body",
+        "--in",
+        "query",
+    ]))
+    .unwrap();
+    assert_eq!(
+        e.placement,
+        Some(vec!["body".to_string(), "query".to_string()])
+    );
+    assert!(e.placed("body") && e.placed("query"));
+    let plain = parse_add(&s(&["gh", "--host", "api.github.com", "--file", "/x"])).unwrap();
+    assert_eq!(plain.placement, None);
+    assert!(!plain.placed("body"));
+    assert!(!secrets::render(&secrets::File {
+        version: 1,
+        secrets: vec![plain]
+    })
+    .contains("placement"));
+    for bad in [["--in", "header"], ["--in", "url"]] {
+        let mut a = s(&["gh", "--host", "a.b", "--file", "/x"]);
+        a.extend(s(&bad));
+        assert!(parse_add(&a).is_err(), "{bad:?}");
+    }
+    assert!(parse_add(&s(&[
+        "gh", "--host", "a.b", "--file", "/x", "--in", "body", "--in", "body"
+    ]))
+    .is_err());
+    // The file's own check refuses what the schema refuses.
+    let mut f = secrets::File::default();
+    let mut e = entry("gh", From::File("/x".into()));
+    e.placement = Some(vec!["header".into()]);
+    f.secrets.push(e);
+    assert!(f.check().is_err());
+}
+
 #[test]
 fn writing_verbs_refuse_without_a_terminal_and_inside_a_chat() {
     let h = home("refuse");
@@ -163,6 +210,7 @@ fn an_unreadable_value_warns_at_add_and_fails_check_without_the_value() {
 
 fn entry(id: &str, from: From) -> Entry {
     Entry {
+        placement: None,
         id: id.into(),
         hosts: vec!["api.github.com".into()],
         from,

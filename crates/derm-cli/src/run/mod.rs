@@ -41,7 +41,8 @@ mod tap; // lane S
 mod user; // lane V
           // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
           // part 3): the Standard tier, lane 6A's. The stub changes nothing.
-mod standard; // lane 6A
+mod broker;
+mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1475,6 +1476,49 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     } else {
         None
     };
+    // The secrets broker (lane 6C's R1; Tony's R2, 12 Nov 23:53 PST: one per
+    // chat, inside `derm run`): read the values, start derm-egress, and chain
+    // the harness to it. Its records go to the daemon over this run's own
+    // daemon-scope connection as source `run`; a dry run reads no value.
+    let tier_name = tier_record
+        .as_ref()
+        .and_then(|r| r.get("tier"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("whole")
+        .to_string();
+    let broker_sink: Option<derm_egress::Sink> = daemon.as_ref().map(|d| {
+        let d = Daemon {
+            socket: d.socket.clone(),
+            token: d.token.clone(),
+        };
+        let sink: derm_egress::Sink = Arc::new(move |events: Vec<Event>| {
+            for mut e in events {
+                e.source = Source::Run;
+                if let Err(err) = d.post(&e) {
+                    eprintln!("derm run: an egress record was not recorded: {err}");
+                }
+            }
+        });
+        sink
+    });
+    let mut chat_broker = broker::wire(
+        &broker::Chat {
+            chat: &chat,
+            harness: a.harness.id,
+            tier: &tier_name,
+            boundary: a.boundary.name(),
+            home: Path::new(&home),
+            dry_run: a.dry_run,
+            temp: &std::env::temp_dir(),
+        },
+        &mut p,
+        &|k| std::env::var(k).ok(),
+        broker_sink,
+    )
+    .map_err(|e| (1, e))?;
+    if let Some(dir) = chat_broker.trust_dir.take() {
+        cleanup.dirs.push(dir);
+    }
     if a.dry_run {
         print!("{}", plan::describe(&p));
         // The wave 6 base: the two per-chat choices, as `run.start` will
@@ -1753,6 +1797,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // Wave 6 (`contracts/events.md` section 6.1).
         ("tier", &tier_record),
         ("taint", &taint_record),
+        // Integration w6's close (lane 6C's R1; `contracts/events.md` 6.3).
+        ("broker", &chat_broker.record),
     ] {
         if let Some(v) = record {
             base[key] = v.clone();
@@ -1834,6 +1880,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let status =
         exec::wait(&mut child).map_err(|e| (1, format!("waiting for {}: {e}", p.program)))?;
     let (code, signal) = exec::code(&status);
+    // The chat's broker ends with its harness, before `run.stop`: its values
+    // leave memory with it, and its last records are posted first.
+    if let Some(e) = chat_broker.egress.take() {
+        e.stop();
+    }
     // The agents' user's bridge (lane V) ends with the harness.
     user::finish();
     // The sandbox goes before `run.stop`, so no VM writes into the project

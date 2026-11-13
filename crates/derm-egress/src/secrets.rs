@@ -51,8 +51,22 @@ pub struct Entry {
     pub id: String,
     pub hosts: Vec<String>,
     pub from: From,
+    /// Where else the value goes toward the secret's own hosts, beside
+    /// headers: `body`, `query` (decision 2, item 2; integration w6's close).
+    /// Absent is headers only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+impl Entry {
+    /// Whether the value is also swapped into `place` (`body` or `query`).
+    pub fn placed(&self, place: &str) -> bool {
+        self.placement
+            .as_ref()
+            .is_some_and(|p| p.iter().any(|x| x == place))
+    }
 }
 
 /// Where a value is read at chat start (exactly one key, as the schema's
@@ -159,6 +173,21 @@ impl File {
                     ))
                 }
                 _ => {}
+            }
+            if let Some(p) = &e.placement {
+                let mut seen: Vec<&str> = Vec::new();
+                if p.is_empty() || p.len() > 2 {
+                    return Err(format!("secret {}: placement holds 1 or 2 places", e.id));
+                }
+                for x in p {
+                    if !matches!(x.as_str(), "body" | "query") || seen.contains(&x.as_str()) {
+                        return Err(format!(
+                            "secret {}: placement {x:?} is not body or query, once each",
+                            e.id
+                        ));
+                    }
+                    seen.push(x);
+                }
             }
             if e.note.as_ref().is_some_and(|n| n.chars().count() > 200) {
                 return Err(format!("secret {}: note over 200 characters", e.id));
@@ -443,6 +472,7 @@ mod tests {
 
     fn entry(id: &str, from: From) -> Entry {
         Entry {
+            placement: None,
             id: id.into(),
             hosts: vec!["api.github.com".into()],
             from,

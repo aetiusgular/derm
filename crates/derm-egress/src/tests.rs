@@ -62,6 +62,8 @@ fn with_no_secrets_a_request_is_forwarded_unchanged() {
 
 #[test]
 fn a_body_swap_recomputes_content_length_and_names_the_secret() {
+    // A body swap needs the secret's placement to name the body (decision 2,
+    // item 2, integration w6's close); this test sets it.
     let body = format!("{{\"token\":\"{PH_A}\"}}");
     let hd = h(&[
         ("content-type", "application/json"),
@@ -70,7 +72,10 @@ fn a_body_swap_recomputes_content_length_and_names_the_secret() {
     let d = decide_with(
         &out("api.github.com", "/x", &hd, body.as_bytes()),
         &two(),
-        &Policy::default(),
+        &Policy {
+            swap_body: vec!["github".into()],
+            ..Policy::default()
+        },
     );
     let want = format!("{{\"token\":\"{VAL_A}\"}}");
     match d.verdict {
@@ -346,4 +351,101 @@ fn a_host_header_or_absolute_target_naming_another_host_is_blocked() {
         Some("a.test")
     );
     assert_eq!(target_host("/p"), None);
+}
+
+// --- Decision 2 as Tony settled it (12 Nov 23:58 PST; integration w6's close)
+
+/// Item 1: toward a model host a foreign placeholder passes in the body (the
+/// conversation) only; in a header or the URL it is blocked.
+#[test]
+fn a_model_host_takes_a_foreign_placeholder_in_the_body_only() {
+    let p = Policy {
+        model_hosts: vec!["api.anthropic.com".into()],
+        ..Policy::default()
+    };
+    let hd = h(&[("x-note", PH_A)]);
+    let d = decide_with(
+        &out("api.anthropic.com", "/v1/messages", &hd, b"{}"),
+        &two(),
+        &p,
+    );
+    assert_eq!(
+        d.blocked,
+        Some(Blocked::Secret {
+            id: "github".into(),
+            place: Place::Header,
+            value: false
+        })
+    );
+    let target = format!("/v1/messages?k={PH_A}");
+    let d = decide_with(&out("api.anthropic.com", &target, &[], b"{}"), &two(), &p);
+    assert_eq!(
+        d.blocked,
+        Some(Blocked::Secret {
+            id: "github".into(),
+            place: Place::Url,
+            value: false
+        })
+    );
+    // In the body it passes, recorded, and unchanged.
+    let body = format!("{{\"content\":\"{PH_A}\"}}");
+    let d = decide_with(
+        &out("api.anthropic.com", "/v1/messages", &[], body.as_bytes()),
+        &two(),
+        &p,
+    );
+    assert!(d.blocked.is_none() && d.placeholder_to_model);
+}
+
+/// Item 2: the value goes into headers only, unless the secret's placement
+/// names the body or the query (`Policy::swap_body`, `swap_query`; `derm
+/// secret add --in body|query`). So a placeholder that reached a body toward
+/// its own host (a model key's placeholder in a transcript) leaves as the
+/// placeholder.
+#[test]
+fn a_secret_is_swapped_into_headers_only_unless_its_placement_names_the_body_or_the_query() {
+    let one = vec![two().remove(0)];
+    let auth = format!("token {PH_A}");
+    let hd = h(&[("authorization", &auth)]);
+    let body = format!("token={PH_A}");
+    let d = decide_with(
+        &out("api.github.com", "/x", &hd, body.as_bytes()),
+        &one,
+        &Policy::default(),
+    );
+    match &d.verdict {
+        Verdict::Forward { headers, body: b } => {
+            assert_eq!(headers[0].1, format!("token {VAL_A}"));
+            assert_eq!(b, body.as_bytes(), "the body keeps the placeholder");
+        }
+        v => panic!("{v:?}"),
+    }
+    assert_eq!(d.injected, vec!["github".to_string()]);
+    assert!(d.target.is_none());
+    // With the body in its placement, the body is swapped too.
+    let p = Policy {
+        swap_body: vec!["github".into()],
+        ..Policy::default()
+    };
+    match decide_with(&out("api.github.com", "/x", &hd, body.as_bytes()), &one, &p).verdict {
+        Verdict::Forward { body: b, .. } => assert_eq!(b, format!("token={VAL_A}").as_bytes()),
+        v => panic!("{v:?}"),
+    }
+    // The query: swapped only after `?`, and only with the query in its
+    // placement; the path keeps a placeholder.
+    let target = format!("/{PH_A}/x?t={PH_A}&a=1");
+    assert!(decide_with(
+        &out("api.github.com", &target, &[], b""),
+        &one,
+        &Policy::default()
+    )
+    .target
+    .is_none());
+    let q = Policy {
+        swap_query: vec!["github".into()],
+        ..Policy::default()
+    };
+    let d = decide_with(&out("api.github.com", &target, &[], b""), &one, &q);
+    assert_eq!(d.target, Some(format!("/{PH_A}/x?t={VAL_A}&a=1")));
+    assert_eq!(d.injected, vec!["github".to_string()]);
 }

@@ -157,6 +157,14 @@ pub struct Policy {
     /// hold a placeholder the agent printed. The value still blocks there.
     /// Empty by default; the chain sets it (Decisions in the lane doc).
     pub model_hosts: Vec<String>,
+    /// Secrets whose value is also swapped into a request's body toward
+    /// their own host (`secrets.json`'s `placement: ["body"]`). By default a
+    /// value goes into headers only (decision 2, item 2, Tony's call of 12
+    /// Nov: OpenShell and Google's agent credentials do the same).
+    pub swap_body: Vec<String>,
+    /// Secrets whose value is also swapped into a request's query (after
+    /// `?`) toward their own host (`placement: ["query"]`).
+    pub swap_query: Vec<String>,
 }
 
 /// The whole outcome of [`decide_with`]: the verdict, the secrets swapped in,
@@ -169,6 +177,9 @@ pub struct Decision {
     pub blocked: Option<Blocked>,
     /// A placeholder was forwarded unchanged to a model host.
     pub placeholder_to_model: bool,
+    /// The request target with a value swapped into its query, when one was
+    /// (`Policy::swap_query`); `None` leaves the target as sent.
+    pub target: Option<String>,
 }
 
 /// The decision for one request with no allow list and no model hosts.
@@ -193,6 +204,7 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
         injected: Vec::new(),
         blocked: Some(b),
         placeholder_to_model: false,
+        target: None,
     };
     let host = normal_host(o.connect_host);
     if let Some(sni) = o.sni {
@@ -253,7 +265,10 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
                         None
                     };
                 if let Some(place) = hit {
-                    if model && !value {
+                    // Decision 2 as Tony settled it (12 Nov 23:58 PST): a
+                    // model host takes a foreign placeholder in the body, the
+                    // conversation, only; in the URL or a header it blocks.
+                    if model && !value && place == Place::Body {
                         placeholder_to_model = true;
                         continue;
                     }
@@ -266,19 +281,30 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
             }
         }
     }
-    // Swap for this host's own secrets: every header value, and the body when
-    // the proxy can read it and nothing signs it (both vendors skip an encoded
-    // body or one with a digest; srt `body-substitution.js:44-56`, Codex
-    // `secret_substitution.rs:37-60`). A placeholder left in place is the
+    // Swap for this host's own secrets: every header value; the body only for
+    // a secret whose placement names it, when the proxy can read the body and
+    // nothing signs it (both vendors skip an encoded body or one with a
+    // digest; srt `body-substitution.js:44-56`, Codex
+    // `secret_substitution.rs:37-60`); the query only for a secret whose
+    // placement names it (decision 2, item 2: NVIDIA OpenShell swaps
+    // `Authorization` only by default and Google's agent credentials only at
+    // the declared `injection_location`). A placeholder left in place is the
     // useless fake: authentication fails and nothing leaks.
-    let pairs: Vec<(&[u8], &[u8])> = own
-        .iter()
-        .map(|s| (s.placeholder.as_bytes(), s.value.as_bytes()))
-        .collect();
+    let pairs_of = |only: Option<&[String]>| -> Vec<(&[u8], &[u8])> {
+        own.iter()
+            .filter(|s| only.is_none_or(|ids| ids.contains(&s.id)))
+            .map(|s| (s.placeholder.as_bytes(), s.value.as_bytes()))
+            .collect()
+    };
+    let pairs = pairs_of(None);
+    let body_pairs = pairs_of(Some(&policy.swap_body));
+    let query_pairs = pairs_of(Some(&policy.swap_query));
     let mut injected: Vec<String> = Vec::new();
-    let note = |s: &[u8], list: &mut Vec<String>| {
+    let note = |s: &[u8], ids: Option<&[String]>, list: &mut Vec<String>| {
         for x in &own {
-            if memchr::memmem::find(s, x.placeholder.as_bytes()).is_some() && !list.contains(&x.id)
+            if ids.is_none_or(|ids| ids.contains(&x.id))
+                && memchr::memmem::find(s, x.placeholder.as_bytes()).is_some()
+                && !list.contains(&x.id)
             {
                 list.push(x.id.clone());
             }
@@ -288,7 +314,7 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
     for (k, v) in o.headers {
         match scan::swap(v.as_bytes(), &pairs) {
             Some(new) => {
-                note(v.as_bytes(), &mut injected);
+                note(v.as_bytes(), None, &mut injected);
                 // The value came from a str and the placeholder is ASCII, so
                 // the result is UTF-8; a value with a line break would split
                 // the header, so such a value is refused at load.
@@ -298,9 +324,9 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
         }
     }
     let mut body = o.body.to_vec();
-    if !encoded && !signed(o.headers) {
-        if let Some(new) = scan::swap(o.body, &pairs) {
-            note(o.body, &mut injected);
+    if !encoded && !signed(o.headers) && !body_pairs.is_empty() {
+        if let Some(new) = scan::swap(o.body, &body_pairs) {
+            note(o.body, Some(&policy.swap_body), &mut injected);
             body = new;
             for (k, v) in headers.iter_mut() {
                 if k.eq_ignore_ascii_case("content-length") {
@@ -309,11 +335,23 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
             }
         }
     }
+    // The query: only after the first `?`, so a placeholder in the path stays.
+    let mut target = None;
+    if let Some(q) = o.target.find('?').filter(|_| !query_pairs.is_empty()) {
+        let query = &o.target.as_bytes()[q + 1..];
+        if let Some(new) = scan::swap(query, &query_pairs) {
+            note(query, Some(&policy.swap_query), &mut injected);
+            let mut t = o.target.as_bytes()[..=q].to_vec();
+            t.extend_from_slice(&new);
+            target = String::from_utf8(t).ok();
+        }
+    }
     Decision {
         verdict: Verdict::Forward { headers, body },
         injected,
         blocked: None,
         placeholder_to_model,
+        target,
     }
 }
 

@@ -162,6 +162,9 @@ pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
 /// A vendor sandbox block derm-egress can chain through: no TLS terminating
 /// proxy of the vendor's own and no credential masks (srt's terminated leg
 /// ignores the parent proxy; Claude Code embeds srt's code, note AZ C7).
+// Only the guard test runs it today, against lane 6A's real block: derm
+// writes that block itself, with no TLS proxy or credential masks.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn vendor_block_ok(block: &Value) -> Result<(), String> {
     let s = block.get("sandbox").unwrap_or(block);
     let net = s.get("network");

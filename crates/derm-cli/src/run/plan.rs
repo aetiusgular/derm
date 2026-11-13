@@ -589,7 +589,7 @@ pub fn srt_temp_root(macos: bool) -> &'static str {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub program: String,
     pub args: Vec<String>,

@@ -436,7 +436,16 @@ fn a_kept_alive_tunnel_decides_each_request_and_counts_them() {
 #[test]
 fn a_chunked_body_is_swapped_and_sent_with_a_length_and_a_chunked_reply_is_relayed_whole() {
     let reply: &'static [u8] = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-    let r = rig(reply, true, Policy::default());
+    // A body swap needs the body in the secret's placement (decision 2,
+    // integration w6's close).
+    let r = rig(
+        reply,
+        true,
+        Policy {
+            swap_body: vec!["github".into()],
+            ..Policy::default()
+        },
+    );
     let mut s = tunnel(&r, "api.github.com", "api.github.com").unwrap();
     let chunk = format!("{{\"k\":\"{PH}\"}}");
     let req = format!(
@@ -476,4 +485,52 @@ fn an_upgrade_is_refused_and_the_allow_list_holds() {
         "not on the allow list"
     );
     assert!(r.up.seen.lock().unwrap().is_empty());
+}
+
+/// Decision 2, item 2, on the wire (integration w6's close): with no
+/// placement a body keeps the placeholder; with the query placed, the value
+/// reaches the upstream in the query and not in the path, and the swap is
+/// recorded.
+#[test]
+fn on_the_wire_the_value_goes_only_where_the_secrets_placement_says() {
+    let r = rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        true,
+        Policy::default(),
+    );
+    let mut s = tunnel(&r, "api.github.com", "api.github.com").unwrap();
+    let body = format!("k={PH}");
+    let resp = ask(
+        &mut s,
+        &format!(
+            "POST /x HTTP/1.1\r\nHost: api.github.com\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert_eq!(r.up.seen.lock().unwrap()[0].1, body.as_bytes());
+    let q = rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        true,
+        Policy {
+            swap_query: vec!["github".into()],
+            ..Policy::default()
+        },
+    );
+    let mut s = tunnel(&q, "api.github.com", "api.github.com").unwrap();
+    let resp = ask(
+        &mut s,
+        &format!(
+            "GET /p/{PH}?t={PH} HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n"
+        ),
+    );
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+    assert_eq!(
+        q.up.seen.lock().unwrap()[0].0.line[1],
+        format!("/p/{PH}?t={VAL}"),
+        "the query takes the value, the path keeps the placeholder"
+    );
+    let e = records(&q, 1);
+    assert!(e.iter().any(|x| x.kind == "secret.inject"));
+    no_value_in(&e);
 }

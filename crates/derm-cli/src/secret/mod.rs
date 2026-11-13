@@ -3,7 +3,7 @@
 //! local CA it terminates TLS with.
 //!
 //! ```text
-//! derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--note <text>]
+//! derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body|query]... [--note <text>]
 //! derm secret list
 //! derm secret check
 //! derm secret remove <id>
@@ -21,9 +21,7 @@
 //! setup verbs (case 147). No verb ever prints a value; `check` reads each value
 //! as a chat start would and says only whether it could.
 
-// Called by `run/` once integration wires it (the lane's request); until
-// then only its tests use it.
-#[allow(dead_code)]
+// Called by `run/broker.rs` (lane 6C's R1, integration w6's close).
 pub mod chain;
 
 use std::path::{Path, PathBuf};
@@ -32,7 +30,7 @@ use derm_egress::ca::{self, Ca};
 use derm_egress::secrets::{self, Entry, From};
 
 pub const USAGE: &str = "usage: derm secret <add|list|check|remove|ca> ...
-  derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--note <text>]
+  derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body|query]... [--note <text>]
   derm secret list
   derm secret check
   derm secret remove <id>
@@ -149,7 +147,9 @@ fn file_path(ctx: &Ctx<'_>) -> PathBuf {
     secrets::path_for(&ctx.home)
 }
 
-/// `add <id> --host <h>... (--env|--file|--keychain) [--note]`.
+/// `add <id> --host <h>... (--env|--file|--keychain) [--in body|query]...
+/// [--note]`. `--in` puts the value into a request's body or query too,
+/// beside its headers (decision 2, integration w6's close).
 pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
     let id = args
         .first()
@@ -159,6 +159,7 @@ pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
     let mut hosts = Vec::new();
     let mut from: Option<From> = None;
     let mut note = None;
+    let mut placement: Vec<String> = Vec::new();
     let mut i = 1;
     while i < args.len() {
         let flag = args[i].as_str();
@@ -180,6 +181,10 @@ pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
             "--file" => set(&mut from, From::File(val))?,
             "--keychain" => set(&mut from, From::Keychain(val))?,
             "--note" => note = Some(val),
+            "--in" if matches!(val.as_str(), "body" | "query") && !placement.contains(&val) => {
+                placement.push(val)
+            }
+            "--in" => return Err(format!("--in takes body or query, once each, not {val:?}")),
             other => return Err(format!("unknown flag {other}")),
         }
         i += 2;
@@ -192,6 +197,7 @@ pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
         id,
         hosts,
         from,
+        placement: (!placement.is_empty()).then_some(placement),
         note,
     })
 }
@@ -220,8 +226,14 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
     );
     let _ = writeln!(
         ctx.out,
-        "the agent sees a placeholder in {}",
-        secrets::variable(&e)
+        "the agent sees a placeholder in {}; the value goes into a request's headers{}",
+        secrets::variable(&e),
+        match (e.placed("body"), e.placed("query")) {
+            (true, true) => ", body and query",
+            (true, false) => " and body",
+            (false, true) => " and query",
+            (false, false) => " only",
+        }
     );
     if matches!(e.from, From::Env(_)) {
         let _ = writeln!(

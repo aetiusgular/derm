@@ -110,11 +110,13 @@ Set only by `run/standard/`; the base's stub sets none, so a chat reads as befor
 
 | `kind` | `source` | What it says |
 |---|---|---|
-| `egress.connect` | `derm` (derm-egress through the daemon) | One connection through derm-egress: CONNECT host and port, SNI, whether they matched, bytes each way, the verdict (`forwarded`, `blocked`), a `reason` when blocked |
-| `secret.inject` | `derm` | A placeholder swapped for its secret: the secret's `id` and the host; never the value |
-| `secret.block` | `derm` | A placeholder or a secret's value bound for a host the secret does not name (case 217): the secret's `id`, the host, where it sat (`header`, `body`, `url`, `dns`), never the value |
+| `egress.connect` | `run` (derm-egress inside `derm run`, posted over its daemon-scope connection; Tony's R2, 12 Nov) | One connection through derm-egress: CONNECT host and port, SNI, whether they matched, bytes each way, the verdict (`forwarded`, `blocked`), a `reason` when blocked |
+| `secret.inject` | `run` | A placeholder swapped for its secret: the secret's `id` and the host; never the value |
+| `secret.block` | `run` | A placeholder or a secret's value bound for a host the secret does not name (case 217): the secret's `id`, the host, where it sat (`header`, `body`, `url`, `dns`), never the value |
 
 Under sbx derm brokers no provider credential (case 218); `run.start`'s `tap.reason: sbx-credential` already says so.
+
+`run.start`'s `broker` (integration w6's close, lane 6C's R1): `{"ids": [...], "brokered": true, "port": <derm-egress's loopback port>, "caSha256": <derm's CA>}` for a brokered chat; `{"ids": [...], "brokered": false}` for a chat with secrets that is not brokered (sbx, or neither the Standard tier nor srt), whose env-sourced variables are left out of the harness's environment; absent with no secrets. A secret's value goes into a request's headers only unless its `placement` names the body or the query (decision 2); a foreign placeholder toward a model host passes in the body only.
 
 ### 6.4 The light tier's per-chat log (lane 6B; the line format for 6E)
 
