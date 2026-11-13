@@ -237,6 +237,7 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
     };
     let id = s(row, "/id");
     let mut problems: Vec<String> = Vec::new();
+    let secrets = secrets_check(env.home.as_deref(), &mut problems);
 
     // The program and its version (case 81).
     let cli = row
@@ -348,8 +349,58 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         } else {
             json!("not asked (--live)")
         },
+        "secrets": secrets,
         "problems": problems,
     })
+}
+
+/// The secrets broker's files (lane 6C's request R6, integration w6's
+/// close): whether `~/.derm/secrets.json` is one derm reads (owner-only, as
+/// `secrets::load` checks it) and how many secrets it names, and, when it
+/// names any, whether derm's CA is there and valid for more than a day (a
+/// chat with secrets refuses to start otherwise) and for how many days.
+/// Reads no value. Each fault is a problem with its fix.
+pub fn secrets_check(home: Option<&Path>, problems: &mut Vec<String>) -> Value {
+    use derm_egress::ca::{self, Ca};
+    use derm_egress::secrets;
+    let Some(home) = home else {
+        return json!({"state": "no home folder"});
+    };
+    let path = secrets::path_for(home);
+    let file = match secrets::load(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            problems.push(format!(
+                "{e}: derm cannot read the secrets file, so every chat refuses to start; fix it with `derm secret`"
+            ));
+            return json!({"state": "unreadable", "file": path.to_string_lossy()});
+        }
+    };
+    let n = file.secrets.len();
+    let ca = match Ca::load(&ca::dir_for(home)) {
+        Ok(Some(c)) => {
+            let days = c.days_left();
+            if !c.valid_for(1) {
+                problems.push(
+                    "derm's CA expires within a day: run `derm secret ca create --replace` from a terminal".into(),
+                );
+            }
+            json!({"state": "present", "sha256": c.fingerprint(), "daysLeft": days})
+        }
+        Ok(None) => {
+            if n > 0 {
+                problems.push(format!(
+                    "{n} secret(s) but no CA: run `derm secret ca create` from a terminal"
+                ));
+            }
+            json!({"state": "none"})
+        }
+        Err(e) => {
+            problems.push(format!("derm's CA cannot be read: {e}"));
+            json!({"state": "unreadable"})
+        }
+    };
+    json!({"state": "ok", "secrets": n, "ca": ca})
 }
 
 fn platform() -> &'static str {
@@ -1164,6 +1215,25 @@ pub fn render(r: &Value) -> String {
         s("/os"),
         s("/arch")
     );
+    match s("/secrets/state").as_str() {
+        "ok" => out.push_str(&format!(
+            "secrets: {} in ~/.derm/secrets.json; CA {}\n",
+            r.pointer("/secrets/secrets")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            match s("/secrets/ca/state").as_str() {
+                "present" => format!(
+                    "{}, {} days left",
+                    s("/secrets/ca/sha256").get(..16).unwrap_or(""),
+                    r.pointer("/secrets/ca/daysLeft")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                ),
+                other => other.to_string(),
+            }
+        )),
+        other => out.push_str(&format!("secrets: {other}\n")),
+    }
     let version = match s("/version/state").as_str() {
         "matches" => format!("{}, as verified", s("/version/installed")),
         "unverified" => format!(

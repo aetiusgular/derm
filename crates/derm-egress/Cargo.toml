@@ -17,8 +17,9 @@ description = "derm's egress proxy and secrets broker"
 
 [features]
 default = []
-# The wave 6 base's red test (`tests/contract.rs`) builds only with this
-# feature while it fails on purpose; integration makes it default at the close.
+# The wave 6 base's red test (`tests/contract.rs`) built only with this
+# feature while it failed on purpose. Since the close (13 Nov) it passes and
+# always builds; the feature is kept, empty.
 w6-red = []
 
 [dependencies]
@@ -50,4 +51,3 @@ rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "p
 
 [[test]]
 name = "contract"
-required-features = ["w6-red"]

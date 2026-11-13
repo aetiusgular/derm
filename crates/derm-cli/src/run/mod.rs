@@ -207,6 +207,25 @@ pub fn main(argv: &[String]) -> u8 {
     }
 }
 
+/// What taint does in a chat under sbx (lane 6D's request 6D-8, its other
+/// half; integration w6's close). The VM's hook reaches the daemon only for
+/// `event` and `approve` (`gate/daemon.rs` `post_vm`, read), so it cannot ask
+/// for the chat's taint state: a Rust gate in the VM keeps taint in the VM's
+/// own light-tier file and denies any call taint flags, whatever `--taint`
+/// said, and the sbx kit's Claude Code hook decides in TypeScript with no
+/// taint at all (the wave 6 base's S1). `None` under any other boundary.
+fn taint_under_sbx(boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+    (boundary == Boundary::Sbx).then(|| {
+        format!(
+            "derm run: taint under sbx: the gate in the VM cannot reach this chat's taint state, so {}a Rust gate there keeps taint in the VM's own file and denies any call it flags, and the sbx kit's Claude Code hook has no taint",
+            match verdict {
+                Some(v) => format!("--taint {v} is not applied: "),
+                None => String::new(),
+            }
+        )
+    })
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1378,6 +1397,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let taint_record: Option<serde_json::Value> = a
         .taint
         .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
+    if let Some(n) = taint_under_sbx(a.boundary, a.taint.map(|v| v.as_str())) {
+        p.notes.push(n);
+    }
     // Content capture's switch as the chat starts (lane S's request 3). It
     // replaced DERM_LOG_CONTENT (request 3's rest, integration w5): with it
     // on, the harness's own argument words and its OTel prompts go to
@@ -1531,7 +1553,14 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             println!("tier: {t}");
         }
         if let Some(v) = &a.taint {
-            println!("taint: {} (--taint)", v.as_str());
+            if a.boundary == Boundary::Sbx {
+                println!(
+                    "taint: {} (--taint; not applied under sbx, see the note above)",
+                    v.as_str()
+                );
+            } else {
+                println!("taint: {} (--taint)", v.as_str());
+            }
         }
         // BW5-5's rest: under sbx the plan's one-step argv is not what runs.
         if a.boundary == Boundary::Sbx {
@@ -3783,6 +3812,18 @@ mod end_to_end {
         assert_eq!(code, 3);
         assert!(seen(&st).contains("token=\n"));
         assert!(st.fake.lines().is_empty(), "the daemon heard nothing");
+    }
+
+    /// 6D-8's other half (integration w6's close): under sbx the start line
+    /// and the dry run say the verdict is not applied, and nowhere else.
+    #[test]
+    fn under_sbx_the_start_says_taint_is_not_applied() {
+        let n = taint_under_sbx(Boundary::Sbx, Some("record")).unwrap();
+        assert!(n.contains("--taint record is not applied"), "{n}");
+        assert!(n.contains("denies any call it flags"), "{n}");
+        assert!(taint_under_sbx(Boundary::Sbx, None).is_some());
+        assert!(taint_under_sbx(Boundary::Srt, Some("record")).is_none());
+        assert!(taint_under_sbx(Boundary::None, Some("deny")).is_none());
     }
 
     #[cfg(unix)]

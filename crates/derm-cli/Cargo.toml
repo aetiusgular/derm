@@ -30,9 +30,10 @@ default = []
 # purpose. Since the close (11 Nov) they pass and always build; the feature
 # is kept, empty, so the lanes' recorded commands still run.
 w5b-red = []
-# The wave 6 base's red tests (`tests/contracts_w6.rs`), built only with this
-# feature while they fail on purpose; integration makes them always build at
-# the close, as it did for w5b-red.
+# The wave 6 base's red tests (`tests/contracts_w6.rs`) built only with this
+# feature while they failed on purpose. Since the close (13 Nov) they pass and
+# always build; the feature is kept, empty, so the lanes' recorded commands
+# still run.
 w6-red = []
 # [lane-C]
 # [lane-D]
@@ -114,7 +115,6 @@ name = "contracts_w5b"
 
 [[test]]
 name = "contracts_w6"
-required-features = ["w6-red"]
 
 [dev-dependencies]
 # [lane-C]

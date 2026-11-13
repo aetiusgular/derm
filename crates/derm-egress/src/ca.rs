@@ -266,6 +266,11 @@ impl Ca {
         hex(ring::digest::digest(&ring::digest::SHA256, self.cert.as_ref()).as_ref())
     }
 
+    /// Days left until the CA's last valid day (negative once expired).
+    pub fn days_left(&self) -> i64 {
+        self.meta.not_after_day - today()
+    }
+
     /// Whether the CA is still valid today, with at least `margin` days left.
     pub fn valid_for(&self, margin: i64) -> bool {
         let t = today();

@@ -816,3 +816,64 @@ fn fp1_s11_goose_scopes_decide_in_order_and_the_old_name_counts() {
         "{s:?}"
     );
 }
+
+/// Lane 6C's request R6 (integration w6's close): the report names the
+/// secrets file's state and the CA's, and each fault is a problem with its
+/// fix; no value is read.
+#[cfg(unix)]
+#[test]
+fn the_report_names_the_secrets_file_and_the_ca() {
+    use derm_egress::ca::{self, Ca};
+    use derm_egress::secrets::{self, Entry, File, From};
+    use std::os::unix::fs::PermissionsExt;
+    let h = std::env::temp_dir().join(format!("ddoc-secrets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&h);
+    std::fs::create_dir_all(h.join(".derm")).unwrap();
+    std::fs::set_permissions(h.join(".derm"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["state"], "ok");
+    assert_eq!(r["secrets"], 0);
+    assert_eq!(r["ca"]["state"], "none");
+    assert!(problems.is_empty(), "{problems:?}");
+    let path = secrets::path_for(&h);
+    secrets::save(
+        &path,
+        &File {
+            version: 1,
+            secrets: vec![Entry {
+                id: "gh".into(),
+                hosts: vec!["api.github.com".into()],
+                from: From::File("/nonexistent".into()),
+                placement: None,
+                note: None,
+            }],
+        },
+    )
+    .unwrap();
+    let mut problems = Vec::new();
+    super::secrets_check(Some(&h), &mut problems);
+    assert!(
+        problems.iter().any(|p| p.contains("derm secret ca create")),
+        "{problems:?}"
+    );
+    Ca::generate()
+        .unwrap()
+        .save(&ca::dir_for(&h), false)
+        .unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["ca"]["state"], "present");
+    assert!(r["ca"]["daysLeft"].as_i64().unwrap() > 300);
+    assert!(problems.is_empty(), "{problems:?}");
+    // A file others can read is refused, as a chat start refuses it.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["state"], "unreadable");
+    assert!(
+        problems.iter().any(|p| p.contains("derm secret")),
+        "{problems:?}"
+    );
+    let _ = std::fs::remove_dir_all(&h);
+}
