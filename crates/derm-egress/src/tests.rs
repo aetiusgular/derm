@@ -310,3 +310,40 @@ fn an_ip_literal_with_brackets_matches_its_sni_free_connect() {
         .blocked
         .is_none());
 }
+
+#[test]
+fn a_host_header_or_absolute_target_naming_another_host_is_blocked() {
+    let fronted = h(&[("host", "evil.test"), ("authorization", PH_A)]);
+    let d = decide_with(
+        &out("api.github.com", "/", &fronted, b""),
+        &two(),
+        &Policy::default(),
+    );
+    assert_eq!(d.blocked, Some(Blocked::HostMismatch));
+    let d = decide_with(
+        &out("api.github.com", "https://evil.test/x", &[], b""),
+        &two(),
+        &Policy::default(),
+    );
+    assert_eq!(d.blocked, Some(Blocked::HostMismatch));
+    for ok in ["api.github.com", "API.github.com:443", "api.github.com."] {
+        let hd = h(&[("host", ok)]);
+        assert!(
+            decide_with(
+                &out("api.github.com", "/", &hd, b""),
+                &two(),
+                &Policy::default()
+            )
+            .blocked
+            .is_none(),
+            "{ok}"
+        );
+    }
+    assert_eq!(authority_host("[::1]:8080"), "::1");
+    assert_eq!(authority_host("user@a.test:1"), "a.test");
+    assert_eq!(
+        target_host("HTTP://A.test:80/p?q").as_deref(),
+        Some("a.test")
+    );
+    assert_eq!(target_host("/p"), None);
+}

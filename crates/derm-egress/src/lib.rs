@@ -117,6 +117,10 @@ pub enum Blocked {
     EncodedBody,
     /// The host is not on the chat's allow list.
     NotAllowed,
+    /// The `Host` header or an absolute-form target names another host than
+    /// the CONNECT host (domain fronting would route an injected secret to
+    /// another backend behind the same front).
+    HostMismatch,
 }
 
 impl Blocked {
@@ -134,6 +138,9 @@ impl Blocked {
                     .into()
             }
             Blocked::NotAllowed => "the host is not on this chat's allow list".into(),
+            Blocked::HostMismatch => {
+                "the Host header or the URL names another host than the connection".into()
+            }
         }
     }
 }
@@ -191,6 +198,17 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
     if let Some(sni) = o.sni {
         if normal_host(sni) != host {
             return block(Blocked::SniMismatch);
+        }
+    }
+    let named = o
+        .headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("host"))
+        .map(|(_, v)| authority_host(v))
+        .chain(target_host(o.target));
+    for n in named {
+        if n != host {
+            return block(Blocked::HostMismatch);
         }
     }
     // A placeholder or a value in the host name itself, for every secret: no
@@ -297,6 +315,33 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
         blocked: None,
         placeholder_to_model,
     }
+}
+
+/// The host of an authority (`host`, `host:port`, `[v6]:port`), normalized.
+pub fn authority_host(a: &str) -> String {
+    let a = a.trim();
+    let a = a.rsplit_once('@').map_or(a, |(_, h)| h);
+    if let Some(rest) = a.strip_prefix('[') {
+        return normal_host(rest.split(']').next().unwrap_or(rest));
+    }
+    match a.rsplit_once(':') {
+        Some((h, p)) if !h.contains(':') && p.bytes().all(|c| c.is_ascii_digit()) => normal_host(h),
+        _ => normal_host(a),
+    }
+}
+
+/// The host of an absolute-form target (`http://h/...`), if it is one.
+pub fn target_host(t: &str) -> Option<String> {
+    let lower = t.get(..8).unwrap_or(t).to_ascii_lowercase();
+    let rest = if lower.starts_with("http://") {
+        &t[7..]
+    } else if lower.starts_with("https://") {
+        &t[8..]
+    } else {
+        return None;
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    Some(authority_host(&rest[..end]))
 }
 
 fn names(s: &Secret, host: &str) -> bool {
