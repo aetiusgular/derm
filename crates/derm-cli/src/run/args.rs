@@ -162,7 +162,8 @@ pub fn valid_host_port(s: &str) -> bool {
     let host_ok = !host.is_empty()
         && host.len() <= 253
         && if v6 {
-            host.bytes().all(|b| b.is_ascii_hexdigit() || b == b':')
+            // BW6-12: any IPv6 literal, as srt 0.0.82 takes it.
+            host.parse::<std::net::Ipv6Addr>().is_ok()
         } else {
             host.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
@@ -594,6 +595,11 @@ mod tests {
             "localhost:8080",
             "[::1]:4318",
             "api.example.com:443",
+            // Box test w6, BW6-12: srt 0.0.82 takes any bracketed IPv6
+            // literal (`domain-pattern.js:38-136`, node's `isIP`), the
+            // IPv4-mapped form with its dotted tail too.
+            "[::ffff:169.254.169.254]:443",
+            "[64:ff9b::a9fe:a9fe]:443",
         ] {
             assert!(valid_host_port(ok), "{ok}");
         }
@@ -605,6 +611,10 @@ mod tests {
             "a b:1",
             "[::1]",
             "::1:443",
+            "[::1.2]:443",
+            "[a.b]:443",
+            "[]:443",
+            "[::ffff:1.2.3.4.5]:443",
         ] {
             assert!(!valid_host_port(bad), "{bad}");
         }
