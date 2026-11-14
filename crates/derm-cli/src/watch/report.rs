@@ -424,6 +424,7 @@ fn reason(r: &str) -> String {
         "leftRunning" => "left running".into(),
         "appNotGranted" => "app not granted".into(),
         "recordingOff" => "recording off".into(),
+        "noGateRecord" => "no gate record".into(),
         other => clean(other, 20),
     }
 }

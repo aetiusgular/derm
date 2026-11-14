@@ -218,6 +218,12 @@ pub struct Inputs<'a> {
     /// What the files Codex reads say of its sign-in store (fix pass 6,
     /// FP5R-5; `run::codex_store` reads them, this module reads no file).
     pub codex_store: CodexStoreFiles,
+    /// Under srt on Linux, the route file `derm run` writes for the gate
+    /// (`gate::daemon::srt_route_file`), by absolute path: re-opened
+    /// read-only inside the hidden `~/.derm`, so the hook finds the daemon's
+    /// port without reading it from an environment a project can set (Tony's
+    /// R7 call, option 1; case 270). `None` when the gate has no route out.
+    pub srt_route: Option<String>,
 }
 
 /// Why Codex's sign-in may live in a store srt cannot write, from its files
@@ -1036,6 +1042,31 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     env.push(("DERM_DAEMON_SOCKET".into(), sock.to_string()));
                 }
             }
+            // R7, option 1 (case 270): the gate's route out of srt on Linux,
+            // a literal path inside the hidden `~/.derm`, re-opened read-only
+            // (srt 0.0.82 binds an `allowRead` under a `denyRead` back over its
+            // tmpfs, `pushReadDenyDirMounts`, run). srt refuses the daemon's
+            // socket there, so the hook's records go to the daemon's port
+            // through srt's own proxy.
+            if !i.macos {
+                match &i.srt_route {
+                    Some(r) if r.starts_with('/') => {
+                        allow_read.push(json!({"path": r, "literal": true}));
+                        notes.push(format!(
+                            "derm run: under srt on Linux srt refuses the daemon's socket, so {}'s gate sends its records to the daemon's port through srt's proxy; a record it cannot post denies the call, and an ask goes to {}'s own prompt or is denied (no approver reaches into srt here)",
+                            h.id, h.id
+                        ));
+                    }
+                    _ if !i.args.no_daemon => notes.push(format!(
+                        "derm run: under srt on Linux {}'s gate has no route to the daemon here (the daemon published no OTLP port), so it denies every call it gates",
+                        h.id
+                    )),
+                    _ => notes.push(format!(
+                        "derm run: under srt on Linux with no daemon {}'s gate can keep no record (srt's ~/.derm is a tmpfs that goes with the sandbox), so it denies every call it gates",
+                        h.id
+                    )),
+                }
+            }
             // MW5-22: `cu.endpoint` beside the socket, re-opened read-only
             // like the socket (a literal path, so nothing else in the folder),
             // with the socket named so the relay finds that folder (macOS sets
@@ -1523,6 +1554,7 @@ mod tests {
             macos: false,
             terminal: false,
             codex_store: CodexStoreFiles::default(),
+            srt_route: None,
         }
     }
 

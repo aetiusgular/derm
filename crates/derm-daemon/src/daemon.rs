@@ -70,7 +70,8 @@ fn flag_rank(f: &Value) -> u8 {
         "recordingOff" => 2,
         "newHost" => 3,
         "leftRunning" => 4,
-        _ => 5,
+        "noGateRecord" => 5,
+        _ => 6,
     }
 }
 

@@ -61,6 +61,9 @@ pub enum FlagReason {
     NewHost,
     /// Computer use's recording did not start (`cua.recording`, `on` false).
     RecordingOff,
+    /// A call the tap saw come back, in a chat whose gate was expected, that
+    /// no gate record names (Tony's R7 call, option 1; the P4-R7 pattern).
+    NoGateRecord,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1456,6 +1459,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
     }
 
     found.extend(left_running(input, &windows, &tree));
+    found.extend(no_gate_record(input));
     let flags = dedupe(input.events, found);
     let mut expected = dedupe(input.events, hidden);
     expected.truncate(MAX_EXPECTED_ROWS);
@@ -1464,6 +1468,82 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
         expected,
         suppressed,
     }
+}
+
+/// Tony's R7 call, option 1 (14 Nov 2026; case 270; the P4-R7 pattern): a
+/// call the tap saw come back with a result, in a chat whose `run.start`
+/// says derm's gate was expected (`gate.expected`) and the tap on, that no
+/// gate record (`approval` or `tool.call`, by `toolUseId`, which is the
+/// tap's `callId`) names in the window. The tap's records come from the
+/// daemon's own tap, which no chat token can post; a chat token can post a
+/// gate record for a call id it reads from its own tail (case 66), so this
+/// shows a gate that did not run (a project's settings that turn hooks off)
+/// or records that were lost, not an agent that forges them. A code tool's
+/// call is not judged: Codex sends no hook for Code Mode's `exec` or `wait`
+/// (`core/src/tools/registry.rs:168-177` at 0.167.2: the default hook
+/// payload is for function calls only).
+fn no_gate_record<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
+    let mut watched: HashSet<&str> = HashSet::new();
+    for e in input.events {
+        if e.source == ActivitySource::Run && e.kind == "run.start" {
+            let expected = e
+                .detail
+                .pointer("/gate/expected")
+                .and_then(Value::as_bool)
+                == Some(true);
+            let tapped = e.detail.pointer("/tap/on").and_then(Value::as_bool) == Some(true);
+            if expected && tapped {
+                watched.insert(e.chat_id.as_str());
+            }
+        }
+    }
+    if watched.is_empty() {
+        return Vec::new();
+    }
+    let gated: HashSet<(&str, &str)> = input
+        .events
+        .iter()
+        .filter(|e| {
+            e.source == ActivitySource::Adapter && (e.kind == "approval" || e.kind == "tool.call")
+        })
+        .filter_map(|e| Some((e.chat_id.as_str(), str_field(e, "toolUseId")?)))
+        .collect();
+    let mut out = Vec::new();
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    for e in input.events {
+        if e.source != ActivitySource::Tap
+            || e.kind != "tap.call"
+            || !watched.contains(e.chat_id.as_str())
+            || e.detail.get("resultSha256").is_none_or(Value::is_null)
+        {
+            continue;
+        }
+        let Some(call) = str_field(e, "callId") else {
+            continue;
+        };
+        let tool = str_field(e, "toolNormalized").unwrap_or("");
+        if derm_core::policy::code_tool(&e.harness, tool)
+            || gated.contains(&(e.chat_id.as_str(), call))
+            || !seen.insert((e.chat_id.as_str(), call))
+        {
+            continue;
+        }
+        out.push(Candidate {
+            event: e,
+            reason: FlagReason::NoGateRecord,
+            summary: one_line(
+                &format!(
+                    "the tap saw {tool} call {call} come back, and no gate record names it: the gate did not run for it, or its record was lost"
+                ),
+                300,
+            ),
+            tier: None,
+            subject: call.to_string(),
+            grouped_path: None,
+            alone: true,
+        });
+    }
+    out
 }
 
 /// Processes a tool call started that were still running 10 s after it
@@ -1582,6 +1662,7 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
         FlagReason::SensitivePath => "sensitivePath",
         FlagReason::NewHost => "newHost",
         FlagReason::RecordingOff => "recordingOff",
+        FlagReason::NoGateRecord => "noGateRecord",
     }
 }
 
@@ -1862,6 +1943,89 @@ mod tests {
             &[],
         );
         assert_eq!(flags.len(), 5, "{flags:?}");
+    }
+
+    fn chat_ev(id: &str, at: i64, chat: &str, source: ActivitySource, kind: &str, detail: Value) -> ActivityEvent {
+        let mut e = ev(id, at, source, kind, detail, None);
+        e.chat_id = chat.into();
+        e.harness = "claude-code".into();
+        e
+    }
+
+    /// Tony's R7 call, option 1 (14 Nov 2026; the P4-R7 pattern): in a
+    /// chat whose `run.start` says derm's gate was expected and the tap on,
+    /// a call the tap saw come back with a result, and that no gate record
+    /// names, is flagged. A chat token can still post a record for a call id
+    /// it reads from its own tail (case 66), so this catches a gate that did
+    /// not run or a record that was lost, not an agent that forges one.
+    #[test]
+    fn r7_a_tapped_call_no_gate_record_names_is_flagged() {
+        let start = |chat: &str, expected: bool, tap: bool| {
+            chat_ev(
+                &format!("start-{chat}"),
+                1,
+                chat,
+                ActivitySource::Run,
+                "run.start",
+                json!({"boundary": "srt", "gate": {"expected": expected}, "tap": {"on": tap}}),
+            )
+        };
+        let tap = |id: &str, chat: &str, call: &str, tool: &str, result: bool| {
+            let mut d = json!({"callId": call, "toolNormalized": tool});
+            if result {
+                d["resultSha256"] = json!("ab");
+            }
+            chat_ev(id, 10, chat, ActivitySource::Tap, "tap.call", d)
+        };
+        let gate = |id: &str, chat: &str, call: &str| {
+            chat_ev(
+                id,
+                9,
+                chat,
+                ActivitySource::Adapter,
+                "approval",
+                json!({"toolUseId": call, "decision": "allow", "tool": "bash"}),
+            )
+        };
+        let flags = check(
+            &[
+                start("c1", true, true),
+                tap("t1", "c1", "toolu_a", "bash", true),
+                gate("g1", "c1", "toolu_a"),
+                tap("t2", "c1", "toolu_b", "bash", true),
+                // No result yet: not judged.
+                tap("t3", "c1", "toolu_c", "bash", false),
+            ],
+            &[],
+        );
+        let ungated: Vec<&Flag> = flags
+            .iter()
+            .filter(|f| f.reason == FlagReason::NoGateRecord)
+            .collect();
+        assert_eq!(ungated.len(), 1, "{flags:?}");
+        assert_eq!(ungated[0].event_id, "t2");
+        assert!(ungated[0].summary.contains("toolu_b"), "{flags:?}");
+        // No flag where the gate was not expected, the tap was off, or the
+        // call is a code tool's (Codex sends no hook for those).
+        let mut codex = tap("t6", "c4", "c_x", "exec", true);
+        codex.harness = "codex".into();
+        let mut codex_start = start("c4", true, true);
+        codex_start.harness = "codex".into();
+        let flags = check(
+            &[
+                start("c2", false, true),
+                tap("t4", "c2", "toolu_d", "bash", true),
+                start("c3", true, false),
+                tap("t5", "c3", "toolu_e", "bash", true),
+                codex_start,
+                codex,
+            ],
+            &[],
+        );
+        assert!(
+            flags.iter().all(|f| f.reason != FlagReason::NoGateRecord),
+            "{flags:?}"
+        );
     }
 
     #[test]

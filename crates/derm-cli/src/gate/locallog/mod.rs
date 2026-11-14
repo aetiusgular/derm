@@ -79,7 +79,95 @@ pub enum Outcome {
 }
 
 /// The seam `post_event` calls after the daemon answered (`posted`).
-pub fn after_post(event: &AdapterEvent, env: &Env, _cwd: &Path, posted: bool) -> Outcome {
+pub fn after_post(event: &AdapterEvent, env: &Env, cwd: &Path, posted: bool) -> Outcome {
+    after_post_with(event, env, cwd, posted, &System::real())
+}
+
+/// What the light tier reads of the system before it writes (case 270).
+pub struct System {
+    /// `/proc/self/net/dev`, on Linux.
+    pub netdev: Option<String>,
+    /// `/proc/self/mountinfo`, on Linux.
+    pub mountinfo: Option<String>,
+}
+
+impl System {
+    pub fn real() -> System {
+        let linux = cfg!(target_os = "linux");
+        let read = |p: &str| linux.then(|| std::fs::read_to_string(p).ok()).flatten();
+        System {
+            netdev: read("/proc/self/net/dev"),
+            mountinfo: read("/proc/self/mountinfo"),
+        }
+    }
+}
+
+/// Why a file written in `home`'s `.derm` would not reach the disk the
+/// person reads it from, or `None` (re-review W6C-R7, case 270; Tony's R7
+/// call, option 1): a hook in a network with only `lo` (srt's on Linux,
+/// which a project's settings cannot make for derm's hook), or a mount at or
+/// under `~/.derm` (srt's `denyRead` of `~/.derm` is a tmpfs there, which
+/// goes with the sandbox: run under srt 0.0.82 as a user, the append
+/// succeeded and the host's folder stayed empty).
+pub fn kept_away(home: &Path, sys: &System) -> Option<String> {
+    if sys
+        .netdev
+        .as_deref()
+        .is_some_and(super::daemon::only_loopback_netns)
+    {
+        return Some(
+            "this hook runs in a sandbox's own network (only loopback, as srt's on Linux), where a file it writes in ~/.derm may never reach your disk"
+                .into(),
+        );
+    }
+    let derm = home.join(".derm");
+    let derm = derm.to_string_lossy();
+    for line in sys.mountinfo.as_deref().unwrap_or("").lines() {
+        let Some(at) = line.split(' ').nth(4).map(unescape_mount) else {
+            continue;
+        };
+        if at == derm || at.starts_with(&format!("{derm}/")) {
+            return Some(format!(
+                "{at} is a mount here (srt's tmpfs over ~/.derm), so a file written there goes with the sandbox"
+            ));
+        }
+    }
+    None
+}
+
+/// `/proc/self/mountinfo` writes a space, a tab, a newline and `\` in a
+/// mount point as `\040`, `\011`, `\012` and `\134` (proc(5)).
+fn unescape_mount(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let octal = b.get(i + 1..i + 4).filter(|t| {
+            b[i] == b'\\' && t.iter().all(|c| (b'0'..=b'7').contains(c))
+        });
+        let n = octal.and_then(|t| {
+            let v = u16::from(t[0] - b'0') * 64 + u16::from(t[1] - b'0') * 8 + u16::from(t[2] - b'0');
+            u8::try_from(v).ok()
+        });
+        if let Some(n) = n {
+            out.push(n);
+            i += 4;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// [`after_post`] with the system's facts given.
+pub fn after_post_with(
+    event: &AdapterEvent,
+    env: &Env,
+    _cwd: &Path,
+    posted: bool,
+    sys: &System,
+) -> Outcome {
     if posted {
         return Outcome::Skipped;
     }
@@ -88,6 +176,11 @@ pub fn after_post(event: &AdapterEvent, env: &Env, _cwd: &Path, posted: bool) ->
             "derm's light-tier log: no home folder (HOME is not an absolute path)".into(),
         );
     };
+    if let Some(why) = kept_away(&home, sys) {
+        return Outcome::Failed(format!(
+            "derm's light-tier log: {why}; under derm run the gate's records go to the daemon, and one it could not post is not kept here"
+        ));
+    }
     match append(&home, event, now_ms(), DEADLINE) {
         Ok(seq) => Outcome::Appended { seq },
         Err(why) => Outcome::Failed(format!("derm's light-tier log: {why}")),

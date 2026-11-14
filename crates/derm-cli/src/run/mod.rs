@@ -265,6 +265,38 @@ fn event(
 
 /// Writes srt's settings as a new 0600 file in a 0700 folder, refusing a
 /// symlink at the file's place.
+/// R7, option 1 (case 270): where the gate's route out of srt goes and what
+/// it says, on Linux under srt for a chat with a token: the daemon's HTTP
+/// port (its `otlp.endpoint`, `http://127.0.0.1:<port>`) and srt's proxy
+/// port inside the sandbox, under `home`'s `.derm`, which srt hides and
+/// re-opens this one file of.
+fn srt_route_path(
+    boundary: Boundary,
+    with_token: bool,
+    otlp: Option<&str>,
+    home: &str,
+    chat: &str,
+) -> Option<(PathBuf, String)> {
+    if !cfg!(target_os = "linux") || boundary != Boundary::Srt || !with_token {
+        return None;
+    }
+    let port: u16 = otlp?
+        .strip_prefix("http://127.0.0.1:")?
+        .trim_end_matches('/')
+        .parse()
+        .ok()
+        .filter(|p| *p > 0)?;
+    if !home.starts_with('/') {
+        return None;
+    }
+    let text = serde_json::json!({
+        "daemonPort": port,
+        "proxyPort": crate::gate::daemon::SRT_PROXY_PORT,
+    })
+    .to_string();
+    Some((crate::gate::daemon::srt_route_file(Path::new(home), chat), text))
+}
+
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -1269,6 +1301,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // Cline's approval folder sits in its own state, which it can write
     // under srt as under none (T2.9).
     let cline_dir = format!("{}/.cline/derm-approval/{chat}", home.trim_end_matches('/'));
+    // R7, option 1: the daemon's port for the gate's route out of srt.
+    let otlp_endpoint = otlp.clone();
     let inputs = plan::Inputs {
         args: &a,
         chat: chat.clone(),
@@ -1308,6 +1342,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
         macos: cfg!(target_os = "macos"),
         terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        // R7, option 1 (case 270): the gate's route out of srt on Linux.
+        srt_route: srt_route_path(
+            a.boundary,
+            token.is_some() || (a.dry_run && !a.no_daemon),
+            otlp_endpoint.as_deref(),
+            &home,
+            &chat,
+        )
+        .map(|(path, _)| path.to_string_lossy().into_owned()),
         // FP5R-5: read only for Codex under srt, where it decides.
         codex_store: if a.harness.id == "codex" && a.boundary == Boundary::Srt {
             codex_store::read(
@@ -1397,6 +1440,23 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     if a.boundary == Boundary::Srt && !tapped && a.model_url.is_none() {
         plan::srt_admit_model_hosts(&mut p, a.harness.id).map_err(|e| (1, e))?;
     }
+    // R7, option 1 (case 270): whether derm's gate is registered here and
+    // blocks when it fails (`probe::gate_holds`, the boundary choice's own
+    // reading), for the daemon's check of calls the tap saw that no gate
+    // record names (`gate.expected` in `run.start`).
+    let gate_expected = a.harness.id != "other" && {
+        let mut e = crate::watch::status::Env::real();
+        e.cwd = Some(PathBuf::from(&cwd));
+        boundary::probe::gate_holds(a.harness.id, &e)
+    };
+    if cfg!(target_os = "linux") && a.boundary == Boundary::Srt && gate_expected && !a.no_daemon {
+        p.notes.push(if tapped {
+            "derm run: the daemon flags any call the model tap saw come back that no gate record names (a gate that did not run, or a record that was lost)".to_string()
+        } else {
+            "derm run: the model tap is off, so nothing beside the gate sees the chat's calls: a call whose gate record never reached the daemon shows nowhere".to_string()
+        });
+    }
+    let gate_record = Some(json!({"expected": gate_expected}));
     // The Standard tier (lane 6A's seam; `contracts/sandbox.md`): the agent's
     // own sandbox from derm's policy, as `detail.tier`. The base's stub
     // returns none.
@@ -1604,6 +1664,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         write_private(&settings_path, text)
             .map_err(|e| (1, format!("{}: {e}", settings_path.display())))?;
         cleanup.files.push(settings_path.clone());
+    }
+    // R7, option 1 (case 270): the gate's route out of srt on Linux, which
+    // the plan re-opened read-only inside the hidden `~/.derm`.
+    if let Some((route, text)) =
+        srt_route_path(a.boundary, token.is_some(), otlp_endpoint.as_deref(), &home, &chat)
+    {
+        write_private(&route, &format!("{text}\n"))
+            .map_err(|e| (1, format!("{}: {e}", route.display())))?;
+        cleanup.files.push(route);
     }
     let token_file_named = p.env_set.iter().any(|(k, _)| k == "DERM_CHAT_TOKEN_FILE");
     if let (true, Some(t)) = (token_file_named, &token) {
@@ -1852,6 +1921,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ("taint", &taint_record),
         // Integration w6's close (lane 6C's R1; `contracts/events.md` 6.3).
         ("broker", &chat_broker.record),
+        // R7, option 1 (case 270).
+        ("gate", &gate_record),
     ] {
         if let Some(v) = record {
             base[key] = v.clone();

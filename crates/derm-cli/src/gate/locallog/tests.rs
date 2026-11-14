@@ -682,3 +682,41 @@ mod windows {
         assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
     }
 }
+
+/// Re-review W6C-R7, case 270, Tony's R7 call (option 1): under srt on
+/// Linux the light log's append succeeded into srt's tmpfs over `~/.derm`
+/// and the record went with the sandbox (run as root and, by this pass, as
+/// a plain user). It is not written there, so the call is denied.
+#[test]
+fn r7_no_light_log_where_it_would_go_with_the_sandbox() {
+    let home = Path::new("/home/u");
+    let lo = "Inter-|\n face |\n    lo: 0\n";
+    let eth = "Inter-|\n face |\n    lo: 0\n  eth0: 1\n";
+    let srt_mounts = "36 25 0:30 / /home/u/.derm rw,nosuid - tmpfs tmpfs rw\n37 36 8:1 /home/u/.derm/policy.json /home/u/.derm/policy.json ro - ext4 /dev/sda1 rw\n";
+    let sys = |net: &str, mounts: &str| System {
+        netdev: Some(net.to_string()),
+        mountinfo: Some(mounts.to_string()),
+    };
+    assert!(kept_away(home, &sys(lo, "")).unwrap().contains("only loopback"));
+    assert!(kept_away(home, &sys(eth, srt_mounts))
+        .unwrap()
+        .contains("/home/u/.derm is a mount"));
+    // A mount point with a space, as mountinfo escapes it.
+    let spaced = Path::new("/home/a b");
+    assert!(kept_away(
+        spaced,
+        &sys(eth, "40 25 0:31 / /home/a\\040b/.derm/local rw - tmpfs tmpfs rw\n")
+    )
+    .is_some());
+    // Not a mount at or under ~/.derm: kept.
+    assert_eq!(
+        kept_away(home, &sys(eth, "41 25 0:32 / /home/u/.dermx rw - tmpfs tmpfs rw\n36 1 8:1 / / rw - ext4 /dev/sda1 rw\n")),
+        None
+    );
+    assert_eq!(kept_away(home, &System { netdev: None, mountinfo: None }), None);
+    // And the seam fails, so the light tier denies.
+    let h = scratch("r7");
+    let out = after_post_with(&event("c-r7", "approval", 0), &env_home(&h), &h, false, &sys(lo, ""));
+    assert!(matches!(&out, Outcome::Failed(w) if w.contains("only loopback")), "{out:?}");
+    assert!(!h.join(".derm").exists());
+}

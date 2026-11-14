@@ -747,3 +747,164 @@ fn a_decision_id_names_an_unknown_call_and_stays_under_the_cap() {
     assert!(long.contains("-decision-"));
     assert!(decision_id("hermes", Some("a\nb c/d")).starts_with("hermes-a_b_c_d-decision-"));
 }
+
+/// Tony's R7 call, option 1 (case 270): the route a hook inside derm's srt
+/// chat on Linux takes to the daemon, and every way it is refused.
+#[cfg(unix)]
+mod srt_route {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const LO: &str = "Inter-|   Receive\n face |bytes\n    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
+    const ETH: &str = "Inter-|   Receive\n face |bytes\n    lo: 0 0\n  eth0: 1 2\n";
+    const PROXY: &str = "http://srt.bGFiZWw%3D:s3cret@localhost:3128";
+
+    struct Home(PathBuf);
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn home(name: &str, route: Option<&str>, mode: u32) -> Home {
+        let h = std::env::temp_dir().join(format!("derm-srt-route-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&h);
+        let f = srt_route_file(&h, "derm-abc");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        if let Some(r) = route {
+            std::fs::write(&f, r).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        Home(h)
+    }
+    fn env_of(extra: &[(&str, &str)]) -> Env {
+        let mut v = vec![("DERM_CHAT_ID", "derm-abc"), ("HTTPS_PROXY", PROXY)];
+        v.extend_from_slice(extra);
+        Env::of(&v)
+    }
+    fn route(env: &Env, h: &Home, net: &str, bound: bool) -> Result<SrtRoute, String> {
+        let dir = h.0.clone();
+        let net = net.to_string();
+        srt_route_with(
+            env,
+            &SrtReads {
+                netdev: &|| Some(net.clone()),
+                home: &|| Some(dir.clone()),
+                uid: derm_core::runtime::current_uid(),
+                bound: &|_| bound,
+            },
+        )
+    }
+    const GOOD: &str = r#"{"daemonPort":41861,"proxyPort":3128}"#;
+
+    #[test]
+    fn the_route_is_the_daemons_port_through_srts_own_proxy() {
+        let h = home("good", Some(GOOD), 0o600);
+        let r = route(&env_of(&[]), &h, LO, true).unwrap();
+        assert_eq!(r.port, 41861);
+        assert!(r.proxy.addrs.iter().all(|a| a.port() == 3128), "{r:?}");
+        assert_eq!(r.proxy.auth.as_deref(), Some("srt.bGFiZWw=:s3cret"));
+    }
+
+    #[test]
+    fn no_route_outside_a_sandboxs_own_network_or_for_a_file_srt_did_not_bind() {
+        let h = home("refused", Some(GOOD), 0o600);
+        let e = env_of(&[]);
+        assert!(route(&e, &h, ETH, true).unwrap_err().contains("network"));
+        assert!(route(&e, &h, LO, false).unwrap_err().contains("bound"));
+        let loose = home("loose", Some(GOOD), 0o644);
+        assert!(route(&e, &loose, LO, true).unwrap_err().contains("yours alone"));
+        let none = home("none", None, 0o600);
+        assert!(route(&e, &none, LO, true).unwrap_err().contains("no route file"));
+        let bad = home("bad", Some(r#"{"daemonPort":0,"proxyPort":3128}"#), 0o600);
+        assert!(route(&e, &bad, LO, true).unwrap_err().contains("daemon port"));
+    }
+
+    #[test]
+    fn a_proxy_or_a_chat_id_a_project_names_gives_no_route() {
+        let h = home("env", Some(GOOD), 0o600);
+        for (k, v, why) in [
+            ("HTTPS_PROXY", "http://localhost:4444", "not srt's"),
+            ("HTTPS_PROXY", "http://proxy.example.com:3128", "no loopback proxy"),
+            ("DERM_CHAT_ID", "../derm-abc", "not a chat id"),
+            ("DERM_CHAT_ID", ".derm-abc", "not a chat id"),
+            ("DERM_CHAT_ID", "derm-other", "no route file"),
+        ] {
+            let got = route(&env_of(&[(k, v)]), &h, LO, true).unwrap_err();
+            assert!(got.contains(why), "{k}={v}: {got}");
+        }
+    }
+
+    #[test]
+    fn only_lo_is_a_sandboxs_own_network() {
+        assert!(only_loopback_netns(LO));
+        assert!(!only_loopback_netns(ETH));
+        assert!(!only_loopback_netns("Inter-|\n face |\n"));
+    }
+
+    /// A record goes through the proxy as a CONNECT to 127.0.0.1:<port> and
+    /// a POST of the event with the chat token; an ask goes nowhere.
+    #[test]
+    fn a_record_tunnels_through_the_proxy_and_an_ask_does_not() {
+        use std::io::{BufRead, BufReader, Write};
+        let daemon = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = daemon.local_addr().unwrap().port();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let pport = proxy.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let (c, _) = proxy.accept().unwrap();
+            let mut r = BufReader::new(c.try_clone().unwrap());
+            let mut connect = String::new();
+            r.read_line(&mut connect).unwrap();
+            let mut l = String::new();
+            let mut auth = String::new();
+            while r.read_line(&mut l).unwrap() > 2 {
+                if l.to_ascii_lowercase().starts_with("proxy-authorization") {
+                    auth = l.trim().to_string();
+                }
+                l.clear();
+            }
+            (&c).write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+            let mut up = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let mut head = String::new();
+            let mut body_len = 0usize;
+            loop {
+                let mut l = String::new();
+                r.read_line(&mut l).unwrap();
+                if l == "\r\n" {
+                    break;
+                }
+                if let Some(n) = l.to_ascii_lowercase().strip_prefix("content-length:") {
+                    body_len = n.trim().parse().unwrap();
+                }
+                head.push_str(&l);
+            }
+            let mut body = vec![0u8; body_len];
+            std::io::Read::read_exact(&mut r, &mut body).unwrap();
+            up.write_all(b"ok").unwrap();
+            let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+            (&c).write_all(reply.as_bytes()).unwrap();
+            (connect, auth, head, String::from_utf8(body).unwrap())
+        });
+        let route = SrtRoute {
+            port,
+            proxy: derm_daemon::computer_use::bridge_cli::Proxy {
+                addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], pport))],
+                auth: Some("srt.x:s3cret".into()),
+            },
+        };
+        let ask = json!({"op": "approve", "request": {}});
+        assert!(post_srt(&route, &"a".repeat(64), &ask, Duration::from_secs(2))
+            .unwrap_err()
+            .contains("records only"));
+        let ev = json!({"op": "event", "event": {"id": "x1", "kind": "approval"}});
+        let reply = post_srt(&route, &"a".repeat(64), &ev, Duration::from_secs(5)).unwrap();
+        assert_eq!(reply, json!({"ok": true}));
+        let (connect, auth, head, body) = seen.join().unwrap();
+        assert_eq!(connect.trim(), format!("CONNECT 127.0.0.1:{port} HTTP/1.1"));
+        assert!(auth.starts_with("Proxy-Authorization: Basic "), "{auth}");
+        assert!(head.starts_with("POST /derm/v1/event HTTP/1.1"), "{head}");
+        assert!(head.contains(&format!("Host: 127.0.0.1:{port}")), "{head}");
+        assert!(head.contains(&format!("x-derm-token: {}", "a".repeat(64))), "{head}");
+        assert_eq!(body, r#"{"event":{"id":"x1","kind":"approval"}}"#);
+    }
+}

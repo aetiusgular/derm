@@ -352,7 +352,7 @@ pub fn socket_candidates(env: &Env) -> Vec<PathBuf> {
 }
 
 #[cfg(unix)]
-fn passwd_home() -> Option<PathBuf> {
+pub(crate) fn passwd_home() -> Option<PathBuf> {
     use std::ffi::CStr;
     use std::os::unix::ffi::OsStrExt;
     let mut buf = vec![0u8; 16 * 1024];
@@ -448,6 +448,205 @@ pub fn vm_endpoint(
     Some(url)
 }
 
+/// srt 0.0.82's proxy inside the sandbox on Linux: its relay listens on
+/// this port in the sandbox's own network (`buildSandboxCommand`,
+/// `dist/sandbox/linux-sandbox-utils.js:1442-1460`, `relay(3128, ...)`), and
+/// holds it for the sandbox's life, so nothing in the sandbox can take it
+/// (run under srt 0.0.82: a bind of 127.0.0.1:3128 there fails with
+/// EADDRINUSE, and the relay is outside the command's PID namespace).
+pub const SRT_PROXY_PORT: u16 = 3128;
+
+/// Where `derm run` writes a chat's route out of srt on Linux, under its
+/// home: `<home>/.derm/run/routes/<chat>.json`. A project can set the hook's
+/// `HOME` (case 237); what makes the file trusted is not where it is found
+/// but that srt bound it in ([`SrtReads::bound`]).
+pub fn srt_route_file(home: &Path, chat: &str) -> PathBuf {
+    home.join(".derm")
+        .join("run")
+        .join("routes")
+        .join(format!("{chat}.json"))
+}
+
+/// The route a hook inside derm's srt chat on Linux takes to the daemon for
+/// its records (Tony's R7 call, option 1, 14 Nov 2026; case 270): srt
+/// refuses every `socket(AF_UNIX)` there, so the daemon's socket is out of
+/// reach, and its HTTP port is reached through srt's own proxy, which admits
+/// `127.0.0.1:<port>` because `derm run` lists it.
+#[derive(Debug)]
+pub struct SrtRoute {
+    pub port: u16,
+    pub proxy: derm_daemon::computer_use::bridge_cli::Proxy,
+}
+
+/// What [`srt_route_with`] reads from the system, so a test can give its own.
+pub struct SrtReads<'a> {
+    /// `/proc/self/net/dev`.
+    pub netdev: &'a dyn Fn() -> Option<String>,
+    /// The hook's home: `HOME` when it is an absolute path, else the one the
+    /// password database names.
+    pub home: &'a dyn Fn() -> Option<PathBuf>,
+    /// This process's uid.
+    pub uid: u32,
+    /// Whether the file was bound into the sandbox: its device is not its
+    /// folder's. Inside srt `~/.derm` is a tmpfs the agent can write, and a
+    /// file the agent made there sits on that tmpfs; only srt can bind one
+    /// (nothing in the sandbox can mount: srt's seccomp helper refuses it).
+    pub bound: &'a dyn Fn(&Path) -> bool,
+}
+
+/// Whether `/proc/net/dev`'s interfaces are `lo` alone: the network
+/// namespace srt gives a chat on Linux (bwrap `--unshare-net`), which a
+/// project's settings cannot make for derm's hook.
+pub fn only_loopback_netns(dev: &str) -> bool {
+    let names: Vec<&str> = dev
+        .lines()
+        .skip(2)
+        .filter_map(|l| l.split_once(':').map(|(n, _)| n.trim()))
+        .collect();
+    !names.is_empty() && names.iter().all(|n| *n == "lo")
+}
+
+fn chat_id_ok(c: &str) -> bool {
+    !c.is_empty()
+        && c.len() <= 128
+        && !c.starts_with('.')
+        && c.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// The srt route, or why there is none. Linux only: a network with only
+/// `lo`; the route file `derm run` wrote for `DERM_CHAT_ID`, a regular file
+/// of this user's alone with one name, bound into the sandbox, naming the
+/// daemon's port and srt's proxy port; and srt's proxy, from the
+/// environment (the only place srt gives its credentials), on loopback and
+/// at that proxy port. A project can set `DERM_CHAT_ID` and the proxy
+/// variables; it cannot make the network, bind a file or take the port.
+pub fn srt_route_with(env: &Env, r: &SrtReads) -> Result<SrtRoute, String> {
+    let dev = (r.netdev)().ok_or("no /proc/self/net/dev")?;
+    if !only_loopback_netns(&dev) {
+        return Err("not in a sandbox's own network".into());
+    }
+    let chat = env.get("DERM_CHAT_ID").ok_or("no DERM_CHAT_ID")?;
+    if !chat_id_ok(chat) {
+        return Err("DERM_CHAT_ID is not a chat id".into());
+    }
+    let home = (r.home)().ok_or("no home folder")?;
+    let file = srt_route_file(&home, chat);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let st = std::fs::symlink_metadata(&file).map_err(|_| "no route file".to_string())?;
+        if !st.is_file() || st.nlink() != 1 || st.len() > 256 {
+            return Err("the route file is not a plain file".into());
+        }
+        if st.uid() != r.uid || st.mode() & 0o077 != 0 {
+            return Err("the route file is not yours alone".into());
+        }
+        if !(r.bound)(&file) {
+            return Err("the route file was not bound in by the sandbox".into());
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&file)
+            .map_err(|_| "the route file cannot be read".to_string())?;
+        let mut text = String::new();
+        (&mut f)
+            .take(257)
+            .read_to_string(&mut text)
+            .map_err(|_| "the route file cannot be read".to_string())?;
+        let v: Value =
+            serde_json::from_str(&text).map_err(|_| "the route file is not JSON".to_string())?;
+        let port_of = |k: &str| {
+            v.get(k)
+                .and_then(Value::as_u64)
+                .and_then(|n| u16::try_from(n).ok())
+                .filter(|n| *n > 0)
+        };
+        let port = port_of("daemonPort").ok_or("the route file names no daemon port")?;
+        let proxy_port = port_of("proxyPort").ok_or("the route file names no proxy port")?;
+        let proxy = derm_daemon::computer_use::bridge_cli::loopback_proxy(&|n| {
+            env.raw(n).map(str::to_string)
+        })
+        .ok_or("no loopback proxy in the environment")?;
+        if proxy.addrs.iter().any(|a| a.port() != proxy_port) {
+            return Err("the environment's proxy is not srt's".into());
+        }
+        Ok(SrtRoute { port, proxy })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, r);
+        Err("the srt route is for Linux".into())
+    }
+}
+
+/// [`srt_route_with`] on this system: Linux only.
+pub fn srt_route(env: &Env) -> Option<SrtRoute> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let bound = |p: &Path| {
+            let dev = |q: &Path| std::fs::symlink_metadata(q).ok().map(|m| m.dev());
+            match (dev(p), p.parent().and_then(dev)) {
+                (Some(a), Some(b)) => a != b,
+                _ => false,
+            }
+        };
+        let home = || {
+            env.get("HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .or_else(passwd_home)
+        };
+        srt_route_with(
+            env,
+            &SrtReads {
+                netdev: &|| std::fs::read_to_string("/proc/self/net/dev").ok(),
+                home: &home,
+                uid: derm_core::runtime::current_uid(),
+                bound: &bound,
+            },
+        )
+        .ok()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = env;
+        None
+    }
+}
+
+/// One record over the srt route: a tunnel through srt's proxy to the
+/// daemon's port, then the same HTTP request as the VM route.
+pub fn post_srt(
+    route: &SrtRoute,
+    token: &str,
+    request: &Value,
+    reply_timeout: Duration,
+) -> Result<Value, String> {
+    if request.get("op").and_then(Value::as_str) != Some("event") {
+        // Records only (R7, option 1): an ask has no approver from inside
+        // srt on Linux, and goes to the harness's own prompt or is denied
+        // (FP2-L1).
+        return Err("under srt on Linux the gate reaches the daemon for records only".into());
+    }
+    let target = std::net::SocketAddr::from(([127, 0, 0, 1], route.port));
+    let s = derm_daemon::computer_use::bridge_cli::through_proxy(&route.proxy, target)
+        .map_err(|e| format!("daemon unreachable through srt's proxy ({e})"))?;
+    http_post(
+        s,
+        &format!("127.0.0.1:{}", route.port),
+        "/derm/v1/event",
+        token,
+        &json!({"event": request.get("event").cloned().unwrap_or(Value::Null)}).to_string(),
+        reply_timeout,
+    )
+}
+
 /// One HTTP request to the daemon's derm route (`postVm`); its reply, or
 /// why not.
 /// Whether the host's port on the VM route takes a connection (FP1-R4).
@@ -489,7 +688,7 @@ pub fn post_vm(
             .collect();
     let mut last = String::from("daemon unreachable (error)");
     for addr in addrs {
-        let mut s = match std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+        let s = match std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 last = "daemon connect timed out".into();
@@ -500,39 +699,57 @@ pub fn post_vm(
                 continue;
             }
         };
-        let _ = s.set_read_timeout(Some(reply_timeout));
-        let _ = s.set_write_timeout(Some(reply_timeout));
-        let head = format!(
-            "POST {path} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-derm-token: {token}\r\nConnection: close\r\n\r\n",
-            url.host,
-            url.port,
-            body.len()
+        return http_post(
+            s,
+            &format!("{}:{}", url.host, url.port),
+            path,
+            token,
+            &body,
+            reply_timeout,
         );
-        // One write: a server that answers before reading the body (an
-        // error status) must not turn the reply into a failed write.
-        let request_bytes = format!("{head}{body}");
-        if s.write_all(request_bytes.as_bytes()).is_err() {
-            return Err("daemon reply failed".into());
-        }
-        let mut raw = Vec::new();
-        match (&mut s)
-            .take(MAX_LINE_BYTES as u64 + 16 * 1024)
-            .read_to_end(&mut raw)
-        {
-            Ok(_) => {}
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Err("daemon reply timed out".into())
-            }
-            Err(_) => return Err("daemon reply failed".into()),
-        }
-        return read_http_reply(&raw);
     }
     Err(last)
+}
+
+/// One `POST` of a JSON `body` to the daemon's derm route on `s`, with the
+/// chat token; the reply's body.
+fn http_post(
+    mut s: std::net::TcpStream,
+    host: &str,
+    path: &str,
+    token: &str,
+    body: &str,
+    reply_timeout: Duration,
+) -> Result<Value, String> {
+    let _ = s.set_read_timeout(Some(reply_timeout));
+    let _ = s.set_write_timeout(Some(reply_timeout));
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nx-derm-token: {token}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    // One write: a server that answers before reading the body (an
+    // error status) must not turn the reply into a failed write.
+    let request_bytes = format!("{head}{body}");
+    if s.write_all(request_bytes.as_bytes()).is_err() {
+        return Err("daemon reply failed".into());
+    }
+    let mut raw = Vec::new();
+    match (&mut s)
+        .take(MAX_LINE_BYTES as u64 + 16 * 1024)
+        .read_to_end(&mut raw)
+    {
+        Ok(_) => {}
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            return Err("daemon reply timed out".into())
+        }
+        Err(_) => return Err("daemon reply failed".into()),
+    }
+    read_http_reply(&raw)
 }
 
 fn read_http_reply(raw: &[u8]) -> Result<Value, String> {
@@ -644,6 +861,21 @@ pub fn exchange(requests: &[Value], o: &Opts) -> Result<Vec<Value>, String> {
         let mut replies = Vec::new();
         for r in requests {
             replies.push(post_vm(&vm, &token, r, o.reply_timeout)?);
+        }
+        return Ok(replies);
+    }
+    // Inside derm's srt chat on Linux (R7, option 1; case 270): the records
+    // go to the daemon's port through srt's proxy.
+    if let Some(route) = srt_route(env) {
+        if requests.is_empty() {
+            let target = std::net::SocketAddr::from(([127, 0, 0, 1], route.port));
+            return derm_daemon::computer_use::bridge_cli::through_proxy(&route.proxy, target)
+                .map(|_| Vec::new())
+                .map_err(|e| format!("daemon unreachable through srt's proxy ({e})"));
+        }
+        let mut replies = Vec::new();
+        for r in requests {
+            replies.push(post_srt(&route, &token, r, o.reply_timeout)?);
         }
         return Ok(replies);
     }
