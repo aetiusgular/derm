@@ -408,8 +408,16 @@ pub(crate) fn read_private(path: &Path, max: u64) -> Result<Option<String>, Stri
     Ok(Some(s))
 }
 
+/// Windows test w6, WW6-5: the Windows form checked only who may write the
+/// file, and then read it again by its path. Now as on Unix: the file is
+/// opened once without following a reparse point, its owner must be ours
+/// and no one else may read or write it (`open_private_file`:
+/// `is_private_security`, the user, the owner, LocalSystem and
+/// Administrators), it has one link (`only_owner_writes_file`), and what is
+/// read is that handle.
 #[cfg(windows)]
 pub(crate) fn read_private(path: &Path, max: u64) -> Result<Option<String>, String> {
+    use std::io::Read;
     let m = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -418,16 +426,21 @@ pub(crate) fn read_private(path: &Path, max: u64) -> Result<Option<String>, Stri
     if !m.is_file() {
         return Err("not a regular file".into());
     }
-    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let f = derm_core::platform::windows::open_private_file(path).map_err(|e| {
+        format!("{e}; it must be readable and writable by you alone (SYSTEM and Administrators aside)")
+    })?;
     if !derm_core::platform::windows::only_owner_writes_file(&f) {
-        return Err("someone else may write it".into());
+        return Err("someone else may write it, or it has a second name (a hard link)".into());
     }
-    if m.len() > max {
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    if len > max {
         return Err(format!("larger than {max} bytes"));
     }
-    std::fs::read_to_string(path)
-        .map(Some)
-        .map_err(|e| e.to_string())
+    let mut s = String::new();
+    f.take(max + 1)
+        .read_to_string(&mut s)
+        .map_err(|e| e.to_string())?;
+    Ok(Some(s))
 }
 
 /// Write `bytes` to `path` through a 0600 temporary in `dir`, which is made
@@ -476,6 +489,12 @@ pub(crate) fn write_private(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(),
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let tmp = dir.join(format!(".secrets.{}.tmp", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    // WW6-5: the reader now refuses a file others may read, so the writer
+    // makes it this user's alone, as 0600 does on Unix.
+    if let Err(e) = derm_core::platform::set_private_file(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", tmp.display()));
+    }
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -547,6 +566,25 @@ mod tests {
             r#"{"version":1,"secrets":[{"id":"a","hosts":["a.b"],"from":{"env":"A"},"value":"x"}]}"#
         )
         .is_err());
+    }
+
+    /// Windows test w6, WW6-5: a file Everyone may read was taken
+    /// (`scratch: ok`), where any group or other bit refuses it on Unix.
+    #[cfg(windows)]
+    #[test]
+    fn ww6_5_a_file_others_may_read_is_refused_on_windows_too() {
+        let d = std::env::temp_dir().join(format!("de-ww65-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("v.val");
+        std::fs::write(&f, b"x").unwrap();
+        let me = derm_core::platform::windows::effective_user();
+        derm_core::platform::windows::set_dacl_sddl(&f, &format!("D:(A;;FA;;;{me})(A;;FR;;;WD)"))
+            .unwrap();
+        assert!(read_private(&f, 64).is_err(), "Everyone may read it");
+        derm_core::platform::windows::set_dacl_sddl(&f, &format!("D:P(A;;FA;;;{me})")).unwrap();
+        assert_eq!(read_private(&f, 64).unwrap().as_deref(), Some("x"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Windows test w6, WW6-4: a `--file` source `C:\\...` was refused as
