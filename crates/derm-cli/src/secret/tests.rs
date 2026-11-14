@@ -158,6 +158,35 @@ fn writing_verbs_refuse_without_a_terminal_and_inside_a_chat() {
     assert_eq!(go(&h.0, false, Some("x"), &["list"]).0, 0);
 }
 
+/// Mac test w6, MW6-5: the note that a chat already running keeps its
+/// sandbox until it restarts was printed for an `--env` add only; a `--file`
+/// add changes what a new chat's sandbox hides (W6C-R9) just the same.
+#[test]
+fn mw6_5_every_add_says_a_running_chat_keeps_its_sandbox() {
+    let h = home("mw65");
+    let v = h.0.join("value");
+    std::fs::write(&v, "fake-not-a-token\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&v, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let file = v.to_string_lossy().into_owned();
+    for (id, from) in [
+        ("a", ["--env", "GH_TOKEN"]),
+        ("b", ["--file", file.as_str()]),
+    ] {
+        let mut args = vec!["add", id, "--host", "api.github.com"];
+        args.extend(from);
+        let (c, out, e) = go(&h.0, true, None, &args);
+        assert_eq!(c, 0, "{e}");
+        assert!(
+            out.contains("a chat already running keeps its sandbox until it restarts"),
+            "{id}: {out}"
+        );
+    }
+}
+
 #[test]
 fn add_list_check_remove_round_trip_never_print_the_value() {
     let h = home("trip");
@@ -391,4 +420,40 @@ fn the_trust_files_are_written_where_the_chain_names_them() {
         }
         Err(e) => assert!(e.contains("no system root bundle")),
     }
+}
+
+/// Mac test w6, MW6-6: gh cannot start in a chat whose sandbox hides
+/// `~/.config/gh`, so a GitHub secret's start line says what gh needs; and a
+/// brokered Codex chat under the Standard tier says its commands have no
+/// network (`:workspace`), so the secret is not usable there.
+#[test]
+fn mw6_6_a_github_secret_names_what_gh_needs_and_codex_standard_says_no_network() {
+    let sec = vec![(
+        entry("gh", From::File("/x".into())),
+        "dermsecret_gh_0123456789abcdef".to_string(),
+    )];
+    let line = chain::plan(&input("whole", "srt", &sec))
+        .unwrap()
+        .line
+        .unwrap();
+    assert!(
+        line.contains("GH_CONFIG_DIR") && line.contains("GH_TOKEN"),
+        "{line}"
+    );
+    assert!(!line.contains("no network"), "{line}");
+    let mut i = input("standard", "none", &sec);
+    i.harness = "codex";
+    let line = chain::plan(&i).unwrap().line.unwrap();
+    assert!(
+        line.contains("Codex's own commands have no network"),
+        "{line}"
+    );
+    let mut other = entry("x", From::File("/x".into()));
+    other.hosts = vec!["api.example.com".into()];
+    let sec = vec![(other, "dermsecret_x_0123456789abcdef".to_string())];
+    let line = chain::plan(&input("whole", "srt", &sec))
+        .unwrap()
+        .line
+        .unwrap();
+    assert!(!line.contains("GH_CONFIG_DIR"), "{line}");
 }

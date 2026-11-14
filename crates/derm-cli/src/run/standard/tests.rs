@@ -188,6 +188,63 @@ fn claude_codes_block_is_the_last_settings_of_its_command_line() {
     assert!(p.notes.iter().any(|n| n.contains("tier: standard")));
 }
 
+/// Mac test w6, MW6-4: a brokered chat's secret hosts were not on derm's
+/// block's `allowedDomains`, so Claude Code's own proxy refused every request
+/// to them (403, "deny network-outbound api.github.com:443 (user denied)")
+/// and derm-egress was never reached. Claude Code chains a host on its list
+/// to the parent `HTTPS_PROXY` (note AZ C1, run on the Mac; on Linux, the
+/// run in `tk_integration_w6_fp1.md`, Research). The block now lists each
+/// secret's hosts when the chat is brokered (the Standard tier with no
+/// srt), and nothing else.
+#[test]
+fn mw6_4_a_brokered_chats_secret_hosts_are_on_the_blocks_allowed_domains() {
+    let s = Scratch::new("mw64");
+    s.write(
+        "home/.derm/secrets.json",
+        r#"{"version":1,"secrets":[{"id":"gh","hosts":["api.github.com","uploads.github.com"],"from":{"env":"GH_TOKEN"}},{"id":"x","hosts":["api.example.com"],"from":{"env":"X_TOKEN"}}]}"#,
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let f = s.root.join("home/.derm/secrets.json");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(
+            s.root.join("home/.derm"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+    }
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    run(
+        &s,
+        "claude-code",
+        Boundary::None,
+        Some(Tier::Standard),
+        &mut p,
+    )
+    .unwrap()
+    .unwrap();
+    let b = last_settings(&p.args);
+    assert_eq!(
+        b["sandbox"]["network"]["allowedDomains"],
+        json!(["api.example.com", "api.github.com", "uploads.github.com"]),
+        "{b}"
+    );
+    // Under sbx nothing is brokered (case 218), so nothing is opened.
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    run(
+        &s,
+        "claude-code",
+        Boundary::Sbx,
+        Some(Tier::Standard),
+        &mut p,
+    )
+    .unwrap()
+    .unwrap();
+    let b = last_settings(&p.args);
+    assert_eq!(b["sandbox"]["network"]["allowedDomains"], json!([]), "{b}");
+}
+
 /// Case 214, AZ-7: `excludedCommands` anywhere Claude Code reads it.
 #[test]
 fn excluded_commands_in_any_settings_file_refuse_the_tier() {

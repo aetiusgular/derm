@@ -239,11 +239,29 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
             fields => format!(" and {}", fields.join(", ")),
         }
     );
-    if matches!(e.from, From::Env(_)) {
-        let _ = writeln!(
-            ctx.out,
-            "note: a value from the environment stays in the start environment of the process that reads it, which any process of yours can read outside a sandbox (/proc on Linux, ps on macOS); --file keeps it out of every environment, and srt and the Standard tier hide that file from the agent's commands in chats started after this (a chat already running keeps its sandbox until it restarts); a --keychain value is as safe as the sandbox's reach into your keychain, which derm does not change"
-        );
+    match &e.from {
+        From::Env(_) => {
+            let _ = writeln!(
+                ctx.out,
+                "note: a value from the environment stays in the start environment of the process that reads it, which any process of yours can read outside a sandbox (/proc on Linux, ps on macOS); --file keeps it out of every environment, and srt and the Standard tier hide that file from the agent's commands in chats started after this (a chat already running keeps its sandbox until it restarts); a --keychain value is as safe as the sandbox's reach into your keychain, which derm does not change"
+            );
+        }
+        // Mac test w6, MW6-5: a file's or the keychain's add changes what a
+        // new chat's sandbox hides and admits (W6C-R9, MW6-4) just the same.
+        From::File(_) => {
+            let _ = writeln!(
+                ctx.out,
+                "note: chats started after this hide the value's file from the agent's commands and admit {}; a chat already running keeps its sandbox until it restarts",
+                e.hosts.join(", ")
+            );
+        }
+        From::Keychain(_) => {
+            let _ = writeln!(
+                ctx.out,
+                "note: chats started after this admit {}; a chat already running keeps its sandbox until it restarts; a --keychain value is as safe as the sandbox's reach into your keychain, which derm does not change",
+                e.hosts.join(", ")
+            );
+        }
     }
     Ok(())
 }
@@ -402,6 +420,23 @@ pub fn value_files(home: &Path) -> Vec<String> {
             }
         }
     }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The hosts of the person's secrets, sorted and once each: what a brokered
+/// chat's own sandbox must admit for its requests to reach derm-egress
+/// (Mac test w6, MW6-4). A secrets file that cannot be read names none.
+pub fn secret_hosts(home: &Path) -> Vec<String> {
+    let Ok(file) = secrets::load(&secrets::path_for(home)) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = file
+        .secrets
+        .iter()
+        .flat_map(|e| e.hosts.iter().cloned())
+        .collect();
     out.sort();
     out.dedup();
     out

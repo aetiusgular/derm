@@ -231,6 +231,16 @@ fn apply(p: &mut Plan, plan: &chain::Plan) -> Result<(), String> {
         for (k, x) in net.as_object().into_iter().flatten() {
             v["network"][k] = x.clone();
         }
+        if let Some(list) = v
+            .pointer_mut("/network/allowedDomains")
+            .and_then(Value::as_array_mut)
+        {
+            for h in &plan.srt_allow {
+                if !list.iter().any(|x| x.as_str() == Some(h.as_str())) {
+                    list.push(json!(h));
+                }
+            }
+        }
         p.srt_settings = Some(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
     }
     if let Some(line) = &plan.line {

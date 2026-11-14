@@ -299,11 +299,19 @@ pub(crate) fn environment_with(
             plan.folders.push(d.clone());
         }
     }
+    // MW6-4: a brokered chat (this tier with no srt or sbx) admits its
+    // secrets' hosts, so their requests reach derm-egress.
+    let allowed_domains = if crate::secret::chain::brokered("standard", boundary_name(boundary)) {
+        crate::secret::secret_hosts(Path::new(&home))
+    } else {
+        Vec::new()
+    };
     let ctx = Context {
         home,
         folders,
         daemon_dir: i.daemon_dir.clone(),
         data_dir: i.data_dir.clone(),
+        allowed_domains,
     };
     let pinned = if harness == "claude-code" {
         let text =

@@ -241,6 +241,80 @@ export const checks = [
     },
   },
   {
+    id: "standard-claude-reaches-a-secret-host",
+    title: "6A/6C (Mac test w6, MW6-4): in a brokered Standard chat, Claude Code's own proxy admits the secret's host and chains it to derm-egress, and still refuses a host off its list with its own 403",
+    harness: "claude",
+    async run({ binPath }) {
+      const why = needs();
+      if (why) return { status: "skip", finding: why };
+      if (!existsSync("/usr/bin/script")) return { status: "skip", finding: "no script(1) to give `derm secret ca create` a terminal" };
+      const dirs = box("cc-secret");
+      // derm's CA, from a terminal (case 89: a pty passes that check), and a
+      // secret whose value comes from this run's own environment.
+      const ca = await new Promise((resolve) => {
+        const ch = spawn("/usr/bin/script", ["-qec", `${dermBin()} secret ca create`, "/dev/null"], { env: { PATH: "/usr/bin:/bin", HOME: dirs.home }, stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        ch.stdout.on("data", (d) => (out += d));
+        ch.stderr.on("data", (d) => (out += d));
+        ch.on("exit", (code) => resolve({ code, out }));
+      });
+      if (ca.code !== 0) return done(dirs, { status: "fail", finding: `derm secret ca create: exit ${ca.code}: ${ca.out.slice(-300)}` });
+      writeFileSync(path.join(dirs.home, ".derm", "secrets.json"), JSON.stringify({ version: 1, secrets: [{ id: "gh", hosts: ["api.github.com"], from: { env: "W6_FAKE_SECRET" } }] }));
+      chmodSync(path.join(dirs.home, ".derm", "secrets.json"), 0o600);
+      chmodSync(path.join(dirs.home, ".derm"), 0o700);
+      const fake = await startFakeMessages({
+        script: (b) =>
+          JSON.stringify(b.messages ?? []).includes("tool_result")
+            ? [textBlock("done")]
+            : [
+                toolUse("Bash", { command: "curl -s -m 15 -o g.out -w gh=%{http_connect}/%{http_code} https://api.github.com/zen", description: "secret host" }, "toolu_gh"),
+                toolUse("Bash", { command: "curl -s -m 15 -o o.out -w other=%{http_connect}/%{http_code} https://example.org/", description: "other host" }, "toolu_other"),
+              ],
+      });
+      let r;
+      try {
+        r = await derm(
+          dirs,
+          ["claude-code", "--boundary", "none", "--tier", "standard", "--no-daemon", "--no-tap", "--", "-p", "go", "--allowedTools", "Bash", "--model", "claude-sonnet-4-5", "--output-format", "json"],
+          {
+            program: "claude",
+            cli: binPath,
+            env: {
+              ANTHROPIC_BASE_URL: fake.baseUrl,
+              ANTHROPIC_API_KEY: DUMMY_KEY,
+              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+              DISABLE_AUTOUPDATER: "1",
+              DISABLE_TELEMETRY: "1",
+              W6_FAKE_SECRET: "fake-value-for-the-contract-check-0000",
+            },
+          },
+        );
+      } finally {
+        await fake.close();
+      }
+      let o = "";
+      for (const q of fake.requests) {
+        for (const m of q.body?.messages ?? []) {
+          for (const c of Array.isArray(m.content) ? m.content : []) {
+            if (c?.type === "tool_result" && (c.tool_use_id === "toolu_gh" || c.tool_use_id === "toolu_other")) o += ` ${typeof c.content === "string" ? c.content : JSON.stringify(c.content)}`;
+          }
+        }
+      }
+      // `%{http_connect}` is the CONNECT's answer from Claude Code's own
+      // proxy, `%{http_code}` the request's inside the tunnel.
+      const [ghConnect, ghCode] = (/gh=(\d{3})\/(\d{3})/.exec(o) ?? []).slice(1);
+      const [otherConnect] = (/other=(\d{3})\/(\d{3})/.exec(o) ?? []).slice(1);
+      const gh = ghConnect === undefined ? undefined : `${ghConnect}/${ghCode}`;
+      const other = otherConnect;
+      // The secret's host passes Claude Code's own proxy (CONNECT 200) and
+      // meets derm-egress, whose leaf curl trusts through CURL_CA_BUNDLE (a
+      // response came back through the tunnel); a host off the list stops at
+      // Claude Code's proxy with its own 403.
+      const ok = ghConnect === "200" && ghCode !== undefined && ghCode !== "000" && otherConnect === "403";
+      return done(dirs, { status: ok ? "pass" : "fail", finding: `secret's host ${gh ?? "none"}, other host ${other ?? "none"}; exit ${r.code}; ${o.slice(0, 300)} ${r.err.trim().slice(-300)}` });
+    },
+  },
+  {
     id: "standard-codex-holds",
     title: "6A: under derm run --tier standard, Codex's own sandbox (derm's profile by -c) denies a read of ~/.ssh and a write outside the chat's folder, and lets a write inside it through",
     harness: "codex",

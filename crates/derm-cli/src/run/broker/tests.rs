@@ -89,6 +89,41 @@ fn a_chat_with_no_secrets_gets_no_broker_and_no_change() {
     assert_eq!(p, before);
 }
 
+/// Mac test w6, MW6-4 (srt's half): srt's allow list held derm's ports and
+/// the sign-in host, so `gh api user` in a brokered srt chat got srt's own
+/// "host is not on the allow list" until `--allow-host api.github.com:443`.
+/// srt admits what its list holds and chains it to `parentProxy` (note AZ
+/// C2), so each secret's host is admitted on 443, the one port derm-egress
+/// swaps on (case 258); a dry run plans the same.
+#[test]
+fn mw6_4_under_srt_each_secrets_host_is_on_srts_allow_list() {
+    let (h, t, v) = home("mw64srt");
+    Ca::generate()
+        .unwrap()
+        .save(&ca::dir_for(&h), false)
+        .unwrap();
+    let mut e = entry("gh", From::File(v.to_string_lossy().into_owned()));
+    e.hosts = vec!["api.github.com".into(), "uploads.github.com".into()];
+    secrets_file(&h, vec![e]);
+    for dry in [false, true] {
+        let mut p = Plan {
+            srt_settings: Some(r#"{"network":{"allowedDomains":["127.0.0.1:4318"]}}"#.into()),
+            ..Plan::default()
+        };
+        let _b = wire(&chat(&h, &t, "whole", "srt", dry), &mut p, &no_env, None).unwrap();
+        let s: Value = serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            s["network"]["allowedDomains"],
+            serde_json::json!([
+                "127.0.0.1:4318",
+                "api.github.com:443",
+                "uploads.github.com:443"
+            ]),
+            "dry {dry}"
+        );
+    }
+}
+
 #[test]
 fn under_srt_the_broker_starts_and_srt_chains_to_it_and_no_value_leaves_this_process() {
     let (h, t, v) = home("srt");
@@ -261,6 +296,7 @@ fn the_file_a_secret_is_read_from_is_hidden_by_every_sandbox_derm_writes() {
         folders: vec![h.join("work").to_string_lossy().into_owned()],
         daemon_dir: None,
         data_dir: None,
+        allowed_domains: Vec::new(),
     };
     let denied = crate::connect::sandbox::denied_reads(&ctx);
     assert!(

@@ -37,6 +37,9 @@ pub struct Context {
     pub daemon_dir: Option<String>,
     /// The daemon's data folder (its activity log, content files).
     pub data_dir: Option<String>,
+    /// Hosts the agent's own network list admits: a brokered chat's secret
+    /// hosts, so its requests to them reach derm-egress (Mac test w6, MW6-4).
+    pub allowed_domains: Vec<String>,
 }
 
 /// Under the home, by name: what srt hides from every chat (`run/plan.rs`,
@@ -98,6 +101,18 @@ fn extra_write_roots(c: &Context) -> Vec<String> {
     out
 }
 
+/// The hosts the block's network list admits, sorted and once each. Only a
+/// brokered chat's secret hosts (MW6-4): Claude Code applies its own list
+/// first and chains a host on it to the `HTTPS_PROXY` derm sets, derm-egress
+/// (note AZ C1), so a request there still meets derm-egress's rules; any
+/// other host is still the person's call when Claude Code asks.
+fn allowed_domains(c: &Context) -> Vec<String> {
+    let mut out = c.allowed_domains.clone();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Claude Code 2.1.322's block (contract section 2; keys V at 2.1.322, note
 /// AZ A1). Never `excludedCommands` (AZ-7): it takes a matching command out
 /// of the sandbox, inside a `--settings` block too (run in the cloud, 12
@@ -114,7 +129,7 @@ pub fn claude_block(c: &Context) -> Value {
                 "allowWrite": extra_write_roots(c),
             },
             "network": {
-                "allowedDomains": [],
+                "allowedDomains": allowed_domains(c),
             },
         },
         "permissions": {
@@ -260,6 +275,7 @@ mod tests {
             folders: vec!["/w/p".into(), "/w/extra dir".into()],
             daemon_dir: Some("/run/user/1/derm".into()),
             data_dir: Some("/h/u/.local/share/derm".into()),
+            allowed_domains: Vec::new(),
         }
     }
 

@@ -71,6 +71,8 @@ pub struct Plan {
     pub srt_network: Option<Value>,
     /// derm-egress's model hosts (`Policy::model_hosts`): the tap's table.
     pub model_hosts: Vec<String>,
+    /// srt's `allowedDomains` to add: each secret's hosts on 443 (MW6-4).
+    pub srt_allow: Vec<String>,
     /// The start line, or `None` when the chat has no secrets.
     pub line: Option<String>,
 }
@@ -123,6 +125,17 @@ pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
         // skip derm-egress (`dist/sandbox/parent-proxy.js:54`; review
         // W6C-S6). Loopback never goes to a parent (`:137-142`, AZ-4).
         p.srt_network = Some(json!({"parentProxy": {"http": url, "https": url, "noProxy": ""}}));
+        // Mac test w6, MW6-4: srt admits only what its list holds and chains
+        // that to the parent (note AZ C2), so each secret's host goes on it,
+        // on 443, the port derm-egress swaps on (case 258).
+        let mut allow: Vec<String> = i
+            .secrets
+            .iter()
+            .flat_map(|(e, _)| e.hosts.iter().map(|h| format!("{h}:443")))
+            .collect();
+        allow.sort();
+        allow.dedup();
+        p.srt_allow = allow;
     } else {
         for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
             p.env.push((k.into(), url.into()));
@@ -159,7 +172,28 @@ pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
         i.fingerprint.get(..16).unwrap_or(i.fingerprint),
         trust.iter().take(6).map(|(k, _)| *k).collect::<Vec<_>>().join(", "),
     ));
-    let _ = i.harness;
+    // Mac test w6, MW6-6: gh refuses to start when it cannot read its own
+    // config folder (`failed to read configuration ... operation not
+    // permitted`), and every sandbox derm writes hides `~/.config/gh` (it
+    // holds gh's own tokens); gh reads `GH_CONFIG_DIR` first and `GH_TOKEN`
+    // before its hosts file (https://cli.github.com/manual/gh_help_environment).
+    if i.secrets.iter().any(|(e, _)| {
+        e.hosts
+            .iter()
+            .any(|h| h == "api.github.com" || h == "github.com")
+    }) {
+        if let Some(l) = p.line.as_mut() {
+            l.push_str("; gh cannot read ~/.config/gh in this chat's sandbox: give it GH_CONFIG_DIR, a folder in the chat, and GH_TOKEN, the placeholder");
+        }
+    }
+    // Codex's Standard tier is `:workspace`, whose commands have no network
+    // (a loopback port is refused: the contract check `standard-codex-holds`),
+    // so they cannot reach derm-egress or any secret's host.
+    if i.harness == "codex" && i.boundary != "srt" {
+        if let Some(l) = p.line.as_mut() {
+            l.push_str("; under the Standard tier Codex's own commands have no network, so they cannot use these secrets (run the chat under srt for that)");
+        }
+    }
     Ok(p)
 }
 
