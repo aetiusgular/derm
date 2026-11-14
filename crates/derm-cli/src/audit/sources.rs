@@ -168,7 +168,8 @@ pub fn lines_of(files: &[PathBuf]) -> Result<Vec<Line>, String> {
             return Err(format!("{}: over 1 GiB, not read", path.display()));
         }
         let file = open_plain(path)?;
-        let mut reader = BufReader::new(file.take(MAX_FILE_BYTES));
+        shared_lock(&file, path)?;
+        let mut reader = BufReader::new((&file).take(MAX_FILE_BYTES));
         let mut buf = Vec::new();
         let mut number = 0;
         loop {
@@ -191,8 +192,42 @@ pub fn lines_of(files: &[PathBuf]) -> Result<Vec<Line>, String> {
                 text: text.to_string(),
             });
         }
+        drop(reader);
+        let _ = file.unlock();
     }
     Ok(out)
+}
+
+/// How long a reader waits for a writer's lock: as a hook waits for
+/// another's (`gate/locallog/file.rs`, 1 s; a hook holds it for
+/// milliseconds, note AZ B4).
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
+
+/// A shared lock on the file for the read (Windows test w6, WW6-3): a light
+/// log's hooks append under an exclusive lock, which on Windows is
+/// mandatory, so a read without one met error 33 mid-append; with one the
+/// reader waits and reads whole lines on every system. The daemon's log
+/// takes no file lock, so its reads never wait.
+fn shared_lock(file: &File, path: &Path) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        match file.try_lock_shared() {
+            Ok(()) => return Ok(()),
+            Err(fs::TryLockError::WouldBlock) if start.elapsed() < LOCK_WAIT => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "{}: a writer held its lock for over {} ms; not read",
+                    path.display(),
+                    LOCK_WAIT.as_millis()
+                ))
+            }
+            Err(fs::TryLockError::Error(e)) => {
+                return Err(format!("{}: the lock failed ({e})", path.display()))
+            }
+        }
+    }
 }
 
 fn open_plain(path: &Path) -> Result<File, String> {
@@ -233,6 +268,51 @@ mod tests {
             light_name("nul.x"),
             if cfg!(windows) { "_nul.x" } else { "nul.x" }
         );
+    }
+
+    /// Windows test w6, WW6-3: a hook holds the light log's lock while it
+    /// appends, and on Windows that lock is mandatory: a plain read meets
+    /// error 33 (`gate/locallog/tests.rs`,
+    /// `a_plain_reader_meets_error_33_while_a_hook_holds_the_lock`), and 1
+    /// of 277 `verify --light` runs said BROKEN. The reader takes a shared
+    /// lock, waiting as a hook does (1 s), so it reads whole lines on every
+    /// system.
+    #[test]
+    fn ww6_3_a_reader_waits_for_a_hooks_lock_then_reads() {
+        let d = std::env::temp_dir().join(format!("da-src-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let f = d.join("a.jsonl");
+        fs::write(&f, "one\n").unwrap();
+        let holder = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&f)
+            .unwrap();
+        holder.lock().unwrap();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            use std::io::Write as _;
+            (&holder).write_all(b"two\n").unwrap();
+            holder.unlock().unwrap();
+        });
+        let start = std::time::Instant::now();
+        let l = lines_of(std::slice::from_ref(&f)).unwrap();
+        t.join().unwrap();
+        assert!(start.elapsed() >= std::time::Duration::from_millis(150));
+        let texts: Vec<&str> = l.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, vec!["one", "two"]);
+        // Held past the deadline: said so, and nothing is read as broken.
+        let holder = fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&f)
+            .unwrap();
+        holder.lock().unwrap();
+        let e = lines_of(std::slice::from_ref(&f)).unwrap_err();
+        assert!(e.contains("held its lock"), "{e}");
+        holder.unlock().unwrap();
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
