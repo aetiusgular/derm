@@ -237,6 +237,13 @@ pub(crate) fn environment_with(
         }
         plan.srt_settings = Some(serde_json::to_string_pretty(&v).map_err(|e| (1, e.to_string()))?);
     }
+    // Box test w6, BW6-5: the tap is the daemon's (rules section 5, item
+    // 8), so the chat's model requests stop with it; a restart brings the
+    // route back on the same port (`derm-daemon`'s
+    // `a_restart_brings_back_a_running_chats_route_and_the_taps_port`).
+    plan.notes.push(format!(
+        "derm run: model tap: {harness}'s model requests go through the daemon's tap at {endpoint}; while the daemon is stopped they fail (a restart brings the route back on the same port). To stop or upgrade the daemon during a chat, start the chat with --no-tap"
+    ));
     Ok(Some(json!({
         "on": true,
         "via": l.via,
