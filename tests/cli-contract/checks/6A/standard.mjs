@@ -24,7 +24,7 @@
 // pointed at its fake by its own variables or `-c` pairs.
 
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -216,7 +216,29 @@ function tmpMark(name) {
   return `/tmp/std6a-${name}-${process.pid}-${Date.now()}`;
 }
 
+// Codex's own workspace-write leaves empty `.agents`, `.aws`, `.codex` and
+// `.git` in each writable root, /tmp included (case 248, open item 6A-5); the
+// control run here would leave them, and a `.git` in /tmp breaks a later
+// walk to a git root (`hook/native/tests.rs`). Those this turn made, empty,
+// are removed after it.
+const LITTER = [".agents", ".aws", ".codex", ".git"].map((n) => path.join("/tmp", n));
+
 async function codexTmpTurn(dirs, codexPath, tierArgs, extra = []) {
+  const before = new Set(LITTER.filter((p) => existsSync(p)));
+  try {
+    return await codexTmpTurnIn(dirs, codexPath, tierArgs, extra);
+  } finally {
+    for (const p of LITTER) {
+      if (!before.has(p)) {
+        try {
+          rmdirSync(p);
+        } catch {}
+      }
+    }
+  }
+}
+
+async function codexTmpTurnIn(dirs, codexPath, tierArgs, extra) {
   const mark = tmpMark("cx");
   const pr = tmpProbe(mark);
   const fake = await startFakeResponses({ script: (b, n) => (n === 0 ? [call("exec_command", { cmd: `${pr.slash}; ${pr.mk}` }, "c1")] : [text("done")]) });
