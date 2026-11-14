@@ -190,13 +190,23 @@ pub fn decide(o: &Outbound<'_>, secrets: &[Secret]) -> Verdict {
     decide_with(o, secrets, &Policy::default()).verdict
 }
 
-/// Lowercase, no trailing dot, no IPv6 brackets.
+/// Lowercase, no trailing dot, no IPv6 brackets, and an IPv4-mapped IPv6
+/// literal spelled as the IPv4 address it connects to, as srt 0.0.82's proxy
+/// spells a CONNECT target (`dist/sandbox/parent-proxy.js:432-434`; box test
+/// w6 retest, BW6R-1), so a `Host` in the mapped form names the same host.
 pub fn normal_host(h: &str) -> String {
     let h = h.trim().trim_end_matches('.');
     let h = h
         .strip_prefix('[')
         .and_then(|x| x.strip_suffix(']'))
         .unwrap_or(h);
+    if let Some(v4) = h
+        .parse::<std::net::Ipv6Addr>()
+        .ok()
+        .and_then(|a| a.to_ipv4_mapped())
+    {
+        return v4.to_string();
+    }
     h.to_ascii_lowercase()
 }
 

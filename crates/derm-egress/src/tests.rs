@@ -758,3 +758,42 @@ fn a_field_is_named_as_written_and_read_in_one_charset() {
         v => panic!("{v:?}"),
     }
 }
+
+/// Box test w6 retest, BW6R-1: srt 0.0.82's parent proxy spells an
+/// IPv4-mapped IPv6 CONNECT target as its dotted quad ("An IPv4-mapped
+/// literal connects to that IPv4 address, so it is spelled as one",
+/// `dist/sandbox/parent-proxy.js:432-434`, `address.js:105-112`), while the
+/// request's `Host` keeps the IPv6 form. derm-egress compared the two as
+/// written and refused with "names another host", before the address rule
+/// could give the true reason. Both now read the mapped form as its IPv4.
+#[test]
+fn bw6r_1_a_mapped_ipv6_host_is_the_ipv4_it_carries() {
+    assert_eq!(normal_host("::ffff:169.254.169.254"), "169.254.169.254");
+    assert_eq!(normal_host("[::FFFF:a9fe:a9fe]"), "169.254.169.254");
+    assert_eq!(authority_host("[::ffff:169.254.169.254]:443"), "169.254.169.254");
+    // Not mapped: kept as written.
+    assert_eq!(normal_host("64:ff9b::a9fe:a9fe"), "64:ff9b::a9fe:a9fe");
+    assert_eq!(normal_host("::1"), "::1");
+    let hd = h(&[("host", "[::ffff:169.254.169.254]:443")]);
+    assert_eq!(
+        decide_with(
+            &out("169.254.169.254", "/", &hd, b""),
+            &two(),
+            &Policy::default()
+        )
+        .blocked,
+        None,
+        "the Host names the tunnel's own address"
+    );
+    // A mapped form of another address is still another host.
+    let hd = h(&[("host", "[::ffff:1.2.3.4]:443")]);
+    assert_eq!(
+        decide_with(
+            &out("169.254.169.254", "/", &hd, b""),
+            &two(),
+            &Policy::default()
+        )
+        .blocked,
+        Some(Blocked::HostMismatch)
+    );
+}
