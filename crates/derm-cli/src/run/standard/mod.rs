@@ -416,9 +416,17 @@ pub(crate) fn environment_with(
         pairs[3].clone()
     };
     if !verified.is_empty() {
-        plan.notes.push(format!(
-            "derm run: {harness}'s Standard tier is verified at {verified}; `derm doctor` names an installed version that differs"
-        ));
+        // Mac test w6, MW6-3: under sbx the VM runs sbx's own image of the
+        // agent (Claude Code 2.1.323 there on 13 Nov), not the host's.
+        plan.notes.push(if boundary == Boundary::Sbx {
+            format!(
+                "derm run: {harness}'s Standard tier is verified at {verified}; under sbx the VM runs sbx's own {harness}, at the version sbx's image holds, not the one installed here"
+            )
+        } else {
+            format!(
+                "derm run: {harness}'s Standard tier is verified at {verified}; `derm doctor` names an installed version that differs"
+            )
+        });
     }
     let mut rec = json!({
         "tier": "standard",

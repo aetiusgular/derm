@@ -836,3 +836,34 @@ fn bw6_2_the_chats_tmp_folder_is_new_private_and_named_in_a_dry_run() {
         .to_string_lossy()
         .starts_with("derm-tmp-derm-c1-"));
 }
+
+/// Mac test w6, MW6-3: under sbx the VM ran sbx's own Claude Code 2.1.323,
+/// not the host's install, while the start line spoke of the installed
+/// version `derm doctor` names. Under sbx it says whose program runs.
+#[test]
+fn mw6_3_under_sbx_the_version_line_names_sbxs_own_program() {
+    let s = Scratch::new("sbx-ver");
+    let mut p = plan(
+        "sbx",
+        &["run", "--name", "derm-x", "claude", "/w"],
+        &[&s.work()],
+    );
+    run(
+        &s,
+        "claude-code",
+        Boundary::Sbx,
+        Some(Tier::Standard),
+        &mut p,
+    )
+    .unwrap();
+    let line = p
+        .notes
+        .iter()
+        .find(|n| n.contains("verified at"))
+        .unwrap_or_else(|| panic!("{:?}", p.notes));
+    assert!(line.contains("sbx's own"), "{line}");
+    assert!(!line.contains("derm doctor"), "{line}");
+    let q = codex(&s, &["exec", "hi"]).unwrap();
+    let line = q.notes.iter().find(|n| n.contains("verified at")).unwrap();
+    assert!(line.contains("derm doctor"), "{line}");
+}
