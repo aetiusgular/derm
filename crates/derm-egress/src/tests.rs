@@ -770,7 +770,10 @@ fn a_field_is_named_as_written_and_read_in_one_charset() {
 fn bw6r_1_a_mapped_ipv6_host_is_the_ipv4_it_carries() {
     assert_eq!(normal_host("::ffff:169.254.169.254"), "169.254.169.254");
     assert_eq!(normal_host("[::FFFF:a9fe:a9fe]"), "169.254.169.254");
-    assert_eq!(authority_host("[::ffff:169.254.169.254]:443"), "169.254.169.254");
+    assert_eq!(
+        authority_host("[::ffff:169.254.169.254]:443"),
+        "169.254.169.254"
+    );
     // Not mapped: kept as written.
     assert_eq!(normal_host("64:ff9b::a9fe:a9fe"), "64:ff9b::a9fe:a9fe");
     assert_eq!(normal_host("::1"), "::1");
