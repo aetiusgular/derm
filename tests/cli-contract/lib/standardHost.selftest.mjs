@@ -1,9 +1,9 @@
-// node tests/cli-contract/checks/6A/standard.selftest.mjs
+// node tests/cli-contract/lib/standardHost.selftest.mjs
 // Box test w6 retest, BW6R-2: the Standard tier's Claude Code checks take
 // derm's refusal (BW6-1) as their pass where this host kills Claude Code's
 // sandboxed commands, read the way `contracts_w6.rs` reads it, for the PATH
 // the check gives derm. Each case is the facts of one host.
-import { hostKillsClaudeCommands } from "./standard.mjs";
+import { hostKillsClaudeCommands } from "../checks/6A/standard.mjs";
 
 const host = (o) => ({
   platform: o.platform ?? "linux",

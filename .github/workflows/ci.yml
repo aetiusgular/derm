@@ -118,7 +118,7 @@ jobs:
       - run: node tests/cli-contract/lib/ran.selftest.mjs
       # The Standard tier checks' own reading of a host that kills Claude
       # Code's sandboxed commands (box test w6 retest, BW6R-2).
-      - run: node tests/cli-contract/checks/6A/standard.selftest.mjs
+      - run: node tests/cli-contract/lib/standardHost.selftest.mjs
       # tests/cli-contract needs the real Claude Code and Codex CLIs; it runs
       # when they are installed (integration installs them under /tmp/cli).
       - name: cli contract

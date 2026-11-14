@@ -27,7 +27,7 @@
 // refuses Claude Code's tier (BW6-1), and the Claude checks take that refusal
 // as their pass; `DERM_BWRAP_DIR=/usr/local/libexec/derm-srt` puts srt's
 // bubblewrap copy first on the checks' PATH so the tier runs (box test w6
-// retest, BW6R-2). `node tests/cli-contract/checks/6A/standard.selftest.mjs`
+// retest, BW6R-2). `node tests/cli-contract/lib/standardHost.selftest.mjs`
 // tests that reading.
 
 import { spawn } from "node:child_process";
