@@ -378,6 +378,7 @@ pub(crate) fn environment_with(
         daemon_dir: i.daemon_dir.clone(),
         data_dir: i.data_dir.clone(),
         allowed_domains,
+        tmp_to_chat: tmp_to_chat(harness, boundary),
     };
     let pinned = if harness == "claude-code" {
         let text =
@@ -406,7 +407,11 @@ pub(crate) fn environment_with(
         plan.notes.push(format!(
             "derm run: tier: standard: Codex's own sandbox, from derm's permission profile \"{}\" given with -c (Codex's session flags outrank every config file): its commands cannot read your secrets, the agents' sign-ins or derm's folders, write outside this chat's folders, or reach the network{}",
             writers::CODEX_PROFILE,
-            if boundary == Boundary::Sbx { "; under sbx it runs inside the VM too (note AZ A8)" } else { "" }
+            if boundary == Boundary::Sbx {
+                "; under sbx it runs inside the VM too (note AZ A8), where /tmp is the VM's"
+            } else {
+                "; /tmp is read-only to them, and their temporary files go to a folder of this chat's own (TMPDIR), removed when the chat ends"
+            }
         ));
         pairs[3].clone()
     };
@@ -425,6 +430,43 @@ pub(crate) fn environment_with(
         rec["vendorUnderSbx"] = json!("on");
     }
     Ok(Some(rec))
+}
+
+/// Box test w6, BW6-2: Codex's `:workspace` writes `/tmp`, which every
+/// chat and every user's programs share, so with no boundary derm's profile
+/// makes it read-only and `derm run` gives Codex a `TMPDIR` of the chat's
+/// own (`chat_tmp_dir`). Under sbx `/tmp` is the VM's, and a host folder
+/// named in `TMPDIR` would not be there.
+pub fn tmp_to_chat(harness: &str, boundary: Boundary) -> bool {
+    harness == "codex" && boundary == Boundary::None
+}
+
+/// Whether this chat's record is the Standard tier with Codex's `/tmp`
+/// kept to the chat (`tmp_to_chat`): then `derm run` makes the folder.
+pub fn wants_chat_tmp(harness: &str, boundary: Boundary, record: Option<&Value>) -> bool {
+    tmp_to_chat(harness, boundary)
+        && record.and_then(|r| r.get("tier")).and_then(Value::as_str) == Some("standard")
+}
+
+/// The chat's own temporary folder for `TMPDIR` (BW6-2): a name no one can
+/// make first (a random part, as the trust folder's, review W6C-S9), made
+/// with `create_dir` so a folder already there is refused, 0700. A dry run
+/// names it and makes nothing.
+pub fn chat_tmp_dir(temp: &Path, chat: &str, dry_run: bool) -> Result<PathBuf, String> {
+    if dry_run {
+        return Ok(temp.join(format!("derm-tmp-{chat}-<random>")));
+    }
+    let dir = temp.join(format!("derm-tmp-{chat}-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+            let _ = std::fs::remove_dir(&dir);
+            return Err(format!("{}: {e}", dir.display()));
+        }
+    }
+    Ok(dir)
 }
 
 /// A settings file Claude Code reads, and which layer it is.

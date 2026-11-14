@@ -775,3 +775,64 @@ fn every_sandbox_row_names_its_verified_version() {
     }
     assert_eq!(sandbox_row("gemini"), None);
 }
+
+/// Box test w6, BW6-2: Codex's `:workspace` writes `/tmp` (its session
+/// header said `workspace-write [workdir, /tmp, $TMPDIR]`, A2). With no
+/// boundary derm's profile makes `/tmp` read-only and `derm run` names a
+/// `TMPDIR` of the chat's own; under sbx `/tmp` is the VM's and stays.
+#[test]
+fn bw6_2_codexs_tier_keeps_tmp_to_the_chat_with_no_boundary() {
+    let s = Scratch::new("cx-tmp");
+    let p = codex(&s, &["exec", "hi"]).unwrap();
+    assert!(
+        p.args[4].contains("\":slash_tmp\"=\"read\""),
+        "{}",
+        p.args[4]
+    );
+    assert!(
+        p.notes.iter().any(|n| n.contains("/tmp is read-only")),
+        "{:?}",
+        p.notes
+    );
+    let rec = json!({"tier": "standard"});
+    assert!(wants_chat_tmp("codex", Boundary::None, Some(&rec)));
+    assert!(!wants_chat_tmp("codex", Boundary::Sbx, Some(&rec)));
+    assert!(!wants_chat_tmp("claude-code", Boundary::None, Some(&rec)));
+    assert!(!wants_chat_tmp(
+        "codex",
+        Boundary::None,
+        Some(&json!({"tier": "whole"}))
+    ));
+    assert!(!wants_chat_tmp("codex", Boundary::None, None));
+    let mut q = plan(
+        "sbx",
+        &["run", "--name", "derm-x", "codex", "/w", "--", "exec", "hi"],
+        &[&s.work()],
+    );
+    run(&s, "codex", Boundary::Sbx, Some(Tier::Standard), &mut q).unwrap();
+    assert!(!q.args.iter().any(|a| a.contains(":slash_tmp")));
+}
+
+#[test]
+fn bw6_2_the_chats_tmp_folder_is_new_private_and_named_in_a_dry_run() {
+    let s = Scratch::new("cx-tmpdir");
+    let temp = s.root.join("t");
+    std::fs::create_dir_all(&temp).unwrap();
+    let named = chat_tmp_dir(&temp, "derm-c1", true).unwrap();
+    assert!(named.ends_with("derm-tmp-derm-c1-<random>"));
+    assert_eq!(std::fs::read_dir(&temp).unwrap().count(), 0);
+    let a = chat_tmp_dir(&temp, "derm-c1", false).unwrap();
+    let b = chat_tmp_dir(&temp, "derm-c1", false).unwrap();
+    assert_ne!(a, b);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let m = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+        assert_eq!(m, 0o700);
+    }
+    assert!(a
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("derm-tmp-derm-c1-"));
+}

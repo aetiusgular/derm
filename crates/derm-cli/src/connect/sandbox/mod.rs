@@ -40,6 +40,12 @@ pub struct Context {
     /// Hosts the agent's own network list admits: a brokered chat's secret
     /// hosts, so its requests to them reach derm-egress (Mac test w6, MW6-4).
     pub allowed_domains: Vec<String>,
+    /// Codex only: `/tmp` read-only to its commands, whose temporary files
+    /// go to the folder of the chat's own that `derm run` names in `TMPDIR`
+    /// (box test w6, BW6-2). Claude Code's sandbox keeps its commands'
+    /// temporary files in its own folder already (`TMPDIR=/tmp/claude-<uid>`,
+    /// run at 2.1.322 by the contract check `standard-claude-keeps-tmp-to-the-chat`).
+    pub tmp_to_chat: bool,
 }
 
 /// Under the home, by name: what srt hides from every chat (`run/plan.rs`,
@@ -182,6 +188,15 @@ pub fn codex_profile(c: &Context) -> String {
             .iter()
             .map(|p| format!("{}=\"write\"", toml_string(p))),
     );
+    // BW6-2: `:workspace` gives `:slash_tmp` and `:tmpdir` write (Codex
+    // 0.167.2, `protocol/src/permissions.rs:820-852`), and a child profile's
+    // key replaces its parent's (`config/src/permissions_toml.rs:158-191`,
+    // `merge_permission_profiles`), so `/tmp` is read-only here and
+    // `:tmpdir`, which Codex resolves from its own `TMPDIR`
+    // (`permissions.rs:2280-2288`), is the chat's folder.
+    if c.tmp_to_chat {
+        entries.push("\":slash_tmp\"=\"read\"".to_string());
+    }
     format!(
         "{{description=\"derm Standard tier\",extends=\":workspace\",filesystem={{{}}}}}",
         entries.join(",")
@@ -276,6 +291,7 @@ mod tests {
             daemon_dir: Some("/run/user/1/derm".into()),
             data_dir: Some("/h/u/.local/share/derm".into()),
             allowed_domains: Vec::new(),
+            tmp_to_chat: false,
         }
     }
 
@@ -325,6 +341,26 @@ mod tests {
         let pairs = codex_pairs(&ctx());
         assert_eq!(pairs[1], "default_permissions=\"derm\"");
         assert!(pairs[3].starts_with("permissions.derm={"));
+    }
+
+    #[test]
+    fn bw6_2_codexs_profile_makes_slash_tmp_read_only_when_the_chat_has_its_own() {
+        let parse = |c: &Context| -> toml_edit::DocumentMut {
+            format!("_x_ = {}", codex_profile(c)).parse().unwrap()
+        };
+        let t = parse(&Context {
+            tmp_to_chat: true,
+            ..ctx()
+        });
+        let fs = t["_x_"]["filesystem"].as_inline_table().unwrap();
+        assert_eq!(fs.get(":slash_tmp").unwrap().as_str(), Some("read"));
+        assert!(fs.get(":tmpdir").is_none());
+        let t = parse(&ctx());
+        assert!(t["_x_"]["filesystem"]
+            .as_inline_table()
+            .unwrap()
+            .get(":slash_tmp")
+            .is_none());
     }
 
     #[test]

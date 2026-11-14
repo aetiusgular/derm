@@ -17,7 +17,8 @@
 //   apt-get install bubblewrap socat     # both CLIs' Linux sandboxes
 //   DERM_BIN=<target>/debug/derm node tests/cli-contract/run.mjs \
 //     --claude /tmp/cli/node_modules/.bin/claude --codex /tmp/cli/node_modules/.bin/codex \
-//     --only standard-claude-holds,standard-claude-refuses-a-widening-user-file,standard-codex-holds,standard-codex-refuses-a-layer-naming-its-profile
+//     --only standard-claude-holds,standard-claude-refuses-a-widening-user-file,standard-codex-holds,standard-codex-refuses-a-layer-naming-its-profile,\
+//       standard-codex-keeps-tmp-to-the-chat,standard-claude-keeps-tmp-to-the-chat
 //
 // No account and no network but loopback: `--no-daemon --no-tap`, each CLI
 // pointed at its fake by its own variables or `-c` pairs.
@@ -200,6 +201,113 @@ async function codexTurn(dirs, codexPath, tierArgs, extra = []) {
   };
 }
 
+// --- /tmp (box test w6, BW6-2) ---------------------------------------------------------------
+
+/** The shell lines the /tmp checks run: a write to /tmp itself, and a
+ *  `mktemp` (which takes TMPDIR when it is set). */
+function tmpProbe(mark) {
+  return {
+    slash: `echo x > ${mark}; echo tmpw=$?`,
+    mk: `t=$(mktemp) && echo y > "$t" && echo mk=ok; echo "td=\${TMPDIR:-unset}"`,
+  };
+}
+
+function tmpMark(name) {
+  return `/tmp/std6a-${name}-${process.pid}-${Date.now()}`;
+}
+
+async function codexTmpTurn(dirs, codexPath, tierArgs, extra = []) {
+  const mark = tmpMark("cx");
+  const pr = tmpProbe(mark);
+  const fake = await startFakeResponses({ script: (b, n) => (n === 0 ? [call("exec_command", { cmd: `${pr.slash}; ${pr.mk}` }, "c1")] : [text("done")]) });
+  const provider = `{name="fake_local",base_url="${fake.baseUrl}/v1",wire_api="responses",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}`;
+  mkdirSync(path.join(dirs.home, ".codex"), { recursive: true });
+  let r;
+  try {
+    r = await derm(
+      dirs,
+      [
+        "codex", "--boundary", "none", ...tierArgs, "--no-daemon", "--no-tap", "--",
+        "exec", "--skip-git-repo-check", "--json",
+        "-c", 'approval_policy="never"', "-c", 'model_provider="fake_local"', "-c", 'model="fake-model"',
+        "-c", `model_providers.fake_local=${provider}`, "-c", "analytics.enabled=false", ...extra, "go",
+      ],
+      { program: "codex", cli: codexPath, env: { CODEX_DISABLE_UPDATE_CHECK: "1" } },
+    );
+  } finally {
+    await fake.close();
+  }
+  const out = Object.assign({}, ...fake.requests.map((q) => callOutputs(q.body)));
+  const o = out.c1 ?? "";
+  const onHost = existsSync(mark);
+  rmSync(mark, { force: true });
+  const td = (o.match(/td=(\S+)/) ?? [])[1] ?? "";
+  return {
+    exit: r.code,
+    ran: o.length > 0,
+    slashTmpOnHost: onHost,
+    mktempOk: /mk=ok/.test(o),
+    tmpdir: td,
+    tmpdirLeft: td.startsWith("/") && existsSync(td),
+    output: o.split("Output:").pop().trim().slice(0, 400),
+    stderrTail: r.err.slice(-500),
+  };
+}
+
+async function claudeTmpTurn(dirs, claudePath, tierArgs) {
+  const mark = tmpMark("cc");
+  const pr = tmpProbe(mark);
+  const fake = await startFakeMessages({
+    script: (b) =>
+      JSON.stringify(b.messages ?? []).includes("tool_result")
+        ? [textBlock("done")]
+        : [
+            toolUse("Bash", { command: pr.slash, description: "slash tmp" }, "toolu_slash"),
+            toolUse("Bash", { command: pr.mk, description: "mktemp" }, "toolu_mk"),
+          ],
+  });
+  let r;
+  try {
+    r = await derm(
+      dirs,
+      ["claude-code", "--boundary", "none", ...tierArgs, "--no-daemon", "--no-tap", "--", "-p", "go", "--allowedTools", "Bash", "--model", "claude-sonnet-4-5", "--output-format", "json"],
+      {
+        program: "claude",
+        cli: claudePath,
+        env: {
+          ANTHROPIC_BASE_URL: fake.baseUrl,
+          ANTHROPIC_API_KEY: DUMMY_KEY,
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          DISABLE_AUTOUPDATER: "1",
+          DISABLE_TELEMETRY: "1",
+        },
+      },
+    );
+  } finally {
+    await fake.close();
+  }
+  const results = {};
+  for (const q of fake.requests) {
+    for (const m of q.body?.messages ?? []) {
+      for (const c of Array.isArray(m.content) ? m.content : []) {
+        if (c?.type === "tool_result") results[c.tool_use_id] = (typeof c.content === "string" ? c.content : JSON.stringify(c.content)).slice(0, 300);
+      }
+    }
+  }
+  const onHost = existsSync(mark);
+  rmSync(mark, { force: true });
+  const td = ((results.toolu_mk ?? "").match(/td=(\S+?)(?:\\n|"|\s|$)/) ?? [])[1] ?? "";
+  return {
+    exit: r.code,
+    ran: Object.keys(results).length,
+    slashTmpOnHost: onHost,
+    mktempOk: /mk=ok/.test(results.toolu_mk ?? ""),
+    tmpdir: td,
+    results,
+    stderrTail: r.err.slice(-500),
+  };
+}
+
 export const checks = [
   {
     id: "standard-claude-holds",
@@ -359,6 +467,49 @@ export const checks = [
       const started = existsSync(s.marker);
       const ok = r.code === 2 && !started && /permissions\.derm/.test(r.err);
       return done(dirs, { status: ok ? "pass" : "fail", finding: `exit ${r.code}, started ${started}; ${r.err.trim().slice(-300)}` });
+    },
+  },
+  {
+    id: "standard-codex-keeps-tmp-to-the-chat",
+    title: "6A (BW6-2): under derm run --tier standard, a Codex command cannot write /tmp itself, gets a TMPDIR of the chat's own that mktemp writes, and derm removes that folder after the chat",
+    harness: "codex",
+    async run({ binPath }) {
+      const why = needs();
+      if (why) return { status: "skip", finding: why };
+      // Control: Codex's own workspace-write writes /tmp (its `:slash_tmp`).
+      const control = box("cxt-control");
+      const before = await codexTmpTurn(control, binPath, [], ["-s", "workspace-write"]);
+      done(control, null);
+      const dirs = box("cxt");
+      const seen = await codexTmpTurn(dirs, binPath, ["--tier", "standard"]);
+      const meaningful = before.ran && before.slashTmpOnHost;
+      const held = seen.ran && !seen.slashTmpOnHost && seen.mktempOk && /\/derm-tmp-/.test(seen.tmpdir) && !seen.tmpdirLeft;
+      return done(dirs, {
+        status: meaningful && held ? "pass" : "fail",
+        finding: `control (workspace-write): /tmp write ${before.slashTmpOnHost}; Standard: /tmp write ${seen.slashTmpOnHost}, mktemp ${seen.mktempOk}, TMPDIR ${seen.tmpdir || "(none)"}, left after ${seen.tmpdirLeft}`,
+        seen: { control: before, standard: seen },
+      });
+    },
+  },
+  {
+    id: "standard-claude-keeps-tmp-to-the-chat",
+    title: "6A (BW6-2): under derm run --tier standard, a Claude Code Bash command cannot write /tmp itself, and mktemp still works",
+    harness: "claude",
+    async run({ binPath }) {
+      const why = needs();
+      if (why) return { status: "skip", finding: why };
+      const control = box("cct-control");
+      const before = await claudeTmpTurn(control, binPath, []);
+      done(control, null);
+      const dirs = box("cct");
+      const seen = await claudeTmpTurn(dirs, binPath, ["--tier", "standard"]);
+      const meaningful = before.ran >= 2 && before.slashTmpOnHost;
+      const held = seen.ran >= 2 && !seen.slashTmpOnHost && seen.mktempOk;
+      return done(dirs, {
+        status: meaningful && held ? "pass" : "fail",
+        finding: `control (no tier): /tmp write ${before.slashTmpOnHost}; Standard: /tmp write ${seen.slashTmpOnHost}, mktemp ${seen.mktempOk}, TMPDIR ${seen.tmpdir || "(none)"}`,
+        seen: { control: before, standard: seen },
+      });
     },
   },
 ];

@@ -1430,6 +1430,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // The helper script prints the chat token: it goes on every way out.
         cleanup.dirs.push(helper_dir.clone());
     }
+    // Box test w6, BW6-2: Codex's Standard tier with `/tmp` read-only; its
+    // commands' temporary files go to a folder of this chat's own, removed
+    // on every way out.
+    if standard::wants_chat_tmp(a.harness.id, a.boundary, tier_record.as_ref()) {
+        let dir =
+            standard::chat_tmp_dir(&std::env::temp_dir(), &chat, a.dry_run).map_err(|e| (1, e))?;
+        if !a.dry_run {
+            cleanup.dirs.push(dir.clone());
+        }
+        p.env_set.retain(|(k, _)| k != "TMPDIR");
+        p.env_set
+            .push(("TMPDIR".into(), dir.to_string_lossy().into_owned()));
+    }
     let (export, export_at) = if a.dry_run {
         (json!("dry run"), None)
     } else {

@@ -297,6 +297,7 @@ fn the_file_a_secret_is_read_from_is_hidden_by_every_sandbox_derm_writes() {
         daemon_dir: None,
         data_dir: None,
         allowed_domains: Vec::new(),
+        tmp_to_chat: false,
     };
     let denied = crate::connect::sandbox::denied_reads(&ctx);
     assert!(
