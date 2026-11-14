@@ -472,7 +472,16 @@ pub fn chat_tmp_dir(temp: &Path, chat: &str, dry_run: bool) -> Result<PathBuf, S
         return Ok(temp.join(format!("derm-tmp-{chat}-<random>")));
     }
     let dir = temp.join(format!("derm-tmp-{chat}-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Made 0700 from the start (review FP1-R11), then set again past the
+    // umask; `create` refuses a name already there, a link included.
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

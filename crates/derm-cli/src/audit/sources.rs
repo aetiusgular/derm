@@ -168,8 +168,14 @@ pub fn lines_of(files: &[PathBuf]) -> Result<Vec<Line>, String> {
             return Err(format!("{}: over 1 GiB, not read", path.display()));
         }
         let file = open_plain(path)?;
+        // Review FP1-R8: under the lock only the bytes are copied, so a
+        // hook waits for a read, never for the parse.
         shared_lock(&file, path)?;
-        let mut reader = BufReader::new((&file).take(MAX_FILE_BYTES));
+        let mut bytes = Vec::new();
+        let read = (&file).take(MAX_FILE_BYTES).read_to_end(&mut bytes);
+        let _ = file.unlock();
+        read.map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut reader = BufReader::new(bytes.as_slice());
         let mut buf = Vec::new();
         let mut number = 0;
         loop {
@@ -192,8 +198,6 @@ pub fn lines_of(files: &[PathBuf]) -> Result<Vec<Line>, String> {
                 text: text.to_string(),
             });
         }
-        drop(reader);
-        let _ = file.unlock();
     }
     Ok(out)
 }
