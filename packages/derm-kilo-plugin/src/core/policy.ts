@@ -627,6 +627,18 @@ export const CONTROL_PATHS = [
 const NAME_CHAR = /[a-z0-9_-]/;
 const LEFT_NAME_CHAR = /[a-z0-9_.-]/;
 
+// Each text, and beside it each one that holds a `\` with every `\` read as
+// `/` (Windows test w6, WW6-1): a file tool on Windows names a path the way
+// Windows writes it (`C:\Users\u\.git\hooks\pre-commit`), and Windows takes
+// `\` and `/` alike as separators, so an entry with an inner `/` is also looked
+// for there. Only ever adds an ask; run before withCollapsedSlashes. derm-core's
+// `with_native_separators`.
+export function withNativeSeparators(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) if (t.includes("\\")) out.push(t.replace(/\\/g, "/"));
+  return out;
+}
+
 // The path the shell opens is the same with `//` or `/./` in it, so a
 // control path is also looked for in the text with those collapsed to `/`
 // (review W4-S5). Only ever adds an ask.
@@ -687,6 +699,8 @@ export const SECRET_PATHS = [
   ".mylogin.cnf", ".vault-token", ".terraform.d/credentials", ".config/op/", ".password-store/",
   ".local/share/keyrings/", "library/keychains/", ".zsh_history", ".bash_history", ".env", ".envrc",
   "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+  // Windows test w6, WW6-9: gcloud's, gh's and PSReadLine's places on Windows (derm-core's list says where from).
+  "appdata/roaming/gcloud/", "appdata/roaming/github cli/", "powershell/psreadline/",
 ] as const;
 
 /**
@@ -705,6 +719,8 @@ export const RUNS_LATER_PATHS = [
   ".opencode/", ".continue/", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
   ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".config/fish/", ".login", ".cshrc", ".tcshrc",
   ".kshrc", ".mkshrc", ".curlrc", "_curlrc", ".config/curlrc", ".wgetrc", ".config/wget/",
+  // Windows test w6, WW6-9: PowerShell's profiles and modules, and the Startup folder (derm-core's list says where from).
+  "documents/powershell/", "documents/windowspowershell/", ".config/powershell/", "start menu/programs/startup/",
 ] as const;
 
 /**
@@ -973,7 +989,7 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   if (ambiguous) return { action: "ask", normalizedTool, reason: "ambiguous server name: list the server in the policy's servers" };
   const folded = fold(decodeEscapes(call.inputText));
   const unquoted = unquote(folded);
-  const texts = withCollapsedSlashes([folded, unquoted]);
+  const texts = withCollapsedSlashes(withNativeSeparators([folded, unquoted]));
   const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
   if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   // On the folded text, so `＄HOME` asks: stricter than the raw input, the

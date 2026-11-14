@@ -569,6 +569,18 @@ const NAME_CHAR = /[a-z0-9_-]/;
 const LEFT_NAME_CHAR = /[a-z0-9_.-]/;
 
 /** Whether folded `text` names the control path `entry` (contract section 4, step 7a). */
+// Each text, and beside it each one that holds a `\` with every `\` read as
+// `/` (Windows test w6, WW6-1): a file tool on Windows names a path the way
+// Windows writes it (`C:\Users\u\.git\hooks\pre-commit`), and Windows takes
+// `\` and `/` alike as separators, so an entry with an inner `/` is also looked
+// for there. Only ever adds an ask; run before withCollapsedSlashes. derm-core's
+// `with_native_separators`.
+export function withNativeSeparators(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) if (t.includes("\\")) out.push(t.replace(/\\/g, "/"));
+  return out;
+}
+
 // The path the shell opens is the same with `//` or `/./` in it, so a
 // control path is also looked for in the text with those collapsed to `/`
 // (review W4-S5). Only ever adds an ask.
@@ -628,6 +640,8 @@ export const SECRET_PATHS = [
   ".mylogin.cnf", ".vault-token", ".terraform.d/credentials", ".config/op/", ".password-store/",
   ".local/share/keyrings/", "library/keychains/", ".zsh_history", ".bash_history", ".env", ".envrc",
   "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+  // Windows test w6, WW6-9: gcloud's, gh's and PSReadLine's places on Windows (derm-core's list says where from).
+  "appdata/roaming/gcloud/", "appdata/roaming/github cli/", "powershell/psreadline/",
 ] as const;
 
 /**
@@ -646,6 +660,8 @@ export const RUNS_LATER_PATHS = [
   ".opencode/", ".continue/", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
   ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".config/fish/", ".login", ".cshrc", ".tcshrc",
   ".kshrc", ".mkshrc", ".curlrc", "_curlrc", ".config/curlrc", ".wgetrc", ".config/wget/",
+  // Windows test w6, WW6-9: PowerShell's profiles and modules, and the Startup folder (derm-core's list says where from).
+  "documents/powershell/", "documents/windowspowershell/", ".config/powershell/", "start menu/programs/startup/",
 ] as const;
 
 /**
@@ -849,7 +865,7 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
 function allowSteps(normalizedTool: string, folded: string, reason: string): Decision {
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
-  const texts = withCollapsedSlashes([folded, unquoted]);
+  const texts = withCollapsedSlashes(withNativeSeparators([folded, unquoted]));
   const control = CONTROL_PATH_MARKERS.find((m) => texts.some((t) => namesControlPath(t, m)));
   if (control !== undefined) {
     return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };

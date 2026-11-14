@@ -774,6 +774,16 @@ pub const SECRET_PATHS: &[&str] = &[
     "id_dsa",
     "id_ecdsa",
     "id_ed25519",
+    // Windows test w6, WW6-9: the same secrets where Windows keeps them.
+    // gcloud in `%APPDATA%\gcloud` (google-auth's `_cloud_sdk.py`,
+    // `_WINDOWS_CONFIG_ROOT_ENV_VAR = "APPDATA"`), gh in `%AppData%\GitHub
+    // CLI` (https://cli.github.com/manual/gh_help_environment), and
+    // PSReadLine's command history (`$Env:APPDATA\Microsoft\Windows\
+    // PowerShell\PSReadLine` on Windows, `.local/share/powershell/PSReadLine`
+    // elsewhere; about_PSReadLine), PowerShell's `.bash_history`.
+    "appdata/roaming/gcloud/",
+    "appdata/roaming/github cli/",
+    "powershell/psreadline/",
 ];
 
 /// Files that something runs later, outside the call (step 7a; R-E0-2's
@@ -834,6 +844,18 @@ pub const RUNS_LATER_PATHS: &[&str] = &[
     ".config/curlrc",
     ".wgetrc",
     ".config/wget/",
+    // Windows test w6, WW6-9: PowerShell's profiles and modules, which every
+    // PowerShell session runs or loads (about_Profiles: `$HOME\Documents\
+    // PowerShell\` for pwsh on Windows, `$HOME\Documents\WindowsPowerShell\`
+    // for Windows PowerShell 5.1, `~/.config/powershell/` on Linux and
+    // macOS), and the Startup folder, whose items run at sign-in
+    // (support.microsoft.com, "Configure Startup applications in Windows":
+    // `%userprofile%\AppData\Roaming\...\Startup` and
+    // `%ProgramData%\...\Startup`).
+    "documents/powershell/",
+    "documents/windowspowershell/",
+    ".config/powershell/",
+    "start menu/programs/startup/",
 ];
 
 /// Cloud instance metadata and link-local addresses, which hand out the
@@ -909,6 +931,29 @@ pub fn names_entry(text: &str, entry: &str) -> bool {
         from = i + text[i..].chars().next().map_or(1, char::len_utf8);
     }
     false
+}
+
+/// Each text, and beside it each one that holds a `\` with every `\` read as
+/// `/` (Windows test w6, WW6-1). A file tool on Windows names a path the way
+/// Windows writes it (`C:\Users\u\.git\hooks\pre-commit`; serialized as JSON
+/// the `\` is doubled), and Windows takes `\` and `/` alike as separators
+/// (Microsoft, "File path formats on Windows systems"), so a list entry that
+/// holds an inner `/` (`.git/hooks/`, `.github/workflows/`,
+/// `.docker/config.json`) is also looked for there. Claude Code's own
+/// permission rules read a Windows path in POSIX form for the same reason
+/// (https://code.claude.com/docs/en/permissions, read 13 Nov 2026). On Unix a
+/// `\` is a name character or a shell escape; reading it as `/` only adds a
+/// text to look in, so it only ever adds an ask. Run before
+/// [`with_collapsed_slashes`], which folds the doubled `//` back to `/`. The
+/// hook core's and derm-pi's `withNativeSeparators`.
+pub fn with_native_separators(texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = texts.to_vec();
+    for t in texts {
+        if t.contains('\\') {
+            out.push(t.replace('\\', "/"));
+        }
+    }
+    out
 }
 
 /// The path the shell opens is the same with `//` or `/./` in it, so a
@@ -1442,7 +1487,7 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
     };
     // Control files before shell text (contract, section 4, step 7).
     let unquoted = unquote(folded);
-    let texts = with_collapsed_slashes(&[folded.to_string(), unquoted]);
+    let texts = with_collapsed_slashes(&with_native_separators(&[folded.to_string(), unquoted]));
     if let Some(control) = CONTROL_PATHS
         .iter()
         .find(|p| texts.iter().any(|t| names_control_path(t, p)))
