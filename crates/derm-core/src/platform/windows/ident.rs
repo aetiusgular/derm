@@ -277,9 +277,35 @@ pub fn acceptable_owners() -> Vec<UserId> {
     out
 }
 
+/// Whether `owner` may own a file derm trusts for what it reads: one this
+/// process could have made (`acceptable_owners`), or `Administrators` or
+/// LocalSystem, which no user without those rights can make an owner
+/// (Windows test w6, WW6-7: a policy file an elevated session made was
+/// refused under a normal token). Win32-OpenSSH trusts the same three
+/// (`contrib/win32/win32compat/w32-sshfileperm.c:102-105`, cited by
+/// `acl.rs` `private_dir`, WW5-2).
+pub fn trusted_owner(owner: &UserId) -> bool {
+    owner.as_str() == ADMINISTRATORS
+        || owner.as_str() == SYSTEM
+        || acceptable_owners().contains(owner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ww6_7_administrators_and_system_are_trusted_owners_and_another_user_is_not() {
+        assert!(trusted_owner(&effective_user()));
+        assert!(trusted_owner(&UserId::parse(ADMINISTRATORS).unwrap()));
+        assert!(trusted_owner(&UserId::parse(SYSTEM).unwrap()));
+        assert!(!trusted_owner(
+            &UserId::parse("S-1-5-21-1-2-3-4242").unwrap()
+        ));
+        // BUILTIN\Users and Everyone are not owners derm trusts.
+        assert!(!trusted_owner(&UserId::parse("S-1-5-32-545").unwrap()));
+        assert!(!trusted_owner(&UserId::parse("S-1-1-0").unwrap()));
+    }
 
     #[test]
     fn a_sid_string_parses_and_markers_match_nothing() {

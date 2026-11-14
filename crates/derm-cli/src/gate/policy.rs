@@ -73,10 +73,10 @@ pub(crate) fn load_checked_by(
         return empty("policy file is not a regular file; every call asks".into());
     }
     if !policy_file_private(&file, &meta, owner_ok) {
-        return empty(
-            "someone other than you may write this policy file; not used, so every call asks"
-                .into(),
-        );
+        return empty(format!(
+            "someone other than you may write this policy file{}; not used, so every call asks",
+            policy_owner_note(&file)
+        ));
     }
     let real_parent = std::fs::canonicalize(p)
         .ok()
@@ -171,6 +171,24 @@ fn policy_file_private(
     _owner_ok: &dyn Fn(u32) -> bool,
 ) -> bool {
     derm_core::platform::windows::only_owner_writes_file(file)
+}
+
+/// Windows test w6, WW6-7: the refusal named writers and not the owner,
+/// though the owner was the cause (an elevated session's file is owned by
+/// Administrators). Names an owner derm does not trust.
+#[cfg(windows)]
+fn policy_owner_note(file: &std::fs::File) -> String {
+    match derm_core::platform::windows::owner_of_file(file) {
+        Ok(o) if !derm_core::platform::windows::trusted_owner(&o) => {
+            format!(" (its owner is {o}, not you)")
+        }
+        _ => String::new(),
+    }
+}
+
+#[cfg(not(windows))]
+fn policy_owner_note(_file: &std::fs::File) -> String {
+    String::new()
 }
 
 /// The hook core's folder rule: no group or other write bit (links

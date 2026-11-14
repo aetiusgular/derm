@@ -490,10 +490,7 @@ pub fn is_private_path(path: &Path) -> bool {
     let Ok(s) = read_security(sys::raw(&h), SE_FILE_OBJECT) else {
         return false;
     };
-    s.owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
-        && is_private_security(&s, &me)
+    s.owner.as_ref().is_some_and(ident::trusted_owner) && is_private_security(&s, &me)
 }
 
 /// Whether the open file `f` may be changed by no one but this user (and its
@@ -510,9 +507,7 @@ pub fn only_owner_writes_file(f: &std::fs::File) -> bool {
         return false;
     }
     read_security(h, SE_FILE_OBJECT).is_ok_and(|s| {
-        s.owner
-            .as_ref()
-            .is_some_and(|o| ident::acceptable_owners().contains(o))
+        s.owner.as_ref().is_some_and(ident::trusted_owner)
             && only_owner_writes_security(&s, &ident::effective_user())
     })
 }
@@ -535,9 +530,7 @@ pub fn only_owner_writes(path: &Path) -> bool {
     let Ok(s) = read_security(sys::raw(&h), SE_FILE_OBJECT) else {
         return false;
     };
-    s.owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
+    s.owner.as_ref().is_some_and(ident::trusted_owner)
         && only_owner_writes_security(&s, &ident::effective_user())
 }
 
@@ -551,7 +544,7 @@ pub fn owned_plain_dir(path: &Path) -> bool {
     read_security(sys::raw(&h), SE_FILE_OBJECT)
         .ok()
         .and_then(|s| s.owner)
-        .is_some_and(|o| ident::acceptable_owners().contains(&o))
+        .is_some_and(|o| ident::trusted_owner(&o))
 }
 
 /// Opens a regular file of ours that no one else may use, for reading: the
@@ -571,17 +564,22 @@ pub fn open_private_file(path: &Path) -> io::Result<std::fs::File> {
         return Err(refuse("has a link, junction or short name on its path"));
     }
     let s = read_security(sys::raw(&h), SE_FILE_OBJECT)?;
-    if !s
-        .owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
-    {
+    if !s.owner.as_ref().is_some_and(ident::trusted_owner) {
         return Err(refuse("is not this user's"));
     }
     if !is_private_security(&s, &ident::effective_user()) {
         return Err(refuse("may be used by another user"));
     }
     Ok(std::fs::File::from(h))
+}
+
+/// The owner of an open file, read from its handle (WW6-7: a refusal names
+/// it).
+pub fn owner_of_file(f: &std::fs::File) -> io::Result<UserId> {
+    use std::os::windows::io::AsRawHandle;
+    read_security(f.as_raw_handle() as HANDLE, SE_FILE_OBJECT)?
+        .owner
+        .ok_or_else(|| io::Error::other("the owner could not be read"))
 }
 
 /// The volume serial number and file id of an open object, to tell whether

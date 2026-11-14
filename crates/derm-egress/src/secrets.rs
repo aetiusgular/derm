@@ -427,7 +427,9 @@ pub(crate) fn read_private(path: &Path, max: u64) -> Result<Option<String>, Stri
         return Err("not a regular file".into());
     }
     let f = derm_core::platform::windows::open_private_file(path).map_err(|e| {
-        format!("{e}; it must be readable and writable by you alone (SYSTEM and Administrators aside)")
+        format!(
+            "{e}; it must be readable and writable by you alone (SYSTEM and Administrators aside)"
+        )
     })?;
     if !derm_core::platform::windows::only_owner_writes_file(&f) {
         return Err("someone else may write it, or it has a second name (a hard link)".into());

@@ -144,18 +144,16 @@ fn check_with(
     // start or an anchor's start checks it (AZ-1). An OCSF export of such a
     // log begins there too, and is read the same way (box test w6, BW6-7).
     let mut start = start;
-    if start.is_none() {
-        if matches!(src, Source::Daemon(_)) || is_ocsf {
-            if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(texts[0]) {
-                let seq = o.get("seq").and_then(Value::as_u64);
-                let prev = o.get("prev").and_then(Value::as_str);
-                if let (Some(s), Some(p)) = (seq, prev) {
-                    if !(s == Version::V1.first_seq() && p == derm_core::audit_chain::GENESIS) {
-                        out.notes.push(format!(
-                            "begins at seq {s}, not at the chain's start (older days removed by retention, or cut): its first line is taken as given; give --start <seq>:<prev> or an anchor to check it"
-                        ));
-                        start = Some((s, p.to_string()));
-                    }
+    if start.is_none() && (matches!(src, Source::Daemon(_)) || is_ocsf) {
+        if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(texts[0]) {
+            let seq = o.get("seq").and_then(Value::as_u64);
+            let prev = o.get("prev").and_then(Value::as_str);
+            if let (Some(s), Some(p)) = (seq, prev) {
+                if !(s == Version::V1.first_seq() && p == derm_core::audit_chain::GENESIS) {
+                    out.notes.push(format!(
+                        "begins at seq {s}, not at the chain's start (older days removed by retention, or cut): its first line is taken as given; give --start <seq>:<prev> or an anchor to check it"
+                    ));
+                    start = Some((s, p.to_string()));
                 }
             }
         }
