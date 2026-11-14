@@ -91,6 +91,20 @@ impl Client {
         self.recv()
     }
 
+    /// `ask`, with a longer wait for the reply: a report over thousands of
+    /// events took past the 10 s read timeout on CI's macOS runner (run
+    /// 43474083257, `WouldBlock` at `recv`; Rust's `set_read_timeout` docs:
+    /// "Unix typically returns an error of the kind `WouldBlock`").
+    fn ask_slow(&mut self, v: Value, wait: Duration) -> Value {
+        self.r.get_ref().set_read_timeout(Some(wait)).unwrap();
+        let reply = self.ask(v);
+        self.r
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        reply
+    }
+
     fn closed(&mut self) -> bool {
         let mut buf = [0u8; 1];
         matches!(self.r.read(&mut buf), Ok(0))
@@ -1648,7 +1662,10 @@ fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
     }
     let mut reply = Value::Null;
     for _ in 0..100 {
-        reply = d.ask(json!({"op": "report", "chat": "chat-b", "since": 0, "until": i64::MAX}));
+        reply = d.ask_slow(
+            json!({"op": "report", "chat": "chat-b", "since": 0, "until": i64::MAX}),
+            Duration::from_secs(60),
+        );
         if reply["report"]["events"] == n + 1 {
             break;
         }
