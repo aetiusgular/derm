@@ -54,14 +54,28 @@ const FETCHERS: &[&str] = &[
     "curl", "wget", "wget2", "http", "https", "xh", "aria2c", "lynx", "w3m", "links", "elinks",
 ];
 
-/// A host on this machine: a local server's page is the person's own.
+/// A host on this machine: a local server's page is the person's own. An
+/// address only by its parsed form (review FP1-R3: `127.attacker.example`
+/// is a name, not 127/8).
 fn local_host(h: &str) -> bool {
     let h = h.trim_start_matches('[').trim_end_matches(']');
-    h == "localhost"
-        || h.ends_with(".localhost")
-        || h == "::1"
-        || h == "0.0.0.0"
-        || h.starts_with("127.")
+    if let Ok(a) = h.parse::<std::net::IpAddr>() {
+        return a.is_loopback() || a.is_unspecified();
+    }
+    h == "localhost" || h.ends_with(".localhost")
+}
+
+/// The host a fetcher's operand with no scheme names: curl and wget take
+/// `host/path` as `http://host/path` (review FP1-R2; curl 8.5.0, run). Any
+/// operand that is not an option counts, an option's value too (`-o
+/// out.txt`): taint only raises.
+fn schemeless_host(word: &str) -> Option<String> {
+    if word.starts_with('-') || word.contains("://") || word.starts_with('@') {
+        return None;
+    }
+    hosts::url_hosts(&format!("http://{word}"))
+        .into_iter()
+        .next()
 }
 
 const MAX_DEPTH: usize = 4;
@@ -772,12 +786,25 @@ pub fn read(folded: &str) -> Shell {
         let head = base(&w[0]).to_string();
         s.words.extend(w.iter().cloned());
         let fetcher = FETCHERS.contains(&head.as_str());
+        let mut saw_url = false;
         for word in w {
             for h in hosts::url_hosts(word) {
+                saw_url = true;
                 if fetcher && !local_host(&h) && !s.fetched.contains(&h) {
                     s.fetched.push(h.clone());
                 }
                 add_host(&mut s, h);
+            }
+        }
+        // Only when no operand had a scheme: a local fetch's `-o out.txt`
+        // is not read as a host.
+        if fetcher && !saw_url {
+            for word in &w[1..] {
+                if let Some(h) = schemeless_host(word) {
+                    if !local_host(&h) && !s.fetched.contains(&h) {
+                        s.fetched.push(h);
+                    }
+                }
             }
         }
         // Runs.

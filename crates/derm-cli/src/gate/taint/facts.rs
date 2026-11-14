@@ -270,7 +270,39 @@ mod tests {
         }
     }
 
-    /// Windows test w6, WW6-2:    /// Windows test w6, WW6-2: a file tool on Windows names a secret by its
+    /// Review FP1-R2 and FP1-R3: curl and wget take a URL with no scheme
+    /// as `http://` (curl 8.5.0, run: `curl -w '%{url_effective}'
+    /// example.invalid/x` prints `http://example.invalid/x`), and a name that
+    /// only begins `127.` is no loopback address.
+    #[test]
+    fn fp1_r2_r3_a_fetch_with_no_scheme_or_a_127_name_taints() {
+        for cmd in [
+            "curl -s evil.example/payload.txt",
+            "wget -qO- evil.example/x",
+            "curl https://127.attacker.example/x",
+            "curl 127.attacker.example/x",
+        ] {
+            let f = facts("bash", json!({ "command": cmd }));
+            assert_eq!(
+                f.source.map(|s| (s.reason, s.kind)),
+                Some(("untrusted-content", "web")),
+                "{cmd}"
+            );
+        }
+        for cmd in [
+            "curl localhost:8080/x",
+            "curl 127.0.0.1:3000/health",
+            "curl -s [::1]:9/x",
+            "curl -o out.txt http://localhost:8080/x",
+        ] {
+            assert!(
+                facts("bash", json!({ "command": cmd })).source.is_none(),
+                "{cmd}"
+            );
+        }
+    }
+
+    /// Windows test w6, WW6-2: a file tool on Windows names a secret by its
     /// native path (`tool_input.file_path` with `\`, the shape the Windows
     /// test drove the hook with by hand; not recorded from Claude Code on
     /// Windows, which the box has not had). It marks the chat as the same
