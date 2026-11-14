@@ -29,6 +29,10 @@ pub struct Outcome {
     pub failure: Option<(usize, String)>,
     pub notes: Vec<String>,
     pub start_used: Option<(u64, String)>,
+    /// The first line was taken as given, with no `--start` (BW6-7; review
+    /// FP1-R7): a cut from the front would not show unless an anchor checks
+    /// it, so the result says so itself.
+    pub first_taken_as_given: bool,
 }
 
 impl Outcome {
@@ -62,6 +66,7 @@ impl Outcome {
             "head": self.report.last().map(|l| json!({"seq": l.seq, "hash": l.hash})),
             "broken": self.failure.as_ref().map(|(n, why)| json!({"at": self.place(*n), "why": why})),
             "notes": self.notes,
+            "firstTakenAsGiven": self.first_taken_as_given,
         })
     }
 }
@@ -154,6 +159,7 @@ fn check_with(
                         "begins at seq {s}, not at the chain's start (older days removed by retention, or cut): its first line is taken as given; give --start <seq>:<prev> or an anchor to check it"
                     ));
                     start = Some((s, p.to_string()));
+                    out.first_taken_as_given = true;
                 }
             }
         }
@@ -440,8 +446,13 @@ fn print_outcome(o: &Outcome, anchors: usize) {
                 _ => String::new(),
             };
             println!(
-                "{}: holds ({} line(s){span}{})",
+                "{}: holds{} ({} line(s){span}{})",
                 o.describe,
+                match (o.first_taken_as_given, o.report.first()) {
+                    (true, Some(f)) if anchors == 0 =>
+                        format!(" from seq {}, its first line taken as given", f.seq),
+                    _ => String::new(),
+                },
                 o.report.links.len(),
                 if anchors > 0 {
                     format!(", {anchors} anchor(s) match")

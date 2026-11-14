@@ -779,6 +779,10 @@ fn bw6_7_an_ocsf_export_of_a_trimmed_log_verifies_with_the_plain_verifys_note() 
         "{:?}",
         o.notes
     );
+    // Review FP1-R7: a front cut verifies too, so the result itself says
+    // its first line was taken as given, not a note alone.
+    assert_eq!(o.json()["firstTakenAsGiven"], true);
+    assert_eq!(plain_check.json()["firstTakenAsGiven"], true);
     // A line cut from the middle still breaks it.
     let cut: Vec<&String> = lines
         .iter()
