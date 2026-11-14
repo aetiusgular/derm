@@ -728,6 +728,15 @@ fn r7_no_light_log_where_it_would_go_with_the_sandbox() {
         ),
         None
     );
+    // A volume or a bind of a folder on disk at ~/.derm keeps its files
+    // (review FP2-R3): only a tmpfs, as srt's, goes with the sandbox.
+    assert_eq!(
+        kept_away(
+            home,
+            &sys(eth, "42 25 8:1 /vol /home/u/.derm rw - ext4 /dev/sdb1 rw\n")
+        ),
+        None
+    );
     // And the seam fails, so the light tier denies.
     let h = scratch("r7");
     let out = after_post_with(

@@ -120,12 +120,25 @@ pub fn kept_away(home: &Path, sys: &System) -> Option<String> {
                 .into(),
         );
     }
+    // Mountinfo names real paths: the home with its links followed
+    // (review FP2-R3).
+    let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let derm = home.join(".derm");
     let derm = derm.to_string_lossy();
     for line in sys.mountinfo.as_deref().unwrap_or("").lines() {
         let Some(at) = line.split(' ').nth(4).map(unescape_mount) else {
             continue;
         };
+        // A tmpfs only, as srt's over a denied folder: a volume or a bind of
+        // a folder on disk (a devcontainer's `~/.derm` volume) keeps its
+        // files (review FP2-R3).
+        let fstype = line
+            .split_once(" - ")
+            .and_then(|(_, rest)| rest.split(' ').next())
+            .unwrap_or("");
+        if fstype != "tmpfs" {
+            continue;
+        }
         if at == derm || at.starts_with(&format!("{derm}/")) {
             return Some(format!(
                 "{at} is a mount here (srt's tmpfs over ~/.derm), so a file written there goes with the sandbox"
@@ -133,6 +146,15 @@ pub fn kept_away(home: &Path, sys: &System) -> Option<String> {
         }
     }
     None
+}
+
+/// The mount points `/proc/self/mountinfo` lists (its fifth field), with
+/// its escapes read.
+pub fn mount_points(mountinfo: &str) -> Vec<String> {
+    mountinfo
+        .lines()
+        .filter_map(|l| l.split(' ').nth(4).map(unescape_mount))
+        .collect()
 }
 
 /// `/proc/self/mountinfo` writes a space, a tab, a newline and `\` in a

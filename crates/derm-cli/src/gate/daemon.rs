@@ -487,11 +487,20 @@ pub struct SrtReads<'a> {
     pub home: &'a dyn Fn() -> Option<PathBuf>,
     /// This process's uid.
     pub uid: u32,
-    /// Whether the file was bound into the sandbox: its device is not its
-    /// folder's. Inside srt `~/.derm` is a tmpfs the agent can write, and a
-    /// file the agent made there sits on that tmpfs; only srt can bind one
-    /// (nothing in the sandbox can mount: srt's seccomp helper refuses it).
+    /// Whether the file was bound into the sandbox: its real path, every
+    /// link followed, is itself a mount point in `/proc/self/mountinfo`.
+    /// Inside srt `~/.derm` is a tmpfs the agent can write, and a file it
+    /// makes there, or a link it puts in place of a folder, is no mount
+    /// point; only srt can bind one (nothing in the sandbox can mount: srt's
+    /// seccomp helper refuses it). A device that differs from the folder's
+    /// was not enough: through a linked folder the file's device is the
+    /// link target's (fix pass 2's review, FP2-R1, run).
     pub bound: &'a dyn Fn(&Path) -> bool,
+    /// Whether `socket(AF_UNIX)` is refused with EPERM, as srt's seccomp
+    /// filter refuses it on Linux (srt README, Unix sockets; run): where a
+    /// Unix socket can be made, the daemon's socket is the route, so a host
+    /// network with only `lo` (`docker --network none`) is never diverted.
+    pub unix_refused: bool,
 }
 
 /// Whether `/proc/net/dev`'s interfaces are `lo` alone: the network
@@ -522,6 +531,9 @@ fn chat_id_ok(c: &str) -> bool {
 /// at that proxy port. A project can set `DERM_CHAT_ID` and the proxy
 /// variables; it cannot make the network, bind a file or take the port.
 pub fn srt_route_with(env: &Env, r: &SrtReads) -> Result<SrtRoute, String> {
+    if !r.unix_refused {
+        return Err("a Unix socket can be made here, so the daemon's socket is the route".into());
+    }
     let dev = (r.netdev)().ok_or("no /proc/self/net/dev")?;
     if !only_loopback_netns(&dev) {
         return Err("not in a sandbox's own network".into());
@@ -588,12 +600,25 @@ pub fn srt_route(env: &Env) -> Option<SrtRoute> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
         let bound = |p: &Path| {
-            let dev = |q: &Path| std::fs::symlink_metadata(q).ok().map(|m| m.dev());
-            match (dev(p), p.parent().and_then(dev)) {
-                (Some(a), Some(b)) => a != b,
-                _ => false,
+            let Ok(real) = std::fs::canonicalize(p) else {
+                return false;
+            };
+            let real = real.to_string_lossy().into_owned();
+            std::fs::read_to_string("/proc/self/mountinfo").is_ok_and(|m| {
+                super::locallog::mount_points(&m)
+                    .iter()
+                    .any(|at| *at == real)
+            })
+        };
+        // SAFETY: a plain socket(2) call; the descriptor is closed at once.
+        let unix_refused = unsafe {
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            if fd >= 0 {
+                libc::close(fd);
+                false
+            } else {
+                std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
             }
         };
         let home = || {
@@ -609,6 +634,7 @@ pub fn srt_route(env: &Env) -> Option<SrtRoute> {
                 home: &home,
                 uid: derm_core::runtime::current_uid(),
                 bound: &bound,
+                unix_refused,
             },
         )
         .ok()

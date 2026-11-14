@@ -1088,7 +1088,8 @@ fn bubblewrap_dev_link(event: &ActivityEvent, exe: &str) -> bool {
             | "/proc/kcore"
             | "pts/ptmx"
     );
-    let own = to.starts_with('?') || to.starts_with("/newroot/dev/") || to.starts_with("/dev/");
+    // Never the host's own `/dev` (fix pass 2's review, FP2-R2).
+    let own = to.starts_with('?') || to.starts_with("/newroot/dev/");
     target && own
 }
 
@@ -1940,6 +1941,13 @@ mod tests {
             &[],
         );
         assert_eq!(flags.len(), 5, "{flags:?}");
+        // The host's own /dev is never bubblewrap's new one (FP2-R2); a
+        // write under /dev is the check's noise either way, so the rule is
+        // checked on its own.
+        let host_dev = auditd_link("26", 26, "/proc/self/fd", "/dev/fd", "/usr/bin/bwrap");
+        assert!(!bubblewrap_dev_link(&host_dev, "/usr/bin/bwrap"));
+        let new_dev = auditd_link("27", 27, "/proc/self/fd", "?", "/usr/bin/bwrap");
+        assert!(bubblewrap_dev_link(&new_dev, "/usr/bin/bwrap"));
     }
 
     fn chat_ev(

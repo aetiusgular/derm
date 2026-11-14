@@ -791,6 +791,7 @@ mod srt_route {
                 home: &|| Some(dir.clone()),
                 uid: derm_core::runtime::current_uid(),
                 bound: &|_| bound,
+                unix_refused: true,
             },
         )
     }
@@ -842,6 +843,27 @@ mod srt_route {
             let got = route(&env_of(&[(k, v)]), &h, LO, true).unwrap_err();
             assert!(got.contains(why), "{k}={v}: {got}");
         }
+    }
+
+    /// Fix pass 2's review, FP2-R1: where a Unix socket can be made (a host
+    /// network with only `lo`, `docker --network none`), the socket is the
+    /// route, and the route file is not even looked for.
+    #[test]
+    fn no_route_where_a_unix_socket_can_be_made() {
+        let h = home("unix", Some(GOOD), 0o600);
+        let dir = h.0.clone();
+        let got = srt_route_with(
+            &env_of(&[]),
+            &SrtReads {
+                netdev: &|| Some(LO.to_string()),
+                home: &|| Some(dir.clone()),
+                uid: derm_core::runtime::current_uid(),
+                bound: &|_| true,
+                unix_refused: false,
+            },
+        )
+        .unwrap_err();
+        assert!(got.contains("Unix socket"), "{got}");
     }
 
     #[test]
