@@ -754,6 +754,55 @@ fn an_ocsf_export_verifies_and_an_edited_field_shows() {
     let _ = fs::remove_dir_all(&d);
 }
 
+/// Box test w6, BW6-7: an OCSF export of a log retention had trimmed did not
+/// verify on its own ("seq 51705 where 1 was due"), while the plain verify of
+/// the same log held, taking its first line as given and saying so. The OCSF
+/// verify now reads a first line that does not begin the chain as the plain
+/// verify does, with the same note; `--start` or an anchor checks it.
+#[test]
+fn bw6_7_an_ocsf_export_of_a_trimmed_log_verifies_with_the_plain_verifys_note() {
+    let d = scratch("bw67");
+    let mut evs = plain(2, T0);
+    evs.extend(plain(3, T0 + DAY));
+    write_log(&d, &evs);
+    fs::remove_file(day_file(&d, T0)).unwrap();
+    let src = Source::Daemon(d.clone());
+    let plain_check = verify::check(&src, None, &[]);
+    assert!(plain_check.holds(), "{:?}", plain_check.failure);
+    let lines = ocsf_export(&src, false);
+    let f = d.join("ocsf.jsonl");
+    fs::write(&f, lines.join("\n") + "\n").unwrap();
+    let o = verify::check_ocsf(&Source::Files(vec![f.clone()]), None, &[]);
+    assert!(o.holds(), "{:?}", o.failure);
+    assert!(
+        o.notes.iter().any(|n| n.contains("taken as given")),
+        "{:?}",
+        o.notes
+    );
+    // A line cut from the middle still breaks it.
+    let cut: Vec<&String> = lines
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != 1)
+        .map(|(_, l)| l)
+        .collect();
+    fs::write(
+        &f,
+        cut.iter()
+            .map(|l| l.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    assert!(
+        verify::check_ocsf(&Source::Files(vec![f.clone()]), None, &[])
+            .failure
+            .is_some()
+    );
+    let _ = fs::remove_dir_all(&d);
+}
+
 #[test]
 fn the_ocsf_flags_are_wired_to_the_commands() {
     let d = scratch("ocsfmain");

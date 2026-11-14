@@ -224,7 +224,7 @@ pub fn main(args: &[String]) -> u8 {
         eprintln!("  as OCSF 1.9.0 events; check it with derm audit verify --ocsf");
     }
     if let Some((seq, prev)) = &s.start {
-        eprintln!("  it does not begin a chain: verify it with --start {seq}:{prev}");
+        eprintln!("  it does not begin a chain: verify takes its first line as given, and --start {seq}:{prev} checks it");
     }
     if let Some((seq, hash)) = &s.head {
         eprintln!("  head {seq}:{hash}");

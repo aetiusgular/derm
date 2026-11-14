@@ -141,10 +141,11 @@ fn check_with(
     let texts: Vec<&str> = out.lines.iter().map(|l| l.text.as_str()).collect();
     // The daemon's oldest day kept begins inside the chain once retention has
     // removed a day: its first line is taken as given, and said so, unless a
-    // start or an anchor's start checks it (AZ-1).
+    // start or an anchor's start checks it (AZ-1). An OCSF export of such a
+    // log begins there too, and is read the same way (box test w6, BW6-7).
     let mut start = start;
     if start.is_none() {
-        if let Source::Daemon(_) = src {
+        if matches!(src, Source::Daemon(_)) || is_ocsf {
             if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(texts[0]) {
                 let seq = o.get("seq").and_then(Value::as_u64);
                 let prev = o.get("prev").and_then(Value::as_str);
