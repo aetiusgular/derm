@@ -82,6 +82,6 @@
     "failSwitch": "onFailure: \"block\" (derm sets it)",
     "ask": "own-prompt",
     "shellAliases": [],
-    "verifiedAt": "2.1.311, run"
+    "verifiedAt": "2.1.322, run"
   }
 }

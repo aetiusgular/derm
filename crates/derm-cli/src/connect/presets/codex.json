@@ -68,7 +68,7 @@
     "failSwitch": null,
     "ask": "approver-or-deny",
     "shellAliases": [],
-    "verifiedAt": "0.163.0, run",
+    "verifiedAt": "0.167.2, run",
     "note": "Codex's sandbox, approvals and requirements.toml are the lock; the hook is best-effort"
   }
 }

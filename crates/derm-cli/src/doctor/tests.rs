@@ -158,7 +158,7 @@ fn a_version_other_than_the_rows_is_unverified() {
     let r = doctor(&row, &env(&h), &probes(), false, false);
     assert_eq!(r["version"]["state"], "unverified");
     assert_eq!(r["version"]["installed"], "2.1.318");
-    assert_eq!(r["version"]["verifiedAt"], "2.1.311");
+    assert_eq!(r["version"]["verifiedAt"], "2.1.322");
     assert!(r["problems"]
         .as_array()
         .unwrap()
@@ -166,7 +166,7 @@ fn a_version_other_than_the_rows_is_unverified() {
         .any(|p| p.as_str().unwrap().contains("unverified at 2.1.318")));
     assert!(render(&r).contains("unverified at 2.1.318"));
     // The same version: nothing to say about it.
-    program(&h, "claude", "echo '2.1.311 (Claude Code)'");
+    program(&h, "claude", "echo '2.1.322 (Claude Code)'");
     let r = doctor(&row, &env(&h), &probes(), false, false);
     assert_eq!(r["version"]["state"], "matches");
     // Not installed: said, not a problem.
