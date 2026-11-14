@@ -450,6 +450,20 @@ pub fn vm_endpoint(
 
 /// One HTTP request to the daemon's derm route (`postVm`); its reply, or
 /// why not.
+/// Whether the host's port on the VM route takes a connection (FP1-R4).
+fn vm_listens(url: &VmUrl) -> Result<(), String> {
+    let addrs: Vec<std::net::SocketAddr> =
+        std::net::ToSocketAddrs::to_socket_addrs(&(url.host.as_str(), url.port))
+            .map_err(|e| format!("daemon unreachable ({})", io_code(&e)))?
+            .collect();
+    for addr in addrs {
+        if std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).is_ok() {
+            return Ok(());
+        }
+    }
+    Err("daemon unreachable".into())
+}
+
 pub fn post_vm(
     url: &VmUrl,
     token: &str,
@@ -621,6 +635,12 @@ pub fn exchange(requests: &[Value], o: &Opts) -> Result<Vec<Value>, String> {
         uid,
         &|| socket_candidates(env),
     ) {
+        // Review FP1-R4: with no request, nothing was sent on this route,
+        // so "the daemon answers" was always true. The route has no hello;
+        // a connect to the host's port is the check that something listens.
+        if requests.is_empty() {
+            return vm_listens(&vm).map(|()| Vec::new());
+        }
         let mut replies = Vec::new();
         for r in requests {
             replies.push(post_vm(&vm, &token, r, o.reply_timeout)?);

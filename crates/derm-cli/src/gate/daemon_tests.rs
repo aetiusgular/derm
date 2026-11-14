@@ -619,6 +619,21 @@ mod unix {
         (port, rx, server)
     }
 
+    /// Review FP1-R4: `exchange(&[], ..)` on the VM route sent nothing and
+    /// said the daemon answers; the check is now a connect to its port.
+    #[test]
+    fn fp1_r4_the_vm_route_says_a_daemon_answers_only_when_its_port_does() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let url = VmUrl {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        assert!(vm_listens(&url).is_ok());
+        drop(l);
+        assert!(vm_listens(&url).is_err());
+    }
+
     #[test]
     fn post_vm_sends_each_op_to_its_route_with_the_chat_token() {
         let (port, rx, server) = http_server(200);
