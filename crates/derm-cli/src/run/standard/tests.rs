@@ -54,6 +54,7 @@ impl Scratch {
             daemon_dir: Some("/run/user/1000/derm".into()),
             data_dir: Some(format!("{}/.local/share/derm", self.home())),
             windows: false,
+            linux_bwrap: None,
         }
     }
     fn write(&self, rel: &str, text: &str) {
@@ -243,6 +244,96 @@ fn mw6_4_a_brokered_chats_secret_hosts_are_on_the_blocks_allowed_domains() {
     .unwrap();
     let b = last_settings(&p.args);
     assert_eq!(b["sandbox"]["network"]["allowedDomains"], json!([]), "{b}");
+}
+
+/// Box test w6, BW6-1: on Ubuntu with its `bwrap-userns-restrict` profile
+/// and the system bubblewrap first on PATH, Claude Code's own sandbox kills
+/// every command, so the tier is refused before it starts, naming the
+/// profile and the way on; the bubblewrap copy first on PATH, or no profile
+/// and the sysctl at 0, lets it through; Codex's sandbox ran there (box A2)
+/// and is not refused; under sbx the VM's kernel decides.
+#[test]
+fn bw6_1_claude_codes_tier_is_refused_where_ubuntus_profile_kills_its_commands() {
+    let s = Scratch::new("bw61");
+    let mut i = s.inputs();
+    i.linux_bwrap = Some(LinuxBwrap {
+        bwrap: Some("/usr/bin/bwrap".into()),
+        profile: true,
+        userns: Some("1\n".into()),
+    });
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    let e = environment_with(
+        "claude-code",
+        Boundary::None,
+        Some(Tier::Standard),
+        &mut p,
+        &i,
+    )
+    .unwrap_err();
+    assert_eq!(e.0, 2);
+    assert!(
+        e.1.contains("bwrap-userns-restrict") && e.1.contains("docs/install/linux.md"),
+        "{}",
+        e.1
+    );
+    assert!(!p.args.iter().any(|a| a == "--settings"), "nothing written");
+    // The sysctl alone (Ubuntu 24.04's case) refuses too.
+    i.linux_bwrap = Some(LinuxBwrap {
+        bwrap: Some("/usr/bin/bwrap".into()),
+        profile: false,
+        userns: Some("1".into()),
+    });
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    assert!(environment_with(
+        "claude-code",
+        Boundary::None,
+        Some(Tier::Standard),
+        &mut p,
+        &i
+    )
+    .is_err());
+    // srt's copy first on PATH, or no restriction: the tier goes on.
+    for b in [
+        LinuxBwrap {
+            bwrap: Some("/usr/local/libexec/derm-srt/bwrap".into()),
+            profile: true,
+            userns: Some("1".into()),
+        },
+        LinuxBwrap {
+            bwrap: Some("/usr/bin/bwrap".into()),
+            profile: false,
+            userns: Some("0".into()),
+        },
+    ] {
+        i.linux_bwrap = Some(b);
+        let mut p = claude_plan(&s, &["-p", "hi"]);
+        environment_with(
+            "claude-code",
+            Boundary::None,
+            Some(Tier::Standard),
+            &mut p,
+            &i,
+        )
+        .unwrap();
+        assert!(p.args.iter().any(|a| a == "--settings"));
+    }
+    // Codex and sbx are not refused.
+    i.linux_bwrap = Some(LinuxBwrap {
+        bwrap: Some("/usr/bin/bwrap".into()),
+        profile: true,
+        userns: Some("1".into()),
+    });
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    environment_with(
+        "claude-code",
+        Boundary::Sbx,
+        Some(Tier::Standard),
+        &mut p,
+        &i,
+    )
+    .unwrap();
+    let mut p = plan("codex", &["exec", "go"], &[&s.work()]);
+    environment_with("codex", Boundary::None, Some(Tier::Standard), &mut p, &i).unwrap();
 }
 
 /// Case 214, AZ-7: `excludedCommands` anywhere Claude Code reads it.

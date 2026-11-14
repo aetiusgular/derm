@@ -58,6 +58,19 @@ pub(crate) struct Inputs {
     pub daemon_dir: Option<String>,
     pub data_dir: Option<String>,
     pub windows: bool,
+    /// Linux only: what decides whether Claude Code's own sandbox can run a
+    /// command here (box test w6, BW6-1): the bubblewrap it will run (the
+    /// first `bwrap` on PATH, by its real path), whether Ubuntu's
+    /// `bwrap-userns-restrict` profile is installed, and the userns sysctl.
+    pub linux_bwrap: Option<LinuxBwrap>,
+}
+
+/// The facts `preflight::apparmor_note_for` reads, for the Standard tier.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LinuxBwrap {
+    pub bwrap: Option<String>,
+    pub profile: bool,
+    pub userns: Option<String>,
 }
 
 impl Inputs {
@@ -86,6 +99,24 @@ impl Inputs {
             daemon_dir: derm_audit_linux::client::socket_path()
                 .and_then(|s| s.parent().map(|d| d.to_string_lossy().into_owned())),
             windows: cfg!(windows),
+            linux_bwrap: cfg!(target_os = "linux").then(|| {
+                let path = std::env::var("PATH").unwrap_or_default();
+                let cwd = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                LinuxBwrap {
+                    bwrap: super::preflight::first_on_path(&path, "bwrap", &cwd).map(|b| {
+                        std::fs::canonicalize(&b)
+                            .map(|r| r.to_string_lossy().into_owned())
+                            .unwrap_or(b)
+                    }),
+                    profile: Path::new(super::boundary::probe::UBUNTU_BWRAP_PROFILE).exists(),
+                    userns: std::fs::read_to_string(
+                        "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+                    )
+                    .ok(),
+                }
+            }),
         }
     }
 }
@@ -267,6 +298,41 @@ pub(crate) fn environment_with(
                 "--tier standard: derm writes {harness}'s own sandbox on Linux and macOS only (verified at {verified} there); run --tier whole"
             ),
         ));
+    }
+    // Box test w6, BW6-1: on Ubuntu 26.04 Claude Code 2.1.322's sandbox
+    // started, and every command then died in its own seccomp step
+    // (`apply-seccomp: write /proc/self/setgroups (nested userns is
+    // capability-restricted; caller must provide CAP_SYS_ADMIN): Permission
+    // denied`), with no `failIfUnavailable` refusal: Ubuntu's
+    // `bwrap-userns-restrict` runs everything `/usr/bin/bwrap` starts under
+    // `unpriv_bwrap`, which denies that capability, as it does for srt (the
+    // same `apply-seccomp`; `preflight::apparmor_note_for`). Claude Code
+    // takes the first `bwrap` on PATH unless managed settings set
+    // `sandbox.bwrapPath` (2.1.322's bundle: `fN("bwrap")`, `ps` lists
+    // `bwrapPath` among the managed-only keys). Under sbx the VM's kernel is
+    // not this host's, so this is checked with no boundary only.
+    if harness == "claude-code" && boundary == Boundary::None {
+        if let Some(b) = &i.linux_bwrap {
+            let bwrap = b.bwrap.as_deref().unwrap_or(super::preflight::UBUNTU_BWRAP);
+            if super::preflight::apparmor_note_for(true, b.profile, b.userns.as_deref(), bwrap)
+                .is_some()
+            {
+                let why = if b.profile {
+                    format!(
+                        "Ubuntu's AppArmor profile {} runs everything {bwrap} starts under unpriv_bwrap, which denies the CAP_SYS_ADMIN Claude Code's seccomp step needs, so every command it runs fails (apply-seccomp: write /proc/self/setgroups ... Permission denied)",
+                        super::boundary::probe::UBUNTU_BWRAP_PROFILE
+                    )
+                } else {
+                    "kernel.apparmor_restrict_unprivileged_userns is 1, which takes the capabilities Claude Code's bubblewrap and seccomp step need, so every command it runs fails".to_string()
+                };
+                return Err((
+                    2,
+                    format!(
+                        "--tier standard: Claude Code's own sandbox cannot run a command on this host: {why}. Claude Code runs the first bwrap on PATH; with the bubblewrap copy docs/install/linux.md describes for srt first on PATH it starts. Or leave --tier out, or run --tier whole under srt or sbx"
+                    ),
+                ));
+            }
+        }
     }
     if boundary == Boundary::Srt {
         plan.notes.push(format!(
