@@ -1386,6 +1386,16 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     } else {
         tap::environment(a.harness.id, &mut p)?
     };
+    // BW6-11: under srt, the tap off and no `--model-url`: srt admits the
+    // harness's own model host, or the chat cannot reach its model.
+    let tapped = tap_record
+        .as_ref()
+        .and_then(|t| t.get("on"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if a.boundary == Boundary::Srt && !tapped && a.model_url.is_none() {
+        plan::srt_admit_model_hosts(&mut p, a.harness.id).map_err(|e| (1, e))?;
+    }
     // The Standard tier (lane 6A's seam; `contracts/sandbox.md`): the agent's
     // own sandbox from derm's policy, as `detail.tier`. The base's stub
     // returns none.
@@ -2907,6 +2917,71 @@ mod end_to_end {
             _ => serde_json::Value::Null,
         };
         assert_eq!(ev[0]["detail"]["ioUring"], want);
+    }
+
+    #[cfg(unix)]
+    /// Box test w6, BW6-11: under srt with the tap off (`--no-tap`, the
+    /// setting, or no daemon), srt's allow list held derm's own ports and
+    /// the sign-in host only, so Claude Code's requests to its own model
+    /// host got srt's 403 ("Couldn't connect through your proxy" after ten
+    /// retries). The tap's route reaches exactly that host (`derm_tap::
+    /// upstream::builtin`); with the tap off, srt admits it instead, says
+    /// so, and admits nothing more. A `--model-url` names the route itself.
+    #[test]
+    fn bw6_11_under_srt_with_the_tap_off_the_harness_reaches_its_model_host() {
+        let st = setup("bw611");
+        let claude = script(&st.fake.dir, "claude", "exit 0");
+        let mut env = RunEnv {
+            programs: st.env.programs.clone(),
+            ..clone_env(&st.env)
+        };
+        env.programs.push(("claude".into(), claude));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let copy = || -> serde_json::Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(st.fake.dir.join("settings.copy")).unwrap(),
+            )
+            .unwrap()
+        };
+        let argv = |extra: &[&str]| {
+            let mut v = vec![
+                "claude-code",
+                "--boundary",
+                "srt",
+                "--chat",
+                "chat-bw611",
+                "--cwd",
+                &cwd,
+            ];
+            v.extend_from_slice(extra);
+            v.extend(["--", "-p", "x"]);
+            s(&v)
+        };
+        run(&argv(&["--no-tap"]), &env).unwrap();
+        let allowed = copy()["network"]["allowedDomains"].clone();
+        let list: Vec<&str> = allowed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(list.contains(&"api.anthropic.com:443"), "{allowed}");
+        assert!(!list.contains(&"api.openai.com:443"), "{allowed}");
+        // With a model URL of the person's own, the provider is not opened.
+        run(
+            &argv(&["--no-tap", "--model-url", "http://127.0.0.1:8080"]),
+            &env,
+        )
+        .unwrap();
+        let allowed = copy()["network"]["allowedDomains"].clone();
+        assert!(
+            !allowed
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "api.anthropic.com:443"),
+            "{allowed}"
+        );
     }
 
     #[cfg(unix)]

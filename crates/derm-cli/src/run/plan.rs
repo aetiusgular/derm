@@ -1376,6 +1376,55 @@ pub fn describe(p: &Plan) -> String {
 pub const SRT_NO_PROXY_WITHOUT_LOOPBACK: &str =
     "169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 
+/// The host and port each harness sends its model requests to when nothing
+/// redirects it: the hosts the tap forwards to (`derm_tap::upstream::builtin`:
+/// Anthropic's API for Claude Code; OpenAI's API and ChatGPT's backend for
+/// Codex, by API key and by sign-in; Google's Generative Language API for
+/// Gemini CLI). Empty for a harness with no fixed provider (Pi and the rest).
+pub fn model_hosts(harness: &str) -> &'static [&'static str] {
+    match harness {
+        "claude-code" => &["api.anthropic.com:443"],
+        "codex" => &["api.openai.com:443", "chatgpt.com:443"],
+        "gemini" => &["generativelanguage.googleapis.com:443"],
+        _ => &[],
+    }
+}
+
+/// Box test w6, BW6-11: under srt the model tap's loopback port is how a
+/// harness reaches its provider (`run/tap/` adds it to srt's allow list). With
+/// the tap off (`--no-tap`, the setting, no daemon, no endpoint) and no
+/// `--model-url`, srt admits the harness's own model hosts instead, and the
+/// start line says so: srt admits by host and port, so every path on them is
+/// open to every process in the sandbox (FP4-S7's reading for the sign-in
+/// host), as the tap's route already was. Nothing for a harness with none.
+pub fn srt_admit_model_hosts(p: &mut Plan, harness: &str) -> Result<(), String> {
+    let hosts = model_hosts(harness);
+    let Some(text) = p.srt_settings.as_deref() else {
+        return Ok(());
+    };
+    if hosts.is_empty() {
+        return Ok(());
+    }
+    let mut v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if let Some(list) = v
+        .pointer_mut("/network/allowedDomains")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for h in hosts {
+            if !list.iter().any(|x| x.as_str() == Some(h)) {
+                list.push(serde_json::json!(h));
+            }
+        }
+    }
+    p.srt_settings = Some(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+    p.notes.push(format!(
+        "derm run: the model tap is off for this chat, so srt admits {harness}'s own model host{} {} directly; srt admits any request on that host and port, and derm records none of them (the gate and the OS feed still record the chat)",
+        if hosts.len() > 1 { "s" } else { "" },
+        hosts.join(" and ")
+    ));
+    Ok(())
+}
+
 /// Mac test w5, MW5-5 (and Linux, run in the cloud): under srt the harness
 /// reaches derm's own loopback ports (the tap, the OTLP receiver) only
 /// through srt's proxy, which admits exactly the `allowedDomains` derm
