@@ -108,10 +108,16 @@ fn patch_files(text: &str) -> Vec<String> {
     out
 }
 
-/// A word that names a path, for the secret check: a word with a `/`, or
-/// starting with `.`, `~` or `$`.
+/// A word that names a path, for the secret check: a word with a `/` or a
+/// `\` (a native Windows path, `C:\Users\u\.ssh\id_rsa`: Windows test w6,
+/// WW6-2; `paths::key` already reads `\` as `/`), or starting with `.`, `~`
+/// or `$`. Only ever finds more reads, so taint only raises.
 fn path_like(w: &str) -> bool {
-    w.contains('/') || w.starts_with('.') || w.starts_with('~') || w.starts_with('$')
+    w.contains('/')
+        || w.contains('\\')
+        || w.starts_with('.')
+        || w.starts_with('~')
+        || w.starts_with('$')
 }
 
 /// The facts of a call to the tool the gate normalized as `normalized`,
@@ -218,6 +224,30 @@ mod tests {
         let f = facts("write", json!({"file_path": "/w/.env", "content": "A=1"}));
         assert!(f.source.is_none());
         assert_eq!(f.writes, vec!["/w/.env"]);
+    }
+
+    /// Windows test w6, WW6-2: a file tool on Windows names a secret by its
+    /// native path (`tool_input.file_path` with `\`, the shape the Windows
+    /// test drove the hook with by hand; not recorded from Claude Code on
+    /// Windows, which the box has not had). It marks the chat as the same
+    /// read spelled with `/` does.
+    #[test]
+    fn ww6_2_a_secret_read_by_a_native_windows_path_taints() {
+        for p in [
+            "C:\\Users\\usern\\.ssh\\id_test",
+            "C:\\Users\\usern\\.aws\\credentials",
+            "\\\\server\\share\\.ssh\\id_rsa",
+            ".ssh\\id_test",
+        ] {
+            let f = facts("read", json!({ "file_path": p }));
+            assert_eq!(f.source.map(|s| s.reason), Some("secret-read"), "{p}");
+        }
+        // A plain native path still marks nothing.
+        assert!(facts(
+            "read",
+            json!({"file_path": "C:\\Users\\usern\\proj\\README.md"})
+        )
+        .is_empty());
     }
 
     #[test]
