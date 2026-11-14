@@ -96,7 +96,12 @@ describe("beforeTool (the SDK plugin)", () => {
     daemon.setApprove("hang");
     const started = Date.now();
     expect(await beforeTool(ctx("github__create_issue", {}), deps())).toEqual({ policy: { autoApprove: false } });
-    expect(await beforeTool(ctx("run_commands", { commands: ["ls"] }), depsWith({ DERM_POLICY: policyFile, DERM_DAEMON_SOCKET: path.join(root, "absent.sock") }))).toBeUndefined();
+    // With no daemon the decision is kept in the light tier's log under the
+    // home (box test w6, BW6-3: a plugin that keeps its own records gets it
+    // too), so this environment names one; with none the light tier fails
+    // closed, as Claude Code's hook does.
+    const home = { HOME: root, USERPROFILE: root };
+    expect(await beforeTool(ctx("run_commands", { commands: ["ls"] }), depsWith({ DERM_POLICY: policyFile, DERM_DAEMON_SOCKET: path.join(root, "absent.sock"), ...home }))).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(500);
     daemon.setApprove("yes");
   });
