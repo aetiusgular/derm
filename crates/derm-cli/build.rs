@@ -31,7 +31,9 @@ fn main() {
     let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let tag = format!("v{version}");
     println!("cargo:rerun-if-env-changed=GITHUB_REF");
-    let commit = git(dir, &["rev-parse", "--short=7", "HEAD"]);
+    // The first 7 of the full name, never a longer short form, so the
+    // release workflow can say what to expect (`${GITHUB_SHA::7}`).
+    let commit = git(dir, &["rev-parse", "HEAD"]).map(|c| c.chars().take(7).collect::<String>());
     let tagged = std::env::var("GITHUB_REF").is_ok_and(|r| r == format!("refs/tags/{tag}"))
         || git(dir, &["tag", "--points-at", "HEAD"]).is_some_and(|t| t.lines().any(|l| l == tag));
     let suffix = match commit {
