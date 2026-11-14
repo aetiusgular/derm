@@ -304,6 +304,31 @@ pub(crate) fn environment_with(
             ),
         ));
     }
+    if boundary == Boundary::Srt {
+        plan.notes.push(format!(
+            "derm run: one tier: whole (srt): {harness}'s own sandbox does not start inside srt's (note AZ A8), so srt is this chat's only sandbox; for the Standard tier alone, run with --boundary none"
+        ));
+        return Ok(Some(whole("srt-no-nesting")));
+    }
+    let home = i.home.clone().filter(|h| h.starts_with('/')).ok_or((
+        2,
+        "--tier standard: HOME is not an absolute path".to_string(),
+    ))?;
+    let cwd = i.cwd.clone().unwrap_or_default();
+    let mut folders = plan.folders.clone();
+    if folders.is_empty() && !cwd.is_empty() {
+        folders.push(cwd.clone());
+    }
+    let start = harness_words_start(plan);
+    let words: Vec<String> = plan.args[start..].to_vec();
+    let added_dirs = if harness == "claude-code" {
+        claude_refusals(&words, i, &cwd)?
+    } else {
+        codex_refusals(&words, i, &home, &cwd)?;
+        Vec::new()
+    };
+    // After the settings files' refusals, which name the file to fix
+    // (integration w6 fix pass 1: CI's Ubuntu runner has the sysctl at 1).
     // Box test w6, BW6-1: on Ubuntu 26.04 Claude Code 2.1.322's sandbox
     // started, and every command then died in its own seccomp step
     // (`apply-seccomp: write /proc/self/setgroups (nested userns is
@@ -339,29 +364,6 @@ pub(crate) fn environment_with(
             }
         }
     }
-    if boundary == Boundary::Srt {
-        plan.notes.push(format!(
-            "derm run: one tier: whole (srt): {harness}'s own sandbox does not start inside srt's (note AZ A8), so srt is this chat's only sandbox; for the Standard tier alone, run with --boundary none"
-        ));
-        return Ok(Some(whole("srt-no-nesting")));
-    }
-    let home = i.home.clone().filter(|h| h.starts_with('/')).ok_or((
-        2,
-        "--tier standard: HOME is not an absolute path".to_string(),
-    ))?;
-    let cwd = i.cwd.clone().unwrap_or_default();
-    let mut folders = plan.folders.clone();
-    if folders.is_empty() && !cwd.is_empty() {
-        folders.push(cwd.clone());
-    }
-    let start = harness_words_start(plan);
-    let words: Vec<String> = plan.args[start..].to_vec();
-    let added_dirs = if harness == "claude-code" {
-        claude_refusals(&words, i, &cwd)?
-    } else {
-        codex_refusals(&words, i, &home, &cwd)?;
-        Vec::new()
-    };
     for d in &added_dirs {
         if !folders.contains(d) {
             folders.push(d.clone());

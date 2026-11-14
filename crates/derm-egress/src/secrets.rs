@@ -517,7 +517,14 @@ mod tests {
     #[test]
     fn the_schemas_fixture_parses_and_renders_back() {
         let text = include_str!("../../../contracts/fixtures/secrets/secrets.example.json");
-        let f = parse(text).unwrap();
+        // WW6-4: a file source is absolute by the system's own rule, and the
+        // fixture's are Unix paths, so on Windows they are given its form.
+        let text = if cfg!(windows) {
+            text.replace("\"file\": \"/", "\"file\": \"C:/")
+        } else {
+            text.to_string()
+        };
+        let f = parse(&text).unwrap();
         assert_eq!(parse(&render(&f)).unwrap(), f);
     }
 

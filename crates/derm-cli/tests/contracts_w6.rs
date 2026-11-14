@@ -443,9 +443,41 @@ fn the_standard_tier_gives_claude_code_its_block_by_settings_flag() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+    // Box test w6, BW6-1: where Ubuntu's AppArmor setting kills every
+    // command Claude Code's sandbox runs (CI's Ubuntu runner has
+    // `kernel.apparmor_restrict_unprivileged_userns` at 1), the tier is
+    // refused before anything starts, naming why.
+    if host_kills_claude_codes_commands() {
+        assert_eq!(out.status.code(), Some(2), "{all}");
+        assert!(all.contains("cannot run a command on this host"), "{all}");
+        return;
+    }
     assert_eq!(out.status.code(), Some(0), "{all}");
     assert!(all.contains("\"--settings\""), "{all}");
     assert!(all.contains("tier: standard"), "{all}");
+}
+
+/// The facts `preflight::apparmor_note_for` reads for BW6-1, as this test
+/// can read them: Ubuntu's `bwrap-userns-restrict` with `/usr/bin/bwrap`
+/// first on PATH, or the userns sysctl at 1.
+fn host_kills_claude_codes_commands() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let sysctl = std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+        .is_ok_and(|v| v.trim() == "1");
+    let profile = std::path::Path::new("/etc/apparmor.d/bwrap-userns-restrict").exists();
+    let first_bwrap = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .find_map(|d| {
+            let p = std::path::Path::new(d).join("bwrap");
+            p.exists().then(|| std::fs::canonicalize(&p).unwrap_or(p))
+        });
+    let ubuntu_bwrap = first_bwrap
+        .as_deref()
+        .is_none_or(|b| b == std::path::Path::new("/usr/bin/bwrap"));
+    (profile && ubuntu_bwrap) || (!profile && sysctl)
 }
 
 /// Owner: lane 6A (`contracts/sandbox.md` section 3). Codex's profile goes
