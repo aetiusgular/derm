@@ -1009,30 +1009,84 @@ enum BwrapSetup {
 /// the new root is the host's path a bind put there, so it is checked by
 /// that name, and fails safe if no bind did.
 fn bubblewrap_setup(path: &str, exe: &str) -> BwrapSetup {
-    if exe.rsplit('/').next() != Some("bwrap") {
+    let name = exe.rsplit('/').next().unwrap_or("");
+    const MAPS: &[&str] = &["uid_map", "gid_map", "setgroups"];
+    // Box test w6 retest, BW6R-3: srt 0.0.82's `apply-seccomp` and Claude
+    // Code 2.1.322's own binary (which runs that helper as a multicall
+    // program) set up a nested user namespace: its maps and its own
+    // `user.max_user_namespaces` (the strings of each binary; a limit under
+    // `/proc/sys/user` is the namespace's own). No file is written.
+    let userns_helper = name == "apply-seccomp"
+        || name == "claude"
+        || name == "claude.exe"
+        || exe.contains("/claude/versions/");
+    if userns_helper {
+        if path == "/proc/sys/user/max_user_namespaces" || own_map(path, MAPS) {
+            return BwrapSetup::Own;
+        }
         return BwrapSetup::Other;
     }
-    const MAPS: &[&str] = &["uid_map", "gid_map", "setgroups"];
-    if let Some(name) = path.strip_prefix('?') {
-        if MAPS.contains(&name) {
-            return BwrapSetup::Own;
-        }
+    if name != "bwrap" {
+        return BwrapSetup::Other;
     }
-    if let Some(rest) = path.strip_prefix("/proc/") {
-        let mut parts = rest.split('/');
-        let who = parts.next().unwrap_or("");
-        let name = parts.next().unwrap_or("");
-        let per_process = who == "self"
-            || who == "thread-self"
-            || (!who.is_empty() && who.bytes().all(|b| b.is_ascii_digit()));
-        if per_process && parts.next().is_none() && MAPS.contains(&name) {
-            return BwrapSetup::Own;
-        }
+    // bubblewrap 0.11.1's `mkstemp("/bindfileXXXXXX")` in its own tmpfs root
+    // (`bubblewrap.c:1517`; the tmpfs, 3314-3315), never the host's.
+    let bindfile = |p: &str| {
+        p.strip_prefix("/bindfile")
+            .is_some_and(|x| x.len() == 6 && x.bytes().all(|b| b.is_ascii_alphanumeric()))
+    };
+    if bindfile(path) || path.strip_prefix("/newroot").is_some_and(bindfile) {
+        return BwrapSetup::Own;
+    }
+    if own_map(path, MAPS) {
+        return BwrapSetup::Own;
     }
     if let Some(rest) = path.strip_prefix("/newroot/") {
         return BwrapSetup::Host(format!("/{rest}"));
     }
     BwrapSetup::Other
+}
+
+/// A user namespace's map of the writer's own (`?uid_map` when the feed
+/// could not resolve the name, or `/proc/<self|thread-self|pid>/<map>`).
+fn own_map(path: &str, maps: &[&str]) -> bool {
+    if let Some(name) = path.strip_prefix('?') {
+        return maps.contains(&name);
+    }
+    let Some(rest) = path.strip_prefix("/proc/") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    let who = parts.next().unwrap_or("");
+    let name = parts.next().unwrap_or("");
+    let per_process = who == "self"
+        || who == "thread-self"
+        || (!who.is_empty() && who.bytes().all(|b| b.is_ascii_digit()));
+    per_process && parts.next().is_none() && maps.contains(&name)
+}
+
+/// bubblewrap 0.11.1's links in the new `/dev` (`bubblewrap.c:1390-1422`):
+/// `stdin`, `stdout` and `stderr` to `/proc/self/fd/<n>`, `fd` to
+/// `/proc/self/fd`, `core` to `/proc/kcore`, `ptmx` to `pts/ptmx`. The
+/// feed reads the link's own name as `?` (or `/newroot/dev/...`), and the
+/// target as the event's `path` (box test w6 retest, BW6R-3).
+fn bubblewrap_dev_link(event: &ActivityEvent, exe: &str) -> bool {
+    if event.kind != "link" || exe.rsplit('/').next() != Some("bwrap") {
+        return false;
+    }
+    let from = str_field(event, "path").unwrap_or("");
+    let to = str_field(event, "dest").unwrap_or("");
+    let target = matches!(
+        from,
+        "/proc/self/fd"
+            | "/proc/self/fd/0"
+            | "/proc/self/fd/1"
+            | "/proc/self/fd/2"
+            | "/proc/kcore"
+            | "pts/ptmx"
+    );
+    let own = to.starts_with('?') || to.starts_with("/newroot/dev/") || to.starts_with("/dev/");
+    target && own
 }
 
 fn written_paths(event: &ActivityEvent) -> Vec<&str> {
@@ -1241,6 +1295,9 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                 })
             });
             let exe = str_field(event, "exe").unwrap_or("");
+            if bubblewrap_dev_link(event, exe) {
+                continue;
+            }
             for raw in written_paths(event) {
                 // Box test w6, BW6-4: bubblewrap's own setup.
                 let mapped;
@@ -1710,6 +1767,101 @@ mod tests {
             &[],
         );
         assert_eq!(flags.len(), 3, "{flags:?}");
+    }
+
+    fn auditd_link(id: &str, at: i64, from: &str, to: &str, exe: &str) -> ActivityEvent {
+        ev(
+            id,
+            at,
+            ActivitySource::Auditd,
+            "link",
+            json!({ "path": from, "dest": to, "exe": exe }),
+            Some(10),
+        )
+    }
+
+    /// Box test w6 retest, BW6R-3: what BW6-4 left in every Standard and srt
+    /// chat's report. srt 0.0.82's `apply-seccomp` (its strings: "write
+    /// /proc/self/uid_map", "/proc/sys/user/max_user_namespaces", "could not
+    /// set user.max_user_namespaces") and Claude Code 2.1.322's own binary,
+    /// which runs the same helper as a multicall program, set up a nested
+    /// user namespace; bubblewrap 0.11.1 makes `/bindfileXXXXXX` in its own
+    /// tmpfs root (`bubblewrap.c:1517`, the tmpfs at 3314-3315, pivoted to
+    /// at 3352) and the new `/dev`'s links to `/proc/self/fd`, `/proc/kcore`
+    /// and `pts/ptmx` (1390-1422), whose own names the feed cannot resolve.
+    #[test]
+    fn bw6r_3_the_sandbox_helpers_own_setup_is_not_a_write_outside_the_folders() {
+        let helper = "/home/u/cli/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp";
+        let claude = "/home/u/cli/node_modules/@anthropic-ai/claude-code/bin/claude.exe";
+        let native = "/home/u/.local/share/claude/versions/2.1.322";
+        let flags = check(
+            &[
+                auditd_by("1", 1, "write", "/proc/self/setgroups", helper),
+                auditd_by("2", 2, "write", "/proc/self/uid_map", helper),
+                auditd_by("3", 3, "write", "/proc/self/gid_map", claude),
+                auditd_by(
+                    "4",
+                    4,
+                    "write",
+                    "/proc/sys/user/max_user_namespaces",
+                    helper,
+                ),
+                auditd_by(
+                    "5",
+                    5,
+                    "write",
+                    "/proc/sys/user/max_user_namespaces",
+                    claude,
+                ),
+                auditd_by("6", 6, "write", "/proc/self/uid_map", native),
+                auditd_by("7", 7, "create", "/bindfileAb3xYz", "/usr/bin/bwrap"),
+                auditd_by(
+                    "8",
+                    8,
+                    "create",
+                    "/newroot/bindfile9q2WeR",
+                    "/x/codex-resources/bwrap",
+                ),
+                auditd_link("9", 9, "/proc/self/fd", "?", "/usr/bin/bwrap"),
+                auditd_link(
+                    "10",
+                    10,
+                    "/proc/self/fd/0",
+                    "/newroot/dev/stdin",
+                    "/usr/bin/bwrap",
+                ),
+                auditd_link("11", 11, "/proc/kcore", "?", "/usr/bin/bwrap"),
+                auditd_link("12", 12, "pts/ptmx", "?", "/usr/bin/bwrap"),
+            ],
+            &[],
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+        // Still flagged: another program writing those names, bubblewrap
+        // linking anything else, a bindfile name of another shape, and the
+        // helper writing a real file.
+        let flags = check(
+            &[
+                auditd_by(
+                    "21",
+                    21,
+                    "write",
+                    "/proc/sys/user/max_user_namespaces",
+                    "/usr/bin/python3",
+                ),
+                auditd_link("22", 22, "/home/u/.ssh/id_rsa", "?", "/usr/bin/bwrap"),
+                auditd_by(
+                    "23",
+                    23,
+                    "create",
+                    "/bindfile-not-mkstemp",
+                    "/usr/bin/bwrap",
+                ),
+                auditd_by("24", 24, "write", "/home/u/.bashrc", helper),
+                auditd_by("25", 25, "create", "/bindfileAb3xYz", "/usr/bin/python3"),
+            ],
+            &[],
+        );
+        assert_eq!(flags.len(), 5, "{flags:?}");
     }
 
     #[test]
