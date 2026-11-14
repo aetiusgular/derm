@@ -989,6 +989,52 @@ fn sensitive_file(path: &str) -> bool {
 }
 
 /// The written path a write flag is about (a copy's or link's destination).
+/// What a write by bubblewrap is (box test w6, BW6-4).
+enum BwrapSetup {
+    /// The user namespace's maps: a kernel interface, no file.
+    Own,
+    /// A path under the new root before its `pivot_root`: the host's path.
+    Host(String),
+    /// Anything else, or a writer that is not bubblewrap.
+    Other,
+}
+
+/// Claude Code runs the first `bwrap` on PATH, srt its own copy, and Codex
+/// 0.167.2 its `codex-resources/bwrap` (`linux-sandbox/src/bundled_bwrap.rs:130-134`):
+/// each is a program named `bwrap`. bubblewrap 0.11.1 writes the new user
+/// namespace's `uid_map`, `gid_map` and `setgroups` through a `/proc/<pid>`
+/// descriptor (the audit feed cannot resolve the name, so it reads
+/// `?uid_map`), and builds the sandbox under `/newroot/` before it pivots
+/// there (`strings /usr/bin/bwrap`). Only the maps are dropped: a path under
+/// the new root is the host's path a bind put there, so it is checked by
+/// that name, and fails safe if no bind did.
+fn bubblewrap_setup(path: &str, exe: &str) -> BwrapSetup {
+    if exe.rsplit('/').next() != Some("bwrap") {
+        return BwrapSetup::Other;
+    }
+    const MAPS: &[&str] = &["uid_map", "gid_map", "setgroups"];
+    if let Some(name) = path.strip_prefix('?') {
+        if MAPS.contains(&name) {
+            return BwrapSetup::Own;
+        }
+    }
+    if let Some(rest) = path.strip_prefix("/proc/") {
+        let mut parts = rest.split('/');
+        let who = parts.next().unwrap_or("");
+        let name = parts.next().unwrap_or("");
+        let per_process = who == "self"
+            || who == "thread-self"
+            || (!who.is_empty() && who.bytes().all(|b| b.is_ascii_digit()));
+        if per_process && parts.next().is_none() && MAPS.contains(&name) {
+            return BwrapSetup::Own;
+        }
+    }
+    if let Some(rest) = path.strip_prefix("/newroot/") {
+        return BwrapSetup::Host(format!("/{rest}"));
+    }
+    BwrapSetup::Other
+}
+
 fn written_paths(event: &ActivityEvent) -> Vec<&str> {
     let path = str_field(event, "path");
     let dest = str_field(event, "dest");
@@ -1194,7 +1240,18 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                     })
                 })
             });
-            for path in written_paths(event) {
+            let exe = str_field(event, "exe").unwrap_or("");
+            for raw in written_paths(event) {
+                // Box test w6, BW6-4: bubblewrap's own setup.
+                let mapped;
+                let path = match bubblewrap_setup(raw, exe) {
+                    BwrapSetup::Own => continue,
+                    BwrapSetup::Host(p) => {
+                        mapped = p;
+                        mapped.as_str()
+                    }
+                    BwrapSetup::Other => raw,
+                };
                 // The chat's own runtime writing its recording (T1).
                 if own_runtime && in_recordings(path, data_dir) {
                     continue;
@@ -1588,6 +1645,71 @@ mod tests {
             json!({ "path": path }),
             Some(10),
         )
+    }
+
+    fn auditd_by(id: &str, at: i64, kind: &str, path: &str, exe: &str) -> ActivityEvent {
+        ev(
+            id,
+            at,
+            ActivitySource::Auditd,
+            kind,
+            json!({ "path": path, "exe": exe }),
+            Some(10),
+        )
+    }
+
+    /// Box test w6, BW6-4: in every Standard (and srt) chat, bubblewrap's
+    /// own setup was flagged "write outside folders": the user namespace's
+    /// maps (`?uid_map`, `?setgroups`, `?gid_map`, written through a
+    /// `/proc/<pid>` descriptor, so unresolved) and the new root before its
+    /// `pivot_root` (`/newroot/dev/null`). bubblewrap 0.11.1 names both
+    /// (`strings /usr/bin/bwrap`: "uid_map", "error writing to setgroups",
+    /// "/newroot/", "pivot_root(/newroot)"); Claude Code runs the first
+    /// `bwrap` on PATH and Codex 0.167.2 its own `codex-resources/bwrap`
+    /// (`linux-sandbox/src/bundled_bwrap.rs:130-134`).
+    #[test]
+    fn bw6_4_bubblewraps_own_setup_is_not_a_write_outside_the_folders() {
+        let flags = check(
+            &[
+                auditd_by("1", 1, "write", "?uid_map", "/usr/bin/bwrap"),
+                auditd_by("2", 2, "write", "?setgroups", "/usr/bin/bwrap"),
+                auditd_by(
+                    "3",
+                    3,
+                    "write",
+                    "/proc/4242/gid_map",
+                    "/x/codex-resources/bwrap",
+                ),
+                auditd_by("4", 4, "create", "/newroot/dev/null", "/usr/bin/bwrap"),
+            ],
+            &[],
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+        // The new root's binds are the host's paths: a write there is still
+        // a write outside the folders, under the host's name.
+        let flags = check(
+            &[auditd_by(
+                "5",
+                5,
+                "create",
+                "/newroot/home/t/.bashrc",
+                "/usr/bin/bwrap",
+            )],
+            &[],
+        );
+        assert_eq!(flags.len(), 1, "{flags:?}");
+        assert!(flags[0].summary.contains("/home/t/.bashrc"), "{flags:?}");
+        assert!(!flags[0].summary.contains("/newroot"), "{flags:?}");
+        // Anything else writing those names is flagged as before.
+        let flags = check(
+            &[
+                auditd_by("6", 6, "write", "?uid_map", "/usr/bin/python3"),
+                auditd_by("7", 7, "create", "/newroot/dev/null", "/usr/bin/python3"),
+                auditd_by("8", 8, "write", "?notes", "/usr/bin/bwrap"),
+            ],
+            &[],
+        );
+        assert_eq!(flags.len(), 3, "{flags:?}");
     }
 
     #[test]
