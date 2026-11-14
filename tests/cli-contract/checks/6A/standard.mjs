@@ -22,9 +22,16 @@
 //
 // No account and no network but loopback: `--no-daemon --no-tap`, each CLI
 // pointed at its fake by its own variables or `-c` pairs.
+//
+// On Ubuntu with `bwrap-userns-restrict` (or the userns sysctl at 1) derm
+// refuses Claude Code's tier (BW6-1), and the Claude checks take that refusal
+// as their pass; `DERM_BWRAP_DIR=/usr/local/libexec/derm-srt` puts srt's
+// bubblewrap copy first on the checks' PATH so the tier runs (box test w6
+// retest, BW6R-2). `node tests/cli-contract/checks/6A/standard.selftest.mjs`
+// tests that reading.
 
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,9 +74,66 @@ function done(dirs, result) {
   return result;
 }
 
+/** The folder of a bubblewrap copy to put first on the checks' PATH
+ *  (`DERM_BWRAP_DIR`, the box's `/usr/local/libexec/derm-srt`, which
+ *  `docs/install/linux.md` option 1 installs), when it holds one. Box test
+ *  w6 retest, BW6R-2: the checks' own PATH had `/usr/bin` first, so derm
+ *  refused the tier there whatever the host offered. */
+function bwrapDir(env = process.env) {
+  const d = env.DERM_BWRAP_DIR;
+  return d && path.isAbsolute(d) && existsSync(path.join(d, "bwrap")) ? d : null;
+}
+
+function checkPath(dirs) {
+  return [dirs.bin, bwrapDir(), path.dirname(process.execPath), "/usr/bin", "/bin"].filter(Boolean).join(":");
+}
+
+/** Whether derm refuses Claude Code's tier on this host (BW6-1), read the
+ *  way `contracts_w6.rs`'s `host_kills_claude_codes_commands` reads it, for
+ *  the PATH the check gives derm: Ubuntu's `bwrap-userns-restrict` with
+ *  `/usr/bin/bwrap` (or none) first on it, or no profile and the userns
+ *  sysctl at 1. Facts are passed in for the test of this function. */
+export function hostKillsClaudeCommands(PATH, facts = {}) {
+  if ((facts.platform ?? process.platform) !== "linux") return false;
+  const exists = facts.exists ?? existsSync;
+  const read = facts.read ?? ((f) => readFileSync(f, "utf8"));
+  const real = facts.real ?? ((f) => realpathSync(f));
+  let sysctl = false;
+  try {
+    sysctl = read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").trim() === "1";
+  } catch {}
+  const profile = exists("/etc/apparmor.d/bwrap-userns-restrict");
+  let first = null;
+  for (const d of PATH.split(":")) {
+    const b = path.join(d, "bwrap");
+    if (exists(b)) {
+      try {
+        first = real(b);
+      } catch {
+        first = b;
+      }
+      break;
+    }
+  }
+  return (profile && (first === null || first === "/usr/bin/bwrap")) || (!profile && sysctl);
+}
+
+/** On a host where derm refuses Claude Code's tier, the check's pass is
+ *  that refusal: exit 2, named, nothing started (BW6-1, as the Rust test). */
+async function claudeRefusal(dirs) {
+  const s = standIn(dirs);
+  const r = await derm(dirs, ["claude-code", "--boundary", "none", "--tier", "standard", "--no-daemon", "--no-tap", "--", "-p", "go"], { program: "claude", cli: s.p, timeoutMs: 60000 });
+  const started = existsSync(s.marker);
+  const ok = r.code === 2 && !started && /cannot run a command on this host/.test(r.err);
+  return done(dirs, {
+    status: ok ? "pass" : "fail",
+    finding: `this host kills Claude Code's sandboxed commands (BW6-1), so the tier's pass is derm's refusal: exit ${r.code}, started ${started}; ${r.err.trim().slice(-300)}`,
+  });
+}
+
 function derm(dirs, args, { program, cli, env = {}, timeoutMs = 150000 }) {
   symlinkSync(cli, path.join(dirs.bin, program));
-  const PATH = [dirs.bin, path.dirname(process.execPath), "/usr/bin", "/bin"].join(":");
+  const PATH = checkPath(dirs);
   return new Promise((resolve) => {
     const ch = spawn(dermBin(), ["run", ...args], {
       cwd: dirs.work,
@@ -338,6 +402,7 @@ export const checks = [
     async run({ binPath }) {
       const why = needs();
       if (why) return { status: "skip", finding: why };
+      if (hostKillsClaudeCommands(checkPath({ bin: "/nonexistent" }))) return claudeRefusal(box("cc-refused"));
       const control = box("cc-control");
       const before = await claudeTurn(control, binPath, []);
       done(control, null);
@@ -377,6 +442,7 @@ export const checks = [
     async run({ binPath }) {
       const why = needs();
       if (why) return { status: "skip", finding: why };
+      if (hostKillsClaudeCommands(checkPath({ bin: "/nonexistent" }))) return claudeRefusal(box("cc-refused"));
       if (!existsSync("/usr/bin/script")) return { status: "skip", finding: "no script(1) to give `derm secret ca create` a terminal" };
       const dirs = box("cc-secret");
       // derm's CA, from a terminal (case 89: a pty passes that check), and a
@@ -520,6 +586,7 @@ export const checks = [
     async run({ binPath }) {
       const why = needs();
       if (why) return { status: "skip", finding: why };
+      if (hostKillsClaudeCommands(checkPath({ bin: "/nonexistent" }))) return claudeRefusal(box("cc-refused"));
       const control = box("cct-control");
       const before = await claudeTmpTurn(control, binPath, []);
       done(control, null);
