@@ -524,6 +524,46 @@ mod unix {
 mod windows {
     use super::*;
 
+    /// Windows test w6, WW6-6: on Windows the light tier refused only a
+    /// reparse point. `~\.derm\local` that Everyone may write and a log
+    /// with a second name are refused, and a log others may read is made
+    /// the user's alone, as on Unix (`check_file`, `own_folder`).
+    #[test]
+    fn ww6_6_the_folder_and_the_file_are_checked_as_on_unix() {
+        use derm_core::platform::windows as w;
+        let me = w::effective_user();
+        // A log others may read: appended, then the user's alone.
+        let home = scratch("ww66a");
+        let env = env_home(&home);
+        after_post(&event("s-1", "approval", 0), &env, &home, false);
+        let p = log_path(&home, "s-1");
+        w::set_dacl_sddl(&p, &format!("D:(A;;FA;;;{me})(A;;FR;;;WD)")).unwrap();
+        assert!(!w::is_private_path(&p));
+        assert_eq!(
+            after_post(&event("s-1", "tool.call", 1), &env, &home, false),
+            Outcome::Appended { seq: 1 }
+        );
+        assert!(w::is_private_path(&p));
+        // A second name: refused.
+        std::fs::hard_link(&p, home.join("other-name.txt")).unwrap();
+        let r = after_post(&event("s-1", "tool.call", 2), &env, &home, false);
+        assert!(
+            matches!(&r, Outcome::Failed(why) if why.contains("names")),
+            "{r:?}"
+        );
+        // The folder: Everyone may write it, refused.
+        let home = scratch("ww66b");
+        let env = env_home(&home);
+        after_post(&event("s-2", "approval", 0), &env, &home, false);
+        let local = home.join(".derm").join("local");
+        w::set_dacl_sddl(&local, &format!("D:(A;OICI;FA;;;{me})(A;OICI;FA;;;WD)")).unwrap();
+        let r = after_post(&event("s-2", "tool.call", 1), &env, &home, false);
+        assert!(
+            matches!(&r, Outcome::Failed(why) if why.contains("written by others")),
+            "{r:?}"
+        );
+    }
+
     #[test]
     fn a_read_and_append_handle_takes_the_lock_where_an_append_only_one_cannot() {
         let home = scratch("winlock");

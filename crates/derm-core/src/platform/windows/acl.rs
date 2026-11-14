@@ -573,6 +573,76 @@ pub fn open_private_file(path: &Path) -> io::Result<std::fs::File> {
     Ok(std::fs::File::from(h))
 }
 
+/// The light tier's file rule on Windows, as on Unix (Windows test w6,
+/// WW6-6: only a reparse point was refused there): the open file's owner is
+/// one derm trusts (`trusted_owner`), it has one name (a second would let a
+/// line land in another file of the user's), and when others may read or
+/// write it, it is made the user's alone, as Unix sets 0600.
+pub fn check_light_file(file: &std::fs::File, path: &Path) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    let h = file.as_raw_handle() as HANDLE;
+    let s = read_security(h, SE_FILE_OBJECT).map_err(|e| format!("{}: {e}", path.display()))?;
+    match &s.owner {
+        Some(o) if ident::trusted_owner(o) => {}
+        Some(o) => return Err(format!("{} belongs to another user ({o})", path.display())),
+        None => return Err(format!("{}: its owner could not be read", path.display())),
+    }
+    match links(h) {
+        Some(1) => {}
+        Some(n) => {
+            return Err(format!(
+                "{} has {n} names (a hard link); derm writes only a file with one",
+                path.display()
+            ))
+        }
+        None => {
+            return Err(format!(
+                "{}: its names could not be counted",
+                path.display()
+            ))
+        }
+    }
+    if !is_private_security(&s, &ident::effective_user()) {
+        let w = open_plain(path, READ_CONTROL | WRITE_DAC, false)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        // The handle by path must name the file checked above.
+        if file_id(sys::raw(&w)).is_none() || file_id(sys::raw(&w)) != file_id(h) {
+            return Err(format!("{} changed while it was checked", path.display()));
+        }
+        set_user_only(sys::raw(&w), SE_FILE_OBJECT, false)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The light tier's folder rule on Windows, as on Unix (WW6-6): a plain
+/// folder (no reparse point), an owner derm trusts, no one else may write
+/// it, and when made here or `tighten`, the user's alone (Unix 0700).
+pub fn check_light_folder(dir: &Path, made: bool, tighten: bool) -> Result<(), String> {
+    let h = open_plain(dir, READ_CONTROL, true).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !path_is_plain(sys::raw(&h), dir).unwrap_or(false) {
+        return Err(format!(
+            "{} is not a folder (a link or a junction is refused)",
+            dir.display()
+        ));
+    }
+    let s = read_security(sys::raw(&h), SE_FILE_OBJECT)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    match &s.owner {
+        Some(o) if ident::trusted_owner(o) => {}
+        Some(o) => return Err(format!("{} belongs to another user ({o})", dir.display())),
+        None => return Err(format!("{}: its owner could not be read", dir.display())),
+    }
+    let me = ident::effective_user();
+    if !only_owner_writes_security(&s, &me) {
+        return Err(format!("{} can be written by others", dir.display()));
+    }
+    if (made || tighten) && !is_private_security(&s, &me) {
+        set_private(dir, true).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
 /// The owner of an open file, read from its handle (WW6-7: a refusal names
 /// it).
 pub fn owner_of_file(f: &std::fs::File) -> io::Result<UserId> {

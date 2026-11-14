@@ -236,7 +236,9 @@ fn check_file(file: &File, path: &Path) -> Result<(), String> {
     if !m.is_file() || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(format!("{} is not a plain file", path.display()));
     }
-    Ok(())
+    // Windows test w6, WW6-6: the owner, the names and who may read it,
+    // as on Unix (`derm_core::platform::windows::check_light_file`).
+    derm_core::platform::windows::check_light_file(file, path)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -286,14 +288,14 @@ fn own_folder(dir: &Path, tighten: bool) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn own_folder(dir: &Path, _tighten: bool) -> Result<(), String> {
+fn own_folder(dir: &Path, tighten: bool) -> Result<(), String> {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    match std::fs::create_dir(dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+    let made = match std::fs::create_dir(dir) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
         Err(e) => return Err(format!("{}: {e}", dir.display())),
-    }
+    };
     let m = std::fs::symlink_metadata(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     if !m.is_dir() || m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err(format!(
@@ -301,7 +303,9 @@ fn own_folder(dir: &Path, _tighten: bool) -> Result<(), String> {
             dir.display()
         ));
     }
-    Ok(())
+    // WW6-6: the owner and who may write it, as on Unix; made here or
+    // `tighten`, the user's alone.
+    derm_core::platform::windows::check_light_folder(dir, made, tighten)
 }
 
 #[cfg(not(any(unix, windows)))]
