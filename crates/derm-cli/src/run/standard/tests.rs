@@ -867,3 +867,14 @@ fn mw6_3_under_sbx_the_version_line_names_sbxs_own_program() {
     let line = q.notes.iter().find(|n| n.contains("verified at")).unwrap();
     assert!(line.contains("derm doctor"), "{line}");
 }
+
+/// Windows test w6, WW6-10: a program derm does not know is the harness
+/// `other`, and the refusal read "derm writes no sandbox of other's own".
+#[test]
+fn ww6_10_a_program_derm_does_not_know_is_named_as_a_program() {
+    let s = Scratch::new("other");
+    let mut p = plan("node", &["x.js"], &[&s.work()]);
+    let e = run(&s, "other", Boundary::None, Some(Tier::Standard), &mut p).unwrap_err();
+    assert!(!e.1.contains("other's"), "{}", e.1);
+    assert!(e.1.contains("this program"), "{}", e.1);
+}

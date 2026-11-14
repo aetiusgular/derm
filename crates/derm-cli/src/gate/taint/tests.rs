@@ -426,6 +426,9 @@ fn a_state_that_cannot_be_kept_denies_what_it_should_have_kept() {
         Action::Allow,
     );
     assert_eq!(w.action, Action::Deny, "{}", w.reason);
+    // Windows test w6, WW6-10: the deny names why the state could not be
+    // read, as the log's deny does, not only that it could not.
+    assert!(w.reason.contains("not a folder"), "{}", w.reason);
     // A read of an ordinary file needs nothing kept.
     let r = step(
         &h,

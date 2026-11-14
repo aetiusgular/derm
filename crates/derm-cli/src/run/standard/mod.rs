@@ -271,7 +271,12 @@ pub(crate) fn environment_with(
                 ),
             }
         } else {
-            format!("derm writes no sandbox of {harness}'s own")
+            // WW6-10: `other` is a program derm does not know.
+            if harness == "other" {
+                "derm writes no sandbox for this program".to_string()
+            } else {
+                format!("derm writes no sandbox of {harness}'s own")
+            }
         };
         if boundary == Boundary::None {
             return Err((

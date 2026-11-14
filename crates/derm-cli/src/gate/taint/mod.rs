@@ -81,8 +81,8 @@ enum Store {
     Daemon,
     /// The light tier's file.
     File(PathBuf),
-    /// Neither: nothing is kept.
-    None,
+    /// Neither: nothing is kept, and why (WW6-10: the deny says it).
+    None(String),
 }
 
 /// The rules `facts` meets against `state`. `named`: the hosts an untrusted
@@ -393,6 +393,11 @@ pub fn adjust_with(
         None => {
             let path = home.as_deref().map(|h| state::file_path(h, chat));
             let loaded = path.as_deref().map(state::load);
+            let why = match &loaded {
+                Some(Err(e)) => e.clone(),
+                Some(Ok(_)) => String::new(),
+                None => "no home folder".to_string(),
+            };
             match (path, loaded) {
                 (Some(p), Some(Ok(s))) => {
                     let (v, f) = if token {
@@ -416,7 +421,7 @@ pub fn adjust_with(
                         unreadable: true,
                         ..State::default()
                     };
-                    (s, v, f, Vec::new(), Store::None)
+                    (s, v, f, Vec::new(), Store::None(why))
                 }
             }
         }
@@ -487,7 +492,7 @@ pub fn adjust_with(
         let kept = match &store {
             Store::Daemon => state::daemon_add(env, cwd, chat, &add),
             Store::File(p) => state::save(p, &add),
-            Store::None => Err("no taint state could be read".into()),
+            Store::None(why) => Err(format!("no taint state could be read ({why})")),
         };
         // The light tier fails closed, as its log does: a call that taints
         // the chat or writes a file is not run when that cannot be kept,

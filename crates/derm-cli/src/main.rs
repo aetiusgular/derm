@@ -88,7 +88,13 @@ fn dispatch(args: &[String]) -> u8 {
         Some("audit") => audit::main(&args[1..]),
         Some("secret") => secret::main(&args[1..]),
         Some("--version") => {
-            println!("derm {}", env!("CARGO_PKG_VERSION"));
+            // ` (<commit>)` on any build but the release's own tag
+            // (`build.rs`; BW6-9, MW6-1, WW6-10).
+            println!(
+                "derm {}{}",
+                env!("CARGO_PKG_VERSION"),
+                env!("DERM_BUILD_SUFFIX")
+            );
             0
         }
         _ => {
