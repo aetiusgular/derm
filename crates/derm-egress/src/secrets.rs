@@ -163,9 +163,12 @@ impl File {
                         e.id
                     ))
                 }
-                From::File(p) if !p.starts_with('/') => {
+                // WW6-4: absolute by the system's own rule (`C:\...` on
+                // Windows), and never a network path (`\\server\share`,
+                // `//server/share`), which Windows would open over SMB.
+                From::File(p) if !file_source_ok(p) => {
                     return Err(format!(
-                        "secret {}: file {p:?} is not an absolute path",
+                        "secret {}: file {p:?} is not an absolute path on this system (a network path is refused)",
                         e.id
                     ))
                 }
@@ -202,6 +205,12 @@ impl File {
 }
 
 /// Parse and check the file's text.
+/// A `--file` source derm reads: absolute here, and not a network path
+/// (Windows test w6, WW6-4).
+fn file_source_ok(p: &str) -> bool {
+    std::path::Path::new(p).is_absolute() && !p.starts_with("//") && !p.starts_with("\\\\")
+}
+
 pub fn parse(text: &str) -> Result<File, String> {
     let f: File = serde_json::from_str(text).map_err(|e| format!("secrets.json: {e}"))?;
     f.check().map_err(|e| format!("secrets.json: {e}"))?;
@@ -538,6 +547,24 @@ mod tests {
             r#"{"version":1,"secrets":[{"id":"a","hosts":["a.b"],"from":{"env":"A"},"value":"x"}]}"#
         )
         .is_err());
+    }
+
+    /// Windows test w6, WW6-4: a `--file` source `C:\\...` was refused as
+    /// "not an absolute path" (`starts_with('/')`), and then every chat.
+    /// A file source is absolute by the system's own rule; a network path
+    /// (`\\\\server\\share`) is not taken on any system.
+    #[test]
+    fn ww6_4_a_file_source_is_absolute_by_the_systems_own_rule() {
+        let with = |p: &str| File {
+            version: 1,
+            secrets: vec![entry("gh", From::File(p.into()))],
+        };
+        assert_eq!(with(r"C:\Users\u\gh.val").check().is_ok(), cfg!(windows));
+        assert_eq!(with("/home/u/gh.val").check().is_ok(), !cfg!(windows));
+        assert!(with(r"\\server\share\gh.val").check().is_err());
+        assert!(with("//server/share/gh.val").check().is_err());
+        assert!(with(r"Users\u\gh.val").check().is_err());
+        assert!(with(r"\Users\u\gh.val").check().is_err());
     }
 
     #[test]
