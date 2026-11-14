@@ -1001,11 +1001,11 @@ enum BwrapSetup {
 
 /// Claude Code runs the first `bwrap` on PATH, srt its own copy, and Codex
 /// 0.167.2 its `codex-resources/bwrap` (`linux-sandbox/src/bundled_bwrap.rs:130-134`):
-/// each is a program named `bwrap`. bubblewrap 0.11.1 writes the new user
+/// each is a program named `bwrap`. bubblewrap writes the new user
 /// namespace's `uid_map`, `gid_map` and `setgroups` through a `/proc/<pid>`
 /// descriptor (the audit feed cannot resolve the name, so it reads
 /// `?uid_map`), and builds the sandbox under `/newroot/` before it pivots
-/// there (`strings /usr/bin/bwrap`). Only the maps are dropped: a path under
+/// there (`strings /usr/bin/bwrap`, bubblewrap 0.9.0 in the cloud; the box runs 0.11.1, where the report showed the same paths). Only the maps are dropped: a path under
 /// the new root is the host's path a bind put there, so it is checked by
 /// that name, and fails safe if no bind did.
 fn bubblewrap_setup(path: &str, exe: &str) -> BwrapSetup {
@@ -1662,7 +1662,7 @@ mod tests {
     /// own setup was flagged "write outside folders": the user namespace's
     /// maps (`?uid_map`, `?setgroups`, `?gid_map`, written through a
     /// `/proc/<pid>` descriptor, so unresolved) and the new root before its
-    /// `pivot_root` (`/newroot/dev/null`). bubblewrap 0.11.1 names both
+    /// `pivot_root` (`/newroot/dev/null`). bubblewrap names both
     /// (`strings /usr/bin/bwrap`: "uid_map", "error writing to setgroups",
     /// "/newroot/", "pivot_root(/newroot)"); Claude Code runs the first
     /// `bwrap` on PATH and Codex 0.167.2 its own `codex-resources/bwrap`
