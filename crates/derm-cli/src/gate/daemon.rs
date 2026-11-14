@@ -605,11 +605,8 @@ pub fn srt_route(env: &Env) -> Option<SrtRoute> {
                 return false;
             };
             let real = real.to_string_lossy().into_owned();
-            std::fs::read_to_string("/proc/self/mountinfo").is_ok_and(|m| {
-                super::locallog::mount_points(&m)
-                    .iter()
-                    .any(|at| *at == real)
-            })
+            std::fs::read_to_string("/proc/self/mountinfo")
+                .is_ok_and(|m| super::locallog::mount_points(&m).contains(&real))
         };
         // SAFETY: a plain socket(2) call; the descriptor is closed at once.
         let unix_refused = unsafe {
