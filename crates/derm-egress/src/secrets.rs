@@ -208,7 +208,12 @@ impl File {
 /// A `--file` source derm reads: absolute here, and not a network path
 /// (Windows test w6, WW6-4).
 fn file_source_ok(p: &str) -> bool {
-    std::path::Path::new(p).is_absolute() && !p.starts_with("//") && !p.starts_with("\\\\")
+    // Review FP1-R5: Windows reads `/` as `\`, so `/\server\share` is a
+    // network path too: any two separators first.
+    let sep = |c: char| c == '/' || c == '\\';
+    let mut c = p.chars();
+    let two = matches!((c.next(), c.next()), (Some(a), Some(b)) if sep(a) && sep(b));
+    std::path::Path::new(p).is_absolute() && !two
 }
 
 pub fn parse(text: &str) -> Result<File, String> {
@@ -609,6 +614,9 @@ mod tests {
         assert_eq!(with(r"C:\Users\u\gh.val").check().is_ok(), cfg!(windows));
         assert_eq!(with("/home/u/gh.val").check().is_ok(), !cfg!(windows));
         assert!(with(r"\\server\share\gh.val").check().is_err());
+        // FP1-R5: a mixed pair is a network path on Windows too.
+        assert!(with(r"/\server\share\gh.val").check().is_err());
+        assert!(with(r"\/server/share/gh.val").check().is_err());
         assert!(with("//server/share/gh.val").check().is_err());
         assert!(with(r"Users\u\gh.val").check().is_err());
         assert!(with(r"\Users\u\gh.val").check().is_err());
