@@ -44,7 +44,8 @@ fn main() {
     // Build again when HEAD moves: a checkout or a commit writes the
     // git folder's `logs/HEAD` (a worktree has its own).
     if let Some(gd) = git(dir, &["rev-parse", "--absolute-git-dir"]) {
-        for f in ["HEAD", "logs/HEAD"] {
+        // A tag made at HEAD changes the line too (re-review FP1-RR4).
+        for f in ["HEAD", "logs/HEAD", "refs/tags", "packed-refs"] {
             let p = Path::new(&gd).join(f);
             if p.exists() {
                 println!("cargo:rerun-if-changed={}", p.display());

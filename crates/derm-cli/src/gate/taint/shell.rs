@@ -66,16 +66,46 @@ fn local_host(h: &str) -> bool {
 }
 
 /// The host a fetcher's operand with no scheme names: curl and wget take
-/// `host/path` as `http://host/path` (review FP1-R2; curl 8.5.0, run). Any
-/// operand that is not an option counts, an option's value too (`-o
-/// out.txt`): taint only raises.
+/// `host/path` as `http://host/path` (review FP1-R2; curl 8.5.0, run).
+/// `hosts::host_word` reads only a word shaped like a host (a dot, labels,
+/// no file extension last), so an option's value such as `POST` or
+/// `out.json` is no host (re-review FP1-RR2).
 fn schemeless_host(word: &str) -> Option<String> {
-    if word.starts_with('-') || word.contains("://") || word.starts_with('@') {
+    if word.starts_with('@') {
         return None;
     }
-    hosts::url_hosts(&format!("http://{word}"))
-        .into_iter()
-        .next()
+    hosts::host_word(word)
+}
+
+/// A fetcher option that reads its URLs from a file or stdin, which derm
+/// never sees (re-review FP1-RR1): curl's `-K`/`--config`, wget's,
+/// wget2's and aria2c's `-i`/`--input-file`. The text is folded to lower
+/// case, so curl's `-K` reads as `-k` (`--insecure`) and wget's `-I` as
+/// `-i`: a short form counts only when the call names no target of its own
+/// (`curl -sK -`), and a long form always.
+fn reads_urls_elsewhere(head: &str, word: &str, has_target: bool) -> bool {
+    if word == "--config" || word.starts_with("--config=") {
+        return head == "curl";
+    }
+    if word == "--input-file" || word.starts_with("--input-file=") {
+        return head != "curl";
+    }
+    let Some(short) = word.strip_prefix('-').filter(|w| !w.starts_with('-')) else {
+        return false;
+    };
+    let letter = if head == "curl" { 'k' } else { 'i' };
+    !has_target && matches!(head, "curl" | "wget" | "wget2" | "aria2c") && short.contains(letter)
+}
+
+/// Whether a fetcher's words name a target of their own: a URL, or an
+/// operand read as `http://<operand>` that has a host.
+fn names_target(w: &[String]) -> bool {
+    w[1..].iter().any(|word| {
+        !hosts::url_hosts(word).is_empty()
+            || (!word.starts_with('-')
+                && !word.starts_with('@')
+                && !hosts::url_hosts(&format!("http://{word}")).is_empty())
+    })
 }
 
 const MAX_DEPTH: usize = 4;
@@ -786,22 +816,26 @@ pub fn read(folded: &str) -> Shell {
         let head = base(&w[0]).to_string();
         s.words.extend(w.iter().cloned());
         let fetcher = FETCHERS.contains(&head.as_str());
-        let mut saw_url = false;
         for word in w {
             for h in hosts::url_hosts(word) {
-                saw_url = true;
                 if fetcher && !local_host(&h) && !s.fetched.contains(&h) {
                     s.fetched.push(h.clone());
                 }
                 add_host(&mut s, h);
             }
         }
-        // Only when no operand had a scheme: a local fetch's `-o out.txt`
-        // is not read as a host.
-        if fetcher && !saw_url {
+        // Every operand, whatever else the line names (re-review FP1-RR1:
+        // one local URL beside `evil.example/x` hid it).
+        if fetcher {
+            let has_target = names_target(w);
             for word in &w[1..] {
-                if let Some(h) = schemeless_host(word) {
-                    if !local_host(&h) && !s.fetched.contains(&h) {
+                let h = if reads_urls_elsewhere(&head, word, has_target) {
+                    Some("(urls read from a file or stdin)".to_string())
+                } else {
+                    schemeless_host(word).filter(|h| !local_host(h))
+                };
+                if let Some(h) = h {
+                    if !s.fetched.contains(&h) {
                         s.fetched.push(h);
                     }
                 }

