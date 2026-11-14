@@ -33,6 +33,10 @@ pub(crate) struct Inputs {
     pub inherited: Vec<(String, String)>,
     /// Claude Code's managed settings file (and its `.d` folder).
     pub claude_managed: PathBuf,
+    /// A dry run that would mint a token (no `--no-daemon`): the plan is
+    /// built as the real run's, with a stand-in route (Mac test w6 retest,
+    /// MW6R-1).
+    pub preview: bool,
 }
 
 impl Inputs {
@@ -53,13 +57,23 @@ impl Inputs {
             } else {
                 "/etc/claude-code/managed-settings.json"
             }),
+            preview: false,
         }
     }
 }
 
+/// The token a dry run's tapped plan is built with (MW6R-1); never minted,
+/// never sent.
+const PREVIEW_TOKEN: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
 /// The seam `run_io` calls.
-pub(crate) fn environment(harness: &str, plan: &mut Plan) -> Result<Option<Value>, (u8, String)> {
-    let inputs = Inputs::real(plan);
+pub(crate) fn environment(
+    harness: &str,
+    plan: &mut Plan,
+    preview: bool,
+) -> Result<Option<Value>, (u8, String)> {
+    let mut inputs = Inputs::real(plan);
+    inputs.preview = preview;
     environment_with(harness, plan, &inputs)
 }
 
@@ -117,13 +131,15 @@ pub(crate) fn environment_with(
     i: &Inputs,
 ) -> Result<Option<Value>, (u8, String)> {
     // No chat token: `--no-daemon` or a dry run. Nothing is recorded, so
-    // nothing is said here; the tap runs in the daemon.
-    let Some(token) = plan
+    // nothing is said here; the tap runs in the daemon. A dry run that would
+    // mint one builds the tapped plan with a stand-in route, so its srt list
+    // and its lines are the real run's (Mac test w6 retest, MW6R-1).
+    let token = plan
         .env_set
         .iter()
         .find(|(k, _)| k == "DERM_CHAT_TOKEN")
-        .map(|(_, v)| v.clone())
-    else {
+        .map(|(_, v)| v.clone());
+    let Some(token) = token.or_else(|| i.preview.then(|| PREVIEW_TOKEN.to_string())) else {
         return Ok(None);
     };
     let (prefs, warning) = match &i.home {
@@ -156,6 +172,7 @@ pub(crate) fn environment_with(
             cwd: i.cwd.clone(),
             inherited: Vec::new(),
             claude_managed: PathBuf::new(),
+            preview: i.preview,
         };
         let why = base_url_already_set(harness, plan, &in_vm).or_else(|| {
             (harness == "gemini")
@@ -244,6 +261,12 @@ pub(crate) fn environment_with(
     plan.notes.push(format!(
         "derm run: model tap: {harness}'s model requests go through the daemon's tap at {endpoint}; while the daemon is stopped they fail (a restart brings the route back on the same port). To stop or upgrade the daemon during a chat, start the chat with --no-tap"
     ));
+    if i.preview {
+        plan.notes.push(
+            "derm run: dry run: the tap's route in the base URL above is a stand-in; the real run gives the chat its own"
+                .into(),
+        );
+    }
     Ok(Some(json!({
         "on": true,
         "via": l.via,

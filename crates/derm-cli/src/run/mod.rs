@@ -1384,7 +1384,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         );
         Some(json!({"on": false, "via": "none", "reason": "no-tap-flag"}))
     } else {
-        tap::environment(a.harness.id, &mut p)?
+        // A dry run that would mint a token shows the tapped plan (MW6R-1).
+        tap::environment(a.harness.id, &mut p, a.dry_run && !a.no_daemon)?
     };
     // BW6-11: under srt, the tap off and no `--model-url`: srt admits the
     // harness's own model host, or the chat cannot reach its model.
