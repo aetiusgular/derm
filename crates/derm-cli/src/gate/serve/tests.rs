@@ -121,6 +121,7 @@ fn run_text(se: &Session, agent: &str, input: &[u8], approver: ApproveOutcome) -
         post: &post,
         post_later: &post_later,
         approve: &approve,
+        daemon_up: &|| false,
     };
     let mut out = Vec::new();
     let code = run(&ctx, &mut Cursor::new(input.to_vec()), &mut out);
@@ -331,6 +332,43 @@ fn decide_with_record_false_posts_nothing() {
     let r = run_lines(&se, "pi", &[hello("pi"), d], no_approver());
     assert_eq!(r.replies[1]["action"], "allow");
     assert!(r.posted.is_empty());
+}
+
+/// Box test w6, BW6-3: derm-pi asks with `record: false` (its records are the
+/// decision notices its emitter sends the daemon), so with no daemon nothing
+/// kept Pi's decisions and nothing failed closed. With no daemon to take the
+/// chat, the co-process keeps the light tier's record itself, and a record
+/// it cannot keep is a deny, as for every other gate (case 249). Run against
+/// the real light log in the session's home.
+#[test]
+fn bw6_3_a_plugin_that_keeps_its_own_records_still_fails_closed_with_no_daemon() {
+    let se = session(FIXTURE_POLICY, &[]);
+    let home = se.s.0.join("home");
+    let local = home.join(".derm").join("local");
+    // The light log's folder made a plain file: nothing can be kept.
+    std::fs::write(&local, b"").unwrap();
+    let mut d = decide(1, "bash", json!({"command": "ls"}));
+    d["record"] = json!(false);
+    let r = run_lines(&se, "pi", &[hello("pi"), d], no_approver());
+    assert_eq!(r.replies[1]["action"], "deny", "{}", r.replies[1]);
+    let why = r.replies[1]["reason"].as_str().unwrap_or("");
+    assert!(why.contains("light tier fails closed"), "{why}");
+    assert!(r.posted.is_empty(), "nothing goes to the daemon's post");
+    // An ask Pi's own card would answer is kept before the card, or denied.
+    let mut a = approve_req(2, true);
+    a["record"] = json!(false);
+    let r = run_lines(&se, "pi", &[hello("pi"), a], no_approver());
+    assert_eq!(r.replies[1]["kind"], "deny", "{}", r.replies[1]);
+    // With the folder back, the decision is a line of the chat's light log.
+    std::fs::remove_file(&local).unwrap();
+    let mut d = decide(3, "bash", json!({"command": "ls"}));
+    d["record"] = json!(false);
+    d["call"]["chat"] = json!("bw6-3");
+    let r = run_lines(&se, "pi", &[hello("pi"), d], no_approver());
+    assert_eq!(r.replies[1]["action"], "allow", "{}", r.replies[1]);
+    let log = std::fs::read_to_string(local.join("bw6-3.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.contains("bash allow"), "{log}");
 }
 
 #[test]

@@ -27,7 +27,9 @@
 // or no daemon, Pi's own card asks, over the frozen input (case 88), as
 // before. Pi's records stay what they were: the decision notice the emitter
 // sends (DECISION_CHANNEL), not an adapter record, so the co-process is
-// asked with `record: false`. A secret-like value in an MCP or web tool's
+// asked with `record: false`; with no daemon to take the chat, the co-process
+// keeps the light tier's record itself and denies a call it cannot keep (box
+// test w6, BW6-3; contracts/gate-serve.md 2.1). A secret-like value in an MCP or web tool's
 // input is rewritten in place, as the other plugins do (Pi: "tool_call (can
 // block or mutate input)", docs/extensions.md:364, 419 at 1.5.2). What stays
 // TypeScript here is Pi's glue: the memory index rule (Pi runs the memory

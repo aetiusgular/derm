@@ -80,6 +80,18 @@ pub fn main(args: &[String]) -> u8 {
         })
     };
     let post_later = move |e: AdapterEvent| tx.try_send(e).is_ok();
+    let daemon_up = || {
+        daemon::exchange(
+            &[],
+            &daemon::Opts {
+                env: &env,
+                client: "derm gate serve".into(),
+                reply_timeout: std::time::Duration::from_millis(1500),
+                cwd: &cwd,
+            },
+        )
+        .is_ok()
+    };
     let ctx = Ctx {
         agent,
         memory_state: memory::state_path(&env),
@@ -88,6 +100,7 @@ pub fn main(args: &[String]) -> u8 {
         post: &post,
         post_later: &post_later,
         approve: &approve,
+        daemon_up: &daemon_up,
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -150,6 +163,9 @@ pub(crate) struct Ctx<'a> {
     /// Queues a record without waiting for the daemon; false when dropped.
     pub post_later: &'a dyn Fn(AdapterEvent) -> bool,
     pub approve: &'a dyn Fn(&ApproveRequest) -> ApproveOutcome,
+    /// Whether a daemon takes this chat now (a hello with its chat token),
+    /// for a plugin that keeps its own records ([`keep_light`]).
+    pub daemon_up: &'a dyn Fn() -> bool,
 }
 
 /// One line of input, as read.
@@ -426,8 +442,12 @@ fn op_decide(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         call.tool = omp_tool_name(&call.tool, &policy.servers);
     }
     let mut answer = gate::decide_call(&LoadedPolicy { policy, problem }, &call, &ctx.env);
-    if record && answer.action != Action::Ask {
-        let (_, lost) = post_outcome(ctx, &call, &answer, answer.action, None, true, false);
+    if answer.action != Action::Ask {
+        let lost = if record {
+            post_outcome(ctx, &call, &answer, answer.action, None, true, false).1
+        } else {
+            keep_light(ctx, &call, &answer, answer.action, None)
+        };
         // The light tier fails closed: a decision no one recorded is a deny.
         if let Some(why) = lost.filter(|_| answer.action != Action::Deny) {
             (answer.action, answer.reason, answer.updated_input) = (Action::Deny, why, None);
@@ -514,6 +534,63 @@ fn with_description(
     policy
 }
 
+/// The approval record of one call's outcome, as every gate writes it.
+fn approval_event(
+    call: &GateCall,
+    answer: &GateAnswer,
+    outcome: Action,
+    extra: Option<&Extra>,
+) -> AdapterEvent {
+    let chat = call.chat.clone().unwrap_or_default();
+    let mut detail = Map::new();
+    detail.insert("tool".into(), json!(answer.normalized_tool));
+    let label = extra
+        .and_then(|e| e.label.clone())
+        .unwrap_or_else(|| action_word(outcome).to_string());
+    detail.insert("decision".into(), json!(label));
+    detail.insert("policyAction".into(), json!(action_word(answer.action)));
+    let reason = extra
+        .and_then(|e| e.reason.clone())
+        .unwrap_or_else(|| answer.reason.clone());
+    detail.insert("reason".into(), json!(reason));
+    detail.insert("redacted".into(), json!(answer.redacted));
+    if let Some(via) = extra.and_then(|e| e.via.clone()) {
+        detail.insert("via".into(), json!(via));
+    }
+    if let Some(t) = &call.tool_use_id {
+        detail.insert("toolUseId".into(), json!(t));
+    }
+    AdapterEvent {
+        id: daemon::decision_id(&call.harness, call.tool_use_id.as_deref()),
+        chat_id: chat.clone(),
+        harness: call.harness.clone(),
+        kind: "approval".into(),
+        summary: format!("{} {}", answer.normalized_tool, action_word(outcome)),
+        detail,
+    }
+}
+
+/// For a plugin that keeps its own records (`record: false`: derm-pi, whose
+/// records are the decision notices its emitter sends the daemon): with no
+/// daemon to take this chat, the co-process keeps the light tier's record of
+/// the outcome itself, and the reason to deny when it cannot (case 249; box
+/// test w6, BW6-3: Pi's decisions were kept nowhere and nothing failed
+/// closed). With a daemon, nothing: the plugin's own record goes there.
+fn keep_light(
+    ctx: &Ctx,
+    call: &GateCall,
+    answer: &GateAnswer,
+    outcome: Action,
+    extra: Option<&Extra>,
+) -> Option<String> {
+    if (ctx.daemon_up)() {
+        return None;
+    }
+    let e = approval_event(call, answer, outcome, extra);
+    let kept = super::locallog::after_post(&e, &ctx.env, &ctx.cwd, false);
+    super::locallog::denies(&kept, &ctx.env, &ctx.cwd)
+}
+
 /// The approval record for one call's outcome, then, with `installs`, its
 /// install records: what the TypeScript adapters posted after `decideCall`
 /// (`opencode.ts`, `openclaw.ts`, `cline.ts`). How many the daemon took, and,
@@ -541,33 +618,8 @@ fn post_outcome(
         }
     };
     let chat = call.chat.clone().unwrap_or_default();
-    let mut detail = Map::new();
-    detail.insert("tool".into(), json!(answer.normalized_tool));
-    let label = extra
-        .and_then(|e| e.label.clone())
-        .unwrap_or_else(|| action_word(outcome).to_string());
-    detail.insert("decision".into(), json!(label));
-    detail.insert("policyAction".into(), json!(action_word(answer.action)));
-    let reason = extra
-        .and_then(|e| e.reason.clone())
-        .unwrap_or_else(|| answer.reason.clone());
-    detail.insert("reason".into(), json!(reason));
-    detail.insert("redacted".into(), json!(answer.redacted));
-    if let Some(via) = extra.and_then(|e| e.via.clone()) {
-        detail.insert("via".into(), json!(via));
-    }
-    if let Some(t) = &call.tool_use_id {
-        detail.insert("toolUseId".into(), json!(t));
-    }
+    let record = approval_event(call, answer, outcome, extra);
     let mut posted = 0;
-    let record = AdapterEvent {
-        id: daemon::decision_id(&call.harness, call.tool_use_id.as_deref()),
-        chat_id: chat.clone(),
-        harness: call.harness.clone(),
-        kind: "approval".into(),
-        summary: format!("{} {}", answer.normalized_tool, action_word(outcome)),
-        detail,
-    };
     if send(&record, true) {
         posted += 1;
     }
@@ -617,6 +669,21 @@ fn op_approve(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         AskResolution::Deny(why) => ("deny", why, Some(Action::Deny)),
         AskResolution::Harness(why) => ("harness", why, None),
     };
+    if !record {
+        // The outcome, or the host's own prompt about to ask (an ask, as the
+        // Claude-format hooks record one before the agent's prompt).
+        let extra = Extra {
+            label: None,
+            via: None,
+            reason: Some(reason.clone()),
+        };
+        let kept = outcome.unwrap_or(Action::Ask);
+        if let Some(why) =
+            keep_light(ctx, &call, &answer, kept, Some(&extra)).filter(|_| kept != Action::Deny)
+        {
+            (kind, reason) = ("deny", why);
+        }
+    }
     if let (true, Some(outcome)) = (record, outcome) {
         let extra = Extra {
             label: None,
