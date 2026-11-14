@@ -687,6 +687,9 @@ mod windows {
 /// Linux the light log's append succeeded into srt's tmpfs over `~/.derm`
 /// and the record went with the sandbox (run as root and, by this pass, as
 /// a plain user). It is not written there, so the call is denied.
+// Mount points and `/proc` are Linux's; the paths here are Unix paths (a
+// Windows join puts `\` before `.derm`, CI's windows job).
+#[cfg(unix)]
 #[test]
 fn r7_no_light_log_where_it_would_go_with_the_sandbox() {
     let home = Path::new("/home/u");
