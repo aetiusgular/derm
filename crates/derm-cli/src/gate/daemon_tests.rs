@@ -812,11 +812,17 @@ mod srt_route {
         assert!(route(&e, &h, ETH, true).unwrap_err().contains("network"));
         assert!(route(&e, &h, LO, false).unwrap_err().contains("bound"));
         let loose = home("loose", Some(GOOD), 0o644);
-        assert!(route(&e, &loose, LO, true).unwrap_err().contains("yours alone"));
+        assert!(route(&e, &loose, LO, true)
+            .unwrap_err()
+            .contains("yours alone"));
         let none = home("none", None, 0o600);
-        assert!(route(&e, &none, LO, true).unwrap_err().contains("no route file"));
+        assert!(route(&e, &none, LO, true)
+            .unwrap_err()
+            .contains("no route file"));
         let bad = home("bad", Some(r#"{"daemonPort":0,"proxyPort":3128}"#), 0o600);
-        assert!(route(&e, &bad, LO, true).unwrap_err().contains("daemon port"));
+        assert!(route(&e, &bad, LO, true)
+            .unwrap_err()
+            .contains("daemon port"));
     }
 
     #[test]
@@ -824,7 +830,11 @@ mod srt_route {
         let h = home("env", Some(GOOD), 0o600);
         for (k, v, why) in [
             ("HTTPS_PROXY", "http://localhost:4444", "not srt's"),
-            ("HTTPS_PROXY", "http://proxy.example.com:3128", "no loopback proxy"),
+            (
+                "HTTPS_PROXY",
+                "http://proxy.example.com:3128",
+                "no loopback proxy",
+            ),
             ("DERM_CHAT_ID", "../derm-abc", "not a chat id"),
             ("DERM_CHAT_ID", ".derm-abc", "not a chat id"),
             ("DERM_CHAT_ID", "derm-other", "no route file"),
@@ -893,9 +903,11 @@ mod srt_route {
             },
         };
         let ask = json!({"op": "approve", "request": {}});
-        assert!(post_srt(&route, &"a".repeat(64), &ask, Duration::from_secs(2))
-            .unwrap_err()
-            .contains("records only"));
+        assert!(
+            post_srt(&route, &"a".repeat(64), &ask, Duration::from_secs(2))
+                .unwrap_err()
+                .contains("records only")
+        );
         let ev = json!({"op": "event", "event": {"id": "x1", "kind": "approval"}});
         let reply = post_srt(&route, &"a".repeat(64), &ev, Duration::from_secs(5)).unwrap();
         assert_eq!(reply, json!({"ok": true}));
@@ -904,7 +916,10 @@ mod srt_route {
         assert!(auth.starts_with("Proxy-Authorization: Basic "), "{auth}");
         assert!(head.starts_with("POST /derm/v1/event HTTP/1.1"), "{head}");
         assert!(head.contains(&format!("Host: 127.0.0.1:{port}")), "{head}");
-        assert!(head.contains(&format!("x-derm-token: {}", "a".repeat(64))), "{head}");
+        assert!(
+            head.contains(&format!("x-derm-token: {}", "a".repeat(64))),
+            "{head}"
+        );
         assert_eq!(body, r#"{"event":{"id":"x1","kind":"approval"}}"#);
     }
 }

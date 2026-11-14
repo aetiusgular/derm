@@ -294,7 +294,10 @@ fn srt_route_path(
         "proxyPort": crate::gate::daemon::SRT_PROXY_PORT,
     })
     .to_string();
-    Some((crate::gate::daemon::srt_route_file(Path::new(home), chat), text))
+    Some((
+        crate::gate::daemon::srt_route_file(Path::new(home), chat),
+        text,
+    ))
 }
 
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
@@ -1667,9 +1670,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     }
     // R7, option 1 (case 270): the gate's route out of srt on Linux, which
     // the plan re-opened read-only inside the hidden `~/.derm`.
-    if let Some((route, text)) =
-        srt_route_path(a.boundary, token.is_some(), otlp_endpoint.as_deref(), &home, &chat)
-    {
+    if let Some((route, text)) = srt_route_path(
+        a.boundary,
+        token.is_some(),
+        otlp_endpoint.as_deref(),
+        &home,
+        &chat,
+    ) {
         write_private(&route, &format!("{text}\n"))
             .map_err(|e| (1, format!("{}: {e}", route.display())))?;
         cleanup.files.push(route);
@@ -3151,12 +3158,16 @@ mod end_to_end {
             )
             .unwrap();
             // The policy's entry only: on macOS the daemon socket is
-            // re-opened beside it (MW5-5's gate half), whatever the policy.
+            // re-opened beside it (MW5-5's gate half), and on Linux the
+            // gate's route file (R7, option 1), whatever the policy.
             let read: Vec<serde_json::Value> = c["filesystem"]["allowRead"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|e| !e["path"].as_str().unwrap_or("").ends_with("/daemon.sock"))
+                .filter(|e| {
+                    let p = e["path"].as_str().unwrap_or("");
+                    !p.ends_with("/daemon.sock") && !p.contains("/.derm/run/routes/")
+                })
                 .cloned()
                 .collect();
             serde_json::Value::Array(read)

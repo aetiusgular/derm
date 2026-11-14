@@ -142,11 +142,12 @@ fn unescape_mount(s: &str) -> String {
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        let octal = b.get(i + 1..i + 4).filter(|t| {
-            b[i] == b'\\' && t.iter().all(|c| (b'0'..=b'7').contains(c))
-        });
+        let octal = b
+            .get(i + 1..i + 4)
+            .filter(|t| b[i] == b'\\' && t.iter().all(|c| (b'0'..=b'7').contains(c)));
         let n = octal.and_then(|t| {
-            let v = u16::from(t[0] - b'0') * 64 + u16::from(t[1] - b'0') * 8 + u16::from(t[2] - b'0');
+            let v =
+                u16::from(t[0] - b'0') * 64 + u16::from(t[1] - b'0') * 8 + u16::from(t[2] - b'0');
             u8::try_from(v).ok()
         });
         if let Some(n) = n {

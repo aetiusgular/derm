@@ -697,7 +697,9 @@ fn r7_no_light_log_where_it_would_go_with_the_sandbox() {
         netdev: Some(net.to_string()),
         mountinfo: Some(mounts.to_string()),
     };
-    assert!(kept_away(home, &sys(lo, "")).unwrap().contains("only loopback"));
+    assert!(kept_away(home, &sys(lo, ""))
+        .unwrap()
+        .contains("only loopback"));
     assert!(kept_away(home, &sys(eth, srt_mounts))
         .unwrap()
         .contains("/home/u/.derm is a mount"));
@@ -705,7 +707,10 @@ fn r7_no_light_log_where_it_would_go_with_the_sandbox() {
     let spaced = Path::new("/home/a b");
     assert!(kept_away(
         spaced,
-        &sys(eth, "40 25 0:31 / /home/a\\040b/.derm/local rw - tmpfs tmpfs rw\n")
+        &sys(
+            eth,
+            "40 25 0:31 / /home/a\\040b/.derm/local rw - tmpfs tmpfs rw\n"
+        )
     )
     .is_some());
     // Not a mount at or under ~/.derm: kept.
@@ -713,10 +718,28 @@ fn r7_no_light_log_where_it_would_go_with_the_sandbox() {
         kept_away(home, &sys(eth, "41 25 0:32 / /home/u/.dermx rw - tmpfs tmpfs rw\n36 1 8:1 / / rw - ext4 /dev/sda1 rw\n")),
         None
     );
-    assert_eq!(kept_away(home, &System { netdev: None, mountinfo: None }), None);
+    assert_eq!(
+        kept_away(
+            home,
+            &System {
+                netdev: None,
+                mountinfo: None
+            }
+        ),
+        None
+    );
     // And the seam fails, so the light tier denies.
     let h = scratch("r7");
-    let out = after_post_with(&event("c-r7", "approval", 0), &env_home(&h), &h, false, &sys(lo, ""));
-    assert!(matches!(&out, Outcome::Failed(w) if w.contains("only loopback")), "{out:?}");
+    let out = after_post_with(
+        &event("c-r7", "approval", 0),
+        &env_home(&h),
+        &h,
+        false,
+        &sys(lo, ""),
+    );
+    assert!(
+        matches!(&out, Outcome::Failed(w) if w.contains("only loopback")),
+        "{out:?}"
+    );
     assert!(!h.join(".derm").exists());
 }

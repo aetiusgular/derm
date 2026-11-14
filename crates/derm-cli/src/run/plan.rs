@@ -1905,6 +1905,56 @@ mod tests {
         serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap()
     }
 
+    /// Tony's R7 call, option 1 (case 270): under srt on Linux the gate's
+    /// route file is re-opened read-only inside the hidden `~/.derm`, as a
+    /// literal path, and the start line says where the records go; with no
+    /// route, it says the gate denies every call it gates.
+    #[test]
+    fn r7_srt_re_opens_the_gates_route_file_on_linux_and_says_where_records_go() {
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let route = "/home/u/.derm/run/routes/chat-b.json".to_string();
+        let p = build(&Inputs {
+            srt_route: Some(route.clone()),
+            ..inputs(&args)
+        })
+        .unwrap();
+        let read = srt_of(&p)["filesystem"]["allowRead"].clone();
+        assert!(
+            read.as_array()
+                .unwrap()
+                .contains(&json!({"path": route, "literal": true})),
+            "{read}"
+        );
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| n.contains("through srt's proxy") && n.contains("denies the call")),
+            "{:?}",
+            p.notes
+        );
+        let none = build(&inputs(&args)).unwrap();
+        assert!(!srt_of(&none)["filesystem"]["allowRead"]
+            .to_string()
+            .contains("/routes/"),);
+        assert!(
+            none.notes
+                .iter()
+                .any(|n| n.contains("has no route to the daemon")),
+            "{:?}",
+            none.notes
+        );
+        // macOS reaches the socket (case 174): no route file.
+        let mac = build(&Inputs {
+            srt_route: Some(route),
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(!srt_of(&mac)["filesystem"]["allowRead"]
+            .to_string()
+            .contains("/routes/"));
+    }
+
     /// Mac test w5 retest 4, MW5-24: under derm's srt, Claude Code could not
     /// renew its sign-in ("OAuth refresh failed (expected): proxy refused the
     /// connection"), so once its access token expired every chat under the

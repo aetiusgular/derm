@@ -1486,11 +1486,8 @@ fn no_gate_record<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
     let mut watched: HashSet<&str> = HashSet::new();
     for e in input.events {
         if e.source == ActivitySource::Run && e.kind == "run.start" {
-            let expected = e
-                .detail
-                .pointer("/gate/expected")
-                .and_then(Value::as_bool)
-                == Some(true);
+            let expected =
+                e.detail.pointer("/gate/expected").and_then(Value::as_bool) == Some(true);
             let tapped = e.detail.pointer("/tap/on").and_then(Value::as_bool) == Some(true);
             if expected && tapped {
                 watched.insert(e.chat_id.as_str());
@@ -1945,7 +1942,14 @@ mod tests {
         assert_eq!(flags.len(), 5, "{flags:?}");
     }
 
-    fn chat_ev(id: &str, at: i64, chat: &str, source: ActivitySource, kind: &str, detail: Value) -> ActivityEvent {
+    fn chat_ev(
+        id: &str,
+        at: i64,
+        chat: &str,
+        source: ActivitySource,
+        kind: &str,
+        detail: Value,
+    ) -> ActivityEvent {
         let mut e = ev(id, at, source, kind, detail, None);
         e.chat_id = chat.into();
         e.harness = "claude-code".into();
