@@ -158,7 +158,9 @@ fn an_untainted_chat_gets_no_coarse_review() {
     for (n, cmd) in [
         "git push origin main",
         "npm install left-pad",
-        "curl https://new.test/",
+        // A host reached with no page brought in (since BW6-6 a fetching
+        // program's call is a taint source of its own).
+        "git ls-remote https://new.test/x",
     ]
     .iter()
     .enumerate()
@@ -179,12 +181,14 @@ fn an_untainted_chat_gets_no_coarse_review() {
 #[test]
 fn after_a_fetch_a_protected_write_an_install_a_push_and_a_new_host_are_asked_about() {
     let h = Home::new("after");
-    // A host reached before the taint is not new afterwards.
+    // A host reached before the taint is not new afterwards. Since box test
+    // w6's BW6-6 a fetching program's call is itself a taint source, so the
+    // host is reached here by a program that brings no page in.
     assert_eq!(
         step(
             &h,
             "bash",
-            json!({"command": "curl -s https://known.test/x"}),
+            json!({"command": "git ls-remote https://known.test/x"}),
             0,
             Action::Allow
         )
@@ -253,9 +257,11 @@ fn after_a_fetch_a_protected_write_an_install_a_push_and_a_new_host_are_asked_ab
     // The marks and reviews are in the chat's log.
     let log = h.log("c-1");
     let kinds: Vec<&str> = log.iter().filter_map(|r| r["kind"].as_str()).collect();
+    // The web fetch, and since BW6-6 the two shell fetches (steps 5 and 6):
+    // each source call is its own mark.
     assert_eq!(
         kinds.iter().filter(|k| **k == "taint.mark").count(),
-        1,
+        3,
         "{kinds:?}"
     );
     assert_eq!(

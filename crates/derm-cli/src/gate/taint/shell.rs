@@ -40,6 +40,28 @@ pub struct Shell {
     pub push: bool,
     /// Every word of every command, for the secret-path check.
     pub words: Vec<String>,
+    /// Hosts off this machine that a fetching program (`FETCHERS`) was
+    /// pointed at: what it brought in is untrusted content (box test w6,
+    /// BW6-6).
+    pub fetched: Vec<String>,
+}
+
+/// Programs whose job is to bring a URL's content back: curl and wget (the
+/// two OpenMoat 0.19.0 reads as a fetch, `shell/commands/fetch.rs`), their
+/// kin (HTTPie's `http` and `https`, `xh`, `wget2`, `aria2c`) and the text
+/// browsers that print a page.
+const FETCHERS: &[&str] = &[
+    "curl", "wget", "wget2", "http", "https", "xh", "aria2c", "lynx", "w3m", "links", "elinks",
+];
+
+/// A host on this machine: a local server's page is the person's own.
+fn local_host(h: &str) -> bool {
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    h == "localhost"
+        || h.ends_with(".localhost")
+        || h == "::1"
+        || h == "0.0.0.0"
+        || h.starts_with("127.")
 }
 
 const MAX_DEPTH: usize = 4;
@@ -749,8 +771,12 @@ pub fn read(folded: &str) -> Shell {
         let w = &c.words;
         let head = base(&w[0]).to_string();
         s.words.extend(w.iter().cloned());
+        let fetcher = FETCHERS.contains(&head.as_str());
         for word in w {
             for h in hosts::url_hosts(word) {
+                if fetcher && !local_host(&h) && !s.fetched.contains(&h) {
+                    s.fetched.push(h.clone());
+                }
                 add_host(&mut s, h);
             }
         }

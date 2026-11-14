@@ -143,6 +143,14 @@ pub fn of(normalized: &str, input: &Value, cwd: &Path, home: Option<&Path>) -> F
         f.hosts = s.hosts;
         f.push = s.push;
         f.install = !derm_core::installs::parse::parse_installs(&folded).is_empty();
+        // BW6-6: a fetching program's page is untrusted content, as a fetch
+        // tool's is (`kinds::untrusted`).
+        if f.source.is_none() && !s.fetched.is_empty() {
+            f.source = Some(Source {
+                reason: "untrusted-content",
+                kind: "web",
+            });
+        }
         secret = s
             .words
             .iter()
@@ -226,7 +234,43 @@ mod tests {
         assert_eq!(f.writes, vec!["/w/.env"]);
     }
 
-    /// Windows test w6, WW6-2: a file tool on Windows names a secret by its
+    /// Box test w6, BW6-6: a shell fetch brings a page into the chat as a
+    /// web fetch tool does, and marked nothing (`marks: []` after `curl
+    /// https://example.org/`). OpenMoat 0.19.0 decides a `curl` or `wget`
+    /// that sends nothing but the request as a fetch, whose result taints
+    /// (`shell/commands/fetch.rs:1-25`, `shell/commands.rs:497-552`,
+    /// `engine/taint.rs:70-77`). derm marks any call of a fetching program
+    /// that names a URL off this machine: taint only raises.
+    #[test]
+    fn bw6_6_a_shell_fetch_taints_like_a_fetch_tool() {
+        for cmd in [
+            "curl -s -o /dev/null -w %{http_code} https://example.org/",
+            "wget -qO- https://e.test/a.sh",
+            "curl -X POST https://api.e.test/v1 -d @x.json",
+            "xh https://e.test/x",
+            "cd /tmp && curl -fsSL https://e.test/i",
+        ] {
+            let f = facts("bash", json!({ "command": cmd }));
+            assert_eq!(
+                f.source.map(|s| (s.reason, s.kind)),
+                Some(("untrusted-content", "web")),
+                "{cmd}"
+            );
+        }
+        for cmd in [
+            "curl -s http://127.0.0.1:3000/health",
+            "curl http://localhost:8080/",
+            "echo https://example.org/",
+            "git log --oneline",
+        ] {
+            assert!(
+                facts("bash", json!({ "command": cmd })).source.is_none(),
+                "{cmd}"
+            );
+        }
+    }
+
+    /// Windows test w6, WW6-2:    /// Windows test w6, WW6-2: a file tool on Windows names a secret by its
     /// native path (`tool_input.file_path` with `\`, the shape the Windows
     /// test drove the hook with by hand; not recorded from Claude Code on
     /// Windows, which the box has not had). It marks the chat as the same
