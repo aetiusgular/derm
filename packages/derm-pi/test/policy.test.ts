@@ -35,8 +35,8 @@ describe("contract fixture (contracts/fixtures/policy)", () => {
     expect(loaded.policy.askTimeoutSeconds).toBe(30);
   });
 
-  it("has all 240 cases (21 from session 0, 24 from integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5, 22 from lane W's command rules, 10 from integration w5's close, 3 from its fix pass, 33 from integration w6's close, 20 from its security review, 22 from its re-review, 15 after the close, 12 from its review, 4 from its re-review, 15 from its fix pass (WW6-1, WW6-9))", () => {
-    expect(cases).toHaveLength(240);
+  it("has all 247 cases (21 from session 0, 24 from integration w1, 15 from integration w2, 2 from the rename, 16 from integration w4, 6 from integration w5, 22 from lane W's command rules, 10 from integration w5's close, 3 from its fix pass, 33 from integration w6's close, 20 from its security review, 22 from its re-review, 15 after the close, 12 from its review, 4 from its re-review, 15 from its fix pass (WW6-1, WW6-9), 7 from its fix pass 2 (WW6R-1))", () => {
+    expect(cases).toHaveLength(247);
   });
 
   for (const c of cases) {

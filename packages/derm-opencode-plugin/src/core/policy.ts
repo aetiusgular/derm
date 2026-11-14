@@ -639,6 +639,50 @@ export function withNativeSeparators(texts: string[]): string[] {
   return out;
 }
 
+// Each text, and beside it, where it differs, the text with each part's
+// trailing dots and spaces read away (Windows test w6 retest, WW6R-1):
+// Windows' path normalization drops a single trailing dot from a part before
+// a separator and every trailing dot and space from the last part, so a Win32
+// caller writing `.git.\hooks\pre-commit` lands in `.git\hooks` (Jeremy
+// Kuhne, "Path Normalization"). A run of dots and spaces is read away where it
+// ends a part that holds something else, before `/`, a quote, a separator of
+// words or the end of the text; more than Windows does, which only adds an
+// ask. `.`, `..` and a part of dots alone are left. Run after
+// withNativeSeparators. derm-core's `with_win32_trimmed`.
+export function withWin32Trimmed(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) {
+    const trimmed = win32Trim(t);
+    if (trimmed !== t) out.push(trimmed);
+  }
+  return out;
+}
+
+const WIN32_PART_END = new Set(["/", '"', "'", "`", "\n", "\t", "\r", ";", "|", "&", ")", ",", "}", "]"]);
+const WIN32_NOT_A_NAME = new Set(["/", '"', "'", "`", "(", "=", ":"]);
+
+function win32Trim(t: string): string {
+  const chars = Array.from(t);
+  let out = "";
+  let i = 0;
+  while (i < chars.length) {
+    const c = chars[i];
+    if (c === "." || c === " ") {
+      const start = i;
+      while (i < chars.length && (chars[i] === "." || chars[i] === " ")) i++;
+      const before = start > 0 ? chars[start - 1] : undefined;
+      const named = before !== undefined && !WIN32_NOT_A_NAME.has(before) && !/[ \t\n\f\r]/.test(before);
+      const next = chars[i];
+      if (named && (next === undefined || WIN32_PART_END.has(next))) continue;
+      out += chars.slice(start, i).join("");
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
 // The path the shell opens is the same with `//` or `/./` in it, so a
 // control path is also looked for in the text with those collapsed to `/`
 // (review W4-S5). Only ever adds an ask.
@@ -989,7 +1033,7 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   if (ambiguous) return { action: "ask", normalizedTool, reason: "ambiguous server name: list the server in the policy's servers" };
   const folded = fold(decodeEscapes(call.inputText));
   const unquoted = unquote(folded);
-  const texts = withCollapsedSlashes(withNativeSeparators([folded, unquoted]));
+  const texts = withCollapsedSlashes(withWin32Trimmed(withNativeSeparators([folded, unquoted])));
   const control = CONTROL_PATHS.find((p) => texts.some((t) => namesControlPath(t, p)));
   if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   // On the folded text, so `＄HOME` asks: stricter than the raw input, the

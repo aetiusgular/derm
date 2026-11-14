@@ -956,6 +956,67 @@ pub fn with_native_separators(texts: &[String]) -> Vec<String> {
     out
 }
 
+/// Each text, and beside it, where it differs, the text with each part's
+/// trailing dots and spaces read away (Windows test w6 retest, WW6R-1):
+/// Windows' path normalization drops a single trailing dot from a part
+/// before a separator and every trailing dot and space from the last part,
+/// so a Win32 caller writing `.git.\hooks\pre-commit` lands in `.git\hooks`
+/// (Jeremy Kuhne, "Path Normalization", Microsoft's .NET blog: "If a segment
+/// ends in a single period, that period will be removed ... all trailing
+/// periods and spaces ... will be removed"; run on the box: .NET's
+/// `WriteAllText` wrote `.git\hooks\w6r-dot2`). A run of dots and spaces is
+/// read away where it ends a part that holds something else, before `/`, a
+/// quote, a separator of words or the end of the text. That reads more away
+/// than Windows does (two dots, a space before a separator, on any system),
+/// which only adds a text to look in, so only ever an ask; `.`, `..` and a
+/// part of dots alone are left. Run after [`with_native_separators`]. The
+/// hook core's and derm-pi's `withWin32Trimmed`.
+pub fn with_win32_trimmed(texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = texts.to_vec();
+    for t in texts {
+        let trimmed = win32_trim(t);
+        if trimmed != *t {
+            out.push(trimmed);
+        }
+    }
+    out
+}
+
+fn win32_trim(t: &str) -> String {
+    let chars: Vec<char> = t.chars().collect();
+    let ends_part = |c: Option<&char>| {
+        c.is_none_or(|c| {
+            matches!(
+                c,
+                '/' | '"' | '\'' | '`' | '\n' | '\t' | '\r' | ';' | '|' | '&' | ')' | ',' | '}' | ']'
+            )
+        })
+    };
+    let mut out = String::with_capacity(t.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '.' || c == ' ' {
+            let start = i;
+            while i < chars.len() && (chars[i] == '.' || chars[i] == ' ') {
+                i += 1;
+            }
+            let before = start
+                .checked_sub(1)
+                .map(|b| chars[b])
+                .filter(|b| *b != '/' && !b.is_ascii_whitespace() && !"\"'`(=:".contains(*b));
+            if before.is_some() && ends_part(chars.get(i)) {
+                continue;
+            }
+            out.extend(&chars[start..i]);
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// The path the shell opens is the same with `//` or `/./` in it, so a
 /// control path is also looked for in the text with those collapsed to `/`
 /// (review W4-S5). Only ever adds an ask; the hook core's
@@ -1487,7 +1548,10 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
     };
     // Control files before shell text (contract, section 4, step 7).
     let unquoted = unquote(folded);
-    let texts = with_collapsed_slashes(&with_native_separators(&[folded.to_string(), unquoted]));
+    let texts = with_collapsed_slashes(&with_win32_trimmed(&with_native_separators(&[
+        folded.to_string(),
+        unquoted,
+    ])));
     if let Some(control) = CONTROL_PATHS
         .iter()
         .find(|p| texts.iter().any(|t| names_control_path(t, p)))
