@@ -32,6 +32,12 @@
 //!   `host.docker.internal` into `localhost` (Docker's "Develop and test
 //!   locally" page), and these routes also take `Host: host.docker.internal:
 //!   <port>`, which a client that bypasses the forward proxy may send.
+//! - A third, `POST /derm/v1/taint`, a body `{"taint": {"chat", "hosts",
+//!   "add"}}`, for a gate behind srt's route on Linux or the VM's: the
+//!   socket's `taint` op under the same chat scope, so a gate behind a
+//!   sandbox keeps the chat's taint in the daemon and never in the
+//!   sandbox's own `~/.derm`, which the agent can rewrite (fix pass 4's
+//!   part 2, FP4-R1; redone by fix pass 6).
 
 #[path = "decode.rs"]
 pub mod decode;
@@ -124,6 +130,9 @@ pub type Sink = Arc<dyn Fn(Vec<ActivityEvent>) + Send + Sync>;
 pub enum ChatOp {
     Event(serde_json::Value),
     Approve(serde_json::Value),
+    /// `taint`'s fields (`chat`, `hosts`, `add`), from a gate behind a
+    /// sandbox's route (fix pass 6, the redo of fix pass 4's part 2).
+    Taint(serde_json::Value),
 }
 
 /// The daemon's answer to a `ChatOp` for the token's chat and harness: the
@@ -580,9 +589,13 @@ impl Receiver {
             "/v1/metrics" | "/v1/traces" => Signal::Other,
             "/derm/v1/event" => Signal::DermEvent,
             "/derm/v1/approve" => Signal::DermApprove,
+            "/derm/v1/taint" => Signal::DermTaint,
             _ => Signal::Unknown,
         };
-        let derm = matches!(signal, Signal::DermEvent | Signal::DermApprove);
+        let derm = matches!(
+            signal,
+            Signal::DermEvent | Signal::DermApprove | Signal::DermTaint
+        );
         let host_ok = head.header("host").is_some_and(|host| {
             host == format!("127.0.0.1:{}", self.port)
                 || host.eq_ignore_ascii_case(&format!("localhost:{}", self.port))
@@ -712,10 +725,10 @@ impl Receiver {
         let serde_json::Value::Object(mut map) = value else {
             return Err(400);
         };
-        let field = if signal == Signal::DermEvent {
-            "event"
-        } else {
-            "request"
+        let field = match signal {
+            Signal::DermEvent => "event",
+            Signal::DermTaint => "taint",
+            _ => "request",
         };
         if map.len() != 1 {
             return Err(400);
@@ -726,6 +739,13 @@ impl Receiver {
                 &holder.chat_id,
                 holder.harness,
                 ChatOp::Event(inner),
+                &|| false,
+            )
+        } else if signal == Signal::DermTaint {
+            ops(
+                &holder.chat_id,
+                holder.harness,
+                ChatOp::Taint(inner),
                 &|| false,
             )
         } else {
@@ -879,6 +899,7 @@ enum Signal {
     Other,
     DermEvent,
     DermApprove,
+    DermTaint,
     Unknown,
 }
 

@@ -674,8 +674,13 @@ mod daemon_tier {
         derm_tap::results::forget("c-1");
     }
 
+    /// Was `a_daemon_that_refuses_the_op_falls_back_to_the_file_with_deny`.
+    /// Since fix pass 6 (note BE section 2.3, Tony's call of 15 Nov) a daemon
+    /// that refuses `taint` is no answer, and with a chat token the file is
+    /// never the state: the chat counts as tainted and its verdict as deny,
+    /// and nothing is written to the light tier's file.
     #[test]
-    fn a_daemon_that_refuses_the_op_falls_back_to_the_file_with_deny() {
+    fn a_daemon_that_refuses_the_op_leaves_the_chat_tainted_with_deny_and_no_file() {
         // A daemon that refuses `taint`: here the real store's check, since
         // the fake's token holds `chat-fake`, not `c-1` (an older daemon's
         // "unknown op" is the same refusal).
@@ -697,12 +702,18 @@ mod daemon_tier {
         );
         let r = go(&h, &e, "bash", json!({"command": "sh y.sh"}), 1);
         assert_eq!(r.action, Action::Deny, "{}", r.reason);
-        assert!(h.0.join(".derm/local").exists());
+        assert!(r.reason.contains("gave no answer"), "{}", r.reason);
+        assert!(
+            !h.0.join(".derm/local").join("c-1.taint.json").exists(),
+            "the light tier's file was written"
+        );
     }
 
+    /// Was `under_derm_run_with_no_store_taint_is_off`. A `derm run` chat
+    /// whose daemon gives no taint answer and which has no home is no longer
+    /// left untainted: it counts as tainted with deny (note BE section 2.3).
     #[test]
-    fn under_derm_run_with_no_store_taint_is_off() {
-        // srt denies `~/.derm` to the hooks (note AZ B8); here: no home.
+    fn under_derm_run_with_no_daemon_answer_and_no_home_taint_still_holds() {
         let fake = crate::gate::fake_daemon::FakeDaemon::start(
             crate::gate::fake_daemon::Approve::None,
             None,
@@ -715,6 +726,43 @@ mod daemon_tier {
         crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(Some(true)));
         let r = adjust_with(allow("bash"), &c, &e, "c-1", Path::new("/tmp"), true);
         crate::gate::daemon::UNDER_DERM_RUN.with(|u| u.set(None));
+        assert_eq!(r.action, Action::Deny, "{}", r.reason);
+    }
+
+    /// Windows test w6 retest 3, WW6R3-1 (run on the box): with no boundary
+    /// the agent stopped `derm-daemon` (the same user), the gate fell back to
+    /// the light tier's file, and the next push after a fetch was allowed.
+    /// Here: a fetch marks the chat in the daemon, the daemon goes (its
+    /// socket gone), the agent writes `{"v":1}` into the light file, and the
+    /// push is still denied, and says why.
+    #[test]
+    fn ww6r3_1_a_stopped_daemon_does_not_lower_taint() {
+        let h = Home::new("dt-gone");
+        let s = serve("gone");
+        run_start(&s.taints, "record");
+        let e = env(&h, &s.socket);
+        let r = go(&h, &e, "webfetch", json!({"url": "https://a.test/"}), 0);
+        assert_eq!(r.action, Action::Allow, "{}", r.reason);
+        assert!(s.taints.is_tainted("c-1"));
+        // The agent stops the daemon and writes a clean light file.
+        std::fs::remove_file(&s.socket).unwrap();
+        let light = crate::gate::taint::state::file_path(&h.0, "c-1");
+        std::fs::create_dir_all(light.parent().unwrap()).unwrap();
+        std::fs::write(&light, "{\"v\":1}\n").unwrap();
+        for (n, input) in [
+            (1, json!({"command": "git push origin main"})),
+            (2, json!({"command": "curl https://b.test/"})),
+        ] {
+            let r = go(&h, &e, "bash", input, n);
+            assert_eq!(r.action, Action::Deny, "{}", r.reason);
+            assert!(r.reason.contains("gave no answer"), "{}", r.reason);
+        }
+        // With no light file at all, the same.
+        std::fs::remove_file(&light).unwrap();
+        let r = go(&h, &e, "bash", json!({"command": "git push"}), 3);
+        assert_eq!(r.action, Action::Deny, "{}", r.reason);
+        // A call that taint has nothing to say about still runs.
+        let r = go(&h, &e, "bash", json!({"command": "ls"}), 4);
         assert_eq!(r.action, Action::Allow, "{}", r.reason);
     }
 
@@ -739,7 +787,7 @@ mod daemon_tier {
         // Request 6D-1 (integration w6, phase 2): `adjust_in` takes the
         // daemon tier, so a hook with a chat token sends `op: "taint"`. The
         // fake's token holds `chat-fake`, not `c-1`, so the real store's
-        // check refuses it, and the file is used with deny (fail safe).
+        // check refuses it.
         let h = Home::new("dt-on");
         let fake = crate::gate::fake_daemon::FakeDaemon::start(
             crate::gate::fake_daemon::Approve::None,
@@ -751,14 +799,16 @@ mod daemon_tier {
         }
         let c = call("webfetch", json!({"url": "https://a.test/"}), 0);
         let r = adjust_in(allow("webfetch"), &c, &e, "c-1", &h.work());
-        assert_eq!(r.action, Action::Allow, "{}", r.reason);
+        // Since fix pass 6 a refused `taint` is no answer: the chat counts
+        // as tainted with deny, so a first fetch to a new host is denied,
+        // and no light file is written (note BE section 2.3).
+        assert_eq!(r.action, Action::Deny, "{}", r.reason);
         let ops: Vec<String> = fake
             .lines()
             .into_iter()
             .filter_map(|(_, l)| l["op"].as_str().map(str::to_string))
             .collect();
         assert!(ops.iter().any(|o| o == "taint"), "{ops:?}");
-        // The fetch marked the chat in the file the gate fell back to.
-        assert!(h.0.join(".derm/local").exists());
+        assert!(!h.0.join(".derm/local").join("c-1.taint.json").exists());
     }
 }

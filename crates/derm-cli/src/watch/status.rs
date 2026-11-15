@@ -521,6 +521,15 @@ fn chat_marks(c: &Value) -> Vec<String> {
         out.push(format!("as the agents' user {}", clean(user, 32)));
     } else if boundary == "none" {
         out.push("runs as you".into());
+        // Fix pass 6 (note BE section 2.3, item 4): with no boundary the
+        // agent is the same user as derm's daemon, so it can stop the
+        // daemon or edit ~/.derm and the log (Windows test w6 retest 3,
+        // WW6R3-1). The gate then denies what taint covers, but taint holds
+        // against a mistake there, not against an agent.
+        out.push(
+            "taint holds against mistakes, not the agent (it can stop derm's daemon or edit ~/.derm)"
+                .into(),
+        );
     }
     if boundary == "sbx" {
         // Only Claude Code has derm's kit (P4-R3: run.start does not yet say
@@ -982,6 +991,11 @@ mod tests {
             "tap": {"on": false, "reason": "no-tap-flag"},
             "content": {"on": true, "retentionDays": 3}})));
         assert!(t.contains("runs as you"), "{t}");
+        // Fix pass 6: what taint holds against with no boundary.
+        assert!(
+            t.contains("taint holds against mistakes, not the agent"),
+            "{t}"
+        );
         assert!(t.contains("io_uring not audited"), "{t}");
         assert!(t.contains("untapped (no-tap-flag)"), "{t}");
         assert!(t.contains("content kept 3 days"), "{t}");
@@ -989,6 +1003,7 @@ mod tests {
         let t = render(row(serde_json::json!({"agentUser": "derm-agent"})));
         assert!(t.contains("as the agents' user derm-agent"), "{t}");
         assert!(!t.contains("runs as you"), "{t}");
+        assert!(!t.contains("taint holds against mistakes"), "{t}");
         let t = render(row(
             serde_json::json!({"boundary": "sbx", "harness": "codex",
             "ioUring": "own-kernel", "tap": {"on": true}}),

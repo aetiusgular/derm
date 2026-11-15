@@ -1769,3 +1769,84 @@ fn taint_is_routed_and_a_chat_token_names_only_its_own_chat_and_only_adds() {
     let r = d.ask(json!({"op": "taint", "chat": own}));
     assert_eq!(r["state"]["marks"].as_array().map(Vec::len), Some(1), "{r}");
 }
+
+/// Fix pass 6 (the redo of fix pass 4's part 2, FP4-R1): a gate behind
+/// srt's route on Linux, or the VM's, keeps its chat's taint in the daemon
+/// through `POST /derm/v1/taint`, under the socket's chat scope: its own
+/// chat only, adding only, and answered as the socket answers.
+#[test]
+fn a_taint_op_over_http_is_the_chat_scoped_socket_op() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-ht", "claude-code");
+    let endpoint = f.daemon.endpoint();
+    let port = endpoint.rsplit(':').next().unwrap().to_string();
+    let local = format!("127.0.0.1:{port}");
+    let mark =
+        json!({"id": "m-ht", "reason": "untrusted-content", "kind": "web", "tool": "webfetch"});
+    let add = json!({"taint": {"chat": "chat-ht", "hosts": [], "add": {"v": 1, "marks": [mark]}}});
+    let (status, body) = http(
+        &port,
+        "/derm/v1/taint",
+        &local,
+        Some(&token),
+        &add.to_string(),
+    );
+    assert_eq!(status, 200, "{body}");
+    let r: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(r["ok"], true, "{body}");
+    assert_eq!(r["state"]["marks"][0]["id"], "m-ht", "{body}");
+    // The socket sees what the route added: one store.
+    let (mut c, _) = Client::hello(&f, &token);
+    let on_socket = c.ask(json!({"op": "taint", "chat": "chat-ht", "hosts": ["a.test"]}));
+    assert_eq!(on_socket["state"]["marks"][0]["id"], "m-ht", "{on_socket}");
+    // Another chat's taint is refused, as on the socket.
+    let other = json!({"taint": {"chat": "chat-other", "hosts": []}}).to_string();
+    let (_, body) = http(&port, "/derm/v1/taint", &local, Some(&token), &other);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ok"],
+        false,
+        "{body}"
+    );
+    // An add cannot remove: an empty state leaves the mark.
+    let empty = json!({"taint": {"chat": "chat-ht", "add": {"v": 1}}}).to_string();
+    let (_, body) = http(&port, "/derm/v1/taint", &local, Some(&token), &empty);
+    let r: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(r["state"]["marks"][0]["id"], "m-ht", "{body}");
+    // A body that names its own op, a field the op does not take, the
+    // wrong field name, or no token: refused.
+    for bad in [
+        json!({"taint": {"op": "token.mint", "chat": "chat-ht"}}),
+        json!({"taint": {"chat": "chat-ht", "verdict": "record"}}),
+        json!({"taint": 1}),
+    ] {
+        let (status, body) = http(
+            &port,
+            "/derm/v1/taint",
+            &local,
+            Some(&token),
+            &bad.to_string(),
+        );
+        assert_eq!(status, 200, "{bad}: {body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["ok"],
+            false,
+            "{bad}: {body}"
+        );
+    }
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/taint",
+            &local,
+            Some(&token),
+            &json!({"request": {}}).to_string()
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        http(&port, "/derm/v1/taint", &local, None, &add.to_string()).0,
+        401
+    );
+}

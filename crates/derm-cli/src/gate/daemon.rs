@@ -643,31 +643,59 @@ pub fn srt_route(env: &Env) -> Option<SrtRoute> {
     }
 }
 
-/// One record over the srt route: a tunnel through srt's proxy to the
-/// daemon's port, then the same HTTP request as the VM route.
+/// One request over the srt route: a tunnel through srt's proxy to the
+/// daemon's port, then the same HTTP request as the VM route. A record
+/// (`event`) or the chat's taint (`taint`, fix pass 6, the redo of fix
+/// pass 4's part 2): an ask has no approver from inside srt on Linux
+/// (FP2-L1).
 pub fn post_srt(
     route: &SrtRoute,
     token: &str,
     request: &Value,
     reply_timeout: Duration,
 ) -> Result<Value, String> {
-    if request.get("op").and_then(Value::as_str) != Some("event") {
-        // Records only (R7, option 1): an ask has no approver from inside
-        // srt on Linux, and goes to the harness's own prompt or is denied
-        // (FP2-L1).
-        return Err("under srt on Linux the gate reaches the daemon for records only".into());
-    }
+    let Some((path, body)) = derm_route(request, false) else {
+        // Records and taint only (R7, option 1): an ask has no approver
+        // from inside srt on Linux, and goes to the harness's own prompt or
+        // is denied (FP2-L1).
+        return Err(
+            "under srt on Linux the gate reaches the daemon for records and taint only".into(),
+        );
+    };
     let target = std::net::SocketAddr::from(([127, 0, 0, 1], route.port));
     let s = derm_daemon::computer_use::bridge_cli::through_proxy(&route.proxy, target)
         .map_err(|e| format!("daemon unreachable through srt's proxy ({e})"))?;
     http_post(
         s,
         &format!("127.0.0.1:{}", route.port),
-        "/derm/v1/event",
+        path,
         token,
-        &json!({"event": request.get("event").cloned().unwrap_or(Value::Null)}).to_string(),
+        &body,
         reply_timeout,
     )
+}
+
+/// A socket line's derm route over HTTP: its path and its body, the line's
+/// one field (`event`, `request`) or, for `taint`, the line without its
+/// `op`. `approve` only where `asks` (the VM's route); `None` for any other
+/// op.
+fn derm_route(request: &Value, asks: bool) -> Option<(&'static str, String)> {
+    match request.get("op").and_then(Value::as_str) {
+        Some("event") => Some((
+            "/derm/v1/event",
+            json!({"event": request.get("event").cloned().unwrap_or(Value::Null)}).to_string(),
+        )),
+        Some("approve") if asks => Some((
+            "/derm/v1/approve",
+            json!({"request": request.get("request").cloned().unwrap_or(Value::Null)}).to_string(),
+        )),
+        Some("taint") => {
+            let mut fields = request.as_object()?.clone();
+            fields.remove("op");
+            Some(("/derm/v1/taint", json!({"taint": fields}).to_string()))
+        }
+        _ => None,
+    }
 }
 
 /// One HTTP request to the daemon's derm route (`postVm`); its reply, or
@@ -692,19 +720,12 @@ pub fn post_vm(
     request: &Value,
     reply_timeout: Duration,
 ) -> Result<Value, String> {
-    let op = request.get("op").and_then(Value::as_str).unwrap_or("");
-    let (path, field) = match op {
-        "event" => ("/derm/v1/event", "event"),
-        "approve" => ("/derm/v1/approve", "request"),
-        other => {
-            let shown = request.get("op").map_or("undefined".to_string(), |v| {
-                v.as_str().map_or(v.to_string(), str::to_string)
-            });
-            let _ = other;
-            return Err(format!("no route for {shown} from a VM"));
-        }
+    let Some((path, body)) = derm_route(request, true) else {
+        let shown = request.get("op").map_or("undefined".to_string(), |v| {
+            v.as_str().map_or(v.to_string(), str::to_string)
+        });
+        return Err(format!("no route for {shown} from a VM"));
     };
-    let body = json!({ field: request.get(field).cloned().unwrap_or(Value::Null) }).to_string();
     let addrs: Vec<std::net::SocketAddr> =
         std::net::ToSocketAddrs::to_socket_addrs(&(url.host.as_str(), url.port))
             .map_err(|e| format!("daemon unreachable ({})", io_code(&e)))?

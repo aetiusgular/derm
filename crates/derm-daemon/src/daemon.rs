@@ -1168,11 +1168,12 @@ impl Daemon {
         daemon
             .receiver
             .set_ops(Arc::new(move |chat, harness, op, gone| {
-                let reply = match weak.upgrade() {
+                match weak.upgrade() {
                     Some(d) => d.http_op(chat, harness, op, gone),
-                    None => error("the daemon is stopping"),
-                };
-                serde_json::to_value(reply).unwrap_or(Value::Null)
+                    None => {
+                        serde_json::to_value(error("the daemon is stopping")).unwrap_or(Value::Null)
+                    }
+                }
             }));
         if let Some(saved) = saved {
             daemon.restore_state(&saved);
@@ -1270,6 +1271,9 @@ impl Daemon {
         if let Ok(mut i) = self.run_info.lock() {
             *i = infos;
         }
+        // The taint of the chats that still run (fix pass 6, note BE
+        // section 2.3): a restart must not lower it.
+        crate::taint::global().restore(saved.get("taint"), &|chat| runs.contains_key(chat));
         if let Ok(mut r) = self.runs.lock() {
             *r = runs;
         }
@@ -1358,6 +1362,8 @@ impl Daemon {
             "tapPort": tap_port,
             "tokens": tokens,
             "runs": runs,
+            // The taint of every chat still running (fix pass 6).
+            "taint": crate::taint::global().snapshot(),
         })
         .to_string();
         let _ = crate::service::write_private(path, &text);
@@ -1606,6 +1612,11 @@ impl Daemon {
             // `run.stop` (lane 6D's request 6D-1). Only `derm run`'s own
             // records name it: a chat token posts no `run` record.
             crate::taint::global().on_event(&event);
+            // The verdict a `run.start` named goes into the state file too,
+            // so a restart keeps it (fix pass 6, note BE section 2.3).
+            if event.kind == "run.start" {
+                self.save_state();
+            }
         }
         // Install records (lane X's request 4, integration w5 continue): the
         // control-path flags and the lockfile diffs read every event, the
@@ -1759,22 +1770,35 @@ impl Daemon {
         harness: &str,
         op: otel_receiver::ChatOp,
         gone: &dyn Fn() -> bool,
-    ) -> Reply {
+    ) -> Value {
         let who = Who::Chat {
             chat: chat.to_string(),
             harness: harness.to_string(),
         };
+        let as_value = |r: Reply| serde_json::to_value(r).unwrap_or(Value::Null);
         let line = match op {
             otel_receiver::ChatOp::Event(event) => json!({"op": "event", "event": event}),
             otel_receiver::ChatOp::Approve(request) => {
                 json!({"op": "approve", "request": request})
             }
+            // The socket's `taint` line with its `op`; a body that names an
+            // `op` of its own is not a taint request.
+            otel_receiver::ChatOp::Taint(fields) => match fields {
+                Value::Object(mut m) if !m.contains_key("op") => {
+                    m.insert("op".into(), json!("taint"));
+                    Value::Object(m)
+                }
+                _ => return as_value(error("bad request: taint takes chat, hosts and add")),
+            },
         };
         match serde_json::from_value::<Request>(line) {
-            Ok(Request::Event { event }) => self.op_event(&who, event),
-            Ok(Request::Approve { request }) => self.op_approve_until(&who, request, gone),
-            Ok(_) => error("not an op this route takes"),
-            Err(e) => error(format!("bad request: {e}")),
+            Ok(Request::Event { event }) => as_value(self.op_event(&who, event)),
+            Ok(Request::Approve { request }) => {
+                as_value(self.op_approve_until(&who, request, gone))
+            }
+            Ok(Request::Taint { chat, hosts, add }) => self.op_taint(&who, chat, hosts, add),
+            Ok(_) => as_value(error("not an op this route takes")),
+            Err(e) => as_value(error(format!("bad request: {e}"))),
         }
     }
 
@@ -2572,7 +2596,15 @@ impl Daemon {
                 Some(own.as_str())
             }
         };
-        crate::taint::global().handle(scope, &line)
+        let adds = line.get("add").is_some();
+        let reply = crate::taint::global().handle(scope, &line);
+        // What a chat added survives a restart (fix pass 6, note BE section
+        // 2.3): the state file is written before the gate hears its add
+        // was kept.
+        if adds && reply.get("ok") == Some(&Value::Bool(true)) {
+            self.save_state();
+        }
+        reply
     }
 
     fn op_mint(&self, who: &Who, chat: &str, harness: &str) -> Reply {
@@ -3187,11 +3219,13 @@ mod tests {
     }
 
     /// Box test w6 retest 3, BW6R3-2: `run.start`'s `dermExe` reaches the
-    /// chat's context, before and after a restart, and the gate's own
-    /// taint state in a sandbox's tmpfs is then no flag. A chat whose
-    /// `run.start` named no derm keeps the flag.
+    /// chat's context, before and after a restart, and the gate's read of
+    /// its own route out of srt is then no flag (`dermGateOwnRoute`; fix
+    /// pass 6 removed the taint-file hide this test held first, since the
+    /// gate no longer writes that file). A chat whose `run.start` named no
+    /// derm keeps the flag.
     #[test]
-    fn bw6r3_2_run_starts_derm_exe_hides_the_gates_own_sandbox_state() {
+    fn bw6r3_2_run_starts_derm_exe_hides_the_gates_read_of_its_own_route() {
         let root = std::env::temp_dir().join(format!(
             "tkd-unit-{}-{}",
             std::process::id(),
@@ -3219,13 +3253,11 @@ mod tests {
             let mut write = ev_of(
                 chat,
                 Source::Auditd,
-                "create",
+                "open",
                 Some(77),
                 json!({
-                    "path": format!("/home/t/.derm/local/{chat}.taint.json"),
+                    "path": format!("/home/t/.derm/run/routes/{chat}.json"),
                     "exe": "/home/t/.local/bin/derm",
-                    "dev": "00:3e",
-                    "devMounted": false,
                     "tier": "child",
                 }),
             );

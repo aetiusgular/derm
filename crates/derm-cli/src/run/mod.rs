@@ -208,47 +208,25 @@ pub fn main(argv: &[String]) -> u8 {
 }
 
 /// What taint does in a chat under sbx (lane 6D's request 6D-8, its other
-/// half; integration w6's close). The VM's hook reaches the daemon only for
-/// `event` and `approve` (`gate/daemon.rs` `post_vm`, read), so it cannot ask
-/// for the chat's taint state: a Rust gate in the VM keeps taint in the VM's
-/// own light-tier file and denies any call taint flags, whatever `--taint`
-/// said, and the sbx kit's Claude Code hook decides in TypeScript with no
-/// taint at all (the wave 6 base's S1). Under srt on Linux the gate's route
-/// carries records only too (`post_srt`, R7), so the gate keeps taint in
-/// srt's own `~/.derm`, a tmpfs that goes with the sandbox, and denies any
-/// call taint flags whatever `--taint` said (box test w6 retest 2, BW6R2-5;
-/// run: a push after a fetch under `--taint record` was denied, "the chat's
-/// verdict is deny, default"). `None` under any other boundary.
-///
-/// Under srt there is no note with `--no-daemon` (no route, and every gated
-/// call is denied, which another note says), and for a program with no
-/// preset it speaks of a derm gate the program may run (fix pass 3's
-/// review, FP3-R6).
-fn taint_not_reached(
-    boundary: Boundary,
-    linux: bool,
-    verdict: Option<&str>,
-    harness: &str,
-    no_daemon: bool,
-) -> Option<String> {
+/// half; integration w6's close). No gate in the VM keeps taint: the sbx
+/// kit's hook (Claude Code only, `run/boundary/kit.rs`) decides in
+/// TypeScript with no taint at all (the wave 6 base's S1), and derm's Rust
+/// gate does not run in the VM (wave 5b's 5bF moves the kit to it; fix
+/// pass 4's review, FP4-T1 and FP4-T2, redone by fix pass 6). `None` under
+/// any other boundary: under srt on Linux the gate keeps taint in the
+/// daemon through srt's route since fix pass 6 (`POST /derm/v1/taint`; the
+/// redo of fix pass 4's part 2, FP4-R1), and with no daemon answer the
+/// chat counts as tainted with deny (`gate/taint/mod.rs`), which the srt
+/// notes in `plan.rs` say.
+fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String> {
     let not_applied = match verdict {
         Some(v) => format!("--taint {v} is not applied: "),
         None => String::new(),
     };
     match boundary {
         Boundary::Sbx => Some(format!(
-            "derm run: taint under sbx: the gate in the VM cannot reach this chat's taint state, so {not_applied}a Rust gate there keeps taint in the VM's own file and denies any call it flags, and the sbx kit's Claude Code hook has no taint"
+            "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (the sbx kit's hook, for Claude Code only, decides with no taint, and derm's own gate does not run in the VM yet)"
         )),
-        Boundary::Srt if linux && !no_daemon => {
-            let gate = if harness == "other" {
-                "a derm gate the program runs"
-            } else {
-                "the gate"
-            };
-            Some(format!(
-                "derm run: taint under srt on Linux: the gate's route out of srt carries records only, so {not_applied}{gate} keeps this chat's taint in srt's own ~/.derm (a tmpfs that goes with the sandbox) and denies any call it flags"
-            ))
-        }
         _ => None,
     }
 }
@@ -265,7 +243,8 @@ fn derm_exe() -> Option<String> {
 /// The dry run's `taint:` line. Under srt on Linux with `--no-daemon` the
 /// gate keeps no record and denies every call it gates (the no-daemon note
 /// in `plan.rs`), so `--taint` decides nothing there either (box test w6
-/// retest 3, BW6R3-3).
+/// retest 3, BW6R3-3). Under srt on Linux with the daemon it holds (fix
+/// pass 6).
 fn taint_summary(boundary: Boundary, linux: bool, no_daemon: bool, verdict: &str) -> String {
     match boundary {
         Boundary::Sbx => {
@@ -274,9 +253,6 @@ fn taint_summary(boundary: Boundary, linux: bool, no_daemon: bool, verdict: &str
         Boundary::Srt if linux && no_daemon => format!(
             "taint: {verdict} (--taint; not applied under srt on Linux with no daemon: the gate denies every call it gates, see the note above)"
         ),
-        Boundary::Srt if linux => {
-            format!("taint: {verdict} (--taint; not applied under srt on Linux, see the note above)")
-        }
         _ => format!("taint: {verdict} (--taint)"),
     }
 }
@@ -1599,13 +1575,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let taint_record: Option<serde_json::Value> = a
         .taint
         .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
-    if let Some(n) = taint_not_reached(
-        a.boundary,
-        cfg!(target_os = "linux"),
-        a.taint.map(|v| v.as_str()),
-        a.harness.id,
-        a.no_daemon,
-    ) {
+    if let Some(n) = taint_not_reached(a.boundary, a.taint.map(|v| v.as_str())) {
         p.notes.push(n);
     }
     // Content capture's switch as the chat starts (lane S's request 3). It
@@ -3493,8 +3463,11 @@ mod end_to_end {
         let srt_none = taint_summary(Boundary::Srt, true, true, "record");
         assert!(srt_none.contains("not applied"), "{srt_none}");
         assert!(srt_none.contains("no daemon"), "{srt_none}");
-        let srt = taint_summary(Boundary::Srt, true, false, "record");
-        assert!(srt.contains("not applied under srt on Linux"), "{srt}");
+        // Fix pass 6: with the daemon, taint holds under srt on Linux.
+        assert_eq!(
+            taint_summary(Boundary::Srt, true, false, "record"),
+            "taint: record (--taint)"
+        );
         let sbx = taint_summary(Boundary::Sbx, true, true, "record");
         assert!(sbx.contains("not applied under sbx"), "{sbx}");
         // Elsewhere the line is unchanged: srt on macOS and no boundary.
@@ -4265,35 +4238,29 @@ mod end_to_end {
     }
 
     /// 6D-8's other half (integration w6's close): under sbx the start line
-    /// and the dry run say the verdict is not applied, and nowhere else.
+    /// and the dry run say the verdict is not applied, and nowhere else. Fix
+    /// pass 4's review, FP4-T1 and FP4-T2 (redone by fix pass 6): the note
+    /// names no Claude Code hook a chat may lack and no Rust gate in the VM.
     #[test]
     fn under_sbx_the_start_says_taint_is_not_applied() {
-        let n = taint_not_reached(Boundary::Sbx, true, Some("record"), "pi", false).unwrap();
+        let n = taint_not_reached(Boundary::Sbx, Some("record")).unwrap();
         assert!(n.contains("--taint record is not applied"), "{n}");
-        assert!(n.contains("denies any call it flags"), "{n}");
-        assert!(taint_not_reached(Boundary::Sbx, false, None, "pi", false).is_some());
-        assert!(taint_not_reached(Boundary::Srt, false, Some("record"), "pi", false).is_none());
-        assert!(taint_not_reached(Boundary::None, true, Some("deny"), "pi", false).is_none());
+        assert!(n.contains("no gate in the VM keeps"), "{n}");
+        assert!(!n.contains("denies any call it flags"), "{n}");
+        assert!(taint_not_reached(Boundary::Sbx, None).is_some());
+        assert!(taint_not_reached(Boundary::None, Some("deny")).is_none());
     }
 
-    /// Box test w6 retest 2, BW6R2-5: under srt on Linux the gate's taint is
-    /// kept in srt's tmpfs and every call it flags is denied, whatever
-    /// `--taint` said (run with srt 0.0.82: a push after a fetch under
-    /// `--taint record`, "the chat's verdict is deny, default"), and the
-    /// start said nothing of it.
+    /// Was `bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied`.
+    /// Box test w6 retest 2, BW6R2-5 found the gate kept taint in srt's
+    /// tmpfs; fix pass 6 (the redo of fix pass 4's part 2) puts it in the
+    /// daemon through srt's route, so the start says nothing of taint not
+    /// applying under srt, on Linux or macOS, and the record route note says
+    /// the taint state goes there too.
     #[test]
-    fn bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied() {
-        let n =
-            taint_not_reached(Boundary::Srt, true, Some("record"), "claude-code", false).unwrap();
-        assert!(n.contains("--taint record is not applied"), "{n}");
-        assert!(n.contains("srt's own ~/.derm"), "{n}");
-        assert!(n.contains("denies any call it flags"), "{n}");
-        assert!(taint_not_reached(Boundary::Srt, true, None, "claude-code", false).is_some());
-        // FP3-R6: no route with --no-daemon, and no gate of derm's in an
-        // unknown program.
-        assert!(taint_not_reached(Boundary::Srt, true, None, "claude-code", true).is_none());
-        let o = taint_not_reached(Boundary::Srt, true, None, "other", false).unwrap();
-        assert!(o.contains("a derm gate the program runs"), "{o}");
+    fn under_srt_taint_is_applied_and_the_start_says_no_otherwise() {
+        assert!(taint_not_reached(Boundary::Srt, Some("record")).is_none());
+        assert!(taint_not_reached(Boundary::Srt, None).is_none());
     }
 
     #[cfg(unix)]

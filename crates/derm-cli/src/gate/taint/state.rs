@@ -12,10 +12,14 @@
 //!   write under the lock.
 //! - **Under `derm run`** (a chat token): the daemon's op `taint`
 //!   ([`daemon_ask`], [`daemon_add`]; `crates/derm-daemon/src/taint/`, routed
-//!   since integration w6's phase 2 merge). When the daemon refuses it (an
-//!   older daemon's "unknown op", a chat id the token does not hold, the
-//!   sbx VM's HTTP route, which carries no `taint`) the gate falls back to
-//!   the file.
+//!   since integration w6's phase 2 merge), over the socket or a sandbox's
+//!   route (`POST /derm/v1/taint`, fix pass 6). When no answer comes (the
+//!   daemon is down, or was stopped by the agent, which needs no more than
+//!   the same user with no boundary: Windows test w6 retest 3, WW6R3-1; an
+//!   older daemon's "unknown op"; a chat id the token does not hold) the
+//!   gate never falls back to the file, which the agent can write: the
+//!   chat counts as tainted, its every run as its own code, and its verdict
+//!   as `deny` (note BE section 2.3, Tony's call of 15 Nov).
 //!
 //! What it holds: hashes, paths and ids, never a result (`contracts/events.md`
 //! section 6). Every list only grows ([`State::merge`]): a writer that lost
@@ -333,27 +337,21 @@ fn opts<'a>(env: &'a Env, cwd: &'a Path) -> Opts<'a> {
     }
 }
 
-/// The chat's state, verdict and named hosts from the daemon, and whether
-/// a daemon took the hook's chat token
-/// (its hello passed), which a token a project set cannot do with derm's
-/// daemon (W6C-S4).
+/// The chat's state, verdict and named hosts from the daemon, or why none
+/// came (the daemon down or refusing, a route that refused, a reply that
+/// does not parse).
 pub fn daemon_ask(
     env: &Env,
     cwd: &Path,
     chat: &str,
     hosts: &[String],
-) -> (Option<FromDaemon>, bool) {
+) -> Result<FromDaemon, String> {
     let req = json!({"op": "taint", "chat": chat, "hosts": hosts});
-    match daemon::exchange(&[req], &opts(env, cwd)) {
-        Err(_) => (None, false),
-        Ok(replies) => (
-            replies
-                .into_iter()
-                .next()
-                .and_then(|r| parse_reply(&r).ok()),
-            true,
-        ),
-    }
+    daemon::exchange(&[req], &opts(env, cwd))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no reply".to_string())
+        .and_then(|r| parse_reply(&r))
 }
 
 /// Adds to the chat's state in the daemon.

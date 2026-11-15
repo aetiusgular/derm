@@ -373,55 +373,48 @@ pub fn adjust_with(
     if facts.is_empty() {
         return answer;
     }
-    // Under `derm run` the daemon holds the chat's state and verdict; when
-    // it refuses `op: "taint"` (an older daemon, a chat id the token does
-    // not hold, the sbx VM's route) the file is used, with the strictest
-    // verdict, since the person's `--taint` cannot be read (rules section 9,
-    // item 7: fail safe).
-    let (from_daemon, accepted) = if token {
-        state::daemon_ask(env, cwd, chat, &facts.hosts)
-    } else {
-        (None, false)
-    };
-    // A token alone may be a project's (case 227): only a hook whose daemon
-    // took its token, or whose token a real `derm run` above it gave, skips
-    // the light tier's fail-safe rules (integration w6's review, W6C-S4;
-    // re-review W6C-R6).
-    let run_chat = token && (accepted || daemon::derm_run_chat(env, cwd));
+    // Under `derm run` the daemon holds the chat's state and verdict. With a
+    // chat token and no answer from the daemon (down, stopped by the agent,
+    // an older daemon, a chat id the token does not hold, a route that
+    // refused) the light tier's file is never the state: the agent can
+    // write it, and with no boundary it can stop the daemon first (Windows
+    // test w6 retest 3, WW6R3-1; note BE section 2.3, Tony's call of 15
+    // Nov). The chat counts as tainted, every run as its own code, and the
+    // verdict as `deny`, since the person's `--taint` cannot be read (rules
+    // section 9, item 7: fail safe). A token a project set (case 227) only
+    // makes this stricter.
+    let from_daemon = token.then(|| state::daemon_ask(env, cwd, chat, &facts.hosts));
+    let mut no_answer = None;
     let (st, verdict, from, named, store) = match from_daemon {
-        Some(d) => (d.state, d.verdict, d.from, d.named, Store::Daemon),
+        Some(Ok(d)) => (d.state, d.verdict, d.from, d.named, Store::Daemon),
+        Some(Err(why)) => {
+            no_answer = Some(why.clone());
+            (
+                State::unreadable(),
+                Verdict::Deny,
+                From::Default,
+                Vec::new(),
+                Store::None(format!("the daemon gave no answer ({why})")),
+            )
+        }
         None => {
             let path = home.as_deref().map(|h| state::file_path(h, chat));
             let loaded = path.as_deref().map(state::load);
-            let why = match &loaded {
-                Some(Err(e)) => e.clone(),
-                Some(Ok(_)) => String::new(),
-                None => "no home folder".to_string(),
-            };
             match (path, loaded) {
                 (Some(p), Some(Ok(s))) => {
-                    let (v, f) = if token {
-                        (Verdict::Deny, From::Default)
-                    } else {
-                        light_verdict(home.as_deref())
-                    };
+                    let (v, f) = light_verdict(home.as_deref());
                     (s, v, f, Vec::new(), Store::File(p))
                 }
-                // A `derm run` chat whose daemon and file both refused (srt
-                // denies `~/.derm` to its hooks, note AZ B8): taint is off
-                // for it until the daemon answers (the lane's Open items).
-                _ if run_chat => return answer,
                 // The light tier whose state cannot be read (a lock held
                 // past the deadline, a folder others can write): fail safe,
                 // as a state that does not parse.
-                _ => {
-                    let (v, f) = light_verdict(home.as_deref());
-                    let s = State {
-                        v: 1,
-                        unreadable: true,
-                        ..State::default()
+                (_, loaded) => {
+                    let why = match loaded {
+                        Some(Err(e)) => e,
+                        _ => "no home folder".to_string(),
                     };
-                    (s, v, f, Vec::new(), Store::None(why))
+                    let (v, f) = light_verdict(home.as_deref());
+                    (State::unreadable(), v, f, Vec::new(), Store::None(why))
                 }
             }
         }
@@ -444,8 +437,14 @@ pub fn adjust_with(
             raised.is_some() || (verdict == Verdict::Record && answer.action == Action::Allow);
         if let Some(a) = raised {
             out.action = a;
+            let lost = match &no_answer {
+                Some(w) => format!(
+                    "; derm's daemon gave no answer for this chat's taint ({w}), so the chat counts as tainted and its verdict as deny"
+                ),
+                None => String::new(),
+            };
             out.reason = format!(
-                "taint: {why} (the chat's verdict is {}, {}); {}",
+                "taint: {why} (the chat's verdict is {}, {}{lost}); {}",
                 verdict.as_str(),
                 from.as_str(),
                 answer.reason
@@ -494,15 +493,17 @@ pub fn adjust_with(
             Store::File(p) => state::save(p, &add),
             Store::None(why) => Err(format!("no taint state could be read ({why})")),
         };
-        // The light tier fails closed, as its log does: a call that taints
-        // the chat or writes a file is not run when that cannot be kept,
-        // or a later call would not know.
+        // derm fails closed, the light tier as its log does and a `derm
+        // run` chat whose daemon gave no answer alike (note BE section 2.3):
+        // a call that taints the chat or writes a file is not run when that
+        // cannot be kept, or a later call, after the daemon is back, would
+        // not know.
         if let Err(why) = kept {
             let carries = !add.marks.is_empty() || !add.written.is_empty();
-            if !run_chat && carries && out.action != Action::Deny {
+            if carries && out.action != Action::Deny {
                 out.action = Action::Deny;
                 out.reason = format!(
-                    "derm's taint state: {why}; with no daemon a call that taints the chat or writes a file is not run unkept (the light tier fails closed)"
+                    "derm's taint state: {why}; a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)"
                 );
                 out.updated_input = None;
             }

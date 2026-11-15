@@ -560,7 +560,7 @@ mod unix {
     /// joins it first (the wave 6 base, finding W6B-2: a third connection
     /// made before the thread ended sat in the listener's backlog and got
     /// "daemon reply failed", 4 of 40 runs on `main` at 4dbb2fa).
-    fn http_server(
+    pub(super) fn http_server(
         status: u16,
     ) -> (
         u16,
@@ -928,7 +928,7 @@ mod srt_route {
         assert!(
             post_srt(&route, &"a".repeat(64), &ask, Duration::from_secs(2))
                 .unwrap_err()
-                .contains("records only")
+                .contains("records and taint only")
         );
         let ev = json!({"op": "event", "event": {"id": "x1", "kind": "approval"}});
         let reply = post_srt(&route, &"a".repeat(64), &ev, Duration::from_secs(5)).unwrap();
@@ -943,5 +943,37 @@ mod srt_route {
             "{head}"
         );
         assert_eq!(body, r#"{"event":{"id":"x1","kind":"approval"}}"#);
+    }
+
+    /// Fix pass 6 (the redo of fix pass 4's part 2): the chat's taint goes
+    /// over a sandbox's route as `POST /derm/v1/taint`, the socket's line
+    /// without its `op`, on the VM's route and srt's alike.
+    #[test]
+    fn post_vm_and_post_srt_send_taint_to_the_daemons_taint_route() {
+        let line = json!({"op": "taint", "chat": "c-1", "hosts": ["a.test"], "add": {"v": 1}});
+        assert_eq!(
+            derm_route(&line, false).unwrap(),
+            (
+                "/derm/v1/taint",
+                json!({"taint": {"chat": "c-1", "hosts": ["a.test"], "add": {"v": 1}}}).to_string()
+            )
+        );
+        assert!(derm_route(&json!({"op": "approve", "request": {}}), false).is_none());
+        assert!(derm_route(&json!({"op": "approve", "request": {}}), true).is_some());
+        assert!(derm_route(&json!({"op": "token.mint"}), true).is_none());
+        let (port, rx, _server) = super::unix::http_server(200);
+        let url = VmUrl {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        let r = post_vm(&url, &"a".repeat(64), &line, Duration::from_secs(1)).unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+        let (path, token, body) = rx.recv().unwrap();
+        assert_eq!(path, "/derm/v1/taint");
+        assert_eq!(token, "a".repeat(64));
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({"taint": {"chat": "c-1", "hosts": ["a.test"], "add": {"v": 1}}})
+        );
     }
 }

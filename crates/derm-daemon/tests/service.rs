@@ -444,3 +444,90 @@ fn the_tap_endpoint_is_published_private_and_kept_across_a_restart() {
     );
     stop(child);
 }
+
+/// Fix pass 6 (note BE section 2.2 and 2.3, Tony's call of 15 Nov): the
+/// daemon's taint lived in memory only, so a restart (a service manager's,
+/// within seconds) answered a running chat with an empty state and the
+/// default verdict, which lowered its taint. A restarted daemon takes back
+/// the state and the verdict of every chat still running, and none of a
+/// chat that has gone.
+#[test]
+fn a_restart_keeps_a_running_chats_taint_and_verdict() {
+    let d = Dirs::new();
+    let daemon = start(&d);
+    let (mut w, mut r) = session(&d);
+    let mut harness = Command::new("sleep").arg("60").spawn().unwrap();
+    let mut gone = Command::new("sleep").arg("60").spawn().unwrap();
+    let mut chat = |id: &str, pid: u32| -> String {
+        let t = ask(
+            &mut w,
+            &mut r,
+            json!({"op": "token.mint", "chat": id, "harness": "claude-code"}),
+        );
+        let token = t["token"].as_str().unwrap().to_string();
+        let started = ask(
+            &mut w,
+            &mut r,
+            json!({"op": "event", "event": {
+                "id": format!("start-{id}"), "at": 0, "chatId": id, "harness": "claude-code",
+                "source": "run", "kind": "run.start", "summary": "",
+                "detail": {"cwd": "/tmp", "taint": {"verdict": "deny", "from": "flag"}},
+                "pid": pid
+            }}),
+        );
+        assert_eq!(started["ok"], true, "{started}");
+        token
+    };
+    let running = chat("chat-tr", harness.id());
+    let ended = chat("chat-tg", gone.id());
+    drop((w, r));
+    let mark = |token: &str, chat: &str| {
+        let s = UnixStream::connect(d.socket()).unwrap();
+        let mut w = s.try_clone().unwrap();
+        let mut r = BufReader::new(s);
+        let hello = ask(
+            &mut w,
+            &mut r,
+            json!({"op": "hello", "token": token, "client": "test"}),
+        );
+        assert_eq!(hello["scope"], "chat", "{hello}");
+        let m = json!({"id": format!("m-{chat}"), "reason": "untrusted-content", "kind": "web", "tool": "webfetch"});
+        let added = ask(
+            &mut w,
+            &mut r,
+            json!({"op": "taint", "chat": chat, "hosts": [], "add": {"v": 1, "marks": [m]}}),
+        );
+        assert_eq!(added["ok"], true, "{added}");
+        assert_eq!(added["verdict"], "deny", "{added}");
+    };
+    mark(&running, "chat-tr");
+    mark(&ended, "chat-tg");
+    gone.kill().unwrap();
+    gone.wait().unwrap();
+    stop(daemon);
+    let daemon = start(&d);
+    let s = UnixStream::connect(d.socket()).unwrap();
+    let mut w = s.try_clone().unwrap();
+    let mut r = BufReader::new(s);
+    let hello = ask(
+        &mut w,
+        &mut r,
+        json!({"op": "hello", "token": running, "client": "test"}),
+    );
+    assert_eq!(hello["scope"], "chat", "{hello}");
+    let back = ask(
+        &mut w,
+        &mut r,
+        json!({"op": "taint", "chat": "chat-tr", "hosts": []}),
+    );
+    assert_eq!(back["ok"], true, "{back}");
+    assert_eq!(back["state"]["marks"][0]["id"], "m-chat-tr", "{back}");
+    assert_eq!(back["verdict"], "deny", "{back}");
+    assert_eq!(back["from"], "flag", "{back}");
+    // The gone chat's taint did not come back (its token neither).
+    let state = std::fs::read_to_string(d.run().join("chats.json")).unwrap();
+    assert!(!state.contains("m-chat-tg"), "{state}");
+    let _ = harness.kill();
+    let _ = harness.wait();
+    stop(daemon);
+}

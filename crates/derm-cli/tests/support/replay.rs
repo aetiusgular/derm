@@ -120,6 +120,20 @@ fn set_mode(p: &Path, m: u64) {
 #[cfg(not(unix))]
 fn set_mode(_p: &Path, _m: u64) {}
 
+/// Calls whose answer a later rule changed on purpose, with the answer that
+/// rule gives: (case id, call index, stdout). The recording stays as the
+/// TypeScript gave it; the rule and its source are named here.
+///
+/// - Fix pass 6 (note BE section 2.3, Tony's call of 15 Nov): with a chat
+///   token and no daemon answer, a call that taints the chat (an MCP
+///   result) is not run with its mark unkept, since the daemon is the only
+///   store a `derm run` chat's taint has. The TypeScript hook had no taint.
+const CHANGED: &[(&str, usize, &str)] = &[(
+    "claude_plugin_hook_claude_code_pretooluse_no_approver_connected_or_no_daemon_claude_code_s_own_prompt_contract",
+    1,
+    "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (no daemon socket)); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}}",
+)];
+
 /// Runs one recorded case: every call in order, each held to its recording.
 pub fn case(cases: &str, id: &str) {
     let doc: Value = serde_json::from_str(cases).expect("case file");
@@ -136,6 +150,14 @@ pub fn case(cases: &str, id: &str) {
         if call.get("manual").is_some() {
             continue;
         }
+        let mut call = call.clone();
+        if let Some((_, _, want)) = CHANGED
+            .iter()
+            .find(|(case_id, n, _)| *case_id == id && *n == i)
+        {
+            call["want"]["stdout"] = Value::String((*want).to_string());
+        }
+        let call = &call;
         if let Err(why) = one(call) {
             failures.push(format!(
                 "call {i} ({} {}): {why}",
@@ -243,6 +265,26 @@ fn one(call: &Value) -> Result<(), String> {
     cmd.env("HOME", &home);
     for (k, v) in call["env"].as_object().unwrap() {
         cmd.env(k, subst(v.as_str().unwrap_or(""), &map));
+    }
+    // `derm run` names the chat its token holds (`DERM_CHAT_ID`,
+    // `run/plan.rs`), and since fix pass 6 a taint answer the daemon refuses
+    // (a chat the token does not hold) leaves the chat tainted with deny,
+    // never the light file (note BE section 2.3). These recordings predate
+    // taint and name no chat: a case that gives the fake's chat token gets
+    // the fake's chat, as under `derm run`; one that names its own keeps it.
+    #[cfg(unix)]
+    {
+        let env = call["env"].as_object().unwrap();
+        let token = [
+            "DERM_CHAT_TOKEN",
+            "DERM_CHAT_TOKEN_FILE",
+            "GEMINI_CLI_DERM_CHAT_TOKEN_FILE",
+        ]
+        .iter()
+        .any(|k| env.contains_key(*k));
+        if daemon.is_some() && token && !env.contains_key("DERM_CHAT_ID") {
+            cmd.env("DERM_CHAT_ID", "chat-fake");
+        }
     }
     cmd.current_dir(subst(call["cwd"].as_str().unwrap(), &map));
     cmd.stdin(Stdio::piped())

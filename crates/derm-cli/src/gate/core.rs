@@ -189,7 +189,10 @@ fn full_access(call: &GateCall, env: &Env) -> bool {
 pub fn decide_call(loaded: &LoadedPolicy, call: &GateCall, env: &Env) -> GateAnswer {
     // Wave 6's seam (lane 6D, `gate/taint/`): taint may raise an answer,
     // never lower it; the base's stub returns it unchanged.
-    let answer = super::taint::adjust(decide_call_inner(loaded, call), call, env);
+    // Fix pass 6 (note BE section 2.3): a call that stops derm's daemon
+    // asks, before taint reads the answer.
+    let answer = super::daemon_stop::adjust(decide_call_inner(loaded, call), call);
+    let answer = super::taint::adjust(answer, call, env);
     deny_ask_in_full_access(answer, call, env)
 }
 

@@ -9,11 +9,18 @@
 //! `detail.taint`), which only the daemon's record of the start can say: a
 //! hook's environment is the project's to set (case 227).
 //!
-//! What it keeps, per chat, in memory only: the state the gate adds (the
-//! shared type `derm_tap::results::state::State`: mark ids and reasons, the
-//! files the chat wrote by path, the hosts it reached as fingerprints), and
-//! the verdict `run.start` named. The hosts untrusted results named are the
-//! tap's (`derm_tap::results::named`), in the same process.
+//! What it keeps, per chat: the state the gate adds (the shared type
+//! `derm_tap::results::state::State`: mark ids and reasons, the files the
+//! chat wrote by path, the hosts it reached as fingerprints), and the
+//! verdict `run.start` named. The hosts untrusted results named are the
+//! tap's (`derm_tap::results::named`), in the same process, and go with it.
+//! Since fix pass 6 the state and the verdict of every chat still running
+//! are also written with the daemon's state file ([`Taints::snapshot`],
+//! `daemon.rs` `save_state`) and taken back after a restart for the chats
+//! that still run ([`Taints::restore`]): a service manager brings the
+//! daemon back within seconds (`Restart=on-failure`, launchd's `KeepAlive`),
+//! and an empty taint after that would lower the chat's taint (note BE
+//! section 2.2, Tony's call of 15 Nov).
 //!
 //! The op (`{"op": "taint", "chat", "hosts", "add"?}`, a proposal for
 //! `contracts/daemon-protocol.md` section 2, routed by integration):
@@ -143,6 +150,75 @@ impl Taints {
         }
     }
 
+    /// The state and the verdict flag of every chat not stopped, for the
+    /// daemon's state file.
+    pub fn snapshot(&self) -> Value {
+        let chats: Vec<Value> = self
+            .chats
+            .lock()
+            .map(|c| {
+                c.iter()
+                    .filter(|c| !c.stopped)
+                    .map(|c| {
+                        json!({
+                            "id": c.id,
+                            "flag": c.flag.map(Verdict::as_str),
+                            "state": c.state,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({"v": 1, "chats": chats})
+    }
+
+    /// Takes back what [`Taints::snapshot`] wrote, for the chats `keep`
+    /// names (those that still run). Read, not trusted: a chat id and a
+    /// state are checked as the op checks them, and what comes back is
+    /// merged in, so it only adds. Returns how many chats came back.
+    pub fn restore(&self, saved: Option<&Value>, keep: &dyn Fn(&str) -> bool) -> usize {
+        let mut n = 0;
+        for c in saved
+            .and_then(|s| s.get("chats"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = c
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 128 && keep(id))
+            else {
+                continue;
+            };
+            let Ok(state) =
+                serde_json::from_value::<State>(c.get("state").cloned().unwrap_or(Value::Null))
+            else {
+                continue;
+            };
+            if !bounded(&state) {
+                continue;
+            }
+            let flag = c
+                .get("flag")
+                .and_then(Value::as_str)
+                .and_then(Verdict::parse);
+            let back = self.with_chat(id, |chat| {
+                chat.state.merge(&state);
+                // A flag `run.start` already gave this daemon stands; else
+                // the one the chat started with.
+                if chat.flag.is_none() {
+                    chat.flag = flag;
+                }
+                chat.stopped = false;
+            });
+            if back.is_some() {
+                n += 1;
+            }
+        }
+        n
+    }
+
     /// Whether the daemon knows `chat` as tainted.
     pub fn is_tainted(&self, chat: &str) -> bool {
         self.chats
@@ -198,15 +274,7 @@ impl Taints {
             Some(v) => {
                 let s: State =
                     serde_json::from_value(v.clone()).map_err(|e| format!("add: {e}"))?;
-                if s.marks.len() > MAX_MARKS
-                    || s.written.len() > MAX_WRITTEN
-                    || s.hosts.len() > MAX_HOSTS
-                    || s.marks
-                        .iter()
-                        .any(|m| m.id.len() > 160 || m.tool.len() > 160)
-                    || s.written.iter().any(|w| w.len() > 4096)
-                    || s.hosts.iter().any(|h| h.len() != 64)
-                {
+                if !bounded(&s) {
                     return Err("add is larger than a state holds".into());
                 }
                 Some(s)
@@ -230,6 +298,19 @@ impl Taints {
             "named": named,
         }))
     }
+}
+
+/// Whether a state is within what one chat's state holds (the op's check,
+/// and the restore's).
+fn bounded(s: &State) -> bool {
+    !(s.marks.len() > MAX_MARKS
+        || s.written.len() > MAX_WRITTEN
+        || s.hosts.len() > MAX_HOSTS
+        || s.marks
+            .iter()
+            .any(|m| m.id.len() > 160 || m.tool.len() > 160)
+        || s.written.iter().any(|w| w.len() > 4096)
+        || s.hosts.iter().any(|h| h.len() != 64))
 }
 
 /// The daemon's one store (integration routes the op and the ingest to it).

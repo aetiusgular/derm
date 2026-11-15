@@ -1069,7 +1069,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     Some(r) if r.starts_with('/') => {
                         allow_read.push(json!({"path": r, "literal": true}));
                         notes.push(format!(
-                            "derm run: under srt on Linux srt refuses the daemon's socket, so {gate} sends its records to the daemon's port through srt's proxy; a record it cannot post denies the call, and an ask goes to {own} own prompt or is denied (no approver reaches into srt here)"
+                            "derm run: under srt on Linux srt refuses the daemon's socket, so {gate} sends its records and this chat's taint state to the daemon's port through srt's proxy; a record it cannot post denies the call, a taint state it cannot read counts as tainted with deny, and an ask goes to {own} own prompt or is denied (no approver reaches into srt here)"
                         ));
                     }
                     _ if !i.args.no_daemon => notes.push(format!(

@@ -160,3 +160,55 @@ fn chats_are_bounded_and_a_stopped_chat_goes_first() {
     assert!(t.is_tainted("keep"));
     assert!(!t.is_tainted("stopped"));
 }
+
+/// Fix pass 6: what the state file holds comes back only for the chats that
+/// still run, only adds, and is checked as the op checks an add.
+#[test]
+fn a_snapshot_comes_back_for_running_chats_only_and_only_adds() {
+    let a = Taints::new(None);
+    a.on_event(&run_event(
+        "run.start",
+        "fp6-a",
+        Source::Run,
+        Some(json!({"verdict": "deny", "from": "flag"})),
+    ));
+    let mark =
+        json!({"id": "m1", "reason": "untrusted-content", "kind": "web", "tool": "webfetch"});
+    for chat in ["fp6-a", "fp6-b"] {
+        let r = a.handle(
+            Some(chat),
+            &json!({"op": "taint", "chat": chat, "add": {"v": 1, "marks": [mark]}}),
+        );
+        assert_eq!(r["ok"], true, "{r}");
+    }
+    a.on_event(&run_event("run.stop", "fp6-b", Source::Run, None));
+    let snap = a.snapshot();
+    let ids: Vec<&str> = snap["chats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["fp6-a"], "a stopped chat is not kept: {snap}");
+    let b = Taints::new(None);
+    // A chat a later run.start already named keeps its own flag.
+    assert_eq!(b.restore(Some(&snap), &|c| c == "fp6-a"), 1);
+    assert!(b.is_tainted("fp6-a"));
+    assert_eq!(b.verdict("fp6-a"), (Verdict::Deny, From::Flag));
+    let c = Taints::new(None);
+    assert_eq!(c.restore(Some(&snap), &|_| false), 0, "not running");
+    assert!(!c.is_tainted("fp6-a"));
+    // A planted entry: an empty state removes nothing; one over the bound,
+    // a long id, or no state at all is not taken.
+    let big: Vec<String> = (0..MAX_HOSTS + 1).map(|i| format!("{i:064}")).collect();
+    let planted = json!({"v": 1, "chats": [
+        {"id": "fp6-a", "flag": "record", "state": {"v": 1}},
+        {"id": "fp6-c", "state": {"v": 1, "hosts": big}},
+        {"id": "x".repeat(200), "state": {"v": 1, "marks": [mark]}},
+        {"id": "fp6-d"}
+    ]});
+    assert_eq!(b.restore(Some(&planted), &|_| true), 1);
+    assert!(b.is_tainted("fp6-a"), "an empty state removed nothing");
+    assert_eq!(b.verdict("fp6-a"), (Verdict::Deny, From::Flag));
+    assert!(!b.is_tainted("fp6-c"));
+}

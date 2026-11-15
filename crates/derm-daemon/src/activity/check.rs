@@ -1106,10 +1106,6 @@ pub const RULE_BWRAP_TMPFS: &str = "bubblewrapOwnTmpfs";
 /// (BW6R3-1), counted in `suppressed`.
 pub const RULE_BWRAP_BIND_CHECK: &str = "bubblewrapBindCheck";
 
-/// The rule that hides derm's gate writing the chat's own taint state in a
-/// sandbox's tmpfs (BW6R3-2), counted in `suppressed`.
-pub const RULE_DERM_SANDBOX_STATE: &str = "dermGateSandboxState";
-
 /// The rule that hides derm's gate reading its chat's own route out of srt,
 /// counted in `suppressed`.
 pub const RULE_DERM_OWN_ROUTE: &str = "dermGateOwnRoute";
@@ -1144,25 +1140,6 @@ fn bubblewrap_bind_check(event: &ActivityEvent, path: &str, folders: &[String]) 
         && exe.rsplit('/').next() == Some("bwrap")
         && path.starts_with("/newroot/")
         && event.detail.get("pathOnly").and_then(Value::as_bool) == Some(true)
-}
-
-/// derm's gate writing this chat's own taint state in a sandbox's tmpfs
-/// (BW6R3-2): under srt on Linux the gate keeps it in srt's tmpfs over
-/// `~/.derm` (BW6R2-5), `<home>/.derm/local/<chat>.taint.json`
-/// (`derm-cli` `gate/taint/state.rs`, `file_path`), where it goes with the
-/// sandbox. Hidden only when the feed said the file was on no host mount,
-/// the writer is the derm binary the chat's `run.start` names and the chat
-/// cannot have replaced, the call creates or writes (never a delete or a
-/// rename), and the chat's id is plain, so its file name is the id as the
-/// gate writes it (`gate/locallog`, `file_name`). A write can clear a chat's
-/// taint as well as a delete (`{"v":1}`: `gate/taint/state.rs` `load` reads
-/// the file as it is; fix pass 4's review, FP4-R1), so the writer is what
-/// this rests on: srt keeps that binary read-only (`run/plan.rs`), and one in
-/// the chat's folder or a temp root is never trusted.
-fn derm_gate_sandbox_state(event: &ActivityEvent, path: &str, chat: Option<&ChatContext>) -> bool {
-    matches!(event.kind.as_str(), "create" | "write")
-        && made_off_the_host(event)
-        && by_chats_own_derm(event, path, chat, ".derm/local", ".taint.json")
 }
 
 /// derm's gate reading its chat's own route out of srt on Linux,
@@ -1446,14 +1423,11 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                     }
                     BwrapSetup::Other => raw,
                 };
-                // Box test w6 retest 3, BW6R3-2: the gate's own state in a
-                // sandbox's tmpfs.
-                if derm_gate_sandbox_state(event, path, chat) {
-                    *suppressed
-                        .entry(RULE_DERM_SANDBOX_STATE.to_string())
-                        .or_default() += 1;
-                    continue;
-                }
+                // Box test w6 retest 3's BW6R3-2 hid the gate's own taint
+                // state in a sandbox's tmpfs. Since fix pass 6 (the redo of
+                // fix pass 4's part 2) the gate keeps taint in the daemon
+                // behind every route and never writes that file, so a write
+                // of it is the agent's, and is flagged.
                 // The chat's own runtime writing its recording (T1).
                 if own_runtime && in_recordings(path, data_dir) {
                     continue;
@@ -2257,102 +2231,40 @@ mod tests {
         }
     }
 
-    /// Box test w6 retest 3, BW6R3-2: under srt derm's gate keeps a chat's
-    /// taint state in srt's tmpfs over `~/.derm` (BW6R2-5), and its create
-    /// and write read as "Created ~/.derm/local/<chat>.taint.json", though
-    /// the feed said the file was on no host mount. Only that chat's own
-    /// state file, written by the derm its `run.start` names, on no host
-    /// mount, is hidden; a delete or a rename of it (which can clear a
-    /// chat's taint, case 265), any other writer, file or chat still flags.
+    /// Box test w6 retest 3, BW6R3-2 hid derm's gate writing a chat's taint
+    /// state in srt's tmpfs over `~/.derm` (records 1 and 2 of the box's
+    /// fixture). Since fix pass 6 (the redo of fix pass 4's part 2, FP4-R1)
+    /// the gate keeps taint in the daemon behind srt's route and writes no
+    /// such file, so a write of it, by any program, is the agent's and is
+    /// flagged: `{"v":1}` there would have cleared the chat's taint.
     #[test]
-    fn bw6r3_2_the_gates_own_taint_state_in_a_sandboxs_tmpfs_is_not_a_host_write() {
+    fn bw6r3_2_a_taint_file_in_a_sandboxs_tmpfs_is_flagged_whoever_writes_it() {
         let recs = box_records();
         let writes = [recs[1].clone(), recs[2].clone()];
         let chat = "derm-544da2c1fa2c";
-        let ctx = |exe: Option<&str>| {
-            HashMap::from([(
-                chat.to_string(),
-                ChatContext {
-                    chat_id: chat.into(),
-                    harness: "claude-code".into(),
-                    folders: vec!["/home/opone/w6box/rt3/a5cp".into()],
-                    derm_exe: exe.map(str::to_string),
-                },
-            )])
-        };
-        let own = ctx(Some("/home/opone/.local/bin/derm"));
+        let own = HashMap::from([(
+            chat.to_string(),
+            ChatContext {
+                chat_id: chat.into(),
+                harness: "claude-code".into(),
+                folders: vec!["/home/opone/w6box/rt3/a5cp".into()],
+                derm_exe: Some("/home/opone/.local/bin/derm".into()),
+            },
+        )]);
         let out = check_with(&writes, &own);
-        assert!(out.flags.is_empty(), "{:?}", out.flags);
-        assert_eq!(out.suppressed.get(RULE_DERM_SANDBOX_STATE), Some(&2));
-        let edit = |f: &dyn Fn(&mut ActivityEvent)| {
-            let mut e = recs[1].clone();
-            f(&mut e);
-            e
-        };
-        for (why, e, chats) in [
-            ("no run.start path", recs[1].clone(), ctx(None)),
-            ("another derm", recs[1].clone(), ctx(Some("/usr/bin/derm"))),
-            (
-                "on the host",
-                edit(&|e| e.detail["devMounted"] = json!(true)),
-                own.clone(),
-            ),
-            (
-                "not said",
-                edit(&|e| {
-                    e.detail.as_object_mut().unwrap().remove("devMounted");
-                }),
-                own.clone(),
-            ),
-            (
-                "another writer",
-                edit(&|e| e.detail["exe"] = json!("/usr/bin/bash")),
-                own.clone(),
-            ),
-            (
-                "another chat's file",
-                edit(&|e| {
-                    e.detail["path"] = json!("/home/opone/.derm/local/derm-000000000000.taint.json")
-                }),
-                own.clone(),
-            ),
-            (
-                "the light log",
-                edit(&|e| {
-                    e.detail["path"] = json!("/home/opone/.derm/local/derm-544da2c1fa2c.jsonl")
-                }),
-                own.clone(),
-            ),
-            (
-                "another folder",
-                edit(&|e| {
-                    e.detail["path"] = json!("/home/opone/.derm/run/derm-544da2c1fa2c.taint.json")
-                }),
-                own.clone(),
-            ),
-            ("a delete", edit(&|e| e.kind = "unlink".into()), own.clone()),
-            (
-                "a rename",
-                edit(&|e| {
-                    e.kind = "rename".into();
-                    e.detail["dest"] = e.detail["path"].clone();
-                }),
-                own.clone(),
-            ),
-            (
-                "another feed",
-                edit(&|e| e.source = ActivitySource::Eslogger),
-                own.clone(),
-            ),
-        ] {
-            let out = check_with(&[e], &chats);
-            assert_eq!(out.flags.len(), 1, "{why}: {:?}", out.flags);
-            assert!(
-                !out.suppressed.contains_key(RULE_DERM_SANDBOX_STATE),
-                "{why}: {:?}",
-                out.suppressed
-            );
-        }
+        // The create and the write, as one flag of two.
+        assert_eq!(out.flags.len(), 1, "{:?}", out.flags);
+        assert_eq!(out.flags[0].count, 2, "{:?}", out.flags);
+        assert!(
+            out.flags[0].summary.contains(".taint.json"),
+            "{:?}",
+            out.flags
+        );
+        assert!(
+            !out.suppressed.contains_key("dermGateSandboxState"),
+            "{:?}",
+            out.suppressed
+        );
     }
 
     /// Box test w6 retest 4 (on the fix of retest 3): derm's gate reads
@@ -2426,8 +2338,11 @@ mod tests {
     #[test]
     fn fp4_r1_a_derm_or_bwrap_the_chat_can_replace_hides_nothing() {
         let recs = box_records();
-        let chat = "derm-544da2c1fa2c";
-        let folder = "/home/opone/w6box/rt3/a5cp";
+        // The gate's read of its own route (record 4), by a derm the chat
+        // could have replaced: flagged. (Fix pass 6 removed the taint-file
+        // hide this test also held: no derm write of that file is hidden.)
+        let chat = "derm-3827ee1711f4";
+        let folder = "/home/opone/w6box/rt4/a5cp";
         let ctx = |exe: &str| {
             HashMap::from([(
                 chat.to_string(),
@@ -2445,14 +2360,11 @@ mod tests {
             "/var/tmp/x/derm".to_string(),
             "/dev/shm/derm".to_string(),
         ] {
-            let mut e = recs[1].clone();
+            let mut e = recs[4].clone();
             e.detail["exe"] = json!(exe);
             let out = check_with(&[e], &ctx(&exe));
             assert_eq!(out.flags.len(), 1, "{exe}: {:?}", out.flags);
-            assert!(
-                !out.suppressed.contains_key(RULE_DERM_SANDBOX_STATE),
-                "{exe}"
-            );
+            assert!(!out.suppressed.contains_key(RULE_DERM_OWN_ROUTE), "{exe}");
         }
         let mut look = recs[0].clone();
         look.detail["pathOnly"] = json!(true);

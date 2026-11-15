@@ -19,6 +19,16 @@
 //             runs in the sandbox as proxy and daemon: denied, and nothing
 //             reaches the listener (fix pass 2's review, FP2-R1)
 //
+// Then taint through the same route (fix pass 6, the redo of fix pass 4's
+// part 2, FP4-R1): two more chats, `--taint record` and `--taint deny`, each
+// a WebFetch then a `git push`, then `{"v":1}` written by the chat into
+// srt's own `~/.derm/local/<chat>.taint.json`, then a push again:
+//   record    both pushes run, the log holds taint.mark and taint.review
+//   deny      both pushes are denied with the chat's verdict (deny, flag):
+//             the file the agent wrote is never the state
+//   neither chat leaves a light file in the sandbox, and the start line
+//   has no note that taint is not applied
+//
 //   node tests/integration/w6/r7-srt-gate-route.mjs --bin target/debug --srt /tmp/cli/node_modules/.bin/srt
 //
 // On a host with Ubuntu's `bwrap-userns-restrict` profile, put srt's
@@ -89,7 +99,10 @@ if (process.env.DERM_BWRAP_DIR && !bwrapDir()) {
 const PATH = [TOOLS, bwrapDir(), dirname(process.execPath), "/usr/local/bin", "/usr/bin", "/bin"].filter(Boolean).join(":");
 if (bwrapDir()) console.log(`bwrap: ${bwrapDir()}/bwrap first on PATH`);
 const env = { PATH, HOME, XDG_RUNTIME_DIR: RUN, XDG_DATA_HOME: DATA, LANG: "C.UTF-8" };
-writeFileSync(join(HOME, ".derm", "policy.json"), JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }));
+writeFileSync(
+  join(HOME, ".derm", "policy.json"),
+  JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }, { tool: "webfetch", action: "allow" }] }),
+);
 chmodSync(join(HOME, ".derm", "policy.json"), 0o600);
 
 // A listener the agent could run in the sandbox: it answers a CONNECT and
@@ -137,6 +150,23 @@ echo "LIGHT $(ls "$HOME/.derm/local" 2>/dev/null | wc -l)"
 );
 chmodSync(probe, 0o755);
 
+// The taint probe: a fetch, a push, the agent's clean file, a push.
+const taintProbe = join(top, "taint.sh");
+writeFileSync(
+  taintProbe,
+  `#!/bin/bash
+input() { printf '{"session_id":"s","transcript_path":"/x","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"%s","tool_input":%s,"tool_use_id":"%s"}' "$PWD" "$1" "$2" "$3"; }
+hook() { echo "CASE $3 $(input "$1" "$2" "$3" | derm hook claude-code pre | tr -d '\\n')"; }
+echo "CHAT $DERM_CHAT_ID"
+hook WebFetch '{"url":"https://a.test/x","prompt":"p"}' toolu_t_fetch
+hook Bash '{"command":"git push origin main"}' toolu_t_push
+mkdir -p "$HOME/.derm/local" && printf '{"v":1}\\n' > "$HOME/.derm/local/$DERM_CHAT_ID.taint.json"
+hook Bash '{"command":"git push origin main"}' toolu_t_push2
+echo "LIGHT $(ls "$HOME/.derm/local" | grep -v "^$DERM_CHAT_ID.taint.json$" | wc -l)"
+`,
+);
+chmodSync(taintProbe, 0o755);
+
 const daemon = spawn(DAEMON, ["--foreground"], { env, stdio: ["ignore", "ignore", "pipe"] });
 let daemonErr = "";
 daemon.stderr.on("data", (d) => (daemonErr += d));
@@ -162,7 +192,11 @@ try {
   await sleep(500);
   const logs = readdirSync(join(DATA, "derm", "activity")).map((f) => readFileSync(join(DATA, "derm", "activity", f), "utf8")).join("");
   const kept = (id) => logs.includes(`"toolUseId":"${id}"`);
-  check("the route note is on the start line", /sends its records to the daemon's port through srt's proxy/.test(run.err), run.err.split("\n").find((l) => /srt/.test(l))?.slice(0, 120));
+  check(
+    "the route note is on the start line",
+    /sends its records and this chat's taint state to the daemon's port through srt's proxy/.test(run.err),
+    run.err.split("\n").find((l) => /srt/.test(l))?.slice(0, 120),
+  );
   check("route: the record reaches the daemon, the call runs", decision("toolu_r7_route") === "allow" && kept("toolu_r7_route"), `${decision("toolu_r7_route")}, kept ${kept("toolu_r7_route")}`);
   for (const id of ["token", "chat", "proxy", "planted", "symlink"]) {
     const d = decision(`toolu_r7_${id}`);
@@ -174,6 +208,47 @@ try {
   check("no light log on the host", !existsSync(join(HOME, ".derm", "local")) || readdirSync(join(HOME, ".derm", "local")).length === 0);
   const routes = join(HOME, ".derm", "run", "routes");
   check("the route file is gone after the chat", !existsSync(routes) || readdirSync(routes).length === 0);
+
+  // Taint through the route (fix pass 6).
+  for (const verdict of ["record", "deny"]) {
+    const t = await new Promise((done) => {
+      const ch = spawn(DERM, ["run", "--boundary", "srt", "--taint", verdict, "--", taintProbe], {
+        env,
+        cwd: WORK,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      let err = "";
+      ch.stdout.on("data", (d) => (out += d));
+      ch.stderr.on("data", (d) => (err += d));
+      ch.on("exit", (code) => done({ code, out, err }));
+    });
+    const ans = (id) => (t.out.match(new RegExp(`CASE ${id} (.*)`)) ?? [])[1] ?? "";
+    const dec = (id) => (ans(id).match(/"permissionDecision":"(\w+)"/) ?? [])[1] ?? "none";
+    await sleep(500);
+    const all = readdirSync(join(DATA, "derm", "activity")).map((f) => readFileSync(join(DATA, "derm", "activity", f), "utf8")).join("");
+    const chat = (t.out.match(/CHAT (\S+)/) ?? [])[1] ?? "";
+    const mine = all.split("\n").filter((l) => chat && l.includes(`"chatId":"${chat}"`));
+    const kinds = ["taint.mark", "taint.review"].filter((k) => mine.some((l) => l.includes(`"kind":"${k}"`)));
+    check(`taint ${verdict}: the fetch runs`, dec("toolu_t_fetch") === "allow", dec("toolu_t_fetch"));
+    if (verdict === "record") {
+      check(
+        "taint record: both pushes run, and the log holds taint.mark and taint.review",
+        dec("toolu_t_push") === "allow" && dec("toolu_t_push2") === "allow" && kinds.includes("taint.mark") && kinds.includes("taint.review"),
+        `${dec("toolu_t_push")}, ${dec("toolu_t_push2")}, ${chat}: ${[...new Set(kinds)].join(" ")}`,
+      );
+    } else {
+      const both = [ans("toolu_t_push"), ans("toolu_t_push2")];
+      check(
+        "taint deny: both pushes are denied with the chat's verdict, the agent's file is not the state",
+        dec("toolu_t_push") === "deny" && dec("toolu_t_push2") === "deny" && both.every((a) => /the chat's verdict is deny, flag/.test(a)),
+        `${dec("toolu_t_push")}, ${dec("toolu_t_push2")}: ${both[1].slice(0, 200)}`,
+      );
+    }
+    const lightT = Number((t.out.match(/LIGHT (\d+)/) ?? [])[1] ?? -1);
+    check(`taint ${verdict}: no taint or log file of the gate's in the sandbox`, lightT === 0, `${lightT}`);
+    check(`taint ${verdict}: no note that taint is not applied`, !/taint under srt|is not applied/.test(t.err), t.err.split("\n").find((l) => /taint/.test(l))?.slice(0, 160));
+  }
 } finally {
   cleanup();
 }
