@@ -5,6 +5,7 @@
 // as part of a hook: hooks import only src/core and their own adapter.
 
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,7 +38,12 @@ export async function startFakeDaemon(opts: { approve?: ApproveBehaviour; root?:
   // Unix socket paths are limited to about 104 bytes; keep the folder short.
   const dir = mkdtempSync(path.join(opts.root ?? tmpdir(), "tkd-"));
   chmodSync(dir, 0o700);
-  const socket = path.join(dir, "daemon.sock");
+  // Windows: a named pipe, which the Rust gate takes by name in
+  // DERM_DAEMON_SOCKET (`derm_core::platform::windows::pipe::connect`, a
+  // name under `\\.\pipe\`; its server check wants the pipe and its server
+  // ours, which this process is). Windows CI on e334037: 17 files failed
+  // whole on `listen(<tmp>/daemon.sock)`, EACCES (fix pass 7).
+  const socket = process.platform === "win32" ? `\\\\.\\pipe\\derm-test-${randomBytes(16).toString("hex")}` : path.join(dir, "daemon.sock");
   writeFileSync(path.join(dir, "daemon.token"), `${DAEMON_TOKEN}\n`, { mode: 0o600 });
   let behaviour: ApproveBehaviour = opts.approve ?? "none";
   const lines: { conn: number; line: Record<string, unknown> }[] = [];
@@ -130,7 +136,7 @@ export async function startFakeDaemon(opts: { approve?: ApproveBehaviour; root?:
     server.once("error", reject);
     server.listen(socket, () => resolve());
   });
-  chmodSync(socket, 0o600);
+  if (process.platform !== "win32") chmodSync(socket, 0o600);
   return {
     dir,
     socket,
