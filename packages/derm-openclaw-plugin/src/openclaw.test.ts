@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import entry from "../index.ts";
 import { REDACTED } from "./core/redact.ts";
@@ -40,6 +40,9 @@ let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
 });
+// Each test is a chat of its own: taint a test's calls made stays with it
+// (the fake answers `taint` as the daemon does since fix pass 6).
+beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
   await daemon.close();
   rmSync(root, { recursive: true, force: true });

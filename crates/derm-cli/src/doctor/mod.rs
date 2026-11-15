@@ -743,8 +743,9 @@ fn settings_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
     Some(match (me, named) {
         (Some(me), Some(named)) if me == named => Ok(named),
         _ => Err(format!(
-            "the gate in {} runs {gate}, which is not this derm; doctor runs only its own binary there",
-            file.display()
+            "the gate in {} runs {}, which is not this derm; doctor runs only its own binary there",
+            file.display(),
+            gate.chars().take(120).collect::<String>()
         )),
     })
 }

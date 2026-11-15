@@ -115,13 +115,24 @@ fn a_dry_run_says_the_plan_and_writes_nothing() {
     assert!(r.said.contains("the workspace-write preset"), "{}", r.said);
     #[cfg(not(unix))]
     assert!(r.said.contains("none written"), "{}", r.said);
-    assert!(
-        r.said.contains(
-            "claude plugin marketplace add aetiusgular/derm && claude plugin install derm@derm"
-        ),
-        "{}",
-        r.said
-    );
+    // On Windows Claude Code's gate is derm's settings registration since
+    // fix pass 6 (gates.json's Windows row, note BE section 1.5 (d)); the
+    // plugin elsewhere.
+    if cfg!(windows) {
+        assert!(
+            r.said.contains("derm connect claude-code --gate --write"),
+            "{}",
+            r.said
+        );
+    } else {
+        assert!(
+            r.said.contains(
+                "claude plugin marketplace add aetiusgular/derm && claude plugin install derm@derm"
+            ),
+            "{}",
+            r.said
+        );
+    }
     assert!(
         r.said
             .contains(&format!("--ref v{}", env!("CARGO_PKG_VERSION"))),

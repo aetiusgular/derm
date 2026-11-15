@@ -143,6 +143,7 @@ fn claude(env: &Env, home: &Path) -> Registered {
     // writes it on Windows. Claude Code runs it whatever the plugin is.
     if let Ok(Some(v)) = read_json(&config.join("settings.json"), false) {
         if let Some(gate) = settings_gate(&v) {
+            let gate: String = gate.chars().take(120).collect();
             return Registered::Yes(format!(
                 "derm's gate in {} runs {gate} hook claude-code pre in exec form and blocks when it fails",
                 config.join("settings.json").display()
@@ -267,8 +268,9 @@ fn claude(env: &Env, home: &Path) -> Registered {
 /// The derm a settings file's own exec-form gate runs (`connect/gates.json`,
 /// Claude Code's Windows row): a `PreToolUse` hook whose command is an
 /// absolute path to a file named `derm` or `derm.exe`, whose arguments are
-/// `hook claude-code pre`, and which blocks when it fails. The path, cut to
-/// 120 characters (the file is one an agent can write).
+/// `hook claude-code pre`, and which blocks when it fails. The path as the
+/// file gives it; a reader that prints it cuts it (the file is one an agent
+/// can write).
 pub fn settings_gate(v: &Value) -> Option<String> {
     let entries = v.pointer("/hooks/PreToolUse")?.as_array()?;
     entries
@@ -283,7 +285,7 @@ pub fn settings_gate(v: &Value) -> Option<String> {
                 || (cmd.len() > 3 && cmd.as_bytes()[1] == b':' && cmd.as_bytes()[2] == b'\\');
             let args_ok = h.get("args") == Some(&serde_json::json!(["hook", "claude-code", "pre"]));
             let blocks = h.get("onFailure").and_then(Value::as_str) == Some("block");
-            (named && absolute && args_ok && blocks).then(|| cmd.chars().take(120).collect())
+            (named && absolute && args_ok && blocks).then(|| cmd.to_string())
         })
 }
 
