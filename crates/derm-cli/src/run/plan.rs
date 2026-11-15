@@ -1047,23 +1047,31 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             // (srt 0.0.82 binds an `allowRead` under a `denyRead` back over its
             // tmpfs, `pushReadDenyDirMounts`, run). srt refuses the daemon's
             // socket there, so the hook's records go to the daemon's port
-            // through srt's own proxy.
+            // through srt's own proxy. A program with no preset (case 80) is
+            // not named as having a gate: derm wrote none for it, though one
+            // it starts (a harness run by its path, a wrapper) may run one
+            // the person registered (box test w6 retest 2, BW6R2-6).
             if !i.macos {
+                let (gate, own) = if h.id == "other" {
+                    (
+                        format!("a derm gate that {command} runs (derm registered none for it)"),
+                        format!("{command}'s"),
+                    )
+                } else {
+                    (format!("{}'s gate", h.id), format!("{}'s", h.id))
+                };
                 match &i.srt_route {
                     Some(r) if r.starts_with('/') => {
                         allow_read.push(json!({"path": r, "literal": true}));
                         notes.push(format!(
-                            "derm run: under srt on Linux srt refuses the daemon's socket, so {}'s gate sends its records to the daemon's port through srt's proxy; a record it cannot post denies the call, and an ask goes to {}'s own prompt or is denied (no approver reaches into srt here)",
-                            h.id, h.id
+                            "derm run: under srt on Linux srt refuses the daemon's socket, so {gate} sends its records to the daemon's port through srt's proxy; a record it cannot post denies the call, and an ask goes to {own} own prompt or is denied (no approver reaches into srt here)"
                         ));
                     }
                     _ if !i.args.no_daemon => notes.push(format!(
-                        "derm run: under srt on Linux {}'s gate has no route to the daemon here (the daemon published no OTLP port), so it denies every call it gates",
-                        h.id
+                        "derm run: under srt on Linux {gate} has no route to the daemon here (the daemon published no OTLP port), so it denies every call it gates"
                     )),
                     _ => notes.push(format!(
-                        "derm run: under srt on Linux with no daemon {}'s gate can keep no record (srt's ~/.derm is a tmpfs that goes with the sandbox), so it denies every call it gates",
-                        h.id
+                        "derm run: under srt on Linux with no daemon {gate} can keep no record (srt's ~/.derm is a tmpfs that goes with the sandbox), so it denies every call it gates"
                     )),
                 }
             }
@@ -1953,6 +1961,46 @@ mod tests {
         assert!(!srt_of(&mac)["filesystem"]["allowRead"]
             .to_string()
             .contains("/routes/"));
+    }
+
+    /// Box test w6 retest 2, BW6R2-6: `derm run --boundary srt -- /bin/bash`
+    /// named "other's gate" on the start line. derm registers no gate in a
+    /// program with no preset (case 80); one it starts may run a gate the
+    /// person registered (`/usr/bin/claude` is `other`, args.rs L15), so
+    /// the route stays and the line names the program.
+    #[test]
+    fn bw6r2_6_a_program_with_no_preset_is_not_named_as_having_a_gate() {
+        let args = a(&["--boundary", "srt", "--", "/bin/bash"]);
+        assert_eq!(args.harness.id, "other");
+        let route = "/home/u/.derm/run/routes/chat-b.json".to_string();
+        for r in [None, Some(route.clone())] {
+            let p = build(&Inputs {
+                srt_route: r,
+                ..inputs(&args)
+            })
+            .unwrap();
+            assert!(
+                !p.notes.iter().any(|n| n.contains("other's")),
+                "{:?}",
+                p.notes
+            );
+            assert!(
+                p.notes
+                    .iter()
+                    .any(|n| n.contains("a derm gate that /bin/bash runs")),
+                "{:?}",
+                p.notes
+            );
+        }
+        let p = build(&Inputs {
+            srt_route: Some(route.clone()),
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(srt_of(&p)["filesystem"]["allowRead"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path": route, "literal": true})));
     }
 
     /// Mac test w5 retest 4, MW5-24: under derm's srt, Claude Code could not
