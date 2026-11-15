@@ -238,7 +238,10 @@ fn derm_exe() -> Option<String> {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .ok()
-        .map(|p| p.to_string_lossy().into_owned())
+        // Windows: `C:\x`, not the `\\?\C:\x` canonicalize gives, as
+        // `derm connect` writes it (fix pass 6's review): the hook command
+        // and `derm status` read a plain drive path.
+        .map(|p| crate::connect::gate::without_verbatim(&p.to_string_lossy()))
 }
 
 /// The dry run's `taint:` line. Under srt on Linux with `--no-daemon` the
@@ -1333,6 +1336,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let claude_gate_by =
         if a.harness.id == "claude-code" && a.boundary != Boundary::Sbx {
             claude_gate::check_user_settings(&a.rest).map_err(|e| (2, e))?;
+            claude_gate::check_settings_files(
+                Path::new(&home),
+                std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+                Path::new(&cwd),
+            )
+            .map_err(|e| (2, e))?;
             Some(derm_exe().ok_or((
             1,
             "derm's own path cannot be read, so derm cannot register its gate for Claude Code"
@@ -1644,7 +1653,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // Claude Code's gate, as the last `--settings`: after the Standard
     // tier's block and the export's, which it holds (fix pass 6).
     if let Some(derm) = &claude_gate_by {
-        claude_gate::register(&mut p, derm).map_err(|e| (1, e))?;
+        // The chat in the hook's own words only when a daemon holds its
+        // taint (fix pass 6's review): with `--no-daemon` the light tier is
+        // the store, as derm run's start line says.
+        let held = token.is_some() || (a.dry_run && !a.no_daemon);
+        claude_gate::register(&mut p, derm, held.then_some(chat.as_str())).map_err(|e| (1, e))?;
     }
     // Only a run that wrote a helper clears the receiver's helpers: one
     // `derm run` is one chat, so they are this run's.

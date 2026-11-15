@@ -334,3 +334,49 @@ fn gate_serve_denies_a_decision_its_light_tier_log_could_not_keep() {
     assert_eq!(a, "deny", "{}", text(&o));
     assert!(why.contains(MARK), "{why}");
 }
+
+/// Fix pass 6's review: the hook `derm run` registers names its chat
+/// (`--run-chat`). With the token unset by a project's settings `env`, a
+/// light taint file the agent wrote is not the state: a push is denied
+/// with the chat counted as tainted, and the record goes to that chat.
+#[test]
+fn fp6_a_run_chat_hook_with_no_token_does_not_read_the_agents_light_file() {
+    let dir = home("runchat", false);
+    let light = dir.join(".derm/local");
+    std::fs::create_dir_all(&light).unwrap();
+    std::fs::set_permissions(dir.join(".derm"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&light, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::write(light.join("rc-1.taint.json"), "{\"v\":1}\n").unwrap();
+    let push = json!({
+        "session_id": "s-fc", "transcript_path": dir.join("t.jsonl"), "cwd": dir.join("work"),
+        "permission_mode": "default", "hook_event_name": "PreToolUse",
+        "tool_name": "Bash", "tool_input": {"command": "git push origin main"}, "tool_use_id": "toolu_rc1",
+    })
+    .to_string();
+    let o = run(
+        &dir,
+        &["hook", "claude-code", "pre", "--run-chat", "rc-1"],
+        &push,
+        false,
+    );
+    assert_eq!(claude_decision(&o), "deny", "{}", text(&o));
+    assert!(text(&o).contains("no chat token"), "{}", text(&o));
+    // Without it the same hook reads the light tier, as before.
+    let o = run(
+        &dir,
+        &["hook", "claude-code", "pre"],
+        &claude_pre(&dir),
+        false,
+    );
+    assert_eq!(claude_decision(&o), "allow", "{}", text(&o));
+    // Words derm hook does not take fail closed.
+    let o = run(
+        &dir,
+        &["hook", "claude-code", "pre", "--other"],
+        &claude_pre(&dir),
+        false,
+    );
+    assert_ne!(claude_decision(&o), "allow", "{}", text(&o));
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert!(text(&o).contains("--run-chat"), "{}", text(&o));
+}

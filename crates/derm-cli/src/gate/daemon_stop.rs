@@ -91,7 +91,23 @@ fn stopping(words: &[String]) -> bool {
 /// The derm service a call's shell text stops, if it does.
 pub fn stops(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
-    let named = NAMES.iter().copied().find(|n| lower.contains(n))?;
+    // A name of derm's, or a word a process matcher reads as one: `derm`,
+    // `derm-d` (pkill matches part of a name), `derm*`, `'derm-*'`
+    // (fix pass 6's review).
+    let named = NAMES
+        .iter()
+        .copied()
+        .find(|n| lower.contains(n))
+        .or_else(|| {
+            lower
+                .split(|c: char| c.is_whitespace() || "|;&()`,=".contains(c))
+                .any(derm_like)
+                .then_some("derm-daemon")
+        })?;
+    // PowerShell's `(Get-Process derm-daemon).Kill()`.
+    if lower.contains(".kill(") {
+        return Some(named);
+    }
     let (cmds, _) = super::taint::shell::effective(&lower);
     // The shell's reading, then each piece split at a pipe, a separator or
     // a substitution by its words as written: a Windows path such as
@@ -108,6 +124,23 @@ pub fn stops(text: &str) -> Option<&'static str> {
         });
     let stopper = cmds.iter().any(|c| stopping(&c.words)) || raw.into_iter().any(|w| stopping(&w));
     stopper.then_some(named)
+}
+
+/// A word naming derm's programs loosely: `derm`, a name starting `derm-`,
+/// or either with a glob, quoted or not.
+fn derm_like(w: &str) -> bool {
+    let w = w.trim_matches(['\'', '"']);
+    let w = w.rsplit(['/', '\\']).next().unwrap_or(w);
+    let Some(rest) = w.strip_prefix("derm") else {
+        return false;
+    };
+    rest.is_empty()
+        || rest == "*"
+        || rest == ".*"
+        || rest.starts_with('-')
+            && rest[1..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-*.".contains(c))
 }
 
 /// Raises an allow to an ask when a shell call stops one of derm's own
@@ -133,6 +166,31 @@ pub fn adjust(mut answer: GateAnswer, call: &GateCall) -> GateAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fix pass 6's review: names a process matcher reads loosely.
+    #[test]
+    fn loose_names_and_powershells_kill_are_seen() {
+        for text in [
+            "pkill derm",
+            "pkill -f derm-d",
+            "killall -r derm",
+            "Stop-Process -Name derm*",
+            "taskkill /IM derm* /F",
+            "systemctl --user stop 'derm-*'",
+            "(Get-Process derm-daemon).Kill()",
+        ] {
+            assert!(stops(text).is_some(), "{text}");
+        }
+        for text in [
+            "pkill dermatology",
+            "kill 4242",
+            "ls derm",
+            "echo derm-daemon",
+            "cat ~/.derm/policy.json",
+        ] {
+            assert!(stops(text).is_none(), "{text}");
+        }
+    }
 
     #[test]
     fn the_ways_to_stop_derms_daemon_are_seen() {

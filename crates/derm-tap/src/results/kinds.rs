@@ -113,14 +113,18 @@ pub const LOCAL_TOOLS: &[&str] = &[
     "tasklist",
     "taskstop",
     "sendusermessage",
-    // The harnesses' deferred-tool loaders: what they return is the
-    // definitions of tools the harness already holds (Claude Code 2.1.322's
-    // `ToolSearch`, "Fetches full schema definitions for deferred tools",
-    // in `BUILTIN_TOOL_NAMES`; Codex 0.167.2's and Amp's `tool_search`), the
-    // same text a harness that does not defer puts in its prompt with no
-    // taint. Windows test w6 retest 3, WW6R3-2: Claude Code's ToolSearch
-    // marked a chat as "unknown-tool", so under `--taint deny` its first
-    // fetch was denied as a new host.
+    // The harnesses' deferred-tool loaders (Claude Code's `ToolSearch`,
+    // Codex 0.167.2's and Amp's `tool_search`): what they return is the
+    // definitions of tools the harness defers, which are mostly MCP tools,
+    // so text an MCP server wrote (fix pass 6's review read 2.1.42, where
+    // the deferred tools are exactly the MCP tools). A harness that does
+    // not defer puts the same definitions in its prompt, which derm does
+    // not mark, so marking the loader would mark one way of listing tools
+    // and not the other: a choice for parity, not a claim the text is
+    // trusted (fix pass 6; Windows test w6 retest 3, WW6R3-2, where
+    // ToolSearch marked a chat as "unknown-tool" and under `--taint deny`
+    // its first fetch was denied as a new host). Tool-description
+    // poisoning is not caught by taint either way.
     "toolsearch",
     "tool_search",
 ];

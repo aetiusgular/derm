@@ -1233,6 +1233,11 @@ impl Daemon {
                 runs.insert(chat.to_string(), run);
             }
         }
+        // The taint of the chats that still run (fix pass 6, note BE
+        // section 2.3): a restart must not lower it. Before the tokens, so
+        // no hook whose token is back reads a chat with its taint not yet
+        // restored (fix pass 6's review).
+        crate::taint::global().restore(saved.get("taint"), &|chat| runs.contains_key(chat));
         let mut restored = 0;
         let mut minted_at = HashMap::new();
         for t in saved
@@ -1271,9 +1276,6 @@ impl Daemon {
         if let Ok(mut i) = self.run_info.lock() {
             *i = infos;
         }
-        // The taint of the chats that still run (fix pass 6, note BE
-        // section 2.3): a restart must not lower it.
-        crate::taint::global().restore(saved.get("taint"), &|chat| runs.contains_key(chat));
         if let Ok(mut r) = self.runs.lock() {
             *r = runs;
         }
@@ -1320,6 +1322,12 @@ impl Daemon {
         let Some(path) = self.state_file.as_deref() else {
             return;
         };
+        // One save at a time, read and written together, so a later save
+        // never puts an older state in place (fix pass 6's review).
+        static SAVING: Mutex<()> = Mutex::new(());
+        let _one = SAVING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let minted = self.minted_at.lock().map(|m| m.clone()).unwrap_or_default();
         let tokens: Vec<Value> = self
             .receiver

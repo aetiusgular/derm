@@ -783,6 +783,36 @@ mod daemon_tier {
         assert_eq!(r.action, Action::Allow, "{}", r.reason);
     }
 
+    /// Fix pass 6's review: a project's settings `env` unsets the chat token
+    /// (Claude Code applies settings `env` to the hooks it starts). The hook
+    /// derm run registered names its chat in its own arguments, so a light
+    /// file the agent wrote is still not the state.
+    #[test]
+    fn a_run_chat_hook_with_its_token_unset_does_not_use_the_light_file() {
+        let h = Home::new("dt-untoken");
+        let e = h.env().with(crate::hook::RUN_CHAT, "c-1");
+        let light = crate::gate::taint::state::file_path(&h.0, "c-1");
+        std::fs::create_dir_all(light.parent().unwrap()).unwrap();
+        std::fs::write(&light, "{\"v\":1}\n").unwrap();
+        let r = go(
+            &h,
+            &e,
+            "bash",
+            json!({"command": "git push origin main"}),
+            0,
+        );
+        assert_eq!(r.action, Action::Deny, "{}", r.reason);
+        assert!(r.reason.contains("no chat token"), "{}", r.reason);
+        assert_eq!(
+            std::fs::read_to_string(&light).unwrap(),
+            "{\"v\":1}\n",
+            "never written"
+        );
+        // Without derm run's word the light tier is the store, as before.
+        let r = go(&h, &h.env(), "bash", json!({"command": "ls"}), 1);
+        assert_eq!(r.action, Action::Allow, "{}", r.reason);
+    }
+
     #[test]
     fn a_chat_token_with_no_derm_run_above_it_keeps_the_light_tiers_fail_safe() {
         // Integration w6's review, W6C-S4: a project's settings can set

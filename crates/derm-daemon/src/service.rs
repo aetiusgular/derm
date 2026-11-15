@@ -42,7 +42,12 @@ impl Running {
 /// Writes `text` to `path` through a new file beside it, mode 0600, never
 /// following a link, then renames it into place.
 pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    // A name of this write's own: two threads writing at once each rename
+    // their own whole file (fix pass 6's review; one name per process let
+    // one thread rename the other's half-written file).
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp-{}-{n}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let mut file =
         derm_core::platform::private_no_follow(OpenOptions::new().write(true).create_new(true))
@@ -197,5 +202,44 @@ mod windows_tests {
             !data.exists(),
             "the data folder was made before the refusal"
         );
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    /// Fix pass 6's review: writes from many threads at once each land
+    /// whole and leave no temporary file. With one temporary name per
+    /// process a thread could rename another's file into place while that
+    /// one still wrote it; the writer then finishes the same file, so the
+    /// tear is seen only by a read in between, and this test passed before
+    /// the change too (it holds the change, it did not fail first).
+    #[test]
+    fn writes_at_once_each_land_whole() {
+        let dir = std::env::temp_dir().join(format!("derm-wp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chats.json");
+        let texts: Vec<String> = (0..16)
+            .map(|i| format!("{{\"n\":{i},\"pad\":\"{}\"}}", "x".repeat(200_000)))
+            .collect();
+        for _ in 0..4 {
+            std::thread::scope(|s| {
+                for t in &texts {
+                    let p = path.clone();
+                    s.spawn(move || {
+                        let _ = super::write_private(&p, t);
+                    });
+                }
+            });
+            let got = std::fs::read_to_string(&path).unwrap();
+            assert!(texts.contains(&got), "a torn file of {} bytes", got.len());
+        }
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

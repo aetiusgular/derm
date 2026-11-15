@@ -211,4 +211,10 @@ fn a_snapshot_comes_back_for_running_chats_only_and_only_adds() {
     assert!(b.is_tainted("fp6-a"), "an empty state removed nothing");
     assert_eq!(b.verdict("fp6-a"), (Verdict::Deny, From::Flag));
     assert!(!b.is_tainted("fp6-c"));
+    // Fix pass 6's review: a saved flag milder than the answer with none
+    // (here `ask`, no settings) comes back as that answer.
+    let d = Taints::new(None);
+    let mild = json!({"v": 1, "chats": [{"id": "fp6-e", "flag": "record", "state": {"v": 1}}]});
+    assert_eq!(d.restore(Some(&mild), &|_| true), 1);
+    assert_eq!(d.verdict("fp6-e"), (Verdict::Ask, From::Flag));
 }

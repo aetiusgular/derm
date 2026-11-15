@@ -111,16 +111,39 @@ pub fn fail_closed(agent: &str, reason: &str) -> Reply {
     }
 }
 
-pub const USAGE: &str = "usage: derm hook <agent> <event>
+pub const USAGE: &str = "usage: derm hook <agent> <event> [--run-chat <chat>]
 
   The gate for an agent's command hook: the agent's hook input on stdin, its
   reply on stdout, stderr and the exit code (contracts/hook-dialects.md).
   The agent's registration names the event (`derm connect <agent> --gate`).";
 
 /// Runs one hook call: reads stdin, answers, writes the reply.
+/// Set by `derm hook` itself from `--run-chat <chat>`, never read from the
+/// environment it was started with: the chat `derm run` registered this
+/// hook for (fix pass 6's review). Then the chat is that one, and its
+/// taint is the daemon's or the fail-closed state, never the light tier's
+/// file, even when a project's or the agent's settings `env` unset the chat
+/// token (`gate::taint`).
+pub const RUN_CHAT: &str = "DERM_RUN_CHAT";
+
 pub fn main(args: &[String]) -> u8 {
     let agent = args.first().map(String::as_str).unwrap_or("");
     let event = args.get(1).map(String::as_str).unwrap_or("");
+    // Whatever the hook inherited is not derm run's word.
+    std::env::remove_var(RUN_CHAT);
+    match &args[2.min(args.len())..] {
+        [] => {}
+        [flag, chat] if flag == "--run-chat" && !chat.trim().is_empty() => {
+            std::env::set_var(RUN_CHAT, chat);
+            std::env::set_var("DERM_CHAT_ID", chat);
+        }
+        _ => {
+            let r = fail_closed(agent, "derm hook takes <agent> <event> [--run-chat <chat>]");
+            let _ = std::io::stdout().write_all(r.stdout.as_bytes());
+            let _ = std::io::stderr().write_all(r.stderr.as_bytes());
+            return r.exit;
+        }
+    }
     let reply = answer(agent, event, &mut std::io::stdin().lock());
     let _ = std::io::stdout().write_all(reply.stdout.as_bytes());
     let _ = std::io::stderr().write_all(reply.stderr.as_bytes());

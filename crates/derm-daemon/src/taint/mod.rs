@@ -17,10 +17,14 @@
 //! Since fix pass 6 the state and the verdict of every chat still running
 //! are also written with the daemon's state file ([`Taints::snapshot`],
 //! `daemon.rs` `save_state`) and taken back after a restart for the chats
-//! that still run ([`Taints::restore`]): a service manager brings the
-//! daemon back within seconds (`Restart=on-failure`, launchd's `KeepAlive`),
-//! and an empty taint after that would lower the chat's taint (note BE
-//! section 2.2, Tony's call of 15 Nov).
+//! that still run ([`Taints::restore`]): a daemon that comes back, by hand,
+//! by launchd's `KeepAlive` or by systemd after a crash
+//! (`packaging/deb/derm-daemon.service` is `Restart=on-failure`, which does
+//! not restart after a clean stop), would otherwise answer an empty taint
+//! and lower the chat's (note BE section 2.2, Tony's call of 15 Nov). The
+//! hosts named in results (`named-in-result`) are the tap's and are not
+//! kept across a restart. A saved verdict never comes back milder than the
+//! answer with none (fix pass 6's review).
 //!
 //! The op (`{"op": "taint", "chat", "hosts", "add"?}`, a proposal for
 //! `contracts/daemon-protocol.md` section 2, routed by integration):
@@ -199,10 +203,17 @@ impl Taints {
             if !bounded(&state) {
                 continue;
             }
+            // The state file is the daemon's (0600), but with no boundary
+            // the agent runs as its owner: a saved flag never comes back
+            // milder than what this daemon would answer with none, the
+            // person's settings or `ask` (fix pass 6's review). A `--taint
+            // record` chat comes back as that answer after a restart.
+            let fallback = self.verdict("\u{0}").0;
             let flag = c
                 .get("flag")
                 .and_then(Value::as_str)
-                .and_then(Verdict::parse);
+                .and_then(Verdict::parse)
+                .map(|f| f.max(fallback));
             let back = self.with_chat(id, |chat| {
                 chat.state.merge(&state);
                 // A flag `run.start` already gave this daemon stands; else
