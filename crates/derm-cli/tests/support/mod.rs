@@ -3,6 +3,5 @@
 //! recorded TypeScript hook cases.
 #![allow(dead_code)]
 
-#[cfg(unix)]
 pub mod fake_daemon;
 pub mod replay;

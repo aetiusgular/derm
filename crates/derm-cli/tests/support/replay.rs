@@ -117,8 +117,21 @@ fn set_mode(p: &Path, m: u64) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(m as u32));
 }
+/// On Windows a mode no one but the owner can write under is made private
+/// to the owner, the nearest the platform seam has (`set_private_dir`,
+/// `set_private_file`); a mode others can write under is Unix's own
+/// ([`unix_only`]), and such a case does not run here.
 #[cfg(not(unix))]
-fn set_mode(_p: &Path, _m: u64) {}
+fn set_mode(p: &Path, m: u64) {
+    if m & 0o022 != 0 {
+        return;
+    }
+    let _ = if p.is_dir() {
+        derm_core::platform::set_private_dir(p)
+    } else {
+        derm_core::platform::set_private_file(p)
+    };
+}
 
 /// Calls whose answer a later rule changed on purpose, with the answer that
 /// rule gives: (case id, call index, stdout). The recording stays as the
@@ -134,6 +147,29 @@ const CHANGED: &[(&str, usize, &str)] = &[(
     "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (no daemon socket)); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}}",
 )];
 
+/// Why a case's setup holds only on Unix, or `None`: a mode others can
+/// write under, which the checks the case tests read as a Unix mode (case
+/// 225: Windows has none; a mode only the owner writes under is made
+/// private there, `set_mode`), a link or a FIFO, which the replay makes with
+/// Unix calls only. On Windows such a case is not run, and says why; every
+/// other case runs there (fix pass 6, note BE section 3.5).
+pub fn unix_only(case: &Value) -> Option<String> {
+    for call in case["calls"].as_array()? {
+        for f in call["files"].as_array().into_iter().flatten() {
+            if f.get("mode")
+                .and_then(Value::as_u64)
+                .is_some_and(|m| m & 0o022 != 0)
+            {
+                return Some(format!("{} is set to a mode others can write", f["path"]));
+            }
+            if matches!(f["kind"].as_str(), Some("link" | "fifo")) {
+                return Some(format!("{} is a {}", f["path"], f["kind"]));
+            }
+        }
+    }
+    None
+}
+
 /// Runs one recorded case: every call in order, each held to its recording.
 pub fn case(cases: &str, id: &str) {
     let doc: Value = serde_json::from_str(cases).expect("case file");
@@ -143,6 +179,12 @@ pub fn case(cases: &str, id: &str) {
         .iter()
         .find(|c| c["id"] == id)
         .unwrap_or_else(|| panic!("no case {id}"));
+    if cfg!(windows) {
+        if let Some(why) = unix_only(case) {
+            eprintln!("not run on Windows: {why}");
+            return;
+        }
+    }
     let mut failures = Vec::new();
     for (i, call) in case["calls"].as_array().unwrap().iter().enumerate() {
         // A call the test made with its own dependencies: listed in
@@ -180,8 +222,8 @@ fn one(call: &Value) -> Result<(), String> {
         "{REPO}".to_string(),
         repo().canonicalize().unwrap().display().to_string(),
     );
-    // The fake daemon, when the case had one.
-    #[cfg(unix)]
+    // The fake daemon, when the case had one: a Unix socket, or on Windows
+    // a named pipe and its pointer file (fix pass 6, note BE section 3.5).
     let daemon = call["daemon"].as_str().map(|mode| {
         let d = super::fake_daemon::FakeDaemon::start(
             super::fake_daemon::Approve::parse(mode),
@@ -190,10 +232,6 @@ fn one(call: &Value) -> Result<(), String> {
         map.insert("{D}".into(), d.dir.display().to_string());
         d
     });
-    #[cfg(not(unix))]
-    if call["daemon"].is_string() {
-        return Err("the fake daemon is Unix only".into());
-    }
     // Temp folders: {T0} and on, each a fresh folder under the scratch root.
     for f in call["files"].as_array().unwrap() {
         let p = f["path"].as_str().unwrap();
@@ -272,7 +310,6 @@ fn one(call: &Value) -> Result<(), String> {
     // never the light file (note BE section 2.3). These recordings predate
     // taint and name no chat: a case that gives the fake's chat token gets
     // the fake's chat, as under `derm run`; one that names its own keeps it.
-    #[cfg(unix)]
     {
         let env = call["env"].as_object().unwrap();
         let token = [
@@ -335,7 +372,6 @@ fn one(call: &Value) -> Result<(), String> {
     }
     // What a call's own text was must never reach a reply it did not have
     // in the TypeScript either (case 77): checked through rule 4.
-    #[cfg(unix)]
     if let Some(d) = &daemon {
         let got: Vec<Value> = d
             .lines()

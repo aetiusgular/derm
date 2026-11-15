@@ -30,7 +30,7 @@ pub mod policy;
 pub mod serve;
 pub mod taint;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "../../tests/support/fake_daemon.rs"]
 pub(crate) mod fake_daemon;
 
