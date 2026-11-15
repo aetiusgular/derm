@@ -91,6 +91,25 @@ fn subst(s: &str, map: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// [`subst`] for a hook's stdin: in JSON, a placeholder sits inside a
+/// string, so its value goes in escaped (a Windows path's backslashes;
+/// Windows CI run 43716584933, "hook input is not JSON"). Elsewhere, and
+/// for any value with nothing to escape (every Unix path), the same text.
+fn subst_stdin(s: &str, map: &BTreeMap<String, String>) -> String {
+    let t = s.trim_start();
+    if !(t.starts_with('{') || t.starts_with('[')) {
+        return subst(s, map);
+    }
+    let escaped: BTreeMap<String, String> = map
+        .iter()
+        .map(|(k, v)| {
+            let j = serde_json::to_string(v).unwrap();
+            (k.clone(), j[1..j.len() - 1].to_string())
+        })
+        .collect();
+    subst(s, &escaped)
+}
+
 struct Scratch(PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -346,7 +365,7 @@ fn one(call: &Value) -> Result<(), String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("spawn derm: {e}"))?;
-    let stdin = subst(call["stdin"].as_str().unwrap(), &map);
+    let stdin = subst_stdin(call["stdin"].as_str().unwrap(), &map);
     if let Some(mut s) = child.stdin.take() {
         let _ = s.write_all(stdin.as_bytes());
     }
