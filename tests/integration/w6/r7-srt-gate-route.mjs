@@ -21,6 +21,9 @@
 //
 //   node tests/integration/w6/r7-srt-gate-route.mjs --bin target/debug --srt /tmp/cli/node_modules/.bin/srt
 //
+// On a host with Ubuntu's `bwrap-userns-restrict` profile, put srt's
+// bubblewrap copy first: `DERM_BWRAP_DIR=/usr/local/libexec/derm-srt`.
+//
 // Needs srt 0.0.82 with bubblewrap, socat and ripgrep in /usr/bin, and Node
 // 22.18 or later. Everything runs under a fresh folder in /var/tmp (HOME,
 // XDG_RUNTIME_DIR, XDG_DATA_HOME), removed at the end. Run on 14 Nov 2026 by
@@ -70,7 +73,21 @@ for (const [name, target] of [["derm", DERM], ["srt", SRT]]) {
   writeFileSync(join(TOOLS, name), `#!/bin/sh\nexec '${target}' "$@"\n`);
   chmodSync(join(TOOLS, name), 0o755);
 }
-const PATH = [TOOLS, dirname(process.execPath), "/usr/local/bin", "/usr/bin", "/bin"].join(":");
+// Box test w6 retest 2, BW6R2-3: with Ubuntu's `bwrap-userns-restrict`
+// profile derm refuses srt when `/usr/bin/bwrap` comes first, so the case
+// takes `DERM_BWRAP_DIR` (the box's `/usr/local/libexec/derm-srt`, which
+// `docs/install/linux.md` option 1 installs) first, as
+// `tests/cli-contract/checks/6A/standard.mjs` does.
+const bwrapDir = (e = process.env) => {
+  const d = e.DERM_BWRAP_DIR;
+  return d && d.startsWith("/") && existsSync(join(d, "bwrap")) ? d : null;
+};
+if (process.env.DERM_BWRAP_DIR && !bwrapDir()) {
+  console.log(`FAIL  DERM_BWRAP_DIR=${process.env.DERM_BWRAP_DIR} holds no bwrap`);
+  process.exit(1);
+}
+const PATH = [TOOLS, bwrapDir(), dirname(process.execPath), "/usr/local/bin", "/usr/bin", "/bin"].filter(Boolean).join(":");
+if (bwrapDir()) console.log(`bwrap: ${bwrapDir()}/bwrap first on PATH`);
 const env = { PATH, HOME, XDG_RUNTIME_DIR: RUN, XDG_DATA_HOME: DATA, LANG: "C.UTF-8" };
 writeFileSync(join(HOME, ".derm", "policy.json"), JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }));
 chmodSync(join(HOME, ".derm", "policy.json"), 0o600);
