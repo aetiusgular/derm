@@ -1029,7 +1029,12 @@ mod tests {
             matches!(&r, Registered::YesNote(n) if n.contains("/hooks")),
             "untrusted"
         );
-        let key = format!("{}:pre_tool_use:1:0", hooks.display());
+        // As Codex prints the file: its folder joined with `hooks.json`
+        // (`\` on Windows), not the mixed separators of `hooks` above.
+        let key = format!(
+            "{}:pre_tool_use:1:0",
+            h.0.join(".codex").join("hooks.json").display()
+        );
         put(
             &h.0.join(".codex/config.toml"),
             // A literal key: a Windows path's backslashes are not TOML escapes.

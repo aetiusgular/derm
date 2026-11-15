@@ -382,10 +382,15 @@ export class GateServe {
    * session's folder after the session waits here first (fix pass 7).
    */
   async closeAndWait(waitMs = 5000): Promise<void> {
-    const child = this.child;
     this.close();
-    if (child === undefined || child.exitCode !== null || child.signalCode !== null) return;
-    await new Promise<void>((resolve) => {
+    // Every co-process this session started, one an earlier `close` or a
+    // restart ended included (its exit may still be on its way).
+    const running = this.spawned.splice(0).filter((c) => c.exitCode === null && c.signalCode === null);
+    await Promise.all(running.map((c) => GateServe.exitOf(c, waitMs)));
+  }
+
+  private static exitOf(child: ChildProcess, waitMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
       const done = () => {
         clearTimeout(t);
         resolve();
@@ -402,6 +407,9 @@ export class GateServe {
       if (child.exitCode !== null || child.signalCode !== null) done();
     });
   }
+
+  /** The co-processes started, for `closeAndWait`. */
+  private spawned: ChildProcess[] = [];
 
   private ensure(): Promise<ChildProcess> {
     // FP2-S3: a co-process that exited is ended now with its reason (its
@@ -444,6 +452,10 @@ export class GateServe {
       throw this.fail(`${prog} did not start: ${(e as Error)?.message ?? String(e)}`);
     }
     this.child = child;
+    // Only those still running are kept, so a long session's restarts do
+    // not pile up.
+    this.spawned = this.spawned.filter((c) => c.exitCode === null && c.signalCode === null);
+    this.spawned.push(child);
     this.buffered = "";
     this.stderr = "";
     child.on("error", (e: Error) => this.stop(`${prog}: ${e.message}`, child));
