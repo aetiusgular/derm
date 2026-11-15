@@ -19,7 +19,32 @@ const unix = process.platform !== "win32";
 const uid = typeof process.getuid === "function" ? process.getuid() : -1;
 
 const dirs: string[] = [];
-afterEach(() => {
+const children: ChildProcess[] = [];
+function track(c: ChildProcess): ChildProcess {
+  children.push(c);
+  return c;
+}
+// Each fake co-process runs in a scratch folder. GateServe ends a co-process
+// with `kill()` and rejects its calls at once, before the child has exited
+// (Node child_process: 'exit' is emitted after the process ends), and on
+// Windows a running process's current folder cannot be removed ("The current
+// directory for a process is locked while the process is executing. That
+// prevents the directory from being deleted, moved, or renamed.", Microsoft's
+// SetCurrentDirectory reference), which was the EPERM in rmSync (Windows CI,
+// run 43687193459). So every fake child is ended and seen to exit before its
+// folder goes; a child still running then is ended here.
+afterEach(async () => {
+  const live = children.splice(0).filter((c) => c.exitCode === null && c.signalCode === null);
+  await Promise.all(
+    live.map(
+      (c) =>
+        new Promise<void>((resolve) => {
+          c.once("exit", () => resolve());
+          if (c.exitCode !== null || c.signalCode !== null) resolve();
+          else c.kill();
+        }),
+    ),
+  );
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 function scratch(): string {
@@ -38,7 +63,7 @@ function fake(mode: string, opts: { startMs?: number; requestMs?: number } = {})
     startMs: opts.startMs ?? 3000,
     requestMs: opts.requestMs ?? 3000,
     locate: () => ({ path: process.execPath }),
-    spawn: (_cmd: string, args: string[], o: SpawnOptions) => spawn(process.execPath, [FAKE, ...args], o),
+    spawn: (_cmd: string, args: string[], o: SpawnOptions) => track(spawn(process.execPath, [FAKE, ...args], o)),
   });
 }
 
@@ -76,7 +101,7 @@ describe("failing closed (case 228)", () => {
       spawn: (_c: string, args: string[], o: SpawnOptions) => {
         starts += 1;
         const mode = starts === 1 ? "die-on-request" : "ok";
-        return spawn(process.execPath, [FAKE, ...args], { ...o, env: { ...o.env, FAKE_SERVE_MODE: mode } });
+        return track(spawn(process.execPath, [FAKE, ...args], { ...o, env: { ...o.env, FAKE_SERVE_MODE: mode } }));
       },
     });
     const both = [s.request("decide", { call: { tool: "bash" } }), s.request("decide", { call: { tool: "bash" } })];
@@ -169,7 +194,7 @@ describe("failing closed (case 228)", () => {
       spawn: (_c: string, args: string[], o: SpawnOptions) => {
         starts += 1;
         if (starts === 1) return dead as unknown as ChildProcess;
-        return spawn(process.execPath, [FAKE, ...args], { ...o, env: { ...o.env, FAKE_SERVE_MODE: "ok" } });
+        return track(spawn(process.execPath, [FAKE, ...args], { ...o, env: { ...o.env, FAKE_SERVE_MODE: "ok" } }));
       },
     });
     const a = s.request("decide", { call: { tool: "bash" } });
