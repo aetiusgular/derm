@@ -300,6 +300,13 @@ fn the_installed_codex_gate_denies_a_denied_call() {
         &cache.join("0.1.3"),
     );
     let r = run_fixture("codex", &env(&h), &probes());
+    // Fix pass 7: on Windows Codex runs the plugin's `commandWindows`, which
+    // blocks every call and names `derm connect codex --gate --write`, the
+    // route there (`fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm`).
+    if cfg!(windows) {
+        assert_eq!(r["state"], "fail-closed", "{r}");
+        return;
+    }
     assert_eq!(r["state"], "pass", "{r}");
     // Nothing installed: not run, and why.
     let h2 = home("cx-none");
@@ -586,7 +593,9 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     assert!(why.contains("/bin/sh, which runs derm hook"), "{why}");
     assert!(render(&r).contains("--run-gate"));
     let r = doctor(&row, &env(&h), &probes(), false, true);
-    assert_eq!(r["gateRun"]["state"], "pass", "{r}");
+    // Fix pass 7: the plugin blocks every call on Windows (above).
+    let want = if cfg!(windows) { "fail-closed" } else { "pass" };
+    assert_eq!(r["gateRun"]["state"], want, "{r}");
     assert!(
         slashed(&render(&r)).contains("0.1.3/hooks/derm-gate.sh"),
         "{}",
@@ -962,6 +971,35 @@ fn fp6_the_settings_gate_is_run_as_claude_code_runs_it() {
     // A settings gate that runs another program is not run.
     super::TEST_SELF.with(|t| *t.borrow_mut() = Some(PathBuf::from("/usr/bin/true")));
     let r = run_fixture("claude-code", &env(&h), &probes());
+    super::TEST_SELF.with(|t| *t.borrow_mut() = None);
+    assert_eq!(r["state"], "not run", "{r}");
+    assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");
+}
+
+/// Fix pass 7: Codex's gate in its own hooks.json (the Windows row) is run
+/// as Codex runs it, the quoted path and its words, only when it is this
+/// derm.
+#[cfg(unix)]
+#[test]
+fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
+    let h = home("cx-hooks");
+    derm_at_home(&h);
+    let derm = h.root.join("home/.local/bin/derm");
+    put(
+        &h.root.join("home/.codex/hooks.json"),
+        &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": format!("\"{}\" hook codex pre", derm.display()), "timeout": 120}]}]}})
+        .to_string(),
+    );
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(derm.canonicalize().unwrap()));
+    let r = run_fixture("codex", &env(&h), &probes());
+    assert_eq!(r["state"], "pass", "{r}");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook codex pre\n"
+    );
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(PathBuf::from("/usr/bin/true")));
+    let r = run_fixture("codex", &env(&h), &probes());
     super::TEST_SELF.with(|t| *t.borrow_mut() = None);
     assert_eq!(r["state"], "not run", "{r}");
     assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");

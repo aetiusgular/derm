@@ -750,6 +750,42 @@ fn settings_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
     })
 }
 
+fn codex_hooks_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
+    let home = env.home.as_ref()?;
+    let codex = env
+        .var("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let file = codex.join("hooks.json");
+    let v = read_json_small(&file)?;
+    let (gate, _, _) = crate::watch::register::codex_hooks_gate(&v)?;
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let me = std::env::current_exe().ok().and_then(|p| real(&p));
+    #[cfg(test)]
+    let me = TEST_SELF.with(|t| t.borrow().clone()).or(me);
+    let named = real(Path::new(&gate));
+    Some(match (me, named) {
+        (Some(me), Some(named)) if me == named => Ok(named),
+        _ => Err(format!(
+            "the gate in {} runs {}, which is not this derm; doctor runs only its own binary there",
+            file.display(),
+            gate.chars().take(120).collect::<String>()
+        )),
+    })
+}
+
+/// On Windows, the line Codex runs for the plugin's PreToolUse hook
+/// (`commandWindows`, Codex 0.167.2 `discovery.rs:654-662`), when the
+/// installed hooks file has one (fix pass 7).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn codex_windows_line(hook: &Path) -> Option<String> {
+    let file = hook.parent()?.join("hooks.json");
+    let v = read_json_small(&file)?;
+    v.pointer("/hooks/PreToolUse/0/hooks/0/commandWindows")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 #[cfg(test)]
 thread_local! {
     /// A test's stand-in for this derm's own path.
@@ -1081,10 +1117,14 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
     // Fix pass 6 (note BE section 1.5, option (d)): Claude Code's gate in
     // the user's settings, in exec form, runs before any plugin's and is
     // what Claude Code runs; doctor runs it only when it is this derm.
-    let direct = match (id == "claude-code")
-        .then(|| settings_gate_hook(env))
-        .flatten()
-    {
+    // Fix pass 7: Codex's gate in its own hooks.json (the Windows row), a
+    // quoted path to derm and its words, likewise run only when it is this
+    // derm.
+    let direct = match match id {
+        "claude-code" => settings_gate_hook(env),
+        "codex" => codex_hooks_gate_hook(env),
+        _ => None,
+    } {
         Some(Ok(d)) => Some(d),
         Some(Err(why)) => return json!({"state": "not run", "why": why}),
         None => None,
@@ -1147,11 +1187,33 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             })
         };
         let event = if id == "gemini" { "before" } else { "pre" };
+        #[cfg(windows)]
+        let windows_line = (id == "codex" && launcher)
+            .then(|| codex_windows_line(&hook))
+            .flatten();
+        #[cfg(not(windows))]
+        let windows_line: Option<String> = None;
         let mut cmd = if direct.is_some() {
             // As Claude Code runs an exec-form hook: the program and its
-            // arguments, no shell.
+            // arguments, no shell. Codex's hooks.json line is a quoted path
+            // and these words, which cmd.exe hands over as they are (derm
+            // connect refuses a path holding `"`, `%` or `!`).
             let mut c = Command::new(&hook);
             c.args(["hook", id, event]);
+            c
+        } else if let Some(line) = &windows_line {
+            // As Codex runs a hook on Windows: `cmd.exe /C "<line>"`, with
+            // PLUGIN_ROOT set (command_runner.rs:448-470, discovery.rs:314).
+            let comspec = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+            let mut c = Command::new(comspec);
+            c.arg("/C");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                c.raw_arg(format!("\"{line}\""));
+            }
+            #[cfg(not(windows))]
+            c.arg(line);
             c
         } else if launcher {
             // As the agent runs it: /bin/sh by its absolute path on the
@@ -1171,6 +1233,14 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if windows_line.is_some() {
+            if let Some(root) = hook.parent().and_then(Path::parent) {
+                cmd.env("PLUGIN_ROOT", root);
+            }
+            if let Some(v) = std::env::var_os("SystemRoot") {
+                cmd.env("SystemRoot", v);
+            }
+        }
         // HOME is doctor's own (the launcher finds derm under it); PATH only
         // for node, which the launcher never reads.
         if let Some(h) = &env.home {

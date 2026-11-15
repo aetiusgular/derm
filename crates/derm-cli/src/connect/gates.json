@@ -58,6 +58,42 @@
     },
     {
       "agent": "codex",
+      "os": "windows",
+      "name": "Codex",
+      "package": "@aetiusgular/derm-codex-plugin",
+      "command": "\"{derm}\" hook codex pre",
+      "commandPost": "\"{derm}\" hook codex post",
+      "source": "fix pass 7 (Tony's \"fix/build these\" of 15 Nov 2026, the Claude Code Windows row's pattern): Codex 0.167.2 reads the user's $CODEX_HOME/hooks.json (codex-rs/hooks/src/engine/discovery.rs:176-180, config/src/state.rs:239-243) and on Windows runs a hook's command with cmd.exe /C, the line quoted whole (command_runner.rs:448-470), so derm registers derm.exe by its absolute path in double quotes; the plugin's hooks file cannot reach derm there and blocks every call",
+      "markers": ["\" hook codex "],
+      "installedIf": ["~/.codex"],
+      "cli": "codex",
+      "refuseIfPluginOn": "derm@derm",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.codex/hooks.json",
+          "homeEnv": "CODEX_HOME",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120}]}
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.codex/hooks.json",
+          "homeEnv": "CODEX_HOME",
+          "format": "json",
+          "array": ["hooks", "PostToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command_post}", "timeout": 120}]}
+        }
+      ],
+      "notes": [
+        "Then trust both hooks in /hooks: Codex skips an untrusted hook without a word (case 70), and asks again when a hook changes.",
+        "Codex lets a call through when its hook process dies or times out (case 70); derm's hook never crashes on purpose and caps its own waits below this timeout.",
+        "derm.exe's path may not hold a double quote, % or !, which cmd.exe would read."
+      ]
+    },
+    {
+      "agent": "codex",
       "name": "Codex",
       "package": "@aetiusgular/derm-codex-plugin",
       "source": "docs/install/agents.md at 824ae83",

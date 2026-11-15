@@ -58,6 +58,10 @@ pub struct Agent {
     /// own plugin on Windows, whose hooks file cannot start there and which,
     /// beside a settings gate, would gate every call twice (fix pass 6).
     pub refuse_if_plugin_on: Option<String>,
+    /// The gate's command for the post event, where it differs from
+    /// `command` only in its last word (`{command_post}`; Codex's Windows
+    /// row, fix pass 7).
+    pub command_post: Option<String>,
     /// The one system this row is for (`windows`), or `None` for a row
     /// that holds everywhere its agent has no row of its own. A Windows row
     /// names derm by [`self_path_exec`] (fix pass 6).
@@ -418,6 +422,7 @@ pub fn table_for(os: &str) -> Result<Vec<Agent>, String> {
                 notes: strs(r, "notes")?,
                 legacy_name: opt_s(r, "legacyName"),
                 refuse_if_plugin_on: opt_s(r, "refuseIfPluginOn"),
+                command_post: opt_s(r, "commandPost"),
                 os: opt_s(r, "os"),
             })
         })
@@ -428,6 +433,8 @@ pub fn table_for(os: &str) -> Result<Vec<Agent>, String> {
 #[derive(Clone, Debug, Default)]
 pub struct Vars {
     pub command: Option<String>,
+    /// `{command_post}`.
+    pub command_post: Option<String>,
     pub hook_dir: Option<String>,
     pub version: String,
     /// `{gatename}` ([`GATE_NAME_FILE`]).
@@ -437,6 +444,7 @@ pub struct Vars {
 /// Placeholders a whole string may be.
 const WHOLE: &[&str] = &[
     "{command}",
+    "{command_post}",
     "{hook_url}",
     "{hook_dir}",
     "{version}",
@@ -454,6 +462,9 @@ pub fn fill(v: &Value, vars: &Vars) -> Result<Value, String> {
             };
             match x.as_str() {
                 "{command}" => Value::Str(need(&vars.command, "the gate's command")?),
+                "{command_post}" => {
+                    Value::Str(need(&vars.command_post, "the gate's post command")?)
+                }
                 "{hook_dir}" => Value::Str(need(&vars.hook_dir, "the hook folder")?),
                 "{hook_url}" => Value::Str(format!(
                     "file://{}",
@@ -547,13 +558,18 @@ pub fn self_path() -> Result<String, String> {
     checked_self(&exe)
 }
 
-/// Whether Claude Code's plugin `plugin` is on for the user: its user
-/// settings turn it on (`enabledPlugins`), or a user or managed install
-/// record holds it and the settings do not turn it off. The reason, naming
-/// the file; `None` when it is off or not installed. Read as
-/// `watch::register`'s `claude` reads it (CLAUDE_CONFIG_DIR, else
-/// `~/.claude`).
-pub fn plugin_on(plugin: &str, home: &Path, env: &dyn Env) -> Option<String> {
+/// Whether Claude Code's `plugin` may be on for a chat (fix pass 6, and
+/// fix pass 7 for FP6-R8). Claude Code reads `enabledPlugins` from managed
+/// settings over the command line, the project's local file, its shared
+/// file and the user's file, in that order (code.claude.com settings docs,
+/// "Settings precedence"; managed files: `/Library/Application
+/// Support/ClaudeCode/`, `/etc/claude-code/`, `C:\Program Files\ClaudeCode\`,
+/// `managed-settings.json` then `managed-settings.d/*.json` by name). The
+/// first source that sets the plugin decides; with none, an install record
+/// (`CLAUDE_CODE_PLUGIN_CACHE_DIR`, else `<config>/plugins`) for you, or
+/// for this folder or any other project, means it is on there. Not read:
+/// the Windows registry's policy keys and server-managed settings.
+pub fn plugin_on(plugin: &str, home: &Path, cwd: &Path, env: &dyn Env) -> Option<String> {
     let config = env
         .var("CLAUDE_CONFIG_DIR")
         .filter(|d| super::names::absolute(d))
@@ -564,37 +580,130 @@ pub fn plugin_on(plugin: &str, home: &Path, env: &dyn Env) -> Option<String> {
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
     };
-    let settings = config.join("settings.json");
-    let enabled =
-        read(&settings).and_then(|v| v.pointer(&format!("/enabledPlugins/{plugin}")).cloned());
-    if enabled == Some(serde_json::Value::Bool(true)) {
-        return Some(format!(
-            "{plugin} is on in {} (enabledPlugins)",
-            settings.display()
-        ));
-    }
-    if enabled == Some(serde_json::Value::Bool(false)) {
-        return None;
-    }
-    let installed = config.join("plugins").join("installed_plugins.json");
-    let records = read(&installed)?;
-    let anywhere = records
-        .pointer(&format!("/plugins/{plugin}"))
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|rs| {
-            rs.iter().any(|r| {
-                matches!(
-                    r.get("scope").and_then(serde_json::Value::as_str),
-                    Some("user" | "managed")
-                )
+    let set_in =
+        |p: &Path| read(p).and_then(|v| v.pointer(&format!("/enabledPlugins/{plugin}")).cloned());
+    let managed_dir = managed_settings_dir();
+    let mut managed: Vec<PathBuf> = vec![managed_dir.join("managed-settings.json")];
+    if let Ok(rd) = std::fs::read_dir(managed_dir.join("managed-settings.d")) {
+        let mut more: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|x| x == "json")
+                    && !p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
             })
-        });
-    anywhere.then(|| {
+            .collect();
+        more.sort();
+        managed.extend(more);
+    }
+    // Later managed files win over earlier ones.
+    let managed_set = managed
+        .iter()
+        .rev()
+        .find_map(|f| set_in(f).map(|v| (v, f.clone())));
+    let ordered = managed_set.into_iter().chain(
+        [
+            cwd.join(".claude").join("settings.local.json"),
+            cwd.join(".claude").join("settings.json"),
+            config.join("settings.json"),
+        ]
+        .into_iter()
+        .filter_map(|f| set_in(&f).map(|v| (v, f))),
+    );
+    if let Some((v, f)) = ordered.into_iter().next() {
+        return (v == serde_json::Value::Bool(true))
+            .then(|| format!("{plugin} is on in {} (enabledPlugins)", f.display()));
+    }
+    let plugins = env
+        .var("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+        .filter(|d| super::names::absolute(d))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.join("plugins"));
+    let installed = plugins.join("installed_plugins.json");
+    let records = read(&installed)?;
+    let records = records
+        .pointer(&format!("/plugins/{plugin}"))
+        .and_then(serde_json::Value::as_array)?
+        .clone();
+    let mut projects: Vec<String> = Vec::new();
+    for r in &records {
+        match r.get("scope").and_then(serde_json::Value::as_str) {
+            Some("user" | "managed") => {
+                return Some(format!(
+                    "{plugin} is installed for you ({}) and no settings file turns it off",
+                    installed.display()
+                ))
+            }
+            Some("project" | "local") => {
+                if let Some(p) = r.get("projectPath").and_then(serde_json::Value::as_str) {
+                    projects.push(p.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    (!projects.is_empty()).then(|| {
         format!(
-            "{plugin} is installed for you ({}) and your settings do not turn it off",
+            "{plugin} is installed for {} ({}), where it is on unless that project's settings turn it off",
+            projects.join(", "),
             installed.display()
         )
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for the system's managed-settings folder.
+    pub static TEST_MANAGED: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Claude Code's managed-settings folder on this system (code.claude.com,
+/// managed settings).
+fn managed_settings_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(d) = TEST_MANAGED.with(|t| t.borrow().clone()) {
+        return d;
+    }
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/Library/Application Support/ClaudeCode")
+    } else if cfg!(windows) {
+        PathBuf::from(r"C:\Program Files\ClaudeCode")
+    } else {
+        PathBuf::from("/etc/claude-code")
+    }
+}
+
+/// Whether Codex's `plugin` is on (fix pass 7): `[plugins."<plugin>"]` in
+/// `$CODEX_HOME/config.toml` (else `~/.codex`), its `enabled` missing
+/// meaning true (`watch/register.rs`'s reading of Codex 0.163.0).
+pub fn codex_plugin_on(plugin: &str, home: &Path, env: &dyn Env) -> Option<String> {
+    let codex = env
+        .var("CODEX_HOME")
+        .filter(|d| super::names::absolute(d))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let config = codex.join("config.toml");
+    let text = std::fs::read_to_string(&config).ok()?;
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+        return Some(format!(
+            "{} is not TOML derm can read, so derm cannot tell whether {plugin} is on",
+            config.display()
+        ));
+    };
+    let entry = doc
+        .get("plugins")
+        .and_then(|p| p.as_table_like())
+        .and_then(|p| p.get(plugin))
+        .and_then(|e| e.as_table_like())?;
+    let on = entry
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    on.then(|| format!("{plugin} is on in {}", config.display()))
 }
 
 /// derm's own path for a row whose agent runs the gate in exec form (a
@@ -829,7 +938,10 @@ const FINDS_DERM: &[&str] = &[
 /// note says that. `None` for every other agent.
 pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
     match agent {
-        "codex" | "gemini" => Some(Err(format!(
+        "codex" => Some(Ok(
+            "on Windows Codex runs derm's gate from your hooks.json, derm.exe by its absolute path, through cmd.exe /C; trust both hooks in /hooks, and keep the derm plugin off, whose hooks file blocks every call there (fix pass 7)".into(),
+        )),
+        "gemini" => Some(Err(format!(
             "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
         ))),
         "opencode" => Some(Ok(
@@ -1955,10 +2067,37 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     } else {
         None
     };
-    if let (Some(plugin), false) = (&agent.refuse_if_plugin_on, o.ungate) {
-        if let Some(why) = plugin_on(plugin, &ctx.home, ctx.env) {
+    // cmd.exe reads `"`, `%` and `!` even inside the double quotes a
+    // command line puts derm's path in (Codex's Windows row, which Codex
+    // runs with `cmd.exe /C`; fix pass 7).
+    if let (Some(d), true) = (
+        &derm,
+        agent
+            .command
+            .as_deref()
+            .is_some_and(|t| t.contains("\"{derm}\"")),
+    ) {
+        if let Some(c) = d.chars().find(|c| matches!(c, '"' | '%' | '!')) {
             return Err(format!(
-                "{why}; with derm's gate in your settings too every call would be gated twice, and on Windows the plugin's own hooks file starts /bin/sh, which blocks every call. Turn the plugin off first (claude plugin disable {plugin}, or claude plugin uninstall {plugin}) and run this again"
+                "derm's path {d} holds {c}, which cmd.exe would read in the line {} runs; install derm where its path holds none of \" % !",
+                agent.name
+            ));
+        }
+    }
+    if let (Some(plugin), false) = (&agent.refuse_if_plugin_on, o.ungate) {
+        let on = if agent.agent == "codex" {
+            codex_plugin_on(plugin, &ctx.home, ctx.env)
+        } else {
+            plugin_on(plugin, &ctx.home, &ctx.cwd, ctx.env)
+        };
+        if let Some(why) = on {
+            let off = if agent.agent == "codex" {
+                format!("codex plugin remove {plugin}, or enabled = false under [plugins.\"{plugin}\"] in config.toml")
+            } else {
+                format!("claude plugin disable {plugin}, or claude plugin uninstall {plugin}")
+            };
+            return Err(format!(
+                "{why}; with derm's gate in your settings too every call would be gated twice, and on Windows the plugin's own hooks file cannot reach derm and blocks every call. Turn the plugin off first ({off}) and run this again"
             ));
         }
     }
@@ -2014,8 +2153,13 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     } else {
         (None, false)
     };
+    let command_post = agent.command_post.as_deref().and_then(|t| {
+        derm.as_deref()
+            .map(|d| fill_text(t, &node, None, None, &version, d))
+    });
     let vars = Vars {
         command,
+        command_post,
         hook_dir: hook_dir.clone(),
         version: version.clone(),
         gate_name: gate_name.clone(),

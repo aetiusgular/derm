@@ -143,10 +143,19 @@ fn claude(env: &Env, home: &Path) -> Registered {
     // writes it on Windows. Claude Code runs it whatever the plugin is.
     if let Ok(Some(v)) = read_json(&config.join("settings.json"), false) {
         if let Some(gate) = settings_gate(&v) {
-            let gate: String = gate.chars().take(120).collect();
+            let file = config.join("settings.json");
+            let shown: String = gate.chars().take(120).collect();
+            // FP6-R12 (fix pass 7): a gate naming another derm (one the agent
+            // planted, an old install) is not this one's registration.
+            if !is_this_derm(&gate) {
+                return Registered::YesNote(format!(
+                    "a gate in {} runs {shown}, which is not this derm; run derm connect claude-code --gate --write to name this one",
+                    file.display()
+                ));
+            }
             return Registered::Yes(format!(
-                "derm's gate in {} runs {gate} hook claude-code pre in exec form and blocks when it fails",
-                config.join("settings.json").display()
+                "derm's gate in {} runs {shown} hook claude-code pre in exec form and blocks when it fails",
+                file.display()
             ));
         }
     }
@@ -287,6 +296,54 @@ pub fn settings_gate(v: &Value) -> Option<String> {
             let blocks = h.get("onFailure").and_then(Value::as_str) == Some("block");
             (named && absolute && args_ok && blocks).then(|| cmd.to_string())
         })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for this derm's own path.
+    pub static TEST_SELF: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `path` names this derm, every link followed (doctor's rule for
+/// running a settings gate, `doctor::settings_gate_hook`).
+fn is_this_derm(path: &str) -> bool {
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let me = std::env::current_exe().ok().and_then(|p| real(&p));
+    #[cfg(test)]
+    let me = TEST_SELF
+        .with(|t| t.borrow().clone())
+        .and_then(|p| real(&p))
+        .or(me);
+    me.is_some_and(|me| real(Path::new(path)) == Some(me))
+}
+
+/// derm's gate in Codex's own `hooks.json`, as `derm connect codex --gate
+/// --write` writes it on Windows (fix pass 7): a PreToolUse command that is
+/// a double-quoted absolute path to `derm` or `derm.exe` and then exactly
+/// ` hook codex pre`. Its path, and the index of its group, which Codex's
+/// trust key names (`<file>:pre_tool_use:<group>:<handler>`, Codex 0.167.2
+/// `codex-rs/hooks/src/lib.rs:125-135`).
+pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize)> {
+    let groups = v.pointer("/hooks/PreToolUse")?.as_array()?;
+    groups.iter().enumerate().find_map(|(g, group)| {
+        group
+            .get("hooks")?
+            .as_array()?
+            .iter()
+            .enumerate()
+            .find_map(|(h, hook)| {
+                let cmd = hook.get("command").and_then(Value::as_str)?;
+                let rest = cmd.strip_prefix('"')?;
+                let (path, tail) = rest.split_once('"')?;
+                let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                let named = base == "derm" || base.eq_ignore_ascii_case("derm.exe");
+                let absolute = path.starts_with('/')
+                    || (path.len() > 3
+                        && path.as_bytes()[1] == b':'
+                        && path.as_bytes()[2] == b'\\');
+                (named && absolute && tail == " hook codex pre").then(|| (path.to_string(), g, h))
+            })
+    })
 }
 
 /// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
@@ -585,6 +642,44 @@ fn codex(env: &Env, home: &Path) -> Registered {
             return Registered::Unknown(format!("{} does not parse as TOML", config.display()))
         }
     };
+    // Fix pass 7: derm's gate in Codex's own hooks.json (the Windows row),
+    // which Codex runs whatever the plugin is, once trusted.
+    let hooks_file = codex_home.join("hooks.json");
+    if let Ok(Some(v)) = read_json(&hooks_file, false) {
+        if let Some((gate, g, h)) = codex_hooks_gate(&v) {
+            let shown: String = gate.chars().take(120).collect();
+            if !is_this_derm(&gate) {
+                return Registered::YesNote(format!(
+                    "a gate in {} runs {shown}, which is not this derm; run derm connect codex --gate --write to name this one",
+                    hooks_file.display()
+                ));
+            }
+            let key = format!("{}:pre_tool_use:{g}:{h}", hooks_file.display());
+            let trusted = doc
+                .get("hooks")
+                .and_then(|x| x.as_table_like())
+                .and_then(|x| x.get("state"))
+                .and_then(|x| x.as_table_like())
+                .and_then(|x| x.get(&key))
+                .and_then(|x| x.as_table_like())
+                .and_then(|x| x.get("trusted_hash"))
+                .and_then(|x| x.as_str())
+                .is_some_and(|x| x.starts_with("sha256:"));
+            return if trusted {
+                Registered::Yes(format!(
+                    "derm's gate in {} runs {shown} hook codex pre, and its PreToolUse hook is trusted in {}",
+                    hooks_file.display(),
+                    config.display()
+                ))
+            } else {
+                Registered::YesNote(format!(
+                    "derm's gate in {} runs {shown} hook codex pre, but it has no trust record in {}; Codex skips an untrusted hook without a word: trust it in /hooks",
+                    hooks_file.display(),
+                    config.display()
+                ))
+            };
+        }
+    }
     let version = env!("CARGO_PKG_VERSION");
     let readd = format!(
         "codex plugin marketplace remove derm, then codex plugin marketplace add aetiusgular/derm --ref v{version}, then codex plugin add derm@derm"
@@ -909,6 +1004,54 @@ mod tests {
     /// user's settings in exec form, as `derm connect claude-code --gate`
     /// writes it on Windows, is a registration; one that does not block, or
     /// runs another program or other arguments, is not.
+    /// Fix pass 7: Codex's own hooks.json gate (the Windows row) is its
+    /// registration once trusted; untrusted, or naming another derm, a note.
+    #[test]
+    fn fp7_a_hooks_json_gate_is_codexs_registration_once_trusted() {
+        let (h, env) = home("fp7-cxhooks");
+        let me = h.0.join("bin/derm");
+        put(&me, "#!/bin/sh\n");
+        TEST_SELF.with(|t| *t.borrow_mut() = Some(me.clone()));
+        let hooks = h.0.join(".codex/hooks.json");
+        let entry = |cmd: String| {
+            serde_json::json!({"hooks": {"PreToolUse": [
+                {"matcher": "^x$", "hooks": [{"type": "command", "command": "mine"}]},
+                {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}]}})
+            .to_string()
+        };
+        put(
+            &hooks,
+            &entry(format!("\"{}\" hook codex pre", me.display())),
+        );
+        put(&h.0.join(".codex/config.toml"), "model = \"m\"\n");
+        let r = check("codex", &env);
+        assert!(
+            matches!(&r, Registered::YesNote(n) if n.contains("/hooks")),
+            "untrusted"
+        );
+        let key = format!("{}:pre_tool_use:1:0", hooks.display());
+        put(
+            &h.0.join(".codex/config.toml"),
+            &format!("[hooks.state.\"{key}\"]\ntrusted_hash = \"sha256:aa\"\n"),
+        );
+        assert!(matches!(check("codex", &env), Registered::Yes(_)));
+        put(&hooks, &entry("\"/home/u/bin/derm\" hook codex pre".into()));
+        assert!(
+            matches!(check("codex", &env), Registered::YesNote(n) if n.contains("not this derm"))
+        );
+        for bad in [
+            "derm hook codex pre",
+            "\"/x/derm\" hook codex pre && x",
+            "\"/x/other\" hook codex pre",
+        ] {
+            assert!(
+                codex_hooks_gate(&serde_json::from_str(&entry(bad.into())).unwrap()).is_none(),
+                "{bad}"
+            );
+        }
+        TEST_SELF.with(|t| *t.borrow_mut() = None);
+    }
+
     #[test]
     fn fp6_a_settings_gate_in_exec_form_is_claude_codes_registration() {
         let (h, env) = home("fp6-settings");
@@ -918,16 +1061,28 @@ mod tests {
             .to_string()
         };
         let pre = serde_json::json!(["hook", "claude-code", "pre"]);
+        // FP6-R12 (fix pass 7): a gate naming another derm is a note, not a
+        // registration; only this derm's path is a yes.
+        let me = h.0.join("bin/derm");
+        put(&me, "#!/bin/sh\n");
+        TEST_SELF.with(|t| *t.borrow_mut() = Some(me.clone()));
         put(
             &h.0.join(".claude/settings.json"),
-            &gate(r"C:\Users\u\.local\bin\derm.exe", pre.clone(), "block"),
+            &gate(me.to_str().unwrap(), pre.clone(), "block"),
         );
         assert!(matches!(check("claude-code", &env), Registered::Yes(_)));
-        put(
-            &h.0.join(".claude/settings.json"),
-            &gate("/home/u/.local/bin/derm", pre.clone(), "block"),
-        );
-        assert!(matches!(check("claude-code", &env), Registered::Yes(_)));
+        for other in [r"C:\Users\u\.local\bin\derm.exe", "/home/u/.local/bin/derm"] {
+            put(
+                &h.0.join(".claude/settings.json"),
+                &gate(other, pre.clone(), "block"),
+            );
+            let r = check("claude-code", &env);
+            assert!(
+                matches!(&r, Registered::YesNote(n) if n.contains("not this derm")),
+                "{other}"
+            );
+        }
+        TEST_SELF.with(|t| *t.borrow_mut() = None);
         for (cmd, args, fail) in [
             ("/home/u/.local/bin/derm", pre.clone(), "continue"),
             ("derm", pre.clone(), "block"),

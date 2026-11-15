@@ -1,5 +1,5 @@
 {
-  "description": "derm policy gate for Codex. Codex runs each line with its shell and lets a call through when a hook fails or times out, so derm's hook never crashes on purpose and caps its own waits below this timeout. /bin/sh by its absolute path runs hooks/derm-gate.sh, which runs `derm hook codex <event>` from derm's install folders, never from PATH (contracts/hook-dialects.md 9.1; rules case 227).",
+  "description": "derm policy gate for Codex. Codex runs each line with its shell and lets a call through when a hook fails or times out, so derm's hook never crashes on purpose and caps its own waits below this timeout. /bin/sh by its absolute path runs hooks/derm-gate.sh, which runs `derm hook codex <event>` from derm's install folders, never from PATH (contracts/hook-dialects.md 9.1; rules case 227). On Windows Codex runs `commandWindows` with cmd.exe (Codex 0.167.2 codex-rs/hooks/src/engine/discovery.rs:654-662, command_runner.rs:448-470): there the plugin cannot reach derm, so PreToolUse blocks every call with exit 2 and a reason (pre_tool_use.rs:268) and names `derm connect codex --gate --write`, derm's Windows route (fix pass 7).",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,7 +8,8 @@
           {
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/hooks/derm-gate.sh\" codex pre",
-            "timeout": 120
+            "timeout": 120,
+            "commandWindows": "echo derm: on Windows the derm plugin's gate cannot start (it runs /bin/sh); turn the plugin off and run derm connect codex --gate --write, which registers derm.exe by its path 1>&2 & exit /B 2"
           }
         ]
       }
@@ -20,7 +21,8 @@
           {
             "type": "command",
             "command": "/bin/sh \"$PLUGIN_ROOT/hooks/derm-gate.sh\" codex post",
-            "timeout": 30
+            "timeout": 30,
+            "commandWindows": "exit /B 0"
           }
         ]
       }
