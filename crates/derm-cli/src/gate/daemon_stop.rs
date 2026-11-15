@@ -88,42 +88,69 @@ fn stopping(words: &[String]) -> bool {
     !MANAGERS.contains(&base) || words[1..].iter().any(|w| VERBS.contains(&w.as_str()))
 }
 
-/// The derm service a call's shell text stops, if it does.
+/// The derm service a call's shell text stops, if it does: a command that
+/// stops or signals something and, among its own words, names one of
+/// derm's services or a word a process matcher reads as one (`derm`,
+/// `derm-d`, `derm*`, `'derm-*'`; fix pass 6's review, and its re-review:
+/// the name must be the stopping command's own, so `cargo test -p
+/// derm-cli; pkill node` does not ask).
 pub fn stops(text: &str) -> Option<&'static str> {
     let lower = text.to_ascii_lowercase();
-    // A name of derm's, or a word a process matcher reads as one: `derm`,
-    // `derm-d` (pkill matches part of a name), `derm*`, `'derm-*'`
-    // (fix pass 6's review).
-    let named = NAMES
-        .iter()
-        .copied()
-        .find(|n| lower.contains(n))
-        .or_else(|| {
-            lower
-                .split(|c: char| c.is_whitespace() || "|;&()`,=".contains(c))
-                .any(derm_like)
-                .then_some("derm-daemon")
-        })?;
-    // PowerShell's `(Get-Process derm-daemon).Kill()`.
-    if lower.contains(".kill(") {
-        return Some(named);
-    }
+    let name_of = |words: &[String]| -> Option<&'static str> {
+        words.iter().find_map(|w| {
+            NAMES
+                .iter()
+                .copied()
+                .find(|n| w.contains(n))
+                .or_else(|| derm_like(w).then_some("derm-daemon"))
+        })
+    };
     let (cmds, _) = super::taint::shell::effective(&lower);
-    // The shell's reading, then each piece split at a pipe, a separator or
-    // a substitution by its words as written: a Windows path such as
-    // `C:\Windows\System32\taskkill.exe` loses its backslashes to the
+    for c in &cmds {
+        if stopping(&c.words) {
+            if let Some(n) = name_of(&c.words) {
+                return Some(n);
+            }
+        }
+    }
+    // Each command split at a pipe or a separator, by its words as written
+    // (a substitution's words with it, so `kill $(pidof derm-daemon)` names
+    // the daemon): a Windows path such as
+    // `C:\\Windows\\System32\\taskkill.exe` loses its backslashes to the
     // shell's quoting, and PowerShell has no POSIX reading.
-    let raw = lower
-        .split(['|', ';', '&', '\n', '(', ')', '`'])
-        .map(|piece| {
-            piece
-                .split_whitespace()
-                .map(|w| w.trim_start_matches('$').to_string())
-                .filter(|w| !w.is_empty())
-                .collect::<Vec<_>>()
-        });
-    let stopper = cmds.iter().any(|c| stopping(&c.words)) || raw.into_iter().any(|w| stopping(&w));
-    stopper.then_some(named)
+    // A pipeline is one: `Get-Process derm-daemon | Stop-Process`.
+    let words_of = |t: &str| -> Vec<String> {
+        t.split(|c: char| c.is_whitespace() || "()`".contains(c))
+            .map(|w| w.trim_start_matches('$').to_string())
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    for line in lower.split([';', '&', '\n']) {
+        if line.split('|').any(|cmd| stopping(&words_of(cmd))) {
+            if let Some(n) = name_of(&words_of(line)) {
+                return Some(n);
+            }
+        }
+    }
+    // PowerShell's `(Get-Process derm-daemon).Kill()`: the process the
+    // getter names, then its Kill.
+    let mut rest = lower.as_str();
+    while let Some(i) = rest.find("get-process") {
+        let after = &rest[i..];
+        let close = after.find(')').unwrap_or(after.len());
+        let words: Vec<String> = after[..close]
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect();
+        if after[close..].starts_with(").kill(") {
+            if let Some(n) = name_of(&words) {
+                return Some(n);
+            }
+        }
+        rest = &after["get-process".len()..];
+    }
+    None
 }
 
 /// A word naming derm's programs loosely: `derm`, a name starting `derm-`,
@@ -187,6 +214,11 @@ mod tests {
             "ls derm",
             "echo derm-daemon",
             "cat ~/.derm/policy.json",
+            // Fix pass 6's re-review: the name is not the stopper's own.
+            "cargo test -p derm-cli; pkill node",
+            "kill %1 && ls target/debug/derm",
+            "kill $PID; cd crates/derm-daemon",
+            "node -e \"c.kill()\" packages/derm-pi/x.js",
         ] {
             assert!(stops(text).is_none(), "{text}");
         }

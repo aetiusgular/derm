@@ -48,8 +48,16 @@ fn start(plan: &Plan) -> usize {
     0
 }
 
-/// Every `--settings` value in `words`, in order.
+/// Claude Code's own words: up to a user's `--`, after which every word is
+/// the prompt (fix pass 6's re-review).
+fn options(words: &[String]) -> &[String] {
+    let end = words.iter().position(|w| w == "--").unwrap_or(words.len());
+    &words[..end]
+}
+
+/// Every `--settings` value in `words`, in order, before a `--`.
 fn settings_values(words: &[String]) -> Vec<&str> {
+    let words = options(words);
     let mut out = Vec::new();
     let mut i = 0;
     while i < words.len() {
@@ -79,7 +87,7 @@ fn settings_values(words: &[String]) -> Vec<&str> {
 /// customizations (... hooks ...) disabled"), as `claude --help` of 2.1.322
 /// says, and a `--settings` that sets `disableAllHooks` true.
 pub fn check_user_settings(rest: &[String]) -> Result<(), String> {
-    for w in rest {
+    for w in options(rest) {
         let flag = w.split('=').next().unwrap_or(w);
         if flag == "--bare" || flag == "--safe-mode" {
             return Err(format!(
@@ -119,16 +127,33 @@ pub fn check_settings_files(
         .filter(|d| std::path::Path::new(d).is_absolute())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| home.join(".claude"));
-    for f in [
-        user.join("settings.json"),
-        cwd.join(".claude").join("settings.json"),
-        cwd.join(".claude").join("settings.local.json"),
-    ] {
+    let mut files = vec![user.join("settings.json")];
+    // The session folder's, and each folder above it up to the repository's
+    // root, whose `.claude/settings.local.json` Claude Code reads from a
+    // subfolder too (`watch/register.rs`; fix pass 6's re-review).
+    for dir in cwd.ancestors() {
+        files.push(dir.join(".claude").join("settings.json"));
+        files.push(dir.join(".claude").join("settings.local.json"));
+        if dir.join(".git").exists() {
+            break;
+        }
+    }
+    let files = if cwd.ancestors().any(|d| d.join(".git").exists()) {
+        files
+    } else {
+        files[..3].to_vec()
+    };
+    for f in files {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
-            continue;
+        // A file derm cannot read as JSON may still be read by Claude Code
+        // (a byte-order mark, say): refused rather than taken as harmless.
+        let Ok(v) = serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')) else {
+            return Err(format!(
+                "{} is not JSON derm can read, so derm cannot tell whether it turns hooks off (disableAllHooks); fix it or move it",
+                f.display()
+            ));
         };
         if v.get("disableAllHooks") == Some(&Value::Bool(true)) {
             return Err(format!(
@@ -358,6 +383,14 @@ mod tests {
         assert!(check_user_settings(&s(&["--settings", r#"{"disableAllHooks":false}"#])).is_ok());
         // A prompt that only names the flag is the prompt (after -p).
         assert!(check_user_settings(&s(&["-p", "explain --bare"])).is_ok());
+        // After a `--` every word is the prompt (fix pass 6's re-review).
+        assert!(check_user_settings(&s(&["-p", "--", "--bare"])).is_ok());
+        assert!(check_user_settings(&s(&["-p", "--", "--settings", "x"])).is_ok());
+        assert!(
+            block(&s(&["--", "--settings", r#"{"model":"m"}"#]), "/d", None)
+                .get("model")
+                .is_none()
+        );
     }
 
     #[test]
@@ -426,6 +459,26 @@ mod tests {
             std::fs::write(&f, r#"{"disableAllHooks": false}"#).unwrap();
         }
         assert!(check_settings_files(&home, None, &cwd).is_ok());
+        // Fix pass 6's re-review: a file derm cannot read is refused, and a
+        // repository root's local file is read from a subfolder.
+        std::fs::write(cwd.join(".claude/settings.json"), "{not json").unwrap();
+        assert!(check_settings_files(&home, None, &cwd)
+            .unwrap_err()
+            .contains("not JSON"));
+        std::fs::write(cwd.join(".claude/settings.json"), "\u{feff}{}").unwrap();
+        assert!(
+            check_settings_files(&home, None, &cwd).is_ok(),
+            "a byte-order mark is read past"
+        );
+        std::fs::create_dir_all(cwd.join(".git")).unwrap();
+        let sub = cwd.join("a/b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(
+            cwd.join(".claude/settings.local.json"),
+            r#"{"disableAllHooks": true}"#,
+        )
+        .unwrap();
+        assert!(check_settings_files(&home, None, &sub).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 }
