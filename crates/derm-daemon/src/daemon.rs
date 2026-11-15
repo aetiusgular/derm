@@ -2139,10 +2139,17 @@ impl Daemon {
         if let Some(cwd) = event.detail.get("cwd").and_then(Value::as_str) {
             folders.insert(0, cwd.to_string());
         }
+        // Box test w6 retest 3, BW6R3-2: the derm that started the chat.
+        let derm_exe = event
+            .detail
+            .get("dermExe")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let Some(context) = clean_context(ChatContext {
             chat_id: event.chat_id.clone(),
             harness: event.harness.clone(),
             folders,
+            derm_exe,
         }) else {
             return;
         };
@@ -3186,6 +3193,79 @@ mod tests {
     /// chat's folders" (chats b510ctl and fp13c: 4 such flags each; b510ctl2,
     /// run in the same daemon's life: 0). A restarted daemon reads the
     /// chats' `run.start` records back from its log.
+    /// Box test w6 retest 3, BW6R3-2: `run.start`'s `dermExe` reaches the
+    /// chat's context, before and after a restart, and the gate's own
+    /// taint state in a sandbox's tmpfs is then no flag. A chat whose
+    /// `run.start` named no derm keeps the flag.
+    #[test]
+    fn bw6r3_2_run_starts_derm_exe_hides_the_gates_own_sandbox_state() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let first = Daemon::new(TOKEN, log, &data, false).unwrap();
+        let now = now_ms();
+        for (n, (chat, derm)) in [
+            ("chat-g", Some("/home/t/.local/bin/derm")),
+            ("chat-h", None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut detail = json!({"boundary": "srt", "argv": ["srt"], "cwd": "/home/t/proj"});
+            if let Some(d) = derm {
+                detail["dermExe"] = json!(d);
+            }
+            let mut start = ev_of(chat, Source::Run, "run.start", None, detail);
+            start.at = now - 60_000;
+            assert!(first.op_event(&Who::Daemon, start).ok);
+            let mut write = ev_of(
+                chat,
+                Source::Auditd,
+                "create",
+                Some(77),
+                json!({
+                    "path": format!("/home/t/.derm/local/{chat}.taint.json"),
+                    "exe": "/home/t/.local/bin/derm",
+                    "dev": "00:3e",
+                    "devMounted": false,
+                    "tier": "child",
+                }),
+            );
+            write.id = format!("auditd-2-{n}");
+            write.at = now - 50_000;
+            assert!(first.op_event(&Who::Daemon, write).ok);
+        }
+        // The restore runs on its own thread (as BW5R5-1's test waits).
+        let report = |d: &Daemon, chat: &str| {
+            let mut held = Value::Null;
+            for _ in 0..100 {
+                held = d.report(Some(chat), 0, i64::MAX);
+                if held["events"] == 2 && (chat != "chat-g" || held["flags"] == 0) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            held
+        };
+        let g = report(&first, "chat-g");
+        assert_eq!(g["events"], 2, "{g}");
+        assert_eq!(g["flags"], 0, "{g}");
+        let h = report(&first, "chat-h");
+        assert_eq!(h["flags"], 1, "no dermExe, no hide: {h}");
+        drop(first);
+        let log2: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
+        let g = report(&second, "chat-g");
+        assert_eq!(g["flags"], 0, "after a restart: {g}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn bw5r5_1_a_chats_folders_survive_a_daemon_restart() {
         let root = std::env::temp_dir().join(format!(

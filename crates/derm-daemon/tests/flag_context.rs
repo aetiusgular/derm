@@ -52,6 +52,7 @@ fn r2_3_a_flags_own_event_is_always_in_its_context() {
             chat_id: "chat-a".into(),
             harness: "pi".into(),
             folders: vec!["/home/t/proj".into()],
+            derm_exe: None,
         },
     );
     let out = run_full(&CheckInput {

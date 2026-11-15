@@ -253,6 +253,25 @@ fn taint_not_reached(
     }
 }
 
+/// The dry run's `taint:` line. Under srt on Linux with `--no-daemon` the
+/// gate keeps no record and denies every call it gates (the no-daemon note
+/// in `plan.rs`), so `--taint` decides nothing there either (box test w6
+/// retest 3, BW6R3-3).
+fn taint_summary(boundary: Boundary, linux: bool, no_daemon: bool, verdict: &str) -> String {
+    match boundary {
+        Boundary::Sbx => {
+            format!("taint: {verdict} (--taint; not applied under sbx, see the note above)")
+        }
+        Boundary::Srt if linux && no_daemon => format!(
+            "taint: {verdict} (--taint; not applied under srt on Linux with no daemon: the gate denies every call it gates, see the note above)"
+        ),
+        Boundary::Srt if linux => {
+            format!("taint: {verdict} (--taint; not applied under srt on Linux, see the note above)")
+        }
+        _ => format!("taint: {verdict} (--taint)"),
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1741,19 +1760,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             println!("tier: {t}");
         }
         if let Some(v) = &a.taint {
-            if a.boundary == Boundary::Sbx {
-                println!(
-                    "taint: {} (--taint; not applied under sbx, see the note above)",
+            println!(
+                "{}",
+                taint_summary(
+                    a.boundary,
+                    cfg!(target_os = "linux"),
+                    a.no_daemon,
                     v.as_str()
-                );
-            } else if a.boundary == Boundary::Srt && cfg!(target_os = "linux") && !a.no_daemon {
-                println!(
-                    "taint: {} (--taint; not applied under srt on Linux, see the note above)",
-                    v.as_str()
-                );
-            } else {
-                println!("taint: {} (--taint)", v.as_str());
-            }
+                )
+            );
         }
         // BW5-5's rest: under sbx the plan's one-step argv is not what runs.
         if a.boundary == Boundary::Sbx {
@@ -1989,6 +2004,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             a.program.as_deref().unwrap_or(a.harness.command),
             std::env::var("PATH").ok().as_deref(),
         ),
+        // The derm that started the chat, by its real path, so the daemon
+        // knows the gate's own state writes in a sandbox's tmpfs (box test
+        // w6 retest 3, BW6R3-2); null when it cannot be read.
+        "dermExe": std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
@@ -3452,6 +3474,64 @@ mod end_to_end {
             );
         }
         assert!(seen(&st).is_empty(), "the harness never started");
+    }
+
+    /// Box test w6 retest 3, BW6R3-3: with `--no-daemon` under srt on
+    /// Linux the dry run's line said `taint: record (--taint)`, as if it
+    /// held, while the start line says the gate denies every call it gates
+    /// (`plan.rs`, the no-daemon note).
+    #[test]
+    fn bw6r3_3_the_dry_runs_taint_line_says_when_it_is_not_applied() {
+        let srt_none = taint_summary(Boundary::Srt, true, true, "record");
+        assert!(srt_none.contains("not applied"), "{srt_none}");
+        assert!(srt_none.contains("no daemon"), "{srt_none}");
+        let srt = taint_summary(Boundary::Srt, true, false, "record");
+        assert!(srt.contains("not applied under srt on Linux"), "{srt}");
+        let sbx = taint_summary(Boundary::Sbx, true, true, "record");
+        assert!(sbx.contains("not applied under sbx"), "{sbx}");
+        // Where it holds the line says so plainly: srt on macOS, no boundary.
+        assert_eq!(
+            taint_summary(Boundary::Srt, false, true, "record"),
+            "taint: record (--taint)"
+        );
+        assert_eq!(
+            taint_summary(Boundary::None, true, false, "deny"),
+            "taint: deny (--taint)"
+        );
+    }
+
+    /// Box test w6 retest 3, BW6R3-2: `run.start` names the derm that
+    /// started the chat by its real path, so the daemon knows the gate's
+    /// own writes in a sandbox's tmpfs.
+    #[cfg(unix)]
+    #[test]
+    fn bw6r3_2_run_start_names_derms_own_binary() {
+        let st = setup("derm-exe");
+        let cwd = st.work.to_string_lossy().into_owned();
+        let _ = run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-x",
+                "--cwd",
+                &cwd,
+            ]),
+            &st.env,
+        );
+        let ev = events(&st);
+        assert_eq!(ev[0]["kind"], "run.start");
+        let want = std::fs::canonicalize(std::env::current_exe().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            ev[0]["detail"]["dermExe"],
+            json!(want),
+            "{}",
+            ev[0]["detail"]
+        );
     }
 
     /// Mac test w5, MW5-1: help and argument errors are answered before
