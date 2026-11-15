@@ -82,10 +82,13 @@ pub fn to_event(action: &Action, placed: &Placement, reasons: &[Reason]) -> Even
                 d.insert("flagsKnown".into(), json!(false));
             }
         }
-        What::Open { path } => {
+        What::Open { path, path_only } => {
             kind = "open";
             summary = format!("open {path}");
             put(&mut d, "path", path);
+            if *path_only {
+                d.insert("pathOnly".into(), json!(true));
+            }
         }
         What::Truncate { path } => {
             kind = "truncate";

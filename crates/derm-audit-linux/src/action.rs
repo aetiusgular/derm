@@ -15,6 +15,10 @@ const AT_FDCWD: [&str; 2] = ["ffffff9c", "ffffffffffffff9c"];
 const DENIED: [i64; 3] = [-1, -13, -30];
 /// EINPROGRESS: a non-blocking connect that has started (seen in the fixture).
 const EINPROGRESS: i64 = -115;
+/// `O_PATH`, `010000000` in `include/uapi/asm-generic/fcntl.h:83-84` at
+/// Linux v7.0. Both arches the feed reads (`syscalls.rs`: x86_64 and i386)
+/// take the generic header; alpha, sparc and parisc define their own.
+const O_PATH: u64 = 0o10000000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
@@ -53,9 +57,14 @@ pub enum What {
         created: bool,
         flags_known: bool,
     },
-    /// A read the rules watch (the `derm_sens` key).
+    /// A read the rules watch (the `derm_sens` key). `path_only`: the call
+    /// asked for `O_PATH`, which opens no file: "The file itself is not
+    /// opened, and other file operations (e.g., read(2), write(2), ...) fail"
+    /// (open(2)). Known only for `open` (flags in a1) and `openat` (a2);
+    /// `openat2`'s flags are in a struct the record does not show.
     Open {
         path: String,
+        path_only: bool,
     },
     Truncate {
         path: String,
@@ -137,7 +146,17 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
             }
             let (path, created) = paths.target()?;
             if sys.get("key") == Some("derm_sens") && !created && call != Call::Creat {
-                What::Open { path }
+                let flags = match call {
+                    Call::Open => sys.get("a1"),
+                    Call::OpenAt => sys.get("a2"),
+                    _ => None,
+                };
+                // Box test w6 retest 3, BW6R3-1: bubblewrap 0.11.1's look at
+                // each bind it made (`bind-mount.c:397-408`).
+                let path_only = flags
+                    .and_then(|f| u64::from_str_radix(f, 16).ok())
+                    .is_some_and(|f| f & O_PATH != 0);
+                What::Open { path, path_only }
             } else {
                 dev = paths.target_dev();
                 What::Write {
