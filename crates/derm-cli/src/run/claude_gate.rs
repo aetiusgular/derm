@@ -70,13 +70,35 @@ fn settings_values(words: &[String]) -> Vec<&str> {
 /// Refuses, before anything starts, a `--settings` among the user's own
 /// words that is not a JSON object: derm adds the last `--settings`, and
 /// Claude Code reads only that one, so the user's must be merged into it.
+///
+/// Refused too: words that start Claude Code with no hook at all, derm's
+/// gate included, so the chat would run ungated while `derm run` says it is
+/// gated (fix pass 6's review): `--bare` ("skip hooks (those defined in
+/// settings and by installed plugins ...)") and `--safe-mode` ("all
+/// customizations (... hooks ...) disabled"), as `claude --help` of 2.1.322
+/// says, and a `--settings` that sets `disableAllHooks` true.
 pub fn check_user_settings(rest: &[String]) -> Result<(), String> {
+    for w in rest {
+        let flag = w.split('=').next().unwrap_or(w);
+        if flag == "--bare" || flag == "--safe-mode" {
+            return Err(format!(
+                "{flag} starts Claude Code with no hooks, so derm's gate would not run; derm run does not start a chat it says is gated with no gate"
+            ));
+        }
+    }
     for v in settings_values(rest) {
-        if !matches!(serde_json::from_str::<Value>(v), Ok(Value::Object(_))) {
+        let parsed = serde_json::from_str::<Value>(v);
+        if !matches!(parsed, Ok(Value::Object(_))) {
             return Err(format!(
                 "Claude Code reads only the last --settings on its command line, and derm adds its gate there; a --settings that is not JSON ({} characters) cannot be merged into it: pass the settings as JSON, or put them in ~/.claude/settings.json",
                 v.chars().count()
             ));
+        }
+        if parsed.is_ok_and(|o| o.get("disableAllHooks") == Some(&Value::Bool(true))) {
+            return Err(
+                "a --settings that sets disableAllHooks turns every hook off, derm's gate included; derm run does not start a chat it says is gated with no gate"
+                    .into(),
+            );
         }
     }
     Ok(())
@@ -171,6 +193,12 @@ pub fn register(plan: &mut Plan, derm: &str) -> Result<(), String> {
     let at = start(plan);
     let text = serde_json::to_string(&block(&plan.args[at..], derm)).map_err(|e| e.to_string())?;
     plan.args.extend(["--settings".to_string(), text]);
+    // `--safe-mode` "Sets CLAUDE_CODE_SAFE_MODE=1" (`claude --help`,
+    // 2.1.322); whether the variable alone starts safe mode, every hook off,
+    // was not read (I), so it never reaches the chat (fix pass 6's review).
+    if !plan.env_remove.iter().any(|v| v == "CLAUDE_CODE_SAFE_MODE") {
+        plan.env_remove.push("CLAUDE_CODE_SAFE_MODE".into());
+    }
     plan.notes.push(format!(
         "derm run: derm's gate for Claude Code is in derm's --settings block, run by its absolute path ({derm}) with no shell, and derm's plugin is off for this chat (enabledPlugins), so each call is gated once"
     ));
@@ -242,6 +270,23 @@ mod tests {
         assert!(check_user_settings(&s(&["-p", "x"])).is_ok());
     }
 
+    /// Fix pass 6's review: words that start Claude Code with no hook.
+    #[test]
+    fn words_that_turn_every_hook_off_are_refused() {
+        for words in [
+            vec!["--bare", "-p", "x"],
+            vec!["-p", "x", "--safe-mode"],
+            vec!["--settings", r#"{"disableAllHooks":true}"#],
+            vec![r#"--settings={"model":"m","disableAllHooks":true}"#],
+        ] {
+            let e = check_user_settings(&s(&words)).unwrap_err();
+            assert!(e.contains("derm's gate"), "{words:?}: {e}");
+        }
+        assert!(check_user_settings(&s(&["--settings", r#"{"disableAllHooks":false}"#])).is_ok());
+        // A prompt that only names the flag is the prompt (after -p).
+        assert!(check_user_settings(&s(&["-p", "explain --bare"])).is_ok());
+    }
+
     #[test]
     fn register_adds_the_last_settings_after_srts_command() {
         let mut p = Plan {
@@ -256,6 +301,7 @@ mod tests {
             b["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
             "/d/derm"
         );
+        assert!(p.env_remove.iter().any(|v| v == "CLAUDE_CODE_SAFE_MODE"));
         // srt's own --settings is a file of srt's, not Claude Code's.
         assert!(b.get("filesystem").is_none(), "{b}");
         assert!(p.notes.iter().any(|n| n.contains("plugin is off")));
