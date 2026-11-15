@@ -1110,6 +1110,10 @@ pub const RULE_BWRAP_BIND_CHECK: &str = "bubblewrapBindCheck";
 /// sandbox's tmpfs (BW6R3-2), counted in `suppressed`.
 pub const RULE_DERM_SANDBOX_STATE: &str = "dermGateSandboxState";
 
+/// The rule that hides derm's gate reading its chat's own route out of srt,
+/// counted in `suppressed`.
+pub const RULE_DERM_OWN_ROUTE: &str = "dermGateOwnRoute";
+
 /// A path bubblewrap wrote under its new root on a filesystem the host had
 /// no mount of when the feed read the event (box test w6 retest 2,
 /// BW6R2-2): the mount point of a bind, made in bubblewrap's own tmpfs root
@@ -1132,9 +1136,10 @@ fn made_off_the_host(event: &ActivityEvent) -> bool {
 /// (`bind-mount.c:397-408` at v0.11.1). An `O_PATH` open reads nothing:
 /// "The file itself is not opened" (open(2)). Only the Linux feed says so
 /// (`pathOnly`); an event that does not say stays flagged.
-fn bubblewrap_bind_check(event: &ActivityEvent, path: &str) -> bool {
+fn bubblewrap_bind_check(event: &ActivityEvent, path: &str, folders: &[String]) -> bool {
     let exe = str_field(event, "exe").unwrap_or("");
     event.source == ActivitySource::Auditd
+        && !chat_could_replace(exe, folders)
         && event.kind == "open"
         && exe.rsplit('/').next() == Some("bwrap")
         && path.starts_with("/newroot/")
@@ -1146,11 +1151,41 @@ fn bubblewrap_bind_check(event: &ActivityEvent, path: &str) -> bool {
 /// `~/.derm` (BW6R2-5), `<home>/.derm/local/<chat>.taint.json`
 /// (`derm-cli` `gate/taint/state.rs`, `file_path`), where it goes with the
 /// sandbox. Hidden only when the feed said the file was on no host mount,
-/// the writer is the derm binary the chat's `run.start` names, the call
-/// creates or writes (never a delete or a rename, which can clear a chat's
-/// taint, case 265), and the chat's id is plain, so its file name is the id
-/// as the gate writes it (`gate/locallog`, `file_name`).
+/// the writer is the derm binary the chat's `run.start` names and the chat
+/// cannot have replaced, the call creates or writes (never a delete or a
+/// rename), and the chat's id is plain, so its file name is the id as the
+/// gate writes it (`gate/locallog`, `file_name`). A write can clear a chat's
+/// taint as well as a delete (`{"v":1}`: `gate/taint/state.rs` `load` reads
+/// the file as it is; fix pass 4's review, FP4-R1), so the writer is what
+/// this rests on: srt keeps that binary read-only (`run/plan.rs`), and one in
+/// the chat's folder or a temp root is never trusted.
 fn derm_gate_sandbox_state(event: &ActivityEvent, path: &str, chat: Option<&ChatContext>) -> bool {
+    matches!(event.kind.as_str(), "create" | "write")
+        && made_off_the_host(event)
+        && by_chats_own_derm(event, path, chat, ".derm/local", ".taint.json")
+}
+
+/// derm's gate reading its chat's own route out of srt on Linux,
+/// `<home>/.derm/run/routes/<chat>.json` (`derm-cli` `gate/daemon.rs`,
+/// `srt_route_file`), which holds two port numbers (`run/mod.rs`,
+/// `srt_route`). Box test w6 retest 4: three reads a chat, each "Opened"
+/// that file. Only the derm the chat's `run.start` names, reading that
+/// chat's own route, from the Linux feed.
+fn derm_gate_own_route(event: &ActivityEvent, path: &str, chat: Option<&ChatContext>) -> bool {
+    event.kind == "open" && by_chats_own_derm(event, path, chat, ".derm/run/routes", ".json")
+}
+
+/// The event is the Linux feed's, its writer the derm binary the chat's
+/// `run.start` names (`dermExe`), and its path `<home>/<folder>/<chat><suffix>`
+/// for a plain chat id (as the gate names its files: `gate/locallog`,
+/// `file_name`; `srt_route_file`).
+fn by_chats_own_derm(
+    event: &ActivityEvent,
+    path: &str,
+    chat: Option<&ChatContext>,
+    folder: &str,
+    suffix: &str,
+) -> bool {
     let Some(derm) = chat.and_then(|c| c.derm_exe.as_deref()) else {
         return false;
     };
@@ -1161,12 +1196,30 @@ fn derm_gate_sandbox_state(event: &ActivityEvent, path: &str, chat: Option<&Chat
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
     let own_file =
-        home_of(path).is_some_and(|home| path == format!("{home}/.derm/local/{id}.taint.json"));
-    matches!(event.kind.as_str(), "create" | "write")
-        && made_off_the_host(event)
+        home_of(path).is_some_and(|home| path == format!("{home}/{folder}/{id}{suffix}"));
+    let folders = chat.map(|c| c.folders.as_slice()).unwrap_or(&[]);
+    event.source == ActivitySource::Auditd
         && str_field(event, "exe") == Some(derm)
+        && !chat_could_replace(derm, folders)
         && plain_id
         && own_file
+}
+
+/// A program the chat may have put in place: inside one of its folders, or
+/// under a temp root a sandbox lets it write (srt's `/tmp`, Claude Code's
+/// `/tmp/claude-<uid>`; fix pass 4's review, FP4-R1, FP4-R2). Such a binary
+/// is trusted for no hide.
+fn chat_could_replace(exe: &str, folders: &[String]) -> bool {
+    const TEMP: &[&str] = &[
+        "/tmp",
+        "/var/tmp",
+        "/dev/shm",
+        "/private/tmp",
+        "/private/var/tmp",
+        "/private/var/folders",
+        "/var/folders",
+    ];
+    TEMP.iter().any(|t| inside(exe, t)) || folders.iter().any(|f| inside(exe, f))
 }
 
 fn written_paths(event: &ActivityEvent) -> Vec<&str> {
@@ -1451,9 +1504,13 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
         // Sensitive opens.
         if flag.is_none() && kernel_feed(event.source) && event.kind == "open" {
             if let Some(path) = str_field(event, "path") {
-                if bubblewrap_bind_check(event, path) {
+                if bubblewrap_bind_check(event, path, folders) {
                     *suppressed
                         .entry(RULE_BWRAP_BIND_CHECK.to_string())
+                        .or_default() += 1;
+                } else if derm_gate_own_route(event, path, chat) {
+                    *suppressed
+                        .entry(RULE_DERM_OWN_ROUTE.to_string())
                         .or_default() += 1;
                 } else if !expected_sensitive(path, folders) {
                     flag = Some((
@@ -2295,6 +2352,123 @@ mod tests {
                 "{why}: {:?}",
                 out.suppressed
             );
+        }
+    }
+
+    /// Box test w6 retest 4 (on the fix of retest 3): derm's gate reads
+    /// its chat's route out of srt (`gate/daemon.rs` `srt_route_file`),
+    /// three times in a Claude Code srt chat, each "Opened
+    /// ~/.derm/run/routes/<chat>.json". The file holds two port numbers.
+    /// Only the derm the chat's `run.start` names reading that chat's own
+    /// route is hidden; the new feed's bwrap look (`pathOnly`, recorded at
+    /// `0f1d9ca`) is hidden as BW6R3-1's rule says.
+    #[test]
+    fn bw6r3_1_the_gates_read_of_its_own_route_is_not_a_flag() {
+        let recs = box_records();
+        let (look, read) = (recs[3].clone(), recs[4].clone());
+        let chat = "derm-3827ee1711f4";
+        let ctx = |exe: Option<&str>| {
+            HashMap::from([(
+                chat.to_string(),
+                ChatContext {
+                    chat_id: chat.into(),
+                    harness: "claude-code".into(),
+                    folders: vec!["/home/opone/w6box/rt4/a5cp".into()],
+                    derm_exe: exe.map(str::to_string),
+                },
+            )])
+        };
+        let own = ctx(Some("/home/opone/.local/bin/derm"));
+        let out = check_with(&[look, read.clone()], &own);
+        assert!(out.flags.is_empty(), "{:?}", out.flags);
+        assert_eq!(out.suppressed.get(RULE_BWRAP_BIND_CHECK), Some(&1));
+        assert_eq!(out.suppressed.get(RULE_DERM_OWN_ROUTE), Some(&1));
+        let edit = |f: &dyn Fn(&mut ActivityEvent)| {
+            let mut e = read.clone();
+            f(&mut e);
+            e
+        };
+        for (why, e, chats) in [
+            ("no run.start path", read.clone(), ctx(None)),
+            (
+                "another writer",
+                edit(&|e| e.detail["exe"] = json!("/usr/bin/cat")),
+                own.clone(),
+            ),
+            (
+                "another chat's route",
+                edit(&|e| {
+                    e.detail["path"] = json!("/home/opone/.derm/run/routes/derm-000000000000.json")
+                }),
+                own.clone(),
+            ),
+            (
+                "another file",
+                edit(&|e| e.detail["path"] = json!("/home/opone/.derm/run/daemon.token")),
+                own.clone(),
+            ),
+            (
+                "another feed",
+                edit(&|e| e.source = ActivitySource::Eslogger),
+                own.clone(),
+            ),
+        ] {
+            let out = check_with(&[e], &chats);
+            assert_eq!(out.flags.len(), 1, "{why}: {:?}", out.flags);
+            assert!(!out.suppressed.contains_key(RULE_DERM_OWN_ROUTE), "{why}");
+        }
+    }
+
+    /// Fix pass 4's review, FP4-R1 and FP4-R2: a derm or a bwrap the chat
+    /// could have replaced (in its own folder, or a temp root a sandbox lets
+    /// it write) is not trusted for either hide. A write of `{"v":1}` clears
+    /// a chat's taint (`gate/taint/state.rs` `load` reads the file as it is).
+    #[test]
+    fn fp4_r1_a_derm_or_bwrap_the_chat_can_replace_hides_nothing() {
+        let recs = box_records();
+        let chat = "derm-544da2c1fa2c";
+        let folder = "/home/opone/w6box/rt3/a5cp";
+        let ctx = |exe: &str| {
+            HashMap::from([(
+                chat.to_string(),
+                ChatContext {
+                    chat_id: chat.into(),
+                    harness: "claude-code".into(),
+                    folders: vec![folder.into()],
+                    derm_exe: Some(exe.into()),
+                },
+            )])
+        };
+        for exe in [
+            format!("{folder}/target/release/derm"),
+            "/tmp/derm-build/derm".to_string(),
+            "/var/tmp/x/derm".to_string(),
+            "/dev/shm/derm".to_string(),
+        ] {
+            let mut e = recs[1].clone();
+            e.detail["exe"] = json!(exe);
+            let out = check_with(&[e], &ctx(&exe));
+            assert_eq!(out.flags.len(), 1, "{exe}: {:?}", out.flags);
+            assert!(
+                !out.suppressed.contains_key(RULE_DERM_SANDBOX_STATE),
+                "{exe}"
+            );
+        }
+        let mut look = recs[0].clone();
+        look.detail["pathOnly"] = json!(true);
+        for exe in ["/tmp/bwrap", "/home/opone/w6box/rt3/a5xr/bwrap"] {
+            let mut e = look.clone();
+            e.detail["exe"] = json!(exe);
+            let chats = HashMap::from([(
+                e.chat_id.clone(),
+                ChatContext {
+                    chat_id: e.chat_id.clone(),
+                    folders: vec!["/home/opone/w6box/rt3/a5xr".into()],
+                    ..ChatContext::default()
+                },
+            )]);
+            let out = check_with(&[e], &chats);
+            assert_eq!(out.flags.len(), 1, "{exe}: {:?}", out.flags);
         }
     }
 

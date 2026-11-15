@@ -253,6 +253,15 @@ fn taint_not_reached(
     }
 }
 
+/// The derm binary running now, by its real path; `None` when it cannot be
+/// read (BW6R3-2, FP4-R1).
+fn derm_exe() -> Option<String> {
+    std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// The dry run's `taint:` line. Under srt on Linux with `--no-daemon` the
 /// gate keeps no record and denies every call it gates (the no-daemon note
 /// in `plan.rs`), so `--taint` decides nothing there either (box test w6
@@ -1451,6 +1460,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        // FP4-R1: derm's own binary stays read-only under srt.
+        derm_exe: derm_exe(),
         // FP8-S2, FP8R-5: the git files srt's own denies leave out.
         git_controls: if a.boundary == Boundary::Srt {
             git_controls(Path::new(&cwd))
@@ -2007,10 +2018,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // The derm that started the chat, by its real path, so the daemon
         // knows the gate's own state writes in a sandbox's tmpfs (box test
         // w6 retest 3, BW6R3-2); null when it cannot be read.
-        "dermExe": std::env::current_exe()
-            .and_then(std::fs::canonicalize)
-            .ok()
-            .map(|p| p.to_string_lossy().into_owned()),
+        "dermExe": derm_exe(),
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
@@ -3489,7 +3497,9 @@ mod end_to_end {
         assert!(srt.contains("not applied under srt on Linux"), "{srt}");
         let sbx = taint_summary(Boundary::Sbx, true, true, "record");
         assert!(sbx.contains("not applied under sbx"), "{sbx}");
-        // Where it holds the line says so plainly: srt on macOS, no boundary.
+        // Elsewhere the line is unchanged: srt on macOS and no boundary.
+        // Whether taint holds under srt on macOS with `--no-daemon` (srt
+        // keeps `~/.derm` read-only there too) is not run (FP4-R4, open).
         assert_eq!(
             taint_summary(Boundary::Srt, false, true, "record"),
             "taint: record (--taint)"

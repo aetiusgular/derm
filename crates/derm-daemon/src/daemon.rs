@@ -3186,13 +3186,6 @@ mod tests {
         (Daemon::new(TOKEN, log, &data, false).unwrap(), root)
     }
 
-    /// Box retest of fix pass 13r (BW5R5-1, run on the box 8 Nov): the
-    /// chat-to-folders map the check reads lived only in memory, filled by a
-    /// `run.start` this daemon took, so after any daemon restart every write
-    /// of an earlier chat, its own folder's included, was "outside this
-    /// chat's folders" (chats b510ctl and fp13c: 4 such flags each; b510ctl2,
-    /// run in the same daemon's life: 0). A restarted daemon reads the
-    /// chats' `run.start` records back from its log.
     /// Box test w6 retest 3, BW6R3-2: `run.start`'s `dermExe` reaches the
     /// chat's context, before and after a restart, and the gate's own
     /// taint state in a sandbox's tmpfs is then no flag. A chat whose
@@ -3266,6 +3259,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Box retest of fix pass 13r (BW5R5-1, run on the box 8 Nov): the
+    /// chat-to-folders map the check reads lived only in memory, filled by a
+    /// `run.start` this daemon took, so after any daemon restart every write
+    /// of an earlier chat, its own folder's included, was "outside this
+    /// chat's folders" (chats b510ctl and fp13c: 4 such flags each; b510ctl2,
+    /// run in the same daemon's life: 0). A restarted daemon reads the
+    /// chats' `run.start` records back from its log.
     #[test]
     fn bw5r5_1_a_chats_folders_survive_a_daemon_restart() {
         let root = std::env::temp_dir().join(format!(

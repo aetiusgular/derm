@@ -61,7 +61,9 @@ pub enum What {
     /// asked for `O_PATH`, which opens no file: "The file itself is not
     /// opened, and other file operations (e.g., read(2), write(2), ...) fail"
     /// (open(2)). Known only for `open` (flags in a1) and `openat` (a2);
-    /// `openat2`'s flags are in a struct the record does not show.
+    /// `openat2`'s flags are in a struct the record does not show, and the
+    /// rules key `openat2` as `derm_write` only (`rules.rs`), so it never
+    /// reaches here as a read (fix pass 4's review, FP4-R5).
     Open {
         path: String,
         path_only: bool,

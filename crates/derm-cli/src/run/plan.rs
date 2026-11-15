@@ -197,6 +197,11 @@ pub struct Inputs<'a> {
     /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
     /// read-only wherever they sit (re-review FP5-R2).
     pub gate_paths: Vec<String>,
+    /// The derm binary running `derm run`, by its real path (`run.start`'s
+    /// `dermExe`). srt keeps it read-only, so an agent cannot replace the
+    /// binary the daemon trusts for the gate's own files (fix pass 4's
+    /// review, FP4-R1).
+    pub derm_exe: Option<String>,
     /// The git files in the chat's folder that srt's own denies (the
     /// folder's `.git/hooks` and `.git/config`) leave out, by absolute path
     /// (`run/mod.rs` lists them): each submodule's `config` and `hooks` under
@@ -1161,6 +1166,8 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             // What derm's registered gate runs, wherever it sits (re-review
             // FP5-R2): a chat folder that is a derm clone holds the gate.
             deny_write.extend(i.gate_paths.iter().filter(|p| p.starts_with('/')).cloned());
+            // FP4-R1: the derm the daemon trusts for the gate's own files.
+            deny_write.extend(i.derm_exe.iter().filter(|p| p.starts_with('/')).cloned());
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
             // The daemon's data folder: its activity log, content files and
@@ -1557,6 +1564,7 @@ mod tests {
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
             gate_paths: Vec::new(),
+            derm_exe: None,
             git_controls: Vec::new(),
             cu_endpoint: None,
             macos: false,
@@ -2799,6 +2807,24 @@ mod tests {
                 "{want} in {deny:?}"
             );
         }
+    }
+
+    /// Fix pass 4's review, FP4-R1: the daemon hides the gate's own state
+    /// writes by the derm `run.start` names, so srt keeps that binary
+    /// read-only wherever it sits (a derm clone as the chat's folder, /tmp).
+    #[test]
+    fn fp4_r1_srt_keeps_derms_own_binary_read_only() {
+        let args = a(&["pi", "--boundary", "srt"]);
+        let i = Inputs {
+            derm_exe: Some("/home/u/proj dir/target/release/derm".into()),
+            ..inputs(&args)
+        };
+        let p = build(&i).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap();
+        let want = json!({"path": "/home/u/proj dir/target/release/derm", "literal": true});
+        assert!(deny.contains(&want), "{deny:?}");
     }
 
     #[test]
