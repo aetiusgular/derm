@@ -66,7 +66,28 @@ function box(name) {
   const dirs = { root, home: path.join(root, "home"), work: path.join(root, "work"), bin: path.join(root, "bin") };
   for (const d of [dirs.home, dirs.work, dirs.bin, path.join(dirs.home, ".ssh")]) mkdirSync(d, { recursive: true });
   writeFileSync(path.join(dirs.home, ".ssh", "id_test"), `${SECRET}\n`);
+  // Since fix pass 6 `derm run claude-code` gates the chat with derm's own
+  // hook (note BE section 1.5, option (e)). With no policy every call asks,
+  // and `-p` denies an ask; a policy that allows the shell lets the probes
+  // through derm's gate, and Claude Code's sandbox decides (fix pass 7).
+  mkdirSync(path.join(dirs.home, ".derm"), { recursive: true, mode: 0o700 });
+  chmodSync(path.join(dirs.home, ".derm"), 0o700);
+  writeFileSync(path.join(dirs.home, ".derm", "policy.json"), JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
   return dirs;
+}
+
+/**
+ * The probe as a script in the chat's folder, and the line that runs it.
+ * derm's gate asks before a read of `~/.ssh` and before shell text it
+ * cannot read (`$?`, `{`), and a yes for a chat with no boundary needs your
+ * password (`derm-daemon` `approver/person.rs`), which a check cannot give.
+ * Claude Code's sandbox holds for every process the command starts, so the
+ * script's reads and writes are the sandbox's to allow, as these checks
+ * mean; the gate sees `sh <script>`, which it allows (fix pass 7).
+ */
+function probe(dirs, name, command) {
+  writeFileSync(path.join(dirs.work, `.probe-${name}.sh`), `${command}\n`);
+  return `sh .probe-${name}.sh`;
 }
 
 function done(dirs, result) {
@@ -178,9 +199,9 @@ async function claudeTurn(dirs, claudePath, tierArgs) {
       JSON.stringify(b.messages ?? []).includes("tool_result")
         ? [textBlock("done")]
         : [
-            toolUse("Bash", { command: `cat ${dirs.home}/.ssh/id_test`, description: "read" }, "toolu_read"),
-            toolUse("Bash", { command: `echo x > ${outside}`, description: "outside" }, "toolu_out"),
-            toolUse("Bash", { command: "echo y > inside.txt", description: "inside" }, "toolu_in"),
+            toolUse("Bash", { command: probe(dirs, "read", `cat ${dirs.home}/.ssh/id_test`), description: "read" }, "toolu_read"),
+            toolUse("Bash", { command: probe(dirs, "out", `echo x > ${outside}`), description: "outside" }, "toolu_out"),
+            toolUse("Bash", { command: probe(dirs, "in", "echo y > inside.txt"), description: "inside" }, "toolu_in"),
           ],
   });
   let r;
@@ -348,8 +369,8 @@ async function claudeTmpTurn(dirs, claudePath, tierArgs) {
       JSON.stringify(b.messages ?? []).includes("tool_result")
         ? [textBlock("done")]
         : [
-            toolUse("Bash", { command: pr.slash, description: "slash tmp" }, "toolu_slash"),
-            toolUse("Bash", { command: pr.mk, description: "mktemp" }, "toolu_mk"),
+            toolUse("Bash", { command: probe(dirs, "slash", pr.slash), description: "slash tmp" }, "toolu_slash"),
+            toolUse("Bash", { command: probe(dirs, "mk", pr.mk), description: "mktemp" }, "toolu_mk"),
           ],
   });
   let r;
@@ -463,8 +484,8 @@ export const checks = [
           JSON.stringify(b.messages ?? []).includes("tool_result")
             ? [textBlock("done")]
             : [
-                toolUse("Bash", { command: "curl -s -m 15 -o g.out -w gh=%{http_connect}/%{http_code} https://api.github.com/zen", description: "secret host" }, "toolu_gh"),
-                toolUse("Bash", { command: "curl -s -m 15 -o o.out -w other=%{http_connect}/%{http_code} https://example.org/", description: "other host" }, "toolu_other"),
+                toolUse("Bash", { command: probe(dirs, "gh", "curl -s -m 15 -o g.out -w gh=%{http_connect}/%{http_code} https://api.github.com/zen"), description: "secret host" }, "toolu_gh"),
+                toolUse("Bash", { command: probe(dirs, "other", "curl -s -m 15 -o o.out -w other=%{http_connect}/%{http_code} https://example.org/"), description: "other host" }, "toolu_other"),
               ],
       });
       let r;
