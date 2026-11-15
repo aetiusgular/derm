@@ -155,13 +155,13 @@ function realStat(p: string): { uid: number; gid?: number; mode: number; isFile:
   return { uid: s.uid, gid: s.gid, mode: s.mode, isFile: s.isFile(), isDir: s.isDirectory() };
 }
 
-function inside(file: string, folder: string, P: path.PlatformPath = path): boolean {
+function inside(file: string, folder: string, P: typeof path.posix = path): boolean {
   const rel = P.relative(folder, file);
   return rel === "" || (!rel.startsWith("..") && !P.isAbsolute(rel));
 }
 
 /** The path rules of the system the gate runs on (the same as `path` there; tests name another). */
-function pathsOf(platform: NodeJS.Platform): path.PlatformPath {
+function pathsOf(platform: NodeJS.Platform): typeof path.posix {
   return platform === "win32" ? path.win32 : path.posix;
 }
 
@@ -398,7 +398,7 @@ export class GateServe {
     const o = this.options;
     const platform = o.platform ?? process.platform;
     const cwd = o.cwd();
-    const located = (o.locate ?? locateDerm)({ env: o.env, cwd, platform, home: o.home ? o.home() : os.homedir(), trusted: o.trusted, pathFile: o.pathFile });
+    const located = (o.locate ?? locateDerm)({ env: o.env, cwd, platform, home: o.home ? o.home() : os.homedir(), trusted: o.trusted, ...(o.pathFile !== undefined ? { pathFile: o.pathFile } : {}) });
     if ("problem" in located) {
       this.lastProblem = located.problem;
       throw new ServeUnavailable(located.problem);

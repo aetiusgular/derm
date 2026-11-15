@@ -1,9 +1,11 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import plugin, { description, type AmpLike } from "./index.ts";
+import { installCandidates } from "./serve/client.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -70,5 +72,36 @@ describe("the plugin folder is copied whole (Amp loads only what resolves inside
   });
   it("ships no test helpers", () => {
     for (const file of shipped()) expect(readFileSync(file, "utf8")).not.toMatch(/fakeDaemon|vitest/);
+  });
+});
+
+describe("the gate-serve switch (fix pass 6, note BE section 3.3)", () => {
+  it("is off by default: the TypeScript gate decides", async () => {
+    const was = { s: process.env.DERM_AMP_GATE_SERVE, b: process.env.DERM_BIN };
+    try {
+      delete process.env.DERM_AMP_GATE_SERVE;
+      process.env.DERM_BIN = "/nonexistent/derm";
+      const handlers = new Map<string, (e: unknown, c: unknown) => Promise<unknown>>();
+      plugin({ on: (name, h) => handlers.set(name, h as never), helpers: {}, system: { workspaceRoot: null } });
+      const out = await handlers.get("tool.call")?.({ toolUseID: "t1", tool: "Bash", input: { cmd: "export ANTHROPIC_BASE_URL=http://x" }, thread: { id: "T-1" } }, { ui: { confirm: async () => true } });
+      expect(out).toMatchObject({ message: "derm: reject list: anthropic_base_url" });
+      // On, the co-process decides, and with no derm to run every call is refused.
+      process.env.DERM_AMP_GATE_SERVE = "1";
+      const on = new Map<string, (e: unknown, c: unknown) => Promise<unknown>>();
+      plugin({ on: (name, h) => on.set(name, h as never), helpers: {}, system: { workspaceRoot: null } });
+      expect([...on.keys()]).toEqual(["tool.call", "tool.result"]);
+      // Where an installed derm is there to be found (a machine with derm
+      // under /usr/local/bin, say), the co-process runs it; the refusal is
+      // checked only where nothing can be.
+      if (!installCandidates(process.platform, homedir()).some((p) => existsSync(p))) {
+        const refused = await on.get("tool.call")?.({ toolUseID: "t2", tool: "read", input: { path: "a" }, thread: { id: "T-1" } }, { ui: { confirm: async () => true } });
+        expect(refused).toMatchObject({ action: "reject-and-continue", message: expect.stringMatching(/co-process is not running/) });
+      }
+    } finally {
+      if (was.s === undefined) delete process.env.DERM_AMP_GATE_SERVE;
+      else process.env.DERM_AMP_GATE_SERVE = was.s;
+      if (was.b === undefined) delete process.env.DERM_BIN;
+      else process.env.DERM_BIN = was.b;
+    }
   });
 });

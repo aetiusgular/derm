@@ -92,7 +92,7 @@ function chatOf(threadId: unknown, env: NodeJS.ProcessEnv): string | undefined {
   return typeof threadId === "string" && threadId !== "" ? threadId : undefined;
 }
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
@@ -150,7 +150,10 @@ export function gateCallOf(event: ToolCallEvent, deps: Pick<Deps, "env" | "shell
 }
 
 /** The text Amp's dialog shows: what derm asks about, and the input as it will run, redacted. */
-export function confirmOptions(answer: GateAnswer, call: GateCall, rawTool: string): ConfirmOptions {
+/** What Amp's dialog needs of an answer: the TS core's, or `derm gate serve`'s (serve.ts). */
+export type AskAnswer = Pick<GateAnswer, "normalizedTool" | "reason" | "askTimeoutSeconds">;
+
+export function confirmOptions(answer: AskAnswer, call: GateCall, rawTool: string): ConfirmOptions {
   const preview = redactText(inputTextFor(answer.normalizedTool, call.toolInput)).text;
   const shown = preview.length > 1200 ? `${preview.slice(0, 1199)}…` : preview;
   return {
@@ -168,10 +171,10 @@ export function confirmOptions(answer: GateAnswer, call: GateCall, rawTool: stri
   };
 }
 
-type Resolved = { action: "allow" | "deny"; reason: string };
+export type Resolved = { action: "allow" | "deny"; reason: string };
 
 /** Amp's own dialog, bounded by the policy's ask timeout. Anything but a yes in time is a deny. */
-async function askAmp(answer: GateAnswer, call: GateCall, rawTool: string, ctx: HandlerContext | undefined, deps: Deps, prior: string): Promise<Resolved> {
+export async function askAmp(answer: AskAnswer, call: GateCall, rawTool: string, ctx: HandlerContext | undefined, deps: Pick<Deps, "uiUnavailable">, prior: string): Promise<Resolved> {
   if (!ctx?.ui || typeof ctx.ui.confirm !== "function") return { action: "deny", reason: `${prior}; Amp gave no dialog to ask in` };
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
@@ -189,7 +192,7 @@ async function askAmp(answer: GateAnswer, call: GateCall, rawTool: string, ctx: 
   }
 }
 
-function reject(reason: string): ToolCallResult {
+export function reject(reason: string): ToolCallResult {
   return { action: "reject-and-continue", message: `derm: ${reason}` };
 }
 

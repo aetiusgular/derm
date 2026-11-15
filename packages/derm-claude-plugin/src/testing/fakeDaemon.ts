@@ -20,6 +20,8 @@ export type FakeDaemon = {
   lines: { conn: number; line: Record<string, unknown> }[];
   approvals: () => Record<string, unknown>[];
   events: () => Record<string, unknown>[];
+  /** The `taint` requests the daemon was sent, in order. */
+  taints: () => Record<string, unknown>[];
   setApprove: (b: ApproveBehaviour) => void;
   /** Forgets every chat's taint, so each test is a chat of its own. */
   resetTaint: () => void;
@@ -137,6 +139,7 @@ export async function startFakeDaemon(opts: { approve?: ApproveBehaviour; root?:
     lines,
     approvals: () => lines.filter((l) => l.line.op === "approve").map((l) => l.line.request as Record<string, unknown>),
     events: () => lines.filter((l) => l.line.op === "event").map((l) => l.line.event as Record<string, unknown>),
+    taints: () => lines.filter((l) => l.line.op === "taint").map((l) => l.line as Record<string, unknown>),
     setApprove: (b) => {
       behaviour = b;
     },

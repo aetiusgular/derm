@@ -25,6 +25,7 @@ Then run `plugins: reload` from Amp's command palette, or restart Amp. derm neve
 
 ## Known limits
 
+- **Two gates, one live.** The TypeScript gate (`amp.ts`) decides. `serve.ts` decides through `derm gate serve` instead, as OpenCode's plugin does, which adds taint, the light log and one decide path (case 229); it is on only with `DERM_AMP_GATE_SERVE=1` in Amp's environment until one real Amp run passes with it (fix pass 6, note BE section 3.3, BBR-13). It runs derm by `DERM_BIN`, else derm's per-user install folders (case 227).
 - **Not run.** Every claim about Amp here comes from its type definitions and docs page, not from a run.
 - **When a handler fails.** derm's handler catches every error and answers `reject-and-continue`. What Amp does when a handler throws, never answers, or its Bun process dies is not documented: it may let the call through.
 - **Another plugin's answer.** Amp runs plugins' handlers in an order it does not define. Orca installs its own Amp plugin, whose `tool.call` answers allow; how Amp merges two answers is not documented. A plugin that runs after derm's can also change the input derm checked.
