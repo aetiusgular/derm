@@ -314,6 +314,63 @@ describe("the route to derm (case 227)", () => {
     const r = locateDerm({ env: {}, cwd: "C:\\p", platform: "win32", home: "C:\\Users\\u", trusted: () => true });
     expect("problem" in r && r.problem).toMatch(/DERM_BIN/);
   });
+
+  // Fix pass 6 (note BE section 3.2): outside derm run on Windows the
+  // plugin runs the derm.exe that `derm connect opencode --gate --write`
+  // named in derm-path, by that absolute path, never a guessed folder.
+  describe("on Windows, the derm-path derm connect wrote", () => {
+    const exe = "C:\\Users\\u\\.local\\bin\\derm.exe";
+    const file = "C:\\Users\\u\\.config\\opencode\\derm-path";
+    const win = (text: string | undefined, env: NodeJS.ProcessEnv = {}, there: string[] = [exe]): LocateDeps => ({
+      env,
+      cwd: "C:\\p",
+      platform: "win32",
+      home: "C:\\Users\\u",
+      trusted: () => true,
+      pathFile: file,
+      readPathFile: (p) => (p === file ? text : undefined),
+      realpath: (p) => {
+        if (p === "C:\\Users\\u\\.local\\bin" || p === "C:\\p" || there.includes(p)) return p;
+        throw new Error("ENOENT");
+      },
+      lstat: (p) => {
+        if (there.includes(p) || p.endsWith("bin")) return { isLink: false };
+        throw new Error("ENOENT");
+      },
+    });
+
+    it("runs the derm.exe it names", () => {
+      expect(locateDerm(win(`${exe}\n`))).toEqual({ path: exe });
+      expect(locateDerm(win(`${exe}\r\n`))).toEqual({ path: exe });
+    });
+
+    it("comes after DERM_BIN, which derm run sets", () => {
+      const other = "C:\\Users\\u\\.local\\bin\\derm-run\\derm.exe";
+      const d = win(`${exe}\n`, { DERM_BIN: other }, [exe, other]);
+      d.realpath = (p) => p;
+      expect(locateDerm(d)).toEqual({ path: other });
+    });
+
+    it("refuses a file that is not one absolute path to derm.exe, and says which file", () => {
+      for (const text of ["derm.exe\n", "C:\\x\\node.exe\n", `${exe}\n${exe}\n`, "\\\\server\\share\\derm.exe\n", "/usr/bin/derm\n"]) {
+        const r = locateDerm(win(text));
+        expect("problem" in r && r.problem, text).toMatch(/derm-path does not hold one absolute path to derm\.exe/);
+      }
+    });
+
+    it("refuses a derm.exe that is not there, or is inside the session's folder", () => {
+      const gone = locateDerm(win("C:\\nowhere\\derm.exe\n"));
+      expect("problem" in gone && gone.problem).toMatch(/derm-path names C:\\nowhere\\derm\.exe: not there/);
+      const planted = "C:\\p\\derm.exe";
+      const d = win(`${planted}\n`, {}, [planted]);
+      expect(locateDerm(d)).toEqual({ problem: expect.stringMatching(/session's folder/) });
+    });
+
+    it("with no file there, says that derm connect has written none", () => {
+      const r = locateDerm(win(undefined));
+      expect("problem" in r && r.problem).toMatch(/DERM_BIN is not set.*no derm-path/);
+    });
+  });
 });
 
 // ---- the real co-process ------------------------------------------------

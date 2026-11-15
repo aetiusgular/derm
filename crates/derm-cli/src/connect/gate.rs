@@ -58,6 +58,10 @@ pub struct Agent {
     /// own plugin on Windows, whose hooks file cannot start there and which,
     /// beside a settings gate, would gate every call twice (fix pass 6).
     pub refuse_if_plugin_on: Option<String>,
+    /// The one system this row is for (`windows`), or `None` for a row
+    /// that holds everywhere its agent has no row of its own. A Windows row
+    /// names derm by [`self_path_exec`] (fix pass 6).
+    pub os: Option<String>,
 }
 
 /// BC-1 and BC-2 (note BC sections 8 and 11, run by the wave 5b base): goose
@@ -414,6 +418,7 @@ pub fn table_for(os: &str) -> Result<Vec<Agent>, String> {
                 notes: strs(r, "notes")?,
                 legacy_name: opt_s(r, "legacyName"),
                 refuse_if_plugin_on: opt_s(r, "refuseIfPluginOn"),
+                os: opt_s(r, "os"),
             })
         })
         .collect()
@@ -615,6 +620,29 @@ pub fn self_path_exec() -> Result<String, String> {
     }
 }
 
+/// Whether `t` is a file derm wrote naming a derm: one line, an absolute
+/// path (`/...` or a drive path `C:\...`) to a file named `derm` or
+/// `derm.exe`. derm-path files hold this and nothing else (Hermes's, and
+/// OpenCode's on Windows, fix pass 6).
+pub fn derm_line(t: &str) -> bool {
+    let line = t.strip_suffix('\n').unwrap_or(t);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.is_empty() || line.contains(['\n', '\r']) {
+        return false;
+    }
+    let b = line.as_bytes();
+    let drive = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+    if !(line.starts_with('/') || drive) {
+        return false;
+    }
+    let name = line.rsplit(['/', '\\']).next().unwrap_or("");
+    if drive {
+        name.eq_ignore_ascii_case("derm.exe")
+    } else {
+        name == "derm"
+    }
+}
+
 /// `\\?\C:\x` as `C:\x`; any other path as it is (a `\\?\UNC\` path keeps
 /// its prefix: a hook on a share is not one derm names).
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -804,7 +832,10 @@ pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
         "codex" | "gemini" => Some(Err(format!(
             "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
         ))),
-        "pi" | "oh-my-pi" | "opencode" | "kilo" | "openclaw" => Some(Ok(format!(
+        "opencode" => Some(Ok(
+            "on Windows OpenCode's gate runs the derm DERM_BIN names (`derm run` sets it to itself), else the derm.exe named in derm-path beside opencode.json, by that absolute path, and runs it without checking who may write it (Node cannot read that there; case 109 does not hold on Windows yet, FP2-S10); derm connect wrote derm-path only after checking that only its owner can write this derm.exe and its folder".into(),
+        )),
+        "pi" | "oh-my-pi" | "kilo" | "openclaw" => Some(Ok(format!(
             "on Windows {agent}'s gate runs only the derm DERM_BIN names, which `derm run` sets to itself, and runs it without checking who may write it (Node cannot read that there; case 109 does not hold on Windows yet, FP2-S10); with no DERM_BIN it refuses every call (rules case 227)"
         ))),
         _ => None,
@@ -1914,7 +1945,9 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     // no shell): Claude Code's Windows row (fix pass 6).
     let exec_form = agent.command.as_deref() == Some("{derm}");
     let derm = if uses_derm && !o.ungate {
-        Some(if exec_form {
+        // A Windows row names derm.exe as self_path_exec checks it (OpenCode's
+        // derm-path, fix pass 6, note BE section 3.2); self_path refuses there.
+        Some(if exec_form || agent.os.as_deref() == Some("windows") {
             self_path_exec()?
         } else {
             self_path()?
@@ -2437,7 +2470,10 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                     Box::new(move |t, exists| {
                         // derm's own: one line naming a derm. Anything else
                         // is someone else's and is never replaced.
-                        if exists && !(t.lines().count() == 1 && t.starts_with('/') && hit(t, &m)) {
+                        if exists
+                            && !(derm_line(t)
+                                || t.lines().count() == 1 && t.starts_with('/') && hit(t, &m))
+                        {
                             return Err(
                                 "the file exists and is not derm's; derm will not replace it"
                                     .into(),

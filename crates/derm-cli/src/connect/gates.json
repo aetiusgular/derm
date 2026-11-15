@@ -164,6 +164,61 @@
     },
     {
       "agent": "opencode",
+      "os": "windows",
+      "name": "OpenCode",
+      "package": "@aetiusgular/derm-opencode-plugin",
+      "source": "fix pass 6 (note BE section 3.2, Tony's call of 15 Nov 2026): the opencode row's steps, and derm-path beside opencode.json, which the plugin's serve client reads on Windows after DERM_BIN (packages/derm-pi/src/serve/client.ts locateDerm); OpenCode 1.19.4's global folder is $XDG_CONFIG_HOME/opencode or ~/.config/opencode on every system (packages/core/src/global.ts:3,13; xdg-basedir 5.1.0 index.js:10-11)",
+      "marker": "derm-opencode-plugin",
+      "installedIf": ["~/.config/opencode"],
+      "cli": "opencode",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.config/opencode/opencode.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/opencode/config.json",
+            "~/.config/opencode/opencode.json",
+            "~/.config/opencode/opencode.jsonc"
+          ],
+          "array": ["plugin"],
+          "entry": "{hook_url}"
+        },
+        {
+          "kind": "json-permission",
+          "path": "~/.config/opencode/opencode.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/opencode/config.json",
+            "~/.config/opencode/opencode.json",
+            "~/.config/opencode/opencode.jsonc"
+          ],
+          "keys": {
+            "bash": "ask",
+            "edit": "ask",
+            "webfetch": "ask",
+            "external_directory": "ask"
+          },
+          "fragment": "packages/derm-opencode-plugin/opencode.fragment.json"
+        },
+        {
+          "kind": "text-file",
+          "path": "~/.config/opencode/derm-path",
+          "xdgConfig": true,
+          "content": "{derm}\n"
+        }
+      ],
+      "notes": [
+        "derm-path names this derm.exe by its absolute path; the plugin runs it when DERM_BIN is not set (outside derm run), and refuses every call when neither names a derm it can run.",
+        "derm writes the last of config.json, opencode.json and opencode.jsonc that exists: OpenCode merges them in that order and a later `plugin` list replaces an earlier one.",
+        "The `permission` keys keep OpenCode's own prompts as a second layer. They only narrow: an allow becomes ask, a key is added only beside allows and asks, and a deny, a pattern list or a `tools` switch set to false is left as it is.",
+        "A project's own opencode.json, OPENCODE_PERMISSION, OPENCODE_CONFIG_DIR's files and an agent's own `permission` are read after these files and can override them; derm does not see them."
+      ]
+    },
+    {
+      "agent": "opencode",
       "name": "OpenCode",
       "package": "@aetiusgular/derm-opencode-plugin",
       "source": "packages/derm-opencode-plugin/opencode.fragment.json and crates/derm-cli/src/watch/register.rs at 824ae83 (OpenCode 1.19.4 plugin/shared.ts:171-189); the files OpenCode 1.19.4 merges and how, config/config.ts:42-44, 140-148, 272-274, 567-578, permission/index.ts:28-32, util/wildcard.ts:3-19 (lane Q, third chat)",

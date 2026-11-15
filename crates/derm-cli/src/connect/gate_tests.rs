@@ -2856,3 +2856,96 @@ fn fp6_plugin_on_reads_the_settings_then_the_install_records() {
         "a project install only"
     );
 }
+
+/// Fix pass 6 (note BE section 3.2): on Windows OpenCode's row is the
+/// general one plus derm-path beside opencode.json, which the plugin reads
+/// after DERM_BIN; elsewhere the row is unchanged.
+#[test]
+fn fp6_opencodes_windows_row_adds_derm_path_beside_its_config() {
+    let win = gate::table_for("windows").unwrap();
+    let oc = win.iter().find(|a| a.agent == "opencode").unwrap();
+    assert_eq!(oc.os.as_deref(), Some("windows"));
+    let paths: Vec<_> = oc
+        .steps
+        .iter()
+        .filter_map(|st| match st {
+            Step::TextFile { at, content, .. } => {
+                Some((at.path.clone(), at.xdg_config, content.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec![(
+            "~/.config/opencode/derm-path".to_string(),
+            true,
+            "{derm}\n".to_string()
+        )]
+    );
+    assert_eq!(win.iter().filter(|a| a.agent == "opencode").count(), 1);
+    let linux = gate::table_for("linux").unwrap();
+    let oc = linux.iter().find(|a| a.agent == "opencode").unwrap();
+    assert!(oc.os.is_none());
+    assert!(!oc
+        .steps
+        .iter()
+        .any(|st| matches!(st, Step::TextFile { .. })));
+}
+
+/// Fix pass 6: the row writes this derm's path into derm-path, under
+/// XDG_CONFIG_HOME when that is set, and a second run leaves it as it is.
+#[cfg(unix)]
+#[test]
+fn fp6_the_opencode_windows_row_writes_derm_path_and_rewrites_only_its_own() {
+    let d = scratch("fp6-ocw");
+    let home = d.as_path();
+    let derm = fake_derm(home);
+    let pkg = package(
+        home,
+        "clone/packages/derm-opencode-plugin",
+        "@aetiusgular/derm-opencode-plugin",
+    );
+    fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go(home, &["opencode", "--gate", "--hook", &pkg, "--write"]);
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    let file = home.join(".config/opencode/derm-path");
+    assert_eq!(read(&file), format!("{derm}\n"));
+    assert!(read(&home.join(".config/opencode/opencode.json")).contains(&format!("file://{pkg}")));
+    let r = go(home, &["opencode", "--gate", "--hook", &pkg, "--write"]);
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    // Someone else's file of that name is never replaced.
+    fs::write(&file, "my notes\n").unwrap();
+    let r = go(home, &["opencode", "--gate", "--hook", &pkg, "--write"]);
+    gate::TEST_OS.with(|o| o.set(None));
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(r.err.contains("not derm's"), "{}", r.err);
+    assert_eq!(read(&file), "my notes\n");
+}
+
+/// Fix pass 6: what a derm-path file derm wrote holds.
+#[test]
+fn fp6_derm_line_is_one_absolute_path_to_derm() {
+    for yes in [
+        "/home/u/.local/bin/derm\n",
+        "/usr/bin/derm",
+        "C:\\Users\\u\\.local\\bin\\derm.exe\n",
+        "c:\\x\\DERM.EXE\r\n",
+    ] {
+        assert!(gate::derm_line(yes), "{yes:?}");
+    }
+    for no in [
+        "",
+        "derm\n",
+        "/usr/bin/derm-hook\n",
+        "/usr/bin/derm\n/usr/bin/derm\n",
+        "C:\\x\\derm\n",
+        "C:/x/derm.exe\n",
+        "\\\\server\\share\\derm.exe\n",
+        "/x/derm.exe\n",
+        "my notes\n",
+    ] {
+        assert!(!gate::derm_line(no), "{no:?}");
+    }
+}

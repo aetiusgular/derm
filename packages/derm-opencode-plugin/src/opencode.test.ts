@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { REDACTED } from "./core/redact.ts";
 import { decide } from "./decide.ts";
-import { DermBlocked, after, before, defaultDeps, type Deps } from "./opencode.ts";
+import { DermBlocked, after, before, defaultDeps, dermPathFile, type Deps } from "./opencode.ts";
 import * as entry from "./plugin.ts";
 import { GateServe } from "./serve/client.ts";
 
@@ -175,3 +175,12 @@ describe("a co-process that is not running", () => {
 function execFileSyncSpawn() {
   return spawn(process.execPath, ["-e", "process.exit(3)"], { stdio: ["pipe", "pipe", "pipe"] });
 }
+
+describe("derm-path (fix pass 6, note BE section 3.2)", () => {
+  it("is beside opencode.json in OpenCode's global folder, where derm connect writes it", () => {
+    expect(dermPathFile({}, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
+    expect(dermPathFile({ XDG_CONFIG_HOME: "/x" }, "/h")).toBe(path.join("/x", "opencode", "derm-path"));
+    // A relative XDG_CONFIG_HOME is not one derm connect writes under.
+    expect(dermPathFile({ XDG_CONFIG_HOME: "rel" }, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
+  });
+});

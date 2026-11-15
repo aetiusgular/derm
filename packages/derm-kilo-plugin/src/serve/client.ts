@@ -30,7 +30,7 @@
 // the copies stay byte-equal; the plugin passes its trusted-owner rule in.
 
 import { spawn as nodeSpawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -66,6 +66,15 @@ export interface LocateDeps {
   groups?: () => number[] | undefined;
   /** macOS: `/bin/ls -lden` of a path, or undefined when it cannot be read (MW5B-1). */
   acl?: (p: string) => string | undefined;
+  /**
+   * Windows: a file `derm connect <agent> --gate --write` wrote, holding
+   * derm's absolute path (OpenCode's `derm-path`, fix pass 6; note BE
+   * section 3.2), read after DERM_BIN. Elsewhere the install folders are
+   * the route.
+   */
+  pathFile?: string;
+  /** Tests replace this: the path file's text, or undefined when it is not there. */
+  readPathFile?: (p: string) => string | undefined;
 }
 
 /**
@@ -130,14 +139,30 @@ export function installCandidates(platform: NodeJS.Platform, home: string): stri
   return [local, ...brew, "/usr/bin/derm"];
 }
 
+/** A small file's text (at most 4 KiB), or undefined when it is not there or larger. */
+function readSmall(p: string): string | undefined {
+  try {
+    const s = statSync(p);
+    if (!s.isFile() || s.size > 4096) return undefined;
+    return readFileSync(p, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function realStat(p: string): { uid: number; gid?: number; mode: number; isFile: boolean; isDir: boolean } {
   const s = statSync(p);
   return { uid: s.uid, gid: s.gid, mode: s.mode, isFile: s.isFile(), isDir: s.isDirectory() };
 }
 
-function inside(file: string, folder: string): boolean {
-  const rel = path.relative(folder, file);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+function inside(file: string, folder: string, P: path.PlatformPath = path): boolean {
+  const rel = P.relative(folder, file);
+  return rel === "" || (!rel.startsWith("..") && !P.isAbsolute(rel));
+}
+
+/** The path rules of the system the gate runs on (the same as `path` there; tests name another). */
+function pathsOf(platform: NodeJS.Platform): path.PlatformPath {
+  return platform === "win32" ? path.win32 : path.posix;
 }
 
 /**
@@ -165,22 +190,23 @@ function examine(candidate: string, d: LocateDeps): { file: string } | { why: st
   const real = d.realpath ?? ((p: string) => realpathSync(p));
   const isLink = d.lstat ?? ((p: string) => ({ isLink: lstatSync(p).isSymbolicLink() }));
   const readlink = d.readlink ?? ((p: string) => readlinkSync(p));
-  if (!path.isAbsolute(candidate)) return { why: "not an absolute path" };
+  const P = pathsOf(d.platform);
+  if (!P.isAbsolute(candidate)) return { why: "not an absolute path" };
   let file: string;
   const folders: string[] = [];
   try {
     let cur = candidate;
     for (let hops = 0; ; hops++) {
-      const dir = real(path.dirname(cur));
+      const dir = real(P.dirname(cur));
       if (!folders.includes(dir)) folders.push(dir);
-      const at = path.join(dir, path.basename(cur));
+      const at = P.join(dir, P.basename(cur));
       if (!isLink(at).isLink) {
         file = at;
         break;
       }
       if (hops >= 8) return { why: "too many links" };
       const to = readlink(at);
-      cur = path.isAbsolute(to) ? to : path.join(dir, to);
+      cur = P.isAbsolute(to) ? to : P.join(dir, to);
     }
     real(file);
   } catch {
@@ -200,7 +226,7 @@ function examine(candidate: string, d: LocateDeps): { file: string } | { why: st
   } catch {
     // The session's folder as written.
   }
-  if (inside(candidate, d.cwd) || inside(file, cwdReal)) return { why: "inside the session's folder, which a project can write" };
+  if (inside(candidate, d.cwd, P) || inside(file, cwdReal, P)) return { why: "inside the session's folder, which a project can write" };
   if (d.platform === "win32") return { file: candidate };
   const owned = (uid: number) => uid === 0 || d.trusted(uid);
   const macos = d.platform === "darwin";
@@ -259,7 +285,20 @@ export function locateDerm(d: LocateDeps): Located {
     tried.push(`DERM_BIN ${fromEnv}: ${r.why}`);
   }
   if (d.platform === "win32") {
-    if (tried.length === 0) return { problem: "no derm to run: DERM_BIN is not set (derm run sets it)" };
+    if (d.pathFile !== undefined) {
+      const text = (d.readPathFile ?? readSmall)(d.pathFile);
+      if (text !== undefined) {
+        const named = text.trim();
+        // One absolute drive path to derm.exe, as derm connect writes it.
+        if (!/^[A-Za-z]:\\[^\r\n]*$/.test(named) || path.win32.basename(named).toLowerCase() !== "derm.exe") {
+          return { problem: `no derm this gate can trust: ${d.pathFile} does not hold one absolute path to derm.exe` };
+        }
+        const r = examine(named, d);
+        if ("file" in r) return { path: r.file };
+        tried.push(`${d.pathFile} names ${named}: ${r.why}`);
+      }
+    }
+    if (tried.length === 0) return { problem: "no derm to run: DERM_BIN is not set (derm run sets it), and derm connect has written no derm-path" };
     return { problem: `no derm this gate can trust: ${tried.join("; ")}` };
   }
   const candidates = installCandidates(d.platform, d.home);
@@ -285,6 +324,8 @@ export interface ServeOptions {
   startMs?: number;
   /** How long any other request may take; `approve` adds its ask's timeout. */
   requestMs?: number;
+  /** Windows: the file holding derm's path that derm connect wrote (`LocateDeps.pathFile`). */
+  pathFile?: string;
   /** Tests replace these. */
   locate?: (d: LocateDeps) => Located;
   spawn?: (cmd: string, args: string[], o: SpawnOptions) => ChildProcess;
@@ -357,7 +398,7 @@ export class GateServe {
     const o = this.options;
     const platform = o.platform ?? process.platform;
     const cwd = o.cwd();
-    const located = (o.locate ?? locateDerm)({ env: o.env, cwd, platform, home: o.home ? o.home() : os.homedir(), trusted: o.trusted });
+    const located = (o.locate ?? locateDerm)({ env: o.env, cwd, platform, home: o.home ? o.home() : os.homedir(), trusted: o.trusted, pathFile: o.pathFile });
     if ("problem" in located) {
       this.lastProblem = located.problem;
       throw new ServeUnavailable(located.problem);
