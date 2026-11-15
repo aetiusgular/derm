@@ -339,6 +339,11 @@ impl Daemon {
     /// since `derm run` started. The new token must still give daemon scope,
     /// as at the start.
     fn post_after_restart(&self, e: &Event) -> Result<(), String> {
+        self.post_with_new_token(e).map(|_| ())
+    }
+
+    /// [`Daemon::post_after_restart`], returning the token it posted with.
+    fn post_with_new_token(&self, e: &Event) -> Result<String, String> {
         let dir = self.socket.parent().ok_or("the socket has no folder")?;
         let token = client::read_daemon_token(dir).map_err(|e| e.to_string())?;
         if token == self.token {
@@ -349,7 +354,51 @@ impl Daemon {
         if hello.scope != "daemon" {
             return Err("the daemon's token file gave chat scope, not daemon scope".into());
         }
-        c.post(e).map(|_| ()).map_err(|e| e.to_string())
+        c.post(e).map(|_| token).map_err(|e| e.to_string())
+    }
+}
+
+/// The poster of derm-egress's records (box test w6 retest 2, BW6R2-4): its
+/// daemon token, read again when the daemon restarted during the chat, as
+/// `run.stop` already does (box test w1, BX8). The record that met the new
+/// token is marked `daemonRestarted`, as `run.stop` is, and later records go
+/// with the new token.
+struct RunPoster {
+    socket: PathBuf,
+    token: std::sync::Mutex<String>,
+}
+
+impl RunPoster {
+    fn new(d: &Daemon) -> RunPoster {
+        RunPoster {
+            socket: d.socket.clone(),
+            token: std::sync::Mutex::new(d.token.clone()),
+        }
+    }
+
+    fn post(&self, e: &Event) -> Result<(), String> {
+        let mut token = self
+            .token
+            .lock()
+            .map_err(|_| "the token lock is poisoned")?;
+        let d = Daemon {
+            socket: self.socket.clone(),
+            token: token.clone(),
+        };
+        match d.post(e) {
+            Err(err) if err.contains("bad token") => {
+                let mut again = e.clone();
+                if let Some(o) = again.detail.as_object_mut() {
+                    o.insert("daemonRestarted".into(), json!(true));
+                }
+                let new = d
+                    .post_with_new_token(&again)
+                    .map_err(|e2| format!("{err}; after reading the token again: {e2}"))?;
+                *token = new;
+                Ok(())
+            }
+            other => other,
+        }
     }
 }
 
@@ -1596,10 +1645,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         .unwrap_or("whole")
         .to_string();
     let broker_sink: Option<derm_egress::Sink> = daemon.as_ref().map(|d| {
-        let d = Daemon {
-            socket: d.socket.clone(),
-            token: d.token.clone(),
-        };
+        let d = RunPoster::new(d);
         let sink: derm_egress::Sink = Arc::new(move |events: Vec<Event>| {
             for mut e in events {
                 e.source = Source::Run;
@@ -3126,6 +3172,69 @@ mod end_to_end {
             hellos.last().map(String::as_str),
             Some(fake::RESTARTED_TOKEN)
         );
+    }
+
+    /// Box test w6 retest 2, BW6R2-4: after a daemon restart during a chat,
+    /// derm-egress's records were refused ("bad token", three lost) while
+    /// the gate's chat token was restored (BX8). They are posted again with
+    /// the token file read again, and later ones go with the new token.
+    #[cfg(unix)]
+    #[test]
+    fn bw6r2_4_egress_records_are_kept_after_the_daemon_restarted() {
+        let fake = fake::start("bw6r2-4", fake::Mode::Normal);
+        let d = Daemon {
+            socket: fake.socket.clone(),
+            token: fake::DAEMON_TOKEN.into(),
+        };
+        let poster = RunPoster::new(&d);
+        let rec = |n: u32| {
+            event(
+                "chat-e",
+                "claude-code",
+                "egress.request",
+                format!("record {n}"),
+                json!({"n": n}),
+                None,
+            )
+        };
+        poster.post(&rec(1)).unwrap();
+        // The daemon restarts: its token file and its token change.
+        std::fs::write(
+            fake.dir.join("daemon.token"),
+            format!("{}\n", fake::RESTARTED_TOKEN),
+        )
+        .unwrap();
+        std::fs::write(fake.dir.join("restarted"), "").unwrap();
+        poster.post(&rec(2)).unwrap();
+        poster.post(&rec(3)).unwrap();
+        let got = fake.got.lock().unwrap().clone();
+        let posted: Vec<(u64, bool)> = got
+            .iter()
+            .filter(|l| l["op"] == "event")
+            .map(|l| {
+                (
+                    l["event"]["detail"]["n"].as_u64().unwrap(),
+                    l["event"]["detail"]["daemonRestarted"] == true,
+                )
+            })
+            .collect();
+        assert_eq!(posted, vec![(1, false), (2, true), (3, false)], "{got:?}");
+        let hellos: Vec<&str> = got
+            .iter()
+            .filter(|l| l["op"] == "hello")
+            .filter_map(|l| l["token"].as_str())
+            .collect();
+        assert_eq!(hellos.last(), Some(&fake::RESTARTED_TOKEN));
+        // A token file that gives no daemon scope is not taken.
+        std::fs::write(
+            fake.dir.join("daemon.token"),
+            format!("{}\n", fake::CHAT_TOKEN),
+        )
+        .unwrap();
+        let p2 = RunPoster::new(&d);
+        let _ = std::fs::remove_file(fake.dir.join("restarted"));
+        std::fs::write(fake.dir.join("restarted"), "").unwrap();
+        assert!(p2.post(&rec(4)).is_err());
     }
 
     #[cfg(unix)]
