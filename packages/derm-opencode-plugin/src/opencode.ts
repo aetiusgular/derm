@@ -51,8 +51,10 @@ export function defaultDeps(env: NodeJS.ProcessEnv = process.env, cwd: () => str
  * The client reads it on Windows only, after DERM_BIN.
  */
 export function dermPathFile(env: NodeJS.ProcessEnv, home: string = os.homedir()): string {
-  const xdg = env.XDG_CONFIG_HOME?.trim();
-  const base = xdg && path.isAbsolute(xdg) ? xdg : path.join(home, ".config");
+  // As xdg-basedir 5.1.0 reads it (`env.XDG_CONFIG_HOME || ~/.config`, no
+  // trim, a relative value kept), so the plugin looks where OpenCode keeps
+  // its config (FP6-R11, fix pass 7). derm connect refuses a relative one.
+  const base = env.XDG_CONFIG_HOME || path.join(home, ".config");
   return path.join(base, "opencode", "derm-path");
 }
 

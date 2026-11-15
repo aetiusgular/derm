@@ -234,6 +234,18 @@ fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String
 
 /// The derm binary running now, by its real path; `None` when it cannot be
 /// read (BW6R3-2, FP4-R1).
+/// derm as the gate derm run registers names it (fix pass 7, FP6-R3): by
+/// Homebrew's `opt` link when Homebrew installed it, as `derm connect`
+/// names it (`connect::gate::self_path`, MW5B-6: `brew upgrade` removes the
+/// keg a chat's gate would name), else its real path ([`derm_exe`]).
+fn gate_exe() -> Option<String> {
+    #[cfg(not(windows))]
+    if let Ok(p) = crate::connect::gate::self_path() {
+        return Some(p);
+    }
+    derm_exe()
+}
+
 fn derm_exe() -> Option<String> {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -1342,7 +1354,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
                 Path::new(&cwd),
             )
             .map_err(|e| (2, e))?;
-            Some(derm_exe().ok_or((
+            Some(gate_exe().ok_or((
             1,
             "derm's own path cannot be read, so derm cannot register its gate for Claude Code"
                 .to_string(),
@@ -2226,6 +2238,41 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    /// Fix pass 7 (FP6-R3): a derm Homebrew installed registers its chat
+    /// gate by the `opt` link, which `brew upgrade` keeps, not the keg it
+    /// removes.
+    #[cfg(unix)]
+    #[test]
+    fn fp7_derm_runs_gate_names_a_homebrew_derm_by_its_opt_link() {
+        let root = std::env::temp_dir().join(format!("derm-fp7-opt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let prefix = std::fs::canonicalize(&root).unwrap();
+        let bin = prefix.join("Cellar/derm/1.2.3/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for d in [
+            prefix.clone(),
+            prefix.join("Cellar"),
+            prefix.join("Cellar/derm"),
+            prefix.join("Cellar/derm/1.2.3"),
+            bin.clone(),
+        ] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let real = bin.join("derm");
+        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let opt = prefix.join("opt");
+        std::fs::create_dir_all(&opt).unwrap();
+        std::fs::set_permissions(&opt, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("../Cellar/derm/1.2.3", opt.join("derm")).unwrap();
+        crate::connect::gate::TEST_SELF.with(|t| *t.borrow_mut() = Some(real.clone()));
+        let got = gate_exe();
+        crate::connect::gate::TEST_SELF.with(|t| *t.borrow_mut() = None);
+        assert_eq!(got, Some(opt.join("derm/bin/derm").display().to_string()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// MW5-32's Linux half: a missing `~/.codex` and `config.toml` are made
     /// (0700 and 0600, empty); nothing that exists is changed, a link to a

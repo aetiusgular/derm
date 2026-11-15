@@ -267,6 +267,21 @@ fn members(v: &Value, key: &str) -> Result<Vec<(String, Value)>, String> {
     }
 }
 
+/// Where a step writes, for the steps that write a file.
+fn step_place(st: &Step) -> Option<&Place> {
+    match st {
+        Step::JsonArrayEntry { at, .. }
+        | Step::JsonPermission { at, .. }
+        | Step::JsonMember { at, .. }
+        | Step::TomlArrayEntry { at, .. }
+        | Step::TomlSet { at, .. }
+        | Step::OwnedFile { at, .. }
+        | Step::PluginFolder { at, .. }
+        | Step::TextFile { at, .. } => Some(at),
+        Step::Commands { .. } => None,
+    }
+}
+
 fn place(v: &Value) -> Result<Place, String> {
     let path = s(v, "path")?.to_string();
     if !path.starts_with("~/") {
@@ -2067,6 +2082,25 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     } else {
         None
     };
+    // FP6-R11 (fix pass 7): an agent that reads `$XDG_CONFIG_HOME` as
+    // xdg-basedir does takes a relative value as it is, relative to the
+    // folder it starts in (xdg-basedir 5.1.0 `index.js:10-11`, OpenCode
+    // 1.19.4 `packages/core/src/global.ts:3,13`); derm cannot know that
+    // folder, so it writes nowhere and says why.
+    if agent
+        .steps
+        .iter()
+        .any(|st| step_place(st).is_some_and(|p| p.xdg_config))
+    {
+        if let Some(x) = ctx.env.var("XDG_CONFIG_HOME").filter(|x| !x.is_empty()) {
+            if !super::names::absolute(&x) {
+                return Err(format!(
+                    "XDG_CONFIG_HOME is {x:?}, not an absolute path: {} reads it relative to the folder it starts in, which derm cannot know; set it to an absolute path, or unset it",
+                    agent.name
+                ));
+            }
+        }
+    }
     // cmd.exe reads `"`, `%` and `!` even inside the double quotes a
     // command line puts derm's path in (Codex's Windows row, which Codex
     // runs with `cmd.exe /C`; fix pass 7).

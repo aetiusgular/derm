@@ -3105,3 +3105,27 @@ fn fp7_codex_windows_row_writes_hooks_json_and_refuses_while_the_plugin_is_on() 
         format!("\"{derm}\" hook codex post")
     );
 }
+
+/// FP6-R11 (fix pass 7): a relative XDG_CONFIG_HOME is where OpenCode looks,
+/// relative to where it starts, so derm writes nothing and says why.
+#[cfg(unix)]
+#[test]
+fn fp7_a_relative_xdg_config_home_is_refused_for_an_xdg_row() {
+    let d = scratch("fp7-xdg");
+    let home = d.as_path();
+    let pkg = package(
+        home,
+        "clone/packages/derm-opencode-plugin",
+        "@aetiusgular/derm-opencode-plugin",
+    );
+    fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    let r = go_with(
+        home,
+        &env(&[("XDG_CONFIG_HOME", "rel/cfg")]),
+        Answer(true, None),
+        &["opencode", "--gate", "--hook", &pkg, "--write"],
+    );
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(r.err.contains("not an absolute path"), "{}", r.err);
+    assert!(!home.join(".config/opencode/opencode.json").exists());
+}

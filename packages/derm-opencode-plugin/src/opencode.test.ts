@@ -180,7 +180,9 @@ describe("derm-path (fix pass 6, note BE section 3.2)", () => {
   it("is beside opencode.json in OpenCode's global folder, where derm connect writes it", () => {
     expect(dermPathFile({}, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
     expect(dermPathFile({ XDG_CONFIG_HOME: "/x" }, "/h")).toBe(path.join("/x", "opencode", "derm-path"));
-    // A relative XDG_CONFIG_HOME is not one derm connect writes under.
-    expect(dermPathFile({ XDG_CONFIG_HOME: "rel" }, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
+    // FP6-R11 (fix pass 7): a relative or padded value is OpenCode's too
+    // (xdg-basedir keeps it as it is); derm connect refuses to write there.
+    expect(dermPathFile({ XDG_CONFIG_HOME: "rel" }, "/h")).toBe(path.join("rel", "opencode", "derm-path"));
+    expect(dermPathFile({ XDG_CONFIG_HOME: "" }, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
   });
 });
