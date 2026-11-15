@@ -150,3 +150,98 @@ fn bw6r2_1_kernel_7_0_order_from_the_6_18_record_not_recorded() {
         links(&events)
     );
 }
+
+/// Fix pass 3's review, FP3-R1: where the link's name is read first, the
+/// kernel cuts the target at the length of the link's folder, not at a `/`.
+/// The recorded target with the `/` before the leaf taken out (same length);
+/// built from the 6.18 record, not recorded.
+#[test]
+fn fp3_r1_the_cut_is_at_the_link_folders_length_not_at_a_slash() {
+    let real = "name=\"/tmp/rec/s3/zzzzzzzzzzzzzz/pc2\"";
+    let edited = "name=\"/tmp/rec/s3/zzzzzzzzzzzzzzzpc2\"";
+    assert!(MATCHED.contains(real));
+    let events = parse_for_root(&MATCHED.replace(real, edited), root(8783), HOME);
+    assert!(
+        links(&events).contains(&(
+            "/tmp/rec/s3/zzzzzzzzzzzzzzzpc2".to_string(),
+            "/home/tk/s2proj/.git/hooks/pc2".to_string()
+        )),
+        "{:?}",
+        links(&events)
+    );
+}
+
+/// FP3-R4: no `UNKNOWN` item and a `CREATE` name in the parent's own folder
+/// is the link itself; an anonymous parent (`name=(null)`) places nothing.
+/// Built from the 6.18 record, not recorded.
+#[test]
+fn fp3_r4_a_create_in_its_parents_folder_is_the_link_and_a_null_parent_places_nothing() {
+    let real = "item=1 name=\"/tmp/rec/s3/zzzzzzzzzzzzzz/pc2\"";
+    let own = "item=1 name=\"/home/tk/s2proj/.git/hooks/pc2\"";
+    let events = parse_for_root(&MATCHED.replace(real, own), root(8783), HOME);
+    assert!(
+        links(&events).contains(&(
+            "?".to_string(),
+            "/home/tk/s2proj/.git/hooks/pc2".to_string()
+        )),
+        "{:?}",
+        links(&events)
+    );
+    let parent = "item=0 name=\"/home/tk/s2proj/.git/hooks/\"";
+    assert!(MATCHED.contains(parent));
+    let events = parse_for_root(
+        &MATCHED.replace(parent, "item=0 name=(null)"),
+        root(8783),
+        HOME,
+    );
+    let l = links(&events);
+    let hook = l
+        .iter()
+        .find(|(f, _)| f.ends_with("/pc2"))
+        .expect("the link");
+    assert!(hook.1.starts_with('?'), "{l:?}");
+}
+
+/// BW6R2-2 and FP3-R2: the feed says, when it reads the event, whether the
+/// written file's filesystem is one the host has mounted, from the mounts of
+/// that moment (the workspace's mountinfo, recorded with the log), and reads
+/// them again when a device is not among them.
+#[test]
+fn bw6r2_2_the_feed_says_whether_a_writes_device_is_mounted_on_the_host() {
+    use derm_audit_linux::feed::Feed;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    const MOUNTS: &str = include_str!("fixtures/links_6_18.mountinfo");
+    let reads = Arc::new(AtomicUsize::new(0));
+    let r = reads.clone();
+    let mut f = Feed::new(HOME, None);
+    f.set_mounts_reader(Box::new(move || {
+        r.fetch_add(1, Ordering::SeqCst);
+        Some(MOUNTS.to_string())
+    }));
+    let mut events = f.register(root(8746));
+    for line in LINKS.split('\n') {
+        events.extend(f.push_line(line));
+    }
+    events.extend(f.flush());
+    let mounted = |p: &str| {
+        events
+            .iter()
+            .find(|e| e.kind == "create" && s(e, "path") == p)
+            .and_then(|e| e.detail.get("devMounted").and_then(Value::as_bool))
+    };
+    assert_eq!(mounted("/newroot/home/tk/.gitconfig"), Some(false));
+    assert_eq!(mounted("/newroot/home/tk/.derm/policy.json"), Some(false));
+    assert_eq!(mounted("/newroot/home/tk/s2proj/.gitconfig"), Some(true));
+    // Read again for each device it did not hold, not for one it did.
+    let n = reads.load(Ordering::SeqCst);
+    assert!(n >= 2, "{n}");
+    // A reader that reads nothing says nothing.
+    let mut g = Feed::new(HOME, None);
+    g.set_mounts_reader(Box::new(|| Some(String::new())));
+    let mut ev2 = g.register(root(8746));
+    for line in LINKS.split('\n') {
+        ev2.extend(g.push_line(line));
+    }
+    assert!(ev2.iter().all(|e| e.detail.get("devMounted").is_none()));
+}

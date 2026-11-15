@@ -352,40 +352,73 @@ impl Paths {
     /// BW6R2-1). `symlink(2)` takes the target as a name the kernel never
     /// looks up: it is an item of its own (nametype `UNKNOWN`), and the link
     /// is the `CREATE` item. But when the kernel files the new entry
-    /// (`__audit_inode_child`, kernel/auditsc.c:2413-2426 at v7.0) it takes
-    /// any `UNKNOWN` name whose last part is the entry's name as the child,
-    /// so the `CREATE` item then prints the target (`audit_log_name`,
-    /// auditsc.c:1511-1515) and no `UNKNOWN` item is left. On Linux 7.0 the
-    /// target is read first (`CLASS(filename, old)`, fs/namei.c:5664-5665),
-    /// so any target with the link's own name matches (`/proc/self/fd` for
-    /// bubblewrap's `/dev/fd`, `~/x/pre-commit` for `.git/hooks/pre-commit`);
-    /// on 6.18 the link's name is read first and only a target whose
-    /// folder has the link folder's length matches (recorded, the fixture
-    /// `links_6_18.enriched.audit`). Then the link is the `PARENT` item's
-    /// folder and the entry's name, which `CREATE`'s last part is.
+    /// (`__audit_inode_child`, kernel/auditsc.c:2413-2426 at v7.0) it takes an
+    /// `UNKNOWN` name that ends in the entry's name as the child, so the
+    /// `CREATE` item then prints the target (`audit_log_name`, 1511-1515) and
+    /// no `UNKNOWN` item is left. Where the cut falls depends on the order the
+    /// names were read. On Linux 7.0 the target is read first
+    /// (`CLASS(filename, old)`, fs/namei.c:5664-5665), no parent has been
+    /// found when it is compared, and the cut is the target's own last part
+    /// (`parent_len`, kernel/auditfilter.c:1277-1301): any target with the
+    /// link's name matches (`/proc/self/fd` for bubblewrap's `/dev/fd`,
+    /// `~/x/pre-commit` for `.git/hooks/pre-commit`). Where the link's name is
+    /// read first (the 6.18 record, its `PARENT` item 0), the cut is at the
+    /// length of the link's folder (`found_parent->name_len`, auditsc.c:
+    /// 2417-2421), whatever character is there (fix pass 3's review,
+    /// FP3-R1). The link is then that folder and the entry's name.
     fn symlink(&self) -> Option<(String, String)> {
         let create = self.items.iter().position(|(t, _)| t == "CREATE")?;
         if let Some(u) = self.items.iter().position(|(t, _)| t == "UNKNOWN") {
             return Some((self.items[u].1.clone(), self.resolve(create)));
         }
-        let target = self.items[create].1.clone();
-        let leaf = target
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .filter(|l| !l.is_empty())?;
-        let to = match self.parents.first() {
-            Some(dir) if dir.starts_with('/') => join(dir, leaf),
-            Some(dir) => {
-                let rel = join(dir, leaf);
-                match self.cwd.as_deref().filter(|c| c.starts_with('/')) {
-                    Some(cwd) if self.from_cwd => join(cwd, &rel),
-                    _ => format!("?{rel}"),
-                }
-            }
-            None => format!("?{leaf}"),
+        let parent = self.items.iter().position(|(t, _)| t == "PARENT");
+        let name = self.items[create].1.clone();
+        let Some(p) = parent else {
+            // No folder to place it in: the name as it stands.
+            return Some(("?".into(), self.resolve(create)));
         };
-        Some((target, to))
+        let dir = self.items[p].1.as_str();
+        // An anonymous parent the kernel made (`name=(null)`, auditsc.c
+        // 2429-2435, 1533) names no folder.
+        if dir == "(null)" {
+            return Some((name.clone(), format!("?{name}")));
+        }
+        // The kernel matched no target at all (its names list was full):
+        // the `CREATE` item is the link itself, in the parent's folder
+        // (fix pass 3's review, FP3-R4).
+        let in_dir = |n: &str| {
+            n.strip_prefix(dir)
+                .is_some_and(|rest| !rest.is_empty() && !rest.trim_end_matches('/').contains('/'))
+        };
+        if dir.ends_with('/') && in_dir(&name) {
+            return Some(("?".into(), self.resolve(create)));
+        }
+        let trimmed = name.trim_end_matches('/');
+        let leaf = if p < create {
+            // The cut at the folder's length (`audit_compare_dname_path`
+            // with the parent's length, auditfilter.c:1311-1334). A folder
+            // printed with no `/` at its end is the working folder the
+            // kernel printed for a length of 0 (auditsc.c:1518-1525), so the
+            // cut is at 0.
+            if dir.ends_with('/') {
+                trimmed.get(dir.len()..).filter(|l| !l.is_empty())
+            } else {
+                Some(trimmed).filter(|l| !l.is_empty() && !l.contains('/'))
+            }
+        } else {
+            None
+        }
+        .or_else(|| trimmed.rsplit('/').next().filter(|l| !l.is_empty()))?;
+        let to = if dir.starts_with('/') {
+            join(dir, leaf)
+        } else {
+            let rel = join(dir, leaf);
+            match self.cwd.as_deref().filter(|c| c.starts_with('/')) {
+                Some(cwd) if self.from_cwd => join(cwd, &rel),
+                _ => format!("?{rel}"),
+            }
+        };
+        Some((name, to))
     }
 
     /// The first item of a nametype, resolved.
