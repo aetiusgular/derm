@@ -39,6 +39,8 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
@@ -47,6 +49,9 @@ beforeAll(async () => {
 // (the fake answers `taint` as the daemon does since fix pass 6).
 beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -54,6 +59,7 @@ afterAll(async () => {
 // One co-process per environment, with derm by its absolute path (case 227).
 function depsWith(env: Record<string, string>): Deps {
   const s = new GateServe({ agent: "cline", env, cwd: () => work, trusted: () => true, startMs: 1200, requestMs: 1200, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   return { ...defaultDeps(env, () => work), serve: () => s };
 }
 const deps = (extra: Record<string, string> = {}): Deps => depsWith({ DERM_POLICY: policyFile, ...daemon.env(), ...extra });
@@ -357,6 +363,7 @@ describe("install records", () => {
 describe("a co-process that is not running", () => {
   const without = (o: Partial<ConstructorParameters<typeof GateServe>[0]>): Deps => {
     const s = new GateServe({ agent: "cline", env: {}, cwd: () => work, trusted: () => true, startMs: 1200, requestMs: 1200, locate: () => ({ problem: "no derm to run: DERM_BIN is not set" }), ...o });
+    live.push(s);
     return { env: {}, cwd: () => work, serve: () => s };
   };
   it("skips every call with the reason, which Cline counts as an answer, not a failure", async () => {

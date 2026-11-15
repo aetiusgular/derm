@@ -39,12 +39,17 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
 });
 beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -56,6 +61,7 @@ afterAll(() => {
 function deps(extra: Record<string, string> = {}, env?: Record<string, string>, more: Partial<ServeDeps> = {}): ServeDeps {
   const e = env ?? { DERM_POLICY: policyFile, ...daemon.env(), ...extra };
   const s = new GateServe({ agent: "amp", env: e, cwd: () => project, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   made.push(s);
   return { env: e, serve: () => s, ...more };
 }

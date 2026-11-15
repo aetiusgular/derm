@@ -67,6 +67,28 @@ function fake(mode: string, opts: { startMs?: number; requestMs?: number } = {})
   });
 }
 
+describe("closeAndWait (fix pass 7)", () => {
+  // On Windows a running co-process holds its current folder (fix pass 5's
+  // CI-2): a session that removes its folder waits for the exit first.
+  it("resolves once the co-process has exited", async () => {
+    const s = fake("ok");
+    await decide(s, { tool: "bash", input: { command: "ls" } });
+    const child = children.at(-1) as ChildProcess;
+    expect(child.exitCode).toBe(null);
+    await s.closeAndWait();
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    await s.closeAndWait();
+  });
+  it("ends one that does not exit in time", async () => {
+    const s = fake("hang");
+    await decide(s, { tool: "bash", input: { command: "ls" } }).catch(() => undefined);
+    const child = children.at(-1) as ChildProcess;
+    await s.closeAndWait(200);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+});
+
 describe("failing closed (case 228)", () => {
   it("answers through a co-process that says hello", async () => {
     const s = fake("ok");

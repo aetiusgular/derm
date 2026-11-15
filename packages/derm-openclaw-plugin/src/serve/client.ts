@@ -374,6 +374,35 @@ export class GateServe {
     this.stop("the session ended");
   }
 
+  /**
+   * `close`, then waits until the co-process has exited (ended after
+   * `waitMs` if it has not). On Windows a running process holds its current
+   * folder, which cannot be removed until it exits (Microsoft,
+   * SetCurrentDirectory; fix pass 5's CI-2), so a caller that removes the
+   * session's folder after the session waits here first (fix pass 7).
+   */
+  async closeAndWait(waitMs = 5000): Promise<void> {
+    const child = this.child;
+    this.close();
+    if (child === undefined || child.exitCode !== null || child.signalCode !== null) return;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(t);
+        resolve();
+      };
+      const t = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+          // Already gone.
+        }
+        resolve();
+      }, waitMs);
+      child.once("exit", done);
+      if (child.exitCode !== null || child.signalCode !== null) done();
+    });
+  }
+
   private ensure(): Promise<ChildProcess> {
     // FP2-S3: a co-process that exited is ended now with its reason (its
     // waiting calls rejected) and a new one started, not left in place for

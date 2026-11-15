@@ -36,6 +36,8 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
@@ -44,6 +46,9 @@ beforeAll(async () => {
 // (the fake answers `taint` as the daemon does since fix pass 6).
 beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -52,6 +57,7 @@ afterAll(async () => {
 function deps(extra: Record<string, string> = {}, env?: Record<string, string>): Deps {
   const e = env ?? { DERM_POLICY: policyFile, ...daemon.env(), ...extra };
   const s = new GateServe({ agent: "kilo", env: e, cwd: () => project, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   return { ...defaultDeps(e), serve: () => s };
 }
 const call = (tool: string) => ({ tool, sessionID: "ses_1", callID: `call_${Math.random().toString(36).slice(2)}` });
