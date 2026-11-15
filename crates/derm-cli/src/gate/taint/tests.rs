@@ -813,6 +813,36 @@ mod daemon_tier {
         assert_eq!(r.action, Action::Allow, "{}", r.reason);
     }
 
+    /// Fix pass 7, FP6-R2's rest: a harness that reads its token from a
+    /// file (Gemini, Codex under srt). With the file gone, a light file the
+    /// agent wrote is still not the state.
+    #[test]
+    fn a_named_token_file_that_is_gone_does_not_use_the_light_file() {
+        let h = Home::new("dt-gone");
+        let gone = h.0.join("nowhere/chat.token").display().to_string();
+        let e = h
+            .env()
+            .with("DERM_CHAT_TOKEN_FILE", &gone)
+            .with("DERM_CHAT_ID", "c-2");
+        let light = crate::gate::taint::state::file_path(&h.0, "c-2");
+        std::fs::create_dir_all(light.parent().unwrap()).unwrap();
+        std::fs::write(&light, "{\"v\":1}\n").unwrap();
+        let r = go(
+            &h,
+            &e,
+            "bash",
+            json!({"command": "git push origin main"}),
+            0,
+        );
+        assert_eq!(r.action, Action::Deny, "{}", r.reason);
+        assert!(r.reason.contains("cannot read"), "{}", r.reason);
+        assert_eq!(
+            std::fs::read_to_string(&light).unwrap(),
+            "{\"v\":1}\n",
+            "never written"
+        );
+    }
+
     #[test]
     fn a_chat_token_with_no_derm_run_above_it_keeps_the_light_tiers_fail_safe() {
         // Integration w6's review, W6C-S4: a project's settings can set

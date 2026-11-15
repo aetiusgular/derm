@@ -977,3 +977,42 @@ mod srt_route {
         );
     }
 }
+
+/// Fix pass 7 (Windows CI on e334037,
+/// `gemini_extension_hook_the_hook_s_environment_reaches_the_daemon_through_the_alias_with_the_same_file_checks`):
+/// the token file is read on Windows too, by the seam the light tier uses,
+/// and refused when another user may use it.
+#[cfg(windows)]
+mod windows_token_file {
+    use super::super::*;
+
+    #[test]
+    fn a_private_token_file_is_read_and_a_shared_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("derm-tok-{}", uuid::Uuid::new_v4().simple()));
+        derm_core::platform::private_dir(&dir).unwrap();
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let file = dir.join("chat.token");
+        std::fs::write(&file, format!("{}\n", "a".repeat(64))).unwrap();
+        derm_core::platform::set_private_file(&file).unwrap();
+        let env = Env::of(&[("DERM_CHAT_TOKEN_FILE", &file.display().to_string())]);
+        assert_eq!(chat_token(&env, &project), Some("a".repeat(64)));
+        // Everyone may read it: refused.
+        derm_core::platform::windows::set_dacl_sddl(&file, "D:P(A;;FA;;;OW)(A;;FR;;;WD)").unwrap();
+        assert_eq!(chat_token(&env, &project), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Fix pass 7, FP6-R2's rest: a token named to the hook counts as derm
+/// run's chat whether or not it can be read.
+#[test]
+fn a_named_token_is_named_whether_or_not_it_reads() {
+    assert!(token_named(&Env::of(&[(
+        "DERM_CHAT_TOKEN_FILE",
+        "/gone/chat.token"
+    )])));
+    assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN", "x")])));
+    assert!(!token_named(&Env::of(&[("DERM_CHAT_TOKEN_FILE", " ")])));
+    assert!(!token_named(&Env::of(&[])));
+}

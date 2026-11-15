@@ -362,7 +362,7 @@ pub fn adjust_with(
     // `derm hook` from its own arguments): with no token the chat's taint is
     // still the daemon's, so there is no answer, never the light file (fix
     // pass 6's review: a project's settings `env` can unset the token).
-    let run_chat = env.get(crate::hook::RUN_CHAT).is_some();
+    let run_chat = env.get(crate::hook::RUN_CHAT).is_some() || daemon::token_named(env);
     let home = state::home(env);
     // With no home the light tier keeps nothing: its log cannot be written
     // either, and the dialect denies the call for that (`daemon::lost_deny`).
@@ -391,9 +391,12 @@ pub fn adjust_with(
     let from_daemon = if token {
         Some(state::daemon_ask(env, cwd, chat, &facts.hosts))
     } else if run_chat {
-        Some(Err(
-            "derm run registered this gate for its chat and the hook has no chat token".to_string(),
-        ))
+        Some(Err(if env.get(crate::hook::RUN_CHAT).is_some() {
+            "derm run registered this gate for its chat and the hook has no chat token"
+        } else {
+            "the hook was named a chat token it cannot read (a file gone, loosened or replaced)"
+        }
+        .to_string()))
     } else {
         None
     };

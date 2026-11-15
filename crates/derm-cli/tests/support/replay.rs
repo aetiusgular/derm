@@ -153,18 +153,31 @@ fn set_mode(p: &Path, m: u64) {
 }
 
 /// Calls whose answer a later rule changed on purpose, with the answer that
-/// rule gives: (case id, call index, stdout). The recording stays as the
-/// TypeScript gave it; the rule and its source are named here.
+/// rule gives: (case id, call index, the `want` fields it changes, as
+/// JSON). The recording stays as the TypeScript gave it; the rule and its
+/// source are named here.
 ///
 /// - Fix pass 6 (note BE section 2.3, Tony's call of 15 Nov): with a chat
 ///   token and no daemon answer, a call that taints the chat (an MCP
 ///   result) is not run with its mark unkept, since the daemon is the only
 ///   store a `derm run` chat's taint has. The TypeScript hook had no taint.
-const CHANGED: &[(&str, usize, &str)] = &[(
-    "claude_plugin_hook_claude_code_pretooluse_no_approver_connected_or_no_daemon_claude_code_s_own_prompt_contract",
-    1,
-    "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (no daemon socket)); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}}",
-)];
+/// - Fix pass 7 (FP6-R2's rest, Tony's "fix/build these" of 15 Nov): a
+///   token file named to the hook that cannot be read (here the daemon's
+///   own token, refused by name) still names a `derm run` chat, so its
+///   taint is the fail-closed state, not the light tier's file: the MCP
+///   call is denied, where the TypeScript hook asked.
+const CHANGED: &[(&str, usize, &str)] = &[
+    (
+        "claude_plugin_hook_claude_code_pretooluse_no_approver_connected_or_no_daemon_claude_code_s_own_prompt_contract",
+        1,
+        r#"{"stdout":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (no daemon socket)); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}}"}"#,
+    ),
+    (
+        "gemini_extension_hook_the_hook_s_environment_reaches_the_daemon_through_the_alias_with_the_same_file_checks",
+        1,
+        r#"{"exit":2,"stdout":"{\"decision\":\"deny\",\"reason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (the hook was named a chat token it cannot read (a file gone, loosened or replaced))); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}","stderr":"derm: derm's taint state: no taint state could be read (the daemon gave no answer (the hook was named a chat token it cannot read (a file gone, loosened or replaced))); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)"}"#,
+    ),
+];
 
 /// Why a case's setup holds only on Unix, or `None`: a mode others can
 /// write under, which the checks the case tests read as a Unix mode (case
@@ -216,7 +229,10 @@ pub fn case(cases: &str, id: &str) {
             .iter()
             .find(|(case_id, n, _)| *case_id == id && *n == i)
         {
-            call["want"]["stdout"] = Value::String((*want).to_string());
+            let patch: Value = serde_json::from_str(want).expect("CHANGED holds JSON");
+            for (k, v) in patch.as_object().unwrap() {
+                call["want"][k] = v.clone();
+            }
         }
         let call = &call;
         if let Err(why) = one(call) {

@@ -253,10 +253,38 @@ pub fn chat_token(env: &Env, cwd: &Path) -> Option<String> {
         let t = s.trim();
         hex64(t).then(|| t.to_string())
     }
-    #[cfg(not(unix))]
+    // Windows (fix pass 7): the file itself, never what a reparse point
+    // names, on a path with no link or junction, ours and no one else's to
+    // use, checked on the handle that is read (`open_private_file`, the
+    // seam the light tier's files use). Its one name is checked as Unix
+    // checks a link (`symlink_metadata` above refuses a symlink there).
+    #[cfg(windows)]
+    {
+        let st = std::fs::symlink_metadata(file).ok()?;
+        if !st.is_file() || st.len() > 256 {
+            return None;
+        }
+        let f = derm_core::platform::windows::open_private_file(file).ok()?;
+        let mut s = String::new();
+        (&f).take(257).read_to_string(&mut s).ok()?;
+        let t = s.trim();
+        hex64(t).then(|| t.to_string())
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         None
     }
+}
+
+/// Whether the hook was handed a chat token, by value or by file, whether
+/// or not it can be read (fix pass 7, FP6-R2's rest): a token file the
+/// agent deleted, loosened or replaced still names the chat as `derm
+/// run`'s, so its taint is the daemon's or the fail-closed state, never the
+/// light tier's file the agent can write.
+pub fn token_named(env: &Env) -> bool {
+    ["DERM_CHAT_TOKEN", "DERM_CHAT_TOKEN_FILE"]
+        .iter()
+        .any(|k| env.get(k).is_some_and(|v| !v.trim().is_empty()))
 }
 
 /// What a `stat` of the marker gives (for [`vm_marker`]'s tests).
