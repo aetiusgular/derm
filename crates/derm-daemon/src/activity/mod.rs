@@ -14,6 +14,7 @@ pub mod chain;
 pub mod check;
 pub mod collector;
 pub mod commands;
+pub mod hostdev;
 pub mod registry;
 pub mod retention;
 pub mod store;
