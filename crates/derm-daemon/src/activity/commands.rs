@@ -216,8 +216,6 @@ pub fn flags_report(
         }
     }
     events.sort_by_key(|event| event.at);
-    // BW6R2-2: the daemon's own mounts, read once per check.
-    let mounts = super::hostdev::Mounts::read();
     let output = check::run_full(&check::CheckInput {
         events: &events,
         approvals: &back.approvals,
@@ -225,7 +223,6 @@ pub fn flags_report(
         known_hosts: &known_hosts,
         now_ms,
         data_dir,
-        host_mounts: mounts.as_ref(),
     });
     let wanted: HashSet<&str> = output
         .flags

@@ -61,7 +61,6 @@ fn r2_3_a_flags_own_event_is_always_in_its_context() {
         known_hosts: &HashSet::new(),
         now_ms: 2_000,
         data_dir: Some("/data"),
-        host_mounts: None,
     });
     let flag = out
         .flags
@@ -98,7 +97,6 @@ fn r2_3b_a_chat_tokens_flags_keep_their_own_event() {
         known_hosts: &HashSet::new(),
         now_ms: 2_000,
         data_dir: None,
-        host_mounts: None,
     });
     let lost: Vec<&str> = out
         .flags

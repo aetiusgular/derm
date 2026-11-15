@@ -51,7 +51,6 @@ fn r3_2_a_kernel_connection_to_a_new_host_keeps_an_os_feed_row() {
         known_hosts: &HashSet::new(),
         now_ms: 3_000,
         data_dir: None,
-        host_mounts: None,
     });
     let rows: Vec<(String, bool)> = out
         .flags

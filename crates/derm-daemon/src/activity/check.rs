@@ -24,7 +24,6 @@
 //! counted as expected, never a tool's. Repeats are one row with a count.
 //! The collector's log stays complete: all of this happens here.
 
-use super::hostdev;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -119,10 +118,6 @@ pub struct CheckInput<'a> {
     /// The app's data folder (`app_data_dir`), guarded but for a harness
     /// home's session state.
     pub data_dir: Option<&'a str>,
-    /// The daemon's own mounts (`/proc/self/mountinfo`), to tell bubblewrap's
-    /// mount points in a tmpfs only its sandbox sees from the host's file
-    /// (BW6R2-2). `None` reads none, and every such write stays flagged.
-    pub host_mounts: Option<&'a hostdev::Mounts>,
 }
 
 /// A kernel feed: the Mac collector's `eslogger` events and, on Linux, lane
@@ -1098,22 +1093,24 @@ fn bubblewrap_dev_link(event: &ActivityEvent, exe: &str) -> bool {
     target && own
 }
 
-/// A path bubblewrap wrote under its new root on a filesystem the host has
-/// no mount of (box test w6 retest 2, BW6R2-2): the mount point of a bind,
-/// made in bubblewrap's own tmpfs root (`00:2a` in the feed's fixture
-/// `links_6_18.enriched.audit`) or in a tmpfs a sandbox put over a folder
-/// (srt's `denyRead` of `~/.derm`, `00:2b`). A writable bind of a host folder
-/// is on a filesystem the host has mounted (`fe:00`, the same fixture), and
-/// stays flagged. An event with no `dev` (any feed but Linux's, or an older
-/// feed) or no mounts read stays flagged too. `hostdev.rs` says why the
-/// device and mountinfo agree.
-fn made_off_the_host(event: &ActivityEvent, host_mounts: Option<&hostdev::Mounts>) -> bool {
-    let Some(mounts) = host_mounts else {
-        return false;
-    };
-    str_field(event, "dev")
-        .and_then(hostdev::parse_audit_dev)
-        .is_some_and(|made| !mounts.has_dev(made))
+/// The rule that hides bubblewrap's mount points in a tmpfs only its
+/// sandbox sees (BW6R2-2), counted in `suppressed`.
+pub const RULE_BWRAP_TMPFS: &str = "bubblewrapOwnTmpfs";
+
+/// A path bubblewrap wrote under its new root on a filesystem the host had
+/// no mount of when the feed read the event (box test w6 retest 2,
+/// BW6R2-2): the mount point of a bind, made in bubblewrap's own tmpfs root
+/// (`00:2a` in the feed's fixture `links_6_18.enriched.audit`) or in a tmpfs
+/// a sandbox put over a folder (srt's `denyRead` of `~/.derm`, `00:2b`). The
+/// feed decides it then (`devMounted`, `derm-audit-linux` `hostdev.rs`), not
+/// this check from the mounts of a later report (fix pass 3's review,
+/// FP3-R2). A writable bind of a host folder is on a filesystem the host has
+/// mounted (`fe:00`, the same fixture) and stays flagged, and so does an
+/// event that does not say (any feed but Linux's, an older feed, a feed
+/// that could not read the mounts).
+fn made_off_the_host(event: &ActivityEvent) -> bool {
+    event.source == ActivitySource::Auditd
+        && event.detail.get("devMounted").and_then(Value::as_bool) == Some(false)
 }
 
 fn written_paths(event: &ActivityEvent) -> Vec<&str> {
@@ -1331,7 +1328,8 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                 let path = match bubblewrap_setup(raw, exe) {
                     BwrapSetup::Own => continue,
                     BwrapSetup::Host(p) => {
-                        if made_off_the_host(event, input.host_mounts) {
+                        if made_off_the_host(event) {
+                            *suppressed.entry(RULE_BWRAP_TMPFS.to_string()).or_default() += 1;
                             continue;
                         }
                         mapped = p;
@@ -1791,7 +1789,6 @@ mod tests {
             known_hosts: &hosts,
             now_ms: 1_000_000,
             data_dir: Some(data_dir),
-            host_mounts: None,
         })
     }
 
@@ -2004,97 +2001,61 @@ mod tests {
     /// Box test w6 retest 2, BW6R2-2: bubblewrap's mount points under
     /// `/newroot`, made in its own tmpfs root or in a tmpfs over a folder,
     /// were flagged as writes to the host's `~/.gitconfig`, `~/.derm/policy.json`
-    /// and the route file. The devices are the feed's fixture
-    /// `links_6_18.enriched.audit` (`00:2a` bubblewrap's root, `00:2b` the
-    /// tmpfs at `~/.derm`, `fe:00` the host's disk under a writable bind);
-    /// the host's mounts are that workspace's `/` (`254:0`); a bind of a host
-    /// folder on another filesystem the host has mounted stays flagged.
+    /// and the route file. The feed now says of each write whether its
+    /// filesystem was one the host had mounted (`devMounted`; the devices are
+    /// its fixture `links_6_18`); only `false` from the kernel feed hides one.
     #[test]
     fn bw6r2_2_a_mount_point_bubblewrap_made_in_a_tmpfs_is_not_the_hosts_file() {
-        let bw = |id: &str, kind: &str, path: &str, dev: Option<&str>, exe: &str| {
-            let mut d = json!({ "path": path, "exe": exe });
-            if let Some(dev) = dev {
-                d["dev"] = json!(dev);
+        let bw = |id: &str, path: &str, mounted: Option<bool>, exe: &str, src: ActivitySource| {
+            let mut d = json!({ "path": path, "exe": exe, "dev": "00:2a" });
+            if let Some(m) = mounted {
+                d["devMounted"] = json!(m);
             }
-            ev(
-                id,
-                id.parse().unwrap(),
-                ActivitySource::Auditd,
-                kind,
-                d,
-                Some(10),
-            )
+            ev(id, id.parse().unwrap(), src, "create", d, Some(10))
         };
+        let a = ActivitySource::Auditd;
         let events = [
             bw(
                 "1",
-                "create",
                 "/newroot/Users/t/.gitconfig",
-                Some("00:2a"),
+                Some(false),
                 "/usr/bin/bwrap",
+                a,
             ),
             bw(
                 "2",
-                "create",
                 "/newroot/Users/t/.derm/policy.json",
-                Some("00:2b"),
+                Some(false),
                 "/x/srt/vendor/bwrap",
+                a,
             ),
             bw(
                 "3",
-                "create",
                 "/newroot/Users/t/code/other/.gitconfig",
-                Some("fe:00"),
+                Some(true),
                 "/usr/bin/bwrap",
+                a,
             ),
-            bw(
-                "4",
-                "create",
-                "/newroot/Users/t/.npmrc",
-                None,
-                "/usr/bin/bwrap",
-            ),
+            bw("4", "/newroot/Users/t/.npmrc", None, "/usr/bin/bwrap", a),
             bw(
                 "5",
-                "create",
                 "/newroot/Users/t/.bashrc",
-                Some("00:2a"),
+                Some(false),
                 "/usr/bin/python3",
+                a,
             ),
             bw(
                 "6",
-                "create",
-                "/newroot/Users/t/.profile",
-                Some("nonsense"),
-                "/usr/bin/bwrap",
-            ),
-            bw(
-                "7",
-                "create",
                 "/newroot/Users/t/.zshrc",
-                Some("00:17"),
+                Some(false),
                 "/usr/bin/bwrap",
+                ActivitySource::Eslogger,
             ),
         ];
-        let mounts = super::hostdev::Mounts::parse(
-            "27 1 254:0 / / rw - ext4 /dev/vda rw\n40 27 0:23 / /tmp rw - tmpfs tmpfs rw",
-        );
-        let chats = chats();
-        let hosts = HashSet::new();
-        let out = run_full(&CheckInput {
-            events: &events,
-            approvals: &[],
-            chats: &chats,
-            known_hosts: &hosts,
-            now_ms: 1_000_000,
-            data_dir: Some(DATA),
-            host_mounts: Some(&mounts),
-        });
+        let out = check_full(&events, &[], DATA);
         let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
-        assert_eq!(ids, vec!["3", "4", "5", "6", "7"], "{:?}", out.flags);
-        // With no mounts to read, every one stays flagged.
-        let none = check(&events, &[]);
-        assert_eq!(none.len(), 7, "{none:?}");
+        assert_eq!(ids, vec!["3", "4", "5", "6"], "{:?}", out.flags);
+        assert_eq!(out.suppressed.get(RULE_BWRAP_TMPFS), Some(&2));
     }
 
     fn chat_ev(
@@ -2284,7 +2245,6 @@ mod tests {
             known_hosts: &hosts,
             now_ms: 1_000_000,
             data_dir: None,
-            host_mounts: None,
         });
         let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["2"], "{:?}", out.flags);
@@ -2834,7 +2794,6 @@ mod tests {
             known_hosts: &hosts,
             now_ms: 105 + LEFT_RUNNING_GRACE_MS,
             data_dir: Some(DATA),
-            host_mounts: None,
         })
         .flags;
         assert!(flags.is_empty());
@@ -3242,7 +3201,6 @@ mod tests {
             known_hosts: &hosts,
             now_ms: 1_000_000,
             data_dir: Some(DATA),
-            host_mounts: None,
         });
         let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["k", "d", "s"]);
@@ -3443,7 +3401,6 @@ mod tests {
             known_hosts: &hosts,
             now_ms: 10 * DEDUPE_WINDOW_MS,
             data_dir: Some(DATA),
-            host_mounts: None,
         });
         let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
         assert_eq!(ids, vec!["in", "open"], "{ids:?}");

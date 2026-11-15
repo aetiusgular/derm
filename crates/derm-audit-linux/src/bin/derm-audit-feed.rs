@@ -448,6 +448,9 @@ fn cmd_run(args: &[String]) -> u8 {
     // SAFETY: getuid has no preconditions and cannot fail.
     let runtime_dir = runtime_dir_for(unsafe { libc::getuid() });
     let mut feed = Feed::new(&home, runtime_dir.as_deref());
+    feed.set_mounts_reader(Box::new(|| {
+        std::fs::read_to_string("/proc/self/mountinfo").ok()
+    }));
     // FP13RR-1: the feed's own records (its place saves are audited too).
     feed.set_own_pid(std::process::id());
     let mut gap = gap;
