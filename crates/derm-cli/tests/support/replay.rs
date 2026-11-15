@@ -304,6 +304,24 @@ fn one(call: &Value) -> Result<(), String> {
     for (k, v) in call["env"].as_object().unwrap() {
         cmd.env(k, subst(v.as_str().unwrap_or(""), &map));
     }
+    // Windows: the Rust gate reads the home in USERPROFILE, not HOME
+    // (`gate/policy.rs`, WB-P1-1); the recordings name HOME. And a process
+    // with no SystemRoot cannot start Windows' own sockets and crypto, so it
+    // passes through (CI run 43712895655: every replay that needed a home
+    // failed with "HOME is not an absolute path"; fix pass 6).
+    #[cfg(windows)]
+    {
+        let named = call["env"]["HOME"].as_str().map(|h| subst(h, &map));
+        cmd.env(
+            "USERPROFILE",
+            named.unwrap_or_else(|| home.to_string_lossy().into_owned()),
+        );
+        for k in ["SystemRoot", "windir"] {
+            if let Ok(v) = std::env::var(k) {
+                cmd.env(k, v);
+            }
+        }
+    }
     // `derm run` names the chat its token holds (`DERM_CHAT_ID`,
     // `run/plan.rs`), and since fix pass 6 a taint answer the daemon refuses
     // (a chat the token does not hold) leaves the chat tainted with deny,
