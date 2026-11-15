@@ -42,6 +42,7 @@ mod user; // lane V
           // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
           // part 3): the Standard tier, lane 6A's. The stub changes nothing.
 mod broker;
+mod claude_gate; // fix pass 6, note BE section 1.5 (e)
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
 use std::io::Write;
@@ -1326,6 +1327,20 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ),
     ))?;
     let chat = a.chat.clone().unwrap_or_else(new_chat_id);
+    // Fix pass 6 (note BE section 1.5, option (e)): Claude Code's gate is
+    // derm's own `--settings` registration, by the path of this derm. Both
+    // are checked before anything starts.
+    let claude_gate_by =
+        if a.harness.id == "claude-code" && a.boundary != Boundary::Sbx {
+            claude_gate::check_user_settings(&a.rest).map_err(|e| (2, e))?;
+            Some(derm_exe().ok_or((
+            1,
+            "derm's own path cannot be read, so derm cannot register its gate for Claude Code"
+                .to_string(),
+        ))?)
+        } else {
+            None
+        };
 
     // The daemon, unless the user said to run without it.
     let socket = env.socket.clone();
@@ -1551,10 +1566,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // blocks when it fails (`probe::gate_holds`, the boundary choice's own
     // reading), for the daemon's check of calls the tap saw that no gate
     // record names (`gate.expected` in `run.start`).
+    // Claude Code's gate is derm run's own registration outside sbx since
+    // fix pass 6, so it holds wherever derm run registers it.
     let gate_expected = a.harness.id != "other" && {
         let mut e = crate::watch::status::Env::real();
         e.cwd = Some(PathBuf::from(&cwd));
-        boundary::probe::gate_holds(a.harness.id, &e)
+        claude_gate_by.is_some() || boundary::probe::gate_holds(a.harness.id, &e)
     };
     if cfg!(target_os = "linux") && a.boundary == Boundary::Srt && gate_expected && !a.no_daemon {
         p.notes.push(if tapped {
@@ -1624,6 +1641,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             content_days.is_some(),
         )
     };
+    // Claude Code's gate, as the last `--settings`: after the Standard
+    // tier's block and the export's, which it holds (fix pass 6).
+    if let Some(derm) = &claude_gate_by {
+        claude_gate::register(&mut p, derm).map_err(|e| (1, e))?;
+    }
     // Only a run that wrote a helper clears the receiver's helpers: one
     // `derm run` is one chat, so they are this run's.
     cleanup.otel_helpers = export == json!("claude-code, token through otelHeadersHelper");
@@ -3747,13 +3769,27 @@ mod end_to_end {
         .unwrap();
         assert_eq!(code, 0);
         let seen = std::fs::read_to_string(&out).unwrap();
-        // `--settings <json>` first, the user's words last.
+        // `--settings <json>` first, the user's words, then derm's gate
+        // block, which Claude Code reads (the last `--settings`) and which
+        // holds the export's helper (fix pass 6).
         let args: Vec<&str> = seen
             .lines()
             .filter_map(|l| l.strip_prefix("arg="))
             .collect();
         assert_eq!(args[0], "--settings", "{seen}");
-        assert_eq!(&args[args.len() - 2..], ["-p", "hello"], "{seen}");
+        assert_eq!(&args[2..4], ["-p", "hello"], "{seen}");
+        assert_eq!(args[args.len() - 2], "--settings", "{seen}");
+        let last: serde_json::Value = serde_json::from_str(args[args.len() - 1]).unwrap();
+        assert_eq!(
+            last["otelHeadersHelper"],
+            serde_json::from_str::<serde_json::Value>(args[1]).unwrap()["otelHeadersHelper"],
+            "{seen}"
+        );
+        assert_eq!(
+            last["hooks"]["PreToolUse"][0]["hooks"][0]["onFailure"], "block",
+            "{seen}"
+        );
+        assert_eq!(last["enabledPlugins"]["derm@derm"], false, "{seen}");
         assert!(seen.contains("CLAUDE_CODE_ENABLE_TELEMETRY=1"), "{seen}");
         assert!(
             seen.contains("OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318"),

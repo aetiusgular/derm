@@ -250,6 +250,14 @@ fn the_installed_claude_code_gate_denies_a_denied_call() {
     derm_at_home(&h);
     let dest = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
     let r = run_fixture("claude-code", &env(&h), &probes());
+    // On Windows the plugin's hooks file starts /bin/sh, which is not
+    // there, so Claude Code blocks every call (onFailure: block): the
+    // plugin is not derm's route there since fix pass 6 (note BE section
+    // 1.5, option (d); `fp6_the_settings_gate_is_run_as_claude_code_runs_it`).
+    if cfg!(windows) {
+        assert_eq!(r["state"], "fail-closed", "{r}");
+        return;
+    }
     assert_eq!(r["state"], "pass", "{r}");
     std::fs::remove_dir_all(&dest).unwrap();
     // The launcher ran `derm hook claude-code pre` from ~/.local/bin.
@@ -926,4 +934,35 @@ fn a_launcher_that_cannot_start_is_the_agents_own_outcome() {
     let r = run_fixture("claude-code", &env(&h), &p);
     assert_eq!(r["state"], "fail", "{r}");
     std::fs::remove_dir_all(&cc).unwrap();
+}
+
+/// Fix pass 6 (note BE section 1.5, option (d)): Claude Code's gate in the
+/// user's settings, in exec form, is run as Claude Code runs it (the program
+/// and its arguments, no shell), before any plugin's, and only when it is
+/// this derm.
+#[cfg(unix)]
+#[test]
+fn fp6_the_settings_gate_is_run_as_claude_code_runs_it() {
+    let h = home("cc-settings");
+    derm_at_home(&h);
+    let derm = h.root.join("home/.local/bin/derm");
+    put(
+        &h.root.join("home/.claude/settings.json"),
+        &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": derm, "args": ["hook", "claude-code", "pre"], "onFailure": "block"}]}]}})
+        .to_string(),
+    );
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(derm.canonicalize().unwrap()));
+    let r = run_fixture("claude-code", &env(&h), &probes());
+    assert_eq!(r["state"], "pass", "{r}");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook claude-code pre\n"
+    );
+    // A settings gate that runs another program is not run.
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(PathBuf::from("/usr/bin/true")));
+    let r = run_fixture("claude-code", &env(&h), &probes());
+    super::TEST_SELF.with(|t| *t.borrow_mut() = None);
+    assert_eq!(r["state"], "not run", "{r}");
+    assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");
 }

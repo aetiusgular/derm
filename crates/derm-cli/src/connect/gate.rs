@@ -54,6 +54,10 @@ pub struct Agent {
     /// so `--gate` names it for removal and `--ungate` and `derm doctor`
     /// still find it (BC-1, BC-2; the wave 5b close).
     pub legacy_name: Option<String>,
+    /// A plugin whose being on refuses the registration: Claude Code's
+    /// own plugin on Windows, whose hooks file cannot start there and which,
+    /// beside a settings gate, would gate every call twice (fix pass 6).
+    pub refuse_if_plugin_on: Option<String>,
 }
 
 /// BC-1 and BC-2 (note BC sections 8 and 11, run by the wave 5b base): goose
@@ -337,12 +341,52 @@ fn step(v: &Value) -> Result<Step, String> {
 /// The table, read with derm connect's own JSON reader so every entry keeps
 /// its key order (serde_json's map is sorted in this build).
 pub fn table() -> Result<Vec<Agent>, String> {
+    #[cfg(test)]
+    if let Some(os) = TEST_OS.with(std::cell::Cell::get) {
+        return table_for(os);
+    }
+    table_for(this_os())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for the system `table` reads its rows for.
+    pub static TEST_OS: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// This system as a row's `os` names it.
+pub fn this_os() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+/// The table for `os`: a row with an `os` of another system is left out, so
+/// an agent's own row for this system, listed first, is the one found (fix
+/// pass 6: Claude Code's Windows row).
+pub fn table_for(os: &str) -> Result<Vec<Agent>, String> {
     let doc = json::parse(TABLE, false).map_err(|e| format!("gates.json: {e}"))?;
     let root = doc.root.map(|n| n.to_value()).ok_or("gates.json: empty")?;
     let Some(Value::Array(rows)) = root.get("agents") else {
         return Err("gates.json: no agents".into());
     };
+    let mut seen: Vec<String> = Vec::new();
     rows.iter()
+        .filter(|r| opt_s(r, "os").is_none_or(|o| o == os))
+        // The first row of an agent for this system is its row: a row with
+        // this system's `os` comes before the agent's general one.
+        .filter(|r| match opt_s(r, "agent") {
+            Some(a) if seen.contains(&a) => false,
+            Some(a) => {
+                seen.push(a);
+                true
+            }
+            None => true,
+        })
         .map(|r| {
             let steps = match r.get("steps") {
                 Some(Value::Array(st)) => st.iter().map(step).collect::<Result<Vec<_>, _>>()?,
@@ -369,6 +413,7 @@ pub fn table() -> Result<Vec<Agent>, String> {
                 steps,
                 notes: strs(r, "notes")?,
                 legacy_name: opt_s(r, "legacyName"),
+                refuse_if_plugin_on: opt_s(r, "refuseIfPluginOn"),
             })
         })
         .collect()
@@ -495,6 +540,131 @@ pub fn self_path() -> Result<String, String> {
     }
     let exe = std::env::current_exe().map_err(|e| format!("cannot read derm's own path: {e}"))?;
     checked_self(&exe)
+}
+
+/// Whether Claude Code's plugin `plugin` is on for the user: its user
+/// settings turn it on (`enabledPlugins`), or a user or managed install
+/// record holds it and the settings do not turn it off. The reason, naming
+/// the file; `None` when it is off or not installed. Read as
+/// `watch::register`'s `claude` reads it (CLAUDE_CONFIG_DIR, else
+/// `~/.claude`).
+pub fn plugin_on(plugin: &str, home: &Path, env: &dyn Env) -> Option<String> {
+    let config = env
+        .var("CLAUDE_CONFIG_DIR")
+        .filter(|d| super::names::absolute(d))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let read = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    };
+    let settings = config.join("settings.json");
+    let enabled =
+        read(&settings).and_then(|v| v.pointer(&format!("/enabledPlugins/{plugin}")).cloned());
+    if enabled == Some(serde_json::Value::Bool(true)) {
+        return Some(format!(
+            "{plugin} is on in {} (enabledPlugins)",
+            settings.display()
+        ));
+    }
+    if enabled == Some(serde_json::Value::Bool(false)) {
+        return None;
+    }
+    let installed = config.join("plugins").join("installed_plugins.json");
+    let records = read(&installed)?;
+    let anywhere = records
+        .pointer(&format!("/plugins/{plugin}"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|rs| {
+            rs.iter().any(|r| {
+                matches!(
+                    r.get("scope").and_then(serde_json::Value::as_str),
+                    Some("user" | "managed")
+                )
+            })
+        });
+    anywhere.then(|| {
+        format!(
+            "{plugin} is installed for you ({}) and your settings do not turn it off",
+            installed.display()
+        )
+    })
+}
+
+/// derm's own path for a row whose agent runs the gate in exec form (a
+/// program and its arguments, no shell; Claude Code's Windows row, fix pass
+/// 6): on Windows, by its real path without the `\\?\` prefix
+/// `canonicalize` adds to a drive path, named `derm.exe`, a regular file
+/// that only its owner can write, in a folder only its owner can write. On
+/// other systems the same checks as every `{derm}` row ([`self_path`]).
+pub fn self_path_exec() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        #[cfg(test)]
+        if let Some(p) = TEST_SELF.with(|t| t.borrow().clone()) {
+            return checked_self_exec(&p);
+        }
+        let exe =
+            std::env::current_exe().map_err(|e| format!("cannot read derm's own path: {e}"))?;
+        checked_self_exec(&exe)
+    }
+    #[cfg(not(windows))]
+    {
+        self_path()
+    }
+}
+
+/// `\\?\C:\x` as `C:\x`; any other path as it is (a `\\?\UNC\` path keeps
+/// its prefix: a hook on a share is not one derm names).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn without_verbatim(p: &str) -> String {
+    match p.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.len() > 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest.as_bytes()[1] == b':'
+                && rest.as_bytes()[2] == b'\\' =>
+        {
+            rest.to_string()
+        }
+        _ => p.to_string(),
+    }
+}
+
+#[cfg(windows)]
+fn checked_self_exec(exe: &Path) -> Result<String, String> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let real = std::fs::canonicalize(exe)
+        .map_err(|e| format!("cannot read derm's own path {}: {e}", exe.display()))?;
+    let text = without_verbatim(&real.to_string_lossy());
+    let name_ok = real
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("derm.exe"));
+    if !name_ok {
+        return Err(format!(
+            "{text} is not named derm.exe; a registration names derm by its own file, which is how derm finds its entry again"
+        ));
+    }
+    let meta = std::fs::symlink_metadata(&real).map_err(|e| format!("{text}: {e}"))?;
+    if !meta.is_file() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("{text} is not a regular file"));
+    }
+    if !derm_core::platform::windows::only_owner_writes(&real) {
+        return Err(format!(
+            "{text} can be written by someone other than its owner; a gate registered on it would run whatever is put there"
+        ));
+    }
+    let dir = real.parent().ok_or("derm has no folder")?;
+    if !derm_core::platform::windows::only_owner_writes(dir) {
+        return Err(format!(
+            "{} can be written by someone other than its owner; derm in it could be replaced",
+            without_verbatim(&dir.to_string_lossy())
+        ));
+    }
+    Ok(text)
 }
 
 #[cfg(windows)]
@@ -631,7 +801,7 @@ const FINDS_DERM: &[&str] = &[
 /// note says that. `None` for every other agent.
 pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
     match agent {
-        "claude-code" | "codex" | "gemini" => Some(Err(format!(
+        "codex" | "gemini" => Some(Err(format!(
             "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
         ))),
         "pi" | "oh-my-pi" | "opencode" | "kilo" | "openclaw" => Some(Ok(format!(
@@ -1740,11 +1910,25 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             return Err(why);
         }
     }
+    // A row whose command is derm itself, its arguments apart (exec form,
+    // no shell): Claude Code's Windows row (fix pass 6).
+    let exec_form = agent.command.as_deref() == Some("{derm}");
     let derm = if uses_derm && !o.ungate {
-        Some(self_path()?)
+        Some(if exec_form {
+            self_path_exec()?
+        } else {
+            self_path()?
+        })
     } else {
         None
     };
+    if let (Some(plugin), false) = (&agent.refuse_if_plugin_on, o.ungate) {
+        if let Some(why) = plugin_on(plugin, &ctx.home, ctx.env) {
+            return Err(format!(
+                "{why}; with derm's gate in your settings too every call would be gated twice, and on Windows the plugin's own hooks file starts /bin/sh, which blocks every call. Turn the plugin off first (claude plugin disable {plugin}, or claude plugin uninstall {plugin}) and run this again"
+            ));
+        }
+    }
     let mut hook_ignored = false;
     let hook_file = match o.hook {
         Some(_)
@@ -1828,7 +2012,11 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             agent.name
         ));
     }
-    route_note(agent, ctx);
+    // An exec-form row runs this derm by its path, not a launcher that
+    // looks derm up (fix pass 6).
+    if !exec_form {
+        route_note(agent, ctx);
+    }
 
     // Agents whose gate installs through their own command: print only.
     let printed: Vec<&Step> = agent

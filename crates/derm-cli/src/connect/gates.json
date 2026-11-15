@@ -4,6 +4,37 @@
   "agents": [
     {
       "agent": "claude-code",
+      "os": "windows",
+      "name": "Claude Code",
+      "package": "@aetiusgular/derm-claude-plugin",
+      "command": "{derm}",
+      "source": "fix pass 6 (note BE section 1.5, option (d), Tony's call of 15 Nov 2026): Claude Code 2.1.322 runs a hook in exec form (command and args) with child_process.spawn and no shell, from any settings file; on Windows the plugin's hooks file starts /bin/sh, which is not there, so outside derm run derm registers its gate in the user's settings by derm's absolute path",
+      "markers": ["\"hook\", \"claude-code\", \""],
+      "installedIf": ["~/.claude"],
+      "cli": "claude",
+      "refuseIfPluginOn": "derm@derm",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.claude/settings.json",
+          "homeEnv": "CLAUDE_CONFIG_DIR",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "args": ["hook", "claude-code", "pre"], "timeout": 120, "onFailure": "block"}]}
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.claude/settings.json",
+          "homeEnv": "CLAUDE_CONFIG_DIR",
+          "format": "json",
+          "array": ["hooks", "PostToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "args": ["hook", "claude-code", "post"], "timeout": 120}]}
+        }
+      ],
+      "notes": ["Fails closed (onFailure: block): a gate that cannot start blocks the call.", "derm run claude-code registers its own gate in its --settings block on every system and turns the plugin off for the chat; this registration is for chats started without derm run.", "disableAllHooks, --safe-mode and --bare run no hook at all."]
+    },
+    {
+      "agent": "claude-code",
       "name": "Claude Code",
       "package": "@aetiusgular/derm-claude-plugin",
       "source": "docs/install/agents.md at 824ae83",

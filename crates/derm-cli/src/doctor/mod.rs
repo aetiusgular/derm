@@ -722,6 +722,39 @@ fn plugin_hook(copy: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The derm Claude Code's settings gate runs (`watch::register::settings_gate`),
+/// when there is one: `Ok` only when it is this derm by its real path, so
+/// doctor, which runs it as you outside any sandbox, never runs a program a
+/// settings file an agent can write names (security review L9's rule).
+fn settings_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
+    let home = env.home.as_ref()?;
+    let config = env
+        .var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let file = config.join("settings.json");
+    let v = read_json_small(&file)?;
+    let gate = crate::watch::register::settings_gate(&v)?;
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let me = std::env::current_exe().ok().and_then(|p| real(&p));
+    #[cfg(test)]
+    let me = TEST_SELF.with(|t| t.borrow().clone()).or(me);
+    let named = real(Path::new(&gate));
+    Some(match (me, named) {
+        (Some(me), Some(named)) if me == named => Ok(named),
+        _ => Err(format!(
+            "the gate in {} runs {gate}, which is not this derm; doctor runs only its own binary there",
+            file.display()
+        )),
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for this derm's own path.
+    pub static TEST_SELF: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Whether a hook is the wave 5b launcher.
 fn is_launcher(hook: &Path) -> bool {
     hook.file_name().is_some_and(|n| n == "derm-gate.sh")
@@ -1044,13 +1077,28 @@ const NODE_WINDOWS_ENV: &[&str] = &[];
 /// `bash`, from a folder of its own (the hook refuses a `DERM_POLICY` inside
 /// the session folder). Pass: the agent's own deny form.
 pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
-    let hook = match installed_hook(id, env) {
+    // Fix pass 6 (note BE section 1.5, option (d)): Claude Code's gate in
+    // the user's settings, in exec form, runs before any plugin's and is
+    // what Claude Code runs; doctor runs it only when it is this derm.
+    let direct = match (id == "claude-code")
+        .then(|| settings_gate_hook(env))
+        .flatten()
+    {
+        Some(Ok(d)) => Some(d),
+        Some(Err(why)) => return json!({"state": "not run", "why": why}),
+        None => None,
+    };
+    let hook = match direct
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(|| installed_hook(id, env))
+    {
         Ok(h) => h,
         Err(why) => return json!({"state": "not run", "why": why}),
     };
-    let launcher = is_launcher(&hook);
+    let launcher = direct.is_none() && is_launcher(&hook);
     let node = probes.node.clone();
-    if !launcher && node.is_none() {
+    if direct.is_none() && !launcher && node.is_none() {
         return json!({"state": "not run", "why": "node is not on PATH"});
     }
     let scratch =
@@ -1098,7 +1146,13 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             })
         };
         let event = if id == "gemini" { "before" } else { "pre" };
-        let mut cmd = if launcher {
+        let mut cmd = if direct.is_some() {
+            // As Claude Code runs an exec-form hook: the program and its
+            // arguments, no shell.
+            let mut c = Command::new(&hook);
+            c.args(["hook", id, event]);
+            c
+        } else if launcher {
             // As the agent runs it: /bin/sh by its absolute path on the
             // launcher, which runs `derm hook <agent> <event>` from derm's
             // install folders (never PATH).
@@ -1121,12 +1175,12 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
         if let Some(h) = &env.home {
             cmd.env("HOME", h);
         }
-        if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher) {
+        if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher && direct.is_none()) {
             cmd.env("PATH", v);
         }
         // An older plugin's node on Windows needs these too (lane/windows-ci,
         // `NODE_WINDOWS_ENV`); the launcher never runs there.
-        if !launcher {
+        if !launcher && direct.is_none() {
             for k in NODE_WINDOWS_ENV {
                 if let Some(v) = std::env::var_os(k) {
                     cmd.env(k, v);

@@ -1593,7 +1593,11 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
 /// names DERM_BIN, not Unix folders.
 #[test]
 fn ww5b_2_on_windows_the_launcher_plugins_are_refused_with_the_reason() {
-    for a in ["claude-code", "codex", "gemini"] {
+    // Claude Code's has its own Windows row since fix pass 6 (a settings
+    // gate in exec form, `fp6_claude_codes_windows_row_*`), so it is no
+    // longer refused there.
+    assert!(gate::windows_gate("claude-code").is_none());
+    for a in ["codex", "gemini"] {
         let Some(Err(why)) = gate::windows_gate(a) else {
             panic!("{a}: not refused");
         };
@@ -2707,4 +2711,148 @@ fn fp1_s6_on_linux_an_access_list_within_the_mask_is_read_by_its_mode() {
     let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
     assert_eq!(r.code, Some(2), "{}", r.out);
     assert!(gate::self_path().is_err());
+}
+
+/// Fix pass 6 (note BE section 1.5, option (d)): on Windows Claude Code's
+/// row is its own: derm's gate in the user's settings, in exec form (derm's
+/// absolute path, its arguments apart), failing closed; elsewhere the plugin
+/// commands as before. Each system sees one Claude Code row.
+#[test]
+fn fp6_claude_codes_windows_row_is_a_settings_gate_in_exec_form() {
+    for os in ["linux", "macos", "windows"] {
+        let rows = gate::table_for(os).unwrap();
+        let cc: Vec<_> = rows.iter().filter(|a| a.agent == "claude-code").collect();
+        assert_eq!(cc.len(), 1, "{os}");
+        let writes = cc[0]
+            .steps
+            .iter()
+            .any(|s| !matches!(s, Step::Commands { .. }));
+        assert_eq!(writes, os == "windows", "{os}");
+    }
+    let rows = gate::table_for("windows").unwrap();
+    let cc = rows.iter().find(|a| a.agent == "claude-code").unwrap();
+    assert_eq!(cc.command.as_deref(), Some("{derm}"));
+    assert_eq!(cc.refuse_if_plugin_on.as_deref(), Some("derm@derm"));
+    let vars = Vars {
+        command: Some(r"C:\Users\u\.local\bin\derm.exe".into()),
+        hook_dir: None,
+        version: "0.1.3".into(),
+        gate_name: None,
+    };
+    let mut events = Vec::new();
+    for st in &cc.steps {
+        let Step::JsonArrayEntry { array, entry, .. } = st else {
+            panic!("{st:?}");
+        };
+        let filled = json::compact(&gate::fill(entry, &vars).unwrap());
+        assert!(filled.contains(&cc.markers[0]), "{filled}");
+        assert!(
+            filled.contains(r#""command": "C:\\Users\\u\\.local\\bin\\derm.exe""#),
+            "{filled}"
+        );
+        events.push(array.join("."));
+        if array[1] == "PreToolUse" {
+            assert!(
+                filled.contains(r#""args": ["hook", "claude-code", "pre"]"#),
+                "{filled}"
+            );
+            assert!(filled.contains(r#""onFailure": "block""#), "{filled}");
+        }
+    }
+    assert_eq!(events, ["hooks.PreToolUse", "hooks.PostToolUse"]);
+    assert_eq!(
+        gate::without_verbatim(r"\\?\C:\Users\u\derm.exe"),
+        r"C:\Users\u\derm.exe"
+    );
+    assert_eq!(
+        gate::without_verbatim(r"\\?\UNC\srv\share\derm.exe"),
+        r"\\?\UNC\srv\share\derm.exe"
+    );
+    assert_eq!(gate::without_verbatim("/usr/bin/derm"), "/usr/bin/derm");
+}
+
+/// Fix pass 6: `derm connect claude-code --gate` with the Windows row
+/// writes derm's two hooks into the user's settings, keeps what is there,
+/// and refuses while derm's plugin is on.
+#[cfg(unix)]
+#[test]
+fn fp6_the_windows_row_writes_the_settings_gate_and_refuses_while_the_plugin_is_on() {
+    let d = scratch("fp6-ccw");
+    let home = d.as_path();
+    let derm = fake_derm(home);
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let settings = home.join(".claude/settings.json");
+    fs::write(
+        &settings,
+        r#"{"model": "x", "enabledPlugins": {"derm@derm": true}}"#,
+    )
+    .unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go(home, &["claude-code", "--gate", "--write"]);
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(r.err.contains("derm@derm is on"), "{}", r.err);
+    assert!(read(&settings).contains("\"model\": \"x\""), "left alone");
+    // Turned off, the gate is written beside the rest.
+    fs::write(
+        &settings,
+        r#"{"model": "x", "enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    let r = go(home, &["claude-code", "--gate", "--write"]);
+    gate::TEST_OS.with(|o| o.set(None));
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    let v: serde_json::Value = serde_json::from_str(&read(&settings)).unwrap();
+    assert_eq!(v["model"], "x");
+    let pre = &v["hooks"]["PreToolUse"][0]["hooks"][0];
+    assert_eq!(pre["command"], derm.as_str());
+    assert_eq!(
+        pre["args"],
+        serde_json::json!(["hook", "claude-code", "pre"])
+    );
+    assert_eq!(pre["onFailure"], "block");
+    assert_eq!(
+        v["hooks"]["PostToolUse"][0]["hooks"][0]["args"],
+        serde_json::json!(["hook", "claude-code", "post"])
+    );
+}
+
+/// Fix pass 6: whether derm's plugin is on, as Claude Code reads it.
+#[test]
+fn fp6_plugin_on_reads_the_settings_then_the_install_records() {
+    let d = scratch("fp6-plugon");
+    let home = d.as_path();
+    let e = env(&[]);
+    assert!(
+        gate::plugin_on("derm@derm", home, &e).is_none(),
+        "nothing installed"
+    );
+    fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+    fs::write(
+        home.join(".claude/plugins/installed_plugins.json"),
+        r#"{"plugins": {"derm@derm": [{"scope": "user", "installPath": "/x"}]}}"#,
+    )
+    .unwrap();
+    assert!(
+        gate::plugin_on("derm@derm", home, &e).is_some(),
+        "installed, not turned off"
+    );
+    fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    assert!(
+        gate::plugin_on("derm@derm", home, &e).is_none(),
+        "turned off"
+    );
+    fs::write(
+        home.join(".claude/plugins/installed_plugins.json"),
+        r#"{"plugins": {"derm@derm": [{"scope": "project", "projectPath": "/p"}]}}"#,
+    )
+    .unwrap();
+    fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+    assert!(
+        gate::plugin_on("derm@derm", home, &e).is_none(),
+        "a project install only"
+    );
 }

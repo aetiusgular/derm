@@ -138,6 +138,17 @@ fn claude(env: &Env, home: &Path) -> Registered {
         files.push(cwd.join(".claude/settings.json"));
     }
     files.push(config.join("settings.json"));
+    // Fix pass 6 (note BE section 1.5, option (d)): derm's gate in the
+    // user's settings, in exec form, as `derm connect claude-code --gate`
+    // writes it on Windows. Claude Code runs it whatever the plugin is.
+    if let Ok(Some(v)) = read_json(&config.join("settings.json"), false) {
+        if let Some(gate) = settings_gate(&v) {
+            return Registered::Yes(format!(
+                "derm's gate in {} runs {gate} hook claude-code pre in exec form and blocks when it fails",
+                config.join("settings.json").display()
+            ));
+        }
+    }
     let mut settings = config.join("settings.json");
     let mut enabled = None;
     for file in files {
@@ -251,6 +262,29 @@ fn claude(env: &Env, home: &Path) -> Registered {
             }
         )),
     }
+}
+
+/// The derm a settings file's own exec-form gate runs (`connect/gates.json`,
+/// Claude Code's Windows row): a `PreToolUse` hook whose command is an
+/// absolute path to a file named `derm` or `derm.exe`, whose arguments are
+/// `hook claude-code pre`, and which blocks when it fails. The path, cut to
+/// 120 characters (the file is one an agent can write).
+pub fn settings_gate(v: &Value) -> Option<String> {
+    let entries = v.pointer("/hooks/PreToolUse")?.as_array()?;
+    entries
+        .iter()
+        .filter_map(|e| e.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .find_map(|h| {
+            let cmd = h.get("command").and_then(Value::as_str)?;
+            let base = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
+            let named = base == "derm" || base.eq_ignore_ascii_case("derm.exe");
+            let absolute = cmd.starts_with('/')
+                || (cmd.len() > 3 && cmd.as_bytes()[1] == b':' && cmd.as_bytes()[2] == b'\\');
+            let args_ok = h.get("args") == Some(&serde_json::json!(["hook", "claude-code", "pre"]));
+            let blocks = h.get("onFailure").and_then(Value::as_str) == Some("block");
+            (named && absolute && args_ok && blocks).then(|| cmd.chars().take(120).collect())
+        })
 }
 
 /// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
@@ -867,6 +901,50 @@ mod tests {
     fn put(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    /// Fix pass 6 (note BE section 1.5, option (d)): derm's gate in the
+    /// user's settings in exec form, as `derm connect claude-code --gate`
+    /// writes it on Windows, is a registration; one that does not block, or
+    /// runs another program or other arguments, is not.
+    #[test]
+    fn fp6_a_settings_gate_in_exec_form_is_claude_codes_registration() {
+        let (h, env) = home("fp6-settings");
+        let gate = |cmd: &str, args: serde_json::Value, fail: &str| {
+            serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": cmd, "args": args, "onFailure": fail}]}]}})
+            .to_string()
+        };
+        let pre = serde_json::json!(["hook", "claude-code", "pre"]);
+        put(
+            &h.0.join(".claude/settings.json"),
+            &gate(r"C:\Users\u\.local\bin\derm.exe", pre.clone(), "block"),
+        );
+        assert!(matches!(check("claude-code", &env), Registered::Yes(_)));
+        put(
+            &h.0.join(".claude/settings.json"),
+            &gate("/home/u/.local/bin/derm", pre.clone(), "block"),
+        );
+        assert!(matches!(check("claude-code", &env), Registered::Yes(_)));
+        for (cmd, args, fail) in [
+            ("/home/u/.local/bin/derm", pre.clone(), "continue"),
+            ("derm", pre.clone(), "block"),
+            ("/home/u/bin/other", pre.clone(), "block"),
+            (
+                "/home/u/.local/bin/derm",
+                serde_json::json!(["hook", "codex", "pre"]),
+                "block",
+            ),
+        ] {
+            put(
+                &h.0.join(".claude/settings.json"),
+                &gate(cmd, args.clone(), fail),
+            );
+            assert!(
+                !matches!(check("claude-code", &env), Registered::Yes(_)),
+                "{cmd} {args} {fail}"
+            );
+        }
     }
 
     /// Release check RC4: a release user has no clone. The hints name the
