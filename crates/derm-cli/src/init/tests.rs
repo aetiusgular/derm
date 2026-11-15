@@ -133,12 +133,22 @@ fn a_dry_run_says_the_plan_and_writes_nothing() {
             r.said
         );
     }
-    assert!(
-        r.said
-            .contains(&format!("--ref v{}", env!("CARGO_PKG_VERSION"))),
-        "{}",
-        r.said
-    );
+    // Codex's gate on Windows is its own row since fix pass 7: derm
+    // registers it, as for Claude Code (above).
+    if cfg!(windows) {
+        assert!(
+            r.said.contains("derm connect codex --gate --write"),
+            "{}",
+            r.said
+        );
+    } else {
+        assert!(
+            r.said
+                .contains(&format!("--ref v{}", env!("CARGO_PKG_VERSION"))),
+            "{}",
+            r.said
+        );
+    }
     assert!(
         r.said.contains("derm connect crush --gate --write"),
         "{}",

@@ -596,11 +596,12 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     // Fix pass 7: the plugin blocks every call on Windows (above).
     let want = if cfg!(windows) { "fail-closed" } else { "pass" };
     assert_eq!(r["gateRun"]["state"], want, "{r}");
-    assert!(
-        slashed(&render(&r)).contains("0.1.3/hooks/derm-gate.sh"),
-        "{}",
-        render(&r)
-    );
+    let named = if cfg!(windows) {
+        "derm connect codex"
+    } else {
+        "0.1.3/hooks/derm-gate.sh"
+    };
+    assert!(slashed(&render(&r)).contains(named), "{}", render(&r));
 }
 
 /// Mac test w4, MW4-4: with two `derm@derm` records, a local install for
@@ -923,14 +924,25 @@ fn a_launcher_that_cannot_start_is_the_agents_own_outcome() {
         "{r}"
     );
     let r = run_fixture("codex", &env(&h), &p);
-    assert_eq!(r["state"], "fail", "{r}");
-    assert!(
-        r["saw"]
-            .as_str()
-            .unwrap()
-            .contains("lets every call through"),
-        "{r}"
-    );
+    // Fix pass 7: on Windows Codex runs the hooks file's `commandWindows`,
+    // which blocks every call and names derm's Windows route; elsewhere a
+    // missing /bin/sh lets every call through (case 70).
+    if cfg!(windows) {
+        assert_eq!(r["state"], "fail-closed", "{r}");
+        assert!(
+            r["saw"].as_str().unwrap().contains("derm connect codex"),
+            "{r}"
+        );
+    } else {
+        assert_eq!(r["state"], "fail", "{r}");
+        assert!(
+            r["saw"]
+                .as_str()
+                .unwrap()
+                .contains("lets every call through"),
+            "{r}"
+        );
+    }
     // Review FP5-R1: a copy whose hooks file does not block on a failure
     // lets the call run, whatever the row says Claude Code can do.
     let hooks = cc.join("hooks/hooks.json");

@@ -1032,7 +1032,8 @@ mod tests {
         let key = format!("{}:pre_tool_use:1:0", hooks.display());
         put(
             &h.0.join(".codex/config.toml"),
-            &format!("[hooks.state.\"{key}\"]\ntrusted_hash = \"sha256:aa\"\n"),
+            // A literal key: a Windows path's backslashes are not TOML escapes.
+            &format!("[hooks.state.'{key}']\ntrusted_hash = \"sha256:aa\"\n"),
         );
         assert!(matches!(check("codex", &env), Registered::Yes(_)));
         put(&hooks, &entry("\"/home/u/bin/derm\" hook codex pre".into()));
