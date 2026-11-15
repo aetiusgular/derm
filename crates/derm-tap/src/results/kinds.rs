@@ -104,6 +104,25 @@ pub const LOCAL_TOOLS: &[&str] = &[
     "exec",
     "wait",
     "sleep",
+    // Claude Code 2.1.322's own task list and messages to the person, from
+    // its built-in tool list (`BUILTIN_TOOL_NAMES` in its binary, read in
+    // fix pass 6).
+    "taskcreate",
+    "taskupdate",
+    "taskget",
+    "tasklist",
+    "taskstop",
+    "sendusermessage",
+    // The harnesses' deferred-tool loaders: what they return is the
+    // definitions of tools the harness already holds (Claude Code 2.1.322's
+    // `ToolSearch`, "Fetches full schema definitions for deferred tools",
+    // in `BUILTIN_TOOL_NAMES`; Codex 0.167.2's and Amp's `tool_search`), the
+    // same text a harness that does not defer puts in its prompt with no
+    // taint. Windows test w6 retest 3, WW6R3-2: Claude Code's ToolSearch
+    // marked a chat as "unknown-tool", so under `--taint deny` its first
+    // fetch was denied as a new host.
+    "toolsearch",
+    "tool_search",
 ];
 
 /// Why a tool's result is untrusted, or `None` when it is local.
@@ -141,6 +160,17 @@ mod tests {
             "edit",
             "run_shell_command",
             "todowrite",
+        ] {
+            assert_eq!(untrusted(local), None, "{local}");
+        }
+        // WW6R3-2 (Windows test w6 retest 3): the deferred-tool loaders and
+        // Claude Code 2.1.322's own task tools bring nothing in.
+        for local in [
+            "toolsearch",
+            "tool_search",
+            "taskcreate",
+            "tasklist",
+            "sendusermessage",
         ] {
             assert_eq!(untrusted(local), None, "{local}");
         }

@@ -674,6 +674,23 @@ mod daemon_tier {
         derm_tap::results::forget("c-1");
     }
 
+    /// Windows test w6 retest 3, WW6R3-2 (run on the box): Claude Code
+    /// 2.1.322's ToolSearch, its deferred-tool loader, marked the chat as
+    /// "unknown-tool", so under `--taint deny` the first fetch was denied as
+    /// a new host. Its result is the harness's own tool definitions.
+    #[test]
+    fn ww6r3_2_claude_codes_tool_search_does_not_taint_the_chat() {
+        let h = Home::new("dt-ts");
+        let s = serve("ts");
+        run_start(&s.taints, "deny");
+        let e = env(&h, &s.socket);
+        let r = go(&h, &e, "toolsearch", json!({"query": "select:WebFetch"}), 0);
+        assert_eq!(r.action, Action::Allow, "{}", r.reason);
+        assert!(!s.taints.is_tainted("c-1"));
+        let r = go(&h, &e, "webfetch", json!({"url": "https://a.test/"}), 1);
+        assert_eq!(r.action, Action::Allow, "{}", r.reason);
+    }
+
     /// Was `a_daemon_that_refuses_the_op_falls_back_to_the_file_with_deny`.
     /// Since fix pass 6 (note BE section 2.3, Tony's call of 15 Nov) a daemon
     /// that refuses `taint` is no answer, and with a chat token the file is
