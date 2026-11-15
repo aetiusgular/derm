@@ -267,6 +267,12 @@ fn members(v: &Value, key: &str) -> Result<Vec<(String, Value)>, String> {
     }
 }
 
+/// The first character of `path` that cmd.exe reads inside double quotes
+/// (`"` ends them; `%` and `!` expand), if any (Codex's Windows row).
+pub fn cmd_reads(path: &str) -> Option<char> {
+    path.chars().find(|c| matches!(c, '"' | '%' | '!'))
+}
+
 /// Where a step writes, for the steps that write a file.
 fn step_place(st: &Step) -> Option<&Place> {
     match st {
@@ -652,11 +658,12 @@ pub fn plugin_on(plugin: &str, home: &Path, cwd: &Path, env: &dyn Env) -> Option
                     installed.display()
                 ))
             }
-            Some("project" | "local") => {
-                if let Some(p) = r.get("projectPath").and_then(serde_json::Value::as_str) {
-                    projects.push(p.to_string());
-                }
-            }
+            Some("project" | "local") => projects.push(
+                r.get("projectPath")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("a project not named in the record")
+                    .to_string(),
+            ),
             _ => {}
         }
     }
@@ -2111,7 +2118,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             .as_deref()
             .is_some_and(|t| t.contains("\"{derm}\"")),
     ) {
-        if let Some(c) = d.chars().find(|c| matches!(c, '"' | '%' | '!')) {
+        if let Some(c) = cmd_reads(d) {
             return Err(format!(
                 "derm's path {d} holds {c}, which cmd.exe would read in the line {} runs; install derm where its path holds none of \" % !",
                 agent.name

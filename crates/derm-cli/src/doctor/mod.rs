@@ -755,6 +755,7 @@ fn codex_hooks_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
     let codex = env
         .var("CODEX_HOME")
         .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home.join(".codex"));
     let file = codex.join("hooks.json");
     let v = read_json_small(&file)?;

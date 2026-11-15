@@ -326,6 +326,16 @@ fn is_this_derm(path: &str) -> bool {
 pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize)> {
     let groups = v.pointer("/hooks/PreToolUse")?.as_array()?;
     groups.iter().enumerate().find_map(|(g, group)| {
+        // Every call: no matcher, "" or "*" (Codex 0.167.2
+        // `engine/matcher.rs:12-13`); a narrower one is not the gate.
+        let every = match group.get("matcher") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(m)) => m.is_empty() || m == "*",
+            _ => false,
+        };
+        if !every {
+            return None;
+        }
         group
             .get("hooks")?
             .as_array()?
@@ -654,20 +664,41 @@ fn codex(env: &Env, home: &Path) -> Registered {
                     hooks_file.display()
                 ));
             }
-            let key = format!("{}:pre_tool_use:{g}:{h}", hooks_file.display());
-            let trusted = doc
+            // Codex names the file by its canonical folder, `\\?\` dropped
+            // (`utils/home-dir/src/lib.rs:43-49`; fix pass 7's review).
+            let canonical = std::fs::canonicalize(&codex_home)
+                .map(|c| {
+                    crate::connect::gate::without_verbatim(&c.join("hooks.json").to_string_lossy())
+                })
+                .unwrap_or_else(|_| hooks_file.display().to_string());
+            let key = format!("{canonical}:pre_tool_use:{g}:{h}");
+            let state = doc
                 .get("hooks")
                 .and_then(|x| x.as_table_like())
                 .and_then(|x| x.get("state"))
                 .and_then(|x| x.as_table_like())
                 .and_then(|x| x.get(&key))
-                .and_then(|x| x.as_table_like())
-                .and_then(|x| x.get("trusted_hash"))
+                .and_then(|x| x.as_table_like());
+            if state
+                .and_then(|t| t.get("enabled"))
+                .and_then(|v| v.as_bool())
+                == Some(false)
+            {
+                return Registered::No(format!(
+                    "derm's gate in {} is turned off in /hooks ({})",
+                    hooks_file.display(),
+                    config.display()
+                ));
+            }
+            let trusted = state
+                .and_then(|t| t.get("trusted_hash"))
                 .and_then(|x| x.as_str())
                 .is_some_and(|x| x.starts_with("sha256:"));
             return if trusted {
+                // Codex runs it only while that hash is the entry's own
+                // (`discovery.rs:1000-1021`), which derm does not compute.
                 Registered::Yes(format!(
-                    "derm's gate in {} runs {shown} hook codex pre, and its PreToolUse hook is trusted in {}",
+                    "derm's gate in {} runs {shown} hook codex pre, and its PreToolUse hook has a trust record in {}; whether it still matches the entry is not checked here (Codex re-asks when it changes)",
                     hooks_file.display(),
                     config.display()
                 ))
@@ -1031,9 +1062,11 @@ mod tests {
         );
         // As Codex prints the file: its folder joined with `hooks.json`
         // (`\` on Windows), not the mixed separators of `hooks` above.
+        // Canonical, as Codex prints it (macOS's /var is /private/var).
+        let canon = std::fs::canonicalize(h.0.join(".codex")).unwrap();
         let key = format!(
             "{}:pre_tool_use:1:0",
-            h.0.join(".codex").join("hooks.json").display()
+            crate::connect::gate::without_verbatim(&canon.join("hooks.json").to_string_lossy())
         );
         put(
             &h.0.join(".codex/config.toml"),
@@ -1041,6 +1074,16 @@ mod tests {
             &format!("[hooks.state.'{key}']\ntrusted_hash = \"sha256:aa\"\n"),
         );
         assert!(matches!(check("codex", &env), Registered::Yes(_)));
+        // Turned off in /hooks: no.
+        put(
+            &h.0.join(".codex/config.toml"),
+            &format!("[hooks.state.'{key}']\ntrusted_hash = \"sha256:aa\"\nenabled = false\n"),
+        );
+        assert!(matches!(check("codex", &env), Registered::No(n) if n.contains("turned off")));
+        // Under a narrower matcher it is not the gate.
+        let narrow = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+            {"type": "command", "command": format!("\"{}\" hook codex pre", me.display())}]}]}});
+        assert!(codex_hooks_gate(&narrow).is_none());
         put(&hooks, &entry("\"/home/u/bin/derm\" hook codex pre".into()));
         assert!(
             matches!(check("codex", &env), Registered::YesNote(n) if n.contains("not this derm"))

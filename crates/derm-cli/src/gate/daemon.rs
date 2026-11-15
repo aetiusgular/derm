@@ -224,7 +224,7 @@ pub fn chat_token(env: &Env, cwd: &Path) -> Option<String> {
     if !file.is_absolute() || inside_folder(file, cwd) {
         return None;
     }
-    if file.file_name().and_then(|n| n.to_str()) == Some("daemon.token") {
+    if is_daemon_token_name(file) {
         return None;
     }
     #[cfg(unix)]
@@ -282,9 +282,27 @@ pub fn chat_token(env: &Env, cwd: &Path) -> Option<String> {
 /// run`'s, so its taint is the daemon's or the fail-closed state, never the
 /// light tier's file the agent can write.
 pub fn token_named(env: &Env) -> bool {
+    // Present at all, an empty value included (fix pass 7's review): a
+    // project's settings `env` that sets it to "" must not send the chat
+    // back to the light file.
     ["DERM_CHAT_TOKEN", "DERM_CHAT_TOKEN_FILE"]
         .iter()
-        .any(|k| env.get(k).is_some_and(|v| !v.trim().is_empty()))
+        .any(|k| env.raw(k).is_some())
+}
+
+/// Whether `file` is the daemon's own token by its name (rule S3, never a
+/// chat token), as a case-insensitive file system reads names (Windows,
+/// macOS's APFS): case folded, a trailing dot or space dropped (Win32 drops
+/// them), and the name the file really has, a short 8.3 name expanded, by
+/// its canonical path (fix pass 7's review).
+pub fn is_daemon_token_name(file: &Path) -> bool {
+    let named = |p: &Path| {
+        p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            n.trim_end_matches(['.', ' '])
+                .eq_ignore_ascii_case("daemon.token")
+        })
+    };
+    named(file) || std::fs::canonicalize(file).is_ok_and(|c| named(&c))
 }
 
 /// What a `stat` of the marker gives (for [`vm_marker`]'s tests).

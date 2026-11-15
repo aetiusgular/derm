@@ -3129,3 +3129,22 @@ fn fp7_a_relative_xdg_config_home_is_refused_for_an_xdg_row() {
     assert!(r.err.contains("not an absolute path"), "{}", r.err);
     assert!(!home.join(".config/opencode/opencode.json").exists());
 }
+
+/// Fix pass 7's review: each character cmd.exe reads inside double quotes
+/// is refused in derm's path for Codex's Windows row.
+#[test]
+fn fp7_cmd_reads_quote_percent_and_bang() {
+    for (p, c) in [
+        (r#"C:\a"b\derm.exe"#, '"'),
+        (r"C:\a%PATH%\derm.exe", '%'),
+        (r"C:\a!b\derm.exe", '!'),
+    ] {
+        assert_eq!(gate::cmd_reads(p), Some(c), "{p}");
+    }
+    assert_eq!(gate::cmd_reads(r"C:\Users\u\.local\bin\derm.exe"), None);
+    assert_eq!(
+        gate::cmd_reads(r"C:\Program Files (x86)\a&b\derm.exe"),
+        None,
+        "inside quotes"
+    );
+}

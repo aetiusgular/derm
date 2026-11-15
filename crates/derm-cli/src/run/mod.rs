@@ -232,8 +232,6 @@ fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String
     }
 }
 
-/// The derm binary running now, by its real path; `None` when it cannot be
-/// read (BW6R3-2, FP4-R1).
 /// derm as the gate derm run registers names it (fix pass 7, FP6-R3): by
 /// Homebrew's `opt` link when Homebrew installed it, as `derm connect`
 /// names it (`connect::gate::self_path`, MW5B-6: `brew upgrade` removes the
@@ -246,6 +244,8 @@ fn gate_exe() -> Option<String> {
     derm_exe()
 }
 
+/// The derm binary running now, by its real path; `None` when it cannot be
+/// read (BW6R3-2, FP4-R1).
 fn derm_exe() -> Option<String> {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)

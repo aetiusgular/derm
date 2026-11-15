@@ -1013,6 +1013,37 @@ fn a_named_token_is_named_whether_or_not_it_reads() {
         "/gone/chat.token"
     )])));
     assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN", "x")])));
-    assert!(!token_named(&Env::of(&[("DERM_CHAT_TOKEN_FILE", " ")])));
+    // Fix pass 7's review: an empty value set by a project's `env` is named.
+    assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN_FILE", " ")])));
+    assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN", "")])));
     assert!(!token_named(&Env::of(&[])));
+}
+
+/// Fix pass 7's review: the daemon's own token is refused by its name as a
+/// case-insensitive file system reads it (Windows, APFS), a trailing dot or
+/// space dropped, and by the name its canonical path gives.
+#[test]
+fn the_daemon_token_is_refused_by_any_spelling_of_its_name() {
+    for n in [
+        "daemon.token",
+        "DAEMON.TOKEN",
+        "Daemon.Token.",
+        "daemon.token ",
+        "daemon.token. .",
+    ] {
+        assert!(is_daemon_token_name(Path::new(&format!("/x/{n}"))), "{n}");
+    }
+    for n in ["chat.token", "daemon.tokens", "my-daemon.token"] {
+        assert!(!is_daemon_token_name(Path::new(&format!("/x/{n}"))), "{n}");
+    }
+    #[cfg(unix)]
+    {
+        let d = std::env::temp_dir().join(format!("derm-dtn-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("daemon.token"), "x").unwrap();
+        let _ = std::fs::remove_file(d.join("other"));
+        std::os::unix::fs::symlink(d.join("daemon.token"), d.join("other")).unwrap();
+        assert!(is_daemon_token_name(&d.join("other")), "its real name");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
