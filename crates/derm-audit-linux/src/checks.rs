@@ -212,6 +212,7 @@ mod tests {
             syscall: "openat",
             denied: false,
             cwd: None,
+            dev: None,
             what,
         }
     }

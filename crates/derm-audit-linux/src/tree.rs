@@ -350,6 +350,7 @@ mod tests {
             syscall: "execve",
             denied: false,
             cwd: None,
+            dev: None,
             what,
         }
     }

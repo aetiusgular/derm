@@ -30,6 +30,11 @@ pub struct Action {
     /// The syscall failed with EPERM, EACCES or EROFS.
     pub denied: bool,
     pub cwd: Option<String>,
+    /// The device of the file written, as the PATH record prints it
+    /// (`dev=fe:00`: the inode's `i_sb->s_dev`, `MAJOR:MINOR` in hex,
+    /// kernel `audit_log_name`): for a write, create or truncate the item
+    /// written, for a link the one made. `None` where the record has none.
+    pub dev: Option<String>,
     pub what: What,
 }
 
@@ -103,10 +108,12 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
         syscall: name,
         denied,
         cwd: cwd.clone(),
+        dev: None,
         what,
     };
     let kept = success || denied;
     let paths = Paths::new(event, sys, cwd.as_deref());
+    let mut dev: Option<String> = None;
     let what = match call {
         Call::Exec => {
             if !success {
@@ -132,6 +139,7 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
             if sys.get("key") == Some("derm_sens") && !created && call != Call::Creat {
                 What::Open { path }
             } else {
+                dev = paths.target_dev();
                 What::Write {
                     path,
                     created,
@@ -143,6 +151,7 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
             if !kept {
                 return None;
             }
+            dev = paths.target_dev();
             What::Truncate {
                 path: paths.target()?.0,
             }
@@ -164,12 +173,21 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
                 path: paths.of("DELETE")?,
             }
         }
-        Call::Link | Call::Symlink => {
+        Call::Link => {
             if !kept {
                 return None;
             }
+            dev = paths.dev_of("CREATE");
             let to = paths.of("CREATE")?;
             let from = paths.of("NORMAL").unwrap_or_else(|| "?".into());
+            What::Link { from, to }
+        }
+        Call::Symlink => {
+            if !kept {
+                return None;
+            }
+            dev = paths.dev_of("CREATE");
+            let (from, to) = paths.symlink()?;
             What::Link { from, to }
         }
         Call::Connect | Call::SocketCall => {
@@ -184,7 +202,9 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
             What::Connect { family, addr, port }
         }
     };
-    Some(base(what))
+    let mut action = base(what);
+    action.dev = dev;
+    Some(action)
 }
 
 /// EXECVE `argc` and `a0`..: each quoted, or hex when it holds a space or a
@@ -248,6 +268,9 @@ pub fn sockaddr(hex: &str) -> Option<(Family, String, u16)> {
 struct Paths {
     /// (nametype, name) in item order.
     items: Vec<(String, String)>,
+    /// Each item's `dev=`, in the same order (an item the kernel never
+    /// looked up, nametype `UNKNOWN`, has none).
+    devs: Vec<Option<String>>,
     parents: Vec<String>,
     cwd: Option<String>,
     /// The call named its paths relative to the working folder (a0 is
@@ -257,18 +280,23 @@ struct Paths {
 
 impl Paths {
     fn new(event: &AuditEvent, sys: &Record, cwd: Option<&str>) -> Paths {
-        let mut items: Vec<(usize, String, String)> = event
+        let mut items: Vec<(usize, String, String, Option<String>)> = event
             .all("PATH")
             .filter_map(|r| {
                 let item: usize = r.get("item")?.parse().ok()?;
-                Some((item, r.get("nametype")?.to_string(), r.text("name")?))
+                Some((
+                    item,
+                    r.get("nametype")?.to_string(),
+                    r.text("name")?,
+                    r.get("dev").map(str::to_string),
+                ))
             })
             .collect();
-        items.sort_by_key(|(i, _, _)| *i);
+        items.sort_by_key(|(i, _, _, _)| *i);
         let parents = items
             .iter()
-            .filter(|(_, t, _)| t == "PARENT")
-            .map(|(_, _, n)| n.clone())
+            .filter(|(_, t, _, _)| t == "PARENT")
+            .map(|(_, _, n, _)| n.clone())
             .collect();
         let syscall_name = sys
             .get("arch")
@@ -288,7 +316,8 @@ impl Paths {
             .iter()
             .all(|a| sys.get(a).is_some_and(|v| AT_FDCWD.contains(&v)));
         Paths {
-            items: items.into_iter().map(|(_, t, n)| (t, n)).collect(),
+            devs: items.iter().map(|(_, _, _, d)| d.clone()).collect(),
+            items: items.into_iter().map(|(_, t, n, _)| (t, n)).collect(),
             parents,
             cwd: cwd.map(str::to_string),
             from_cwd,
@@ -306,6 +335,57 @@ impl Paths {
             .enumerate()
             .find(|(_, (t, _))| t == "NORMAL")?;
         Some((self.resolve(idx), false))
+    }
+
+    /// The device of the item [`Paths::target`] names.
+    fn target_dev(&self) -> Option<String> {
+        self.dev_of("CREATE").or_else(|| self.dev_of("NORMAL"))
+    }
+
+    /// The device of the first item of a nametype.
+    fn dev_of(&self, nametype: &str) -> Option<String> {
+        let idx = self.items.iter().position(|(t, _)| t == nametype)?;
+        self.devs.get(idx).cloned().flatten()
+    }
+
+    /// A symlink's target text and the link it made (box test w6 retest 2,
+    /// BW6R2-1). `symlink(2)` takes the target as a name the kernel never
+    /// looks up: it is an item of its own (nametype `UNKNOWN`), and the link
+    /// is the `CREATE` item. But when the kernel files the new entry
+    /// (`__audit_inode_child`, kernel/auditsc.c:2413-2426 at v7.0) it takes
+    /// any `UNKNOWN` name whose last part is the entry's name as the child,
+    /// so the `CREATE` item then prints the target (`audit_log_name`,
+    /// auditsc.c:1511-1515) and no `UNKNOWN` item is left. On Linux 7.0 the
+    /// target is read first (`CLASS(filename, old)`, fs/namei.c:5664-5665),
+    /// so any target with the link's own name matches (`/proc/self/fd` for
+    /// bubblewrap's `/dev/fd`, `~/x/pre-commit` for `.git/hooks/pre-commit`);
+    /// on 6.18 the link's name is read first and only a target whose
+    /// folder has the link folder's length matches (recorded, the fixture
+    /// `links_6_18.enriched.audit`). Then the link is the `PARENT` item's
+    /// folder and the entry's name, which `CREATE`'s last part is.
+    fn symlink(&self) -> Option<(String, String)> {
+        let create = self.items.iter().position(|(t, _)| t == "CREATE")?;
+        if let Some(u) = self.items.iter().position(|(t, _)| t == "UNKNOWN") {
+            return Some((self.items[u].1.clone(), self.resolve(create)));
+        }
+        let target = self.items[create].1.clone();
+        let leaf = target
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|l| !l.is_empty())?;
+        let to = match self.parents.first() {
+            Some(dir) if dir.starts_with('/') => join(dir, leaf),
+            Some(dir) => {
+                let rel = join(dir, leaf);
+                match self.cwd.as_deref().filter(|c| c.starts_with('/')) {
+                    Some(cwd) if self.from_cwd => join(cwd, &rel),
+                    _ => format!("?{rel}"),
+                }
+            }
+            None => format!("?{leaf}"),
+        };
+        Some((target, to))
     }
 
     /// The first item of a nametype, resolved.
