@@ -1055,7 +1055,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 let (gate, own) = if h.id == "other" {
                     (
                         format!("a derm gate that {command} runs (derm registered none for it)"),
-                        format!("{command}'s"),
+                        "the harness's".to_string(),
                     )
                 } else {
                     (format!("{}'s gate", h.id), format!("{}'s", h.id))

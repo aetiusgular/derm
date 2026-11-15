@@ -219,7 +219,18 @@ pub fn main(argv: &[String]) -> u8 {
 /// call taint flags whatever `--taint` said (box test w6 retest 2, BW6R2-5;
 /// run: a push after a fetch under `--taint record` was denied, "the chat's
 /// verdict is deny, default"). `None` under any other boundary.
-fn taint_not_reached(boundary: Boundary, linux: bool, verdict: Option<&str>) -> Option<String> {
+///
+/// Under srt there is no note with `--no-daemon` (no route, and every gated
+/// call is denied, which another note says), and for a program with no
+/// preset it speaks of a derm gate the program may run (fix pass 3's
+/// review, FP3-R6).
+fn taint_not_reached(
+    boundary: Boundary,
+    linux: bool,
+    verdict: Option<&str>,
+    harness: &str,
+    no_daemon: bool,
+) -> Option<String> {
     let not_applied = match verdict {
         Some(v) => format!("--taint {v} is not applied: "),
         None => String::new(),
@@ -228,9 +239,16 @@ fn taint_not_reached(boundary: Boundary, linux: bool, verdict: Option<&str>) -> 
         Boundary::Sbx => Some(format!(
             "derm run: taint under sbx: the gate in the VM cannot reach this chat's taint state, so {not_applied}a Rust gate there keeps taint in the VM's own file and denies any call it flags, and the sbx kit's Claude Code hook has no taint"
         )),
-        Boundary::Srt if linux => Some(format!(
-            "derm run: taint under srt on Linux: the gate's route out of srt carries records only, so {not_applied}the gate keeps this chat's taint in srt's own ~/.derm (a tmpfs that goes with the sandbox) and denies any call it flags"
-        )),
+        Boundary::Srt if linux && !no_daemon => {
+            let gate = if harness == "other" {
+                "a derm gate the program runs"
+            } else {
+                "the gate"
+            };
+            Some(format!(
+                "derm run: taint under srt on Linux: the gate's route out of srt carries records only, so {not_applied}{gate} keeps this chat's taint in srt's own ~/.derm (a tmpfs that goes with the sandbox) and denies any call it flags"
+            ))
+        }
         _ => None,
     }
 }
@@ -385,29 +403,51 @@ impl RunPoster {
         }
     }
 
+    /// The token, from a lock a panic never leaves unusable (FP3-R5).
+    fn token(&self) -> std::sync::MutexGuard<'_, String> {
+        self.token.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// One record. The lock is held only to read or change the token, not
+    /// across a post (fix pass 3's review, FP3-R5); a refusal with a token
+    /// another thread has replaced since is tried once with the new one, and
+    /// a token file the daemon has not rewritten yet is read again once,
+    /// 250 ms later.
     fn post(&self, e: &Event) -> Result<(), String> {
-        let mut token = self
-            .token
-            .lock()
-            .map_err(|_| "the token lock is poisoned")?;
+        let used = self.token().clone();
         let d = Daemon {
             socket: self.socket.clone(),
-            token: token.clone(),
+            token: used.clone(),
         };
-        match d.post(e) {
-            Err(err) if err.contains("bad token") => {
-                let mut again = e.clone();
-                if let Some(o) = again.detail.as_object_mut() {
-                    o.insert("daemonRestarted".into(), json!(true));
-                }
-                let new = d
-                    .post_with_new_token(&again)
-                    .map_err(|e2| format!("{err}; after reading the token again: {e2}"))?;
-                *token = new;
-                Ok(())
+        let err = match d.post(e) {
+            Err(err) if err.contains("bad token") => err,
+            other => return other,
+        };
+        let now = self.token().clone();
+        if now != used {
+            return Daemon {
+                socket: self.socket.clone(),
+                token: now,
+            }
+            .post(e);
+        }
+        let mut again = e.clone();
+        if let Some(o) = again.detail.as_object_mut() {
+            o.insert("daemonRestarted".into(), json!(true));
+        }
+        let new = match d.post_with_new_token(&again) {
+            Err(e2) if e2.contains("has not changed") => {
+                std::thread::sleep(Duration::from_millis(250));
+                d.post_with_new_token(&again)
             }
             other => other,
         }
+        .map_err(|e2| format!("{err}; after reading the token again: {e2}"))?;
+        let mut held = self.token();
+        if *held == used {
+            *held = new;
+        }
+        Ok(())
     }
 }
 
@@ -1533,6 +1573,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         a.boundary,
         cfg!(target_os = "linux"),
         a.taint.map(|v| v.as_str()),
+        a.harness.id,
+        a.no_daemon,
     ) {
         p.notes.push(n);
     }
@@ -1704,7 +1746,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
                     "taint: {} (--taint; not applied under sbx, see the note above)",
                     v.as_str()
                 );
-            } else if a.boundary == Boundary::Srt && cfg!(target_os = "linux") {
+            } else if a.boundary == Boundary::Srt && cfg!(target_os = "linux") && !a.no_daemon {
                 println!(
                     "taint: {} (--taint; not applied under srt on Linux, see the note above)",
                     v.as_str()
@@ -3253,6 +3295,26 @@ mod end_to_end {
         let _ = std::fs::remove_file(fake.dir.join("restarted"));
         std::fs::write(fake.dir.join("restarted"), "").unwrap();
         assert!(p2.post(&rec(4)).is_err());
+        // FP3-R5: a daemon that refuses before it has rewritten its token
+        // file; the file is read again once, 250 ms later.
+        std::fs::write(
+            fake.dir.join("daemon.token"),
+            format!("{}\n", fake::DAEMON_TOKEN),
+        )
+        .unwrap();
+        let dir = fake.dir.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            std::fs::write(
+                dir.join("daemon.token"),
+                format!("{}\n", fake::RESTARTED_TOKEN),
+            )
+            .unwrap();
+        });
+        let p3 = RunPoster::new(&d);
+        p3.post(&rec(5)).unwrap();
+        writer.join().unwrap();
+        assert_eq!(*p3.token(), fake::RESTARTED_TOKEN);
     }
 
     #[cfg(unix)]
@@ -4116,12 +4178,12 @@ mod end_to_end {
     /// and the dry run say the verdict is not applied, and nowhere else.
     #[test]
     fn under_sbx_the_start_says_taint_is_not_applied() {
-        let n = taint_not_reached(Boundary::Sbx, true, Some("record")).unwrap();
+        let n = taint_not_reached(Boundary::Sbx, true, Some("record"), "pi", false).unwrap();
         assert!(n.contains("--taint record is not applied"), "{n}");
         assert!(n.contains("denies any call it flags"), "{n}");
-        assert!(taint_not_reached(Boundary::Sbx, false, None).is_some());
-        assert!(taint_not_reached(Boundary::Srt, false, Some("record")).is_none());
-        assert!(taint_not_reached(Boundary::None, true, Some("deny")).is_none());
+        assert!(taint_not_reached(Boundary::Sbx, false, None, "pi", false).is_some());
+        assert!(taint_not_reached(Boundary::Srt, false, Some("record"), "pi", false).is_none());
+        assert!(taint_not_reached(Boundary::None, true, Some("deny"), "pi", false).is_none());
     }
 
     /// Box test w6 retest 2, BW6R2-5: under srt on Linux the gate's taint is
@@ -4131,11 +4193,17 @@ mod end_to_end {
     /// start said nothing of it.
     #[test]
     fn bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied() {
-        let n = taint_not_reached(Boundary::Srt, true, Some("record")).unwrap();
+        let n =
+            taint_not_reached(Boundary::Srt, true, Some("record"), "claude-code", false).unwrap();
         assert!(n.contains("--taint record is not applied"), "{n}");
         assert!(n.contains("srt's own ~/.derm"), "{n}");
         assert!(n.contains("denies any call it flags"), "{n}");
-        assert!(taint_not_reached(Boundary::Srt, true, None).is_some());
+        assert!(taint_not_reached(Boundary::Srt, true, None, "claude-code", false).is_some());
+        // FP3-R6: no route with --no-daemon, and no gate of derm's in an
+        // unknown program.
+        assert!(taint_not_reached(Boundary::Srt, true, None, "claude-code", true).is_none());
+        let o = taint_not_reached(Boundary::Srt, true, None, "other", false).unwrap();
+        assert!(o.contains("a derm gate the program runs"), "{o}");
     }
 
     #[cfg(unix)]
