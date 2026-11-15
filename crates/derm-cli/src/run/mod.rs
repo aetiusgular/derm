@@ -4399,11 +4399,23 @@ mod end_to_end {
     /// Learn, "Win32_Process class"). The reader itself is left out.
     #[cfg(windows)]
     fn ps_running_with(marker: &str) -> Vec<String> {
-        let script = "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId): $($_.CommandLine)\" }";
+        // `Stop`: a refusal ends the script with a non-zero exit; progress
+        // off, which Windows PowerShell 5.1 can write to a redirected stderr
+        // (review FP5-R3).
+        let script = "$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId): $($_.CommandLine)\" }";
         let out = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .output()
             .expect("powershell runs");
+        // WW6R2-1 (3): under the SAFER token WMI refuses Win32_Process
+        // ("Access denied", HRESULT 0x80041003, run on the box), and an empty
+        // answer read as "nothing running", which every no-process-left check
+        // here would pass. A reader that cannot read says so.
+        assert!(
+            out.status.success(),
+            "Win32_Process could not be read: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         let me = format!("{}:", std::process::id());
         String::from_utf8_lossy(&out.stdout)
             .lines()

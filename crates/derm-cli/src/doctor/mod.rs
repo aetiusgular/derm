@@ -217,6 +217,10 @@ pub fn version_token(s: &str) -> Option<String> {
 pub struct Probes {
     pub version: fn(&Path) -> String,
     pub node: Option<PathBuf>,
+    /// The program the plugins' hooks files start their launcher with,
+    /// `/bin/sh` by its absolute path (contracts/hook-dialects.md 9.1);
+    /// a field so a test can name one that is not there, as on Windows.
+    pub sh: PathBuf,
 }
 
 impl Probes {
@@ -224,6 +228,7 @@ impl Probes {
         Probes {
             version: probe_version,
             node: find_on_path("node", &std::env::var("PATH").unwrap_or_default()),
+            sh: PathBuf::from("/bin/sh"),
         }
     }
 }
@@ -1097,7 +1102,7 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             // As the agent runs it: /bin/sh by its absolute path on the
             // launcher, which runs `derm hook <agent> <event>` from derm's
             // install folders (never PATH).
-            let mut c = Command::new("/bin/sh");
+            let mut c = Command::new(&probes.sh);
             c.arg(&hook).arg(id).arg(event);
             c
         } else {
@@ -1128,9 +1133,16 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
                 }
             }
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("{}: {e}", if launcher { "/bin/sh" } else { "node" }))?;
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            // Only a program that is not there (Windows' os errors 2 and 3 map to
+            // NotFound): another error (EMFILE, a failed chdir into doctor's
+            // own folder) says nothing about the agent (review FP5-R2).
+            Err(e) if launcher && e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(launcher_did_not_start(id, &hook, &probes.sh, &e))
+            }
+            Err(e) => return Err(format!("node: {e}")),
+        };
         if let Some(mut stdin) = child.stdin.take() {
             let _ = std::io::Write::write_all(&mut stdin, input.to_string().as_bytes());
         }
@@ -1197,6 +1209,74 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     result.unwrap_or_else(|why| json!({"state": "not run", "why": why}))
+}
+
+/// The launcher could not start (WW6R4-1, Windows CI run 43687193459:
+/// "/bin/sh: The system cannot find the path specified. (os error 3)"; on
+/// Windows every plugin's hooks file starts `/bin/sh`, which Windows does
+/// not have, WW5B-2). The agent starts the same program the same way, so it
+/// cannot start it either, and what happens to the call is the agent's fail
+/// mode, read from its preset row: Claude Code's plugin hook is
+/// `onFailure: block`, so every call is blocked (`fail-closed`); Codex and
+/// Gemini let the call through (`fail`; case 70). Never "not run": the gate
+/// was run as the agent runs it, and this is its outcome.
+fn launcher_did_not_start(id: &str, hook: &Path, sh: &Path, e: &std::io::Error) -> Value {
+    let mode = find_row(id)
+        .and_then(|r| {
+            r.pointer("/coverage/failMode")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    // Review FP5-R1: the row says what the agent can do; whether this
+    // install blocks is the installed hooks file's own word. Claude Code
+    // blocks on a hook that could not start only with `onFailure: "block"`
+    // on the PreToolUse entry that runs the launcher (2.1.322's schema:
+    // "'block': the failure counts as exit code 2").
+    let blocks = mode.starts_with("blocks") && (id != "claude-code" || blocks_on_failure(hook));
+    let windows = if cfg!(windows) {
+        "; on Windows the plugin's hooks file starts /bin/sh, which Windows does not have (lane 5bF's Windows half, WW5B-2)"
+    } else {
+        ""
+    };
+    let outcome = if blocks {
+        "the agent cannot start it either, and blocks every call"
+    } else {
+        "the agent cannot start it either, and lets every call through (rules case 70)"
+    };
+    json!({
+        "state": if blocks { "fail-closed" } else { "fail" },
+        "hook": hook,
+        "saw": format!("{} did not start: {e}{windows}; {outcome}", sh.display()),
+    })
+}
+
+/// Whether the Claude Code hooks file beside `hook` (`<copy>/hooks/
+/// hooks.json`) has a PreToolUse entry that runs the launcher with
+/// `onFailure: "block"`. Anything unread is `false`: the report then says
+/// the call runs, which is the agent's default (`continue`).
+fn blocks_on_failure(hook: &Path) -> bool {
+    let Some(v) = hook
+        .parent()
+        .and_then(|d| read_json_small(&d.join("hooks.json")))
+    else {
+        return false;
+    };
+    v.pointer("/hooks/PreToolUse")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .any(|h| {
+            h.get("onFailure").and_then(Value::as_str) == Some("block")
+                && h.get("args").and_then(Value::as_array).is_some_and(|a| {
+                    a.iter().any(|x| {
+                        x.as_str()
+                            .is_some_and(|x| x.ends_with("hooks/derm-gate.sh"))
+                    })
+                })
+        })
 }
 
 pub fn render(r: &Value) -> String {

@@ -752,6 +752,15 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
             }
         }
     }
+    // WW6R2-1 (Windows test w6 retest 2, settled in fix pass 5): a junction
+    // that is already there is refused before `create_dir_all`, which on it
+    // checks `is_dir()` through the junction (std 1.97.0 `fs.rs:3427`); where
+    // the system will not traverse it (RedirectionGuard, error 448, seen under
+    // the SAFER token) that check is false and std returns the create's
+    // "already exists" (183), so the reason was lost (the call still failed).
+    if is_reparse_point(dir) {
+        return Err(link());
+    }
     std::fs::create_dir_all(dir)?;
     if is_reparse_point(dir) {
         return Err(link());
@@ -1061,10 +1070,17 @@ mod tests {
             .status()
             .unwrap();
         assert!(ok.success());
+        // Made through the folder itself: where the system will not traverse
+        // a junction this token made (RedirectionGuard, error 448, under the
+        // SAFER token; WW6R2-1), a create through it fails before any derm
+        // code runs. The open through the junction is then refused by the
+        // system (448), or opens and is not plain; either refuses the path.
+        std::fs::create_dir_all(d.join("x")).unwrap();
         let inside = j.join("x");
-        std::fs::create_dir_all(&inside).unwrap();
-        let h = open_plain(&inside, READ_CONTROL, true).unwrap();
-        assert!(!path_is_plain(sys::raw(&h), &inside).unwrap());
+        match open_plain(&inside, READ_CONTROL, true) {
+            Ok(h) => assert!(!path_is_plain(sys::raw(&h), &inside).unwrap()),
+            Err(e) => assert_eq!(e.raw_os_error(), Some(448), "{e}"),
+        }
         assert!(
             open_plain(&j, READ_CONTROL, true).is_err(),
             "the junction itself"

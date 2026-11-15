@@ -53,10 +53,16 @@ fn env(h: &Home) -> Env {
     }
 }
 
+/// A path printed by this OS, its separators as `/` (Windows prints `\\`).
+fn slashed(text: &str) -> String {
+    text.replace('\\', "/")
+}
+
 fn probes() -> Probes {
     Probes {
         version: probe_version,
         node: find_on_path("node", &std::env::var("PATH").unwrap_or_default()),
+        sh: PathBuf::from("/bin/sh"),
     }
 }
 
@@ -248,7 +254,7 @@ fn the_installed_claude_code_gate_denies_a_denied_call() {
     std::fs::remove_dir_all(&dest).unwrap();
     // The launcher ran `derm hook claude-code pre` from ~/.local/bin.
     assert!(
-        r["hook"].as_str().unwrap().ends_with("hooks/derm-gate.sh"),
+        Path::new(r["hook"].as_str().unwrap()).ends_with("hooks/derm-gate.sh"),
         "{r}"
     );
     assert_eq!(
@@ -546,10 +552,7 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
     let r = run_fixture("codex", &env(&h), &probes());
     assert_eq!(r["state"], "pass", "{r}");
     assert!(
-        r["hook"]
-            .as_str()
-            .unwrap()
-            .ends_with("0.10.0/hooks/derm-gate.sh"),
+        Path::new(r["hook"].as_str().unwrap()).ends_with("0.10.0/hooks/derm-gate.sh"),
         "{r}"
     );
 }
@@ -570,13 +573,14 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     assert_eq!(r["gateRun"]["state"], "not run", "{r}");
     let why = r["gateRun"]["why"].as_str().unwrap();
     assert!(why.contains("--run-gate"), "{why}");
-    assert!(why.contains("0.1.3/hooks/derm-gate.sh"), "{why}");
+    // A path as this OS prints it: `\\` between parts on Windows.
+    assert!(slashed(why).contains("0.1.3/hooks/derm-gate.sh"), "{why}");
     assert!(why.contains("/bin/sh, which runs derm hook"), "{why}");
     assert!(render(&r).contains("--run-gate"));
     let r = doctor(&row, &env(&h), &probes(), false, true);
     assert_eq!(r["gateRun"]["state"], "pass", "{r}");
     assert!(
-        render(&r).contains("0.1.3/hooks/derm-gate.sh"),
+        slashed(&render(&r)).contains("0.1.3/hooks/derm-gate.sh"),
         "{}",
         render(&r)
     );
@@ -876,4 +880,50 @@ fn the_report_names_the_secrets_file_and_the_ca() {
         "{problems:?}"
     );
     let _ = std::fs::remove_dir_all(&h);
+}
+
+/// Windows CI (run 43687193459): the plugins' hooks files start `/bin/sh`,
+/// which Windows does not have, and doctor said "not run" for a gate it had
+/// run as the agent runs it. The agent cannot start it either: Claude Code's
+/// plugin hook blocks every call (`onFailure: block`), Codex lets every call
+/// through (case 70). A `/bin/sh` that is not there stands in for Windows.
+#[test]
+fn a_launcher_that_cannot_start_is_the_agents_own_outcome() {
+    let h = home("no-sh");
+    derm_at_home(&h);
+    let cc = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
+    let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
+    copy_dir(
+        &repo().join("packages/derm-codex-plugin"),
+        &cache.join("0.1.3"),
+    );
+    let mut p = probes();
+    p.sh = h.root.join("no-such-sh");
+    let r = run_fixture("claude-code", &env(&h), &p);
+    assert_eq!(r["state"], "fail-closed", "{r}");
+    assert!(
+        r["saw"].as_str().unwrap().contains("blocks every call"),
+        "{r}"
+    );
+    let r = run_fixture("codex", &env(&h), &p);
+    assert_eq!(r["state"], "fail", "{r}");
+    assert!(
+        r["saw"]
+            .as_str()
+            .unwrap()
+            .contains("lets every call through"),
+        "{r}"
+    );
+    // Review FP5-R1: a copy whose hooks file does not block on a failure
+    // lets the call run, whatever the row says Claude Code can do.
+    let hooks = cc.join("hooks/hooks.json");
+    let text = std::fs::read_to_string(&hooks).unwrap();
+    std::fs::write(
+        &hooks,
+        text.replace("\"onFailure\": \"block\"", "\"onFailure\": \"continue\""),
+    )
+    .unwrap();
+    let r = run_fixture("claude-code", &env(&h), &p);
+    assert_eq!(r["state"], "fail", "{r}");
+    std::fs::remove_dir_all(&cc).unwrap();
 }
