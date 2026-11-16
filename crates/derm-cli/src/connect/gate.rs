@@ -267,22 +267,36 @@ fn members(v: &Value, key: &str) -> Result<Vec<(String, Value)>, String> {
     }
 }
 
-/// The warning for Cursor's Windows row when `MSYSTEM` is set in derm's own
-/// environment: cursor-agent then runs its PowerShell-built hook line with
-/// bash (Cursor staff reproduced it on 12 Aug 2026, forum.cursor.com/t/168129;
-/// the variable alone triggers it), so derm's gate fails and, failing closed,
-/// blocks every call.
-pub fn cursor_msystem_warning(
+/// The warning for Cursor's Windows row when derm's own environment looks
+/// like Git Bash's: cursor-agent then runs its PowerShell-built hook line
+/// with bash, so derm's gate fails and, failing closed, blocks every call.
+/// `MSYSTEM` alone triggers it (Cursor staff reproduced it on 12 Aug 2026:
+/// "`MSYSTEM` makes the CLI pick bash", forum.cursor.com/t/168129; hooks in
+/// `.cursor/hooks.json` too, t/170945); a `SHELL` naming Git's bash is
+/// reported to as well (leeguooooo/AgentParty#1123; I).
+pub fn cursor_git_bash_warning(
     agent: &str,
     os: Option<&str>,
     msystem: Option<&str>,
+    shell: Option<&str>,
 ) -> Option<String> {
-    (agent == "cursor" && os == Some("windows") && msystem.is_some_and(|m| !m.is_empty())).then(|| {
-        format!(
-            "MSYSTEM={} is set here (Git Bash or MSYS2); a cursor-agent started with it runs its hooks with bash, where derm's PowerShell line fails, so every call is blocked. Start Cursor from a terminal without MSYSTEM (PowerShell, not Git Bash)",
-            msystem.unwrap_or_default()
-        )
-    })
+    if agent != "cursor" || os != Some("windows") {
+        return None;
+    }
+    let marker = match (msystem.filter(|m| !m.is_empty()), shell) {
+        (Some(m), _) => format!("MSYSTEM={m}"),
+        (None, Some(s))
+            if s.to_ascii_lowercase()
+                .replace('\\', "/")
+                .ends_with("/bash.exe") =>
+        {
+            format!("SHELL={s}")
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "{marker} is set here (Git Bash or MSYS2); a cursor-agent started with it runs its hooks with bash, where derm's PowerShell line fails, so every call is blocked. Start Cursor from a terminal without MSYSTEM or a bash SHELL (PowerShell, not Git Bash)"
+    ))
 }
 
 /// The first character of `path` that cmd.exe reads inside double quotes
@@ -2759,10 +2773,11 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     }
     // Fix pass 9 (note BG section 1): Cursor's own bug runs its hooks with
     // bash when Git Bash's MSYSTEM is set, and every call then blocks.
-    if let Some(w) = cursor_msystem_warning(
+    if let Some(w) = cursor_git_bash_warning(
         &agent.agent,
         agent.os.as_deref(),
         ctx.env.var("MSYSTEM").as_deref(),
+        ctx.env.var("SHELL").as_deref(),
     ) {
         ctx.out.push_str(&format!("warning: {w}\n"));
     }

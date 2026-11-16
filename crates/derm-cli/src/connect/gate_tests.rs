@@ -470,9 +470,19 @@ fn fp9_cursor_windows_row_writes_the_powershell_line_and_warns_on_msystem() {
         );
         assert!(e.contains(&serde_json::to_string(&want).unwrap()), "{e}");
     }
-    assert!(gate::cursor_msystem_warning("cursor", Some("windows"), None).is_none());
-    assert!(gate::cursor_msystem_warning("cursor", None, Some("MINGW64")).is_none());
-    assert!(gate::cursor_msystem_warning("codex", Some("windows"), Some("MINGW64")).is_none());
+    let w = gate::cursor_git_bash_warning;
+    assert!(w("cursor", Some("windows"), None, None).is_none());
+    assert!(w("cursor", None, Some("MINGW64"), None).is_none());
+    assert!(w("codex", Some("windows"), Some("MINGW64"), None).is_none());
+    // A SHELL naming Git's bash (AgentParty#1123), any case or slash.
+    let s = w(
+        "cursor",
+        Some("windows"),
+        None,
+        Some("C:\\Program Files\\Git\\bin\\BASH.EXE"),
+    );
+    assert!(s.is_some_and(|s| s.starts_with("SHELL=")));
+    assert!(w("cursor", Some("windows"), None, Some("C:\\bin\\pwsh.exe")).is_none());
 }
 
 #[cfg(unix)]

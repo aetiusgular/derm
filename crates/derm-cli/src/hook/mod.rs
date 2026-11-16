@@ -61,14 +61,27 @@ pub struct Reply {
     pub exit: u8,
 }
 
-/// The hook's input without one leading UTF-8 byte-order mark. Windows
-/// PowerShell 5.1, which runs Codex's and Cursor's hooks on Windows, can
-/// begin a piped stdin with one (`EF BB BF`; Cursor staff, forum.cursor.com/
-/// t/172787), and a BOM is not JSON, so the call was denied as "not JSON".
-/// RFC 8259 section 8.1: a parser may ignore a BOM. Fix pass 9, note BG
-/// section 1.
+/// The hook's input without the byte-order marks Windows PowerShell puts in
+/// front of it: at most two, each a real one (U+FEFF) or one read as
+/// Windows-1252 (`ï»¿`, which UTF-8 then carries as six bytes).
+/// Cursor pipes a hook's payload through `$input` with `$OutputEncoding`
+/// UTF-8, and Windows PowerShell 5.1 writes a BOM first: `efbbbf` on the box
+/// under Cursor's own wrapper (fix pass 9); Cursor staff say to strip it
+/// (forum.cursor.com/t/172787); a mangled one, sometimes two, is reported
+/// too (vectorize-io/hindsight#5366). A BOM is not JSON, so the call was
+/// denied as "not JSON" (RFC 8259 section 8.1: a parser may ignore one).
 pub fn without_bom(text: &str) -> &str {
-    text.strip_prefix('\u{feff}').unwrap_or(text)
+    let mut t = text;
+    for _ in 0..2 {
+        t = match t
+            .strip_prefix('\u{feff}')
+            .or_else(|| t.strip_prefix("\u{ef}\u{bb}\u{bf}"))
+        {
+            Some(rest) => rest,
+            None => break,
+        };
+    }
+    t
 }
 
 /// The agent's own deny, with `derm: <reason>` (each dialect's `deny` or
@@ -213,9 +226,14 @@ mod tests {
         let read = super::native::read_stdin(&mut &with[..]).unwrap();
         assert!(read.starts_with('{'), "{read:?}");
         assert!(serde_json::from_str::<serde_json::Value>(&read).is_ok());
-        // Only one, and only at the start.
-        assert_eq!(super::without_bom("\u{feff}\u{feff}x"), "\u{feff}x");
+        // At most two, real or read as Windows-1252, and only at the start.
+        assert_eq!(super::without_bom("\u{feff}\u{feff}\u{feff}x"), "\u{feff}x");
+        assert_eq!(super::without_bom("\u{ef}\u{bb}\u{bf}\u{feff}{}"), "{}");
         assert_eq!(super::without_bom("x\u{feff}"), "x\u{feff}");
+        assert_eq!(super::without_bom("\u{ef}\u{bb}x"), "\u{ef}\u{bb}x");
+        // The mangled one as bytes (UTF-8 of U+00EF U+00BB U+00BF).
+        let mangled = b"\xC3\xAF\xC2\xBB\xC2\xBF{\"hook_event_name\":\"PreToolUse\"}";
+        assert!(super::claude_format::parse_input(mangled).is_ok());
     }
 
     use super::*;

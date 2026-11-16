@@ -274,9 +274,12 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
     // Bash's MSYSTEM runs its hooks with bash, and derm's gate then blocks
     // every call.
     if cfg!(windows) {
-        if let Some(w) =
-            crate::connect::gate::cursor_msystem_warning(&id, Some("windows"), env.var("MSYSTEM"))
-        {
+        if let Some(w) = crate::connect::gate::cursor_git_bash_warning(
+            &id,
+            Some("windows"),
+            env.var("MSYSTEM"),
+            env.var("SHELL"),
+        ) {
             problems.push(w);
         }
     }
