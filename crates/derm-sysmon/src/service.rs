@@ -738,9 +738,9 @@ mod tests {
     fn without_restore_privilege<T>(f: impl FnOnce() -> T) -> T {
         use windows_sys::Win32::Security::{
             AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, RevertToSelf,
-            SecurityImpersonation, TokenImpersonation, LUID_AND_ATTRIBUTES,
-            SE_PRIVILEGE_REMOVED, TOKEN_ADJUST_PRIVILEGES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE,
-            TOKEN_PRIVILEGES, TOKEN_QUERY,
+            SecurityImpersonation, TokenImpersonation, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_REMOVED,
+            TOKEN_ADJUST_PRIVILEGES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_PRIVILEGES,
+            TOKEN_QUERY,
         };
         use windows_sys::Win32::System::Threading::{
             GetCurrentProcess, OpenProcessToken, SetThreadToken,
@@ -757,7 +757,10 @@ mod tests {
         let name = win::wide_str("SeRestorePrivilege");
         // SAFETY: our own token; handles leak at test end, which is fine.
         unsafe {
-            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &mut t), 0);
+            assert_ne!(
+                OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &mut t),
+                0
+            );
             assert_ne!(
                 DuplicateTokenEx(
                     t,
@@ -774,14 +777,7 @@ mod tests {
                 0
             );
             assert_ne!(
-                AdjustTokenPrivileges(
-                    dup,
-                    0,
-                    &tp,
-                    0,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut()
-                ),
+                AdjustTokenPrivileges(dup, 0, &tp, 0, std::ptr::null_mut(), std::ptr::null_mut()),
                 0
             );
             assert_ne!(SetThreadToken(std::ptr::null(), dup), 0);

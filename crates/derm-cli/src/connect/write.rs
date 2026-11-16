@@ -176,6 +176,19 @@ fn mode_of(_meta: &fs::Metadata) -> u32 {
 
 /// Copies the old bytes to `backups/<harness>-<ms>-<file name>`, mode 0600.
 fn backup(backups: &Path, harness: &str, path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    backup_at(backups, harness, path, bytes, now_ms())
+}
+
+/// A backup named by `ms`. Two writes in one millisecond (a script, or a
+/// fast box: box retest 5's fix pass) each get their own file, numbered as
+/// GNU `cp --backup=numbered` does; an existing backup is never replaced.
+fn backup_at(
+    backups: &Path,
+    harness: &str,
+    path: &Path,
+    bytes: &[u8],
+    ms: u128,
+) -> Result<PathBuf, String> {
     make_private_dir(backups)?;
     // Windows (lane Z): derm's own backups folder, user-only.
     #[cfg(windows)]
@@ -183,14 +196,32 @@ fn backup(backups: &Path, harness: &str, path: &Path, bytes: &[u8]) -> Result<Pa
     let base = path
         .file_name()
         .map_or("config".into(), |n| n.to_string_lossy().into_owned());
-    let dest = backups.join(format!("{harness}-{}-{base}", now_ms()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut f = options
-        .open(&dest)
-        .map_err(|e| format!("backup {}: {e}", dest.display()))?;
+    let mut opened = None;
+    for n in 0..100u32 {
+        let dest = backups.join(if n == 0 {
+            format!("{harness}-{ms}-{base}")
+        } else {
+            format!("{harness}-{ms}-{n}-{base}")
+        });
+        match options.open(&dest) {
+            Ok(f) => {
+                opened = Some((f, dest));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("backup {}: {e}", dest.display())),
+        }
+    }
+    let (mut f, dest) = opened.ok_or_else(|| {
+        format!(
+            "backup in {}: 100 backups of {base} in one millisecond",
+            backups.display()
+        )
+    })?;
     f.write_all(bytes)
         .and_then(|_| f.sync_all())
         .map_err(|e| format!("backup {}: {e}", dest.display()))?;
@@ -406,6 +437,24 @@ pub(crate) mod tests {
         .unwrap_err();
         assert!(e.contains("changed since the diff was shown"), "{e}");
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"other\": 1}");
+    }
+
+    /// Box retest 5's fix pass: two writes in one millisecond. The second
+    /// backup failed with "File exists" and the write did not happen.
+    #[test]
+    fn two_backups_in_one_millisecond_each_get_their_own_file() {
+        let d = scratch("same-ms");
+        let p = d.join("settings.json");
+        let a = backup_at(&d.join("bk"), "qwen-code", &p, b"one", 42).unwrap();
+        let b = backup_at(&d.join("bk"), "qwen-code", &p, b"two", 42).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(fs::read(&a).unwrap(), b"one");
+        assert_eq!(fs::read(&b).unwrap(), b"two");
+        assert!(
+            b.ends_with("qwen-code-42-1-settings.json"),
+            "{}",
+            b.display()
+        );
     }
 
     #[cfg(unix)]

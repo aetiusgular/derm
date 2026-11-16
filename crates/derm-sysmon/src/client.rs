@@ -162,7 +162,9 @@ fn connect() -> Result<Pipe, String> {
 fn owner_is(owner: Option<&str>, svc: &str) -> Result<(), String> {
     match owner {
         Some(o) if o == svc => Ok(()),
-        Some(o) => Err(format!("the pipe is owned by {o}, not the derm-sysmon service")),
+        Some(o) => Err(format!(
+            "the pipe is owned by {o}, not the derm-sysmon service"
+        )),
         None => Err("the pipe has no owner".into()),
     }
 }

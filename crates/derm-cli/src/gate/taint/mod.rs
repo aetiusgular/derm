@@ -89,24 +89,46 @@ enum Store {
 /// result in the chat named (the daemon's; empty in the light tier).
 pub fn rules(facts: &Facts, st: &State, named: &[String]) -> Vec<Hit> {
     let mut hits = Vec::new();
-    let own: Vec<String> = facts
-        .runs
-        .iter()
-        .filter(|(raw, key)| {
-            st.unreadable
-                || st.written_full
-                || st
-                    .written
-                    .iter()
-                    .chain(facts.writes.iter())
-                    .any(|w| paths::same_file(raw, key, w))
-        })
-        .map(|(_, key)| key.clone())
-        .collect();
-    if !own.is_empty() {
+    // A run the record names is the chat's; with the record unreadable or
+    // its list of written files full, any run may be, and is reviewed as
+    // one, but the reason says which it is (box retest 5, BW6R5-3).
+    let mut wrote: Vec<String> = Vec::new();
+    let mut maybe: Vec<String> = Vec::new();
+    for (raw, key) in &facts.runs {
+        let in_record = st
+            .written
+            .iter()
+            .chain(facts.writes.iter())
+            .any(|w| paths::same_file(raw, key, w));
+        if in_record {
+            wrote.push(key.clone());
+        } else if st.unreadable || st.written_full {
+            maybe.push(key.clone());
+        }
+    }
+    if !wrote.is_empty() || !maybe.is_empty() {
+        let unsure = if st.unreadable {
+            "the chat's taint state could not be read, so derm cannot tell which files it wrote"
+        } else {
+            "the chat wrote more files than derm keeps, so derm cannot tell which files it wrote"
+        };
+        let why = match (wrote.is_empty(), maybe.is_empty()) {
+            (false, true) => format!("runs code this chat wrote ({})", shown(&wrote)),
+            (true, false) => format!(
+                "runs code this chat may have written ({}): {unsure}",
+                shown(&maybe)
+            ),
+            _ => format!(
+                "runs code this chat wrote ({}) and code it may have written ({}): {unsure}",
+                shown(&wrote),
+                shown(&maybe)
+            ),
+        };
+        let mut own = wrote;
+        own.extend(maybe);
         hits.push(Hit {
             rule: "session-written-code",
-            why: format!("runs code this chat wrote ({})", shown(&own)),
+            why,
             paths: own,
         });
     }

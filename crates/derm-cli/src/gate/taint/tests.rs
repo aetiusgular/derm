@@ -818,7 +818,7 @@ mod daemon_tier {
     /// agent wrote is still not the state.
     #[test]
     fn a_named_token_file_that_is_gone_does_not_use_the_light_file() {
-        let h = Home::new("dt-gone");
+        let h = Home::new("dt-file-gone");
         let gone = h.0.join("nowhere/chat.token").display().to_string();
         let e = h
             .env()
@@ -888,4 +888,73 @@ mod daemon_tier {
         assert!(ops.iter().any(|o| o == "taint"), "{ops:?}");
         assert!(!h.0.join(".derm/local").join("c-1.taint.json").exists());
     }
+}
+
+/// Box retest 5, BW6R5-3: with the state unreadable (or its list of written
+/// files full) every run is still reviewed, but the reason does not say the
+/// chat wrote a file it may not have; a run the record does name keeps the
+/// plain wording.
+#[test]
+fn bw6r5_3_a_run_the_record_cannot_name_is_said_to_be_maybe_the_chats() {
+    let f = facts::of(
+        "bash",
+        &json!({"command": "./wait2.sh"}),
+        Path::new("/w"),
+        None,
+    );
+    let bad = State {
+        unreadable: true,
+        ..State::default()
+    };
+    let hits = rules(&f, &bad, &[]);
+    assert_eq!(hits[0].rule, "session-written-code");
+    assert!(
+        !hits[0].why.contains("runs code this chat wrote"),
+        "{}",
+        hits[0].why
+    );
+    assert!(hits[0].why.contains("may have written"), "{}", hits[0].why);
+    assert!(hits[0].why.contains("could not be read"), "{}", hits[0].why);
+    assert_eq!(hits[0].paths, vec!["/w/wait2.sh".to_string()]);
+    let full = State {
+        written_full: true,
+        ..State::default()
+    };
+    let hits = rules(&f, &full, &[]);
+    assert_eq!(hits[0].rule, "session-written-code");
+    assert!(hits[0].why.contains("may have written"), "{}", hits[0].why);
+    assert!(
+        hits[0].why.contains("more files than derm keeps"),
+        "{}",
+        hits[0].why
+    );
+    // A run the record names keeps the plain wording, even with the list full.
+    let mut named = full.clone();
+    named.written.push("/w/wait2.sh".into());
+    let hits = rules(&f, &named, &[]);
+    assert!(
+        hits[0]
+            .why
+            .starts_with("runs code this chat wrote (/w/wait2.sh)"),
+        "{}",
+        hits[0].why
+    );
+    assert!(!hits[0].why.contains("may have written"), "{}", hits[0].why);
+    // One run the record names and one it cannot: both reviewed, each said.
+    let two = facts::of(
+        "bash",
+        &json!({"command": "./wait2.sh && ./other.sh"}),
+        Path::new("/w"),
+        None,
+    );
+    let hits = rules(&two, &named, &[]);
+    assert_eq!(hits[0].rule, "session-written-code");
+    assert!(
+        hits[0].why.starts_with(
+            "runs code this chat wrote (/w/wait2.sh) and code it may have written (/w/other.sh)"
+        ),
+        "{}",
+        hits[0].why
+    );
+    assert_eq!(hits[0].paths.len(), 2, "{:?}", hits[0].paths);
 }

@@ -883,7 +883,18 @@ fn route_says_where_a_plugin_finds_derm() {
     fake_derm(&home);
     let r = go(&home, &["pi", "--gate"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert!(r.out.contains("finds no derm in"), "{}", r.out);
+    // Box retest 5, BW6R5-2: the folders after `~/.local/bin` are this
+    // host's own, and the box has derm's `.deb` in `/usr/bin`, which then
+    // decides (as the launcher would run it; MW6R5-2's reading).
+    match system_derm() {
+        None => assert!(r.out.contains("finds no derm in"), "{}", r.out),
+        Some(sys) => assert!(
+            r.out.contains(&format!("runs derm from {}", sys.display()))
+                && r.out.contains("which is not this derm"),
+            "{}",
+            r.out
+        ),
+    }
     let bin = home.join(".local/bin");
     fs::create_dir_all(&bin).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
