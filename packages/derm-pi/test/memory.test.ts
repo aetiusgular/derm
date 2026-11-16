@@ -718,8 +718,16 @@ describe.runIf(DERM !== undefined)("an index changed outside the memory card (re
     const { statSync } = await import("node:fs");
     // Windows: private is the access list derm writes, the user's full
     // control alone (derm-core `user_only_sddl`); the mode is made up there.
-    if (WIN) expect(accessEntries(statePath).map((e) => e.toLowerCase())).toEqual([`${whoami().toLowerCase()}:(f)`]);
-    else expect(statSync(statePath).mode & 0o777).toBe(0o600);
+    if (WIN) {
+      // One entry, the user's full control. whoami may print the account
+      // with or without its machine (`desktop-x\\u` or `u`; the box's SSH
+      // route prints the latter), icacls always with it.
+      const user = whoami().toLowerCase().split("\\").pop() as string;
+      const entries = accessEntries(statePath).map((e) => e.toLowerCase());
+      expect(entries).toHaveLength(1);
+      const only = entries[0] ?? "";
+      expect(only === `${user}:(f)` || only.endsWith(`\\${user}:(f)`), only).toBe(true);
+    } else expect(statSync(statePath).mode & 0o777).toBe(0o600);
     const saved = JSON.parse(readFileSync(statePath, "utf8")) as { version: number; projects: Record<string, Record<string, { sha256: string }>> };
     expect(saved.version).toBe(1);
     const entry = Object.values(saved.projects)[0]!;
