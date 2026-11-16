@@ -1027,3 +1027,14 @@ fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
     assert_eq!(r["state"], "not run", "{r}");
     assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");
 }
+
+/// Fix pass 9: doctor runs a Windows PowerShell line with `PATHEXT`, without
+/// which Windows PowerShell 5.1 started no `& '<abs>\derm.exe'` and the gate
+/// run read "derm.exe did not start" on the box while Codex's own calls ran.
+#[test]
+fn fp9_the_powershell_run_keeps_pathext() {
+    assert_eq!(
+        super::POWERSHELL_ENV,
+        &["SystemRoot", "USERPROFILE", "PATHEXT"]
+    );
+}

@@ -1152,6 +1152,14 @@ fn gone_derms(text: &str, id: &str) -> Vec<String> {
 /// https://jpassing.com/2009/12/28/the-hidden-danger-of-forgetting-to-specify-systemroot-in-a-custom-environment-block).
 /// `USERPROFILE` is Windows' HOME. srt's sandbox keeps the same two from the
 /// account's profile (`enter/handoff.rs`, `RESERVED`). From lane/windows-ci.
+/// What doctor's run of a Windows PowerShell line keeps of its environment.
+/// `PATHEXT` too: with it unset, Windows PowerShell 5.1 does not start
+/// `& '<abs>\derm.exe'` at all and `$LASTEXITCODE` stays `$null`, so the
+/// guard reports "derm.exe did not start" (V on the box, fix pass 9 `w9d`:
+/// SystemRoot and USERPROFILE alone fail, adding PATHEXT runs it). Codex runs
+/// the line with the session's environment, which has it.
+pub const POWERSHELL_ENV: &[&str] = &["SystemRoot", "USERPROFILE", "PATHEXT"];
+
 #[cfg(windows)]
 pub const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
 #[cfg(not(windows))]
@@ -1290,7 +1298,7 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
                 }
             }
             // PowerShell needs these to start with an empty environment.
-            for k in ["SystemRoot", "USERPROFILE"] {
+            for k in POWERSHELL_ENV {
                 if let Some(v) = std::env::var_os(k) {
                     cmd.env(k, v);
                 }
@@ -1383,7 +1391,14 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             "exit {}, {}",
             code.map(|c| c.to_string())
                 .unwrap_or_else(|| "on a signal".into()),
-            crate::watch::text::clean(if out.trim().is_empty() { &err } else { &out }, 160)
+            crate::watch::text::clean(
+                if out.trim().is_empty() {
+                    err.trim_end()
+                } else {
+                    out.trim_end()
+                },
+                160
+            )
         );
         Ok(json!({"state": state, "hook": hook, "saw": saw}))
     })();
