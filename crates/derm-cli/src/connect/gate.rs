@@ -268,9 +268,23 @@ fn members(v: &Value, key: &str) -> Result<Vec<(String, Value)>, String> {
 }
 
 /// The first character of `path` that cmd.exe reads inside double quotes
-/// (`"` ends them; `%` and `!` expand), if any (Codex's Windows row).
+/// (`"` ends them; `%` and `!` expand), if any (a `"{derm}"` line).
 pub fn cmd_reads(path: &str) -> Option<char> {
     path.chars().find(|c| matches!(c, '"' | '%' | '!'))
+}
+
+/// The first character of `path` that ends a PowerShell single-quoted
+/// string, if any (a `'{derm}'` line, Codex's Windows row): `'` and the curly
+/// single quotes PowerShell reads as the same (U+2018 to U+201B,
+/// `about_Quoting_Rules`). Nothing else is read inside single quotes, `$`
+/// and the backtick included. A line break is refused too.
+pub fn ps_reads(path: &str) -> Option<char> {
+    path.chars().find(|c| {
+        matches!(
+            c,
+            '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\n' | '\r'
+        )
+    })
 }
 
 /// Where a step writes, for the steps that write a file.
@@ -2108,21 +2122,27 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             }
         }
     }
-    // cmd.exe reads `"`, `%` and `!` even inside the double quotes a
-    // command line puts derm's path in (Codex's Windows row, which Codex
-    // runs with `cmd.exe /C`; fix pass 7).
-    if let (Some(d), true) = (
-        &derm,
-        agent
-            .command
-            .as_deref()
-            .is_some_and(|t| t.contains("\"{derm}\"")),
-    ) {
-        if let Some(c) = cmd_reads(d) {
-            return Err(format!(
-                "derm's path {d} holds {c}, which cmd.exe would read in the line {} runs; install derm where its path holds none of \" % !",
-                agent.name
-            ));
+    // A shell reads some characters even inside the quotes a command line
+    // puts derm's path in: cmd.exe `"`, `%` and `!` in double quotes; and
+    // PowerShell, which runs Codex's hooks on Windows (fix pass 8), a single
+    // quote in single quotes.
+    if let (Some(d), Some(line)) = (&derm, agent.command.as_deref()) {
+        if line.contains("\"{derm}\"") {
+            if let Some(c) = cmd_reads(d) {
+                return Err(format!(
+                    "derm's path {d} holds {c}, which cmd.exe would read in the line {} runs; install derm where its path holds none of \" % !",
+                    agent.name
+                ));
+            }
+        }
+        if line.contains("'{derm}'") {
+            if let Some(c) = ps_reads(d) {
+                return Err(format!(
+                    "derm's path {d} holds {}, which would end the quoted path in the PowerShell line {} runs; install derm where its path holds no quote",
+                    c.escape_default(),
+                    agent.name
+                ));
+            }
         }
     }
     if let (Some(plugin), false) = (&agent.refuse_if_plugin_on, o.ungate) {

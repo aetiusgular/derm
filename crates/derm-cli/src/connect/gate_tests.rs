@@ -3086,7 +3086,16 @@ fn fp7_codex_windows_row_writes_hooks_json_and_refuses_while_the_plugin_is_on() 
     )
     .unwrap();
     let hooks = home.join(".codex/hooks.json");
-    fs::write(&hooks, r#"{"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [{"type": "command", "command": "mine"}]}]}}"#).unwrap();
+    // The user's own entry, and the line fix pass 7 wrote (cmd.exe's form),
+    // which a second --gate replaces (its older marker).
+    fs::write(
+        &hooks,
+        format!(
+            r#"{{"hooks": {{"PreToolUse": [{{"matcher": "^Bash$", "hooks": [{{"type": "command", "command": "mine"}}]}}, {{"matcher": "*", "hooks": [{{"type": "command", "command": "\"{}\" hook codex pre"}}]}}]}}}}"#,
+            derm.replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
     for _ in 0..2 {
         let r = go(home, &["codex", "--gate", "--write"]);
         assert_eq!(r.code, 0, "{} {}", r.out, r.err);
@@ -3096,14 +3105,38 @@ fn fp7_codex_windows_row_writes_hooks_json_and_refuses_while_the_plugin_is_on() 
     let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
     assert_eq!(pre.len(), 2, "the user's entry and derm's, once: {v}");
     assert_eq!(pre[0]["hooks"][0]["command"], "mine");
+    // Fix pass 8: PowerShell's call operator and derm's exit code (Codex
+    // runs a Windows hook through PowerShell; the box run). Fix pass 7's
+    // expectation, the cmd.exe line, was the form that failed open there.
     assert_eq!(
         pre[1]["hooks"][0]["command"],
-        format!("\"{derm}\" hook codex pre")
+        format!("& '{derm}' hook codex pre; exit $LASTEXITCODE")
     );
     assert_eq!(
         v["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
-        format!("\"{derm}\" hook codex post")
+        format!("& '{derm}' hook codex post; exit $LASTEXITCODE")
     );
+}
+
+/// Fix pass 8: each character that ends a PowerShell single-quoted string
+/// is refused in derm's path for Codex's Windows row; `$`, a backtick, `&`,
+/// `%`, `!` and spaces are read as they are there.
+#[test]
+fn fp8_ps_reads_the_quotes_that_end_a_single_quoted_path() {
+    for (p, c) in [
+        (r"C:'b\derm.exe", '\''),
+        ("C:\\a\u{2019}b\\derm.exe", '\u{2019}'),
+        ("C:\\a\u{2018}b\\derm.exe", '\u{2018}'),
+        ("C:\\a\nb\\derm.exe", '\n'),
+    ] {
+        assert_eq!(gate::ps_reads(p), Some(c), "{p:?}");
+    }
+    for ok in [
+        r"C:\Program Files (x86)\a&b\derm.exe",
+        r"C:\Users\u\$x`y%z!\derm.exe",
+    ] {
+        assert_eq!(gate::ps_reads(ok), None, "{ok}");
+    }
 }
 
 /// FP6-R11 (fix pass 7): a relative XDG_CONFIG_HOME is where OpenCode looks,

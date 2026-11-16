@@ -989,8 +989,10 @@ fn fp6_the_settings_gate_is_run_as_claude_code_runs_it() {
 }
 
 /// Fix pass 7: Codex's gate in its own hooks.json (the Windows row) is run
-/// as Codex runs it, the quoted path and its words, only when it is this
-/// derm.
+/// only when it is this derm. Fix pass 8: the row's line is PowerShell's
+/// (Codex runs a Windows hook with PowerShell; the box run), which doctor
+/// runs through PowerShell on Windows and as derm and its words here; fix
+/// pass 7's cmd.exe line is not run, and doctor says to connect again.
 #[cfg(unix)]
 #[test]
 fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
@@ -1004,6 +1006,15 @@ fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
         .to_string(),
     );
     super::TEST_SELF.with(|t| *t.borrow_mut() = Some(derm.canonicalize().unwrap()));
+    let r = run_fixture("codex", &env(&h), &probes());
+    assert_eq!(r["state"], "not run", "{r}");
+    assert!(r["why"].as_str().unwrap().contains("PowerShell"), "{r}");
+    put(
+        &h.root.join("home/.codex/hooks.json"),
+        &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": format!("& '{}' hook codex pre; exit $LASTEXITCODE", derm.display()), "timeout": 120}]}]}})
+        .to_string(),
+    );
     let r = run_fixture("codex", &env(&h), &probes());
     assert_eq!(r["state"], "pass", "{r}");
     assert_eq!(

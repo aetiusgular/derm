@@ -759,7 +759,13 @@ fn codex_hooks_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
         .unwrap_or_else(|| home.join(".codex"));
     let file = codex.join("hooks.json");
     let v = read_json_small(&file)?;
-    let (gate, _, _) = crate::watch::register::codex_hooks_gate(&v)?;
+    let (gate, _, _, ps) = crate::watch::register::codex_hooks_gate(&v)?;
+    if !ps {
+        return Some(Err(format!(
+            "the gate in {} is fix pass 7's cmd.exe line, which Codex runs with PowerShell, where it fails and Codex lets every call through; run derm connect codex --gate --write again",
+            file.display()
+        )));
+    }
     let real = |p: &Path| std::fs::canonicalize(p).ok();
     let me = std::env::current_exe().ok().and_then(|p| real(&p));
     #[cfg(test)]
@@ -785,6 +791,32 @@ fn codex_windows_line(hook: &Path) -> Option<String> {
     v.pointer("/hooks/PreToolUse/0/hooks/0/commandWindows")
         .and_then(Value::as_str)
         .map(str::to_string)
+}
+
+/// The shell Codex runs a Windows hook with (fix pass 8, the box run): its
+/// session shell, PowerShell, `pwsh` first, then `powershell` (Codex 0.167.2
+/// `shell-command/src/shell_detect.rs:270-293`, on PATH or at its fallback
+/// path), as `<shell> -NoProfile -Command <line>` (`core/src/shell.rs:34-43`,
+/// `core/src/session/mod.rs:5805-5813`, `command_runner.rs:444-470`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn codex_windows_shell(path_var: Option<&std::ffi::OsStr>) -> PathBuf {
+    let on_path = |name: &str| {
+        path_var.and_then(|p| {
+            std::env::split_paths(p)
+                .map(|d| d.join(name))
+                .find(|f| f.is_file())
+        })
+    };
+    on_path("pwsh.exe")
+        .or_else(|| {
+            let f = PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe");
+            f.is_file().then_some(f)
+        })
+        .or_else(|| on_path("powershell.exe"))
+        .unwrap_or_else(|| {
+            let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+            PathBuf::from(root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+        })
 }
 
 #[cfg(test)]
@@ -1194,27 +1226,29 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             .flatten();
         #[cfg(not(windows))]
         let windows_line: Option<String> = None;
-        let mut cmd = if direct.is_some() {
-            // As Claude Code runs an exec-form hook: the program and its
-            // arguments, no shell. Codex's hooks.json line is a quoted path
-            // and these words, which cmd.exe hands over as they are (derm
-            // connect refuses a path holding `"`, `%` or `!`).
+        // Codex's hooks.json gate on Windows: the line derm connect writes,
+        // run as Codex runs it there (fix pass 8).
+        #[cfg(windows)]
+        let windows_line = if id == "codex" && direct.is_some() {
+            Some(format!(
+                "& '{}' hook codex pre; exit $LASTEXITCODE",
+                hook.display()
+            ))
+        } else {
+            windows_line
+        };
+        let mut cmd = if let Some(line) = &windows_line {
+            // As Codex runs a hook on Windows: its PowerShell, `-NoProfile
+            // -Command <line>`, with PLUGIN_ROOT set for the plugin's
+            // (discovery.rs:314; `codex_windows_shell`).
+            let mut c = Command::new(codex_windows_shell(std::env::var_os("PATH").as_deref()));
+            c.args(["-NoProfile", "-Command", line]);
+            c
+        } else if direct.is_some() {
+            // As Claude Code runs an exec-form hook, and Codex's hooks.json
+            // gate off Windows: the program and its arguments, no shell.
             let mut c = Command::new(&hook);
             c.args(["hook", id, event]);
-            c
-        } else if let Some(line) = &windows_line {
-            // As Codex runs a hook on Windows: `cmd.exe /C "<line>"`, with
-            // PLUGIN_ROOT set (command_runner.rs:448-470, discovery.rs:314).
-            let comspec = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
-            let mut c = Command::new(comspec);
-            c.arg("/C");
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                c.raw_arg(format!("\"{line}\""));
-            }
-            #[cfg(not(windows))]
-            c.arg(line);
             c
         } else if launcher {
             // As the agent runs it: /bin/sh by its absolute path on the
@@ -1235,11 +1269,16 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if windows_line.is_some() {
-            if let Some(root) = hook.parent().and_then(Path::parent) {
-                cmd.env("PLUGIN_ROOT", root);
+            if launcher {
+                if let Some(root) = hook.parent().and_then(Path::parent) {
+                    cmd.env("PLUGIN_ROOT", root);
+                }
             }
-            if let Some(v) = std::env::var_os("SystemRoot") {
-                cmd.env("SystemRoot", v);
+            // PowerShell needs these to start with an empty environment.
+            for k in ["SystemRoot", "USERPROFILE"] {
+                if let Some(v) = std::env::var_os(k) {
+                    cmd.env(k, v);
+                }
             }
         }
         // HOME is doctor's own (the launcher finds derm under it); PATH only

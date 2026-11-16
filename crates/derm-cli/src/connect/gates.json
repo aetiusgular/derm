@@ -61,10 +61,10 @@
       "os": "windows",
       "name": "Codex",
       "package": "@aetiusgular/derm-codex-plugin",
-      "command": "\"{derm}\" hook codex pre",
-      "commandPost": "\"{derm}\" hook codex post",
-      "source": "fix pass 7 (Tony's \"fix/build these\" of 15 Nov 2026, the Claude Code Windows row's pattern): Codex 0.167.2 reads the user's $CODEX_HOME/hooks.json (codex-rs/hooks/src/engine/discovery.rs:176-180, config/src/state.rs:239-243) and on Windows runs a hook's command with cmd.exe /C, the line quoted whole (command_runner.rs:448-470), so derm registers derm.exe by its absolute path in double quotes; the plugin's hooks file cannot reach derm there and blocks every call",
-      "markers": ["\" hook codex "],
+      "command": "& '{derm}' hook codex pre; exit $LASTEXITCODE",
+      "commandPost": "& '{derm}' hook codex post; exit $LASTEXITCODE",
+      "source": "fix pass 8 (the Windows box, 15 Nov 2026): Codex 0.167.2 reads the user's $CODEX_HOME/hooks.json (codex-rs/hooks/src/engine/discovery.rs:176-180, config/src/state.rs:239-243) and runs a hook's line through the session's shell, which on Windows is PowerShell (shell-command/src/shell_detect.rs:363-365: pwsh, else powershell), as `<shell> -NoProfile -Command <line>` (core/src/session/mod.rs:5805-5813, hooks/src/engine/command_runner.rs:444-470); cmd.exe /C only when the session has no shell. So derm.exe is called by its absolute path with PowerShell's call operator, in single quotes, and `exit $LASTEXITCODE` gives Codex derm's exit code, which -Command would turn into 1 (a non-blocking error) (V by run on the box: exit 2 blocks and the program gets the hook's stdin). Fix pass 7's cmd.exe line ran in PowerShell as a parse error, which Codex lets through.",
+      "markers": ["' hook codex ", "\" hook codex "],
       "installedIf": ["~/.codex"],
       "cli": "codex",
       "refuseIfPluginOn": "derm@derm",
@@ -89,7 +89,7 @@
       "notes": [
         "Then trust both hooks in /hooks: Codex skips an untrusted hook without a word (case 70), and asks again when a hook changes.",
         "Codex lets a call through when its hook process dies or times out (case 70); derm's hook never crashes on purpose and caps its own waits below this timeout.",
-        "derm.exe's path may not hold a double quote, % or !, which cmd.exe would read."
+        "derm.exe's path may not hold a single quote (or a curly one), which would end PowerShell's quoted path."
       ]
     },
     {
