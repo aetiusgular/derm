@@ -213,6 +213,9 @@ pub struct Receiver {
     /// can lower it.
     content_allowance: Mutex<u64>,
     content_writes_allowance: Mutex<u64>,
+    /// This receiver's closer for refused sockets (fix pass 9), started on
+    /// the first refusal.
+    closer: OnceLock<Option<Closer>>,
     pub counters: Counters,
 }
 
@@ -283,6 +286,7 @@ impl Receiver {
             per_chat: Mutex::new(PerChat::default()),
             content_allowance: Mutex::new(MAX_CONTENT_BYTES_PER_CHAT_DAY),
             content_writes_allowance: Mutex::new(MAX_CONTENT_WRITES_PER_CHAT_DAY),
+            closer: OnceLock::new(),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -547,7 +551,7 @@ impl Receiver {
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
                 // The closer reads the rest; the accept thread never waits.
-                refuse_closed(stream);
+                refuse_closed(&self.closer, stream);
                 continue;
             }
             if self.heads.fetch_add(1, Ordering::SeqCst) >= MAX_HEADS {
@@ -555,7 +559,7 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
-                refuse_closed(stream);
+                refuse_closed(&self.closer, stream);
                 continue;
             }
             let slot = OpenSlot(self.clone());
@@ -1031,8 +1035,6 @@ struct Closer {
     held: Arc<AtomicUsize>,
 }
 
-static CLOSER: OnceLock<Option<Closer>> = OnceLock::new();
-
 /// A socket the accept thread refused (503 written): its write side is shut
 /// now, so the client reads the reply's end at once, and one closer thread
 /// then reads what the client still sends, for up to `LINGER_DEADLINE` and
@@ -1045,11 +1047,14 @@ static CLOSER: OnceLock<Option<Closer>> = OnceLock::new();
 /// (note BG section 5). The closer holds at most `CLOSER_HOLDS`; past that,
 /// or when its thread could not start, the accept thread drains what is
 /// there, as before (`close_without_waiting` until fix pass 9).
-fn refuse_closed(stream: TcpStream) {
+/// Each receiver has its own closer and its own `CLOSER_HOLDS` (a static
+/// one was shared by every receiver in the process, so the test suite's
+/// receivers filled one another's: fix pass 9, run on the box).
+fn refuse_closed(closer: &OnceLock<Option<Closer>>, stream: TcpStream) {
     if stream.shutdown(std::net::Shutdown::Write).is_err() {
         return;
     }
-    let closer = CLOSER.get_or_init(|| {
+    let closer = closer.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
         let held = Arc::new(AtomicUsize::new(0));
         let count = held.clone();
@@ -1090,8 +1095,7 @@ fn close_refused(rx: &std::sync::mpsc::Receiver<TcpStream>, held: &AtomicUsize) 
     loop {
         if open.is_empty() {
             // Nothing held: block until the next refused socket. The sender
-            // lives in a static and is never dropped, so this does not end
-            // while the process runs; the `Err` arm is for form.
+            // is the receiver's, so this ends when the receiver is dropped.
             match rx.recv() {
                 Ok(s) => take(s, &mut open),
                 Err(_) => return,
