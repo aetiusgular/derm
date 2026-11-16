@@ -19,6 +19,9 @@
 //! - `redact`: the hook redactor over a value, for a tool result.
 //! - `memory.check` also answers `projectKnown`, which derm-pi's card text
 //!   needs.
+//! - `approvals.check`: whether Cline's approval folder, named in the
+//!   co-process's own environment, may be used (`approvals.rs`; note BF
+//!   section 4.4).
 //!
 //! Failure is the plugin's to turn into a deny (case 228): a line that is
 //! not JSON or is over 1 MiB, a first line that is not a matching `hello`,
@@ -26,6 +29,7 @@
 //! exits. It never reads a file a request names (the memory record's path
 //! comes from its own environment) and writes nothing but that record.
 
+mod approvals;
 mod memory;
 
 use std::io::{BufRead, Read, Write};
@@ -265,6 +269,7 @@ pub(crate) fn run(ctx: &Ctx, input: &mut dyn BufRead, out: &mut dyn Write) -> u8
             "redact" => op_redact(&id, &request),
             "memory.check" => memory::op_check(ctx, &id, &request),
             "memory.approve" => memory::op_approve(ctx, &id, &request),
+            "approvals.check" => approvals::op_check(ctx, &id, &request),
             "hello" => refuse(&id, "hello was already said"),
             other => refuse(&id, &format!("unknown op {}", clip(other, 64))),
         };

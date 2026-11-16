@@ -63,6 +63,18 @@ The record is derm-pi's `~/.derm/memory-index.json` (`DERM_MEMORY_STATE` when ab
 
 `state`: `approved` (the hash matches), `changed` (another hash is approved: `lines` are the approved ones, for the card), `unknown` (none). `trusted: false` when the record cannot be used (a link, others can write it, not the user's, unreadable): then nothing is approved and `memory.approve` answers `written: false`. A missing record is trusted and empty. `memory.approve` writes a new 0600 file beside the record and renames it over, as `memory.ts` does. Only the person's click sends `memory.approve` (case 48); the co-process cannot tell a click from a call, so the plugin's own guard stays.
 
+### 2.5 `approvals.check` (Cline's approval folder, note BF section 4.4)
+
+The folder is the one in the co-process's own environment, `DERM_CLINE_APPROVAL_DIR`, which `derm-cline`'s responder sets from the `--dir` that `derm run cline` gives it; a request names no path. The co-process judges it through the platform seam (`owned_private_dir`), so on Windows, where Node reads no owner and a made-up mode, the folder is judged by its access list.
+
+```
+{"id":6,"op":"approvals.check"}
+{"id":6,"ok":true}
+{"id":6,"ok":true,"problem":"the approval folder can be read or written by others, or is not yours (it must be yours alone)"}
+```
+
+`problem` when the variable is unset, the path is relative, inside the session folder, missing, a link, not a folder, or not the user's alone. The responder uses it on Windows only, before it starts and before each poll and write; on Linux and macOS it judges the folder itself, as before. A problem, or no answer, stops the responder, and Cline denies every waiting call after 5 minutes.
+
 ## 3. Errors
 
 `{"id":<id>,"ok":false,"error":"<text>"}` for a request it refuses (an unknown op, a bad field); the co-process keeps running. A plugin reads any reply without `ok: true` to a `decide` or `approve` as a deny.

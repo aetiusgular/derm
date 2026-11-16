@@ -43,8 +43,21 @@ export const PARTIAL_GRACE_MS = 2000;
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 
-/** Why `dir` cannot be the approval folder, or undefined when it can. */
-export function folderProblem(dir: string, cwd: string): string | undefined {
+/**
+ * Windows (note BF section 4.4): Node reads no owner there and makes up a
+ * file's mode from its read-only bit (libuv `src/win/fs.c`), so "yours
+ * alone" cannot be judged here. On Windows `derm gate serve` judges it, by
+ * the folder's access list (`approvals.check`, `gate/serve/approvals.rs`),
+ * and every check below that it can read still runs. Linux and macOS are
+ * judged here, as before.
+ */
+export const SERVE_JUDGES_FOLDER = process.platform === "win32";
+
+/** The co-process variable that names the approval folder (`approvals::DIR_VAR`). */
+export const APPROVAL_DIR_VAR = "DERM_CLINE_APPROVAL_DIR";
+
+/** Why `dir` cannot be the approval folder, or undefined when it can (on Windows, apart from who may use it: `SERVE_JUDGES_FOLDER`). */
+export function folderProblem(dir: string, cwd: string, serveJudges: boolean = SERVE_JUDGES_FOLDER): string | undefined {
   if (!path.isAbsolute(dir)) return "the approval folder is not an absolute path";
   if (insideFolder(dir, cwd)) return "the approval folder is inside the session folder, which a project can set";
   let st;
@@ -55,6 +68,7 @@ export function folderProblem(dir: string, cwd: string): string | undefined {
   }
   if (st.isSymbolicLink()) return "the approval folder is a link";
   if (!st.isDirectory()) return "the approval folder is not a folder";
+  if (serveJudges) return undefined;
   if (typeof process.getuid === "function" && st.uid !== process.getuid()) return "the approval folder is owned by another user";
   if ((st.mode & 0o077) !== 0) return "the approval folder can be read or written by others (it must be 0700)";
   return undefined;
@@ -95,7 +109,10 @@ export function currentIdentity(file: string): string | undefined {
 export function readRequest(file: string): ReadResult {
   let fd: number;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    // Windows has no O_NOFOLLOW (Node's `fs.constants`): a link is refused by
+    // its own entry first, as derm-core does off Unix (note BF section 4.4).
+    if ((constants.O_NOFOLLOW ?? 0) === 0 && lstatSync(file).isSymbolicLink()) return { refuse: "the request file is a link" };
+    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { gone: true };
@@ -143,7 +160,9 @@ export function writeDecision(dir: string, sessionId: string, requestId: string,
     foreign = false;
   }
   const tmp = path.join(dir, `.derm-${randomUUID()}.tmp`);
-  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  // On Windows the new file takes the folder's access list, which
+  // `approvals.check` judged private; O_EXCL refuses any name already there.
+  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
   try {
     const body = Buffer.from(`${JSON.stringify(answer)}\n`, "utf8");
     let off = 0;
@@ -170,6 +189,8 @@ export type ResponderOptions = {
   deps: Deps;
   log?: (line: string) => void;
   now?: () => number;
+  /** Whether `derm gate serve` judges who may use the folder (default: on Windows). */
+  serveJudges?: boolean;
 };
 
 /** A decision derm wrote that Cline has not taken this long after is removed: no Cline is waiting on it (it polls every 200 ms). */
@@ -201,6 +222,9 @@ export class Responder {
   /** Decision file names derm wrote and Cline has not taken yet, with when. */
   private readonly ours = new Map<string, number>();
   private folderIdentity: string | undefined;
+  /** Windows: `derm gate serve`'s last verdict on the folder (undefined: usable); null before the first. */
+  private serveVerdict: string | undefined | null = null;
+  private readonly serveJudges: boolean;
   private timer: NodeJS.Timeout | undefined;
   private ticking = false;
   stopped: string | undefined;
@@ -212,9 +236,38 @@ export class Responder {
     this.deps = opts.deps;
     this.log = opts.log ?? ((line) => process.stderr.write(`${line}\n`));
     this.now = opts.now ?? (() => Date.now());
+    this.serveJudges = opts.serveJudges ?? SERVE_JUDGES_FOLDER;
   }
 
-  /** Checks the folder; then polls it every POLL_MS until stop(). */
+  /**
+   * Windows: asks `derm gate serve` whether the folder is yours alone, by
+   * its access list (`approvals.check`). The folder is the one in the
+   * co-process's environment (`DERM_CLINE_APPROVAL_DIR`, which `main` sets
+   * from `--dir`); one that names another folder is refused. Anything but a
+   * clean answer is a problem, so the responder stops: it fails closed.
+   */
+  async judgeFolder(): Promise<void> {
+    if (!this.serveJudges) return;
+    if (path.resolve(this.deps.env[APPROVAL_DIR_VAR] ?? "") !== path.resolve(this.dir)) {
+      this.serveVerdict = `derm gate serve was not given this approval folder (${APPROVAL_DIR_VAR})`;
+      return;
+    }
+    try {
+      const r = await this.deps.serve().request("approvals.check");
+      if (!r.ok) this.serveVerdict = `derm gate serve could not judge the approval folder (${r.error ?? "no reason"})`;
+      else this.serveVerdict = typeof r.problem === "string" ? r.problem : undefined;
+    } catch (error) {
+      this.serveVerdict = `derm gate serve could not judge the approval folder (${(error as Error).message})`;
+    }
+  }
+
+  /** `start`, after the folder is judged where `derm gate serve` judges it (Windows). */
+  async begin(): Promise<string | undefined> {
+    await this.judgeFolder();
+    return this.start();
+  }
+
+  /** Checks the folder; then polls it every POLL_MS until stop(). On Windows call `begin`. */
   start(): string | undefined {
     const problem = this.checkFolder();
     if (problem) return problem;
@@ -230,8 +283,12 @@ export class Responder {
 
   /** The folder's rules, and that it is still the folder first checked (by device and inode). */
   private checkFolder(): string | undefined {
-    const problem = folderProblem(this.dir, this.cwd);
+    const problem = folderProblem(this.dir, this.cwd, this.serveJudges);
     if (problem) return problem;
+    if (this.serveJudges) {
+      if (this.serveVerdict === null) return "the approval folder has not been judged by derm gate serve";
+      if (this.serveVerdict !== undefined) return this.serveVerdict;
+    }
     let st;
     try {
       st = lstatSync(this.dir);
@@ -249,6 +306,7 @@ export class Responder {
     if (this.stopped || this.ticking) return;
     this.ticking = true;
     try {
+      await this.judgeFolder();
       const problem = this.checkFolder();
       if (problem) {
         // A folder replaced or opened to others: stop answering. Cline then
@@ -336,6 +394,7 @@ export class Responder {
         this.seen.delete(name);
         return;
       }
+      await this.judgeFolder();
       const folder = this.checkFolder();
       if (folder) {
         this.log(`derm-cline-approvals: ${folder}; no longer answering`);
@@ -415,8 +474,11 @@ export async function main(argv: readonly string[], env: NodeJS.ProcessEnv = pro
     return 1;
   }
   const cwd = path.resolve(args.cwd ?? process.cwd());
-  const responder = new Responder({ dir, cwd, deps: defaultDeps(env, () => cwd), log });
-  const problem = responder.start();
+  // The co-process is told the folder, so on Windows it can judge it
+  // (`approvals.check`); it reads no path a request names.
+  const serveEnv = { ...env, [APPROVAL_DIR_VAR]: path.resolve(dir) };
+  const responder = new Responder({ dir, cwd, deps: defaultDeps(serveEnv, () => cwd), log });
+  const problem = await responder.begin();
   if (problem) {
     log(`derm-cline-approvals: ${problem}`);
     return 1;
