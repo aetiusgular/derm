@@ -296,9 +296,20 @@ pub fn grok_run(pre: bool, env: &Env) -> super::Reply {
 /// `HOME` alone, so on Windows, where it is usually unset, Cursor running
 /// derm's Claude Code hook blocked every call with derm's Cursor gate
 /// registered (run on the box).
+///
+/// On Windows a variable's name is not case-sensitive (`std::env::var_os`
+/// finds `UserProfile` as `USERPROFILE`), so neither is this lookup there
+/// (fix pass 9's second review, finding 7).
 pub fn home_in(env: &Env, windows: bool) -> Option<PathBuf> {
-    let key = if windows { "USERPROFILE" } else { "HOME" };
-    env.raw(key)
+    let value = if windows {
+        env.0
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("USERPROFILE"))
+            .map(|(_, v)| v.as_str())
+    } else {
+        env.raw("HOME")
+    };
+    value
         .filter(|h| Path::new(h).is_absolute())
         .map(PathBuf::from)
 }
@@ -380,6 +391,9 @@ mod fp9_tests {
         assert_eq!(home_in(&only_home, false), Some(PathBuf::from(abs)));
         assert_eq!(home_in(&only_profile, false), None);
         assert_eq!(home_in(&Env::of(&[("HOME", "rel")]), false), None);
+        let mixed = Env::of(&[("UserProfile", abs)]);
+        assert_eq!(home_in(&mixed, true), Some(PathBuf::from(abs)));
+        assert_eq!(home_in(&Env::of(&[("home", abs)]), false), None);
     }
 
     /// The parse of derm's PowerShell line: exact prefix and tail, an

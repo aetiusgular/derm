@@ -183,12 +183,33 @@ pub fn find_row(id: &str) -> Option<Value> {
         .cloned()
 }
 
-/// The versions a row's `verifiedAt` names: the version in each part,
-/// joined by " and ", before its first comma (`"0.169.0 and 0.167.2, run
-/// (...)"` gives both); what follows the comma says how, not which.
+/// The versions a row's `verifiedAt` names. Its leading comma-separated
+/// parts that hold only versions, each part one version or several joined
+/// by " and ": `"0.169.0 and 0.167.2, run (...)"` gives both, `"1.0.70,
+/// 1.0.71, 1.0.74, run"` gives all three. A row that does not start with a
+/// bare version (`"docs, 3 Nov 2026 (CLI changelog v2026.10.22); ..."`)
+/// keeps the one version it always gave, the first in it ([`version_token`];
+/// fix pass 9's second review, finding 2: Cursor's and Kiro's rows had lost
+/// theirs).
 pub fn verified_versions(verified_at: &str) -> Vec<String> {
-    let head = verified_at.split(',').next().unwrap_or("");
-    head.split(" and ").filter_map(version_token).collect()
+    let mut out = Vec::new();
+    for part in verified_at.split(',') {
+        let versions: Option<Vec<String>> = part
+            .split(" and ")
+            .map(|v| {
+                let v = v.trim();
+                version_token(v).filter(|t| v == t || v.strip_prefix('v') == Some(t))
+            })
+            .collect();
+        match versions {
+            Some(vs) if !vs.is_empty() => out.extend(vs),
+            _ => break,
+        }
+    }
+    if out.is_empty() {
+        out.extend(version_token(verified_at));
+    }
+    out
 }
 
 /// `installed` is one of the versions `verified_at` names.
@@ -1168,6 +1189,11 @@ fn gone_derms(text: &str, id: &str) -> Vec<String> {
 /// https://jpassing.com/2009/12/28/the-hidden-danger-of-forgetting-to-specify-systemroot-in-a-custom-environment-block).
 /// `USERPROFILE` is Windows' HOME. srt's sandbox keeps the same two from the
 /// account's profile (`enter/handoff.rs`, `RESERVED`). From lane/windows-ci.
+#[cfg(windows)]
+pub const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
+#[cfg(not(windows))]
+pub const NODE_WINDOWS_ENV: &[&str] = &[];
+
 /// What doctor's run of a Windows PowerShell line keeps of its environment.
 /// `PATHEXT` too: with it unset, Windows PowerShell 5.1 does not start
 /// `& '<abs>\derm.exe'` at all and `$LASTEXITCODE` stays `$null`, so the
@@ -1176,10 +1202,15 @@ fn gone_derms(text: &str, id: &str) -> Vec<String> {
 /// the line with the session's environment, which has it.
 pub const POWERSHELL_ENV: &[&str] = &["SystemRoot", "USERPROFILE", "PATHEXT"];
 
-#[cfg(windows)]
-pub const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
-#[cfg(not(windows))]
-pub const NODE_WINDOWS_ENV: &[&str] = &[];
+/// Gives a command whose environment was cleared the [`POWERSHELL_ENV`]
+/// variables of this process, as doctor's Windows gate run does.
+pub fn keep_powershell_env(cmd: &mut Command) {
+    for k in POWERSHELL_ENV {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+}
 
 /// Runs the installed hook once on a shell call, under a policy that denies
 /// `bash`, from a folder of its own (the hook refuses a `DERM_POLICY` inside
@@ -1314,11 +1345,7 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
                 }
             }
             // PowerShell needs these to start with an empty environment.
-            for k in POWERSHELL_ENV {
-                if let Some(v) = std::env::var_os(k) {
-                    cmd.env(k, v);
-                }
-            }
+            keep_powershell_env(&mut cmd);
         }
         // HOME is doctor's own (the launcher finds derm under it); PATH only
         // for node, which the launcher never reads.

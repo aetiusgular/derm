@@ -1095,13 +1095,23 @@ fn close_refused(rx: &std::sync::mpsc::Receiver<TcpStream>, held: &AtomicUsize) 
     loop {
         if open.is_empty() {
             // Nothing held: block until the next refused socket. The sender
-            // is the receiver's, so this ends when the receiver is dropped.
+            // is the receiver's, and its accept loop holds the receiver for
+            // as long as the process runs, so this thread lives as long (one
+            // per receiver; a test's receivers each keep theirs).
             match rx.recv() {
                 Ok(s) => take(s, &mut open),
                 Err(_) => return,
             }
-        } else if let Ok(s) = rx.recv_timeout(CLOSER_TICK) {
-            take(s, &mut open);
+        } else {
+            match rx.recv_timeout(CLOSER_TICK) {
+                Ok(s) => take(s, &mut open),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // No more sockets can come: still pace the reads of those
+                // held, rather than spin until their deadlines pass.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(CLOSER_TICK)
+                }
+            }
         }
         while let Ok(s) = rx.try_recv() {
             take(s, &mut open);

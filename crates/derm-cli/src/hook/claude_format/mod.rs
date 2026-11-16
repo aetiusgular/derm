@@ -135,7 +135,7 @@ pub fn parse_input(stdin: &[u8]) -> Result<Map<String, Value>, &'static str> {
     }
     let text = String::from_utf8_lossy(stdin);
     let v: Value =
-        serde_json::from_str(super::without_bom(&text)).map_err(|_| "hook input is not JSON")?;
+        serde_json::from_str(super::without_bom(&text)?).map_err(|_| "hook input is not JSON")?;
     match v {
         Value::Object(m) => Ok(m),
         _ => Err("hook input is not an object"),

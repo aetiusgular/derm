@@ -1028,21 +1028,37 @@ fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
     assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");
 }
 
-/// Fix pass 9: doctor runs a Windows PowerShell line with `PATHEXT`, without
-/// which Windows PowerShell 5.1 started no `& '<abs>\derm.exe'` and the gate
-/// run read "derm.exe did not start" on the box while Codex's own calls ran.
+/// Fix pass 9: doctor runs a Windows PowerShell line with an emptied
+/// environment and `keep_powershell_env`. That is enough for Windows
+/// PowerShell to start a program by `&` and its absolute path and give its
+/// exit code back; with `SystemRoot` and `USERPROFILE` alone it started none
+/// (the box, `w9d`), so the guard said "derm.exe did not start" and doctor
+/// reported every Codex gate as failing closed.
+#[cfg(windows)]
 #[test]
-fn fp9_the_powershell_run_keeps_pathext() {
+fn fp9_doctors_powershell_environment_starts_a_program_by_its_path() {
+    let root = std::env::var_os("SystemRoot").expect("SystemRoot");
+    let ps = std::path::Path::new(&root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let cmd_exe = std::path::Path::new(&root).join("System32\\cmd.exe");
+    let line = format!(
+        "& '{}' /c exit 7; if ($null -eq $LASTEXITCODE) {{ [Console]::Error.WriteLine('did not start'); exit 2 }}; exit $LASTEXITCODE",
+        cmd_exe.display()
+    );
+    let mut c = std::process::Command::new(&ps);
+    c.args(["-NoProfile", "-Command", &line]).env_clear();
+    super::keep_powershell_env(&mut c);
+    let out = c.output().unwrap();
     assert_eq!(
-        super::POWERSHELL_ENV,
-        &["SystemRoot", "USERPROFILE", "PATHEXT"]
+        out.status.code(),
+        Some(7),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 
-/// Fix pass 9: a row verified at more than one version lists them before its
-/// first comma, joined by " and " ("0.169.0 and 0.167.2, run (...)"); an
-/// installed version that is any of them matches. A row with one version
-/// reads as before.
+/// Fix pass 9: a row verified at more than one version lists them in its
+/// leading comma parts, a part holding one version or several joined by
+/// " and "; an installed version that is any of them matches.
 #[test]
 fn fp9_a_row_can_be_verified_at_more_than_one_version() {
     let two = "0.169.0 and 0.167.2, run (0.169.0 on the Windows box, fix pass 9)";
@@ -1050,15 +1066,52 @@ fn fp9_a_row_can_be_verified_at_more_than_one_version() {
     assert!(super::verified_matches(two, "0.167.2"));
     assert!(super::verified_matches(two, "0.169.0"));
     assert!(!super::verified_matches(two, "0.168.0"));
-    // The parenthetical after the comma is not a version list.
+    assert_eq!(
+        super::verified_versions("1.0.70, 1.0.71, 1.0.74, run (custom model, fake chat server)"),
+        vec!["1.0.70", "1.0.71", "1.0.74"]
+    );
+    // A version inside the note after the list is not the row's.
     assert!(!super::verified_matches(
         "1.0.105, run (COPILOT_OFFLINE, 9.9.9)",
         "9.9.9"
     ));
-    assert_eq!(super::verified_versions("2.1.322, run"), vec!["2.1.322"]);
-    assert_eq!(
-        super::verified_versions("@ampcode/plugin 0.0.0-20261104001221-gc8c68be, types (not run)"),
-        vec!["0.0.0"]
-    );
+    assert_eq!(super::verified_versions("v0.22.5, source"), vec!["0.22.5"]);
     assert!(super::verified_versions("NF").is_empty());
+}
+
+/// Fix pass 9's second review, finding 2: every preset row's `verifiedAt`
+/// still gives the version it gave before (the first in it), so a row that
+/// starts with words (Cursor's, Kiro's) is not made "unverified".
+#[test]
+fn fp9_every_presets_verified_version_still_reads() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/connect/presets");
+    let mut seen = 0;
+    for e in std::fs::read_dir(&dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let Some(at) = v.pointer("/coverage/verifiedAt").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        seen += 1;
+        if let Some(first) = super::version_token(at) {
+            assert!(
+                super::verified_versions(at).contains(&first),
+                "{}: {at:?} lost {first}",
+                p.display()
+            );
+        }
+    }
+    assert!(seen > 20, "{seen} rows read");
+    assert!(super::verified_matches(
+        "docs, 3 Nov 2026 (CLI changelog v2026.10.22); unverified, not run",
+        "2026.10.22"
+    ));
+    assert!(super::verified_matches(
+        "docs (hooks/actions 10 Oct 2026, CLI 2.36.0 and V3), 3 Nov 2026; unverified, not run",
+        "2.36.0"
+    ));
 }
