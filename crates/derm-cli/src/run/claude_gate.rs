@@ -114,11 +114,36 @@ pub fn check_user_settings(rest: &[String]) -> Result<(), String> {
 }
 
 /// Refuses, before anything starts, a Claude Code settings file that turns
-/// every hook off (`disableAllHooks: true`): the user's
-/// (`CLAUDE_CONFIG_DIR`, else `~/.claude`), and the project's shared and
-/// local files in the session folder (fix pass 6's review). A file written
-/// during the chat is not seen here; derm's block sets the key false.
+/// every hook off (`disableAllHooks: true`): the managed file and its `.d`
+/// folder (fix pass 10, MW6R5-3), the user's (`CLAUDE_CONFIG_DIR`, else
+/// `~/.claude`), and the project's shared and local files in the session
+/// folder (fix pass 6's review). A file written during the chat is not seen
+/// here; derm's block sets the key false, which a managed `true` outranks.
 pub fn check_settings_files(
+    home: &std::path::Path,
+    config_dir: Option<&str>,
+    cwd: &std::path::Path,
+) -> Result<(), String> {
+    check_settings_files_in(
+        &crate::connect::gate::managed_settings_dir(),
+        home,
+        config_dir,
+        cwd,
+    )
+}
+
+/// `check_settings_files` with the managed settings folder given.
+///
+/// Fix pass 10, MW6R5-3 (Mac retest of fix pass 6's line, run with Tony's
+/// file on the Mac): `{"disableAllHooks": true}` in
+/// `/Library/Application Support/ClaudeCode/managed-settings.json` outranks
+/// derm's `--settings` block (managed settings come first in Claude Code's
+/// precedence, code.claude.com/docs/en/settings), and a `derm run
+/// claude-code` chat started with no word and ran a Bash call with no
+/// approval record. Read in Claude Code's order: `managed-settings.json`,
+/// then `managed-settings.d/*.json` by name, skipping dot files.
+pub(crate) fn check_settings_files_in(
+    managed_dir: &std::path::Path,
     home: &std::path::Path,
     config_dir: Option<&str>,
     cwd: &std::path::Path,
@@ -127,7 +152,25 @@ pub fn check_settings_files(
         .filter(|d| std::path::Path::new(d).is_absolute())
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| home.join(".claude"));
-    let mut files = vec![user.join("settings.json")];
+    let mut managed = vec![managed_dir.join("managed-settings.json")];
+    if let Ok(rd) = std::fs::read_dir(managed_dir.join("managed-settings.d")) {
+        let mut more: Vec<std::path::PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|x| x == "json")
+                    && !p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+            })
+            .collect();
+        more.sort();
+        managed.extend(more);
+    }
+    let lead = managed.len();
+    let mut files = managed;
+    files.push(user.join("settings.json"));
     // The session folder's, and each folder above it up to the repository's
     // root, whose `.claude/settings.local.json` Claude Code reads from a
     // subfolder too (`watch/register.rs`; fix pass 6's re-review).
@@ -141,7 +184,7 @@ pub fn check_settings_files(
     let files = if cwd.ancestors().any(|d| d.join(".git").exists()) {
         files
     } else {
-        files[..3].to_vec()
+        files[..lead + 3].to_vec()
     };
     for f in files {
         let Ok(text) = std::fs::read_to_string(&f) else {
@@ -445,29 +488,32 @@ mod tests {
         let d = std::env::temp_dir().join(format!("derm-cg-{}", std::process::id()));
         let home = d.join("home");
         let cwd = d.join("work");
+        // An empty managed folder: this test is about the user's and the
+        // project's files, and the real one may hold a file (fix pass 10).
+        let nm = d.join("no-managed");
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::create_dir_all(cwd.join(".claude")).unwrap();
-        assert!(check_settings_files(&home, None, &cwd).is_ok());
+        assert!(check_settings_files_in(&nm, &home, None, &cwd).is_ok());
         for f in [
             home.join(".claude/settings.json"),
             cwd.join(".claude/settings.json"),
             cwd.join(".claude/settings.local.json"),
         ] {
             std::fs::write(&f, r#"{"disableAllHooks": true}"#).unwrap();
-            let e = check_settings_files(&home, None, &cwd).unwrap_err();
+            let e = check_settings_files_in(&nm, &home, None, &cwd).unwrap_err();
             assert!(e.contains("disableAllHooks"), "{e}");
             std::fs::write(&f, r#"{"disableAllHooks": false}"#).unwrap();
         }
-        assert!(check_settings_files(&home, None, &cwd).is_ok());
+        assert!(check_settings_files_in(&nm, &home, None, &cwd).is_ok());
         // Fix pass 6's re-review: a file derm cannot read is refused, and a
         // repository root's local file is read from a subfolder.
         std::fs::write(cwd.join(".claude/settings.json"), "{not json").unwrap();
-        assert!(check_settings_files(&home, None, &cwd)
+        assert!(check_settings_files_in(&nm, &home, None, &cwd)
             .unwrap_err()
             .contains("not JSON"));
         std::fs::write(cwd.join(".claude/settings.json"), "\u{feff}{}").unwrap();
         assert!(
-            check_settings_files(&home, None, &cwd).is_ok(),
+            check_settings_files_in(&nm, &home, None, &cwd).is_ok(),
             "a byte-order mark is read past"
         );
         std::fs::create_dir_all(cwd.join(".git")).unwrap();
@@ -478,7 +524,51 @@ mod tests {
             r#"{"disableAllHooks": true}"#,
         )
         .unwrap();
-        assert!(check_settings_files(&home, None, &sub).is_err());
+        assert!(check_settings_files_in(&nm, &home, None, &sub).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Fix pass 10, MW6R5-3: a managed settings file or one in its `.d`
+    /// folder that turns every hook off refuses the start, as the user's
+    /// and the project's do; an unreadable one is refused; a dot file in
+    /// the folder is not Claude Code's and is skipped.
+    #[test]
+    fn mw6r5_3_a_managed_file_that_turns_hooks_off_is_refused() {
+        let d = std::env::temp_dir().join(format!("derm-cg-m-{}", std::process::id()));
+        let managed = d.join("managed");
+        let home = d.join("home");
+        let cwd = d.join("work");
+        std::fs::create_dir_all(managed.join("managed-settings.d")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+        assert!(check_settings_files_in(&managed, &home, None, &cwd).is_ok());
+        std::fs::write(
+            managed.join("managed-settings.json"),
+            r#"{"disableAllHooks": true}"#,
+        )
+        .unwrap();
+        let e = check_settings_files_in(&managed, &home, None, &cwd).unwrap_err();
+        assert!(
+            e.contains("managed-settings.json") && e.contains("disableAllHooks"),
+            "{e}"
+        );
+        std::fs::write(managed.join("managed-settings.json"), "{}").unwrap();
+        let drop_in = managed.join("managed-settings.d/50-team.json");
+        std::fs::write(&drop_in, r#"{"disableAllHooks": true}"#).unwrap();
+        assert!(check_settings_files_in(&managed, &home, None, &cwd)
+            .unwrap_err()
+            .contains("50-team.json"));
+        std::fs::remove_file(&drop_in).unwrap();
+        std::fs::write(
+            managed.join("managed-settings.d/.hidden.json"),
+            r#"{"disableAllHooks": true}"#,
+        )
+        .unwrap();
+        assert!(check_settings_files_in(&managed, &home, None, &cwd).is_ok());
+        std::fs::write(managed.join("managed-settings.json"), "{not json").unwrap();
+        assert!(check_settings_files_in(&managed, &home, None, &cwd)
+            .unwrap_err()
+            .contains("not JSON"));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

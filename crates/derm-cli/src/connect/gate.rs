@@ -731,7 +731,7 @@ thread_local! {
 
 /// Claude Code's managed-settings folder on this system (code.claude.com,
 /// managed settings).
-fn managed_settings_dir() -> PathBuf {
+pub(crate) fn managed_settings_dir() -> PathBuf {
     #[cfg(test)]
     if let Some(d) = TEST_MANAGED.with(|t| t.borrow().clone()) {
         return d;
