@@ -1305,6 +1305,16 @@ fn no_socket_client_posts_a_cu_action_record() {
 /// The password is never in a record.
 #[test]
 fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
+    // macOS: the wrong password below counts as a failed login for this
+    // account (`approver/person.rs`, `MacPam`), so there it runs only in CI
+    // or with `DERM_TEST_PAM=1`.
+    if cfg!(target_os = "macos")
+        && std::env::var_os("CI").is_none()
+        && std::env::var_os("DERM_TEST_PAM").is_none()
+    {
+        eprintln!("a failed login for this account; set DERM_TEST_PAM=1 to run");
+        return;
+    }
     let f = fixture();
     let mut d = Client::daemon(&f);
     let mut a = Client::daemon(&f);
@@ -1330,9 +1340,9 @@ fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
     assert_eq!(r["ok"], false, "{r}");
     let why = r["error"].as_str().unwrap_or("");
     assert!(
-        // Linux asks for the password; where no check is built (macOS) the
-        // daemon says so and asks for none (Mac test w5, MW5-4).
-        why.contains(if cfg!(target_os = "linux") {
+        // Linux and macOS (fix pass 12 (Mac)) ask for the password; where no check is built the
+        // daemon says so and asks for none (MW5-4).
+        why.contains(if cfg!(any(target_os = "linux", target_os = "macos")) {
             "your password is needed"
         } else {
             "needs a person check"

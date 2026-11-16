@@ -9,7 +9,9 @@
 //! runs as the person with no boundary is such a process; so is anything it
 //! left running (case 68).
 //!
-//! What the check is: the person's login password, verified by the system's
+//! What the check is: the person's login password, verified by the system
+//! itself: on macOS by its PAM service `checkpw` (`MacPam`, fix pass 12
+//! (Mac)), and on Linux by the system's
 //! own helper for it, Linux-PAM's `unix_chkpwd` (setgid `shadow`; it checks
 //! only the password of the user that runs it, `modules/pam_unix/
 //! unix_chkpwd.c`), with a back-off after each wrong one. An agent that runs
@@ -323,9 +325,187 @@ impl Checker for UnixChkpwd {
     }
 }
 
-/// Where the platform has no check built (macOS, until a PAM or
-/// OpenDirectory route is built; Windows is lane Z's): every `yes` that
-/// needs one is refused, and says why.
+/// macOS: the person's login password, checked by the system's own PAM
+/// service for exactly that, `checkpw` (`/etc/pam.d/checkpw`: `auth required
+/// pam_opendirectory.so use_first_pass nullok`; read on macOS 26.5.1). Its
+/// one auth module verifies the password with `ODRecordVerifyPassword`
+/// (Apple pam_modules-217.0.1, `modules/pam_opendirectory/
+/// pam_opendirectory.m:262-304`), which needs no privilege for the caller's
+/// own account: run on the Mac as the person, a wrong password came back
+/// `PAM_AUTH_ERR` in 2 s with no conversation call. No helper program and no
+/// set-id bit are involved, so nothing here depends on no_new_privs.
+///
+/// The password reaches the module as `PAM_AUTHTOK` (`use_first_pass`;
+/// OpenPAM `pam_set_item.c:67-82` takes it from the application), never
+/// through a conversation, which only refuses. An empty password is refused
+/// before this (`verify`) and by `PAM_DISALLOW_NULL_AUTHTOK`.
+///
+/// What it costs: a wrong password counts as a failed login for the
+/// account. Where an account policy locks after N failures
+/// (`pwpolicy -getaccountpolicies`, `policyAttributeMaximumFailedAuthentications`),
+/// forged answers could lock the account; the daemon's back-off (one try a
+/// minute after six) bounds the rate, and a locked account reads as "cannot
+/// check", never as a wrong password.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct MacPam;
+
+#[cfg(target_os = "macos")]
+mod mac_pam {
+    use std::ffi::{c_char, c_int, c_void};
+
+    pub const SERVICE: &str = "checkpw";
+    pub const SERVICE_FILE: &str = "/etc/pam.d/checkpw";
+    // OpenPAM `security/pam_constants.h` (macOS SDK, read).
+    pub const PAM_SUCCESS: c_int = 0;
+    pub const PAM_CONV_ERR: c_int = 6;
+    pub const PAM_AUTHTOK: c_int = 6;
+    pub const PAM_DISALLOW_NULL_AUTHTOK: c_int = 0x1;
+
+    #[repr(C)]
+    pub struct PamConv {
+        pub conv: extern "C" fn(c_int, *mut c_void, *mut c_void, *mut c_void) -> c_int,
+        pub appdata: *mut c_void,
+    }
+
+    /// The conversation never answers: the password is `PAM_AUTHTOK`, and a
+    /// module that asks for anything else gets an error.
+    pub extern "C" fn refuse(_: c_int, _: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
+        PAM_CONV_ERR
+    }
+
+    #[link(name = "pam")]
+    extern "C" {
+        pub fn pam_start(
+            service: *const c_char,
+            user: *const c_char,
+            conv: *const PamConv,
+            handle: *mut *mut c_void,
+        ) -> c_int;
+        pub fn pam_set_item(handle: *mut c_void, item: c_int, value: *const c_void) -> c_int;
+        pub fn pam_authenticate(handle: *mut c_void, flags: c_int) -> c_int;
+        pub fn pam_end(handle: *mut c_void, status: c_int) -> c_int;
+    }
+}
+
+/// What `pam_authenticate`'s code means for the password (macOS). Only
+/// `PAM_AUTH_ERR` is a wrong password; a locked or disabled account, or any
+/// other code, is no verdict on it.
+/// OpenPAM's codes (`security/pam_constants.h`, macOS SDK): 0 `PAM_SUCCESS`,
+/// 7 `PAM_PERM_DENIED`, 9 `PAM_AUTH_ERR`, 1024 `PAM_APPLE_ACCT_TEMP_LOCK`,
+/// 1025 `PAM_APPLE_ACCT_LOCKED`, as `pam_opendirectory.m:266-300` returns
+/// them. Numbers, not the macOS constants, so the mapping is tested on
+/// every system.
+#[cfg(any(target_os = "macos", test))]
+fn mac_verdict(code: i32) -> Verdict {
+    match code {
+        0 => Verdict::Person,
+        9 => Verdict::Wrong("wrong password".into()),
+        1024 | 1025 => Verdict::Unavailable(
+            "macOS says the account is locked after wrong passwords; unlock it by logging in"
+                .into(),
+        ),
+        7 => Verdict::Unavailable("macOS says the account is disabled or inactive".into()),
+        n => Verdict::Unavailable(format!(
+            "macOS's password check (PAM service checkpw) answered {n}"
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl MacPam {
+    /// The checker, or why there is none to trust: the service's file must
+    /// be there (without it OpenPAM uses `other`, which denies everything,
+    /// and every password would read as wrong), root's, and not writable by
+    /// group or others.
+    pub fn find() -> Result<Self, String> {
+        Self::find_at(Path::new(mac_pam::SERVICE_FILE), 0)
+    }
+
+    fn find_at(file: &Path, trusted: u32) -> Result<Self, String> {
+        let m = std::fs::metadata(file).map_err(|_| {
+            format!(
+                "{} is missing, so macOS has no PAM service to check a password with",
+                file.display()
+            )
+        })?;
+        if !(m.is_file() && m.uid() == trusted && m.mode() & 0o022 == 0) {
+            return Err(format!(
+                "{} is not root's, or others can write it",
+                file.display()
+            ));
+        }
+        Ok(MacPam)
+    }
+
+    /// One `pam_authenticate`, on this thread.
+    fn authenticate(user: &str, password: &[u8]) -> Result<i32, String> {
+        use std::ffi::CString;
+        let service = CString::new(mac_pam::SERVICE).map_err(|e| e.to_string())?;
+        let user = CString::new(user).map_err(|_| "the user name holds a NUL".to_string())?;
+        let mut tok = Vec::with_capacity(password.len() + 1);
+        tok.extend_from_slice(password);
+        tok.push(0);
+        let conv = mac_pam::PamConv {
+            conv: mac_pam::refuse,
+            appdata: std::ptr::null_mut(),
+        };
+        let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: every pointer outlives the calls; `handle` is written by
+        // pam_start and ended once; `tok` is NUL-terminated and PAM copies
+        // it (OpenPAM `pam_set_item.c`), so it is wiped here after.
+        let code = unsafe {
+            let rc = mac_pam::pam_start(service.as_ptr(), user.as_ptr(), &conv, &mut handle);
+            if rc != mac_pam::PAM_SUCCESS || handle.is_null() {
+                wipe(&mut tok);
+                return Err(format!("pam_start answered {rc}"));
+            }
+            let rc = mac_pam::pam_set_item(handle, mac_pam::PAM_AUTHTOK, tok.as_ptr().cast());
+            let code = if rc == mac_pam::PAM_SUCCESS {
+                mac_pam::pam_authenticate(handle, mac_pam::PAM_DISALLOW_NULL_AUTHTOK)
+            } else {
+                wipe(&mut tok);
+                mac_pam::pam_end(handle, rc);
+                return Err(format!("pam_set_item answered {rc}"));
+            };
+            mac_pam::pam_end(handle, code);
+            code
+        };
+        wipe(&mut tok);
+        Ok(code)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Checker for MacPam {
+    /// The check runs on its own thread with the helper's deadline: the
+    /// module waits about 2 s after a wrong password, and OpenDirectory can
+    /// take longer; a check that does not answer is no verdict.
+    fn check(&self, user: &str, password: &[u8]) -> Verdict {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let user = user.to_string();
+        let mut copy = password.to_vec();
+        let started = std::thread::Builder::new()
+            .name("person-check".into())
+            .spawn(move || {
+                let r = MacPam::authenticate(&user, &copy);
+                wipe(&mut copy);
+                let _ = tx.send(r);
+            });
+        if let Err(e) = started {
+            return Verdict::Unavailable(format!("the password check did not start: {e}"));
+        }
+        match rx.recv_timeout(HELPER_DEADLINE) {
+            Ok(Ok(code)) => mac_verdict(code),
+            Ok(Err(why)) => Verdict::Unavailable(format!("macOS's password check failed: {why}")),
+            Err(_) => Verdict::Unavailable("macOS's password check did not answer".into()),
+        }
+    }
+}
+
+/// Where the platform has no check built (Windows is lane Z's), or the
+/// platform's own cannot run: every `yes` that needs one is refused, and
+/// says why.
 pub struct NoChecker(pub &'static str);
 
 impl Checker for NoChecker {
@@ -380,9 +560,17 @@ pub fn platform() -> Box<dyn Checker> {
             Err(why) => Box::new(NoChecker(Box::leak(why.into_boxed_str()))),
         };
     }
-    Box::new(NoChecker(
+    // macOS (fix pass 12 (Mac)): the system's own PAM service.
+    #[cfg(target_os = "macos")]
+    let checker: Box<dyn Checker> = match MacPam::find() {
+        Ok(c) => Box::new(c),
+        Err(why) => Box::new(NoChecker(Box::leak(why.into_boxed_str()))),
+    };
+    #[cfg(not(target_os = "macos"))]
+    let checker: Box<dyn Checker> = Box::new(NoChecker(
         "no person check is built for this system yet: run the chat under a boundary (srt or sbx)",
-    ))
+    ));
+    checker
 }
 
 /// The daemon's user name, for the helper (it compares it with the name of
@@ -742,6 +930,59 @@ mod tests {
         };
         let user = own_user().expect("this user's name");
         let v = helper.check(&user, b"derm-lane-v-not-the-password");
+        assert!(matches!(v, Verdict::Wrong(_)), "{v:?}");
+    }
+    /// Fix pass 12 (Mac): `pam_authenticate`'s codes on macOS. Only 9
+    /// (`PAM_AUTH_ERR`) is a wrong password, which the back-off counts; a
+    /// locked or disabled account, or a code this does not know, is no
+    /// verdict on the password.
+    #[test]
+    fn mac_only_pams_auth_error_is_a_wrong_password() {
+        assert_eq!(mac_verdict(0), Verdict::Person);
+        assert!(matches!(mac_verdict(9), Verdict::Wrong(_)));
+        for code in [7, 1024, 1025, 3, 4, 6, 12, 13, -1] {
+            assert!(
+                matches!(mac_verdict(code), Verdict::Unavailable(_)),
+                "{code}"
+            );
+        }
+    }
+
+    /// The PAM service's file must be there and root's, or no check runs:
+    /// without the file OpenPAM uses `other`, which denies every password.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_a_service_file_that_is_missing_or_not_roots_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("derm-macpam-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("checkpw");
+        assert!(MacPam::find_at(&f, 0).unwrap_err().contains("missing"));
+        std::fs::write(&f, "auth required pam_permit.so\n").unwrap();
+        // This user's file is not root's.
+        assert!(MacPam::find_at(&f, 0).is_err());
+        let me = derm_core::platform::effective_user();
+        assert!(MacPam::find_at(&f, me).is_ok());
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(MacPam::find_at(&f, me).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+        // The system's own is trusted.
+        assert!(MacPam::find().is_ok());
+    }
+
+    /// The real service: a wrong password for the user running the test is
+    /// refused, with no conversation (the right one is not known here). A
+    /// wrong password counts as a failed login for the account, so this
+    /// runs only in CI or with `DERM_TEST_PAM=1`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_the_systems_pam_service_refuses_a_wrong_password() {
+        if std::env::var_os("CI").is_none() && std::env::var_os("DERM_TEST_PAM").is_none() {
+            eprintln!("a failed login for this account; set DERM_TEST_PAM=1 to run");
+            return;
+        }
+        let user = own_user().expect("this user's name");
+        let v = MacPam.check(&user, b"derm-fp12-not-the-password");
         assert!(matches!(v, Verdict::Wrong(_)), "{v:?}");
     }
 }
