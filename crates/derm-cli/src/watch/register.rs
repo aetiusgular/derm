@@ -1704,7 +1704,7 @@ mod cursor_tests {
     #[test]
     fn fp9_codex_tail_is_ps_tail() {
         assert_eq!(
-            CODEX_PS_PRE_TAIL,
+            super::CODEX_PS_PRE_TAIL,
             crate::hook::claude_format::marks::ps_tail("codex", "pre", 2)
         );
     }
