@@ -972,51 +972,108 @@ fn respond<W: Write>(stream: &mut W, status: u16, answer: Option<Answer>) -> std
 const LINGER_DEADLINE: Duration = Duration::from_secs(1);
 const LINGER_BYTES: usize = 8 * 1024;
 
-/// Refused sockets the closer thread may hold at once; past that, one is
-/// closed on the accept thread as before.
-const CLOSER_QUEUE: usize = 16;
+/// Refused sockets the closer thread holds at once; past that, one is
+/// drained on the accept thread as before. Above `MAX_CONNECTIONS`, so a
+/// flood of idle connections refused at the head cap fits (fix pass 9: a
+/// serial closer, one socket a second, filled at once on the box).
+const CLOSER_HOLDS: usize = 256;
+/// How often the closer looks at the sockets it holds.
+const CLOSER_TICK: Duration = Duration::from_millis(20);
 
-static CLOSER: OnceLock<Option<std::sync::mpsc::SyncSender<TcpStream>>> = OnceLock::new();
+struct Closer {
+    tx: std::sync::mpsc::Sender<TcpStream>,
+    held: Arc<AtomicUsize>,
+}
 
-/// A socket the accept thread refused (503 written): one closer thread
-/// closes it gently, reading what the client still sends for up to
-/// `LINGER_DEADLINE`. Closing at once leaves a request that arrives after
-/// the accept thread's drain unread, and Winsock then resets the
-/// connection, which discards the reply the client has not read yet
-/// (Microsoft, "Graceful Shutdown, Linger Options, and Socket Closure";
-/// RFC 1122 4.2.2.13). The box lost a 503 this way under load (fix pass 9,
-/// note BG section 5). The queue is bounded, so a flood costs one thread
-/// and `CLOSER_QUEUE` sockets; when it is full, or the thread could not
-/// start, the accept thread drains what is there, as before
-/// (`close_without_waiting` until fix pass 9).
+static CLOSER: OnceLock<Option<Closer>> = OnceLock::new();
+
+/// A socket the accept thread refused (503 written): its write side is shut
+/// now, so the client reads the reply's end at once, and one closer thread
+/// then reads what the client still sends, for up to `LINGER_DEADLINE` and
+/// `LINGER_BYTES` each, many sockets at a time, before it closes them.
+/// Closing at once leaves a request that arrives after the accept thread's
+/// drain unread, and Winsock then resets the connection, which discards
+/// the reply the client has not read yet (Microsoft, "Graceful Shutdown,
+/// Linger Options, and Socket Closure"; RFC 1122 4.2.2.13): the box lost a
+/// 503 this way under load, and the fix pass 9 test fails there without it
+/// (note BG section 5). The closer holds at most `CLOSER_HOLDS`; past that,
+/// or when its thread could not start, the accept thread drains what is
+/// there, as before (`close_without_waiting` until fix pass 9).
 fn refuse_closed(stream: TcpStream) {
-    // The reply's end goes out now, so the client is never kept waiting
-    // behind another refused socket's linger; the closer only takes in
-    // what still arrives.
     if stream.shutdown(std::net::Shutdown::Write).is_err() {
         return;
     }
-    let tx = CLOSER.get_or_init(|| {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<TcpStream>(CLOSER_QUEUE);
+    let closer = CLOSER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
+        let held = Arc::new(AtomicUsize::new(0));
+        let count = held.clone();
         std::thread::Builder::new()
             .name("otel-receiver-closer".into())
-            .spawn(move || {
-                for s in rx {
-                    linger_read(&s);
-                }
-            })
+            .spawn(move || close_refused(&rx, &count))
             .ok()
-            .map(|_| tx)
+            .map(|_| Closer { tx, held })
     });
-    let back = match tx {
-        Some(tx) => match tx.try_send(stream) {
-            Ok(()) => return,
-            Err(std::sync::mpsc::TrySendError::Full(s))
-            | Err(std::sync::mpsc::TrySendError::Disconnected(s)) => s,
-        },
-        None => stream,
+    if let Some(c) = closer {
+        if c.held.fetch_add(1, Ordering::SeqCst) < CLOSER_HOLDS {
+            match c.tx.send(stream) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::SendError(s)) => {
+                    c.held.fetch_sub(1, Ordering::SeqCst);
+                    drain_waiting_for_nothing(&s);
+                    return;
+                }
+            }
+        }
+        c.held.fetch_sub(1, Ordering::SeqCst);
+    }
+    drain_waiting_for_nothing(&stream);
+}
+
+/// The closer's loop: each socket non-blocking, read until the client
+/// closes, its deadline passes or it sent `LINGER_BYTES`, then dropped.
+fn close_refused(rx: &std::sync::mpsc::Receiver<TcpStream>, held: &AtomicUsize) {
+    let mut open: Vec<(TcpStream, Instant, usize)> = Vec::new();
+    let mut buf = [0u8; 1024];
+    let take = |s: TcpStream, open: &mut Vec<(TcpStream, Instant, usize)>| {
+        if s.set_nonblocking(true).is_ok() {
+            open.push((s, Instant::now() + LINGER_DEADLINE, 0));
+        } else {
+            held.fetch_sub(1, Ordering::SeqCst);
+        }
     };
-    drain_waiting_for_nothing(&back);
+    loop {
+        if open.is_empty() {
+            // Nothing held: wait for the next refused socket.
+            match rx.recv() {
+                Ok(s) => take(s, &mut open),
+                Err(_) => return,
+            }
+        } else if let Ok(s) = rx.recv_timeout(CLOSER_TICK) {
+            take(s, &mut open);
+        }
+        while let Ok(s) = rx.try_recv() {
+            take(s, &mut open);
+        }
+        let now = Instant::now();
+        open.retain_mut(|(s, deadline, read)| {
+            let keep = loop {
+                if *read >= LINGER_BYTES || now >= *deadline {
+                    break false;
+                }
+                match (&*s).read(&mut buf) {
+                    Ok(0) => break false,
+                    Ok(n) => *read += n,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break true,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break false,
+                }
+            };
+            if !keep {
+                held.fetch_sub(1, Ordering::SeqCst);
+            }
+            keep
+        });
+    }
 }
 
 /// Reads, without blocking, what input is already here (write side shut):
