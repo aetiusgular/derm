@@ -863,6 +863,10 @@ pub struct Daemon {
     /// Stretches of the audit log the Linux feed said it could not read
     /// (`feed.gap`, BW5R4-1), newest last, at most `FEED_GAPS_MAX`.
     feed_gaps: Mutex<VecDeque<(Option<i64>, i64, String)>>,
+    /// The sensitive paths the Linux feed last said the loaded audit rules
+    /// do not cover (`feed.unwatched`, E1-3), and when that list was first
+    /// posted. None when the last list was empty or none came.
+    os_unwatched: Mutex<Option<(i64, Vec<String>)>>,
     pub counters: Counters,
 }
 
@@ -875,6 +879,8 @@ const CHAT_CONTEXTS_BACK_MS: i64 = 8 * 24 * 3_600_000;
 
 /// How many `feed.gap` stretches the daemon keeps for its reports.
 const FEED_GAPS_MAX: usize = 64;
+/// How many `feed.unwatched` paths it keeps (the feed's list has 24 today).
+const UNWATCHED_MAX: usize = 64;
 
 /// The client name `derm-audit-feed run` gives its tail connection
 /// (`derm-audit-linux/src/bin/derm-audit-feed.rs`). The feed holds that
@@ -1155,6 +1161,7 @@ impl Daemon {
             run_watchers: Mutex::new(Vec::new()),
             os_feed: Mutex::new(OsFeed::default()),
             feed_gaps: Mutex::new(VecDeque::new()),
+            os_unwatched: Mutex::new(None),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -1450,6 +1457,32 @@ impl Daemon {
             gaps.push_back((from, to, why));
             while gaps.len() > FEED_GAPS_MAX {
                 gaps.pop_front();
+            }
+        }
+    }
+
+    /// E1-3: the feed's list of sensitive paths whose reads the loaded audit
+    /// rules do not record. The newest list stands; the same list again
+    /// keeps its first time; an empty one ends it. At most
+    /// `UNWATCHED_MAX` paths of 512 characters are kept.
+    fn note_unwatched(&self, e: &Event) {
+        let paths: Vec<String> = e
+            .detail
+            .get("paths")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .take(UNWATCHED_MAX)
+                    .map(|p| p.chars().take(512).collect())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Ok(mut cur) = self.os_unwatched.lock() {
+            if paths.is_empty() {
+                *cur = None;
+            } else if cur.as_ref().map(|(_, p)| p) != Some(&paths) {
+                *cur = Some((e.at, paths));
             }
         }
     }
@@ -1923,6 +1956,11 @@ impl Daemon {
                 // refused above).
                 if event.source == Source::Auditd && event.kind == "feed.gap" {
                     self.note_feed_gap(&event);
+                }
+                // E1-3: the sensitive paths the loaded audit rules do not
+                // cover, from the same scope.
+                if event.source == Source::Auditd && event.kind == "feed.unwatched" {
+                    self.note_unwatched(&event);
                 }
                 if event.source == Source::Run && event.kind == "run.start" {
                     self.set_chat_from_run(&event);
@@ -2469,6 +2507,15 @@ impl Daemon {
             // read, in the window, and for a chat, during its run (to its
             // stop and the join's keep).
             "osFeedGaps": Some(self.feed_gaps_in(since, until)).filter(|g| !g.is_empty()),
+            // E1-3: sensitive paths that exist and whose reads the loaded
+            // audit rules do not record, as the feed last found; for a chat
+            // and for the window alike, since it is the state now.
+            "osUnwatched": self
+                .os_unwatched
+                .lock()
+                .ok()
+                .and_then(|u| u.clone())
+                .map(|(at, paths)| json!({"paths": paths, "sinceMs": at})),
             "chatOsFeedGaps": run
                 .map(|(start, stop)| {
                     let end = stop.map_or(i64::MAX, |s| {

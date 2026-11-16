@@ -3342,6 +3342,38 @@ fn fp13r_5_a_feed_gap_does_not_tell_the_join_the_feed_is_current() {
     assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
 }
 
+/// E1-3: the feed's `feed.unwatched` is its own note like `feed.gap`: it
+/// has no OS time, so it says nothing about how far the feed has read.
+#[test]
+fn e1_3_a_feed_unwatched_note_does_not_tell_the_join_the_feed_is_current() {
+    let mut note = ev(
+        Source::Auditd,
+        "feed.unwatched",
+        42_500,
+        None,
+        json!({"paths": ["/home/u/.aws"], "checkedMs": 42_500}),
+    );
+    note.chat_id = String::new();
+    note.id = "auditd-unwatched-42500".into();
+    assert_eq!(feed_progress(&note), None);
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_G", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6301}));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    j.observe(&note);
+    let mut late = ev(
+        Source::Auditd,
+        "exec",
+        42_501,
+        Some(6301),
+        json!({"ppid": ROOT, "auditAt": 1_150, "exe": "/bin/sh"}),
+    );
+    late.id = "auditd-1150-1".into();
+    let r = j.observe(&late);
+    assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
+}
+
 /// Box retest of fix pass 13r, BW5R5-4: a real Claude Code 2.1.319 chat under
 /// srt 0.0.81 on Linux, its records as the daemon logged them on the box
 /// (`fixtures/README.md`). Inside bubblewrap's PID namespace a fork's

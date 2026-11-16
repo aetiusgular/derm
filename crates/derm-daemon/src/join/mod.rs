@@ -147,9 +147,9 @@ pub fn os_feed_time(e: &Event) -> Option<i64> {
 ///
 /// A feed's own `feed.gap` is no OS event: it carries no OS time, and its
 /// `at` is when it was posted, before the feed reads what it fell behind on
-/// (fp13's review, FP13R-5).
+/// (fp13's review, FP13R-5). Nor is its `feed.unwatched` (E1-3).
 pub fn feed_progress(e: &Event) -> Option<i64> {
-    if e.kind == "feed.gap" {
+    if e.kind == "feed.gap" || e.kind == "feed.unwatched" {
         return None;
     }
     os_feed_time(e).filter(|t| *t <= e.at + SLACK_AFTER_MS)

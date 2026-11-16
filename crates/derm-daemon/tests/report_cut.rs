@@ -684,6 +684,49 @@ fn bw5r4_1_a_chat_that_ran_in_a_feed_gap_is_named_not_fully_watched() {
     assert_eq!(w["report"]["osFeedGaps"].as_array().map(Vec::len), Some(1));
 }
 
+/// E1-3 (eval pass 1): `~/.aws` was made after the audit rules were
+/// installed, a script read a file in it, and the report read as a full
+/// watch. The feed now posts the sensitive paths the loaded rules do not
+/// cover (`feed.unwatched`), and the report names them until the feed posts
+/// an empty list.
+#[test]
+fn e1_3_paths_the_audit_rules_do_not_cover_are_named_until_the_feed_clears_them() {
+    let f = fixture();
+    let (mut d, _) = Client::hello(&f, DAEMON_TOKEN);
+    let w = d.ask(json!({"op": "report", "since": 0, "until": i64::MAX}));
+    assert!(w["report"]["osUnwatched"].is_null(), "{}", w["report"]);
+    let post = |d: &mut Client, n: i64, paths: Value| {
+        let r = d.ask(json!({"op": "event", "event": {
+            "id": format!("auditd-unwatched-{n}"), "at": n, "chatId": "", "harness": "",
+            "source": "auditd", "kind": "feed.unwatched", "summary": "unwatched",
+            "detail": {"paths": paths, "checkedMs": n}
+        }}));
+        assert_eq!(r["ok"], true, "{r}");
+    };
+    post(&mut d, 1, json!(["/home/t/.aws", "/home/t/.kube"]));
+    let w = d.ask(json!({"op": "report", "since": 0, "until": i64::MAX}));
+    assert_eq!(
+        w["report"]["osUnwatched"]["paths"],
+        json!(["/home/t/.aws", "/home/t/.kube"]),
+        "{}",
+        w["report"]
+    );
+    assert!(w["report"]["osUnwatched"]["sinceMs"].as_i64().unwrap_or(0) > 0);
+    // A chat's report says it too: its reads there were not recorded.
+    let c = d.ask(json!({"op": "report", "chat": "chat-x", "since": 0, "until": i64::MAX}));
+    assert_eq!(c["report"]["osUnwatched"]["paths"][0], "/home/t/.aws");
+    // The same list again keeps the time it was first seen.
+    let since = w["report"]["osUnwatched"]["sinceMs"].clone();
+    std::thread::sleep(Duration::from_millis(20));
+    post(&mut d, 2, json!(["/home/t/.aws", "/home/t/.kube"]));
+    let w = d.ask(json!({"op": "report", "since": 0, "until": i64::MAX}));
+    assert_eq!(w["report"]["osUnwatched"]["sinceMs"], since);
+    // The rules were installed again: the feed's next list is empty.
+    post(&mut d, 3, json!([]));
+    let w = d.ask(json!({"op": "report", "since": 0, "until": i64::MAX}));
+    assert!(w["report"]["osUnwatched"].is_null(), "{}", w["report"]);
+}
+
 /// BW5R4-1: a `since` tail says how many backlog events come before the
 /// live ones, so the Linux feed reads the audit log only once it knows
 /// every chat.

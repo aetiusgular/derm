@@ -5,11 +5,21 @@
 //! Syntax and fields are auditctl's at 3.1.2 (man page, noble). Loaded and
 //! checked in the lane's workspace on 27 Oct 2026: `auditctl -R` accepts
 //! every line and `auditctl -l` prints `a2&0x3` and `a2&0x40` for the flag
-//! filters. A `-F dir=` or `-F path=` rule for a path that does not exist
-//! does not load, and without `-c` every rule after it is lost too (run:
-//! "There was an error in line 2", then no rules). So the file starts with
-//! `-c`, those lines are written only for paths that exist now, and they
-//! come last: a path deleted before the next boot costs its own line only.
+//! filters. A `-F dir=` rule for a folder that does not exist does not
+//! load, nor does a `-F path=` rule whose parent folder does not exist, and
+//! without `-c` every rule after it is lost too (run: "There was an error in
+//! line 2", then no rules). So the file starts with `-c`, those lines are
+//! written only for paths that can load now, and they come last: a path
+//! deleted before the next boot costs its own line only.
+//!
+//! A `-F path=` rule for a file that does not exist yet loads when its
+//! parent folder exists, and records the file's opens once it is made (run
+//! in the cloud workspace, 16 Nov 2026, auditctl 3.1.2, kernel 6.x: the rule
+//! lists, and `cat` of the file made afterwards has a record with the key;
+//! E1-3). So a missing sensitive file gets its rule when its folder is
+//! there. A missing folder cannot be covered ahead of time: `-F path=` on
+//! it records opens of the folder itself and creations in it, not reads of
+//! the files inside (same run). `watchcheck.rs` finds those at run time.
 //!
 //! What it records, for processes of `uid` only (the kernel cannot filter
 //! by process tree; `tree.rs` does that):
@@ -20,8 +30,8 @@
 //!   openat2 (flags not filterable), truncate, rename*, unlink*, link*,
 //!   symlink*;
 //! - `derm_net`: connect (and i386 socketcall with call 3, connect);
-//! - `derm_sens`: opens under the sensitive folders and of the sensitive files
-//!   that exist when the file is made.
+//! - `derm_sens`: opens under the sensitive folders that exist when the file
+//!   is made, and of the sensitive files whose folder exists then.
 //!
 //! The write rules come before the sensitive ones: the first matching rule
 //! sets the key, and a read of `~/.ssh/id_x` matches no write rule, so it
@@ -103,42 +113,70 @@ pub fn render(input: &RulesInput) -> (String, Vec<String>) {
             ));
         }
     }
-    let home = input.home.trim_end_matches('/');
     let mut skipped = Vec::new();
-    let mut sens = |out: &mut String, field: &str, path: &str| {
-        if (input.exists)(path) {
-            for tag in ["b64", "b32"] {
-                out.push_str(&format!(
-                    "-a always,exit -F arch={tag} -S open,openat -F {field}={path} -F uid={uid} -k derm_sens\n"
-                ));
+    for (kind, path) in sensitive_paths(input.home, input.runtime_dir) {
+        let loads = match kind {
+            Watch::Dir => (input.exists)(&path),
+            // E1-3: a file's rule loads once its folder is there.
+            Watch::File => {
+                (input.exists)(&path) || parent(&path).is_some_and(|p| (input.exists)(p))
             }
-        } else {
-            skipped.push(path.to_string());
+        };
+        if !loads {
+            skipped.push(path);
+            continue;
         }
-    };
-    for d in HOME_DIRS {
-        sens(&mut out, "dir", &format!("{home}/{d}"));
-    }
-    for d in SYSTEM_DIRS {
-        sens(&mut out, "dir", d);
-    }
-    if let Some(rt) = input.runtime_dir.filter(|r| plain_path(r)) {
-        sens(
-            &mut out,
-            "dir",
-            &format!("{}/derm", rt.trim_end_matches('/')),
-        );
-        // The old name's token folder, while a tk-daemon may be left running
-        // (rename review R1).
-        sens(&mut out, "dir", &format!("{}/tk", rt.trim_end_matches('/')));
-    }
-    for f in HOME_FILES {
-        sens(&mut out, "path", &format!("{home}/{f}"));
-    }
-    for f in SYSTEM_FILES {
-        sens(&mut out, "path", f);
+        let field = match kind {
+            Watch::Dir => "dir",
+            Watch::File => "path",
+        };
+        for tag in ["b64", "b32"] {
+            out.push_str(&format!(
+                "-a always,exit -F arch={tag} -S open,openat -F {field}={path} -F uid={uid} -k derm_sens\n"
+            ));
+        }
     }
     (out, skipped)
+}
+
+/// How a sensitive path is watched: a folder with everything under it, or
+/// one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Watch {
+    Dir,
+    File,
+}
+
+/// Every path the rules file names for `derm_sens`, in its order: the one
+/// list `render` writes rules from and `watchcheck` checks at run time.
+pub fn sensitive_paths(home: &str, runtime_dir: Option<&str>) -> Vec<(Watch, String)> {
+    let home = home.trim_end_matches('/');
+    let mut out = Vec::new();
+    for d in HOME_DIRS {
+        out.push((Watch::Dir, format!("{home}/{d}")));
+    }
+    for d in SYSTEM_DIRS {
+        out.push((Watch::Dir, (*d).to_string()));
+    }
+    if let Some(rt) = runtime_dir.filter(|r| plain_path(r)) {
+        let rt = rt.trim_end_matches('/');
+        out.push((Watch::Dir, format!("{rt}/derm")));
+        // The old name's token folder, while a tk-daemon may be left running
+        // (rename review R1).
+        out.push((Watch::Dir, format!("{rt}/tk")));
+    }
+    for f in HOME_FILES {
+        out.push((Watch::File, format!("{home}/{f}")));
+    }
+    for f in SYSTEM_FILES {
+        out.push((Watch::File, (*f).to_string()));
+    }
+    out
+}
+
+fn parent(path: &str) -> Option<&str> {
+    let (dir, _) = path.rsplit_once('/')?;
+    (!dir.is_empty()).then_some(dir)
 }
 
 /// Whether a home path can go into a rule line unquoted: auditctl splits on
@@ -181,6 +219,32 @@ mod tests {
             let key = line.rsplit("-k ").next().unwrap();
             assert!(key.len() <= 31, "{line}");
         }
+    }
+
+    /// E1-3 (eval pass 1): `~/.npmrc` did not exist when the rules were
+    /// made, so it had no rule and a later read of it was not recorded. A
+    /// file's rule loads when its folder exists (see the module comment),
+    /// so it is written; a file whose folder is missing, and a missing
+    /// folder, still cannot be.
+    #[test]
+    fn e1_3_a_missing_file_gets_its_rule_when_its_folder_exists() {
+        let exists = |p: &str| matches!(p, "/home/u" | "/home/u/.docker" | "/etc");
+        let (text, skipped) = render(&RulesInput {
+            uid: 1000,
+            home: "/home/u",
+            runtime_dir: None,
+            exists: &exists,
+        });
+        assert!(text.contains("-S open,openat -F path=/home/u/.npmrc -F uid=1000 -k derm_sens\n"));
+        assert!(text.contains("-F path=/home/u/.docker/config.json -F uid=1000 -k derm_sens\n"));
+        assert!(text.contains("-F path=/etc/shadow "));
+        assert!(!skipped.contains(&"/home/u/.npmrc".to_string()));
+        // Its folder `~/.codex` is missing: the kernel refuses the rule.
+        assert!(!text.contains(".codex/auth.json"));
+        assert!(skipped.contains(&"/home/u/.codex/auth.json".to_string()));
+        // A missing folder has no rule that would record reads inside it.
+        assert!(!text.contains("/home/u/.aws"));
+        assert!(skipped.contains(&"/home/u/.aws".to_string()));
     }
 
     #[test]

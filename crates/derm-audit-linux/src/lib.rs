@@ -31,6 +31,7 @@ pub mod rules;
 pub mod sensitive;
 pub mod syscalls;
 pub mod tree;
+pub mod watchcheck;
 
 use derm_core::event::Event;
 
