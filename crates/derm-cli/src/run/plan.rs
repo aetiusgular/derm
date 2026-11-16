@@ -153,6 +153,34 @@ pub fn policy_asks(policy: Option<&derm_core::policy::PolicyFile>) -> bool {
             .any(|r| r.tool == "*" && r.harness.is_none() && r.chat.is_none())
 }
 
+/// The paths in the chat's folder that git or the harness reads and runs
+/// later, by absolute path: what srt keeps read-only there (its own denies
+/// of `.git/hooks` and `.git/config`, and the `deny_write` list below), for
+/// sbx's read-only mounts (E1-8). The git files of submodules and worktrees
+/// come from `run/mod.rs`'s `git_controls`.
+pub fn project_controls(harness: &str, control: &[&str], cwd: &str, home: &str) -> Vec<String> {
+    let cwd = cwd.trim_end_matches('/');
+    let mut out = vec![format!("{cwd}/.git/hooks"), format!("{cwd}/.git/config")];
+    if cwd == home.trim_end_matches('/') {
+        // The home's own copies are the harness's state, which it writes.
+        return out;
+    }
+    if harness == "codex" {
+        out.push(format!("{cwd}/.codex"));
+    } else {
+        out.extend(control.iter().map(|c| format!("{cwd}/{c}")));
+    }
+    if harness == "cline" {
+        out.push(format!("{cwd}/.clinerules"));
+    }
+    if harness == "cursor" {
+        out.push(format!("{cwd}/.claude"));
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub struct Inputs<'a> {
     pub args: &'a Args,
     pub chat: String,
@@ -209,6 +237,15 @@ pub struct Inputs<'a> {
     /// FP8R-5). git reads and runs what they name later, so srt keeps them
     /// read-only, for every harness.
     pub git_controls: Vec<String>,
+    /// Under sbx: the control paths in the chat's folder that exist, by
+    /// absolute path (`run/mod.rs` lists them from [`project_controls`] and
+    /// the git ones). Each is mounted read-only over the folder's own
+    /// read-write mount (E1-8).
+    pub sbx_readonly: Vec<String>,
+    /// Under sbx: the control paths in the chat's folder that cannot be
+    /// mounted read-only (missing, a link, or past the cap); `derm run`
+    /// looks at them again when the chat ends.
+    pub sbx_unheld: Vec<String>,
     /// The computer-use bridge's address (`127.0.0.1:<port>` or
     /// `[::1]:<port>`) from the daemon's `cu.endpoint`, when computer use is
     /// on (Mac test w5 retest 3, MW5-22). Under srt the endpoint file is
@@ -860,6 +897,32 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             kit = k;
             args.push(sbx.agent.clone());
             args.push(i.cwd.clone());
+            // E1-8 (eval pass 1): sbx mounts the chat's folder read-write,
+            // `.git/hooks` and the agents' project settings with it, and a
+            // script in the VM planted a git hook the host ran later. sbx
+            // takes more folders or files after the first, each read-only
+            // with `:ro` (https://docs.docker.com/reference/cli/sbx/create/:
+            // "PATH [PATH...]", "append :ro"); one inside the first holds
+            // over it on sbx 0.51.0 (Linux) and 0.53.0 (macOS): a write is
+            // refused (EROFS), so are a rename of it (EBUSY) and of the
+            // folder above it (EROFS), and `git commit` still works (run on
+            // the box and the Mac, 16 Nov 2026). A path that does not exist
+            // is refused by sbx, so only existing ones are named.
+            for p in &i.sbx_readonly {
+                args.push(format!("{p}:ro"));
+            }
+            if !i.sbx_readonly.is_empty() {
+                notes.push(format!(
+                    "derm run: read-only inside the sandbox, as under srt: {} (what git and the agents read and run later; `git commit` works, `git config` and new hooks do not)",
+                    i.sbx_readonly.join(", ")
+                ));
+            }
+            if !i.sbx_unheld.is_empty() {
+                notes.push(format!(
+                    "derm run: sbx cannot hold a path that does not exist (or is a link) read-only, so the sandbox can make or change: {}; derm looks at them when the chat ends and says which changed",
+                    i.sbx_unheld.join(", ")
+                ));
+            }
             if !i.args.rest.is_empty() || !launch_args.is_empty() {
                 args.push("--".into());
                 args.extend(launch_args.iter().cloned());
@@ -1566,6 +1629,8 @@ mod tests {
             gate_paths: Vec::new(),
             derm_exe: None,
             git_controls: Vec::new(),
+            sbx_readonly: Vec::new(),
+            sbx_unheld: Vec::new(),
             cu_endpoint: None,
             macos: false,
             terminal: false,
@@ -1735,6 +1800,78 @@ mod tests {
         );
         let args = a(&["goose", "--boundary", "sbx"]);
         assert!(build(&inputs(&args)).unwrap_err().contains("no sbx form"));
+    }
+
+    /// E1-8 (eval pass 1): under sbx a script planted `.git/hooks/pre-commit`
+    /// in the mounted project and the host ran it at the next commit. The
+    /// control paths that exist go on the create as read-only mounts, after
+    /// the folder and before the harness's own words.
+    #[test]
+    fn e1_8_sbx_mounts_the_projects_control_paths_read_only() {
+        let args = a(&["claude-code", "--boundary", "sbx", "--", "-p", "hi"]);
+        let p = build(&Inputs {
+            sbx_readonly: vec![
+                "/home/u/proj dir/.claude/settings.json".into(),
+                "/home/u/proj dir/.git/config".into(),
+                "/home/u/proj dir/.git/hooks".into(),
+            ],
+            sbx_unheld: vec!["/home/u/proj dir/.claude/hooks".into()],
+            ..inputs(&args)
+        })
+        .unwrap();
+        let at = p.args.iter().position(|w| w == "claude").unwrap();
+        assert_eq!(
+            p.args[at..at + 6],
+            [
+                "claude",
+                "/home/u/proj dir",
+                "/home/u/proj dir/.claude/settings.json:ro",
+                "/home/u/proj dir/.git/config:ro",
+                "/home/u/proj dir/.git/hooks:ro",
+                "--",
+            ]
+        );
+        let notes = p.notes.join("\n");
+        assert!(notes.contains("read-only inside the sandbox"), "{notes}");
+        assert!(notes.contains("/home/u/proj dir/.git/hooks"), "{notes}");
+        assert!(
+            notes.contains("can make or change: /home/u/proj dir/.claude/hooks"),
+            "{notes}"
+        );
+        // With nothing to hold, the argv is as it was.
+        let plain = build(&inputs(&args)).unwrap();
+        assert!(!plain.args.iter().any(|w| w.ends_with(":ro")));
+    }
+
+    /// E1-8: the list is srt's, for the chat's folder: git's hooks and
+    /// config, and the harness's own control files there; never the home's.
+    #[test]
+    fn e1_8_the_projects_control_paths_are_srts() {
+        let c = project_controls(
+            "claude-code",
+            &[".claude/settings.json", ".claude/hooks"],
+            "/w/proj/",
+            "/home/u",
+        );
+        assert_eq!(
+            c,
+            [
+                "/w/proj/.claude/hooks",
+                "/w/proj/.claude/settings.json",
+                "/w/proj/.git/config",
+                "/w/proj/.git/hooks",
+            ]
+        );
+        let codex = project_controls("codex", &[".codex/config.toml"], "/w/proj", "/home/u");
+        assert!(codex.contains(&"/w/proj/.codex".to_string()));
+        assert!(!codex.iter().any(|p| p.ends_with("config.toml")));
+        let home = project_controls(
+            "claude-code",
+            &[".claude/settings.json"],
+            "/home/u",
+            "/home/u/",
+        );
+        assert_eq!(home, ["/home/u/.git/hooks", "/home/u/.git/config"]);
     }
 
     #[test]

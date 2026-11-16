@@ -561,6 +561,87 @@ fn git_controls(cwd: &Path) -> Vec<String> {
     out
 }
 
+/// How many paths `derm run` asks sbx to mount read-only in the chat's
+/// folder; the rest are looked at again when the chat ends. sbx's page
+/// names no limit, so this one is derm's own, well above a plain project's
+/// (two git paths and a handful of the harness's).
+const SBX_READONLY_MAX: usize = 32;
+
+/// E1-8: the control paths in the chat's folder for an sbx chat, split into
+/// those sbx can hold read-only (a real file or folder that exists, with no
+/// `:` in its name, which sbx reads as the mode's mark) and those it cannot.
+fn sbx_controls(harness: &harness::Harness, cwd: &str, home: &str) -> (Vec<String>, Vec<String>) {
+    let mut all = plan::project_controls(harness.id, harness.control, cwd, home);
+    all.extend(git_controls(Path::new(cwd)));
+    all.sort();
+    all.dedup();
+    let mut held = Vec::new();
+    let mut unheld = Vec::new();
+    for p in all {
+        let real = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir() || m.is_file());
+        if real && !p.contains(':') && held.len() < SBX_READONLY_MAX {
+            held.push(p);
+        } else {
+            unheld.push(p);
+        }
+    }
+    (held, unheld)
+}
+
+/// What a control path holds now, to tell after the chat whether the
+/// sandbox made or changed it (E1-8): absent, a link and where it points, a
+/// file's hash, or a folder's entries (names, sizes, hashes of files up to
+/// 1 MiB) down 4 levels and 512 entries. Nothing here follows a link.
+fn control_print(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    fn walk(p: &Path, depth: usize, left: &mut usize, h: &mut sha2::Sha256) {
+        use sha2::Digest;
+        let Ok(m) = std::fs::symlink_metadata(p) else {
+            h.update(b"absent");
+            return;
+        };
+        if m.file_type().is_symlink() {
+            h.update(b"link");
+            if let Ok(t) = std::fs::read_link(p) {
+                h.update(t.to_string_lossy().as_bytes());
+            }
+        } else if m.is_file() {
+            h.update(b"file");
+            h.update(m.len().to_le_bytes());
+            if m.len() <= 1 << 20 {
+                if let Ok(b) = std::fs::read(p) {
+                    h.update(&b);
+                }
+            } else if let Ok(t) = m.modified() {
+                h.update(format!("{t:?}").as_bytes());
+            }
+        } else if m.is_dir() {
+            h.update(b"dir");
+            if depth >= 4 {
+                return;
+            }
+            let mut names: Vec<PathBuf> = std::fs::read_dir(p)
+                .map(|rd| rd.flatten().map(|e| e.path()).collect())
+                .unwrap_or_default();
+            names.sort();
+            for n in names {
+                if *left == 0 {
+                    return;
+                }
+                *left -= 1;
+                h.update(n.to_string_lossy().as_bytes());
+                walk(&n, depth + 1, left, h);
+            }
+        } else {
+            h.update(b"other");
+        }
+    }
+    let mut h = Sha256::new();
+    let mut left = 512usize;
+    walk(path, 0, &mut left, &mut h);
+    format!("{:x}", h.finalize())
+}
+
 /// Each submodule's git folder under the chat's `.git/modules` (FP8-S2),
 /// nested ones too (`modules/a/modules/b`), by absolute path: a folder there
 /// holding a `config` or a `HEAD` is one. No link is followed, at most 8
@@ -1470,6 +1551,14 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let cline_dir = format!("{}/.cline/derm-approval/{chat}", home.trim_end_matches('/'));
     // R7, option 1: the daemon's port for the gate's route out of srt.
     let otlp_endpoint = otlp.clone();
+    // E1-8: under sbx, what git and the harness read and run later in the
+    // chat's folder is mounted read-only where it exists; the rest is
+    // looked at again when the chat ends.
+    let (sbx_held, sbx_unheld) = if a.boundary == Boundary::Sbx {
+        sbx_controls(a.harness, &cwd, &home)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let inputs = plan::Inputs {
         args: &a,
         chat: chat.clone(),
@@ -1506,6 +1595,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        // E1-8: the control paths in the chat's folder sbx holds read-only.
+        sbx_readonly: sbx_held.clone(),
+        sbx_unheld: sbx_unheld.clone(),
         // MW5-22: the computer-use bridge's address, when the daemon
         // publishes one (computer use on), for srt's settings.
         cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
@@ -1929,6 +2021,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // sbx (lane T's request T-2): create the sandbox, let it reach derm's
     // ports on the host with a rule for it alone (case 117), then attach;
     // it is removed when the harness ends, or on any way out from here (SB3).
+    // E1-8: what the paths sbx cannot hold read-only are now.
+    let unheld_before: Vec<(String, String)> = sbx_unheld
+        .iter()
+        .map(|p| (p.clone(), control_print(Path::new(p))))
+        .collect();
     let mut sandbox = if p.sandbox_name.is_some() {
         match boundary::sbx::start(
             env.program("sbx"),
@@ -2096,6 +2193,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "acp": filter.is_some(),
         "trust": "client",
     });
+    if a.boundary == Boundary::Sbx {
+        // E1-8: what sbx holds read-only in the chat's folder, and what it
+        // could not.
+        base["sbxReadOnly"] = json!(sbx_held);
+        base["sbxUnheld"] = json!(sbx_unheld);
+    }
     match argv_file {
         Some(Ok(name)) => {
             base["contentKept"] = json!(true);
@@ -2236,6 +2339,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             false
         }
     });
+    // E1-8: the sandbox is gone, so nothing in it writes any more; which of
+    // the paths it could write did it make or change.
+    let control_changed: Vec<String> = unheld_before
+        .iter()
+        .filter(|(p, before)| control_print(Path::new(p)) != *before)
+        .map(|(p, _)| p.clone())
+        .collect();
+    if !control_changed.is_empty() {
+        eprintln!(
+            "derm run: this chat made or changed, from inside the sandbox, what git or an agent reads and runs later in your project: {}. Read it before you run git or an agent there.",
+            control_changed.join(", ")
+        );
+    }
     if let Some(c) = cleanup.companion.as_mut() {
         exec::stop_companion(c, Duration::from_secs(2));
     }
@@ -2262,6 +2378,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         detail["durationMs"] = json!(started.elapsed().as_millis() as u64);
         if let Some(removed) = sandbox_removed {
             detail["sandboxRemoved"] = json!(removed);
+        }
+        if !control_changed.is_empty() {
+            detail["sbxControlChanged"] = json!(control_changed);
         }
         let summary = format!(
             "{} under {} ended, code {code}",
@@ -3726,6 +3845,85 @@ mod end_to_end {
             );
         }
         assert!(seen(&st).is_empty(), "the harness never started");
+    }
+
+    /// E1-8 (eval pass 1, the box and the Mac): under sbx the chat's folder
+    /// is mounted read-write, and a script in the VM planted a git hook the
+    /// host ran later. The control paths that exist go on the create as
+    /// read-only mounts; one that does not exist cannot, so `derm run`
+    /// looks at it when the sandbox is gone and says it was made.
+    #[cfg(unix)]
+    #[test]
+    fn e1_8_sbx_holds_the_projects_control_paths_and_names_what_the_chat_made() {
+        let st = setup("sbx");
+        let real = std::fs::canonicalize(&st.work).unwrap();
+        std::fs::create_dir_all(real.join(".git/hooks")).unwrap();
+        std::fs::write(real.join(".git/config"), "[core]\n").unwrap();
+        let calls = st.fake.dir.join("sbx-calls");
+        // The stand-in for sbx: the attach makes a control file of pi's in
+        // the project, as an agent in the VM can through the mount.
+        let sbx = script(
+            &st.fake.dir,
+            "sbx",
+            &format!(
+                "echo \"$*\" >> '{calls}'; \
+                 if [ \"$1 $2\" = 'policy log' ]; then echo '{{\"blocked\":[]}}'; exit 0; fi; \
+                 if [ \"$1\" = run ]; then mkdir -p '{work}/.pi/agent' && echo '{{}}' > '{work}/.pi/agent/settings.json'; fi; \
+                 exit 0",
+                calls = calls.display(),
+                work = real.display(),
+            ),
+        );
+        let mut env = RunEnv {
+            socket: st.env.socket.clone(),
+            home: st.env.home.clone(),
+            gateway: None,
+            programs: st.env.programs.clone(),
+            policy: None,
+            path: String::new(),
+            userns: None,
+            bwrap_profile: false,
+            goose_mode: None,
+            cline_responder: None,
+        };
+        env.programs.push(("sbx".into(), sbx));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&["pi", "--boundary", "sbx", "--chat", "chat-h", "--cwd", &cwd]),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&calls).unwrap();
+        let create = calls
+            .lines()
+            .find(|l| l.starts_with("create "))
+            .expect("a create");
+        let real = real.to_string_lossy();
+        assert!(
+            create.ends_with(&format!(
+                " {real} {real}/.git/config:ro {real}/.git/hooks:ro"
+            )),
+            "{create}"
+        );
+        let attach = calls.lines().find(|l| l.starts_with("run ")).unwrap();
+        assert!(!attach.contains(":ro"), "{attach}");
+        let ev = events(&st);
+        let start = ev.iter().find(|e| e["kind"] == "run.start").unwrap();
+        assert_eq!(
+            start["detail"]["sbxReadOnly"],
+            json!([format!("{real}/.git/config"), format!("{real}/.git/hooks")])
+        );
+        let made = format!("{real}/.pi/agent/settings.json");
+        assert!(
+            start["detail"]["sbxUnheld"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(made)),
+            "{start}"
+        );
+        let stop = ev.iter().find(|e| e["kind"] == "run.stop").unwrap();
+        assert_eq!(stop["detail"]["sbxControlChanged"], json!([made]), "{stop}");
     }
 
     #[cfg(unix)]

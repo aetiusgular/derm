@@ -142,12 +142,25 @@ pub(crate) fn stages(
         i += 1;
     }
     let name = name.ok_or("no --name in the sbx argv")?;
-    let [agent, cwd]: [String; 2] = positional.try_into().map_err(|p: Vec<String>| {
-        format!(
+    if positional.len() < 2 {
+        return Err(format!(
             "the sbx argv names {} things, not an agent and a folder",
-            p.len()
-        )
-    })?;
+            positional.len()
+        ));
+    }
+    // E1-8: after the folder, the paths in it held read-only, each an
+    // absolute path with sbx's `:ro` (the create page: "PATH [PATH...]").
+    let readonly = positional.split_off(2);
+    if let Some(bad) = readonly
+        .iter()
+        .find(|p| !p.starts_with('/') || !p.ends_with(":ro") || p.len() < 5)
+    {
+        return Err(format!(
+            "the sbx argv names {bad:?} after the folder, which is not a read-only path"
+        ));
+    }
+    let cwd = positional.pop().unwrap_or_default();
+    let agent = positional.pop().unwrap_or_default();
     let workload = kit.unwrap_or(agent);
 
     let mut create = vec!["create".to_string(), "--name".into(), name.clone()];
@@ -161,6 +174,7 @@ pub(crate) fn stages(
         create.push("--no-input".into());
     }
     create.extend([workload.clone(), cwd]);
+    create.extend(readonly);
 
     let ports = ports(env_set);
     let allow = ports
@@ -428,9 +442,52 @@ pub(crate) fn start_with(
                 .join(", ")
         );
     }
+    let key_in_env = plan
+        .env_set
+        .iter()
+        .any(|(k, v)| k == "ANTHROPIC_API_KEY" && !v.is_empty())
+        || (std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|v| !v.is_empty())
+            && !plan.env_remove.iter().any(|k| k == "ANTHROPIC_API_KEY"));
+    // After the create and the rules, before the attach: the sandbox is
+    // there, and the note is the last thing said before the agent's own.
+    if let Some(note) = credential_note(harness, key_in_env, &super::probe::run, sbx) {
+        eprintln!("{note}");
+    }
     plan.args = st.attach;
     plan.sandbox_name = Some(st.name);
     Ok(sandbox)
+}
+
+/// E1-9 (eval pass 1): on the box, Claude Code under sbx answered every
+/// turn "Not logged in" and nothing derm printed said why. sbx keeps the
+/// model credential itself (`sbx secret set`, "Available services:
+/// anthropic, ..." in its help, 0.51.0); `sbx secret ls --service anthropic`
+/// prints `No secrets found for service "anthropic"` with none stored (the
+/// box, 0.51.0) and a table with one (the Mac, 0.53.0: `(global) anthropic
+/// (oauth configured)`), exit 0 both times. A note when that first line
+/// says none is stored and the key is not in derm's environment; nothing
+/// when sbx does not answer or says anything else. Claude Code only: the
+/// other agents' services were not run.
+pub(crate) fn credential_note(
+    harness: &str,
+    key_in_env: bool,
+    run: super::probe::Runner,
+    sbx: &str,
+) -> Option<String> {
+    if harness != "claude-code" || key_in_env {
+        return None;
+    }
+    let args = [
+        "secret".to_string(),
+        "ls".into(),
+        "--service".into(),
+        "anthropic".into(),
+    ];
+    let r = run(Path::new(sbx), &args, Duration::from_secs(10)).ok()?;
+    (r.ok && r.line.starts_with("No secrets found")).then(|| {
+        "derm run: sbx has no Anthropic credential stored (sbx secret ls --service anthropic) and ANTHROPIC_API_KEY is not set here,          so Claude Code in the sandbox will answer \"Not logged in\" until you log in inside it (/login).          To store one for every sandbox: sbx secret set -g anthropic"
+            .to_string()
+    })
 }
 
 /// Why a create made no sandbox, and what to do. sbx prints its own error
@@ -465,6 +522,91 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// E1-9: with no Anthropic credential in sbx and none in the
+    /// environment, a Claude Code chat is told before it starts. The lines
+    /// are sbx's own (the box, 0.51.0; the Mac, 0.53.0).
+    #[test]
+    fn e1_9_a_missing_sbx_credential_is_said_before_the_chat() {
+        use super::super::probe::Ran;
+        let none = |_: &Path, a: &[String], _: Duration| {
+            assert_eq!(a, s(&["secret", "ls", "--service", "anthropic"]));
+            Ok(Ran {
+                ok: true,
+                line: "No secrets found for service \"anthropic\"".into(),
+            })
+        };
+        let note = credential_note("claude-code", false, &none, "sbx").expect("a note");
+        assert!(note.contains("Not logged in"), "{note}");
+        assert!(note.contains("sbx secret set -g anthropic"), "{note}");
+        // The key is in the environment, or the agent is not Claude Code.
+        assert_eq!(credential_note("claude-code", true, &none, "sbx"), None);
+        assert_eq!(credential_note("pi", false, &none, "sbx"), None);
+        // One is stored.
+        let stored = |_: &Path, _: &[String], _: Duration| {
+            Ok(Ran {
+                ok: true,
+                line: "SCOPE      SERVICE     SECRET".into(),
+            })
+        };
+        assert_eq!(credential_note("claude-code", false, &stored, "sbx"), None);
+        // sbx did not answer, or failed: nothing is claimed.
+        let silent = |_: &Path, _: &[String], _: Duration| Err("no answer in 10 s".to_string());
+        assert_eq!(credential_note("claude-code", false, &silent, "sbx"), None);
+        let failed = |_: &Path, _: &[String], _: Duration| {
+            Ok(Ran {
+                ok: false,
+                line: "No secrets found".into(),
+            })
+        };
+        assert_eq!(credential_note("claude-code", false, &failed, "sbx"), None);
+    }
+
+    /// E1-8: the read-only paths go on the create, after the folder; the
+    /// attach names no folder, so none there. A word after the folder that
+    /// is not an absolute `:ro` path is refused, not passed to sbx.
+    #[test]
+    fn e1_8_read_only_paths_go_on_the_create_alone() {
+        let args = s(&[
+            "run",
+            "--name",
+            "derm-c1",
+            "claude",
+            "/work",
+            "/work/.git/hooks:ro",
+            "/work/.git/config:ro",
+            "--",
+            "-p",
+            "hi",
+        ]);
+        let st = stages(&args, &[], false, &[]).unwrap();
+        assert_eq!(
+            st.create,
+            s(&[
+                "create",
+                "--name",
+                "derm-c1",
+                "--no-input",
+                "claude",
+                "/work",
+                "/work/.git/hooks:ro",
+                "/work/.git/config:ro",
+            ])
+        );
+        assert_eq!(
+            st.attach,
+            s(&["run", "--name", "derm-c1", "--", "-p", "hi"])
+        );
+        for bad in ["/work/.git/hooks", "relative:ro", "/etc"] {
+            let args = s(&["run", "--name", "derm-c1", "claude", "/work", bad]);
+            let e = stages(&args, &[], false, &[]).unwrap_err();
+            assert!(e.contains("not a read-only path"), "{e}");
+        }
+        let one = s(&["run", "--name", "derm-c1", "claude"]);
+        assert!(stages(&one, &[], false, &[])
+            .unwrap_err()
+            .contains("names 1 things"));
     }
 
     /// Box test w5, BW5-5's rest: the dry run printed the one-step `sbx run`
