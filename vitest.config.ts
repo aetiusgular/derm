@@ -9,8 +9,9 @@ import { defineConfig } from "vitest/config";
 // gate), and every one of their cases is held by a Rust test that runs on
 // Windows. scripts/windows-holders.mjs fails on every system when a case in
 // them has no holder (note BF section 4.1). Linux and macOS run them.
+// DERM_LIST_WINDOWS_HELD=1: the guard's own `vitest list`, which must see them.
 const windowsHeld: string[] =
-  process.platform === "win32"
+  process.platform === "win32" && process.env.DERM_LIST_WINDOWS_HELD !== "1"
     ? (JSON.parse(readFileSync(new URL("./scripts/windows-held.json", import.meta.url), "utf8")) as { files: string[] }).files
     : [];
 

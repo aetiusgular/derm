@@ -75,6 +75,8 @@ function main() {
         maxBuffer: 64 * 1024 * 1024,
         shell: process.platform === "win32",
         stdio: ["ignore", "pipe", "inherit"],
+        // vitest.config.ts excludes these files on Windows unless told this.
+        env: { ...process.env, DERM_LIST_WINDOWS_HELD: "1" },
       });
   const tests = JSON.parse(raw).map((t) => ({ file: relative(root, t.file).split(sep).join("/"), name: t.name }));
   const fixtures = {};
