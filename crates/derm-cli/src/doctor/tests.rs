@@ -1012,7 +1012,7 @@ fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
     put(
         &h.root.join("home/.codex/hooks.json"),
         &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
-            "command": format!("& '{}' hook codex pre; exit $LASTEXITCODE", derm.display()), "timeout": 120}]}]}})
+            "command": format!("& '{}'{}", derm.display(), crate::watch::register::CODEX_PS_PRE_TAIL), "timeout": 120}]}]}})
         .to_string(),
     );
     let r = run_fixture("codex", &env(&h), &probes());

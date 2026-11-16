@@ -381,6 +381,10 @@ export class Responder {
         answer = await answerRequest(read.request, this.deps);
       }
       const req = "request" in read ? read.request : undefined;
+      // Windows: the folder is judged before the request is checked again,
+      // so no round trip falls between that check and the write (fix pass
+      // 8's review).
+      await this.judgeFolder();
       // The request may have changed or gone while derm decided (an ask can
       // take its whole timeout). Write nothing for a request derm did not read.
       const now = currentIdentity(file);
@@ -394,7 +398,6 @@ export class Responder {
         this.seen.delete(name);
         return;
       }
-      await this.judgeFolder();
       const folder = this.checkFolder();
       if (folder) {
         this.log(`derm-cline-approvals: ${folder}; no longer answering`);

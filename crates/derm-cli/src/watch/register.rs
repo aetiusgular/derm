@@ -321,12 +321,17 @@ fn is_this_derm(path: &str) -> bool {
 /// --write` writes it on Windows: a PreToolUse command under an every-call
 /// matcher that runs an absolute path to `derm` or `derm.exe` with `hook
 /// codex pre`. Fix pass 8's form is PowerShell's, which Codex runs a Windows
-/// hook with (`& '<path>' hook codex pre; exit $LASTEXITCODE`); fix pass 7's
+/// hook with (`& '<path>'` and [`CODEX_PS_PRE_TAIL`]); fix pass 7's
 /// cmd.exe form (`"<path>" hook codex pre`) is found too, with `false`, since
 /// PowerShell reads it as a parse error and Codex lets the call through.
 /// Its path, the index of its group and handler, which Codex's trust key
 /// names (`<file>:pre_tool_use:<group>:<handler>`, Codex 0.167.2
 /// `codex-rs/hooks/src/lib.rs:125-135`), and whether it is PowerShell's form.
+/// What follows derm's quoted path in the Windows row's PreToolUse line
+/// (gates.json): a derm.exe that does not start blocks, since PowerShell's
+/// `exit $null` would be 0, an allow (fix pass 8's review, run on the box).
+pub const CODEX_PS_PRE_TAIL: &str = " hook codex pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE";
+
 pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize, bool)> {
     let groups = v.pointer("/hooks/PreToolUse")?.as_array()?;
     groups.iter().enumerate().find_map(|(g, group)| {
@@ -349,7 +354,15 @@ pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize, bool)> {
                 let cmd = hook.get("command").and_then(Value::as_str)?;
                 let (path, ps) = if let Some(rest) = cmd.strip_prefix("& '") {
                     let (path, tail) = rest.split_once('\'')?;
-                    (tail == " hook codex pre; exit $LASTEXITCODE").then_some((path, true))?
+                    if tail == CODEX_PS_PRE_TAIL && crate::connect::gate::ps_reads(path).is_none() {
+                        (path, true)
+                    } else if tail == " hook codex pre; exit $LASTEXITCODE" {
+                        // An earlier fix pass 8 line, which exits 0 (an
+                        // allow) when derm.exe does not start.
+                        (path, false)
+                    } else {
+                        return None;
+                    }
                 } else {
                     let rest = cmd.strip_prefix('"')?;
                     let (path, tail) = rest.split_once('"')?;
@@ -673,7 +686,7 @@ fn codex(env: &Env, home: &Path) -> Registered {
                 // PowerShell, where it is a parse error, a failure Codex lets
                 // through.
                 return Registered::No(format!(
-                    "derm's gate in {} is fix pass 7's cmd.exe line, which Codex runs with PowerShell, where it fails and Codex lets every call through; run derm connect codex --gate --write again",
+                    "derm's gate in {} is an older derm's line, which lets calls through on Windows (Codex runs it with PowerShell); run derm connect codex --gate --write again",
                     hooks_file.display()
                 ));
             }
@@ -1079,12 +1092,19 @@ mod tests {
         assert!(
             matches!(check("codex", &env), Registered::No(n) if n.contains("PowerShell") && n.contains("connect codex"))
         );
+        // An earlier fix pass 8 line, which allows when derm.exe does not
+        // start: a no too.
         put(
             &hooks,
             &entry(format!(
                 "& '{}' hook codex pre; exit $LASTEXITCODE",
                 me.display()
             )),
+        );
+        assert!(matches!(check("codex", &env), Registered::No(n) if n.contains("older derm")));
+        put(
+            &hooks,
+            &entry(format!("& '{}'{CODEX_PS_PRE_TAIL}", me.display())),
         );
         let r = check("codex", &env);
         assert!(
@@ -1113,11 +1133,11 @@ mod tests {
         assert!(matches!(check("codex", &env), Registered::No(n) if n.contains("turned off")));
         // Under a narrower matcher it is not the gate.
         let narrow = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
-            {"type": "command", "command": format!("& '{}' hook codex pre; exit $LASTEXITCODE", me.display())}]}]}});
+            {"type": "command", "command": format!("& '{}'{CODEX_PS_PRE_TAIL}", me.display())}]}]}});
         assert!(codex_hooks_gate(&narrow).is_none());
         put(
             &hooks,
-            &entry("& '/home/u/bin/derm' hook codex pre; exit $LASTEXITCODE".into()),
+            &entry(format!("& '/home/u/bin/derm'{CODEX_PS_PRE_TAIL}")),
         );
         assert!(
             matches!(check("codex", &env), Registered::YesNote(n) if n.contains("not this derm"))
@@ -1130,6 +1150,8 @@ mod tests {
             "& '/x/derm' hook codex pre; exit 0",
             "& '/x/other' hook codex pre; exit $LASTEXITCODE",
             "& 'derm' hook codex pre; exit $LASTEXITCODE",
+            // Review item 4: a curly quote ends the path in PowerShell.
+            "& '/x/a\u{2019}b/derm' hook codex pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE",
         ] {
             assert!(
                 codex_hooks_gate(&serde_json::from_str(&entry(bad.into())).unwrap()).is_none(),

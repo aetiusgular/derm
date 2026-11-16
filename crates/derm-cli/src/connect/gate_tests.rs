@@ -3106,15 +3106,17 @@ fn fp7_codex_windows_row_writes_hooks_json_and_refuses_while_the_plugin_is_on() 
     assert_eq!(pre.len(), 2, "the user's entry and derm's, once: {v}");
     assert_eq!(pre[0]["hooks"][0]["command"], "mine");
     // Fix pass 8: PowerShell's call operator and derm's exit code (Codex
-    // runs a Windows hook through PowerShell; the box run). Fix pass 7's
-    // expectation, the cmd.exe line, was the form that failed open there.
+    // runs a Windows hook through PowerShell; the box run), and a derm.exe
+    // that does not start blocks (exit $null is 0 there; the review, run on
+    // the box). Fix pass 7's expectation, the cmd.exe line, was the form
+    // that failed open there.
     assert_eq!(
         pre[1]["hooks"][0]["command"],
-        format!("& '{derm}' hook codex pre; exit $LASTEXITCODE")
+        format!("& '{derm}'{}", crate::watch::register::CODEX_PS_PRE_TAIL)
     );
     assert_eq!(
         v["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
-        format!("& '{derm}' hook codex post; exit $LASTEXITCODE")
+        format!("& '{derm}' hook codex post; if ($null -eq $LASTEXITCODE) {{ [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 1 }}; exit $LASTEXITCODE")
     );
 }
 

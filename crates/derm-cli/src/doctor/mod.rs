@@ -762,7 +762,7 @@ fn codex_hooks_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
     let (gate, _, _, ps) = crate::watch::register::codex_hooks_gate(&v)?;
     if !ps {
         return Some(Err(format!(
-            "the gate in {} is fix pass 7's cmd.exe line, which Codex runs with PowerShell, where it fails and Codex lets every call through; run derm connect codex --gate --write again",
+            "the gate in {} is an older derm's line, which lets calls through on Windows (Codex runs it with PowerShell); run derm connect codex --gate --write again",
             file.display()
         )));
     }
@@ -1231,8 +1231,9 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
         #[cfg(windows)]
         let windows_line = if id == "codex" && direct.is_some() {
             Some(format!(
-                "& '{}' hook codex pre; exit $LASTEXITCODE",
-                hook.display()
+                "& '{}'{}",
+                hook.display(),
+                crate::watch::register::CODEX_PS_PRE_TAIL
             ))
         } else {
             windows_line

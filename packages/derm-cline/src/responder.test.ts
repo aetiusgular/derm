@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { defaultDeps, type Deps } from "./cline.ts";
 import { GateServe } from "./serve/client.ts";
+import { accessEntries } from "../../derm-pi/test/modes.ts";
 import { APPROVAL_DIR_VAR, decisionName, folderProblem, main, PARTIAL_GRACE_MS, parseArgs, parseRequestName, Responder, SERVE_JUDGES_FOLDER, UNTAKEN_MS } from "./responder.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -131,8 +132,13 @@ describe.runIf(DERM !== undefined)("answers (needs a derm build)", () => {
     await pass(responder(dir));
     expect(decision(dir, "s1", rid)).toEqual({ approved: true });
     // Windows: the file takes the folder's access list, which derm gate serve
-    // judged private before the write; Node's mode there is made up.
-    if (!SERVE_JUDGES_FOLDER) expect(lstatSync(path.join(dir, decisionName("s1", rid))).mode & 0o777).toBe(0o600);
+    // judged private before the write (Node's mode there is made up): no
+    // entry for Everyone, Users or Authenticated Users (fix pass 8's review).
+    if (SERVE_JUDGES_FOLDER) {
+      const entries = accessEntries(path.join(dir, decisionName("s1", rid))).map((e) => e.toLowerCase());
+      expect(entries.length).toBeGreaterThan(0);
+      for (const e of entries) expect(e, e).not.toMatch(/^(everyone|builtin\\users|nt authority\\authenticated users):/);
+    } else expect(lstatSync(path.join(dir, decisionName("s1", rid))).mode & 0o777).toBe(0o600);
     expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
   });
   it("a denied call and the reject list: approved false with derm's reason", async () => {
