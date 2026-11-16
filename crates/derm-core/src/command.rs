@@ -64,7 +64,7 @@ pub fn command_problem(words: &[String]) -> Option<String> {
 const WRAPPERS: &[&str] = &[
     "sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic",
     "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox",
-    "parallel", "setsid", "flock", "unshare", "run0",
+    "parallel", "setsid", "flock", "unshare", "run0", "watch", "strace", "ltrace",
 ];
 const SHELLS: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash",
@@ -156,7 +156,16 @@ fn is_head(word: &str, heads: &[&str]) -> bool {
 fn read(input: &[String], heads: &[&str], depth: usize, out: &mut Vec<Vec<String>>) {
     let mut words: Vec<String> = input.to_vec();
     for _ in 0..16 {
-        while words.first().is_some_and(|w| is_assignment(w)) {
+        // Assignments, and the reserved words a simple command may start
+        // with before its program (`then rm`, `do git push`): the splitter
+        // ends a command at `;`, so `if true; then rm -rf /; fi` reaches
+        // here as `then rm -rf /` (eval pass 1's review, E1R-3: a deny or an
+        // ask rule and step 7e missed every command inside `if`, `for` and
+        // `while`).
+        while words
+            .first()
+            .is_some_and(|w| is_assignment(w) || RESERVED.contains(&w.as_str()))
+        {
             words.remove(0);
         }
         let Some(first) = words.first() else {
@@ -187,6 +196,23 @@ fn read(input: &[String], heads: &[&str], depth: usize, out: &mut Vec<Vec<String
         }
         if head == "eval" {
             walk(&rest.join(" "), heads, depth + 1, out);
+            return;
+        }
+        // `su [user] -c <string>`: the string is a shell's (E1R-8).
+        if head == "su" {
+            let mut i = 0;
+            while i < rest.len() {
+                let w = rest[i].as_str();
+                if let Some(v) = w.strip_prefix("--command=") {
+                    walk(v, heads, depth + 1, out);
+                } else if w == "-c" || w == "--command" || w == "--session-command" {
+                    if let Some(v) = rest.get(i + 1) {
+                        walk(v, heads, depth + 1, out);
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
             return;
         }
         // GNU parallel runs its command words and its `:::` arguments
@@ -267,6 +293,13 @@ pub fn token_is_text(folded: &str, token: &str, plain: bool) -> bool {
             before && after
         }),
         "{" | "}" => {
+            // A `#` starts a comment for the shell and for `commands`, and a
+            // quote inside the comment would open one for the scan below
+            // only (eval pass 1's review, E1R-1: `echo hi # '` on one line
+            // hid an unquoted brace on the next). No `#` at all, then.
+            if folded.contains('#') {
+                return false;
+            }
             let mut quote: Option<char> = None;
             for c in &chars {
                 match quote {

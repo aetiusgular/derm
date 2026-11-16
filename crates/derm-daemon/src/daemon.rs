@@ -866,7 +866,11 @@ pub struct Daemon {
     /// The sensitive paths the Linux feed last said the loaded audit rules
     /// do not cover (`feed.unwatched`, E1-3), and when that list was first
     /// posted. None when the last list was empty or none came.
-    os_unwatched: Mutex<Option<(i64, Vec<String>)>>,
+    os_unwatched: Mutex<Option<(i64, Vec<String>, bool)>>,
+    /// Lists that have ended: from, to, paths (the review's E1R-13: a chat
+    /// that ran while a path was not watched must still read so after the
+    /// rules were installed again). Newest last, at most `FEED_GAPS_MAX`.
+    os_unwatched_past: Mutex<VecDeque<(i64, i64, Vec<String>)>>,
     pub counters: Counters,
 }
 
@@ -1162,6 +1166,7 @@ impl Daemon {
             os_feed: Mutex::new(OsFeed::default()),
             feed_gaps: Mutex::new(VecDeque::new()),
             os_unwatched: Mutex::new(None),
+            os_unwatched_past: Mutex::new(VecDeque::new()),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -1478,13 +1483,36 @@ impl Daemon {
                     .collect()
             })
             .unwrap_or_default();
-        if let Ok(mut cur) = self.os_unwatched.lock() {
-            if paths.is_empty() {
-                *cur = None;
-            } else if cur.as_ref().map(|(_, p)| p) != Some(&paths) {
-                *cur = Some((e.at, paths));
+        let none_seen = e.detail.get("noneSeen").and_then(Value::as_bool) == Some(true);
+        let Ok(mut cur) = self.os_unwatched.lock() else {
+            return;
+        };
+        if cur.as_ref().map(|(_, p, _)| p) == Some(&paths) {
+            return;
+        }
+        // The list that stood until now is kept with its end.
+        if let Some((from, old, _)) = cur.take() {
+            if let Ok(mut past) = self.os_unwatched_past.lock() {
+                past.push_back((from, e.at, old));
+                while past.len() > FEED_GAPS_MAX {
+                    past.pop_front();
+                }
             }
         }
+        if !paths.is_empty() {
+            *cur = Some((e.at, paths, none_seen));
+        }
+    }
+
+    /// The ended `feed.unwatched` lists that overlap `[a, b]`, as report rows.
+    fn unwatched_past_in(&self, a: i64, b: i64) -> Vec<Value> {
+        let Ok(past) = self.os_unwatched_past.lock() else {
+            return Vec::new();
+        };
+        past.iter()
+            .filter(|(from, to, _)| *from <= b && *to >= a)
+            .map(|(from, to, paths)| json!({"fromMs": from, "toMs": to, "paths": paths}))
+            .collect()
     }
 
     /// The `feed.gap` stretches that overlap `[a, b]`, as report rows. A
@@ -2515,7 +2543,17 @@ impl Daemon {
                 .lock()
                 .ok()
                 .and_then(|u| u.clone())
-                .map(|(at, paths)| json!({"paths": paths, "sinceMs": at})),
+                .map(|(at, paths, none)| json!({"paths": paths, "sinceMs": at, "noneSeen": none})),
+            // E1R-13: the lists that have ended, for the window, or for a
+            // chat those that overlap its run.
+            "osUnwatchedPast": Some(match run {
+                Some((start, stop)) => self.unwatched_past_in(
+                    start,
+                    stop.map_or(i64::MAX, |s| s.saturating_add(crate::join::STOPPED_KEEP_MS)),
+                ),
+                None => self.unwatched_past_in(since, until),
+            })
+            .filter(|p| !p.is_empty()),
             "chatOsFeedGaps": run
                 .map(|(start, stop)| {
                     let end = stop.map_or(i64::MAX, |s| {

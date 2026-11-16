@@ -47,6 +47,19 @@ pub const SETTLE_MS: i64 = 3_000;
 /// How often the check runs again with nothing new on disk: rules installed
 /// since clear the list within this.
 pub const AGAIN_MS: i64 = 10 * 60_000;
+/// And while the last list was not empty: the person may have just run what
+/// the report told them to (the review's E1R-15).
+pub const AGAIN_UNWATCHED_MS: i64 = 30_000;
+
+/// A settled round: the paths with no record, and whether the feed saw no
+/// record of its own opens at all. That is not a rule missing for each
+/// path: auditd is stopped, the rules are not loaded, or they name another
+/// uid than the feed's (the review's E1R-14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settled {
+    pub unwatched: Vec<String>,
+    pub none_seen: bool,
+}
 
 struct Round {
     begun_ms: i64,
@@ -87,7 +100,14 @@ impl WatchCheck {
         }
         match self.done_ms {
             None => true,
-            Some(done) => now_ms - done >= AGAIN_MS || self.missing.iter().any(|p| exists(p)),
+            Some(done) => {
+                let again = if self.last.as_ref().is_some_and(|l| !l.is_empty()) {
+                    AGAIN_UNWATCHED_MS
+                } else {
+                    AGAIN_MS
+                };
+                now_ms - done >= again || self.missing.iter().any(|p| exists(p))
+            }
         }
     }
 
@@ -137,7 +157,7 @@ impl WatchCheck {
     /// Ends the round when the log has been read past its opens: the paths
     /// with no record, sorted. `idle` says the log is quiet now. None while
     /// the round is open or when there is none.
-    pub fn settle(&mut self, now_ms: i64, idle: bool) -> Option<Vec<String>> {
+    pub fn settle(&mut self, now_ms: i64, idle: bool) -> Option<Settled> {
         let round = self.round.as_ref()?;
         let waited = now_ms - round.begun_ms >= SETTLE_MS;
         if !(round.passed || (idle && waited)) {
@@ -145,7 +165,10 @@ impl WatchCheck {
         }
         let round = self.round.take()?;
         self.done_ms = Some(now_ms);
-        Some(round.asked.difference(&round.seen).cloned().collect())
+        Some(Settled {
+            unwatched: round.asked.difference(&round.seen).cloned().collect(),
+            none_seen: round.asked.len() > 1 && round.own.is_empty(),
+        })
     }
 
     /// Whether `list` differs from the last one posted, and remembers it.
@@ -157,11 +180,6 @@ impl WatchCheck {
         }
         self.last = Some(list.to_vec());
         true
-    }
-
-    /// Forgets the last list posted, so the next one is posted again.
-    pub fn unposted(&mut self) {
-        self.last = None;
     }
 }
 
@@ -206,7 +224,10 @@ mod tests {
         assert_eq!(c.settle(at + 100, true), None, "too soon to tell");
         assert_eq!(
             c.settle(at + SETTLE_MS, true),
-            Some(paths(&["/home/e13u/.aws"]))
+            Some(Settled {
+                unwatched: paths(&["/home/e13u/.aws"]),
+                none_seen: false
+            })
         );
         assert!(c.changed(&paths(&["/home/e13u/.aws"])));
         assert!(!c.changed(&paths(&["/home/e13u/.aws"])), "posted once");
@@ -223,7 +244,10 @@ mod tests {
         for r in &recs {
             c.on_record(r);
         }
-        assert_eq!(c.settle(at + SETTLE_MS, true), Some(Vec::new()));
+        assert_eq!(
+            c.settle(at + SETTLE_MS, true).map(|s| s.unwatched),
+            Some(Vec::new())
+        );
         assert!(c.changed(&[]), "the first list is posted even when empty");
     }
 
@@ -238,9 +262,31 @@ mod tests {
             c.on_record(r);
         }
         assert_eq!(
-            c.settle(at + SETTLE_MS, true),
+            c.settle(at + SETTLE_MS, true).map(|s| s.unwatched),
             Some(paths(&["/home/e13u/.ssh"]))
         );
+    }
+
+    /// The review's E1R-14: when the feed sees none of its own opens (auditd
+    /// stopped, no rules loaded, rules for another uid), every path is
+    /// unseen, and the round says that, so the report does not call each
+    /// path a missing rule.
+    #[test]
+    fn e1_3_no_record_of_any_of_its_own_opens_is_said_apart() {
+        let mut c = WatchCheck::new(4242);
+        c.begin(1_000, paths(&["/home/u/.ssh", "/etc/shadow"]), Vec::new());
+        assert_eq!(
+            c.settle(1_000 + SETTLE_MS, true),
+            Some(Settled {
+                unwatched: paths(&["/etc/shadow", "/home/u/.ssh"]),
+                none_seen: true
+            })
+        );
+        // The next round comes sooner while a list stands (E1R-15).
+        assert!(c.changed(&paths(&["/etc/shadow", "/home/u/.ssh"])));
+        let done = 1_000 + SETTLE_MS;
+        assert!(!c.due(done + AGAIN_UNWATCHED_MS - 1, &|_| false));
+        assert!(c.due(done + AGAIN_UNWATCHED_MS, &|_| false));
     }
 
     /// A busy log never goes quiet: the round ends on a record newer than
@@ -264,7 +310,7 @@ mod tests {
         later.serial += 1_000;
         c.on_record(&later);
         assert_eq!(
-            c.settle(at + 60_000, false),
+            c.settle(at + 60_000, false).map(|s| s.unwatched),
             Some(paths(&["/home/e13u/.aws"]))
         );
     }
@@ -276,7 +322,10 @@ mod tests {
         let mut c = WatchCheck::new(1);
         c.begin(1_000, Vec::new(), paths(&["/home/u/.aws"]));
         assert!(!c.due(1_500, &|_| true), "a round is open");
-        assert_eq!(c.settle(1_000 + SETTLE_MS, true), Some(Vec::new()));
+        assert_eq!(
+            c.settle(1_000 + SETTLE_MS, true).map(|s| s.unwatched),
+            Some(Vec::new())
+        );
         let done = 1_000 + SETTLE_MS;
         assert!(!c.due(done + 1, &|_| false));
         assert!(c.due(done + 1, &|p| p == "/home/u/.aws"));

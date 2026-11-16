@@ -1043,6 +1043,9 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   // E1-5: a quoted brace in a text program's argument and a tilde after a
   // revision's name are text (`tokenIsText`); only for input that was ASCII before the fold.
   const decoded = decodeEscapes(call.inputText);
+  // E1R-2: a `\uXXXX` the matcher decoded held a backslash the shell reads its own way.
+  const escaped = decoded !== call.inputText;
+  if (escaped && isShellTool(normalizedTool)) return { action: "ask", normalizedTool, reason: unreadableReason("\\") };
   const plain = /^[\x00-\x7f]*$/.test(decoded);
   const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t) && !tokenIsText(folded, t, plain)) : undefined;
   if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };

@@ -803,6 +803,16 @@ impl ChatState {
                     .filter(|(_, c)| c.shell() && c.runs_strictly_at(at))
                     .map(|(id, _)| id.to_string())
                     .collect();
+                // No margin around the other calls' windows (the review of
+                // eval pass 1's fixes, E1R-19, asked for one against clock
+                // skew): the order is causal, not a matter of two clocks. A
+                // call's start is stamped when the daemon takes the gate's
+                // record, which the hook waits for before it lets the call
+                // run, so the shell's fork comes after it; its end is stamped
+                // after the command has finished, and the harness starts the
+                // next call only then. On the box the next call's fork came
+                // 17 ms after the first call's end record (the fixture), so
+                // even a 20 ms margin put the finding back.
                 let shells = if strict.is_empty() { shells } else { strict };
                 let shell = program.is_some_and(shell_program);
                 if idle {

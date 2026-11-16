@@ -231,7 +231,10 @@ fn operands(args: &[String]) -> Vec<&str> {
     out
 }
 
-/// `-t <folder>`, `--target-directory <folder>` or `--target-directory=<folder>`.
+/// `-t <folder>`, `--target-directory <folder>` or `--target-directory=<folder>`,
+/// and `-t` at the end of a cluster of short flags (`-rt <folder>`) or with
+/// its folder attached (`-t<folder>`, `-rt<folder>`): cp(1), mv(1), ln(1),
+/// install(1) (the review's E1R-7).
 fn target_directory(args: &[String]) -> Option<&str> {
     let mut i = 0;
     while i < args.len() {
@@ -242,8 +245,18 @@ fn target_directory(args: &[String]) -> Option<&str> {
         if let Some(v) = a.strip_prefix("--target-directory=") {
             return Some(v);
         }
-        if a == "-t" || a == "--target-directory" {
+        if a == "--target-directory" {
             return args.get(i + 1).map(String::as_str);
+        }
+        if a.starts_with('-') && !a.starts_with("--") {
+            if let Some(at) = a.find('t') {
+                let attached = &a[at + 1..];
+                return if attached.is_empty() {
+                    args.get(i + 1).map(String::as_str)
+                } else {
+                    Some(attached)
+                };
+            }
         }
         i += 1;
     }
@@ -262,10 +275,14 @@ fn check(program: &str, args: &[String]) -> Option<String> {
         // `-1` as a pid: after the first argument (a signal comes first), or
         // after `--`.
         let dashes = args.iter().position(|a| a == "--");
+        let minus_one = |a: &str| {
+            a.strip_prefix('-')
+                .is_some_and(|n| n.ends_with('1') && n[..n.len() - 1].bytes().all(|b| b == b'0'))
+        };
         let every = args
             .iter()
             .enumerate()
-            .any(|(i, a)| a == "-1" && (i > 0 || dashes.is_some_and(|d| d < i)));
+            .any(|(i, a)| minus_one(a) && (i > 0 || dashes.is_some_and(|d| d < i)));
         return every.then(|| format!("command signals every process: `{program}`"));
     }
     if matches!(program, "rm" | "chmod" | "chown" | "chgrp")
@@ -277,13 +294,32 @@ fn check(program: &str, args: &[String]) -> Option<String> {
         let outs: Vec<&str> = args.iter().filter_map(|a| a.strip_prefix("of=")).collect();
         return any(&outs, false);
     }
-    let target = target_directory(args);
+    let copies = COPY.contains(&program) || program == "mv";
+    // Only these four have `-t`; for `chmod` it is a mode.
+    let target = if copies { target_directory(args) } else { None };
     let mut ops = operands(args);
     // `-t`'s folder is the destination, not one more operand.
     if let Some(i) = target.and_then(|t| ops.iter().position(|o| *o == t)) {
         ops.remove(i);
     }
-    if COPY.contains(&program) || program == "mv" {
+    if copies {
+        // A flag after the first operand may take a value (`install x
+        // /usr/bin/x -m 755`), so the last word is not known to be the
+        // destination: any operand in a system tree or on a disk counts.
+        let first = args.iter().position(|a| !a.starts_with('-'));
+        let late_flag = first.is_some_and(|f| {
+            args[f..]
+                .iter()
+                .take_while(|a| *a != "--")
+                .any(|a| a.starts_with('-') && a.len() > 1)
+        });
+        // The fold lowercases, so `-T` (no target directory) reads as `-t`:
+        // with either, every operand is checked too.
+        if late_flag || target.is_some() {
+            if let Some(r) = any(&ops, true) {
+                return Some(r);
+            }
+        }
         // With `-t` every operand is a source; without, the last is the
         // destination.
         let (sources, dest): (&[&str], Option<&str>) = match target {
@@ -497,6 +533,18 @@ mod tests {
             "sudo tee /etc/sudoers.d/x",
             "echo x | sudo tee -a /etc/hosts",
             "/bin/rm -rf /",
+            // The review's E1R-3 and E1R-8: inside if, for and while, and
+            // behind su, watch and strace.
+            "if true; then rm -rf /; fi",
+            "for i in 1; do rm -rf /etc; done",
+            "while true; do rm -rf /; done",
+            "if rm -rf /; then echo; fi",
+            "echo x | while read l; do rm -rf /etc; done",
+            "su -c 'rm -rf /'",
+            "su root -c 'rm -rf /'",
+            "watch rm -rf /",
+            "strace rm -rf /",
+            "coproc rm -rf /",
         ] {
             assert!(what(text).is_some(), "{text}");
         }
@@ -557,6 +605,20 @@ mod tests {
         assert!(what("mv x /usr/bin/").is_some());
         assert!(what("mv -t /tmp /home/u").is_some());
         assert_eq!(what("mv -t /tmp build"), None);
+        // The review's E1R-7: -t in a cluster or attached, a flag after the
+        // operands, and chmod's own -t.
+        for text in [
+            "cp -rt /etc/cron.d x",
+            "install -dt /usr/bin x",
+            "ln -sft /etc x",
+            "cp -t/etc x",
+            "install x /usr/bin/x -m 755",
+            "chmod -t /etc",
+        ] {
+            assert!(what(text).is_some(), "{text}");
+        }
+        assert!(what("cp -t src /etc/x").is_some(), "cp -T, folded");
+        assert_eq!(what("cp -rt /tmp/out src"), None);
         assert_eq!(what("cp x /"), None);
         assert_eq!(what("cp x /home/u"), None);
     }
@@ -568,6 +630,7 @@ mod tests {
         assert!(what("kill -- -1").is_some());
         assert!(what("kill -1 -1").is_some());
         assert!(what("sudo kill -kill -1").is_some());
+        assert!(what("kill -9 -01").is_some());
         assert_eq!(what("kill -1"), None);
         assert_eq!(what("kill -1 55"), None);
     }

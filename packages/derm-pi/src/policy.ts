@@ -834,7 +834,9 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
   // JSON and TOML escapes decoded before folding (section 3; integration w1).
   const decoded = decodeEscapes(call.inputText);
   // E1-5: whether the fold could have changed a character's kind.
-  const plain = /^[\x00-\x7f]*$/.test(decoded);
+  // E1R-2: a `\uXXXX` the matcher decoded held a backslash the shell reads its own way.
+  const escaped = decoded !== call.inputText;
+  const plain = !escaped && /^[\x00-\x7f]*$/.test(decoded);
   const folded = foldText(decoded);
   const hit = rejectKeyFolded(folded);
   if (hit !== undefined) return { action: "deny", normalizedTool, reason: `reject list: ${hit}` };
@@ -871,7 +873,7 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
     if (parseInstalls(folded).length > 0) return asked; // never an install of section 6
     const ask = narrowAsk !== undefined && !(narrowAsk.tool === "bash" && compareRank(rankOf(rule), rankOf(narrowAsk)) >= 0) ? narrowAsk : undefined;
     if (ask !== undefined) return asked;
-    const d = allowSteps(normalizedTool, folded, plain, commandReason(rule.command as string[]));
+    const d = allowSteps(normalizedTool, folded, plain, escaped, commandReason(rule.command as string[]));
     return d.action === "allow" ? d : asked;
   };
 
@@ -907,11 +909,11 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
       return { action: "ask", normalizedTool, reason: "description changed since it was approved" };
     }
   }
-  return allowSteps(normalizedTool, folded, plain, describeRule(winner));
+  return allowSteps(normalizedTool, folded, plain, escaped, describeRule(winner));
 }
 
 /** Step 7 for an allow that stands so far: control files, shell text, an install, PowerShell's plain words. */
-function allowSteps(normalizedTool: string, folded: string, plain: boolean, reason: string): Decision {
+function allowSteps(normalizedTool: string, folded: string, plain: boolean, escaped: boolean, reason: string): Decision {
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
   const texts = withCollapsedSlashes(withWin32Trimmed(withNativeSeparators([folded, unquoted])));
@@ -920,6 +922,7 @@ function allowSteps(normalizedTool: string, folded: string, plain: boolean, reas
     return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   }
   // On the folded text, so `＄HOME` asks (integration w1; the hook core and derm-core do the same).
+  if (escaped && SHELL_TOOLS.has(normalizedTool)) return { action: "ask", normalizedTool, reason: "shell text the matcher cannot read: `\\`" };
   // E1-5: a quoted brace in a text program's argument and a tilde after a revision's name are text.
   const token = SHELL_TOOLS.has(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t) && !tokenIsText(folded, t, plain)) : undefined;
   if (token !== undefined) {

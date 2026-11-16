@@ -573,6 +573,15 @@ const SBX_READONLY_MAX: usize = 32;
 fn sbx_controls(harness: &harness::Harness, cwd: &str, home: &str) -> (Vec<String>, Vec<String>) {
     let mut all = plan::project_controls(harness.id, harness.control, cwd, home);
     all.extend(git_controls(Path::new(cwd)));
+    // `.git/commondir` names another folder whose `config` and `hooks` git
+    // then uses (gitrepository-layout(5); the review's E1R-4: with `.git/
+    // hooks` and `.git/config` read-only, one new file `.git/commondir`
+    // pointing at a folder of the chat's made `git status` run its
+    // fsmonitor). It does not exist in a plain clone, so sbx cannot hold it:
+    // it is looked at again when the chat ends. Only when `.git` is a folder.
+    if std::fs::symlink_metadata(Path::new(cwd).join(".git")).is_ok_and(|m| m.is_dir()) {
+        all.push(format!("{}/.git/commondir", cwd.trim_end_matches('/')));
+    }
     all.sort();
     all.dedup();
     let mut held = Vec::new();
@@ -604,6 +613,20 @@ fn control_print(path: &Path) -> String {
             h.update(b"link");
             if let Ok(t) = std::fs::read_link(p) {
                 h.update(t.to_string_lossy().as_bytes());
+            }
+            // What the link names, when it is a file: the sandbox can edit
+            // it through the mount without touching the link (E1R-17).
+            if let Ok(t) = std::fs::metadata(p) {
+                if t.is_file() && t.len() <= 1 << 20 {
+                    if let Ok(b) = std::fs::read(p) {
+                        h.update(&b);
+                    }
+                } else {
+                    h.update(t.len().to_le_bytes());
+                    if let Ok(when) = t.modified() {
+                        h.update(format!("{when:?}").as_bytes());
+                    }
+                }
             }
         } else if m.is_file() {
             h.update(b"file");
@@ -3868,7 +3891,7 @@ mod end_to_end {
             &format!(
                 "echo \"$*\" >> '{calls}'; \
                  if [ \"$1 $2\" = 'policy log' ]; then echo '{{\"blocked\":[]}}'; exit 0; fi; \
-                 if [ \"$1\" = run ]; then mkdir -p '{work}/.pi/agent' && echo '{{}}' > '{work}/.pi/agent/settings.json'; fi; \
+                 if [ \"$1\" = run ]; then mkdir -p '{work}/.pi/agent' && echo '{{}}' > '{work}/.pi/agent/settings.json' && echo ../elsewhere > '{work}/.git/commondir'; fi; \
                  exit 0",
                 calls = calls.display(),
                 work = real.display(),
@@ -3923,7 +3946,12 @@ mod end_to_end {
             "{start}"
         );
         let stop = ev.iter().find(|e| e["kind"] == "run.stop").unwrap();
-        assert_eq!(stop["detail"]["sbxControlChanged"], json!([made]), "{stop}");
+        // E1R-4: `.git/commondir`, made by the chat, is named too.
+        assert_eq!(
+            stop["detail"]["sbxControlChanged"],
+            json!([format!("{real}/.git/commondir"), made]),
+            "{stop}"
+        );
     }
 
     #[cfg(unix)]

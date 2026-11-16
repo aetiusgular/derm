@@ -725,6 +725,22 @@ fn e1_3_paths_the_audit_rules_do_not_cover_are_named_until_the_feed_clears_them(
     post(&mut d, 3, json!([]));
     let w = d.ask(json!({"op": "report", "since": 0, "until": i64::MAX}));
     assert!(w["report"]["osUnwatched"].is_null(), "{}", w["report"]);
+    // The review's E1R-13: the stretch that ended is still in the window's
+    // report, with its paths and its end, and not in a window before it.
+    let past = w["report"]["osUnwatchedPast"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(past.len(), 1, "{}", w["report"]);
+    assert_eq!(past[0]["paths"], json!(["/home/t/.aws", "/home/t/.kube"]));
+    assert_eq!(past[0]["fromMs"], since);
+    assert!(past[0]["toMs"].as_i64().unwrap_or(0) >= since.as_i64().unwrap_or(i64::MAX));
+    let before = d.ask(json!({"op": "report", "since": 0, "until": 0}));
+    assert!(
+        before["report"]["osUnwatchedPast"].is_null(),
+        "{}",
+        before["report"]
+    );
 }
 
 /// BW5R4-1: a `since` tail says how many backlog events come before the

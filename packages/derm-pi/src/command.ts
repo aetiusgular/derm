@@ -50,7 +50,7 @@ export function commandProblem(value: unknown): string | undefined {
 // Lane X's wrapper list (installs/parse.ts): words that run the rest of the
 // line as a command. Their own flags are not parsed; the command starts at
 // the first later word that names a rule's head, a wrapper or a shell.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel", "setsid", "flock", "unshare", "run0"]);
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel", "setsid", "flock", "unshare", "run0", "watch", "strace", "ltrace"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash"]);
 const ASSIGNMENT = /^[a-z_][a-z0-9_]*=/;
 const MAX_DEPTH = 4;
@@ -112,7 +112,10 @@ function isHead(word: string, heads: ReadonlySet<string>): boolean {
 function read(input: string[], heads: ReadonlySet<string>, depth: number, out: string[][]): void {
   let words = input;
   for (let guard = 0; guard < 16; guard++) {
-    while (words.length && ASSIGNMENT.test(words[0] as string)) words = words.slice(1);
+    // Assignments, and the reserved words a simple command may start with
+    // before its program (`then rm`, `do git push`): the review of eval pass
+    // 1's fixes, E1R-3 (derm-core's `read`).
+    while (words.length && (ASSIGNMENT.test(words[0] as string) || RESERVED.has(words[0] as string))) words = words.slice(1);
     if (!words.length) return;
     const head = commandBase(words[0] as string);
     const rest = words.slice(1);
@@ -131,6 +134,19 @@ function read(input: string[], heads: ReadonlySet<string>, depth: number, out: s
     }
     if (head === "eval") {
       walk(rest.join(" "), heads, depth + 1, out);
+      return;
+    }
+    // `su [user] -c <string>`: the string is a shell's (E1R-8).
+    if (head === "su") {
+      for (let i = 0; i < rest.length; i++) {
+        const w = rest[i] as string;
+        if (w.startsWith("--command=")) walk(w.slice("--command=".length), heads, depth + 1, out);
+        else if (w === "-c" || w === "--command" || w === "--session-command") {
+          const v = rest[i + 1];
+          if (v !== undefined) walk(v, heads, depth + 1, out);
+          i++;
+        }
+      }
       return;
     }
     // GNU parallel runs its command words and its `:::` arguments through a
@@ -286,6 +302,9 @@ export function tokenIsText(folded: string, token: string, plain: boolean): bool
     });
   }
   if (token !== "{" && token !== "}") return false;
+  // A quote inside a `#` comment would open one for the scan below only
+  // (E1R-1), so no brace is text when the line holds a `#`.
+  if (folded.includes("#")) return false;
   let quote: string | undefined;
   for (const c of chars) {
     if (quote !== undefined) {

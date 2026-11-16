@@ -96,13 +96,20 @@ function operands(args: readonly string[]): string[] {
   return out;
 }
 
-/** `-t <folder>`, `--target-directory <folder>` or `--target-directory=<folder>`. */
+/** `-t <folder>`, `--target-directory[=]<folder>`, and `-t` ending a cluster of short flags or with its folder attached (E1R-7). */
 function targetDirectory(args: readonly string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--") return undefined;
     if (a.startsWith("--target-directory=")) return a.slice("--target-directory=".length);
-    if (a === "-t" || a === "--target-directory") return args[i + 1];
+    if (a === "--target-directory") return args[i + 1];
+    if (a.startsWith("-") && !a.startsWith("--")) {
+      const at = a.indexOf("t");
+      if (at !== -1) {
+        const attached = a.slice(at + 1);
+        return attached === "" ? args[i + 1] : attached;
+      }
+    }
   }
   return undefined;
 }
@@ -118,19 +125,35 @@ function check(program: string, args: readonly string[]): string | undefined {
   if (program === "kill") {
     // `-1` as a pid: after the first argument (a signal comes first), or after `--`.
     const dashes = args.indexOf("--");
-    const every = args.some((a, i) => a === "-1" && (i > 0 || (dashes !== -1 && dashes < i)));
+    const every = args.some((a, i) => /^-0*1$/.test(a) && (i > 0 || (dashes !== -1 && dashes < i)));
     return every ? `command signals every process: \`${program}\`` : undefined;
   }
   if (["rm", "chmod", "chown", "chgrp"].includes(program) && args.includes("--no-preserve-root")) return reason("the filesystem root", program);
   if (program === "dd") return any(args.filter((a) => a.startsWith("of=")).map((a) => a.slice(3)), false);
-  const target = targetDirectory(args);
+  const copies = COPY.includes(program) || program === "mv";
+  // Only these four have `-t`; for `chmod` it is a mode.
+  const target = copies ? targetDirectory(args) : undefined;
   const ops = operands(args);
   // `-t`'s folder is the destination, not one more operand.
   if (target !== undefined) {
     const i = ops.indexOf(target);
     if (i !== -1) ops.splice(i, 1);
   }
-  if (COPY.includes(program) || program === "mv") {
+  if (copies) {
+    // A flag after the first operand may take a value, and the fold reads
+    // `-T` as `-t`: then any operand in a system tree or on a disk counts.
+    const first = args.findIndex((a) => !a.startsWith("-"));
+    let lateFlag = false;
+    if (first !== -1) {
+      for (const a of args.slice(first)) {
+        if (a === "--") break;
+        if (a.startsWith("-") && a.length > 1) lateFlag = true;
+      }
+    }
+    if (lateFlag || target !== undefined) {
+      const r = any(ops, true);
+      if (r !== undefined) return r;
+    }
     // With `-t` every operand is a source; without, the last is the destination.
     let sources = ops;
     let dest: string | undefined;

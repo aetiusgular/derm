@@ -26,6 +26,10 @@ const some = [
   "echo x | sudo tee -a /etc/hosts", "/bin/rm -rf /",
   "cp x /etc/cron.d/x", "cp -t /usr/bin x", "cp --target-directory=/etc x", "ln -sf /tmp/x /etc/ld.so.preload",
   "install -m 4755 x /usr/bin/x", "mv /etc/hosts .", "mv x /usr/bin/", "mv -t /tmp /home/u",
+  // The review's E1R-3, 7, 8, 10 (derm-core's lists).
+  "if true; then rm -rf /; fi", "for i in 1; do rm -rf /etc; done", "while true; do rm -rf /; done", "if rm -rf /; then echo; fi",
+  "echo x | while read l; do rm -rf /etc; done", "su -c 'rm -rf /'", "su root -c 'rm -rf /'", "watch rm -rf /", "strace rm -rf /", "coproc rm -rf /",
+  "cp -rt /etc/cron.d x", "install -dt /usr/bin x", "ln -sft /etc x", "cp -t/etc x", "install x /usr/bin/x -m 755", "chmod -t /etc", "cp -t src /etc/x", "kill -9 -01",
   "kill -s kill -1", "kill -- -1", "kill -1 -1", "sudo kill -kill -1", "tee /dev/sdcard",
   ...["sda", "sdb1", "nvme0n1p2", "mmcblk0", "disk2", "rdisk2", "mapper/root", "dm-0", "md0", "loop3", "mem"].map((d) => `shred /dev/${d}`),
 ];
@@ -37,7 +41,7 @@ const none = [
   "cmd 2>/dev/null >&2", "echo x >> /tmp/log", "dd if=/dev/sda of=disk.img", "dd if=/dev/zero of=/dev/null", "mkfs.ext4 disk.img",
   "truncate -s 0 out.log", "kill -9 1234", "kill -1 1234", "kill -hup 77", "git commit -m 'rm -rf / is bad'", "echo 'x > /etc/passwd'",
   "grep -r 'chmod 777 /' docs", "cat /etc/hosts", "ls /", "# rm -rf /", "echo a # > /etc/x", "cp x /", "cp x /home/u",
-  "mv -t /tmp build", "kill -1", "kill -1 55",
+  "mv -t /tmp build", "kill -1", "kill -1 55", "cp -rt /tmp/out src",
   ...["null", "zero", "stdout", "stderr", "tty", "shm/x", "fd/3", "urandom"].map((d) => `tee /dev/${d}`),
 ];
 

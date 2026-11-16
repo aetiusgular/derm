@@ -258,8 +258,10 @@ fn gap_event(from_ms: Option<i64>, to_ms: i64, reason: &str, now: i64) -> Event 
 
 /// E1-3: the sensitive paths that exist and whose reads the loaded audit
 /// rules do not record (`watchcheck.rs`); an empty list ends an earlier one.
-fn unwatched_event(paths: &[String], now: i64) -> Event {
-    let summary = if paths.is_empty() {
+fn unwatched_event(paths: &[String], none_seen: bool, now: i64) -> Event {
+    let summary = if none_seen {
+        "derm-audit-feed saw no audit record of its own opens: auditd is stopped, the derm rules are not loaded, or they name another user".to_string()
+    } else if paths.is_empty() {
         "the audit rules record reads of every sensitive path that exists".to_string()
     } else {
         format!(
@@ -275,7 +277,7 @@ fn unwatched_event(paths: &[String], now: i64) -> Event {
         source: Source::Auditd,
         kind: "feed.unwatched".into(),
         summary,
-        detail: serde_json::json!({"paths": paths, "checkedMs": now}),
+        detail: serde_json::json!({"paths": paths, "noneSeen": none_seen, "checkedMs": now}),
         pid: None,
         approval_id: None,
     }
@@ -636,16 +638,21 @@ fn cmd_run(args: &[String]) -> u8 {
             last_prune = Instant::now();
         }
         if caught {
-            if let Some(list) = check.settle(now_ms(), quiet) {
+            if let Some(settled) = check.settle(now_ms(), quiet) {
+                let list = settled.unwatched;
                 if check.changed(&list) {
-                    for p in &list {
-                        eprintln!("derm-audit-feed: the audit rules loaded now do not record reads of {p}; run `derm-audit-feed rules` and install what it prints");
+                    if settled.none_seen {
+                        eprintln!("derm-audit-feed: no audit record of its own opens was seen: auditd is stopped, the derm rules are not loaded, or they name another user than this one; reads of sensitive paths are not recorded");
+                    } else {
+                        for p in &list {
+                            eprintln!("derm-audit-feed: the audit rules loaded now do not record reads of {p}; run `derm-audit-feed rules` and install what it prints");
+                        }
                     }
                     if !post_or_stop(
                         &mut poster,
                         &socket,
                         &token,
-                        &unwatched_event(&list, now_ms()),
+                        &unwatched_event(&list, settled.none_seen, now_ms()),
                     ) {
                         return 1;
                     }

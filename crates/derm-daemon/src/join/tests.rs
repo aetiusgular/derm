@@ -3342,6 +3342,30 @@ fn fp13r_5_a_feed_gap_does_not_tell_the_join_the_feed_is_current() {
     assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
 }
 
+/// The review of eval pass 1's fixes, E1R-19, asked for a margin around the
+/// other call's window before the call running at a fork is taken alone. Not
+/// taken (`place_child` says why); this holds the behaviour the fixture
+/// needs: a fork 12 ms after one call's end record, inside the next call, is
+/// the next call's.
+#[test]
+fn e1r_19_a_fork_just_past_a_calls_end_is_the_running_calls() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_A", "bash", &[], 1_000, Some(2_000));
+    call(&mut j, "toolu_B", "bash", &[], 2_010, None);
+    effect(&mut j, "fork", 2_012, ROOT, 1, json!({"child": 7001}));
+    let near = effect(
+        &mut j,
+        "exec",
+        2_013,
+        7001,
+        ROOT,
+        json!({"exe": "/bin/zsh"}),
+    );
+    assert_eq!(near.len(), 1, "{near:?}");
+    assert_eq!(near[0].detail["chosen"], "tap-chat-j-toolu_B");
+}
+
 /// E1-3: the feed's `feed.unwatched` is its own note like `feed.gap`: it
 /// has no OS time, so it says nothing about how far the feed has read.
 #[test]

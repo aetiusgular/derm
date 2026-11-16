@@ -1344,7 +1344,12 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     };
     let decoded = decode_escapes(&call.input_text);
     // E1-5: whether the fold could have changed a character's kind.
-    let plain = decoded.is_ascii();
+    // A `\uXXXX` in the input was decoded: for a file tool that is the key
+    // a config file will hold, but in a shell command the backslash is the
+    // shell's, and the decoded text is not what runs (eval pass 1's review,
+    // E1R-2: `echo \u0027; rm -rf /; echo \u0027` read as one quoted word).
+    let escaped = decoded != call.input_text;
+    let plain = decoded.is_ascii() && !escaped;
     let folded = fold_text(&decoded);
     if let Some(key) = reject_hit(&folded) {
         return decide(Action::Deny, format!("reject list: {key}"));
@@ -1469,6 +1474,7 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
             &normalized,
             &folded,
             plain,
+            escaped,
             crate::command::command_reason(&words_of(rule)),
         );
         if d.action == Action::Allow {
@@ -1551,12 +1557,18 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
             return decide(Action::Ask, "description changed".to_string());
         }
     }
-    allow_steps(&normalized, &folded, plain, rule_reason(winner))
+    allow_steps(&normalized, &folded, plain, escaped, rule_reason(winner))
 }
 
 /// Step 7 for an allow that stands so far: control files, shell text the
 /// matcher cannot read, an install of section 6, PowerShell's plain words.
-fn allow_steps(normalized: &str, folded: &str, plain: bool, reason: String) -> Decision {
+fn allow_steps(
+    normalized: &str,
+    folded: &str,
+    plain: bool,
+    escaped: bool,
+    reason: String,
+) -> Decision {
     let decide = |action: Action, reason: String| Decision {
         action,
         normalized_tool: normalized.to_string(),
@@ -1580,6 +1592,14 @@ fn allow_steps(normalized: &str, folded: &str, plain: bool, reason: String) -> D
     // On the folded, escape-decoded text: stricter than the raw input
     // (`＄HOME` asks), the side that fails safe (rules section 9, item 7).
     if SHELL_TOOLS.contains(&normalized) {
+        // E1R-2: an escape the matcher decoded held a backslash the shell
+        // reads its own way.
+        if escaped {
+            return decide(
+                Action::Ask,
+                "shell text the matcher cannot read: `\\`".to_string(),
+            );
+        }
         // E1-5: a quoted brace in a text program's argument and a tilde
         // after a revision's name are text (`command::token_is_text`).
         if let Some(t) = UNREADABLE_SHELL_TOKENS
