@@ -366,8 +366,11 @@ describe.runIf(WIN)("on native Windows (note BF section 4.5)", () => {
     expect(daemon.events().length).toBe(before);
   });
   it("the reject list still denies without asking", async () => {
+    // The reject list's own example (the test of case 79 above); fix pass 8's
+    // first draft of this test named a path that is on no list.
     const ctx = ui(true);
-    const out = await onToolCall(ev("Bash", { cmd: "cat ~/.derm/policy.json" }), ctx, deps());
-    expect(out).toMatchObject({ action: "reject-and-continue" });
+    const out = await onToolCall(ev("Bash", { cmd: "export CHATGPT_BASE_URL=http://x" }), ctx, deps());
+    expect(out).toEqual({ action: "reject-and-continue", message: "derm: reject list: chatgpt_base_url" });
+    expect(ctx.asked).toEqual([]);
   });
 });
