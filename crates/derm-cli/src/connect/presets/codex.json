@@ -68,7 +68,7 @@
     "failSwitch": null,
     "ask": "approver-or-deny",
     "shellAliases": [],
-    "verifiedAt": "0.167.2, run",
+    "verifiedAt": "0.169.0 and 0.167.2, run (0.169.0 on the Windows box, fix pass 9: the trusted hooks.json gate allowed and denied, under the elevated, unelevated and mxc sandboxes, doctor's gate run passed, token checks failed closed; 0.167.2 on Linux, macOS and Windows)",
     "note": "Codex's sandbox, approvals and requirements.toml are the lock; the hook is best-effort"
   }
 }

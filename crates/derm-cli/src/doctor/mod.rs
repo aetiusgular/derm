@@ -183,6 +183,21 @@ pub fn find_row(id: &str) -> Option<Value> {
         .cloned()
 }
 
+/// The versions a row's `verifiedAt` names: the version in each part,
+/// joined by " and ", before its first comma (`"0.169.0 and 0.167.2, run
+/// (...)"` gives both); what follows the comma says how, not which.
+pub fn verified_versions(verified_at: &str) -> Vec<String> {
+    let head = verified_at.split(',').next().unwrap_or("");
+    head.split(" and ").filter_map(version_token).collect()
+}
+
+/// `installed` is one of the versions `verified_at` names.
+pub fn verified_matches(verified_at: &str, installed: &str) -> bool {
+    verified_versions(verified_at)
+        .iter()
+        .any(|v| v == installed)
+}
+
 /// The first `N.N[.N...]` in a string: `"2.1.311, run"` gives `2.1.311`,
 /// `"claude 2.1.318 (Claude Code)"` gives `2.1.318`, `"v0.22.5"` gives
 /// `0.22.5`.
@@ -253,9 +268,10 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
     let program = cli.as_deref().and_then(|c| find_on_path(c, &env.path));
     let verified_at = s(row, "/coverage/verifiedAt");
     let installed = program.as_deref().map(probes.version);
-    let version = match (&installed, version_token(&verified_at)) {
+    let wants = verified_versions(&verified_at);
+    let version = match (&installed, (!wants.is_empty()).then(|| wants.join(" and "))) {
         (Some(out), Some(want)) => match version_token(out) {
-            Some(have) if have == want => {
+            Some(have) if verified_matches(&verified_at, &have) => {
                 json!({"state": "matches", "installed": have, "verifiedAt": want})
             }
             Some(have) => {

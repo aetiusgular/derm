@@ -153,7 +153,9 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
             .and_then(crate::doctor::version_token),
         crate::doctor::version_token(&verified),
     ) {
-        (Some(have), Some(want)) if have == want => Value::from("matches"),
+        (Some(have), Some(_)) if crate::doctor::verified_matches(&verified, &have) => {
+            Value::from("matches")
+        }
         (Some(have), Some(_)) => Value::from(format!("unverified at {have}")),
         _ => Value::Null,
     };

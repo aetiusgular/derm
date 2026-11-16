@@ -1038,3 +1038,27 @@ fn fp9_the_powershell_run_keeps_pathext() {
         &["SystemRoot", "USERPROFILE", "PATHEXT"]
     );
 }
+
+/// Fix pass 9: a row verified at more than one version lists them before its
+/// first comma, joined by " and " ("0.169.0 and 0.167.2, run (...)"); an
+/// installed version that is any of them matches. A row with one version
+/// reads as before.
+#[test]
+fn fp9_a_row_can_be_verified_at_more_than_one_version() {
+    let two = "0.169.0 and 0.167.2, run (0.169.0 on the Windows box, fix pass 9)";
+    assert_eq!(super::verified_versions(two), vec!["0.169.0", "0.167.2"]);
+    assert!(super::verified_matches(two, "0.167.2"));
+    assert!(super::verified_matches(two, "0.169.0"));
+    assert!(!super::verified_matches(two, "0.168.0"));
+    // The parenthetical after the comma is not a version list.
+    assert!(!super::verified_matches(
+        "1.0.105, run (COPILOT_OFFLINE, 9.9.9)",
+        "9.9.9"
+    ));
+    assert_eq!(super::verified_versions("2.1.322, run"), vec!["2.1.322"]);
+    assert_eq!(
+        super::verified_versions("@ampcode/plugin 0.0.0-20261104001221-gc8c68be, types (not run)"),
+        vec!["0.0.0"]
+    );
+    assert!(super::verified_versions("NF").is_empty());
+}
