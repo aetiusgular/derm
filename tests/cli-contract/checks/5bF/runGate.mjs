@@ -123,8 +123,12 @@ async function turn(claudePath, { plugin }) {
       }
     }
   }
-  const logDir = path.join(d.data, "derm", "activity");
-  const lines = existsSync(logDir)
+  // The daemon's log: under XDG_DATA_HOME on Linux, under the home's
+  // Application Support on macOS, where it does not read that variable (the
+  // Mac run after eval pass 1's fixes: both checks failed with "approval
+  // records: []" while the deny itself held, because only the first was read).
+  const logDir = [path.join(d.data, "derm", "activity"), path.join(d.home, "Library", "Application Support", "derm", "activity")].find((p) => existsSync(p));
+  const lines = logDir
     ? readdirSync(logDir)
         .flatMap((f) => readFileSync(path.join(logDir, f), "utf8").split("\n"))
         .filter(Boolean)
