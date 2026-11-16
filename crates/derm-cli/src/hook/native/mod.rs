@@ -236,7 +236,7 @@ pub fn read_stdin(stdin: &mut dyn std::io::Read) -> Result<String, String> {
         let _ = std::io::copy(stdin, &mut std::io::sink());
         return Err("hook input too large".into());
     }
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    Ok(super::without_bom(&String::from_utf8_lossy(&buf)).to_string())
 }
 
 /// `derm hook <agent> <event>` for the native agents and Hermes.

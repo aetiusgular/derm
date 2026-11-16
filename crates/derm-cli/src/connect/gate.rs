@@ -267,6 +267,24 @@ fn members(v: &Value, key: &str) -> Result<Vec<(String, Value)>, String> {
     }
 }
 
+/// The warning for Cursor's Windows row when `MSYSTEM` is set in derm's own
+/// environment: cursor-agent then runs its PowerShell-built hook line with
+/// bash (Cursor staff reproduced it on 12 Aug 2026, forum.cursor.com/t/168129;
+/// the variable alone triggers it), so derm's gate fails and, failing closed,
+/// blocks every call.
+pub fn cursor_msystem_warning(
+    agent: &str,
+    os: Option<&str>,
+    msystem: Option<&str>,
+) -> Option<String> {
+    (agent == "cursor" && os == Some("windows") && msystem.is_some_and(|m| !m.is_empty())).then(|| {
+        format!(
+            "MSYSTEM={} is set here (Git Bash or MSYS2); a cursor-agent started with it runs its hooks with bash, where derm's PowerShell line fails, so every call is blocked. Start Cursor from a terminal without MSYSTEM (PowerShell, not Git Bash)",
+            msystem.unwrap_or_default()
+        )
+    })
+}
+
 /// The first character of `path` that cmd.exe reads inside double quotes
 /// (`"` ends them; `%` and `!` expand), if any (a `"{derm}"` line).
 pub fn cmd_reads(path: &str) -> Option<char> {
@@ -2738,6 +2756,15 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     }
     for n in &agent.notes {
         ctx.out.push_str(&format!("note:   {n}\n"));
+    }
+    // Fix pass 9 (note BG section 1): Cursor's own bug runs its hooks with
+    // bash when Git Bash's MSYSTEM is set, and every call then blocks.
+    if let Some(w) = cursor_msystem_warning(
+        &agent.agent,
+        agent.os.as_deref(),
+        ctx.env.var("MSYSTEM").as_deref(),
+    ) {
+        ctx.out.push_str(&format!("warning: {w}\n"));
     }
     let changed: Vec<&FilePlan> = plans
         .iter()

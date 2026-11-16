@@ -270,6 +270,17 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         (None, _) => json!({"state": "not found", "cli": cli}),
     };
 
+    // Fix pass 9 (note BG section 1): on Windows, Cursor started with Git
+    // Bash's MSYSTEM runs its hooks with bash, and derm's gate then blocks
+    // every call.
+    if cfg!(windows) {
+        if let Some(w) =
+            crate::connect::gate::cursor_msystem_warning(&id, Some("windows"), env.var("MSYSTEM"))
+        {
+            problems.push(w);
+        }
+    }
+
     // Registration, for a built gate.
     let status = s(row, "/coverage/gate/status");
     let registered = if status == "built" {
@@ -1139,9 +1150,9 @@ fn gone_derms(text: &str, id: &str) -> Vec<String> {
 /// `USERPROFILE` is Windows' HOME. srt's sandbox keeps the same two from the
 /// account's profile (`enter/handoff.rs`, `RESERVED`). From lane/windows-ci.
 #[cfg(windows)]
-const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
+pub const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
 #[cfg(not(windows))]
-const NODE_WINDOWS_ENV: &[&str] = &[];
+pub const NODE_WINDOWS_ENV: &[&str] = &[];
 
 /// Runs the installed hook once on a shell call, under a policy that denies
 /// `bash`, from a folder of its own (the hook refuses a `DERM_POLICY` inside

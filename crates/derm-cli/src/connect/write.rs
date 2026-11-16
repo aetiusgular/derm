@@ -100,7 +100,9 @@ pub struct Tty;
 /// screen buffer whatever stdin and stdout are), which Windows has in place
 /// of `/dev/tty` (fix pass 8: on the box every `--write` was refused, as
 /// `/dev/tty` is not there).
-fn console() -> Result<(std::fs::File, std::fs::File), String> {
+/// Also `derm watch --approve`'s terminal (fix pass 9, note BG section 3).
+/// The error names the device and why it did not open.
+pub fn console() -> Result<(std::fs::File, std::fs::File), String> {
     #[cfg(windows)]
     let (input, output) = ("CONIN$", "CONOUT$");
     #[cfg(not(windows))]
@@ -110,14 +112,15 @@ fn console() -> Result<(std::fs::File, std::fs::File), String> {
             .read(true)
             .write(write || cfg!(not(windows)))
             .open(name)
-            .map_err(|e| format!("no terminal to confirm on ({name}: {e}); nothing written"))
+            .map_err(|e| format!("{name}: {e}"))
     };
     Ok((open(input, false)?, open(output, true)?))
 }
 
 impl Confirm for Tty {
     fn confirm(&mut self, question: &str) -> Result<bool, String> {
-        let (input, mut output) = console()?;
+        let (input, mut output) =
+            console().map_err(|e| format!("no terminal to confirm on ({e}); nothing written"))?;
         write!(output, "{question} [y/N] ").map_err(|e| e.to_string())?;
         output.flush().map_err(|e| e.to_string())?;
         let mut line = String::new();

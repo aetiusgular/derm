@@ -531,8 +531,8 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
-                // On the accept thread: drain only what is already here.
-                close_without_waiting(&stream);
+                // The closer reads the rest; the accept thread never waits.
+                refuse_closed(stream);
                 continue;
             }
             if self.heads.fetch_add(1, Ordering::SeqCst) >= MAX_HEADS {
@@ -540,7 +540,7 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
-                close_without_waiting(&stream);
+                refuse_closed(stream);
                 continue;
             }
             let slot = OpenSlot(self.clone());
@@ -972,11 +972,57 @@ fn respond<W: Write>(stream: &mut W, status: u16, answer: Option<Answer>) -> std
 const LINGER_DEADLINE: Duration = Duration::from_secs(1);
 const LINGER_BYTES: usize = 8 * 1024;
 
-/// `close_gently` for the accept thread, which must not wait: whatever
-/// input has already arrived is read, then the socket goes.
-fn close_without_waiting(stream: &TcpStream) {
-    if stream.shutdown(std::net::Shutdown::Write).is_err() || stream.set_nonblocking(true).is_err()
-    {
+/// Refused sockets the closer thread may hold at once; past that, one is
+/// closed on the accept thread as before.
+const CLOSER_QUEUE: usize = 16;
+
+static CLOSER: OnceLock<Option<std::sync::mpsc::SyncSender<TcpStream>>> = OnceLock::new();
+
+/// A socket the accept thread refused (503 written): one closer thread
+/// closes it gently, reading what the client still sends for up to
+/// `LINGER_DEADLINE`. Closing at once leaves a request that arrives after
+/// the accept thread's drain unread, and Winsock then resets the
+/// connection, which discards the reply the client has not read yet
+/// (Microsoft, "Graceful Shutdown, Linger Options, and Socket Closure";
+/// RFC 1122 4.2.2.13). The box lost a 503 this way under load (fix pass 9,
+/// note BG section 5). The queue is bounded, so a flood costs one thread
+/// and `CLOSER_QUEUE` sockets; when it is full, or the thread could not
+/// start, the accept thread drains what is there, as before
+/// (`close_without_waiting` until fix pass 9).
+fn refuse_closed(stream: TcpStream) {
+    // The reply's end goes out now, so the client is never kept waiting
+    // behind another refused socket's linger; the closer only takes in
+    // what still arrives.
+    if stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    let tx = CLOSER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<TcpStream>(CLOSER_QUEUE);
+        std::thread::Builder::new()
+            .name("otel-receiver-closer".into())
+            .spawn(move || {
+                for s in rx {
+                    linger_read(&s);
+                }
+            })
+            .ok()
+            .map(|_| tx)
+    });
+    let back = match tx {
+        Some(tx) => match tx.try_send(stream) {
+            Ok(()) => return,
+            Err(std::sync::mpsc::TrySendError::Full(s))
+            | Err(std::sync::mpsc::TrySendError::Disconnected(s)) => s,
+        },
+        None => stream,
+    };
+    drain_waiting_for_nothing(&back);
+}
+
+/// Reads, without blocking, what input is already here (write side shut):
+/// the accept thread's close when the closer is full.
+fn drain_waiting_for_nothing(stream: &TcpStream) {
+    if stream.set_nonblocking(true).is_err() {
         return;
     }
     let mut buf = [0u8; 1024];
@@ -999,6 +1045,12 @@ fn close_gently(stream: &TcpStream) {
     if stream.shutdown(std::net::Shutdown::Write).is_err() {
         return;
     }
+    linger_read(stream);
+}
+
+/// Reads what the client still sends (write side shut) until it closes, for
+/// up to `LINGER_DEADLINE` and `LINGER_BYTES`.
+fn linger_read(stream: &TcpStream) {
     let deadline = Instant::now() + LINGER_DEADLINE;
     let mut drained = 0;
     let mut buf = [0u8; 1024];

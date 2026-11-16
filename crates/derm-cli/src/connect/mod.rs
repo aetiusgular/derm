@@ -51,7 +51,7 @@ mod rules_tests;
 pub(crate) mod sandbox;
 mod spec;
 mod tomlfile;
-mod write;
+pub(crate) mod write;
 
 #[cfg(test)]
 mod tests;

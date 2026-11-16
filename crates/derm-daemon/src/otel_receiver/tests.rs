@@ -379,6 +379,37 @@ fn connection_cap_answers_503() {
     drop(held);
 }
 
+/// Fix pass 9 (note BG section 5): at the cap, a client whose request
+/// arrives after the accept thread's drain still reads the 503 to a clean
+/// end. Closing a socket with input unread resets it (Winsock's closesocket;
+/// RFC 1122 4.2.2.13), and a reset can cost the client the reply (status 0
+/// on the box, once, under the full suite).
+#[test]
+fn fp9_a_refused_clients_late_request_does_not_reset_the_503() {
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let held: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+        .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut late = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // Long past the accept thread's drain.
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = late.write_all(b"POST /v1/logs HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n");
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = late.shutdown(std::net::Shutdown::Write);
+    let mut reply = Vec::new();
+    let end = late.read_to_end(&mut reply);
+    assert!(
+        reply.starts_with(b"HTTP/1.1 503 "),
+        "{:?} {end:?}",
+        String::from_utf8_lossy(&reply)
+    );
+    assert!(end.is_ok(), "the connection was reset: {end:?}");
+    drop(held);
+}
+
 #[test]
 fn a_trickled_head_is_cut_at_its_deadline() {
     // The deadline is re-armed per read, so a byte every second does not

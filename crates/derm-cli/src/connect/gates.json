@@ -534,6 +534,66 @@
     },
     {
       "agent": "cursor",
+      "os": "windows",
+      "name": "Cursor CLI",
+      "package": "@aetiusgular/derm-hooks-native",
+      "command": "& '{derm}' hook cursor pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE",
+      "source": "fix pass 9 (Tony's go of 15 Nov 2026, note BG section 1): Cursor runs a hook on Windows through PowerShell and pipes the JSON into it (cursor.com/docs/hooks: \"On Windows, the desktop app runs hook commands through PowerShell and pipes the JSON into the command\"); its wrapper puts the line in a script block fed the payload (forum.cursor.com/t/172787). So derm.exe is called as on Codex's Windows row: by its absolute path in single quotes with the call operator, a reason and exit 2 when it does not start, else derm's exit code. failClosed: a crash, timeout, non-zero exit or no output blocks (cursor.com/docs/hooks). Not run against a real Cursor (it needs an account, call 8).",
+      "markers": [
+        "' hook cursor ",
+        "/derm hook cursor ",
+        "derm-hook.mjs"
+      ],
+      "installedIf": [
+        "~/.cursor"
+      ],
+      "cli": "cursor-agent",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.cursor/hooks.json",
+          "format": "json",
+          "array": [
+            "hooks",
+            "preToolUse"
+          ],
+          "createWith": {
+            "version": 1
+          },
+          "entry": {
+            "type": "command",
+            "command": "{command}",
+            "timeout": 120,
+            "failClosed": true
+          }
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.cursor/hooks.json",
+          "format": "json",
+          "array": [
+            "hooks",
+            "beforeMCPExecution"
+          ],
+          "createWith": {
+            "version": 1
+          },
+          "entry": {
+            "type": "command",
+            "command": "{command}",
+            "timeout": 120,
+            "failClosed": true
+          }
+        }
+      ],
+      "notes": [
+        "Not run against the real CLI (it needs an account, call 8).",
+        "With Git Bash's MSYSTEM set, cursor-agent runs a PowerShell-built hook line with bash, so every hook fails and, failing closed, every call is blocked (Cursor staff reproduced it 12 Aug 2026; forum.cursor.com/t/168129). Start Cursor from an environment without MSYSTEM.",
+        "derm.exe's path may not hold a single quote (or a curly one), which would end PowerShell's quoted path."
+      ]
+    },
+    {
+      "agent": "cursor",
       "name": "Cursor CLI",
       "package": "@aetiusgular/derm-hooks-native",
       "command": "{derm} hook cursor pre",

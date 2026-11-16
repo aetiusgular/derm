@@ -193,12 +193,33 @@ const CHANGED: &[(&str, usize, &str)] = &[
     ),
 ];
 
+/// Cases whose recorded Cursor gate is the wave 4 node launcher with Unix
+/// paths (`node --no-warnings "/.../derm-hook.mjs" cursor`), which derm never
+/// writes on Windows: there its Cursor row writes a PowerShell line, which
+/// `marks::is_derm_ps_command` reads (fix pass 9, note BG section 1; the
+/// `fp9_cursor_*` tests). They failed on Windows CI once a mode others may
+/// write stopped keeping them off it (fix pass 8). Unix-only by Tony's go of
+/// 15 Nov 2026 (20:09), after the Windows row was built.
+const UNIX_ONLY_CASES: &[(&str, &str)] = &[
+    (
+        "claude_plugin_hook_claude_code_s_hook_run_by_cursor_with_derm_s_cursor_gate_registered_and_failing_closed_it_g",
+        "its Cursor gate is the Unix node launcher, which derm does not write on Windows (fix pass 9)",
+    ),
+    (
+        "claude_plugin_hook_claude_code_s_hook_run_by_cursor_an_entry_counts_only_when_it_runs_derm_s_own_cursor_hook_f",
+        "its Cursor gate is the Unix node launcher, which derm does not write on Windows (fix pass 9)",
+    ),
+];
+
 /// Why a case's setup holds only on Unix, or `None`: a link or a FIFO,
 /// which the replay makes with Unix calls only. On Windows such a case is
 /// not run, and says why; every other case runs there, a mode others can
 /// write under included (`set_mode`; fix pass 6, note BE section 3.5; note
 /// BF section 4.1).
 pub fn unix_only(case: &Value) -> Option<String> {
+    if let Some((_, why)) = UNIX_ONLY_CASES.iter().find(|(id, _)| case["id"] == *id) {
+        return Some((*why).to_string());
+    }
     for call in case["calls"].as_array()? {
         for f in call["files"].as_array().into_iter().flatten() {
             if matches!(f["kind"].as_str(), Some("link" | "fifo")) {

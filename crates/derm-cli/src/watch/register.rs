@@ -386,6 +386,15 @@ pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize, bool)> {
 /// dialect word `cursor` at the end of the command. Other entries (Orca's)
 /// are left alone. A project's `.cursor/hooks.json` is not derm's (case 78)
 /// and is not read here.
+/// This derm, for the Cursor check (a test's stand-in in tests).
+fn cursor_self() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(p) = TEST_SELF.with(|t| t.borrow().clone()) {
+        return Some(p);
+    }
+    std::env::current_exe().ok()
+}
+
 fn cursor(home: &Path) -> Registered {
     let file = home.join(".cursor/hooks.json");
     let v = match read_json(&file, false) {
@@ -410,11 +419,19 @@ fn cursor(home: &Path) -> Registered {
                 // `hook cursor pre` (`hook::claude_format::marks`).
                 is_derm_cursor_entry(e)
                     || e.get("command").and_then(Value::as_str).is_some_and(|c| {
+                        let me = cursor_self();
                         crate::hook::claude_format::marks::is_derm_rust_command(
                             c,
                             "cursor",
-                            std::env::current_exe().ok().as_deref(),
+                            me.as_deref(),
                         )
+                            // Fix pass 9: the Windows row's PowerShell line.
+                            || crate::hook::claude_format::marks::is_derm_ps_command(
+                                c,
+                                "cursor",
+                                "pre",
+                                me.as_deref(),
+                            )
                     })
             })
             .collect();
@@ -1631,6 +1648,65 @@ mod cursor_tests {
             assert_eq!(r.word(), want, "{line}: {:?}", r.detail());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    /// Fix pass 9 (note BG section 1): the Windows row's PowerShell line,
+    /// this derm by its absolute path, on both events and failing closed, is
+    /// Cursor's registration; another derm, a line without the guard, or one
+    /// not failing closed is not. (A Unix path here: the parse is the same.)
+    #[test]
+    fn fp9_cursor_reads_the_windows_rows_powershell_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "derm-reg-cursorps-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let env = env_in(&dir);
+        let file = dir.join(".cursor/hooks.json");
+        let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let tail = crate::hook::claude_format::marks::ps_tail("cursor", "pre", 2);
+        for (line, closed, want) in [
+            (format!("& '{}'{tail}", me.display()), true, "yes"),
+            (format!("& '{}'{tail}", me.display()), false, "no"),
+            (format!("& '/x/derm'{tail}"), true, "no"),
+            (
+                format!("& '{}' hook cursor pre; exit $LASTEXITCODE", me.display()),
+                true,
+                "no",
+            ),
+            (
+                format!(
+                    "& '{}'{}",
+                    me.display(),
+                    crate::hook::claude_format::marks::ps_tail("codex", "pre", 2)
+                ),
+                true,
+                "no",
+            ),
+        ] {
+            let e = entry_for(&line, closed);
+            std::fs::write(
+                &file,
+                format!(
+                    r#"{{"version":1,"hooks":{{"preToolUse":[{e}],"beforeMCPExecution":[{e}]}}}}"#
+                ),
+            )
+            .unwrap();
+            let r = check("cursor", &env);
+            assert_eq!(r.word(), want, "{line} {closed}: {:?}", r.detail());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Codex constant is the shared PowerShell tail.
+    #[test]
+    fn fp9_codex_tail_is_ps_tail() {
+        assert_eq!(
+            CODEX_PS_PRE_TAIL,
+            crate::hook::claude_format::marks::ps_tail("codex", "pre", 2)
+        );
     }
 
     #[cfg(unix)]

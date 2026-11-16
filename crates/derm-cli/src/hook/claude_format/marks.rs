@@ -113,6 +113,55 @@ pub fn is_derm_rust_command(command: &str, agent: &str, me: Option<&Path>) -> bo
     real == me && std::fs::metadata(&real).is_ok_and(|m| m.is_file() && closed(&m))
 }
 
+/// What follows the single-quoted path in a Windows row's PowerShell line
+/// (gates.json's Codex and Cursor Windows rows): the call operator's words,
+/// then, when derm.exe did not start (`$LASTEXITCODE` is `$null`, which
+/// `exit` would make 0, an allow), a reason and `missing_exit`; else derm's
+/// own exit code, which `-Command` would turn into 1 (fix pass 8, run on
+/// the box; Codex 0.167.2 and 0.169.0 and Cursor run Windows hooks through
+/// PowerShell: `shell_detect.rs:363-365`, cursor.com/docs/hooks).
+pub fn ps_tail(agent: &str, event: &str, missing_exit: u8) -> String {
+    format!(
+        " hook {agent} {event}; if ($null -eq $LASTEXITCODE) {{ [Console]::Error.WriteLine('derm: derm.exe did not start'); exit {missing_exit} }}; exit $LASTEXITCODE"
+    )
+}
+
+/// derm's PowerShell line for `agent`'s `event`: `& '<abs derm>'` and
+/// [`ps_tail`] with exit 2, where the path holds nothing that ends a
+/// single-quoted string (`connect::gate::ps_reads`) and is this very program
+/// (same real path), a file only its owner may write.
+pub fn is_derm_ps_command(command: &str, agent: &str, event: &str, me: Option<&Path>) -> bool {
+    let Some(rest) = command.strip_prefix("& '") else {
+        return false;
+    };
+    let Some((path, tail)) = rest.split_once('\'') else {
+        return false;
+    };
+    if tail != ps_tail(agent, event, 2) || crate::connect::gate::ps_reads(path).is_some() {
+        return false;
+    }
+    if !Path::new(path).is_absolute() {
+        return false;
+    }
+    let (Some(me), Ok(real)) = (me, std::fs::canonicalize(path)) else {
+        return false;
+    };
+    let Ok(me) = std::fs::canonicalize(me) else {
+        return false;
+    };
+    real == me && owner_alone_writes(&real)
+}
+
+#[cfg(unix)]
+fn owner_alone_writes(real: &Path) -> bool {
+    std::fs::metadata(real).is_ok_and(|m| m.is_file() && closed(&m))
+}
+
+#[cfg(windows)]
+fn owner_alone_writes(real: &Path) -> bool {
+    real.is_file() && derm_core::platform::windows::only_owner_writes(real)
+}
+
 /// A hooks file as JSON, when it is a regular file under 1 MiB.
 fn read_json(file: &Path) -> Option<Value> {
     let st = std::fs::metadata(file).ok()?;
@@ -256,9 +305,11 @@ pub fn cursor_gate_registered(env: &Env) -> bool {
                 // to the TypeScript's `isDermCursorCommand`), or the wave 5b
                 // form lane 5bF will write.
                 crate::watch::register::is_derm_cursor_entry(e)
-                    || e.get("command")
-                        .and_then(Value::as_str)
-                        .is_some_and(|c| is_derm_rust_command(c, "cursor", me.as_deref()))
+                    || e.get("command").and_then(Value::as_str).is_some_and(|c| {
+                        is_derm_rust_command(c, "cursor", me.as_deref())
+                            // Fix pass 9: the Windows row's PowerShell line.
+                            || is_derm_ps_command(c, "cursor", "pre", me.as_deref())
+                    })
             })
             .collect();
         !ours.is_empty()

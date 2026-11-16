@@ -438,6 +438,43 @@ fn cursor_gets_both_events_in_a_new_file() {
     }
 }
 
+/// Fix pass 9 (note BG section 1): Cursor's Windows row writes the
+/// PowerShell line on both events, failing closed, and warns when MSYSTEM is
+/// set (Cursor's own bug then runs its hooks with bash).
+#[test]
+fn fp9_cursor_windows_row_writes_the_powershell_line_and_warns_on_msystem() {
+    let home = scratch("fp9-cursorw");
+    let derm = fake_derm(&home);
+    fs::create_dir_all(home.join(".cursor")).unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go_with(
+        &home,
+        &env(&[("MSYSTEM", "MINGW64")]),
+        Answer(true, None),
+        &["cursor", "--gate", "--write"],
+    );
+    gate::TEST_OS.with(|o| o.set(None));
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("warning: MSYSTEM=MINGW64"), "{}", r.out);
+    let v = parse(&read(&home.join(".cursor/hooks.json")));
+    for ev in ["preToolUse", "beforeMCPExecution"] {
+        let Some(Value::Array(l)) = v.get_path(&["hooks", ev]) else {
+            panic!("{ev}")
+        };
+        assert_eq!(l.len(), 1, "{ev}");
+        let e = json::compact(&l[0]);
+        assert!(e.contains("\"failClosed\": true"), "{ev}");
+        let want = format!(
+            "& '{derm}'{}",
+            crate::hook::claude_format::marks::ps_tail("cursor", "pre", 2)
+        );
+        assert!(e.contains(&serde_json::to_string(&want).unwrap()), "{e}");
+    }
+    assert!(gate::cursor_msystem_warning("cursor", Some("windows"), None).is_none());
+    assert!(gate::cursor_msystem_warning("cursor", None, Some("MINGW64")).is_none());
+    assert!(gate::cursor_msystem_warning("codex", Some("windows"), Some("MINGW64")).is_none());
+}
+
 #[cfg(unix)]
 /// Antigravity: a named bundle beside others; a `derm` member that is not
 /// derm's is refused.

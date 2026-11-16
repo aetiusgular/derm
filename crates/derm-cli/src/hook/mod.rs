@@ -66,6 +66,16 @@ pub struct Reply {
 /// plugin adds the prefix itself). For an
 /// agent derm does not know: the reason on stderr and exit 2, the most any
 /// hook runner reads as a failure.
+/// The hook's input without one leading UTF-8 byte-order mark. Windows
+/// PowerShell 5.1, which runs Codex's and Cursor's hooks on Windows, can
+/// begin a piped stdin with one (`EF BB BF`; Cursor staff, forum.cursor.com/
+/// t/172787), and a BOM is not JSON, so the call was denied as "not JSON".
+/// RFC 8259 section 8.1: a parser may ignore a BOM. Fix pass 9, note BG
+/// section 1.
+pub fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 pub fn fail_closed(agent: &str, reason: &str) -> Reply {
     let text = format!(
         "derm: {}",
@@ -194,6 +204,20 @@ fn agent_list() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Fix pass 9 (note BG section 1): a leading UTF-8 BOM, as Windows
+    /// PowerShell 5.1 can put on a hook's stdin, is not a reason to deny.
+    #[test]
+    fn fp9_a_leading_bom_is_not_part_of_the_input() {
+        let with = b"\xEF\xBB\xBF{\"hook_event_name\":\"PreToolUse\"}";
+        assert!(super::claude_format::parse_input(with).is_ok());
+        let read = super::native::read_stdin(&mut &with[..]).unwrap();
+        assert!(read.starts_with('{'), "{read:?}");
+        assert!(serde_json::from_str::<serde_json::Value>(&read).is_ok());
+        // Only one, and only at the start.
+        assert_eq!(super::without_bom("\u{feff}\u{feff}x"), "\u{feff}x");
+        assert_eq!(super::without_bom("x\u{feff}"), "x\u{feff}");
+    }
+
     use super::*;
 
     #[test]
