@@ -81,6 +81,7 @@ pub fn set_console_echo(on: bool) {
 }
 
 /// The console's echo state, when there is a console (for the test).
+#[cfg(test)]
 pub fn console_echo() -> Option<bool> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::Console::{GetConsoleMode, ENABLE_ECHO_INPUT};

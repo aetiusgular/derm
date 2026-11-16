@@ -525,6 +525,7 @@ pub struct SrtRoute {
 }
 
 /// What [`srt_route_with`] reads from the system, so a test can give its own.
+#[cfg(unix)]
 pub struct SrtReads<'a> {
     /// `/proc/self/net/dev`.
     pub netdev: &'a dyn Fn() -> Option<String>,
@@ -561,6 +562,7 @@ pub fn only_loopback_netns(dev: &str) -> bool {
     !names.is_empty() && names.iter().all(|n| *n == "lo")
 }
 
+#[cfg(unix)]
 fn chat_id_ok(c: &str) -> bool {
     !c.is_empty()
         && c.len() <= 128
@@ -576,6 +578,7 @@ fn chat_id_ok(c: &str) -> bool {
 /// environment (the only place srt gives its credentials), on loopback and
 /// at that proxy port. A project can set `DERM_CHAT_ID` and the proxy
 /// variables; it cannot make the network, bind a file or take the port.
+#[cfg(unix)]
 pub fn srt_route_with(env: &Env, r: &SrtReads) -> Result<SrtRoute, String> {
     if !r.unix_refused {
         return Err("a Unix socket can be made here, so the daemon's socket is the route".into());

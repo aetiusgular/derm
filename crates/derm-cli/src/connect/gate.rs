@@ -644,6 +644,7 @@ pub fn file_url(dir: &str, windows: bool) -> String {
 /// (a shell string in sh, bash, zsh, cmd or PowerShell, or an exec form)
 /// reads it as one word, and lane 5bA's `is_derm_rust_command` knows it as
 /// derm's (`hook/claude_format/marks.rs`, `plain`).
+#[cfg(not(windows))]
 pub fn plain_hook_path(p: &str) -> bool {
     p.starts_with('/')
         && p.len() <= 1024

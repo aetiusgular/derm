@@ -46,6 +46,28 @@ pub struct Shell {
     pub fetched: Vec<String>,
 }
 
+impl Shell {
+    /// Adds what another reading of the same call found (a decoded
+    /// `-EncodedCommand` payload's, fix pass 11): every list joined, each
+    /// host once, and a push in either is a push.
+    pub fn merge(&mut self, other: Shell) {
+        self.writes.extend(other.writes);
+        self.runs.extend(other.runs);
+        self.words.extend(other.words);
+        for h in other.hosts {
+            if !self.hosts.contains(&h) {
+                self.hosts.push(h);
+            }
+        }
+        for h in other.fetched {
+            if !self.fetched.contains(&h) {
+                self.fetched.push(h);
+            }
+        }
+        self.push |= other.push;
+    }
+}
+
 /// Programs whose job is to bring a URL's content back: curl and wget (the
 /// two OpenMoat 0.19.0 reads as a fetch, `shell/commands/fetch.rs`), their
 /// kin (HTTPie's `http` and `https`, `xh`, `wget2`, `aria2c`) and the text
@@ -340,76 +362,153 @@ fn windows_shell(first: &str) -> Option<WinShell> {
     None
 }
 
-/// PowerShell's parameters that take a value, by name and alias (about_Pwsh
-/// and about_PowerShell_exe; a name counts by any prefix of two letters or
-/// more, as `-ex` does for `-ExecutionPolicy`, run on the box).
-const POWERSHELL_VALUES: &[&str] = &[
-    "executionpolicy",
-    "ex",
-    "ep",
-    "windowstyle",
-    "w",
-    "version",
-    "v",
-    "inputformat",
-    "if",
-    "outputformat",
-    "of",
-    "o",
-    "configurationname",
-    "config",
-    "configurationfile",
-    "psconsolefile",
-    "custompipename",
-    "settingsfile",
-    "workingdirectory",
-    "wd",
+/// What a PowerShell parameter does with the words after it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PsParam {
+    /// A switch: nothing after it is its.
+    Switch,
+    /// Takes the next word as its value.
+    Value,
+    /// `-Command`: the rest of the line is the command.
+    Command,
+    /// `-CommandWithArgs`: the next word is the command, the rest its
+    /// arguments.
+    CommandWithArgs,
+    /// `-EncodedCommand`: the next word is base64 of UTF-16LE.
+    Encoded,
+    /// `-File`, `-help`, `-?`: no command text in the call.
+    NoText,
+}
+
+/// PowerShell's parameters in the order its parser tries them, each with
+/// its smallest unambiguous prefix (`MatchSwitch(switchKey, name,
+/// smallest)`, `CommandLineParameterParser.cs` at PowerShell `cb9cf48`,
+/// lines 914-1279; the values from each branch's `++i`, `ParseFormat`,
+/// `ParseExecutionPolicy`, `ParseCommand`, `CollectArgs`). The first match
+/// wins, as there, so `-co` is `-Command` (run on the box with
+/// powershell.exe 5.1.26100 and pwsh 7.6.10). `-Version` ends pwsh's parse
+/// and takes a value in 5.1; it is read as a value, which reads more.
+const POWERSHELL_PARAMS: &[(&str, &str, PsParam)] = &[
+    ("version", "v", PsParam::Value),
+    ("help", "h", PsParam::NoText),
+    ("?", "?", PsParam::NoText),
+    ("login", "l", PsParam::Switch),
+    ("noexit", "noe", PsParam::Switch),
+    ("noprofile", "nop", PsParam::Switch),
+    ("nologo", "nol", PsParam::Switch),
+    ("noninteractive", "noni", PsParam::Switch),
+    ("socketservermode", "so", PsParam::Switch),
+    ("v2socketservermode", "v2so", PsParam::Switch),
+    ("servermode", "s", PsParam::Switch),
+    ("namedpipeservermode", "nam", PsParam::Switch),
+    ("sshservermode", "sshs", PsParam::Switch),
+    ("noprofileloadtime", "noprofileloadtime", PsParam::Switch),
+    ("interactive", "i", PsParam::Switch),
+    ("configurationfile", "configurationfile", PsParam::Value),
+    ("configurationname", "config", PsParam::Value),
+    ("custompipename", "cus", PsParam::Value),
+    (
+        "commandwithargs",
+        "commandwithargs",
+        PsParam::CommandWithArgs,
+    ),
+    ("cwa", "cwa", PsParam::CommandWithArgs),
+    ("command", "c", PsParam::Command),
+    ("windowstyle", "w", PsParam::Value),
+    ("file", "f", PsParam::NoText),
+    ("isswait", "isswait", PsParam::Switch),
+    ("outputformat", "o", PsParam::Value),
+    ("of", "o", PsParam::Value),
+    ("inputformat", "inp", PsParam::Value),
+    ("if", "if", PsParam::Value),
+    ("executionpolicy", "ex", PsParam::Value),
+    ("ep", "ep", PsParam::Value),
+    ("encodedcommand", "e", PsParam::Encoded),
+    ("ec", "e", PsParam::Encoded),
+    ("encodedarguments", "encodeda", PsParam::Value),
+    ("ea", "ea", PsParam::Value),
+    ("settingsfile", "settings", PsParam::Value),
+    ("sta", "sta", PsParam::Switch),
+    ("mta", "mta", PsParam::Switch),
+    ("workingdirectory", "wo", PsParam::Value),
+    ("wd", "wd", PsParam::Value),
+    (
+        "removeworkingdirectorytrailingcharacter",
+        "removeworkingdirectorytrailingcharacter",
+        PsParam::Switch,
+    ),
+    ("token", "to", PsParam::Value),
+    ("utctimestamp", "utc", PsParam::Value),
 ];
 
-/// The command text a PowerShell command line runs (Windows test w6 retest
-/// 4, `w11a.ps1` on the box with powershell.exe 5.1.26100 and pwsh 7.6.10):
-/// `-Command` by any prefix (`-c`, `-co`, `-com`), `-CommandWithArgs`
-/// (`-cwa`), `/` in place of `-`, any case, takes the rest of the line;
-/// `-EncodedCommand` by `-e`, `-en`, `-ec`, `-enc` or any longer prefix takes
-/// base64 of UTF-16LE (about_Pwsh: "The Base64 representation must be a
-/// UTF-16LE encoded string"); `-File` (`-f`) runs a script, whose text is not
-/// here. A bare word starts the command in 5.1 and names a file in 7; it is
-/// read as a command in both, since reading more only raises an answer.
-/// dcg reads the same forms (`src/heredoc.rs` at 37d1473).
-fn powershell_command(words: &[String]) -> Option<String> {
+/// A PowerShell switch's name without its marker (`GetSwitchKey`, lines
+/// 710-739): one `/`, or a dash (`-`, U+2013, U+2014 or U+2015,
+/// `CharTraits.cs` `IsDash`), a second dash dropped; None for a word that is
+/// no switch.
+fn ps_switch(word: &str) -> Option<String> {
+    let w = word.trim();
+    let first = w.chars().next()?;
+    let dash = |c: char| matches!(c, '-' | '\u{2013}' | '\u{2014}' | '\u{2015}');
+    if !dash(first) && first != '/' {
+        return None;
+    }
+    let mut rest = &w[first.len_utf8()..];
+    if dash(first) {
+        if let Some(c) = rest.chars().next().filter(|c| *c == first) {
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    Some(rest.to_lowercase())
+}
+
+/// What a PowerShell command line runs, read as PowerShell reads it
+/// ([`POWERSHELL_PARAMS`]): the command text, and whether it came from
+/// `-EncodedCommand`. A bare word starts the command in 5.1 and names a
+/// file in 7; a switch pwsh does not know is an error there and the start
+/// of the command in 5.1 (`-cwa` in 5.1, run on the box). Both are read as
+/// the command, since reading more only raises an answer.
+fn powershell_command(words: &[String]) -> Option<(String, bool)> {
     let mut i = 0;
     while i < words.len() {
-        let w = words[i].to_ascii_lowercase();
-        let Some(name) = w.strip_prefix('-').or_else(|| w.strip_prefix('/')) else {
-            return Some(words[i..].join(" "));
+        let Some(key) = ps_switch(&words[i]) else {
+            return Some((words[i..].join(" "), false));
         };
-        if name.is_empty() {
+        if key.is_empty() {
             i += 1;
             continue;
         }
-        if name == "cwa" || name.starts_with('c') && "commandwithargs".starts_with(name) {
-            return Some(words[i + 1..].join(" "));
+        let hit = POWERSHELL_PARAMS.iter().find(|(name, smallest, _)| {
+            key.len() >= smallest.len() && name.starts_with(key.as_str())
+        });
+        match hit.map(|h| h.2) {
+            Some(PsParam::Switch) => i += 1,
+            Some(PsParam::Value) => i += 2,
+            Some(PsParam::Command) | Some(PsParam::CommandWithArgs) => {
+                return Some((words[i + 1..].join(" "), false));
+            }
+            Some(PsParam::Encoded) => {
+                return decode_utf16le_base64(words.get(i + 1)?).map(|t| (t, true));
+            }
+            Some(PsParam::NoText) => return None,
+            None => return Some((words[i..].join(" "), false)),
         }
-        if name == "ec" || name.starts_with('e') && "encodedcommand".starts_with(name) {
-            let b64 = words.get(i + 1)?;
-            return decode_utf16le_base64(b64);
-        }
-        if name.starts_with('f') && "file".starts_with(name) {
-            return None;
-        }
-        let takes_value = POWERSHELL_VALUES
-            .iter()
-            .any(|v| *v == name || name.len() >= 2 && v.starts_with(name));
-        i += if takes_value { 2 } else { 1 };
     }
     None
 }
 
-/// Base64 of UTF-16LE text, as PowerShell's `-EncodedCommand` takes it.
-/// None for anything else (the gate's folded text has lost base64's case).
+/// Base64 of UTF-16LE text, as PowerShell's `-EncodedCommand` takes it
+/// (`Convert.FromBase64String`, then `Encoding.Unicode.GetChars`:
+/// `PsUtils.cs` `Base64ToString`, lines 419-428). .NET skips white space
+/// inside the base64 and so does this. None for anything else.
 fn decode_utf16le_base64(b64: &str) -> Option<String> {
     use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let compact: String = b64
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .ok()?;
     if bytes.len() < 2 || bytes.len() % 2 != 0 {
         return None;
     }
@@ -444,24 +543,42 @@ fn cmd_command(words: &[String]) -> Option<String> {
 /// The commands a simple command runs, read through wrappers, shells' `-c`
 /// and `eval`, and PowerShell's and cmd's command strings (WW6R4-1).
 pub fn effective(text: &str) -> (Vec<Cmd>, Vec<String>) {
-    let mut out = Vec::new();
-    let mut outs = Vec::new();
-    expand_text(text, 0, &mut out, &mut outs);
-    (out, outs)
+    let mut acc = Acc::default();
+    expand_text(text, 0, &mut acc);
+    (acc.out, acc.outs)
 }
 
-fn expand_text(text: &str, depth: usize, out: &mut Vec<Cmd>, outs: &mut Vec<String>) {
+/// Every PowerShell `-EncodedCommand` payload the text runs, decoded, at
+/// any depth (fix pass 11). Read from the text as written: base64 keeps its
+/// case only there, so a caller that folds the text (taint, `facts.rs`)
+/// reads each payload from here and folds it on its own.
+pub fn encoded_commands(text: &str) -> Vec<String> {
+    let mut acc = Acc::default();
+    expand_text(text, 0, &mut acc);
+    acc.enc
+}
+
+/// What the reading gathers: the commands, the redirect targets, and the
+/// decoded `-EncodedCommand` payloads.
+#[derive(Default)]
+struct Acc {
+    out: Vec<Cmd>,
+    outs: Vec<String>,
+    enc: Vec<String>,
+}
+
+fn expand_text(text: &str, depth: usize, acc: &mut Acc) {
     if depth > MAX_DEPTH {
         return;
     }
     let (cmds, o) = split(text);
-    outs.extend(o);
+    acc.outs.extend(o);
     for c in cmds {
-        expand(c.words, depth, out, outs);
+        expand(c.words, depth, acc);
     }
 }
 
-fn expand(mut words: Vec<String>, depth: usize, out: &mut Vec<Cmd>, outs: &mut Vec<String>) {
+fn expand(mut words: Vec<String>, depth: usize, acc: &mut Acc) {
     for _ in 0..16 {
         while words.first().is_some_and(|w| is_assignment(w)) {
             words.remove(0);
@@ -471,35 +588,38 @@ fn expand(mut words: Vec<String>, depth: usize, out: &mut Vec<Cmd>, outs: &mut V
         };
         let head = base(first).to_string();
         if head == "eval" {
-            expand_text(&words[1..].join(" "), depth + 1, out, outs);
+            expand_text(&words[1..].join(" "), depth + 1, acc);
             return;
         }
         if let Some(kind) = windows_shell(first) {
             let inner = match kind {
                 WinShell::PowerShell => powershell_command(&words[1..]),
-                WinShell::Cmd => cmd_command(&words[1..]),
+                WinShell::Cmd => cmd_command(&words[1..]).map(|s| (s, false)),
             };
-            out.push(Cmd {
+            acc.out.push(Cmd {
                 words: words.clone(),
             });
-            if let Some(s) = inner {
-                expand_text(&s, depth + 1, out, outs);
+            if let Some((s, encoded)) = inner {
+                if encoded {
+                    acc.enc.push(s.clone());
+                }
+                expand_text(&s, depth + 1, acc);
             }
             return;
         }
         if SHELLS.contains(&head.as_str()) {
             if let Some(s) = command_string(&words[1..]) {
-                out.push(Cmd {
+                acc.out.push(Cmd {
                     words: words.clone(),
                 });
-                expand_text(&s, depth + 1, out, outs);
+                expand_text(&s, depth + 1, acc);
                 return;
             }
-            out.push(Cmd { words });
+            acc.out.push(Cmd { words });
             return;
         }
         let Some(values) = wrapper_values(&head) else {
-            out.push(Cmd { words });
+            acc.out.push(Cmd { words });
             return;
         };
         if head == "env" {
@@ -508,7 +628,7 @@ fn expand(mut words: Vec<String>, depth: usize, out: &mut Vec<Cmd>, outs: &mut V
                 .position(|w| w == "-s" || w == "--split-string")
             {
                 if let Some(s) = words.get(i + 2) {
-                    expand_text(&s.clone(), depth + 1, out, outs);
+                    expand_text(&s.clone(), depth + 1, acc);
                 }
                 return;
             }

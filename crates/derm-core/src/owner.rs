@@ -21,6 +21,8 @@ use serde_json::Value;
 
 /// The anchor file (`ANCHOR` in `owner.ts`).
 pub const ANCHOR: &str = "/etc/derm/agent-users.json";
+/// The anchor's size cap, read only by [`read_anchor`] (Unix).
+#[cfg(unix)]
 const MAX_BYTES: u64 = 64 * 1024;
 
 /// Whose files this process trusts.

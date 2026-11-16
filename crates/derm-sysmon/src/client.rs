@@ -150,7 +150,21 @@ fn connect() -> Result<Pipe, String> {
     if server.is_none() || server != service_pid() {
         return Err("the pipe's server is not the running derm-sysmon service".into());
     }
+    let sec =
+        win::security_of_handle(pipe.handle()).map_err(|e| format!("the pipe's owner: {e}"))?;
+    owner_is(sec.owner.as_deref(), &svc)?;
     Ok(pipe)
+}
+
+/// The pipe must be owned by the service's account, which the service sets
+/// (`service::pipe_sddl`) and no caller without SeRestorePrivilege can
+/// forge (fix pass 11, R13 corrected).
+fn owner_is(owner: Option<&str>, svc: &str) -> Result<(), String> {
+    match owner {
+        Some(o) if o == svc => Ok(()),
+        Some(o) => Err(format!("the pipe is owned by {o}, not the derm-sysmon service")),
+        None => Err("the pipe has no owner".into()),
+    }
 }
 
 enum Msg {
@@ -301,6 +315,15 @@ pub fn spawn(sink: Arc<dyn Sink>, status: Arc<Status>) -> std::thread::JoinHandl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fp11_a_pipe_owned_by_anyone_but_the_service_is_refused() {
+        let svc = "S-1-5-80-1-2-3-4-5";
+        assert!(owner_is(Some(svc), svc).is_ok());
+        assert!(owner_is(Some("S-1-5-21-1-2-3-1001"), svc).is_err());
+        assert!(owner_is(Some(acl::ADMINISTRATORS), svc).is_err());
+        assert!(owner_is(None, svc).is_err());
+    }
 
     #[test]
     fn only_a_drawn_name_is_taken_from_the_pointer() {

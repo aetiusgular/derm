@@ -491,6 +491,7 @@ pub fn chat_tmp_dir(temp: &Path, chat: &str, dry_run: bool) -> Result<PathBuf, S
     let dir = temp.join(format!("derm-tmp-{chat}-{}", uuid::Uuid::new_v4().simple()));
     // Made 0700 from the start (review FP1-R11), then set again past the
     // umask; `create` refuses a name already there, a link included.
+    #[cfg_attr(not(unix), expect(unused_mut, reason = "the mode is set on Unix only"))]
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

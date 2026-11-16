@@ -530,7 +530,8 @@ impl Checker for NoChecker {
 const PAM_AUTH_ERR: i32 = 7;
 
 /// Why a set-id helper cannot check a password in a process with
-/// no_new_privs set.
+/// no_new_privs set. Unix only: its readers are the helper's.
+#[cfg(unix)]
 const NNP_WHY: &str = "the daemon runs with no_new_privs set (systemd's NoNewPrivileges=, \
 or a setting that implies it), so the set-group-id bit unix_chkpwd needs to read \
 /etc/shadow is ignored; start derm-daemon from a unit without it";
@@ -538,12 +539,14 @@ or a setting that implies it), so the set-group-id bit unix_chkpwd needs to read
 /// Whether `/proc/self/status` says no_new_privs is set for this process
 /// (the kernel's `NoNewPrivs:` line; once set it is inherited and never
 /// unset: https://docs.kernel.org/userspace-api/no_new_privs.html).
+#[cfg(unix)]
 pub fn no_new_privs() -> bool {
     std::fs::read_to_string("/proc/self/status")
         .map(|s| no_new_privs_in(&s))
         .unwrap_or(false)
 }
 
+#[cfg(any(unix, test))]
 fn no_new_privs_in(status: &str) -> bool {
     status.lines().any(|l| {
         l.strip_prefix("NoNewPrivs:")

@@ -1484,6 +1484,7 @@ impl Daemon {
         crate::platform::windows::sysmon_feed::state()
     }
 
+    #[cfg(not(windows))]
     fn os_feed_state_here(&self) -> Value {
         let Ok(feed) = self.os_feed.lock() else {
             return Value::Null;

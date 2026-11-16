@@ -150,6 +150,7 @@ pub fn kept_away(home: &Path, sys: &System) -> Option<String> {
 
 /// The mount points `/proc/self/mountinfo` lists (its fifth field), with
 /// its escapes read.
+#[cfg(unix)]
 pub fn mount_points(mountinfo: &str) -> Vec<String> {
     mountinfo
         .lines()

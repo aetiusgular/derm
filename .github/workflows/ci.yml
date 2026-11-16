@@ -157,6 +157,11 @@ jobs:
           node-version: "24"
       - name: cargo build
         run: cargo build --workspace
+      # Fix pass 11: Windows-only code (cfg(windows), and what only Unix
+      # uses) was linted nowhere; 17 warnings had built up since 10 Nov.
+      - name: cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         if: ${{ !cancelled() }}
         run: cargo test --workspace --no-fail-fast

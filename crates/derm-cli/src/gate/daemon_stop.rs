@@ -307,6 +307,57 @@ mod tests {
         }
     }
 
+    /// Fix pass 11: PowerShell's own parameter table (`CommandLineParameterParser.cs`
+    /// at PowerShell `cb9cf48`: `MatchSwitch`, `GetSwitchKey`, `IsDash`):
+    /// a parameter that takes a value hides nothing after it
+    /// (`-EncodedArguments`, `-InputFormat`, `-WorkingDirectory`, `-Token`,
+    /// `-UtcTimestamp`, `-SettingsFile`); `--` and the Unicode dashes mark a
+    /// switch; base64 may hold white space, as .NET's decoder allows.
+    #[test]
+    fn fp11_powershells_own_parameter_table_reads_the_command() {
+        let enc = |s: &str| {
+            use base64::Engine;
+            let b: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            base64::engine::general_purpose::STANDARD.encode(b)
+        };
+        let stop = "Stop-Process -Name derm-daemon";
+        let b64 = enc(stop);
+        let spaced: String = b64
+            .chars()
+            .enumerate()
+            .flat_map(|(i, c)| {
+                if i > 0 && i % 8 == 0 {
+                    vec![' ', c]
+                } else {
+                    vec![c]
+                }
+            })
+            .collect();
+        for text in [
+            format!("pwsh -ea {} -c \"{stop}\"", enc("x")),
+            format!("pwsh -encodeda {} -command \"{stop}\"", enc("x")),
+            format!("powershell -inp text -c \"{stop}\""),
+            format!("pwsh -wo C:\\w -c \"{stop}\""),
+            format!("pwsh -to abc -c \"{stop}\""),
+            format!("pwsh -utc 2026-11-15T00:00:00Z -c \"{stop}\""),
+            format!("pwsh -settings s.json -c \"{stop}\""),
+            format!("powershell -Version 2 -c \"{stop}\""),
+            format!("powershell --command \"{stop}\""),
+            format!("powershell \u{2013}Command \"{stop}\""),
+            format!("powershell \u{2014}c \"{stop}\""),
+            format!("powershell -enc \"{spaced}\""),
+        ] {
+            assert!(stops(&text).is_some(), "{text}");
+        }
+        for text in [
+            format!("pwsh -ea {b64}"),
+            format!("powershell -help {stop}"),
+            format!("powershell -File stop.ps1 {stop}"),
+        ] {
+            assert!(stops(&text).is_none(), "{text}");
+        }
+    }
+
     #[test]
     fn a_command_that_only_names_derm_or_only_kills_is_not() {
         for text in [

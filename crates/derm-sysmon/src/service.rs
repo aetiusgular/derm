@@ -265,8 +265,14 @@ fn channel_bounds() -> (Option<u64>, Option<u64>) {
                 &mut used,
             )
         };
-        // SAFETY: the union's u64 is read only when the type says so.
-        (ok != 0 && v.Type == EvtVarTypeUInt64 as u32).then(|| unsafe { v.Anonymous.UInt64Val })
+        // The union's u64 is read only when the type says so (an `if`, not
+        // `then_some`, which would read it first).
+        if ok != 0 && v.Type == EvtVarTypeUInt64 as u32 {
+            // SAFETY: the type says the union holds a u64.
+            Some(unsafe { v.Anonymous.UInt64Val })
+        } else {
+            None
+        }
     };
     let oldest = get(EvtLogOldestRecordNumber);
     let count = get(EvtLogNumberOfLogRecords);
@@ -353,6 +359,14 @@ fn write_replace(path: &Path, data: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// The pipe's descriptor. `O:` names the service's own account as owner,
+/// so the client can check it. Without SeRestorePrivilege the kernel takes
+/// an owner only from the creator's token (SetNamedSecurityInfo's
+/// psidOwner; fix pass 11 run of 1307), so a squatter can't forge it.
+pub(crate) fn pipe_sddl(me: &str) -> String {
+    format!("O:{me}D:P(A;;GA;;;SY)(A;;GA;;;{me})(A;;0x12008b;;;AU)")
+}
+
 /// One pipe instance, made with the service's access list: SYSTEM and the
 /// service everything; any signed-in user may read and write data, not
 /// make an instance (`0x12008b`: FILE_GENERIC_READ and FILE_WRITE_DATA, as
@@ -413,7 +427,7 @@ fn serve_until_stopped(running: impl FnOnce()) -> Result<(), String> {
         clients: AtomicU64::new(0),
         next: AtomicU64::new(1),
     });
-    let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;{me})(A;;0x12008b;;;AU)");
+    let sddl = pipe_sddl(&me);
     let name = format!(
         "{PIPE_PREFIX}{}",
         win::random_hex(16).map_err(|e| e.to_string())?
@@ -689,6 +703,93 @@ mod tests {
             Some(acl::SYSTEM)
         );
         assert_eq!(win::sid_of_account("no such account derm 5bE"), None);
+    }
+
+    #[test]
+    fn fp11_the_pipe_names_its_owner_and_no_one_else_can_be_named() {
+        let me = win::own_sid().unwrap();
+        assert!(pipe_sddl(&me).starts_with(&format!("O:{me}D:")));
+        let name = format!("{PIPE_PREFIX}fp11-{}", win::random_hex(8).unwrap());
+        let wide = win::wide_str(&name);
+        let server = instance(&wide, true, &pipe_sddl(&me)).unwrap();
+        let client = Pipe::new(win::open_pipe(&name).unwrap()).unwrap();
+        let sec = win::security_of_handle(client.handle()).unwrap();
+        assert_eq!(sec.owner.as_deref(), Some(me.as_str()));
+        drop((client, server));
+        // A foreign owner is refused at creation (ERROR_INVALID_OWNER) to a
+        // caller without SeRestorePrivilege. An elevated ssh session holds
+        // it enabled (run on the box), so this thread drops it first.
+        let other = format!("{PIPE_PREFIX}fp11-{}", win::random_hex(8).unwrap());
+        let made = without_restore_privilege(|| {
+            instance(
+                &win::wide_str(&other),
+                true,
+                &format!("O:{}D:P(A;;GA;;;SY)", acl::SYSTEM),
+            )
+        });
+        let e = made
+            .err()
+            .expect("a pipe owned by SYSTEM was made without SeRestorePrivilege");
+        assert_eq!(e.raw_os_error(), Some(1307));
+    }
+
+    /// Runs `f` on this thread under a copy of the process token with
+    /// SeRestorePrivilege removed, then reverts.
+    fn without_restore_privilege<T>(f: impl FnOnce() -> T) -> T {
+        use windows_sys::Win32::Security::{
+            AdjustTokenPrivileges, DuplicateTokenEx, LookupPrivilegeValueW, RevertToSelf,
+            SecurityImpersonation, TokenImpersonation, LUID_AND_ATTRIBUTES,
+            SE_PRIVILEGE_REMOVED, TOKEN_ADJUST_PRIVILEGES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE,
+            TOKEN_PRIVILEGES, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, OpenProcessToken, SetThreadToken,
+        };
+        let mut t = std::ptr::null_mut();
+        let mut dup = std::ptr::null_mut();
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: unsafe { std::mem::zeroed() },
+                Attributes: SE_PRIVILEGE_REMOVED,
+            }],
+        };
+        let name = win::wide_str("SeRestorePrivilege");
+        // SAFETY: our own token; handles leak at test end, which is fine.
+        unsafe {
+            assert_ne!(OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &mut t), 0);
+            assert_ne!(
+                DuplicateTokenEx(
+                    t,
+                    TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY | TOKEN_IMPERSONATE,
+                    std::ptr::null(),
+                    SecurityImpersonation,
+                    TokenImpersonation,
+                    &mut dup,
+                ),
+                0
+            );
+            assert_ne!(
+                LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut tp.Privileges[0].Luid),
+                0
+            );
+            assert_ne!(
+                AdjustTokenPrivileges(
+                    dup,
+                    0,
+                    &tp,
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
+            assert_ne!(SetThreadToken(std::ptr::null(), dup), 0);
+        }
+        let r = f();
+        // SAFETY: drops this thread's impersonation.
+        assert_ne!(unsafe { RevertToSelf() }, 0);
+        r
     }
 
     #[test]

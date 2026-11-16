@@ -4179,6 +4179,7 @@ mod end_to_end {
             .any(|l| l["op"] == "hello" && l["token"] == fake::CHAT_TOKEN));
     }
 
+    #[cfg(unix)]
     const DENY_BASH: &str = r#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#;
 
     /// A scripted ACP agent asks about one bash call; the client answers
