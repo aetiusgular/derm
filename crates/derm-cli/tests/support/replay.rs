@@ -136,20 +136,34 @@ fn set_mode(p: &Path, m: u64) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(m as u32));
 }
-/// On Windows a mode no one but the owner can write under is made private
-/// to the owner, the nearest the platform seam has (`set_private_dir`,
-/// `set_private_file`); a mode others can write under is Unix's own
-/// ([`unix_only`]), and such a case does not run here.
+/// On Windows a mode is given as an access list: the path is made private
+/// to the owner (`set_private_dir`, `set_private_file`), and a mode others
+/// can write under also grants Everyone write (`icacls /grant *S-1-1-0`),
+/// the form "others may write" takes there, which derm's Windows checks
+/// read from the access list (case 225; the same grant as
+/// `run::tests::fpw_s2_*`; a folder's grant is not inherited, as a Unix
+/// folder's mode is not its files'). Note BF section 4.1: the loose-mode cases run
+/// on Windows too, so each is held there by the Rust gate, not skipped.
 #[cfg(not(unix))]
 fn set_mode(p: &Path, m: u64) {
-    if m & 0o022 != 0 {
-        return;
-    }
     let _ = if p.is_dir() {
         derm_core::platform::set_private_dir(p)
     } else {
         derm_core::platform::set_private_file(p)
     };
+    if m & 0o022 != 0 {
+        let grant = if p.is_dir() {
+            "*S-1-1-0:(M)"
+        } else {
+            "*S-1-1-0:(W)"
+        };
+        let ok = std::process::Command::new("icacls")
+            .arg(p)
+            .args(["/grant", grant])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "icacls could not let Everyone write {}", p.display());
+    }
 }
 
 /// Calls whose answer a later rule changed on purpose, with the answer that
@@ -179,21 +193,14 @@ const CHANGED: &[(&str, usize, &str)] = &[
     ),
 ];
 
-/// Why a case's setup holds only on Unix, or `None`: a mode others can
-/// write under, which the checks the case tests read as a Unix mode (case
-/// 225: Windows has none; a mode only the owner writes under is made
-/// private there, `set_mode`), a link or a FIFO, which the replay makes with
-/// Unix calls only. On Windows such a case is not run, and says why; every
-/// other case runs there (fix pass 6, note BE section 3.5).
+/// Why a case's setup holds only on Unix, or `None`: a link or a FIFO,
+/// which the replay makes with Unix calls only. On Windows such a case is
+/// not run, and says why; every other case runs there, a mode others can
+/// write under included (`set_mode`; fix pass 6, note BE section 3.5; note
+/// BF section 4.1).
 pub fn unix_only(case: &Value) -> Option<String> {
     for call in case["calls"].as_array()? {
         for f in call["files"].as_array().into_iter().flatten() {
-            if f.get("mode")
-                .and_then(Value::as_u64)
-                .is_some_and(|m| m & 0o022 != 0)
-            {
-                return Some(format!("{} is set to a mode others can write", f["path"]));
-            }
             if matches!(f["kind"].as_str(), Some("link" | "fifo")) {
                 return Some(format!("{} is a {}", f["path"], f["kind"]));
             }

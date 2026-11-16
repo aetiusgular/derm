@@ -5,9 +5,10 @@
 //! the base, whose dialects are stubs, and pass when the lane is done.
 //! Run with `cargo test -p derm-cli --test hook_cases_5bA`.
 //! Every system since fix pass 6: the fake daemon binds through the
-//! daemon's own seam (a named pipe on Windows), and a case whose setup is
-//! Unix's (a file mode, a link, a FIFO) is not run on Windows and says why
-//! (`support/replay.rs`, `unix_only`).
+//! daemon's own seam (a named pipe on Windows). A mode others can write
+//! under is an access list there (Everyone may write); a case that needs a
+//! link or a FIFO is not run on Windows and says why (`support/replay.rs`,
+//! `set_mode`, `unix_only`; note BF section 4.1).
 
 mod support;
 

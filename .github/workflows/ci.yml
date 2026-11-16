@@ -104,6 +104,11 @@ jobs:
       - run: cargo build -p derm-cli
       - run: npx vitest run
       - run: node scripts/lane-scope.test.mjs
+      # vitest skips scripts/windows-held.json's files on Windows only; this
+      # fails on every system when a test in them has no Rust holder (note BF
+      # section 4.1).
+      - run: node scripts/windows-holders.test.mjs
+      - run: node scripts/windows-holders.mjs
       # The Rust fold's tables and contracts/fixtures/policy/fold.json come
       # from the hook core; this fails when they drift (it skips, saying why,
       # on a Node whose Unicode version differs from the tables').
@@ -159,6 +164,9 @@ jobs:
       - name: tsc
         if: ${{ !cancelled() }}
         run: npx tsc --noEmit
+      - name: holders of the tests vitest skips here
+        if: ${{ !cancelled() }}
+        run: node scripts/windows-holders.mjs
       - name: vitest
         if: ${{ !cancelled() }}
         run: npx vitest run
