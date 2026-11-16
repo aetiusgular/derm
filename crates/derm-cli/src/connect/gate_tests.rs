@@ -1474,6 +1474,7 @@ fn geminis_extension_hooks_run_the_launcher() {
 }
 
 #[cfg(unix)]
+#[derive(Debug)]
 struct Launched {
     code: Option<i32>,
     out: String,
@@ -1512,6 +1513,21 @@ fn launch(cwd: &Path, env: &[(&str, &str)], args: &[&str], input: &str) -> Launc
 #[cfg(unix)]
 /// A stand-in derm that prints its argv and its stdin, so a test sees what
 /// the launcher ran it with.
+/// The first derm the launcher's fixed folders after `~/.local/bin` hold
+/// on this host (`derm-gate.sh`: Homebrew's, then `/usr/local/bin`, then
+/// `/usr/bin`), or `None`.
+fn system_derm() -> Option<std::path::PathBuf> {
+    let brew: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin/derm", "/usr/local/bin/derm"]
+    } else {
+        &["/home/linuxbrew/.linuxbrew/bin/derm", "/usr/local/bin/derm"]
+    };
+    brew.iter()
+        .chain(std::iter::once(&"/usr/bin/derm"))
+        .map(std::path::PathBuf::from)
+        .find(|p| p.symlink_metadata().is_ok())
+}
+
 fn echo_derm(dir: &Path) -> String {
     fs::create_dir_all(dir).unwrap();
     fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1584,20 +1600,33 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
         &["claude-code", "pre"],
         "{}",
     );
-    assert_eq!(r.code, Some(2));
-    assert!(r.out.is_empty(), "{}", r.out);
+    // Fix pass 11 (Mac), MW6R5-2: the launcher's fixed folders after
+    // `~/.local/bin` (Homebrew's and `/usr/bin`) are this host's own, and on
+    // Tony's Mac `/opt/homebrew/bin/derm` is there, so the launcher runs it
+    // (as it should: `derm-gate.sh`, the candidate loop). The PATH derm never
+    // runs either way (its marker `argv:` never shows); the "none" messages
+    // are checked where no system derm is installed.
+    let system = system_derm();
     assert!(
-        r.err.starts_with("derm: no derm this hook can trust"),
-        "{}",
-        r.err
+        !r.out.contains("argv:") && !r.err.contains("argv:"),
+        "{r:?}"
     );
-    assert!(r.err.contains("never looked up on PATH"), "{}", r.err);
-    // Gemini reads its JSON on stdout as well.
-    let r = launch(&work, &[("HOME", &h)], &["gemini", "before"], "{}");
-    assert_eq!(r.code, Some(2));
-    let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
-    assert_eq!(v["decision"], "deny");
-    assert!(v["reason"].as_str().unwrap().starts_with("derm: no derm"));
+    if system.is_none() {
+        assert_eq!(r.code, Some(2));
+        assert!(r.out.is_empty(), "{}", r.out);
+        assert!(
+            r.err.starts_with("derm: no derm this hook can trust"),
+            "{}",
+            r.err
+        );
+        assert!(r.err.contains("never looked up on PATH"), "{}", r.err);
+        // Gemini reads its JSON on stdout as well.
+        let r = launch(&work, &[("HOME", &h)], &["gemini", "before"], "{}");
+        assert_eq!(r.code, Some(2));
+        let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+        assert_eq!(v["decision"], "deny");
+        assert!(v["reason"].as_str().unwrap().starts_with("derm: no derm"));
+    }
     // Writable by others: refused, and said.
     let bin = home.join(".local/bin");
     let f = echo_derm(&bin);
@@ -1623,9 +1652,13 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
     let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
     assert_eq!(r.code, Some(2));
     assert!(r.err.contains("others may write"), "{}", r.err);
-    // A relative or missing HOME is not used.
+    // A relative or missing HOME is not used: the scratch `~/.local/bin`'s
+    // refused derm is not reached.
     let r = launch(&work, &[("HOME", "home")], &["claude-code", "pre"], "{}");
-    assert!(r.err.contains("no derm this hook can trust"), "{}", r.err);
+    assert!(!r.err.contains("others may write"), "{}", r.err);
+    if system.is_none() {
+        assert!(r.err.contains("no derm this hook can trust"), "{}", r.err);
+    }
     // An agent or event it does not take: refused before anything runs,
     // the input never printed.
     for args in [&["frob", "pre"][..], &["claude-code", "before"], &[]] {

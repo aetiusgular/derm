@@ -154,6 +154,23 @@ fn a_chat_token_with_no_derm_run_above_it_is_still_the_light_tier() {
     assert!(text(&o).contains(MARK), "{}", text(&o));
 }
 
+/// `sh`, or on macOS an ad hoc signed copy of `/bin/bash` in `dir`, which
+/// SIP does not restrict (MW6R5-1).
+fn unrestricted_shell(dir: &Path) -> String {
+    if !cfg!(target_os = "macos") {
+        return "sh".into();
+    }
+    let copy = dir.join("bash-copy");
+    std::fs::copy("/bin/bash", &copy).unwrap();
+    let signed = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(&copy)
+        .output()
+        .unwrap();
+    assert!(signed.status.success(), "{signed:?}");
+    copy.display().to_string()
+}
+
 /// Runs `derm hook claude-code pre` as `sh -c <inner>` under a real
 /// `derm run --no-daemon`, its input the Claude Code call.
 fn under_derm_run(broken: &Path, inner: &str) -> Output {
@@ -209,10 +226,15 @@ fn a_token_derm_runs_child_was_started_with_keeps_a_lost_record_from_denying() {
     // macOS's `/bin/sh`, does that for a lone command), so the hook stays a
     // child of the process `derm run` started, as a harness's hooks are.
     let inner = format!("{} hook claude-code pre; true", env!("CARGO_BIN_EXE_derm"));
+    // The stand-in harness is a shell macOS does not restrict: SIP hides a
+    // platform binary's start environment (`/bin/sh` here), and a harness is
+    // none (fix pass 11 (Mac), MW6R5-1; Claude Code's binary and node read
+    // in full on the Mac).
+    let sh = unrestricted_shell(&broken);
     let o = under_derm_run(
         &broken,
         &format!(
-            "exec env DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} sh -c '{inner}'",
+            "exec env DERM_CHAT_TOKEN={TOKEN} DERM_DAEMON_SOCKET={} {sh} -c '{inner}'",
             broken.join("no-daemon.sock").display()
         ),
     );

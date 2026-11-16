@@ -428,8 +428,14 @@ mod tests {
     #[test]
     fn a_childs_start_environment_is_read_by_name() {
         // W6C-R6: read the exec-time environment of another process of this
-        // user; run here on Linux and on CI's macOS job.
-        let mut child = std::process::Command::new("sleep")
+        // user; run here on Linux and on CI's macOS job. macOS hides the
+        // environment of a code-signing restricted process, which every
+        // platform binary such as `/bin/sleep` is under SIP (xnu
+        // `sysctl_procargsx`, `omit_env_vars`; fix pass 11 (Mac), MW6R5-1),
+        // so there the child is an ad hoc signed copy, as a harness is not
+        // a platform binary.
+        let program = unrestricted_sleep();
+        let mut child = std::process::Command::new(&program)
             .arg("5")
             .env("DERM_PEER_ENV_TEST", "fake-secret-value-not-a-token-0000")
             .spawn()
@@ -448,6 +454,64 @@ mod tests {
         let _ = child.wait();
         assert_eq!(got.as_deref(), Some("fake-secret-value-not-a-token-0000"));
         assert_eq!(none, None);
+    }
+
+    /// `sleep`, or on macOS an ad hoc signed copy of it that SIP does not
+    /// restrict.
+    fn unrestricted_sleep() -> std::path::PathBuf {
+        if !cfg!(target_os = "macos") {
+            return "sleep".into();
+        }
+        let dir = std::env::temp_dir().join(format!("derm-peer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // One copy per call: two tests signing one path at once fail.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let copy = dir.join(format!("sleep-{n}"));
+        std::fs::copy("/bin/sleep", &copy).unwrap();
+        let signed = std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&copy)
+            .output()
+            .unwrap();
+        assert!(signed.status.success(), "{signed:?}");
+        copy
+    }
+
+    /// MW6R5-1: on macOS a platform binary's start environment is hidden
+    /// from this process when SIP restricts it, and an unrestricted copy's
+    /// is not. Where nothing is hidden (SIP off) both read.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mw6r5_1_a_restricted_programs_environment_reads_as_none() {
+        let read = |program: &std::path::Path| {
+            let mut child = std::process::Command::new(program)
+                .arg("5")
+                .env("DERM_PEER_ENV_TEST", "v")
+                .spawn()
+                .unwrap();
+            let mut got = None;
+            for _ in 0..50 {
+                got = environ_var(child.id(), "DERM_PEER_ENV_TEST");
+                if got.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            got
+        };
+        assert_eq!(read(&unrestricted_sleep()).as_deref(), Some("v"));
+        let sip = std::process::Command::new("/usr/bin/csrutil")
+            .arg("status")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("enabled."))
+            .unwrap_or(false);
+        let platform = read(std::path::Path::new("/bin/sleep"));
+        if sip {
+            assert_eq!(platform, None);
+        }
     }
 
     #[test]

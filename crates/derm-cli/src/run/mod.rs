@@ -232,6 +232,32 @@ fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String
     }
 }
 
+/// Whether macOS hides `pid`'s start environment (MW6R5-1): true when, by
+/// `wait`, the process still runs and its environment never showed the
+/// chat's token. Before its exec the child is a fork of this derm, whose
+/// environment lacks the token, so the read is polled until the exec shows.
+#[cfg(target_os = "macos")]
+pub(crate) fn start_env_hidden(pid: u32, token: &str, wait: Duration) -> bool {
+    use derm_core::platform::peer;
+    let until = Instant::now() + wait;
+    loop {
+        if peer::environ_var(pid, "DERM_CHAT_TOKEN").as_deref() == Some(token) {
+            return false;
+        }
+        if Instant::now() >= until {
+            return peer::program(pid).is_some();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The start line for MW6R5-1.
+pub(crate) fn start_env_note(program: &str) -> String {
+    format!(
+        "derm run: macOS hides the start environment of the program this chat started ({program} runs as a system program that SIP restricts), so derm's hooks cannot tell this chat is derm run's: they keep the light tier's rules, and a call whose record nothing kept is denied. Start the harness's own program rather than a shell script that forks it"
+    )
+}
+
 /// derm as the gate derm run registers names it (fix pass 7, FP6-R3): by
 /// Homebrew's `opt` link when Homebrew installed it, as `derm connect`
 /// names it (`connect::gate::self_path`, MW5B-6: `brew upgrade` removes the
@@ -1980,6 +2006,33 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let mut child = exec::spawn(&launch, &cwd, filter.is_some())
         .map_err(|e| (127, format!("{}: {e}", p.program)))?;
     let pid = child.id();
+    // Fix pass 11 (Mac), MW6R5-1: a hook binds its chat token to the start
+    // environment of the process this `derm run` started (`gate::daemon::
+    // run_gave`, case 268). macOS hides another program's environment when
+    // that program is code-signing restricted (`CS_RESTRICT`), which every
+    // platform binary is under SIP (xnu `bsd/kern/kern_sysctl.c`,
+    // `sysctl_procargsx`'s `omit_env_vars`, at `f6217f8`; run on the Mac:
+    // `/bin/sh` and `/usr/bin/env` 28 bytes, Claude Code's binary and node in
+    // full). A harness started as a shell script that forks its program
+    // leaves `/bin/sh` there, and its hooks then keep the light tier's rules.
+    // That fails safe; this says so.
+    let start_env_hidden = {
+        #[cfg(target_os = "macos")]
+        {
+            a.boundary == Boundary::None
+                && agent_user.is_none()
+                && token
+                    .as_deref()
+                    .is_some_and(|t| start_env_hidden(pid, t, Duration::from_millis(300)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    };
+    if start_env_hidden {
+        eprintln!("{}", start_env_note(&p.program));
+    }
     // The filter starts after `run.start` is posted (below), so no record
     // of the chat reaches the daemon before the run's own start; what the
     // agent writes meanwhile waits in its pipe.
@@ -2019,6 +2072,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "dangerousFlags": dangerous,
         "fullAccess": !dangerous.is_empty(),
         "outsideShapeOnly": a.harness.id == "other",
+        // MW6R5-1: macOS hid the started process's environment, so the
+        // chat's hooks keep the light tier's rules.
+        "startEnvHidden": start_env_hidden,
         // The harness's executable by its real path, so the daemon's join
         // can find the harness under a boundary's wrappers by what it execs
         // (MW5-16, review FP3-S2); null when it cannot be resolved here.
@@ -4847,5 +4903,64 @@ mod policy_load_tests {
         std::fs::write(&inside, RULES).unwrap();
         assert!(verdict(&inside, true, &chat).contains("inside the chat's folder"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// Fix pass 11 (Mac), MW6R5-1: what `derm run` sees of the process it
+/// started, on macOS.
+#[cfg(all(test, target_os = "macos"))]
+mod mw6r5_1 {
+    use super::{start_env_hidden, start_env_note};
+    use std::time::Duration;
+
+    fn sip_on() -> bool {
+        std::process::Command::new("/usr/bin/csrutil")
+            .arg("status")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("enabled."))
+            .unwrap_or(false)
+    }
+
+    fn hidden(program: &std::path::Path, args: &[&str]) -> bool {
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .env("DERM_CHAT_TOKEN", "t".repeat(64))
+            .spawn()
+            .unwrap();
+        let h = start_env_hidden(child.id(), &"t".repeat(64), Duration::from_millis(300));
+        let _ = child.kill();
+        let _ = child.wait();
+        h
+    }
+
+    #[test]
+    fn a_shell_script_harness_on_a_sip_mac_is_said_and_a_real_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("derm-mw6r51-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("sleep");
+        std::fs::copy("/bin/sleep", &copy).unwrap();
+        assert!(std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&copy)
+            .status()
+            .unwrap()
+            .success());
+        assert!(!hidden(&copy, &["3"]));
+        if sip_on() {
+            assert!(hidden(
+                std::path::Path::new("/bin/sh"),
+                &["-c", "sleep 3; true"]
+            ));
+        }
+        // A process that is gone is not reported.
+        let mut quick = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let _ = quick.wait();
+        assert!(!start_env_hidden(
+            quick.id(),
+            "x",
+            Duration::from_millis(50)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(start_env_note("/bin/sh").contains("light tier's rules"));
     }
 }
