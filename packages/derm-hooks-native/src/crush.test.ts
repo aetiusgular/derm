@@ -31,9 +31,14 @@ describe("Crush PreToolUse", () => {
     expect(JSON.parse(r.stdout)).toEqual({ version: 1, decision: "allow", reason: "derm: rule bash" });
   });
 
-  it("the documented example's rm -rf / is allowed by an allow-bash rule; the policy, not the dialect, decides", async () => {
+  // Until eval pass 1 (E1-1) this case read "rm -rf / is allowed by an allow-bash
+  // rule": that was the finding. The policy's step 7e now asks about it, and an ask
+  // with no approver is a deny (case 71). The dialect still decides nothing.
+  it("the documented example's rm -rf / asks under an allow-bash rule (step 7e), and with no approver is denied; the policy, not the dialect, decides", async () => {
     const r = await runPre(crush, readFileSync(new URL("stdin.pre-tool.json", FIX), "utf8"), f.env());
-    expect(r.exitCode).toBe(0);
+    expect(r.exitCode).toBe(2);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("command changes the filesystem root: `rm`");
   });
 
   it("deny is exit 2 with the reason on stderr and nothing on stdout (never exit 49 or halt, case 79)", async () => {

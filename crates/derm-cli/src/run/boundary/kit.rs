@@ -74,6 +74,11 @@ pub(crate) const PLUGIN: &[(&str, &str)] = &[
         "src/core/daemon.ts",
         include_str!("../../../../../packages/derm-claude-plugin/src/core/daemon.ts"),
     ),
+    // Step 7e's reader (eval pass 1, E1-1): policy.ts imports it.
+    (
+        "src/core/destructive.ts",
+        include_str!("../../../../../packages/derm-claude-plugin/src/core/destructive.ts"),
+    ),
     (
         "src/core/fold.ts",
         include_str!("../../../../../packages/derm-claude-plugin/src/core/fold.ts"),
