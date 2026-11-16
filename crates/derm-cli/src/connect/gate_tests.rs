@@ -3263,3 +3263,54 @@ fn fp7_cmd_reads_quote_percent_and_bang() {
         "inside quotes"
     );
 }
+
+/// Windows test w6 retest 4 (WW6R4-2): `--hook` is read as this system reads
+/// an absolute path. On Windows a drive path (Microsoft, "File path formats
+/// on Windows systems": a letter, `:`, `\`); never a drive-relative `C:x`, a
+/// rooted `\x`, a UNC or device path, `/` as a separator, a `.` or `..` part,
+/// or a part Windows would trim (a trailing `.` or space). The plugin list
+/// names it as Node's `pathToFileURL` does (`file:///C:/...`, a space as
+/// `%20`; Node 22.23.4 with `{ windows: true }`).
+#[test]
+fn ww6r4_2_windows_hook_folders_are_read_as_windows_reads_them() {
+    for ok in [
+        r"C:\Users\usern\derm-w6\packages\derm-opencode-plugin",
+        r"C:\Users\usern\derm-w6\packages\derm-opencode-plugin\",
+        r"d:\a b\@aetiusgular\derm-opencode-plugin",
+    ] {
+        assert!(gate::windows_plain_dir(ok), "{ok}");
+    }
+    for bad in [
+        r"C:x\pkg",
+        r"\Users\pkg",
+        r"\\server\share\pkg",
+        r"\\?\C:\Users\pkg",
+        r"\\.\C:\Users\pkg",
+        r"C:/Users/usern/pkg",
+        r"C:\Users/usern\pkg",
+        r"C:\a\..\b",
+        r"C:\a\.\b",
+        r"C:\a.\b",
+        r"C:\a \b",
+        r"C:\a\b.",
+        // Valid on Windows (a part of three dots is not trimmed), refused
+        // here: any part ending in a dot is.
+        r"C:\x\...\pkg",
+        r"C:\",
+        r"C:\a\\b",
+        "/home/usern/pkg",
+        r"C:\a%b",
+        r#"C:\a"b"#,
+        r"C:\a$b",
+    ] {
+        assert!(!gate::windows_plain_dir(bad), "{bad}");
+    }
+    assert_eq!(
+        gate::file_url(r"C:\Users\usern\a b\derm-opencode-plugin", true),
+        "file:///C:/Users/usern/a%20b/derm-opencode-plugin"
+    );
+    assert_eq!(
+        gate::file_url("/home/u/derm-opencode-plugin", false),
+        "file:///home/u/derm-opencode-plugin"
+    );
+}

@@ -533,9 +533,9 @@ pub fn fill(v: &Value, vars: &Vars) -> Result<Value, String> {
                     Value::Str(need(&vars.command_post, "the gate's post command")?)
                 }
                 "{hook_dir}" => Value::Str(need(&vars.hook_dir, "the hook folder")?),
-                "{hook_url}" => Value::Str(format!(
-                    "file://{}",
-                    need(&vars.hook_dir, "the hook folder")?
+                "{hook_url}" => Value::Str(file_url(
+                    &need(&vars.hook_dir, "the hook folder")?,
+                    cfg!(windows),
                 )),
                 "{version}" => Value::Str(vars.version.clone()),
                 "{gatename}" => Value::Str(
@@ -585,6 +585,58 @@ fn plain_path(p: &str) -> bool {
         && !Path::new(p)
             .components()
             .any(|c| matches!(c, Component::ParentDir))
+}
+
+/// A `--hook` folder as this system reads an absolute path (WW6R4-2,
+/// Windows test w6 retest 4: on Windows no path starts with `/`, so
+/// [`plain_path`] refused every one and OpenCode's Windows row could not be
+/// registered; rules case 224).
+fn hook_dir_ok(p: &str) -> bool {
+    if cfg!(windows) {
+        windows_plain_dir(p)
+    } else {
+        plain_path(p)
+    }
+}
+
+/// A Windows folder by a drive path (`C:\Users\me\pkg`), as Microsoft's
+/// "File path formats on Windows systems" names a fully qualified DOS path:
+/// a letter, `:`, `\`, then parts of letters, digits and `._@+~ -` split by
+/// `\` alone. Refused: a relative or drive-relative path (`C:x`), a rooted
+/// one (`\x`), a UNC or device path (`\\server\share`, `\\?\`, `\\.\`),
+/// `/` as a separator, an empty, `.` or `..` part, and a part ending in `.`
+/// or a space, which Windows drops when it opens the path (case 137). What
+/// the path resolves to is checked by [`check_hook`] against its real path.
+pub fn windows_plain_dir(p: &str) -> bool {
+    let p = p.trim_end_matches('\\');
+    let b = p.as_bytes();
+    if b.len() < 4 || b.len() > 1024 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\'
+    {
+        return false;
+    }
+    p[3..].split('\\').all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && !part.ends_with(['.', ' '])
+            && part.bytes().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, b'.' | b'_' | b'@' | b'+' | b'~' | b' ' | b'-')
+            })
+    })
+}
+
+/// The `file:` URL an agent's plugin list names a folder by. On Windows,
+/// Node's `pathToFileURL` form, which OpenCode 1.19.4 reads back with
+/// `fileURLToPath` (`packages/opencode/src/plugin/shared.ts`,
+/// `resolvePathPluginTarget`): `file:///C:/Users/me/pkg`, a space as `%20`.
+/// `file://C:\...` is not a URL Node writes (WW6R4-2).
+pub fn file_url(dir: &str, windows: bool) -> String {
+    if windows {
+        format!("file:///{}", dir.replace('\\', "/").replace(' ', "%20"))
+    } else {
+        format!("file://{dir}")
+    }
 }
 
 /// A path a hook line names bare: absolute, letters, digits and `._/@+~-`
@@ -1284,14 +1336,33 @@ pub fn check_hook(
     agent: &Agent,
     uid: derm_core::platform::UserId,
 ) -> Result<Option<String>, String> {
-    if !plain_path(dir) {
-        return Err(format!(
-            "--hook `{dir}` must be an absolute path of letters, digits and ._/@+~ - (no `..`)"
-        ));
+    if !hook_dir_ok(dir) {
+        return Err(if cfg!(windows) {
+            format!(
+                "--hook `{dir}` must be an absolute drive path (C:\\...) of letters, digits and ._@+~ - split by \\ (no `..`, no part ending in . or a space)"
+            )
+        } else {
+            format!(
+                "--hook `{dir}` must be an absolute path of letters, digits and ._/@+~ - (no `..`)"
+            )
+        });
     }
     let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{dir}: {e}"))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(format!("{dir}: not a folder (a link is refused)"));
+    }
+    // On Windows the folder by its real path, every junction and link
+    // followed and a short (8.3) name expanded (case 137): the path written
+    // into the agent's config is the one checked.
+    #[cfg(windows)]
+    {
+        let real = std::fs::canonicalize(dir).map_err(|e| format!("{dir}: {e}"))?;
+        let real = without_verbatim(&real.to_string_lossy());
+        if !real.eq_ignore_ascii_case(dir.trim_end_matches('\\')) {
+            return Err(format!(
+                "{dir}: its real path is {real} (a junction, a link or a short name on the way); give --hook that path"
+            ));
+        }
     }
     if !closed(Path::new(dir), &meta, uid) {
         return Err(format!(
@@ -2212,7 +2283,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     let hook_dir = o
         .hook
         .filter(|_| !hook_ignored)
-        .map(|d| d.trim_end_matches('/').to_string());
+        .map(|d| d.trim_end_matches(['/', '\\']).to_string());
     let node = match o.node {
         Some(n) => {
             if !plain_path(n) {

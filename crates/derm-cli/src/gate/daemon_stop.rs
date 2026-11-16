@@ -9,7 +9,8 @@
 //! question, so a mistake is caught before it lands.
 //!
 //! **Best effort.** It reads the shell text of a shell tool's call, through
-//! wrappers, `sh -c` and `eval` (`taint::shell::effective`), and asks when a
+//! wrappers, `sh -c`, `eval`, PowerShell's `-Command` and `-EncodedCommand`
+//! and cmd's `/c` (`taint::shell::effective`; WW6R4-1), and asks when a
 //! program that stops or signals a process or a service (`kill`, `pkill`,
 //! `killall`, `systemctl`, `launchctl`, `taskkill`, `sc`, PowerShell's
 //! `Stop-Process`, `Stop-Service` and `Remove-Service`) appears in the same
@@ -105,10 +106,13 @@ pub fn stops(text: &str) -> Option<&'static str> {
                 .or_else(|| derm_like(w).then_some("derm-daemon"))
         })
     };
-    let (cmds, _) = super::taint::shell::effective(&lower);
+    // The text as written, so a PowerShell `-EncodedCommand`'s base64 keeps
+    // its case (WW6R4-1); each word is compared in lower case.
+    let (cmds, _) = super::taint::shell::effective(text);
     for c in &cmds {
-        if stopping(&c.words) {
-            if let Some(n) = name_of(&c.words) {
+        let words: Vec<String> = c.words.iter().map(|w| w.to_ascii_lowercase()).collect();
+        if stopping(&words) {
+            if let Some(n) = name_of(&words) {
                 return Some(n);
             }
         }
@@ -121,7 +125,13 @@ pub fn stops(text: &str) -> Option<&'static str> {
     // A pipeline is one: `Get-Process derm-daemon | Stop-Process`.
     let words_of = |t: &str| -> Vec<String> {
         t.split(|c: char| c.is_whitespace() || "()`".contains(c))
-            .map(|w| w.trim_start_matches('$').to_string())
+            .map(|w| {
+                // A quote a command string opened or closed is not part of
+                // the word (`-Command "Get-Process derm-daemon | Stop-Process"`).
+                w.trim_matches(['\'', '"'])
+                    .trim_start_matches('$')
+                    .to_string()
+            })
             .filter(|w| !w.is_empty())
             .collect()
     };
@@ -247,6 +257,53 @@ mod tests {
             "systemctl --user stop derm-audit-feed",
         ] {
             assert!(stops(text).is_some(), "{text}");
+        }
+    }
+
+    /// Windows test w6 retest 4 (WW6R4-1, run on the box): Claude Code's Bash
+    /// ran `powershell.exe -NoProfile -Command "Stop-Process -Name
+    /// derm-daemon -Force"` and the gate allowed it. PowerShell 5.1 and 7.6
+    /// take any prefix of `-Command` (`-c`, `-co`, `-com`), `/` for `-`, any
+    /// case, and the rest of the line as the command; `-e`, `-en`, `-ec`,
+    /// `-enc` and `/enc` take base64 of UTF-16LE; 5.1 runs a bare word as the
+    /// command; cmd.exe runs what follows `/c`, `/k` or `/r`, with or without
+    /// a space (`w11a.ps1` on the box, 15 Nov). dcg reads the same forms
+    /// (`src/heredoc.rs`, `extract_windows_inline_scripts`, at 37d1473).
+    #[test]
+    fn ww6r4_1_a_stop_inside_another_shells_command_string_asks() {
+        let enc = |s: &str| {
+            use base64::Engine;
+            let bytes: Vec<u8> = s.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        };
+        let stop = enc("Stop-Process -Name derm-daemon -Force");
+        for text in [
+            "powershell.exe -NoProfile -Command \"Stop-Process -Name derm-daemon -Force\"".to_string(),
+            "pwsh -c 'Stop-Process -Name derm-daemon'".to_string(),
+            "powershell -nop -ex bypass -w hidden -com \"Get-Process derm-daemon | Stop-Process\"".to_string(),
+            "PowerShell /COMMAND Stop-Process -Name derm-daemon".to_string(),
+            "powershell Stop-Process -Name derm-daemon".to_string(),
+            "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -Command \"Stop-Process -Name derm-daemon\"".to_string(),
+            "bash -c 'powershell.exe -Command \"Stop-Process -Name derm-daemon\"'".to_string(),
+            "cmd /c taskkill /IM derm-daemon.exe /F".to_string(),
+            "cmd.exe /d /c \"taskkill /im derm-daemon.exe /f\"".to_string(),
+            "CMD /Ctaskkill /im derm-daemon.exe".to_string(),
+            "cmd /k sc.exe stop derm-sysmon".to_string(),
+            format!("powershell -EncodedCommand {stop}"),
+            format!("powershell.exe -NoProfile -enc {stop}"),
+            format!("pwsh -e {stop}"),
+            format!("powershell /ec {stop}"),
+        ] {
+            assert!(stops(&text).is_some(), "{text}");
+        }
+        for text in [
+            "powershell -c \"Get-Process derm-daemon\"",
+            "powershell -File stop-derm-daemon.ps1",
+            "pwsh -c 'Stop-Process -Name node'",
+            "cmd /c echo derm-daemon",
+            "powershell -EncodedCommand !!notbase64!!",
+        ] {
+            assert!(stops(text).is_none(), "{text}");
         }
     }
 

