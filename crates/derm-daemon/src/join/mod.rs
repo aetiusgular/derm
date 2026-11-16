@@ -249,6 +249,12 @@ impl Call {
         self.window().is_some_and(|(a, b)| a <= t && t <= b)
     }
 
+    /// Whether the call's own records put `t` inside it, with no slack: at
+    /// or after its start, and before any end a record gave it (E1-2).
+    fn runs_strictly_at(&self, t: i64) -> bool {
+        self.start.is_some_and(|s| s <= t) && self.end.is_none_or(|e| t <= e)
+    }
+
     /// Whether a process the harness starts at `t` may be placed on this
     /// call: while it runs, but not after the tap's result beyond
     /// `TAP_END_SLACK_MS` (BW5R-7), by the tap's own time, never an end a
@@ -783,6 +789,21 @@ impl ChatState {
                     .filter(|(_, c)| c.shell())
                     .map(|(id, _)| id.to_string())
                     .collect();
+                // E1-2: a shell call that runs at `at` by its own records
+                // (started, not ended) comes before one `at` meets only
+                // through the slack around a window. Two calls one after the
+                // other, closer than the slack, were both open at each
+                // shell's fork and neither write was credited (E1 on the
+                // box, 16 Nov 2026: 0 of 12; `fixtures/README.md`). Calls
+                // that overlap by their own records stay together, none
+                // chosen (case 123, review F1), and with no call strictly
+                // running the slack decides as before (two clocks).
+                let strict: Vec<String> = running
+                    .iter()
+                    .filter(|(_, c)| c.shell() && c.runs_strictly_at(at))
+                    .map(|(id, _)| id.to_string())
+                    .collect();
+                let shells = if strict.is_empty() { shells } else { strict };
                 let shell = program.is_some_and(shell_program);
                 if idle {
                     Some(Owner::Session)

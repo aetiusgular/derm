@@ -3387,3 +3387,63 @@ fn bw5r5_4_under_srt_on_linux_the_harnesss_shell_is_its_calls() {
         write.detail
     );
 }
+
+/// E1-2 (E1 on the box, 16 Nov 2026), from the daemon's own records
+/// (`fixtures/README.md`): two shell calls one after the other, 59 ms
+/// apart. Each call's window stays open `SLACK_AFTER_MS` after its end and
+/// opens `SLACK_BEFORE_MS` before its start, so both were open at each
+/// shell's fork and neither write was credited. A call that runs at the
+/// fork by its own records (started, not ended) comes before one the fork
+/// meets only through the slack.
+fn e1_2_events() -> Vec<Event> {
+    include_str!("fixtures/none-linux-claude-2.1.322-two-calls.jsonl")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("a recorded event"))
+        .collect()
+}
+
+fn e1_2_chosen(out: &[Event], effect: &str) -> Value {
+    out.iter()
+        .find(|r| r.detail.get("effect").and_then(Value::as_str) == Some(effect))
+        .unwrap_or_else(|| panic!("no join record for {effect}: {} records", out.len()))
+        .detail["chosen"]
+        .clone()
+}
+
+const E1_2_A: &str = "auditd-1794827388250-508885";
+const E1_2_B: &str = "auditd-1794827388274-508921";
+const E1_2_CALL_A: &str =
+    "claude-code-toolu_e1twocallsdi0x88048-decision-0a3e73bb492741b8ac67e43c91a6307b";
+const E1_2_CALL_B: &str =
+    "claude-code-toolu_e1twocallsdi1x88048-decision-2896d60df7a44b9aa852839945a47398";
+
+#[test]
+fn e1_2_two_calls_one_after_the_other_each_own_their_write_as_the_daemon_received_them() {
+    // The order the daemon got them in: every gate record, then the OS feed.
+    let mut j = Join::new();
+    let mut out = Vec::new();
+    for e in &e1_2_events() {
+        out.extend(j.observe(e));
+    }
+    assert_eq!(e1_2_chosen(&out, E1_2_A), E1_2_CALL_A);
+    assert_eq!(e1_2_chosen(&out, E1_2_B), E1_2_CALL_B);
+}
+
+#[test]
+fn e1_2_two_calls_one_after_the_other_each_own_their_write_in_time_order() {
+    let mut events = e1_2_events();
+    events.sort_by_key(|e| {
+        e.detail
+            .get("auditAt")
+            .and_then(Value::as_i64)
+            .unwrap_or(e.at)
+    });
+    let mut j = Join::new();
+    let mut out = Vec::new();
+    for e in &events {
+        out.extend(j.observe(e));
+    }
+    assert_eq!(e1_2_chosen(&out, E1_2_A), E1_2_CALL_A);
+    assert_eq!(e1_2_chosen(&out, E1_2_B), E1_2_CALL_B);
+}
