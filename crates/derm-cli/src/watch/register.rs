@@ -379,13 +379,6 @@ pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize, bool)> {
     })
 }
 
-/// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
-/// two entries in `~/.cursor/hooks.json` (`connect/gates.json`, its
-/// `json-array-entry` steps: `preToolUse` and `beforeMCPExecution`, each
-/// `failClosed: true`), found by the row's marker `derm-hook.mjs` and the
-/// dialect word `cursor` at the end of the command. Other entries (Orca's)
-/// are left alone. A project's `.cursor/hooks.json` is not derm's (case 78)
-/// and is not read here.
 /// This derm, for the Cursor check (a test's stand-in in tests).
 fn cursor_self() -> Option<PathBuf> {
     #[cfg(test)]
@@ -395,6 +388,13 @@ fn cursor_self() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
+/// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
+/// two entries in `~/.cursor/hooks.json` (`connect/gates.json`, its
+/// `json-array-entry` steps: `preToolUse` and `beforeMCPExecution`, each
+/// `failClosed: true`), found by the row's marker `derm-hook.mjs` and the
+/// dialect word `cursor` at the end of the command. Other entries (Orca's)
+/// are left alone. A project's `.cursor/hooks.json` is not derm's (case 78)
+/// and is not read here.
 fn cursor(home: &Path) -> Registered {
     let file = home.join(".cursor/hooks.json");
     let v = match read_json(&file, false) {
@@ -1651,10 +1651,11 @@ mod cursor_tests {
     }
 
     #[cfg(unix)]
-    /// Fix pass 9 (note BG section 1): the Windows row's PowerShell line,
-    /// this derm by its absolute path, on both events and failing closed, is
-    /// Cursor's registration; another derm, a line without the guard, or one
-    /// not failing closed is not. (A Unix path here: the parse is the same.)
+    /// Fix pass 9 (note BG section 1): the Windows row's PowerShell line is
+    /// Cursor's registration on Windows only (the box: status "yes" with this
+    /// line in the user's hooks.json); elsewhere a shell runs it and `&` is a
+    /// syntax error, so it is never a gate that can run (fix pass 9's review,
+    /// F3). The parse itself is `ps_command_path` (tested on every system).
     #[test]
     fn fp9_cursor_reads_the_windows_rows_powershell_line() {
         let dir = std::env::temp_dir().join(format!(
@@ -1668,7 +1669,7 @@ mod cursor_tests {
         let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
         let tail = crate::hook::claude_format::marks::ps_tail("cursor", "pre", 2);
         for (line, closed, want) in [
-            (format!("& '{}'{tail}", me.display()), true, "yes"),
+            (format!("& '{}'{tail}", me.display()), true, "no"),
             (format!("& '{}'{tail}", me.display()), false, "no"),
             (format!("& '/x/derm'{tail}"), true, "no"),
             (

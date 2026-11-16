@@ -61,11 +61,6 @@ pub struct Reply {
     pub exit: u8,
 }
 
-/// The agent's own deny, with `derm: <reason>` (each dialect's `deny` or
-/// `block` in the TypeScript, `bin/fallback.mjs` for the native ones; Hermes's
-/// plugin adds the prefix itself). For an
-/// agent derm does not know: the reason on stderr and exit 2, the most any
-/// hook runner reads as a failure.
 /// The hook's input without one leading UTF-8 byte-order mark. Windows
 /// PowerShell 5.1, which runs Codex's and Cursor's hooks on Windows, can
 /// begin a piped stdin with one (`EF BB BF`; Cursor staff, forum.cursor.com/
@@ -76,6 +71,11 @@ pub fn without_bom(text: &str) -> &str {
     text.strip_prefix('\u{feff}').unwrap_or(text)
 }
 
+/// The agent's own deny, with `derm: <reason>` (each dialect's `deny` or
+/// `block` in the TypeScript, `bin/fallback.mjs` for the native ones; Hermes's
+/// plugin adds the prefix itself). For an
+/// agent derm does not know: the reason on stderr and exit 2, the most any
+/// hook runner reads as a failure.
 pub fn fail_closed(agent: &str, reason: &str) -> Reply {
     let text = format!(
         "derm: {}",

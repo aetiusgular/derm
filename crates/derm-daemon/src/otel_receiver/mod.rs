@@ -522,8 +522,23 @@ impl Receiver {
     }
 
     fn serve(self: Arc<Self>, listener: TcpListener) {
+        let mut backoff = AcceptBackoff::default();
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
+            let stream = match stream {
+                Ok(s) => {
+                    backoff.reset();
+                    s
+                }
+                Err(e) => {
+                    // Out of file descriptors, accept fails at once each
+                    // time: wait instead of spinning (fix pass 9's review,
+                    // F2).
+                    if let Some(d) = backoff.after(&e) {
+                        std::thread::sleep(d);
+                    }
+                    continue;
+                }
+            };
             if !stream.peer_addr().is_ok_and(|a| a.ip().is_loopback()) {
                 continue;
             }
@@ -973,12 +988,43 @@ const LINGER_DEADLINE: Duration = Duration::from_secs(1);
 const LINGER_BYTES: usize = 8 * 1024;
 
 /// Refused sockets the closer thread holds at once; past that, one is
-/// drained on the accept thread as before. Above `MAX_CONNECTIONS`, so a
-/// flood of idle connections refused at the head cap fits (fix pass 9: a
-/// serial closer, one socket a second, filled at once on the box).
-const CLOSER_HOLDS: usize = 256;
+/// drained on the accept thread as before. `MAX_CONNECTIONS` again, so the
+/// receiver holds at most twice that many sockets: a flood of idle
+/// connections refused at the head cap (48 at most) fits, and the daemon
+/// stays well under macOS's default limit of 256 open files, which it does
+/// not raise (fix pass 9's review, F2; 256 here would have reached it).
+const CLOSER_HOLDS: usize = MAX_CONNECTIONS;
 /// How often the closer looks at the sockets it holds.
 const CLOSER_TICK: Duration = Duration::from_millis(20);
+
+/// The wait after a failed `accept`, as Go's `net/http` `Server.Serve`
+/// waits on a temporary one (5 ms, doubled each time, at most 1 s, back to
+/// none after a success). A connection the peer reset or aborted before it
+/// was accepted is that connection's error, not the listener's: no wait.
+#[derive(Default)]
+struct AcceptBackoff(Option<Duration>);
+
+impl AcceptBackoff {
+    const FIRST: Duration = Duration::from_millis(5);
+    const MOST: Duration = Duration::from_secs(1);
+
+    fn after(&mut self, e: &std::io::Error) -> Option<Duration> {
+        use std::io::ErrorKind;
+        if matches!(
+            e.kind(),
+            ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::Interrupted
+        ) {
+            return None;
+        }
+        let next = self.0.map_or(Self::FIRST, |d| (d * 2).min(Self::MOST));
+        self.0 = Some(next);
+        Some(next)
+    }
+
+    fn reset(&mut self) {
+        self.0 = None;
+    }
+}
 
 struct Closer {
     tx: std::sync::mpsc::Sender<TcpStream>,
@@ -1043,7 +1089,9 @@ fn close_refused(rx: &std::sync::mpsc::Receiver<TcpStream>, held: &AtomicUsize) 
     };
     loop {
         if open.is_empty() {
-            // Nothing held: wait for the next refused socket.
+            // Nothing held: block until the next refused socket. The sender
+            // lives in a static and is never dropped, so this does not end
+            // while the process runs; the `Err` arm is for form.
             match rx.recv() {
                 Ok(s) => take(s, &mut open),
                 Err(_) => return,

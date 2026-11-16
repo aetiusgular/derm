@@ -130,19 +130,36 @@ pub fn ps_tail(agent: &str, event: &str, missing_exit: u8) -> String {
 /// [`ps_tail`] with exit 2, where the path holds nothing that ends a
 /// single-quoted string (`connect::gate::ps_reads`) and is this very program
 /// (same real path), a file only its owner may write.
+/// Elsewhere a shell runs the line, where `&` at its start is a syntax
+/// error, so it is never a gate that can run there (fix pass 9's review,
+/// F3); [`ps_command_path`] is the parse, on every system.
 pub fn is_derm_ps_command(command: &str, agent: &str, event: &str, me: Option<&Path>) -> bool {
-    let Some(rest) = command.strip_prefix("& '") else {
-        return false;
-    };
-    let Some((path, tail)) = rest.split_once('\'') else {
-        return false;
-    };
-    if tail != ps_tail(agent, event, 2) || crate::connect::gate::ps_reads(path).is_some() {
-        return false;
-    }
-    if !Path::new(path).is_absolute() {
-        return false;
-    }
+    cfg!(windows) && ps_command_path(command, agent, event).is_some_and(|p| is_me(p, me))
+}
+
+/// The path in derm's PowerShell line for `agent`'s `event`, when the line
+/// is exactly `& '<path>'` and [`ps_tail`] with exit 2, the path is
+/// absolute and holds nothing that ends a single-quoted string.
+pub fn ps_command_path<'a>(command: &'a str, agent: &str, event: &str) -> Option<&'a str> {
+    let rest = command.strip_prefix("& '")?;
+    let (path, tail) = rest.split_once('\'')?;
+    (tail == ps_tail(agent, event, 2)
+        && crate::connect::gate::ps_reads(path).is_none()
+        && (Path::new(path).is_absolute() || path_is_windows_absolute(path)))
+    .then_some(path)
+}
+
+/// `C:\...` or `\\server\...`, absolute on Windows whatever this system is
+/// (so the parse reads the same in a Unix test).
+fn path_is_windows_absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\')
+        || p.starts_with("\\\\")
+}
+
+/// `path` is this very program (same real path), a file only its owner may
+/// write.
+fn is_me(path: &str, me: Option<&Path>) -> bool {
     let (Some(me), Ok(real)) = (me, std::fs::canonicalize(path)) else {
         return false;
     };
@@ -231,15 +248,10 @@ pub fn is_derm_compat_node_command(_command: &str, _agent: &str) -> bool {
 /// grok command, and every such entry `failClosed` (Grok 1.0.71 and later
 /// read it).
 pub fn grok_gate_registered(env: &Env) -> bool {
-    let Some(home) = env.raw("HOME").filter(|h| Path::new(h).is_absolute()) else {
+    let Some(home) = home_in(env, cfg!(windows)) else {
         return false;
     };
-    let Some(v) = read_json(
-        &PathBuf::from(home)
-            .join(".grok")
-            .join("hooks")
-            .join("derm.json"),
-    ) else {
+    let Some(v) = read_json(&home.join(".grok").join("hooks").join("derm.json")) else {
         return false;
     };
     let me = std::env::current_exe().ok();
@@ -278,14 +290,26 @@ pub fn grok_run(pre: bool, env: &Env) -> super::Reply {
     )
 }
 
+/// The home folder as the hook's environment gives it, absolute only:
+/// `HOME`, and on Windows `USERPROFILE`, where `derm connect` writes
+/// (`derm_core::runtime::home_dir`). Until fix pass 9's review (F1) this read
+/// `HOME` alone, so on Windows, where it is usually unset, Cursor running
+/// derm's Claude Code hook blocked every call with derm's Cursor gate
+/// registered (run on the box).
+pub fn home_in(env: &Env, windows: bool) -> Option<PathBuf> {
+    let key = if windows { "USERPROFILE" } else { "HOME" };
+    env.raw(key)
+        .filter(|h| Path::new(h).is_absolute())
+        .map(PathBuf::from)
+}
+
 /// derm's two Cursor entries (`connect/gates.json`) in
 /// `~/.cursor/hooks.json`, each `failClosed` (`cursorGateRegistered`).
-/// `HOME` as the hook's environment gives it, absolute only.
 pub fn cursor_gate_registered(env: &Env) -> bool {
-    let Some(home) = env.raw("HOME").filter(|h| Path::new(h).is_absolute()) else {
+    let Some(home) = home_in(env, cfg!(windows)) else {
         return false;
     };
-    let Some(v) = read_json(&PathBuf::from(home).join(".cursor").join("hooks.json")) else {
+    let Some(v) = read_json(&home.join(".cursor").join("hooks.json")) else {
         return false;
     };
     let me = std::env::current_exe().ok();
@@ -332,6 +356,58 @@ pub fn cursor_run(pre: bool, env: &Env) -> super::Reply {
         };
     }
     super::claude_code::block_pre(
-        "Cursor ran derm's Claude Code hook (Cursor's third-party hooks), and derm's own Cursor gate is not registered in ~/.cursor/hooks.json; run derm connect cursor --gate --hook <derm-hooks-native folder> --write, or turn off Third-Party Imports in Cursor's settings",
+        "Cursor ran derm's Claude Code hook (Cursor's third-party hooks), and derm's own Cursor gate is not registered in ~/.cursor/hooks.json; run derm connect cursor --gate --write, or turn off Third-Party Imports in Cursor's settings",
     )
+}
+
+#[cfg(test)]
+mod fp9_tests {
+    use super::*;
+
+    /// Fix pass 9's review, F1: the hook finds the home `derm connect`
+    /// writes to, `USERPROFILE` on Windows (where `HOME` is usually unset).
+    #[test]
+    fn fp9_the_home_is_userprofile_on_windows_and_home_elsewhere() {
+        let abs = if cfg!(windows) {
+            "C:\\Users\\u"
+        } else {
+            "/home/u"
+        };
+        let only_profile = Env::of(&[("USERPROFILE", abs)]);
+        let only_home = Env::of(&[("HOME", abs)]);
+        assert_eq!(home_in(&only_profile, true), Some(PathBuf::from(abs)));
+        assert_eq!(home_in(&only_home, true), None);
+        assert_eq!(home_in(&only_home, false), Some(PathBuf::from(abs)));
+        assert_eq!(home_in(&only_profile, false), None);
+        assert_eq!(home_in(&Env::of(&[("HOME", "rel")]), false), None);
+    }
+
+    /// The parse of derm's PowerShell line: exact prefix and tail, an
+    /// absolute path PowerShell reads as written.
+    #[test]
+    fn fp9_the_powershell_line_parses_only_in_derms_exact_form() {
+        let tail = ps_tail("cursor", "pre", 2);
+        let ok = format!("& 'C:\\Users\\u\\.local\\bin\\derm.exe'{tail}");
+        assert_eq!(
+            ps_command_path(&ok, "cursor", "pre"),
+            Some("C:\\Users\\u\\.local\\bin\\derm.exe")
+        );
+        for bad in [
+            format!("& 'derm.exe'{tail}"),
+            format!("& 'C:\\a\u{2019}b\\derm.exe'{tail}"),
+            format!("& 'C:\\derm.exe'{tail}; whoami"),
+            format!(" & 'C:\\derm.exe'{tail}"),
+            format!("& 'C:\\derm.exe'{}", ps_tail("cursor", "pre", 0)),
+            format!("& 'C:\\derm.exe'{}", ps_tail("codex", "pre", 2)),
+            "& 'C:\\derm.exe' hook cursor pre; exit $LASTEXITCODE".to_string(),
+        ] {
+            assert_eq!(ps_command_path(&bad, "cursor", "pre"), None, "{bad}");
+        }
+        // Off Windows it is never derm's gate, whatever it names.
+        if !cfg!(windows) {
+            let me = std::env::current_exe().unwrap();
+            let line = format!("& '{}'{tail}", me.display());
+            assert!(!is_derm_ps_command(&line, "cursor", "pre", Some(&me)));
+        }
+    }
 }

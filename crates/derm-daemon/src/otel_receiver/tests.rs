@@ -1530,3 +1530,19 @@ fn a_chats_content_files_are_counted_as_well_as_its_bytes() {
         .receiver
         .allow_content("chat-w5r9", 1, now + 24 * 60 * 60 * 1000));
 }
+
+/// Fix pass 9's review, F2: a failed accept waits 5 ms, doubling to 1 s,
+/// and none after a success; a peer's reset or abort is not waited on.
+#[test]
+fn fp9_a_failed_accept_backs_off_and_a_peers_reset_does_not() {
+    use std::io::{Error, ErrorKind};
+    let mut b = AcceptBackoff::default();
+    let emfile = Error::from_raw_os_error(24);
+    let waits: Vec<_> = (0..10).map(|_| b.after(&emfile).unwrap()).collect();
+    assert_eq!(waits[0], Duration::from_millis(5));
+    assert_eq!(waits[1], Duration::from_millis(10));
+    assert_eq!(waits[9], Duration::from_secs(1));
+    assert_eq!(b.after(&Error::from(ErrorKind::ConnectionAborted)), None);
+    b.reset();
+    assert_eq!(b.after(&emfile), Some(Duration::from_millis(5)));
+}
