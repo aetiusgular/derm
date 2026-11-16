@@ -209,7 +209,8 @@ export function score(sc, rec, events) {
     const detail = (e) => JSON.stringify(e.detail ?? {});
     const match = (e) => {
       if (e.source !== "auditd") return false;
-      if (eff.what === "write") return ["write", "create", "rename", "truncate"].includes(e.kind) && String(e.detail?.path ?? "").endsWith(`/${basename(eff.path)}`);
+      // A rename's final name is its `dest`; `path` is the name it had.
+      if (eff.what === "write") return ["write", "create", "rename", "truncate"].includes(e.kind) && [e.detail?.path, e.detail?.dest].some((p) => String(p ?? "").endsWith(`/${basename(eff.path)}`));
       return e.kind === "net.connect" && detail(e).includes(eff.host) && detail(e).includes(String(rec.port));
     };
     const hits = events.filter(match);
@@ -232,6 +233,18 @@ export function score(sc, rec, events) {
 export function scoreLive(dir) {
   const meta = JSON.parse(readFileSync(join(dir, "run.json"), "utf8"));
   const recs = JSON.parse(readFileSync(join(dir, "raw", "runs.json"), "utf8"));
+  // Scored again from the kept records, so a fix to the scorer reads an old run.
+  const log = join(dir, "raw", "activity.jsonl");
+  if (existsSync(log)) {
+    const events = {};
+    for (const line of readFileSync(log, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      const e = JSON.parse(line);
+      (events[e.chatId] ??= []).push(e);
+    }
+    const byId = new Map(load(meta.suite).map((s) => [s.id, s]));
+    for (const rec of recs) if (byId.has(rec.scenario)) rec.scored = score(byId.get(rec.scenario), rec, events[rec.chat] ?? []);
+  }
   const m = meta.machine ?? {};
   const out = [];
   out.push(`# ${meta.suite === "join" ? "Join accuracy" : "Effect visibility"}, live, ${basename(dir)}`);
