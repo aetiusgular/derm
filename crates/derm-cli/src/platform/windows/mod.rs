@@ -39,18 +39,36 @@ fn terminate(pid: u32) {
     }
 }
 
+/// The console's input buffer, opened by name (`CONIN$`) whatever stdin is:
+/// the approver reads its answers there (fix pass 9), so its echo and its
+/// typed-ahead input are that buffer's, not a redirected stdin's. Read and
+/// write access: `SetConsoleMode` on an input buffer needs `GENERIC_READ`,
+/// `FlushConsoleInputBuffer` needs `GENERIC_WRITE` (Microsoft, "SetConsoleMode
+/// function", "FlushConsoleInputBuffer function"; "Console Handles").
+fn console_input() -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("CONIN$")
+        .ok()
+}
+
 /// The console's echo off or on (`ENABLE_ECHO_INPUT` on the console input),
-/// the Windows form of clearing termios' `ECHO` for a password.
+/// the Windows form of clearing termios' `ECHO` for a password. Until fix
+/// pass 9 this took the standard input handle, which is not the console
+/// when stdin is redirected, so the echo stayed on there.
 pub fn set_console_echo(on: bool) {
-    use windows_sys::Win32::System::Console::{
-        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{GetConsoleMode, SetConsoleMode, ENABLE_ECHO_INPUT};
+    let Some(conin) = console_input() else {
+        return;
     };
-    // SAFETY: the standard input handle needs no closing; the mode is plain
-    // data, set only when it was read.
+    // SAFETY: the handle is the open file's, alive for this block; the mode
+    // is plain data, set only when it was read.
     unsafe {
-        let h = GetStdHandle(STD_INPUT_HANDLE);
+        let h = conin.as_raw_handle() as _;
         let mut mode = 0u32;
-        if h.is_null() || GetConsoleMode(h, &mut mode) == 0 {
+        if GetConsoleMode(h, &mut mode) == 0 {
             return;
         }
         let mode = if on {
@@ -62,17 +80,48 @@ pub fn set_console_echo(on: bool) {
     }
 }
 
-/// Drops typed-ahead console input (`FlushConsoleInputBuffer`), the Windows
-/// form of `tcflush(TCIFLUSH)`.
+/// The console's echo state, when there is a console (for the test).
+pub fn console_echo() -> Option<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{GetConsoleMode, ENABLE_ECHO_INPUT};
+    let conin = console_input()?;
+    let mut mode = 0u32;
+    // SAFETY: as above.
+    (unsafe { GetConsoleMode(conin.as_raw_handle() as _, &mut mode) } != 0)
+        .then_some(mode & ENABLE_ECHO_INPUT != 0)
+}
+
+/// Drops typed-ahead console input (`FlushConsoleInputBuffer` on `CONIN$`),
+/// the Windows form of `tcflush(TCIFLUSH)`.
 pub fn flush_console_input() {
-    use windows_sys::Win32::System::Console::{
-        FlushConsoleInputBuffer, GetStdHandle, STD_INPUT_HANDLE,
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::FlushConsoleInputBuffer;
+    let Some(conin) = console_input() else {
+        return;
     };
-    // SAFETY: as above; a handle that is not a console fails harmlessly.
+    // SAFETY: the open file's handle; a failure is harmless.
     unsafe {
-        let h = GetStdHandle(STD_INPUT_HANDLE);
-        if !h.is_null() {
-            FlushConsoleInputBuffer(h);
-        }
+        FlushConsoleInputBuffer(conin.as_raw_handle() as _);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Fix pass 9 (note BG section 3): the approver reads `CONIN$`, so its
+    /// echo is that console's, even with stdin redirected (as under cargo
+    /// test or a script). Where the process has no console there is nothing
+    /// to turn off and nothing to read, so nothing is asserted there.
+    #[test]
+    fn fp9_echo_is_the_consoles_even_with_stdin_redirected() {
+        let Some(before) = super::console_echo() else {
+            eprintln!("no console here: CONIN$ did not open");
+            return;
+        };
+        super::set_console_echo(false);
+        let off = super::console_echo();
+        super::set_console_echo(true);
+        let on = super::console_echo();
+        super::set_console_echo(before);
+        assert_eq!((off, on), (Some(false), Some(true)));
     }
 }
