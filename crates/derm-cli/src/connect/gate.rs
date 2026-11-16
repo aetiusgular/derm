@@ -975,7 +975,7 @@ const FINDS_DERM: &[&str] = &[
 pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
     match agent {
         "codex" => Some(Ok(
-            "on Windows Codex runs derm's gate from your hooks.json, derm.exe by its absolute path, through cmd.exe /C; trust both hooks in /hooks, and keep the derm plugin off, whose hooks file blocks every call there (fix pass 7)".into(),
+            "on Windows Codex runs derm's gate from your hooks.json through its PowerShell, derm.exe by its absolute path with the call operator; trust both hooks in /hooks, and keep the derm plugin off, whose hooks file blocks every call there (fix pass 8)".into(),
         )),
         "gemini" => Some(Err(format!(
             "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"

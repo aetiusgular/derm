@@ -94,17 +94,34 @@ pub trait Confirm {
 /// without a terminal): `--write` then refuses.
 pub struct Tty;
 
+/// The console's input and output: `/dev/tty` on Unix; on Windows the
+/// console itself, `CONIN$` and `CONOUT$` (Microsoft, "Console Handles":
+/// CreateFile on these names opens the console's input buffer and active
+/// screen buffer whatever stdin and stdout are), which Windows has in place
+/// of `/dev/tty` (fix pass 8: on the box every `--write` was refused, as
+/// `/dev/tty` is not there).
+fn console() -> Result<(std::fs::File, std::fs::File), String> {
+    #[cfg(windows)]
+    let (input, output) = ("CONIN$", "CONOUT$");
+    #[cfg(not(windows))]
+    let (input, output) = ("/dev/tty", "/dev/tty");
+    let open = |name: &str, write: bool| {
+        OpenOptions::new()
+            .read(true)
+            .write(write || cfg!(not(windows)))
+            .open(name)
+            .map_err(|e| format!("no terminal to confirm on ({name}: {e}); nothing written"))
+    };
+    Ok((open(input, false)?, open(output, true)?))
+}
+
 impl Confirm for Tty {
     fn confirm(&mut self, question: &str) -> Result<bool, String> {
-        let mut tty = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/tty")
-            .map_err(|e| format!("no terminal to confirm on (/dev/tty: {e}); nothing written"))?;
-        write!(tty, "{question} [y/N] ").map_err(|e| e.to_string())?;
-        tty.flush().map_err(|e| e.to_string())?;
+        let (input, mut output) = console()?;
+        write!(output, "{question} [y/N] ").map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
-        BufReader::new(&tty)
+        BufReader::new(&input)
             .read_line(&mut line)
             .map_err(|e| e.to_string())?;
         let a = line.trim();
