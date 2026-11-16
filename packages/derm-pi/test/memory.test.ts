@@ -2,7 +2,7 @@
 // scratch project folder; Pi's side is a recording fake with the confirm
 // dialog of fake-pi.ts (Pi 1.4.0 RPC semantics).
 
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync, readdirSync, promises as fsp } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync, existsSync, readdirSync, promises as fsp } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,7 @@ import memory, { createMemory, HEADER, MAX_LINE, MAX_LINES, MAX_RESULTS, MESSAGE
 import { FakeRpcClient, type Answer } from "./fake-pi.ts";
 import { GateServe } from "../src/serve/client.ts";
 import { DERM, removeRoot, stopServe } from "./serve/real.ts";
+import { accessEntries, whoami, WIN } from "./modes.ts";
 
 // Every co-process a test starts, stopped and waited for before its folder
 // goes (WB-P1-1: on Windows a running process holds its working folder).
@@ -508,6 +509,10 @@ describe.runIf(DERM !== undefined)("an index changed outside the memory card (re
     // The folder moves and a link takes its old name: the real path, the
     // record's key, is new.
     const moved = `${project}-moved`;
+    // Windows: a running co-process holds the folder it was started in, and
+    // the folder cannot be moved until it exits (Microsoft,
+    // SetCurrentDirectory); the approving session's is stopped first.
+    if (WIN) for (const s of started.splice(0)) await stopServe(s);
     execFileSync("mv", [project, moved]);
     symlinkSync(moved, project);
     try {
@@ -517,7 +522,10 @@ describe.runIf(DERM !== undefined)("an index changed outside the memory card (re
       expect(titles(h)).toEqual([UNKNOWN]);
       expect(out?.message.content ?? "").not.toContain("planted in a moved project");
     } finally {
-      rmSync(project);
+      if (WIN) for (const s of started.splice(0)) await stopServe(s);
+      // A link to a folder is removed as a folder on Windows.
+      if (WIN) rmdirSync(project);
+      else rmSync(project);
       execFileSync("mv", [moved, project]);
     }
   });
@@ -527,11 +535,13 @@ describe.runIf(DERM !== undefined)("an index changed outside the memory card (re
     // The record's folder refuses writes (a chmod by someone else). The
     // record is written by `derm gate serve` (wave 5b), so the refusal is
     // made on disk: a 0500 folder, or, as root (the cloud), where a 0500
-    // folder is still writable, a record path whose folder is a file.
+    // folder is still writable, a record path whose folder is a file. On
+    // Windows, where chmod 500 changes nothing, the file in place of a
+    // folder too (note BF section 4.3).
     const dir = path.join(root, "state");
     mkdirSync(dir, { recursive: true });
     let blocked = statePath();
-    if (UID === 0) {
+    if (UID === 0 || WIN) {
       writeFileSync(path.join(root, "state-file"), "");
       blocked = path.join(root, "state-file", "memory-index.json");
     } else {
@@ -548,7 +558,7 @@ describe.runIf(DERM !== undefined)("an index changed outside the memory card (re
       expect(titles(two)).toEqual([UNKNOWN]);
       expect(b?.message.content ?? "").not.toContain("npm run check");
     } finally {
-      execFileSync("chmod", ["700", dir]);
+      if (!WIN) execFileSync("chmod", ["700", dir]);
       rmSync(path.join(root, "state-file"), { force: true });
     }
   });
@@ -706,7 +716,10 @@ describe.runIf(DERM !== undefined)("an index changed outside the memory card (re
     expect(existsSync(statePath)).toBe(false);
     await h.emit("before_agent_start", userRun, h.ctx(project));
     const { statSync } = await import("node:fs");
-    expect(statSync(statePath).mode & 0o777).toBe(0o600);
+    // Windows: private is the access list derm writes, the user's full
+    // control alone (derm-core `user_only_sddl`); the mode is made up there.
+    if (WIN) expect(accessEntries(statePath).map((e) => e.toLowerCase())).toEqual([`${whoami().toLowerCase()}:(f)`]);
+    else expect(statSync(statePath).mode & 0o777).toBe(0o600);
     const saved = JSON.parse(readFileSync(statePath, "utf8")) as { version: number; projects: Record<string, Record<string, { sha256: string }>> };
     expect(saved.version).toBe(1);
     const entry = Object.values(saved.projects)[0]!;
