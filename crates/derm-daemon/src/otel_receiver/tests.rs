@@ -3,6 +3,19 @@
 use super::*;
 use std::sync::mpsc;
 
+/// Mac test w6 retest 4, MW6R4-3: each flood test holds 64 client sockets
+/// and the receiver's 64 server sockets in this one process, and macOS's
+/// default limit is 256 open files (`launchctl limit maxfiles`), so two of
+/// them in parallel failed with EMFILE in their own `connect`. They run one
+/// at a time.
+static FLOOD: Mutex<()> = Mutex::new(());
+
+fn flood_alone() -> std::sync::MutexGuard<'static, ()> {
+    FLOOD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 struct Fixture {
     receiver: Arc<Receiver>,
     settings: Arc<Mutex<Settings>>,
@@ -367,6 +380,7 @@ fn rate_cap_answers_429_after_the_burst() {
 
 #[test]
 fn connection_cap_answers_503() {
+    let _flood = flood_alone();
     let f = fixture(true);
     let port = f.receiver.port();
     // Idle connections hold their slots until the head deadline.
@@ -386,6 +400,7 @@ fn connection_cap_answers_503() {
 /// on the box, once, under the full suite).
 #[test]
 fn fp9_a_refused_clients_late_request_does_not_reset_the_503() {
+    let _flood = flood_alone();
     let f = fixture(true);
     let port = f.receiver.port();
     let held: Vec<TcpStream> = (0..MAX_CONNECTIONS)
@@ -1483,6 +1498,7 @@ fn one_request_makes_one_content_file_per_part_within_the_chats_allowance() {
 /// hold it out.
 #[test]
 fn idle_connections_before_a_token_cannot_hold_a_chat_out() {
+    let _flood = flood_alone();
     let f = fixture(true);
     let port = f.receiver.port();
     let token = f.receiver.mint("chat-w5r2", "claude-code").unwrap();

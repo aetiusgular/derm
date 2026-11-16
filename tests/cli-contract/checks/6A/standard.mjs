@@ -37,6 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeMessages, toolUse, textBlock } from "../../lib/fakeMessages.mjs";
 import { startFakeResponses, call, text, callOutputs } from "../../lib/fakeResponses.mjs";
+import { scriptArgs } from "../../lib/pty.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
 const SECRET = "s3cret-6a-not-a-key";
@@ -361,7 +362,7 @@ async function codexTmpTurnIn(dirs, codexPath, tierArgs, extra) {
   };
 }
 
-async function claudeTmpTurn(dirs, claudePath, tierArgs) {
+async function claudeTmpTurn(dirs, claudePath, tierArgs, harnessArgs = []) {
   const mark = tmpMark("cc");
   const pr = tmpProbe(mark);
   const fake = await startFakeMessages({
@@ -377,7 +378,7 @@ async function claudeTmpTurn(dirs, claudePath, tierArgs) {
   try {
     r = await derm(
       dirs,
-      ["claude-code", "--boundary", "none", ...tierArgs, "--no-daemon", "--no-tap", "--", "-p", "go", "--allowedTools", "Bash", "--model", "claude-sonnet-4-5", "--output-format", "json"],
+      ["claude-code", "--boundary", "none", ...tierArgs, "--no-daemon", "--no-tap", "--", ...harnessArgs, "-p", "go", "--allowedTools", "Bash", "--model", "claude-sonnet-4-5", "--output-format", "json"],
       {
         program: "claude",
         cli: claudePath,
@@ -412,6 +413,7 @@ async function claudeTmpTurn(dirs, claudePath, tierArgs) {
     tmpdir: td,
     results,
     stderrTail: r.err.slice(-500),
+    err: r.err,
   };
 }
 
@@ -469,7 +471,7 @@ export const checks = [
       // derm's CA, from a terminal (case 89: a pty passes that check), and a
       // secret whose value comes from this run's own environment.
       const ca = await new Promise((resolve) => {
-        const ch = spawn("/usr/bin/script", ["-qec", `${dermBin()} secret ca create`, "/dev/null"], { env: { PATH: "/usr/bin:/bin", HOME: dirs.home }, stdio: ["ignore", "pipe", "pipe"] });
+        const ch = spawn("/usr/bin/script", scriptArgs(`${dermBin()} secret ca create`), { env: { PATH: "/usr/bin:/bin", HOME: dirs.home }, stdio: ["ignore", "pipe", "pipe"] });
         let out = "";
         ch.stdout.on("data", (d) => (out += d));
         ch.stderr.on("data", (d) => (out += d));
@@ -611,14 +613,29 @@ export const checks = [
       const control = box("cct-control");
       const before = await claudeTmpTurn(control, binPath, []);
       done(control, null);
+      // Mac test w6 retest 4, MW6R4-1 (Tony's call, 15 Nov): a second
+      // control, Claude Code's own sandbox with no derm block, shows what
+      // the vendor's sandbox allows by itself. On macOS a bare mktemp fails
+      // there too (it writes the per-user temp folder, which that sandbox
+      // denies; anthropics/claude-code#61149), so derm's tier must match it
+      // and say so at the start, not make mktemp work by widening.
+      const vendorDirs = box("cct-vendor");
+      const vendor = await claudeTmpTurn(vendorDirs, binPath, [], [
+        "--settings",
+        JSON.stringify({ sandbox: { enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false, autoAllowBashIfSandboxed: true } }),
+      ]);
+      done(vendorDirs, null);
       const dirs = box("cct");
       const seen = await claudeTmpTurn(dirs, binPath, ["--tier", "standard"]);
-      const meaningful = before.ran >= 2 && before.slashTmpOnHost;
-      const held = seen.ran >= 2 && !seen.slashTmpOnHost && seen.mktempOk;
+      const meaningful = before.ran >= 2 && before.slashTmpOnHost && vendor.ran >= 2;
+      const vendorLimit = !vendor.mktempOk;
+      const named = /tier: standard on macOS: .*mktemp/.test(seen.err ?? "");
+      const mktempHeld = seen.mktempOk || (vendorLimit && process.platform === "darwin" && named);
+      const held = seen.ran >= 2 && !seen.slashTmpOnHost && mktempHeld;
       return done(dirs, {
         status: meaningful && held ? "pass" : "fail",
-        finding: `control (no tier): /tmp write ${before.slashTmpOnHost}; Standard: /tmp write ${seen.slashTmpOnHost}, mktemp ${seen.mktempOk}, TMPDIR ${seen.tmpdir || "(none)"}`,
-        seen: { control: before, standard: seen },
+        finding: `control (no tier): /tmp write ${before.slashTmpOnHost}; Claude Code's own sandbox: mktemp ${vendor.mktempOk}; Standard: /tmp write ${seen.slashTmpOnHost}, mktemp ${seen.mktempOk}${vendorLimit ? `, named at the start ${named}` : ""}, TMPDIR ${seen.tmpdir || "(none)"}`,
+        seen: { control: before, vendor, standard: seen },
       });
     },
   },

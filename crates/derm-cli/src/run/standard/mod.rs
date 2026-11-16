@@ -63,6 +63,8 @@ pub(crate) struct Inputs {
     /// first `bwrap` on PATH, by its real path), whether Ubuntu's
     /// `bwrap-userns-restrict` profile is installed, and the userns sysctl.
     pub linux_bwrap: Option<LinuxBwrap>,
+    /// macOS: Claude Code's own sandbox there and macOS `mktemp` (MW6R4-1).
+    pub macos: bool,
 }
 
 /// The facts `preflight::apparmor_note_for` reads, for the Standard tier.
@@ -99,6 +101,7 @@ impl Inputs {
             daemon_dir: derm_audit_linux::client::socket_path()
                 .and_then(|s| s.parent().map(|d| d.to_string_lossy().into_owned())),
             windows: cfg!(windows),
+            macos: cfg!(target_os = "macos"),
             linux_bwrap: cfg!(target_os = "linux").then(|| {
                 let path = std::env::var("PATH").unwrap_or_default();
                 let cwd = std::env::current_dir()
@@ -399,6 +402,20 @@ pub(crate) fn environment_with(
             "derm run: tier: standard: Claude Code's own sandbox, from derm's --settings block (the last on its command line, so Claude Code reads no other): its Bash, PowerShell and Monitor commands cannot read your secrets, the agents' sign-ins or derm's folders, write outside this chat's folders, or reach the network unless you allow a host when it asks; its file tools, MCP servers and hooks run outside that sandbox, under derm's gate (note AZ A7){}",
             if boundary == Boundary::Sbx { "; under sbx it runs inside the VM too (note AZ A8)" } else { "" }
         ));
+        // Mac test w6 retest 4, MW6R4-1 (Tony's call, 15 Nov: name it, do
+        // not widen the block): Claude Code 2.1.322's own sandbox on macOS
+        // does not let a command write the per-user temp folder, and macOS
+        // `mktemp` with no template or with `-t` writes there whatever
+        // `TMPDIR` says (mktemp(1) on macOS 26.5.1: "_CS_DARWIN_USER_TEMP_DIR
+        // ... Fallback ... TMPDIR"; run with plain Claude Code and no derm:
+        // "mkstemp failed ... Operation not permitted";
+        // anthropics/claude-code#61149). Widening it would let a command
+        // write every other program's temp files of yours.
+        if i.macos && boundary != Boundary::Sbx {
+            plan.notes.push(
+                "derm run: tier: standard on macOS: Claude Code's own sandbox does not let a command write your per-user temp folder, so `mktemp` with no template (or with -t) fails there, with or without derm; `mktemp \"$TMPDIR/x.XXXXXX\"` and tools that read TMPDIR work. derm does not widen the sandbox for it".to_string(),
+            );
+        }
         text
     } else {
         let pairs = writers::codex_pairs(&ctx);

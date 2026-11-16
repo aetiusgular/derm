@@ -55,6 +55,7 @@ impl Scratch {
             data_dir: Some(format!("{}/.local/share/derm", self.home())),
             windows: false,
             linux_bwrap: None,
+            macos: false,
         }
     }
     fn write(&self, rel: &str, text: &str) {
@@ -877,4 +878,54 @@ fn ww6_10_a_program_derm_does_not_know_is_named_as_a_program() {
     let e = run(&s, "other", Boundary::None, Some(Tier::Standard), &mut p).unwrap_err();
     assert!(!e.1.contains("other's"), "{}", e.1);
     assert!(e.1.contains("this program"), "{}", e.1);
+}
+
+/// Mac test w6 retest 4, MW6R4-1 (Tony's call, 15 Nov: do not widen, name
+/// it): on macOS Claude Code 2.1.322's own sandbox does not let a command
+/// write the per-user temp folder (`getconf DARWIN_USER_TEMP_DIR`), and
+/// macOS `mktemp` with no template or with `-t` writes there whatever
+/// `TMPDIR` says (its man page; run with plain Claude Code, no derm). The
+/// start line says so, names the form that works, and the block is not
+/// widened for it.
+#[test]
+fn mw6r4_1_on_macos_claude_codes_tier_names_bare_mktemp() {
+    let s = Scratch::new("mw6r4-1");
+    let mut i = s.inputs();
+    i.macos = true;
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    environment_with(
+        "claude-code",
+        Boundary::None,
+        Some(Tier::Standard),
+        &mut p,
+        &i,
+    )
+    .unwrap()
+    .unwrap();
+    let note = p
+        .notes
+        .iter()
+        .find(|n| n.contains("mktemp"))
+        .unwrap_or_else(|| panic!("no mktemp note in {:?}", p.notes));
+    assert!(note.contains("mktemp \"$TMPDIR/"), "{note}");
+    let block = last_settings(&p.args);
+    let writes = block["sandbox"]["filesystem"]["allowWrite"].to_string();
+    assert!(!writes.contains("/var/folders"), "{writes}");
+
+    // Not on Linux, where GNU mktemp honours TMPDIR, and not for Codex.
+    let mut p = claude_plan(&s, &["-p", "hi"]);
+    run(
+        &s,
+        "claude-code",
+        Boundary::None,
+        Some(Tier::Standard),
+        &mut p,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        !p.notes.iter().any(|n| n.contains("mktemp")),
+        "{:?}",
+        p.notes
+    );
 }
