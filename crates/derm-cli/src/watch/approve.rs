@@ -75,20 +75,15 @@ pub fn main(args: &Args) -> u8 {
             return 2;
         }
     };
-    let tty = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-    {
+    // The terminal: `/dev/tty` on Unix, the console's `CONIN$` and `CONOUT$`
+    // on Windows, which has no `/dev/tty` (fix pass 9, note BG section 3;
+    // Microsoft, "Console Handles").
+    let (tty_in, tty) = match crate::connect::write::console() {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("derm watch --approve: needs a terminal (/dev/tty: {e})");
+            eprintln!("derm watch --approve: needs a terminal ({e})");
             return 2;
         }
-    };
-    let Ok(tty_in) = tty.try_clone() else {
-        eprintln!("derm watch --approve: cannot read the terminal");
-        return 2;
     };
     let mut out = tty;
     let _ = writeln!(out, "{BANNER}");

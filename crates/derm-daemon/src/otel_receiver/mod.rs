@@ -32,6 +32,12 @@
 //!   `host.docker.internal` into `localhost` (Docker's "Develop and test
 //!   locally" page), and these routes also take `Host: host.docker.internal:
 //!   <port>`, which a client that bypasses the forward proxy may send.
+//! - A third, `POST /derm/v1/taint`, a body `{"taint": {"chat", "hosts",
+//!   "add"}}`, for a gate behind srt's route on Linux or the VM's: the
+//!   socket's `taint` op under the same chat scope, so a gate behind a
+//!   sandbox keeps the chat's taint in the daemon and never in the
+//!   sandbox's own `~/.derm`, which the agent can rewrite (fix pass 4's
+//!   part 2, FP4-R1; redone by fix pass 6).
 
 #[path = "decode.rs"]
 pub mod decode;
@@ -124,6 +130,9 @@ pub type Sink = Arc<dyn Fn(Vec<ActivityEvent>) + Send + Sync>;
 pub enum ChatOp {
     Event(serde_json::Value),
     Approve(serde_json::Value),
+    /// `taint`'s fields (`chat`, `hosts`, `add`), from a gate behind a
+    /// sandbox's route (fix pass 6, the redo of fix pass 4's part 2).
+    Taint(serde_json::Value),
 }
 
 /// The daemon's answer to a `ChatOp` for the token's chat and harness: the
@@ -204,6 +213,9 @@ pub struct Receiver {
     /// can lower it.
     content_allowance: Mutex<u64>,
     content_writes_allowance: Mutex<u64>,
+    /// This receiver's closer for refused sockets (fix pass 9), started on
+    /// the first refusal.
+    closer: OnceLock<Option<Closer>>,
     pub counters: Counters,
 }
 
@@ -274,6 +286,7 @@ impl Receiver {
             per_chat: Mutex::new(PerChat::default()),
             content_allowance: Mutex::new(MAX_CONTENT_BYTES_PER_CHAT_DAY),
             content_writes_allowance: Mutex::new(MAX_CONTENT_WRITES_PER_CHAT_DAY),
+            closer: OnceLock::new(),
             counters: Counters::default(),
         });
         let serving = receiver.clone();
@@ -513,8 +526,23 @@ impl Receiver {
     }
 
     fn serve(self: Arc<Self>, listener: TcpListener) {
+        let mut backoff = AcceptBackoff::default();
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
+            let stream = match stream {
+                Ok(s) => {
+                    backoff.reset();
+                    s
+                }
+                Err(e) => {
+                    // Out of file descriptors, accept fails at once each
+                    // time: wait instead of spinning (fix pass 9's review,
+                    // F2).
+                    if let Some(d) = backoff.after(&e) {
+                        std::thread::sleep(d);
+                    }
+                    continue;
+                }
+            };
             if !stream.peer_addr().is_ok_and(|a| a.ip().is_loopback()) {
                 continue;
             }
@@ -522,8 +550,8 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
-                // On the accept thread: drain only what is already here.
-                close_without_waiting(&stream);
+                // The closer reads the rest; the accept thread never waits.
+                refuse_closed(&self.closer, stream);
                 continue;
             }
             if self.heads.fetch_add(1, Ordering::SeqCst) >= MAX_HEADS {
@@ -531,7 +559,7 @@ impl Receiver {
                 self.open.fetch_sub(1, Ordering::SeqCst);
                 let mut stream = stream;
                 let _ = respond(&mut stream, 503, None);
-                close_without_waiting(&stream);
+                refuse_closed(&self.closer, stream);
                 continue;
             }
             let slot = OpenSlot(self.clone());
@@ -580,9 +608,13 @@ impl Receiver {
             "/v1/metrics" | "/v1/traces" => Signal::Other,
             "/derm/v1/event" => Signal::DermEvent,
             "/derm/v1/approve" => Signal::DermApprove,
+            "/derm/v1/taint" => Signal::DermTaint,
             _ => Signal::Unknown,
         };
-        let derm = matches!(signal, Signal::DermEvent | Signal::DermApprove);
+        let derm = matches!(
+            signal,
+            Signal::DermEvent | Signal::DermApprove | Signal::DermTaint
+        );
         let host_ok = head.header("host").is_some_and(|host| {
             host == format!("127.0.0.1:{}", self.port)
                 || host.eq_ignore_ascii_case(&format!("localhost:{}", self.port))
@@ -712,10 +744,10 @@ impl Receiver {
         let serde_json::Value::Object(mut map) = value else {
             return Err(400);
         };
-        let field = if signal == Signal::DermEvent {
-            "event"
-        } else {
-            "request"
+        let field = match signal {
+            Signal::DermEvent => "event",
+            Signal::DermTaint => "taint",
+            _ => "request",
         };
         if map.len() != 1 {
             return Err(400);
@@ -726,6 +758,13 @@ impl Receiver {
                 &holder.chat_id,
                 holder.harness,
                 ChatOp::Event(inner),
+                &|| false,
+            )
+        } else if signal == Signal::DermTaint {
+            ops(
+                &holder.chat_id,
+                holder.harness,
+                ChatOp::Taint(inner),
                 &|| false,
             )
         } else {
@@ -879,6 +918,7 @@ enum Signal {
     Other,
     DermEvent,
     DermApprove,
+    DermTaint,
     Unknown,
 }
 
@@ -951,11 +991,157 @@ fn respond<W: Write>(stream: &mut W, status: u16, answer: Option<Answer>) -> std
 const LINGER_DEADLINE: Duration = Duration::from_secs(1);
 const LINGER_BYTES: usize = 8 * 1024;
 
-/// `close_gently` for the accept thread, which must not wait: whatever
-/// input has already arrived is read, then the socket goes.
-fn close_without_waiting(stream: &TcpStream) {
-    if stream.shutdown(std::net::Shutdown::Write).is_err() || stream.set_nonblocking(true).is_err()
-    {
+/// Refused sockets the closer thread holds at once; past that, one is
+/// drained on the accept thread as before. `MAX_CONNECTIONS` again, so the
+/// receiver holds at most twice that many sockets: a flood of idle
+/// connections refused at the head cap (48 at most) fits, and the daemon
+/// stays well under macOS's default limit of 256 open files, which it does
+/// not raise (fix pass 9's review, F2; 256 here would have reached it).
+const CLOSER_HOLDS: usize = MAX_CONNECTIONS;
+/// How often the closer looks at the sockets it holds.
+const CLOSER_TICK: Duration = Duration::from_millis(20);
+
+/// The wait after a failed `accept`, as Go's `net/http` `Server.Serve`
+/// waits on a temporary one (5 ms, doubled each time, at most 1 s, back to
+/// none after a success). A connection the peer reset or aborted before it
+/// was accepted is that connection's error, not the listener's: no wait.
+#[derive(Default)]
+struct AcceptBackoff(Option<Duration>);
+
+impl AcceptBackoff {
+    const FIRST: Duration = Duration::from_millis(5);
+    const MOST: Duration = Duration::from_secs(1);
+
+    fn after(&mut self, e: &std::io::Error) -> Option<Duration> {
+        use std::io::ErrorKind;
+        if matches!(
+            e.kind(),
+            ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::Interrupted
+        ) {
+            return None;
+        }
+        let next = self.0.map_or(Self::FIRST, |d| (d * 2).min(Self::MOST));
+        self.0 = Some(next);
+        Some(next)
+    }
+
+    fn reset(&mut self) {
+        self.0 = None;
+    }
+}
+
+struct Closer {
+    tx: std::sync::mpsc::Sender<TcpStream>,
+    held: Arc<AtomicUsize>,
+}
+
+/// A socket the accept thread refused (503 written): its write side is shut
+/// now, so the client reads the reply's end at once, and one closer thread
+/// then reads what the client still sends, for up to `LINGER_DEADLINE` and
+/// `LINGER_BYTES` each, many sockets at a time, before it closes them.
+/// Closing at once leaves a request that arrives after the accept thread's
+/// drain unread, and Winsock then resets the connection, which discards
+/// the reply the client has not read yet (Microsoft, "Graceful Shutdown,
+/// Linger Options, and Socket Closure"; RFC 1122 4.2.2.13): the box lost a
+/// 503 this way under load, and the fix pass 9 test fails there without it
+/// (note BG section 5). The closer holds at most `CLOSER_HOLDS`; past that,
+/// or when its thread could not start, the accept thread drains what is
+/// there, as before (`close_without_waiting` until fix pass 9).
+/// Each receiver has its own closer and its own `CLOSER_HOLDS` (a static
+/// one was shared by every receiver in the process, so the test suite's
+/// receivers filled one another's: fix pass 9, run on the box).
+fn refuse_closed(closer: &OnceLock<Option<Closer>>, stream: TcpStream) {
+    if stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    let closer = closer.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<TcpStream>();
+        let held = Arc::new(AtomicUsize::new(0));
+        let count = held.clone();
+        std::thread::Builder::new()
+            .name("otel-receiver-closer".into())
+            .spawn(move || close_refused(&rx, &count))
+            .ok()
+            .map(|_| Closer { tx, held })
+    });
+    if let Some(c) = closer {
+        if c.held.fetch_add(1, Ordering::SeqCst) < CLOSER_HOLDS {
+            match c.tx.send(stream) {
+                Ok(()) => return,
+                Err(std::sync::mpsc::SendError(s)) => {
+                    c.held.fetch_sub(1, Ordering::SeqCst);
+                    drain_waiting_for_nothing(&s);
+                    return;
+                }
+            }
+        }
+        c.held.fetch_sub(1, Ordering::SeqCst);
+    }
+    drain_waiting_for_nothing(&stream);
+}
+
+/// The closer's loop: each socket non-blocking, read until the client
+/// closes, its deadline passes or it sent `LINGER_BYTES`, then dropped.
+fn close_refused(rx: &std::sync::mpsc::Receiver<TcpStream>, held: &AtomicUsize) {
+    let mut open: Vec<(TcpStream, Instant, usize)> = Vec::new();
+    let mut buf = [0u8; 1024];
+    let take = |s: TcpStream, open: &mut Vec<(TcpStream, Instant, usize)>| {
+        if s.set_nonblocking(true).is_ok() {
+            open.push((s, Instant::now() + LINGER_DEADLINE, 0));
+        } else {
+            held.fetch_sub(1, Ordering::SeqCst);
+        }
+    };
+    loop {
+        if open.is_empty() {
+            // Nothing held: block until the next refused socket. The sender
+            // is the receiver's, and its accept loop holds the receiver for
+            // as long as the process runs, so this thread lives as long (one
+            // per receiver; a test's receivers each keep theirs).
+            match rx.recv() {
+                Ok(s) => take(s, &mut open),
+                Err(_) => return,
+            }
+        } else {
+            match rx.recv_timeout(CLOSER_TICK) {
+                Ok(s) => take(s, &mut open),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // No more sockets can come: still pace the reads of those
+                // held, rather than spin until their deadlines pass.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(CLOSER_TICK)
+                }
+            }
+        }
+        while let Ok(s) = rx.try_recv() {
+            take(s, &mut open);
+        }
+        let now = Instant::now();
+        open.retain_mut(|(s, deadline, read)| {
+            let keep = loop {
+                if *read >= LINGER_BYTES || now >= *deadline {
+                    break false;
+                }
+                match (&*s).read(&mut buf) {
+                    Ok(0) => break false,
+                    Ok(n) => *read += n,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break true,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break false,
+                }
+            };
+            if !keep {
+                held.fetch_sub(1, Ordering::SeqCst);
+            }
+            keep
+        });
+    }
+}
+
+/// Reads, without blocking, what input is already here (write side shut):
+/// the accept thread's close when the closer is full.
+fn drain_waiting_for_nothing(stream: &TcpStream) {
+    if stream.set_nonblocking(true).is_err() {
         return;
     }
     let mut buf = [0u8; 1024];
@@ -978,6 +1164,12 @@ fn close_gently(stream: &TcpStream) {
     if stream.shutdown(std::net::Shutdown::Write).is_err() {
         return;
     }
+    linger_read(stream);
+}
+
+/// Reads what the client still sends (write side shut) until it closes, for
+/// up to `LINGER_DEADLINE` and `LINGER_BYTES`.
+fn linger_read(stream: &TcpStream) {
     let deadline = Instant::now() + LINGER_DEADLINE;
     let mut drained = 0;
     let mut buf = [0u8; 1024];

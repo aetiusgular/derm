@@ -80,8 +80,8 @@
     ]
   },
   "sources": {
-    "claude-code": "the row's `cli` (2.1.311, run)",
-    "codex": "the row's `cli` (0.163.0, run)",
+    "claude-code": "the row's `cli` (2.1.322, run)",
+    "codex": "the row's `cli` (0.167.2, run)",
     "pi": "the row's `cli` (1.4.0, run)",
     "opencode": "the row's `cli` (1.19.4, source)",
     "gemini": "the row's `cli` (0.66.0, run)",

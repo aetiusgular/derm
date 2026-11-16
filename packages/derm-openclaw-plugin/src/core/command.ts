@@ -50,8 +50,8 @@ export function commandProblem(value: unknown): string | undefined {
 // Lane X's wrapper list (installs/parse.ts): words that run the rest of the
 // line as a command. Their own flags are not parsed; the command starts at
 // the first later word that names a rule's head, a wrapper or a shell.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox"]);
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"]);
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel", "setsid", "flock", "unshare", "run0"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash"]);
 const ASSIGNMENT = /^[a-z_][a-z0-9_]*=/;
 const MAX_DEPTH = 4;
 
@@ -133,6 +133,9 @@ function read(input: string[], heads: ReadonlySet<string>, depth: number, out: s
       walk(rest.join(" "), heads, depth + 1, out);
       return;
     }
+    // GNU parallel runs its command words and its `:::` arguments through a
+    // shell (`parallel ::: 'git push --force'`; W6C-R3).
+    if (head === "parallel") for (const w of rest) if (!w.startsWith("-")) walk(w, heads, depth + 1, out);
     if (SHELLS.has(head)) {
       const c = shellCommandString(rest);
       if (c !== undefined) walk(c, heads, depth + 1, out);
@@ -220,4 +223,529 @@ export function commandAllows(rule: readonly string[], folded: string): boolean 
 /** The reason a command rule gives: `rule bash <words>` (policy.md section 7). */
 export function commandReason(rule: readonly string[]): string {
   return `rule bash ${rule.join(" ")}`;
+}
+
+// --- A program read from input (policy.md section 4, step 7b; E0's R-E0-1) --
+//
+// A shell or interpreter whose program comes from its input (a pipe, a
+// here-string, a process substitution or xargs; an interpreter's
+// here-document too) runs text the line does not show. The same reading as
+// derm-core's `stdin_program` (crates/derm-core/src/command.rs) and
+// OpenMoat 0.19.0's `pipe-to-shell` and `<shell> @stdin`
+// (policies/default-v1.yaml:258-270, src/shell/tests/stdin.rs). A shell's
+// here-document is not counted: its lines are on the line, and the matcher
+// reads them as commands.
+
+interface Feed {
+  piped: boolean;
+  hereString: boolean;
+  hereDoc: boolean;
+  process: boolean;
+}
+
+const noFeed = (piped = false): Feed => ({ piped, hereString: false, hereDoc: false, process: false });
+
+/** A command fed either way is fed. */
+const orFeed = (a: Feed, b: Feed): Feed => ({
+  piped: a.piped || b.piped,
+  hereString: a.hereString || b.hereString,
+  hereDoc: a.hereDoc || b.hereDoc,
+  process: a.process || b.process,
+});
+
+// Words that open a compound command whose inner commands share the input it
+// was given (`curl x | if true; then sh; fi`), the words that close one, and
+// the reserved words a simple command may start with before its program
+// (integration w6's re-review, W6C-R1).
+const OPENERS = new Set(["if", "while", "until", "for", "case", "select"]);
+const CLOSERS = new Set(["fi", "done", "esac"]);
+const RESERVED = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{", "coproc"]);
+
+/** An open `(`: a subshell or group whose commands share a feed, or a process substitution with its command's words and feed so far. */
+type Frame = { group: Feed } | { words: string[]; feed: Feed };
+
+/**
+ * Simple commands with what feeds each: `installs/parse.ts`'s `commands`,
+ * keeping the pipe and redirect forms it drops. A subshell or compound
+ * command right after a pipe passes the pipe's input to every command inside
+ * it, and a process substitution feeds the command it sits in, before or
+ * after its program word (W6C-R1). `base` feeds the whole text.
+ */
+function fedCommands(text: string, base: Feed): Array<[string[], Feed]> {
+  const out: Array<[string[], Feed]> = [];
+  let words: string[] = [];
+  let word = "";
+  let inWord = false;
+  let quote: string | undefined;
+  let skipNext = false;
+  let feed: Feed = { ...base };
+  const frames: Frame[] = [];
+  const compounds: Feed[] = [];
+  const shared = (): Feed => {
+    let f = { ...base };
+    for (const fr of frames) if ("group" in fr) f = orFeed(f, fr.group);
+    for (const c of compounds) f = orFeed(f, c);
+    return f;
+  };
+  const endWord = (): void => {
+    if (inWord) {
+      if (skipNext) skipNext = false;
+      else words.push(word);
+    }
+    word = "";
+    inWord = false;
+  };
+  const endCommand = (pipedNext: boolean): void => {
+    endWord();
+    if (words.length) {
+      const first = words.find((w) => !["!", "{", "then", "else", "do"].includes(w)) ?? "";
+      if (CLOSERS.has(words[0] as string)) compounds.pop();
+      else if (OPENERS.has(first)) compounds.push(feed);
+      out.push([words, feed]);
+    }
+    words = [];
+    skipNext = false;
+    feed = pipedNext ? orFeed(noFeed(true), shared()) : shared();
+  };
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i] as string;
+    if (quote !== undefined) {
+      if (ch === quote) quote = undefined;
+      else word += ch;
+      i++;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+    } else if (ch === "#" && !inWord) {
+      while (i < text.length && text[i] !== "\n") i++;
+      endCommand(false);
+      continue;
+    } else if (ch === "|") {
+      const or = text[i + 1] === "|";
+      if (or || text[i + 1] === "&") i++;
+      endCommand(!or);
+    } else if (ch === "(") {
+      // A subshell or group: right after a pipe it takes the pipe's input
+      // (`curl x | (true; sh)`; W6C-S2, W6C-R1).
+      if (!words.length && !inWord) frames.push({ group: feed });
+      else {
+        endCommand(false);
+        frames.push({ group: noFeed() });
+        feed = shared();
+      }
+    } else if (ch === ")") {
+      endCommand(false);
+      const fr = frames.pop();
+      if (fr !== undefined && "words" in fr) {
+        // The command a process substitution sat in goes on, fed by it.
+        words = fr.words;
+        feed = { ...fr.feed, process: true };
+      } else feed = shared();
+    } else if (ch === ";" || ch === "&" || ch === "\n" || ch === "\r") {
+      endCommand(false);
+    } else if (ch === "<" || ch === ">") {
+      if (inWord && word !== "" && /^[0-9]+$/.test(word)) {
+        word = "";
+        inWord = false;
+      }
+      endWord();
+      if (ch === "<" && text[i + 1] === "(") {
+        // `<(` opens a command of its own; the command around it is held
+        // until its `)`.
+        frames.push({ words, feed });
+        words = [];
+        feed = shared();
+        skipNext = false;
+        i += 2;
+        continue;
+      }
+      if (ch === "<") {
+        let run = 0;
+        while (text[i + run] === "<") run++;
+        if (run === 2) feed.hereDoc = true;
+        else if (run >= 3) feed.hereString = true;
+      }
+      while (i + 1 < text.length && "><&|-".includes(text[i + 1] as string)) i++;
+      skipNext = true;
+    } else if (ch === " " || ch === "\t" || ch === "\v" || ch === "\f") {
+      endWord();
+    } else {
+      word += ch;
+      inWord = true;
+    }
+    i++;
+  }
+  endWord();
+  if (words.length) out.push([words, feed]);
+  return out;
+}
+
+/** Interpreters that run a program from their input when the line gives none. */
+function isInterpreter(base: string): boolean {
+  // OpenMoat's `python*`: `python3.12`, `python3-dbg`, `pypy3` (W6C-S2).
+  if (isPython(base) || isPwsh(base) || isPowershell(base)) return true;
+  return ["node", "nodejs", "perl", "ruby", "php", "deno", "bun"].includes(base);
+}
+
+/** pwsh by name: `pwsh`, and the channel builds `pwsh-preview` and `pwsh-lts` (review W6F-8). */
+const isPwsh = (base: string): boolean => base === "pwsh" || base.startsWith("pwsh-");
+
+/** `powershell` by name: Windows PowerShell 5.1, or pwsh 7 as the PowerShell snap installs it (`powershell`, `powershell-preview`); read with both tables (W6G-1, W6G-2). */
+const isPowershell = (base: string): boolean => base === "powershell" || base.startsWith("powershell-");
+
+const isPython = (base: string): boolean => base.startsWith("python") || base.startsWith("pypy");
+
+/**
+ * Paths a program reads its own standard input through, read lexically as the
+ * kernel resolves them: `//`, `/./` and `..`, and under `/proc/self/root`
+ * (W6C-S2, W6C-R2). A relative path whose last part is `stdin` or `fd/0`
+ * counts too, since a `cd` may have put it under `/dev`.
+ */
+function isStdinPath(w: string): boolean {
+  if (w === "-") return true;
+  const abs = w.startsWith("/");
+  const parts: string[] = [];
+  for (const p of w.split("/")) {
+    if (p === "" || p === ".") continue;
+    if (p === "..") parts.pop();
+    else parts.push(p);
+  }
+  if (!abs) return parts[parts.length - 1] === "stdin" || (parts[parts.length - 2] === "fd" && parts[parts.length - 1] === "0");
+  let rest = parts;
+  while (rest.length > 3 && rest[0] === "proc" && (rest[1] === "self" || rest[1] === "thread-self") && rest[2] === "root") rest = rest.slice(3);
+  const j = rest.join("/");
+  return j === "dev/stdin" || j === "dev/fd/0" || j === "proc/self/fd/0" || j === "proc/thread-self/fd/0";
+}
+
+/** What a PowerShell switch does with the words after it; `serve` is a server mode, read as fed (W6F-5). */
+type Pwsh = "flag" | "value" | "command" | "file" | "serve";
+
+/**
+ * pwsh's switches in the order its parser tries them, each with the shortest
+ * form it takes (PowerShell `v7.6.10`, `16ac95d`,
+ * `CommandLineParameterParser.cs:914-1290`; `MatchSwitch` at `:798-806`).
+ * `-version` and `-help` are read as flags, which only reads more as fed
+ * (review W6C-R4, note BD).
+ */
+const PWSH: ReadonlyArray<readonly [string, string, Pwsh]> = [
+  ["version", "v", "flag"],
+  ["help", "h", "flag"],
+  ["?", "?", "flag"],
+  ["login", "l", "flag"],
+  ["noexit", "noe", "flag"],
+  ["noprofile", "nop", "flag"],
+  ["nologo", "nol", "flag"],
+  ["noninteractive", "noni", "flag"],
+  ["socketservermode", "so", "serve"],
+  ["v2socketservermode", "v2so", "serve"],
+  ["servermode", "s", "serve"],
+  ["namedpipeservermode", "nam", "serve"],
+  ["sshservermode", "sshs", "serve"],
+  ["noprofileloadtime", "noprofileloadtime", "flag"],
+  ["interactive", "i", "flag"],
+  ["configurationfile", "configurationfile", "value"],
+  ["configurationname", "config", "value"],
+  ["custompipename", "cus", "value"],
+  ["commandwithargs", "commandwithargs", "command"],
+  ["cwa", "cwa", "command"],
+  ["command", "c", "command"],
+  ["windowstyle", "w", "value"],
+  ["file", "f", "file"],
+  ["isswait", "isswait", "flag"],
+  ["outputformat", "o", "value"],
+  ["of", "o", "value"],
+  ["inputformat", "inp", "value"],
+  ["if", "if", "value"],
+  ["executionpolicy", "ex", "value"],
+  ["ep", "ep", "value"],
+  ["encodedcommand", "e", "command"],
+  ["ec", "e", "command"],
+  ["encodedarguments", "encodeda", "value"],
+  ["ea", "ea", "value"],
+  ["settingsfile", "settings", "value"],
+  ["sta", "sta", "flag"],
+  ["mta", "mta", "flag"],
+  ["workingdirectory", "wo", "value"],
+  ["wd", "wd", "value"],
+  ["removeworkingdirectorytrailingcharacter", "removeworkingdirectorytrailingcharacter", "flag"],
+  ["token", "to", "value"],
+  ["utctimestamp", "utc", "value"],
+];
+
+/** Windows PowerShell 5.1's switches (`about_PowerShell_exe`; prefix rules inferred, read so more reads as fed; its hidden `-servermode` before `-sta`, and a switch it does not list is skipped as a flag, W6F-4). */
+const POWERSHELL: ReadonlyArray<readonly [string, string, Pwsh]> = [
+  ["command", "c", "command"],
+  ["encodedcommand", "e", "command"],
+  ["ec", "ec", "command"],
+  ["file", "f", "file"],
+  ["psconsolefile", "p", "value"],
+  ["version", "v", "value"],
+  ["inputformat", "i", "value"],
+  ["outputformat", "o", "value"],
+  ["windowstyle", "w", "value"],
+  ["encodedarguments", "e", "value"],
+  ["ea", "ea", "value"],
+  ["configurationname", "c", "value"],
+  ["executionpolicy", "e", "value"],
+  ["ep", "ep", "value"],
+  ["nologo", "n", "flag"],
+  ["noexit", "n", "flag"],
+  ["servermode", "s", "serve"],
+  ["sta", "s", "flag"],
+  ["mta", "m", "flag"],
+  ["noprofile", "n", "flag"],
+  ["noninteractive", "n", "flag"],
+];
+
+/**
+ * Does pwsh (or Windows PowerShell) read its program from its input? A switch
+ * starts with a dash (`-`, U+2013, U+2014 or U+2015) or `/` on every system,
+ * a doubled dash is dropped (derm drops a doubled `/` too, which pwsh does
+ * not, and which only reads more as fed), and the first word that is no switch,
+ * or a switch it does not know, is the script (`GetSwitchKey`, `:710-738`;
+ * `IsDash`, `CharTraits.cs:255-261`). `-command -` and `-file -` read the
+ * input, and so does a line with neither.
+ */
+function pwshReadsInput(program: string, args: readonly string[]): boolean {
+  if (isPowershell(program)) return tableReadsInput(POWERSHELL, true, args) || tableReadsInput(PWSH, false, args);
+  return tableReadsInput(PWSH, false, args);
+}
+
+/** One switch table's reading; `skipUnknown` reads a switch the table does not list as a flag (Windows PowerShell, W6F-4), not as the script. */
+function tableReadsInput(table: ReadonlyArray<readonly [string, string, Pwsh]>, skipUnknown: boolean, args: readonly string[]): boolean {
+  const dash = (c: string): boolean => c === "-" || c === "\u2013" || c === "\u2014" || c === "\u2015";
+  for (let i = 0; i < args.length; ) {
+    const w = (args[i] as string).trim();
+    const first = w[0];
+    if (first === undefined || !(dash(first) || first === "/")) return isStdinPath(w);
+    let key = w.slice(1);
+    if (key.startsWith(first)) key = key.slice(1);
+    const hit = table.find(([full, shortest]) => key.length >= shortest.length && full.startsWith(key));
+    if (hit === undefined) {
+      if (!skipUnknown) return isStdinPath(w);
+      i += 1;
+      continue;
+    }
+    const kind = hit[2];
+    if (kind === "serve") return true;
+    if (kind === "flag") i += 1;
+    else if (kind === "value") i += 2;
+    else {
+      const value = args[i + 1];
+      return value !== undefined && isStdinPath(value.trim());
+    }
+  }
+  return true;
+}
+
+/** Does a shell's argument list hold `-c` among its flags (`-c`, `-ec`)? The values of `-o`, `+o`, `--rcfile` and `--init-file` are skipped (W6C-R3). */
+function hasCFlag(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i] as string;
+    if (w === "--" || (!w.startsWith("-") && !w.startsWith("+"))) return false;
+    if (w === "-o" || w === "+o" || w === "--rcfile" || w === "--init-file") {
+      i++;
+      continue;
+    }
+    if (w.startsWith("-") && !w.startsWith("--") && w.slice(1).includes("c")) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `program`, run with `args`, read its program from its input? A shell
+ * does with `-s`, a stdin path, or no operand and no `-c`; `source` and `.`
+ * with a stdin path or no operand; an interpreter with a stdin path, or no
+ * operand and none of its program flags. Folded text is lowercase, so `-E`
+ * reads as `-e` and `-X` as `-x`; where that joins a valued flag and one
+ * that takes none, it is read as valued, which only reads more as fed.
+ */
+function readsItsInput(program: string, args: readonly string[]): boolean {
+  if (isPwsh(program) || isPowershell(program)) return pwshReadsInput(program, args);
+  const shell = SHELLS.has(program);
+  const source = program === "source" || program === ".";
+  let programLetters = "";
+  let valuedLetters = "";
+  let programLong: readonly string[] = [];
+  let valuedLong: readonly string[] = [];
+  if (shell) {
+    programLetters = "c";
+    valuedLetters = "o";
+    valuedLong = ["--rcfile", "--init-file"];
+  } else if (source) {
+    // none
+  } else if (isPython(program)) {
+    programLetters = "cm";
+    valuedLetters = "wx";
+    valuedLong = ["--check-hash-based-pycs"];
+  } else if (program === "node" || program === "nodejs" || program === "bun") {
+    programLetters = "ep";
+    valuedLetters = "rc";
+    programLong = ["--eval", "--print"];
+    valuedLong = ["--require", "--import", "--loader", "--experimental-loader", "--conditions", "--input-type", "--title"];
+  } else if (program === "perl") {
+    programLetters = "e";
+  } else if (program === "ruby") {
+    programLetters = "e";
+    valuedLetters = "ric";
+  } else if (program === "php") {
+    programLetters = "rf";
+    valuedLetters = "cdz";
+  }
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; ) {
+    const w = args[i] as string;
+    if (w === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    const flag = (w.startsWith("-") && w.length > 1) || (shell && w.startsWith("+") && w.length > 1);
+    if (!flag) {
+      operands.push(w);
+      i++;
+      continue;
+    }
+    const name = w.split("=")[0] as string;
+    if (programLong.includes(name)) return false;
+    if (valuedLong.includes(name)) {
+      i += w.includes("=") ? 1 : 2;
+      continue;
+    }
+    if (w.startsWith("--")) {
+      i++;
+      continue;
+    }
+    const letters = w.slice(1);
+    if (shell && w.startsWith("-") && letters.includes("s")) return true;
+    if ([...letters].some((c) => programLetters.includes(c))) return false;
+    // A short flag that takes a value consumes the next word unless it is attached.
+    if (letters.length === 1 && valuedLetters.includes(letters)) {
+      i += 2;
+      continue;
+    }
+    i++;
+  }
+  const first = operands[0];
+  if (first === undefined) return true;
+  if (isStdinPath(first)) return true;
+  // deno and bun name a subcommand first: `deno run -`, bare `deno run`.
+  if ((program === "deno" || program === "bun") && first === "run") {
+    const second = operands[1];
+    return second === undefined || isStdinPath(second);
+  }
+  return false;
+}
+
+const isProgram = (b: string): boolean => SHELLS.has(b) || b === "source" || b === "." || isInterpreter(b);
+
+/**
+ * The program name of a shell or interpreter in folded shell text that
+ * reads its program from its input, or undefined. Read as written and with
+ * every backslash removed, inside `-c`, `eval` and `env -S` strings to the
+ * same depth as the command rules.
+ */
+export function stdinProgram(folded: string): string | undefined {
+  for (const text of [folded, folded.replace(/\\/g, "")]) {
+    const p = stdinWalk(text.replace(/`/g, "\n"), 0, noFeed());
+    if (p !== undefined) return p;
+  }
+  return undefined;
+}
+
+/** `base` feeds the whole text: a `-c`, `env -S` or `eval` string is read by commands that take the outer command's input (W6C-R1). */
+function stdinWalk(text: string, depth: number, base: Feed): string | undefined {
+  if (depth > MAX_DEPTH) return undefined;
+  for (const [words, feed] of fedCommands(text, base)) {
+    const p = stdinRead(words, feed, depth);
+    if (p !== undefined) return p;
+  }
+  return undefined;
+}
+
+/** The words xargs fills from its input in a command it runs: `-I x`, `-ix`, `-i` (`{}`), `--replace[=x]`; `{}` always. */
+function xargsTokens(args: readonly string[]): string[] {
+  const out = ["{}"];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i] as string;
+    if (!w.startsWith("-")) break;
+    if (w === "-i" || w === "--replace") continue;
+    if (w === "-I") {
+      const v = args[i + 1];
+      if (v !== undefined) out.push(v);
+      i++;
+    } else if (w.startsWith("--replace=")) out.push(w.slice("--replace=".length));
+    else if (w.startsWith("-I") || w.startsWith("-i")) {
+      if (w.length > 2) out.push(w.slice(2));
+    }
+  }
+  return out.filter((t) => t !== "");
+}
+
+function stdinRead(input: string[], feed: Feed, depth: number): string | undefined {
+  let words = input;
+  // Behind xargs or parallel: the words it fills from its input.
+  let xargs: string[] | undefined;
+  for (let guard = 0; guard < 16; guard++) {
+    while (words.length && (ASSIGNMENT.test(words[0] as string) || RESERVED.has(words[0] as string))) words = words.slice(1);
+    if (!words.length) return undefined;
+    const head = commandBase(words[0] as string);
+    const rest = words.slice(1);
+    if (head === "env") {
+      const split = rest.findIndex((w) => w === "-s" || w === "--split-string" || w.startsWith("--split-string="));
+      if (split >= 0) {
+        const w = rest[split] as string;
+        const s = w.startsWith("--split-string=") ? w.slice("--split-string=".length) : rest[split + 1];
+        return s === undefined ? undefined : stdinWalk(s, depth + 1, feed);
+      }
+    }
+    if (head === "eval") return stdinWalk(rest.join(" "), depth + 1, feed);
+    if (isProgram(head)) {
+      if (SHELLS.has(head)) {
+        // Behind xargs or parallel a shell's `-c` takes its string from the
+        // input when the line gives none, or when the string holds a word the
+        // input fills (W6C-S2); a fixed string only gets the input as
+        // arguments (W6C-R5).
+        if (xargs !== undefined && hasCFlag(rest)) {
+          const s = shellCommandString(rest);
+          if (s === undefined || xargs.some((t) => s.includes(t))) return head;
+        }
+        const c = shellCommandString(rest);
+        if (c !== undefined) return stdinWalk(c, depth + 1, feed);
+      }
+      const shellish = SHELLS.has(head) || head === "source" || head === ".";
+      const fed = feed.piped || feed.hereString || feed.process || xargs !== undefined || (feed.hereDoc && !shellish);
+      return fed && readsItsInput(head, rest) ? head : undefined;
+    }
+    if (head === "parallel") {
+      // GNU parallel runs each input line as a command when its line names
+      // none, and runs its command words and `:::` arguments through a shell
+      // (GNU parallel 20231122, run; W6C-R3).
+      const fed = feed.piped || feed.hereString || feed.process;
+      const before = [];
+      for (const w of rest) {
+        if (w === ":::" || w === "::::") break;
+        before.push(w);
+      }
+      const command = before.some((w) => !w.startsWith("-") && !/^[0-9]+$/.test(w));
+      if (fed && !command && !rest.some((w) => w === ":::" || w === "::::")) return head;
+      for (const w of rest) {
+        if (w.startsWith("-")) continue;
+        const p = stdinWalk(w, depth + 1, noFeed());
+        if (p !== undefined) return p;
+      }
+    }
+    if (!WRAPPERS.has(head)) return undefined;
+    if (head === "xargs") xargs = xargsTokens(rest);
+    else if (head === "parallel") xargs = ["{"];
+    const next = rest.findIndex((w) => {
+      const b = commandBase(w);
+      return !ASSIGNMENT.test(w) && (WRAPPERS.has(b) || isProgram(b) || b === "eval");
+    });
+    if (next < 0) return undefined;
+    words = rest.slice(next);
+  }
+  return undefined;
 }

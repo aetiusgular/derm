@@ -122,6 +122,7 @@ fn the_table_reads_and_every_writing_row_finds_its_own_entry() {
     ids.dedup();
     assert_eq!(ids.len(), rows.len(), "an agent listed twice");
     let vars = Vars {
+        command_post: None,
         command: None,
         hook_dir: Some("/h/derm/packages/derm-opencode-plugin".into()),
         version: "0.1.3".into(),
@@ -435,6 +436,53 @@ fn cursor_gets_both_events_in_a_new_file() {
             "{e}"
         );
     }
+}
+
+/// Fix pass 9 (note BG section 1): Cursor's Windows row writes the
+/// PowerShell line on both events, failing closed, and warns when MSYSTEM is
+/// set (Cursor's own bug then runs its hooks with bash).
+#[test]
+fn fp9_cursor_windows_row_writes_the_powershell_line_and_warns_on_msystem() {
+    let home = scratch("fp9-cursorw");
+    let derm = fake_derm(&home);
+    fs::create_dir_all(home.join(".cursor")).unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go_with(
+        &home,
+        &env(&[("MSYSTEM", "MINGW64")]),
+        Answer(true, None),
+        &["cursor", "--gate", "--write"],
+    );
+    gate::TEST_OS.with(|o| o.set(None));
+    assert_eq!(r.code, 0, "{}{}", r.out, r.err);
+    assert!(r.out.contains("warning: MSYSTEM=MINGW64"), "{}", r.out);
+    let v = parse(&read(&home.join(".cursor/hooks.json")));
+    for ev in ["preToolUse", "beforeMCPExecution"] {
+        let Some(Value::Array(l)) = v.get_path(&["hooks", ev]) else {
+            panic!("{ev}")
+        };
+        assert_eq!(l.len(), 1, "{ev}");
+        let e = json::compact(&l[0]);
+        assert!(e.contains("\"failClosed\": true"), "{ev}");
+        let want = format!(
+            "& '{derm}'{}",
+            crate::hook::claude_format::marks::ps_tail("cursor", "pre", 2)
+        );
+        assert!(e.contains(&serde_json::to_string(&want).unwrap()), "{e}");
+    }
+    let w = gate::cursor_git_bash_warning;
+    assert!(w("cursor", Some("windows"), None, None).is_none());
+    assert!(w("cursor", None, Some("MINGW64"), None).is_none());
+    assert!(w("codex", Some("windows"), Some("MINGW64"), None).is_none());
+    // A SHELL naming Git's bash (AgentParty#1123), any case or slash.
+    let s = w(
+        "cursor",
+        Some("windows"),
+        None,
+        Some("C:\\Program Files\\Git\\bin\\BASH.EXE"),
+    );
+    assert!(s.is_some_and(|s| s.starts_with("SHELL=")));
+    assert!(w("cursor", Some("windows"), None, Some("C:\\bin\\pwsh.exe")).is_none());
 }
 
 #[cfg(unix)]
@@ -835,7 +883,18 @@ fn route_says_where_a_plugin_finds_derm() {
     fake_derm(&home);
     let r = go(&home, &["pi", "--gate"]);
     assert_eq!(r.code, 0, "{}{}", r.out, r.err);
-    assert!(r.out.contains("finds no derm in"), "{}", r.out);
+    // Box retest 5, BW6R5-2: the folders after `~/.local/bin` are this
+    // host's own, and the box has derm's `.deb` in `/usr/bin`, which then
+    // decides (as the launcher would run it; MW6R5-2's reading).
+    match system_derm() {
+        None => assert!(r.out.contains("finds no derm in"), "{}", r.out),
+        Some(sys) => assert!(
+            r.out.contains(&format!("runs derm from {}", sys.display()))
+                && r.out.contains("which is not this derm"),
+            "{}",
+            r.out
+        ),
+    }
     let bin = home.join(".local/bin");
     fs::create_dir_all(&bin).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1426,6 +1485,7 @@ fn geminis_extension_hooks_run_the_launcher() {
 }
 
 #[cfg(unix)]
+#[derive(Debug)]
 struct Launched {
     code: Option<i32>,
     out: String,
@@ -1464,6 +1524,21 @@ fn launch(cwd: &Path, env: &[(&str, &str)], args: &[&str], input: &str) -> Launc
 #[cfg(unix)]
 /// A stand-in derm that prints its argv and its stdin, so a test sees what
 /// the launcher ran it with.
+/// The first derm the launcher's fixed folders after `~/.local/bin` hold
+/// on this host (`derm-gate.sh`: Homebrew's, then `/usr/local/bin`, then
+/// `/usr/bin`), or `None`.
+fn system_derm() -> Option<std::path::PathBuf> {
+    let brew: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin/derm", "/usr/local/bin/derm"]
+    } else {
+        &["/home/linuxbrew/.linuxbrew/bin/derm", "/usr/local/bin/derm"]
+    };
+    brew.iter()
+        .chain(std::iter::once(&"/usr/bin/derm"))
+        .map(std::path::PathBuf::from)
+        .find(|p| p.symlink_metadata().is_ok())
+}
+
 fn echo_derm(dir: &Path) -> String {
     fs::create_dir_all(dir).unwrap();
     fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1536,20 +1611,33 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
         &["claude-code", "pre"],
         "{}",
     );
-    assert_eq!(r.code, Some(2));
-    assert!(r.out.is_empty(), "{}", r.out);
+    // Fix pass 11 (Mac), MW6R5-2: the launcher's fixed folders after
+    // `~/.local/bin` (Homebrew's and `/usr/bin`) are this host's own, and on
+    // Tony's Mac `/opt/homebrew/bin/derm` is there, so the launcher runs it
+    // (as it should: `derm-gate.sh`, the candidate loop). The PATH derm never
+    // runs either way (its marker `argv:` never shows); the "none" messages
+    // are checked where no system derm is installed.
+    let system = system_derm();
     assert!(
-        r.err.starts_with("derm: no derm this hook can trust"),
-        "{}",
-        r.err
+        !r.out.contains("argv:") && !r.err.contains("argv:"),
+        "{r:?}"
     );
-    assert!(r.err.contains("never looked up on PATH"), "{}", r.err);
-    // Gemini reads its JSON on stdout as well.
-    let r = launch(&work, &[("HOME", &h)], &["gemini", "before"], "{}");
-    assert_eq!(r.code, Some(2));
-    let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
-    assert_eq!(v["decision"], "deny");
-    assert!(v["reason"].as_str().unwrap().starts_with("derm: no derm"));
+    if system.is_none() {
+        assert_eq!(r.code, Some(2));
+        assert!(r.out.is_empty(), "{}", r.out);
+        assert!(
+            r.err.starts_with("derm: no derm this hook can trust"),
+            "{}",
+            r.err
+        );
+        assert!(r.err.contains("never looked up on PATH"), "{}", r.err);
+        // Gemini reads its JSON on stdout as well.
+        let r = launch(&work, &[("HOME", &h)], &["gemini", "before"], "{}");
+        assert_eq!(r.code, Some(2));
+        let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
+        assert_eq!(v["decision"], "deny");
+        assert!(v["reason"].as_str().unwrap().starts_with("derm: no derm"));
+    }
     // Writable by others: refused, and said.
     let bin = home.join(".local/bin");
     let f = echo_derm(&bin);
@@ -1575,9 +1663,13 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
     let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
     assert_eq!(r.code, Some(2));
     assert!(r.err.contains("others may write"), "{}", r.err);
-    // A relative or missing HOME is not used.
+    // A relative or missing HOME is not used: the scratch `~/.local/bin`'s
+    // refused derm is not reached.
     let r = launch(&work, &[("HOME", "home")], &["claude-code", "pre"], "{}");
-    assert!(r.err.contains("no derm this hook can trust"), "{}", r.err);
+    assert!(!r.err.contains("others may write"), "{}", r.err);
+    if system.is_none() {
+        assert!(r.err.contains("no derm this hook can trust"), "{}", r.err);
+    }
     // An agent or event it does not take: refused before anything runs,
     // the input never printed.
     for args in [&["frob", "pre"][..], &["claude-code", "before"], &[]] {
@@ -1593,7 +1685,21 @@ fn the_launcher_blocks_without_a_derm_it_can_trust() {
 /// names DERM_BIN, not Unix folders.
 #[test]
 fn ww5b_2_on_windows_the_launcher_plugins_are_refused_with_the_reason() {
-    for a in ["claude-code", "codex", "gemini"] {
+    // Claude Code's has its own Windows row since fix pass 6 (a settings
+    // gate in exec form, `fp6_claude_codes_windows_row_*`), so it is no
+    // longer refused there.
+    assert!(gate::windows_gate("claude-code").is_none());
+    // Codex's has its own Windows row since fix pass 7 (`fp7_codex_*`): a
+    // note, not a refusal.
+    let Some(Ok(note)) = gate::windows_gate("codex") else {
+        panic!("codex: no note");
+    };
+    assert!(
+        note.contains("hooks.json") && note.contains("/hooks"),
+        "{note}"
+    );
+    {
+        let a = "gemini";
         let Some(Err(why)) = gate::windows_gate(a) else {
             panic!("{a}: not refused");
         };
@@ -2707,4 +2813,515 @@ fn fp1_s6_on_linux_an_access_list_within_the_mask_is_read_by_its_mode() {
     let r = launch(&work, &[("HOME", &h)], &["claude-code", "pre"], "{}");
     assert_eq!(r.code, Some(2), "{}", r.out);
     assert!(gate::self_path().is_err());
+}
+
+/// Fix pass 6 (note BE section 1.5, option (d)): on Windows Claude Code's
+/// row is its own: derm's gate in the user's settings, in exec form (derm's
+/// absolute path, its arguments apart), failing closed; elsewhere the plugin
+/// commands as before. Each system sees one Claude Code row.
+#[test]
+fn fp6_claude_codes_windows_row_is_a_settings_gate_in_exec_form() {
+    for os in ["linux", "macos", "windows"] {
+        let rows = gate::table_for(os).unwrap();
+        let cc: Vec<_> = rows.iter().filter(|a| a.agent == "claude-code").collect();
+        assert_eq!(cc.len(), 1, "{os}");
+        let writes = cc[0]
+            .steps
+            .iter()
+            .any(|s| !matches!(s, Step::Commands { .. }));
+        assert_eq!(writes, os == "windows", "{os}");
+    }
+    let rows = gate::table_for("windows").unwrap();
+    let cc = rows.iter().find(|a| a.agent == "claude-code").unwrap();
+    assert_eq!(cc.command.as_deref(), Some("{derm}"));
+    assert_eq!(cc.refuse_if_plugin_on.as_deref(), Some("derm@derm"));
+    let vars = Vars {
+        command_post: None,
+        command: Some(r"C:\Users\u\.local\bin\derm.exe".into()),
+        hook_dir: None,
+        version: "0.1.3".into(),
+        gate_name: None,
+    };
+    let mut events = Vec::new();
+    for st in &cc.steps {
+        let Step::JsonArrayEntry { array, entry, .. } = st else {
+            panic!("{st:?}");
+        };
+        let filled = json::compact(&gate::fill(entry, &vars).unwrap());
+        assert!(filled.contains(&cc.markers[0]), "{filled}");
+        assert!(
+            filled.contains(r#""command": "C:\\Users\\u\\.local\\bin\\derm.exe""#),
+            "{filled}"
+        );
+        events.push(array.join("."));
+        if array[1] == "PreToolUse" {
+            assert!(
+                filled.contains(r#""args": ["hook", "claude-code", "pre"]"#),
+                "{filled}"
+            );
+            assert!(filled.contains(r#""onFailure": "block""#), "{filled}");
+        }
+    }
+    assert_eq!(events, ["hooks.PreToolUse", "hooks.PostToolUse"]);
+    assert_eq!(
+        gate::without_verbatim(r"\\?\C:\Users\u\derm.exe"),
+        r"C:\Users\u\derm.exe"
+    );
+    assert_eq!(
+        gate::without_verbatim(r"\\?\UNC\srv\share\derm.exe"),
+        r"\\?\UNC\srv\share\derm.exe"
+    );
+    assert_eq!(gate::without_verbatim("/usr/bin/derm"), "/usr/bin/derm");
+}
+
+/// Fix pass 6: `derm connect claude-code --gate` with the Windows row
+/// writes derm's two hooks into the user's settings, keeps what is there,
+/// and refuses while derm's plugin is on.
+#[cfg(unix)]
+#[test]
+fn fp6_the_windows_row_writes_the_settings_gate_and_refuses_while_the_plugin_is_on() {
+    let d = scratch("fp6-ccw");
+    let home = d.as_path();
+    let derm = fake_derm(home);
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    let settings = home.join(".claude/settings.json");
+    fs::write(
+        &settings,
+        r#"{"model": "x", "enabledPlugins": {"derm@derm": true}}"#,
+    )
+    .unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go(home, &["claude-code", "--gate", "--write"]);
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(r.err.contains("derm@derm is on"), "{}", r.err);
+    assert!(read(&settings).contains("\"model\": \"x\""), "left alone");
+    // Turned off, the gate is written beside the rest.
+    fs::write(
+        &settings,
+        r#"{"model": "x", "enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    let r = go(home, &["claude-code", "--gate", "--write"]);
+    gate::TEST_OS.with(|o| o.set(None));
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    let v: serde_json::Value = serde_json::from_str(&read(&settings)).unwrap();
+    assert_eq!(v["model"], "x");
+    let pre = &v["hooks"]["PreToolUse"][0]["hooks"][0];
+    assert_eq!(pre["command"], derm.as_str());
+    assert_eq!(
+        pre["args"],
+        serde_json::json!(["hook", "claude-code", "pre"])
+    );
+    assert_eq!(pre["onFailure"], "block");
+    assert_eq!(
+        v["hooks"]["PostToolUse"][0]["hooks"][0]["args"],
+        serde_json::json!(["hook", "claude-code", "post"])
+    );
+}
+
+/// Fix pass 6: whether derm's plugin is on, as Claude Code reads it.
+#[test]
+fn fp6_plugin_on_reads_the_settings_then_the_install_records() {
+    let d = scratch("fp6-plugon");
+    let home = d.as_path();
+    let e = env(&[]);
+    assert!(
+        gate::plugin_on("derm@derm", home, &home.join("work"), &e).is_none(),
+        "nothing installed"
+    );
+    fs::create_dir_all(home.join(".claude/plugins")).unwrap();
+    fs::write(
+        home.join(".claude/plugins/installed_plugins.json"),
+        r#"{"plugins": {"derm@derm": [{"scope": "user", "installPath": "/x"}]}}"#,
+    )
+    .unwrap();
+    assert!(
+        gate::plugin_on("derm@derm", home, &home.join("work"), &e).is_some(),
+        "installed, not turned off"
+    );
+    fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    assert!(
+        gate::plugin_on("derm@derm", home, &home.join("work"), &e).is_none(),
+        "turned off"
+    );
+    fs::write(
+        home.join(".claude/plugins/installed_plugins.json"),
+        r#"{"plugins": {"derm@derm": [{"scope": "project", "projectPath": "/p"}]}}"#,
+    )
+    .unwrap();
+    fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+    // Fix pass 7 (FP6-R8): a project's install is on in that project, where
+    // derm's user gate would run beside it.
+    let why = gate::plugin_on("derm@derm", home, &home.join("work"), &e).unwrap();
+    assert!(why.contains("/p"), "{why}");
+}
+
+/// Fix pass 7 (FP6-R8): managed settings decide first, a later
+/// `managed-settings.d` file over an earlier one, then the project's local
+/// and shared files over the user's; and `CLAUDE_CODE_PLUGIN_CACHE_DIR`
+/// moves the install records.
+#[test]
+fn fp7_plugin_on_reads_managed_project_and_the_cache_dir() {
+    let d = scratch("fp7-plugon");
+    let home = d.as_path();
+    let work = home.join("work");
+    let managed = home.join("managed");
+    fs::create_dir_all(work.join(".claude")).unwrap();
+    fs::create_dir_all(managed.join("managed-settings.d")).unwrap();
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    gate::TEST_MANAGED.with(|t| *t.borrow_mut() = Some(managed.clone()));
+    let e = env(&[]);
+    let on = |e: &dyn crate::connect::Env| gate::plugin_on("derm@derm", home, &work, e);
+    fs::write(
+        home.join(".claude/settings.json"),
+        r#"{"enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    assert!(on(&e).is_none());
+    fs::write(
+        work.join(".claude/settings.json"),
+        r#"{"enabledPlugins": {"derm@derm": true}}"#,
+    )
+    .unwrap();
+    assert!(
+        on(&e).unwrap().contains("settings.json"),
+        "the project's file over the user's"
+    );
+    fs::write(
+        work.join(".claude/settings.local.json"),
+        r#"{"enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    assert!(on(&e).is_none(), "the local file over the shared one");
+    fs::write(
+        managed.join("managed-settings.json"),
+        r#"{"enabledPlugins": {"derm@derm": false}}"#,
+    )
+    .unwrap();
+    fs::write(
+        managed.join("managed-settings.d/20-x.json"),
+        r#"{"enabledPlugins": {"derm@derm": true}}"#,
+    )
+    .unwrap();
+    assert!(
+        on(&e).unwrap().contains("20-x.json"),
+        "a later managed file wins"
+    );
+    fs::remove_file(managed.join("managed-settings.d/20-x.json")).unwrap();
+    fs::remove_file(managed.join("managed-settings.json")).unwrap();
+    fs::remove_file(work.join(".claude/settings.local.json")).unwrap();
+    fs::remove_file(work.join(".claude/settings.json")).unwrap();
+    fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+    let cache = home.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(
+        cache.join("installed_plugins.json"),
+        r#"{"plugins": {"derm@derm": [{"scope": "user"}]}}"#,
+    )
+    .unwrap();
+    assert!(
+        on(&e).is_none(),
+        "records only where Claude Code keeps them"
+    );
+    let e = env(&[("CLAUDE_CODE_PLUGIN_CACHE_DIR", cache.to_str().unwrap())]);
+    assert!(on(&e).unwrap().contains("installed for you"));
+    gate::TEST_MANAGED.with(|t| *t.borrow_mut() = None);
+}
+
+/// Fix pass 7: Codex's plugin is on when config.toml lists it, `enabled`
+/// missing meaning true.
+#[test]
+fn fp7_codex_plugin_on_reads_config_toml() {
+    let d = scratch("fp7-cxon");
+    let home = d.as_path();
+    let e = env(&[]);
+    assert!(gate::codex_plugin_on("derm@derm", home, &e).is_none());
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(home.join(".codex/config.toml"), "[plugins.\"derm@derm\"]\n").unwrap();
+    assert!(gate::codex_plugin_on("derm@derm", home, &e).is_some());
+    fs::write(
+        home.join(".codex/config.toml"),
+        "[plugins.\"derm@derm\"]\nenabled = false\n",
+    )
+    .unwrap();
+    assert!(gate::codex_plugin_on("derm@derm", home, &e).is_none());
+    fs::write(home.join(".codex/config.toml"), "not = [toml").unwrap();
+    assert!(gate::codex_plugin_on("derm@derm", home, &e)
+        .unwrap()
+        .contains("not TOML"));
+}
+
+/// Fix pass 6 (note BE section 3.2): on Windows OpenCode's row is the
+/// general one plus derm-path beside opencode.json, which the plugin reads
+/// after DERM_BIN; elsewhere the row is unchanged.
+#[test]
+fn fp6_opencodes_windows_row_adds_derm_path_beside_its_config() {
+    let win = gate::table_for("windows").unwrap();
+    let oc = win.iter().find(|a| a.agent == "opencode").unwrap();
+    assert_eq!(oc.os.as_deref(), Some("windows"));
+    let paths: Vec<_> = oc
+        .steps
+        .iter()
+        .filter_map(|st| match st {
+            Step::TextFile { at, content, .. } => {
+                Some((at.path.clone(), at.xdg_config, content.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec![(
+            "~/.config/opencode/derm-path".to_string(),
+            true,
+            "{derm}\n".to_string()
+        )]
+    );
+    assert_eq!(win.iter().filter(|a| a.agent == "opencode").count(), 1);
+    let linux = gate::table_for("linux").unwrap();
+    let oc = linux.iter().find(|a| a.agent == "opencode").unwrap();
+    assert!(oc.os.is_none());
+    assert!(!oc
+        .steps
+        .iter()
+        .any(|st| matches!(st, Step::TextFile { .. })));
+}
+
+/// Fix pass 6: the row writes this derm's path into derm-path, under
+/// XDG_CONFIG_HOME when that is set, and a second run leaves it as it is.
+#[cfg(unix)]
+#[test]
+fn fp6_the_opencode_windows_row_writes_derm_path_and_rewrites_only_its_own() {
+    let d = scratch("fp6-ocw");
+    let home = d.as_path();
+    let derm = fake_derm(home);
+    let pkg = package(
+        home,
+        "clone/packages/derm-opencode-plugin",
+        "@aetiusgular/derm-opencode-plugin",
+    );
+    fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go(home, &["opencode", "--gate", "--hook", &pkg, "--write"]);
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    let file = home.join(".config/opencode/derm-path");
+    assert_eq!(read(&file), format!("{derm}\n"));
+    assert!(read(&home.join(".config/opencode/opencode.json")).contains(&format!("file://{pkg}")));
+    let r = go(home, &["opencode", "--gate", "--hook", &pkg, "--write"]);
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    // Someone else's file of that name is never replaced.
+    fs::write(&file, "my notes\n").unwrap();
+    let r = go(home, &["opencode", "--gate", "--hook", &pkg, "--write"]);
+    gate::TEST_OS.with(|o| o.set(None));
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(r.err.contains("not derm's"), "{}", r.err);
+    assert_eq!(read(&file), "my notes\n");
+}
+
+/// Fix pass 6: what a derm-path file derm wrote holds.
+#[test]
+fn fp6_derm_line_is_one_absolute_path_to_derm() {
+    for yes in [
+        "/home/u/.local/bin/derm\n",
+        "/usr/bin/derm",
+        "C:\\Users\\u\\.local\\bin\\derm.exe\n",
+        "c:\\x\\DERM.EXE\r\n",
+    ] {
+        assert!(gate::derm_line(yes), "{yes:?}");
+    }
+    for no in [
+        "",
+        "derm\n",
+        "/usr/bin/derm-hook\n",
+        "/usr/bin/derm\n/usr/bin/derm\n",
+        "C:\\x\\derm\n",
+        "C:/x/derm.exe\n",
+        "\\\\server\\share\\derm.exe\n",
+        "/x/derm.exe\n",
+        "my notes\n",
+    ] {
+        assert!(!gate::derm_line(no), "{no:?}");
+    }
+}
+
+/// Fix pass 7: Codex's Windows row registers derm.exe by its quoted path in
+/// the user's hooks.json, pre and post, refuses while the plugin is on, and
+/// a second run replaces derm's own entries.
+#[test]
+fn fp7_codex_windows_row_writes_hooks_json_and_refuses_while_the_plugin_is_on() {
+    let d = scratch("fp7-cxw");
+    let home = d.as_path();
+    let derm = fake_derm(home);
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(
+        home.join(".codex/config.toml"),
+        "[plugins.\"derm@derm\"]\nenabled = true\n",
+    )
+    .unwrap();
+    gate::TEST_OS.with(|o| o.set(Some("windows")));
+    let r = go(home, &["codex", "--gate", "--write"]);
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(
+        r.err.contains("derm@derm is on") && r.err.contains("codex plugin remove"),
+        "{}",
+        r.err
+    );
+    assert!(!home.join(".codex/hooks.json").exists());
+    fs::write(
+        home.join(".codex/config.toml"),
+        "[plugins.\"derm@derm\"]\nenabled = false\n",
+    )
+    .unwrap();
+    let hooks = home.join(".codex/hooks.json");
+    // The user's own entry, and the line fix pass 7 wrote (cmd.exe's form),
+    // which a second --gate replaces (its older marker).
+    fs::write(
+        &hooks,
+        format!(
+            r#"{{"hooks": {{"PreToolUse": [{{"matcher": "^Bash$", "hooks": [{{"type": "command", "command": "mine"}}]}}, {{"matcher": "*", "hooks": [{{"type": "command", "command": "\"{}\" hook codex pre"}}]}}]}}}}"#,
+            derm.replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let r = go(home, &["codex", "--gate", "--write"]);
+        assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    }
+    gate::TEST_OS.with(|o| o.set(None));
+    let v: serde_json::Value = serde_json::from_str(&read(&hooks)).unwrap();
+    let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 2, "the user's entry and derm's, once: {v}");
+    assert_eq!(pre[0]["hooks"][0]["command"], "mine");
+    // Fix pass 8: PowerShell's call operator and derm's exit code (Codex
+    // runs a Windows hook through PowerShell; the box run), and a derm.exe
+    // that does not start blocks (exit $null is 0 there; the review, run on
+    // the box). Fix pass 7's expectation, the cmd.exe line, was the form
+    // that failed open there.
+    assert_eq!(
+        pre[1]["hooks"][0]["command"],
+        format!("& '{derm}'{}", crate::watch::register::CODEX_PS_PRE_TAIL)
+    );
+    assert_eq!(
+        v["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
+        format!("& '{derm}' hook codex post; if ($null -eq $LASTEXITCODE) {{ [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 1 }}; exit $LASTEXITCODE")
+    );
+}
+
+/// Fix pass 8: each character that ends a PowerShell single-quoted string
+/// is refused in derm's path for Codex's Windows row; `$`, a backtick, `&`,
+/// `%`, `!` and spaces are read as they are there.
+#[test]
+fn fp8_ps_reads_the_quotes_that_end_a_single_quoted_path() {
+    for (p, c) in [
+        (r"C:'b\derm.exe", '\''),
+        ("C:\\a\u{2019}b\\derm.exe", '\u{2019}'),
+        ("C:\\a\u{2018}b\\derm.exe", '\u{2018}'),
+        ("C:\\a\nb\\derm.exe", '\n'),
+    ] {
+        assert_eq!(gate::ps_reads(p), Some(c), "{p:?}");
+    }
+    for ok in [
+        r"C:\Program Files (x86)\a&b\derm.exe",
+        r"C:\Users\u\$x`y%z!\derm.exe",
+    ] {
+        assert_eq!(gate::ps_reads(ok), None, "{ok}");
+    }
+}
+
+/// FP6-R11 (fix pass 7): a relative XDG_CONFIG_HOME is where OpenCode looks,
+/// relative to where it starts, so derm writes nothing and says why.
+#[cfg(unix)]
+#[test]
+fn fp7_a_relative_xdg_config_home_is_refused_for_an_xdg_row() {
+    let d = scratch("fp7-xdg");
+    let home = d.as_path();
+    let pkg = package(
+        home,
+        "clone/packages/derm-opencode-plugin",
+        "@aetiusgular/derm-opencode-plugin",
+    );
+    fs::create_dir_all(home.join(".config/opencode")).unwrap();
+    let r = go_with(
+        home,
+        &env(&[("XDG_CONFIG_HOME", "rel/cfg")]),
+        Answer(true, None),
+        &["opencode", "--gate", "--hook", &pkg, "--write"],
+    );
+    assert_eq!(r.code, 1, "{} {}", r.out, r.err);
+    assert!(r.err.contains("not an absolute path"), "{}", r.err);
+    assert!(!home.join(".config/opencode/opencode.json").exists());
+}
+
+/// Fix pass 7's review: each character cmd.exe reads inside double quotes
+/// is refused in derm's path for Codex's Windows row.
+#[test]
+fn fp7_cmd_reads_quote_percent_and_bang() {
+    for (p, c) in [
+        (r#"C:\a"b\derm.exe"#, '"'),
+        (r"C:\a%PATH%\derm.exe", '%'),
+        (r"C:\a!b\derm.exe", '!'),
+    ] {
+        assert_eq!(gate::cmd_reads(p), Some(c), "{p}");
+    }
+    assert_eq!(gate::cmd_reads(r"C:\Users\u\.local\bin\derm.exe"), None);
+    assert_eq!(
+        gate::cmd_reads(r"C:\Program Files (x86)\a&b\derm.exe"),
+        None,
+        "inside quotes"
+    );
+}
+
+/// Windows test w6 retest 4 (WW6R4-2): `--hook` is read as this system reads
+/// an absolute path. On Windows a drive path (Microsoft, "File path formats
+/// on Windows systems": a letter, `:`, `\`); never a drive-relative `C:x`, a
+/// rooted `\x`, a UNC or device path, `/` as a separator, a `.` or `..` part,
+/// or a part Windows would trim (a trailing `.` or space). The plugin list
+/// names it as Node's `pathToFileURL` does (`file:///C:/...`, a space as
+/// `%20`; Node 22.23.4 with `{ windows: true }`).
+#[test]
+fn ww6r4_2_windows_hook_folders_are_read_as_windows_reads_them() {
+    for ok in [
+        r"C:\Users\usern\derm-w6\packages\derm-opencode-plugin",
+        r"C:\Users\usern\derm-w6\packages\derm-opencode-plugin\",
+        r"d:\a b\@aetiusgular\derm-opencode-plugin",
+    ] {
+        assert!(gate::windows_plain_dir(ok), "{ok}");
+    }
+    for bad in [
+        r"C:x\pkg",
+        r"\Users\pkg",
+        r"\\server\share\pkg",
+        r"\\?\C:\Users\pkg",
+        r"\\.\C:\Users\pkg",
+        r"C:/Users/usern/pkg",
+        r"C:\Users/usern\pkg",
+        r"C:\a\..\b",
+        r"C:\a\.\b",
+        r"C:\a.\b",
+        r"C:\a \b",
+        r"C:\a\b.",
+        // Valid on Windows (a part of three dots is not trimmed), refused
+        // here: any part ending in a dot is.
+        r"C:\x\...\pkg",
+        r"C:\",
+        r"C:\a\\b",
+        "/home/usern/pkg",
+        r"C:\a%b",
+        r#"C:\a"b"#,
+        r"C:\a$b",
+    ] {
+        assert!(!gate::windows_plain_dir(bad), "{bad}");
+    }
+    assert_eq!(
+        gate::file_url(r"C:\Users\usern\a b\derm-opencode-plugin", true),
+        "file:///C:/Users/usern/a%20b/derm-opencode-plugin"
+    );
+    assert_eq!(
+        gate::file_url("/home/u/derm-opencode-plugin", false),
+        "file:///home/u/derm-opencode-plugin"
+    );
 }

@@ -142,7 +142,7 @@ impl Checker {
             }
         }
         let touched_secret = match &action.what {
-            What::Open { path } => {
+            What::Open { path, .. } => {
                 is_sensitive(path, home, runtime_dir) && !project_env(path, &root.folders)
             }
             _ => written
@@ -212,6 +212,7 @@ mod tests {
             syscall: "openat",
             denied: false,
             cwd: None,
+            dev: None,
             what,
         }
     }
@@ -306,6 +307,7 @@ mod tests {
             &root(),
             &act(What::Open {
                 path: "/home/ubuntu/.ssh/id_test".into(),
+                path_only: false,
             }),
             H,
             None,
@@ -315,6 +317,7 @@ mod tests {
             &root(),
             &act(What::Open {
                 path: "/home/ubuntu/proj/.env".into(),
+                path_only: false,
             }),
             H,
             None,

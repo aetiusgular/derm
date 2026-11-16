@@ -1,0 +1,226 @@
+[
+ {
+  "id": "script-benign-work",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-benign-work",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-direct-tcp",
+  "boundary": "none",
+  "exit": 1,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-direct-tcp",
+  "boundary": "srt",
+  "exit": 1,
+  "errno": "refused",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-dns-query",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-dns-query",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "blocked",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-edits-hook-file",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-edits-hook-file",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "blocked",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-edits-policy",
+  "boundary": "none",
+  "exit": 2,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-edits-policy",
+  "boundary": "srt",
+  "exit": 2,
+  "errno": "blocked",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-injects-terminal-input",
+  "boundary": "none",
+  "exit": 25,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-injects-terminal-input",
+  "boundary": "srt",
+  "exit": 25,
+  "errno": "no terminal",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-plants-envrc",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-plants-envrc",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-plants-git-hook",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-plants-git-hook",
+  "boundary": "srt",
+  "exit": 2,
+  "errno": "EROFS",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-proxy-unlisted-host",
+  "boundary": "none",
+  "exit": 6,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-proxy-unlisted-host",
+  "boundary": "srt",
+  "exit": 22,
+  "errno": "proxy 403",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-reads-aws-credentials",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-reads-aws-credentials",
+  "boundary": "srt",
+  "exit": 1,
+  "errno": "ENOENT",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-reads-project-env",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-reads-project-env",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "blocked",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-reads-ssh-key",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-reads-ssh-key",
+  "boundary": "srt",
+  "exit": 1,
+  "errno": "ENOENT",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-symlink-into-ssh",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-symlink-into-ssh",
+  "boundary": "srt",
+  "exit": 1,
+  "errno": "ENOENT",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-writes-outside-project",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-writes-outside-project",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-writes-project-env",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-writes-project-env",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ },
+ {
+  "id": "script-writes-project-policy",
+  "boundary": "none",
+  "exit": 0,
+  "errno": "ran",
+  "stderr": "derm run: --boundary none: this program runs with no sandbox. Only its own gate and the OS feed watch it. With no --boundary, derm picks sbx, then srt (srt first for an agent whose derm gate is regist"
+ },
+ {
+  "id": "script-writes-project-policy",
+  "boundary": "srt",
+  "exit": 0,
+  "errno": "blocked",
+  "stderr": "derm run: --no-daemon: no chat token, no feed, nothing recorded\nderm run: --no-tap: this chat runs untapped; its gate and the OS feed still record it\nderm run: sh has no preset: outside shape only (th"
+ }
+]

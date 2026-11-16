@@ -11,6 +11,7 @@
 // Amp's, and the types are not needed at run time.
 
 import { defaultDeps, onToolCall, onToolResult, type ShellCommand, type ToolCallEvent, type ToolResultEvent, type HandlerContext } from "./amp.ts";
+import { onToolCallServe, onToolResultServe, serveDeps, serveOn } from "./serve.ts";
 
 export const description = "derm: checks each tool call against your derm policy (~/.derm/policy.json), asks where it says ask, and records the call";
 
@@ -43,6 +44,19 @@ function workspaceFolder(amp: AmpLike): string {
 export default function (amp: AmpLike): void {
   const shellCommand = amp.helpers?.shellCommandFromToolCall;
   const uiUnavailable = amp.helpers?.isPluginUINotAvailableError;
+  // Fix pass 6 (note BE section 3.3): `derm gate serve` decides only when
+  // DERM_AMP_GATE_SERVE=1, until one real Amp run passes with it (BBR-13);
+  // the TypeScript gate below stays the live one.
+  if (serveOn(process.env)) {
+    const sd = {
+      ...serveDeps(process.env, () => workspaceFolder(amp)),
+      ...(shellCommand ? { shellCommand: (e: ToolCallEvent) => shellCommand.call(amp.helpers, e) } : {}),
+      ...(uiUnavailable ? { uiUnavailable: (e: Error) => uiUnavailable.call(amp.helpers, e) } : {}),
+    };
+    amp.on("tool.call", ((event: ToolCallEvent, ctx: HandlerContext) => onToolCallServe(event, ctx, sd)) as never);
+    amp.on("tool.result", ((event: ToolResultEvent) => onToolResultServe(event, sd)) as never);
+    return;
+  }
   const deps = {
     ...defaultDeps(process.env, () => workspaceFolder(amp)),
     ...(shellCommand ? { shellCommand: (e: ToolCallEvent) => shellCommand.call(amp.helpers, e) } : {}),

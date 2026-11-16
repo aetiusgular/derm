@@ -1,0 +1,139 @@
+// Per-call overhead (plan 6F (c)): every Claude Code payload MoatBench 0.19.0 sends
+// (tests/eval/fixtures/moatbench-claude-code-verbose.txt, recorded), through each
+// hook command the way a host runs it: `sh -c`, stdin the payload, PATH, HOME and
+// USERPROFILE only, a throwaway home, process start included. Median and p95 per
+// hook, all calls and repetitions pooled. Good for ratios on one machine only.
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, basename } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readClaudeCode } from "./probe.mjs";
+import { table } from "./score.mjs";
+
+const here = fileURLToPath(new URL(".", import.meta.url));
+export const PAYLOADS = join(here, "..", "fixtures", "moatbench-claude-code-verbose.txt");
+
+// The recorded payloads, with the recording's throwaway home as a placeholder.
+export function recordedPayloads(file = PAYLOADS) {
+  const lines = readFileSync(file, "utf8").split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^> \S+$/.test(lines[i])) continue;
+    const p = JSON.parse(lines[i + 1]);
+    const home = String(p.cwd).replace(/\/proj$/, "");
+    out.push(lines[i + 1].split(home).join("@HOME@"));
+  }
+  return out;
+}
+
+export function quantile(sorted, q) {
+  if (sorted.length === 0) return NaN;
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+function time(command, body, env, cwd) {
+  const t0 = process.hrtime.bigint();
+  const r = spawnSync("sh", ["-c", command], { input: body, env, cwd, encoding: "utf8", timeout: 45_000 });
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  return { ms, answer: r.error ? "error" : readClaudeCode(r.status, r.stdout ?? "") };
+}
+
+export async function runOverhead({ out, hooks, reps, machine }) {
+  mkdirSync(join(out, "raw"), { recursive: true });
+  const payloads = recordedPayloads();
+  const started = new Date().toISOString();
+  const lines = [];
+  const summary = [];
+  for (const h of hooks) {
+    const root = mkdtempSync(join(tmpdir(), "derm-eval-overhead-"));
+    const home = join(root, "home");
+    const project = join(home, "proj");
+    mkdirSync(project, { recursive: true });
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
+    try {
+      // A hook that needs state of its own (OpenMoat's `init`) names a setup line.
+      const [setup, command] = h.command.includes(" ;; ") ? h.command.split(" ;; ") : [null, h.command];
+      if (setup) {
+        const s = spawnSync("sh", ["-c", setup], { env, cwd: project, encoding: "utf8" });
+        if (s.status !== 0) throw new Error(`${h.name} setup failed: ${s.stderr.slice(0, 300)}`);
+      }
+      const samples = payloads.map(() => []);
+      const answers = [];
+      for (let r = 0; r < reps; r++) {
+        payloads.forEach((p, i) => {
+          const t = time(command, p.split("@HOME@").join(home), env, project);
+          samples[i].push(t.ms);
+          answers[i] = t.answer;
+        });
+      }
+      const all = samples.flat().sort((a, b) => a - b);
+      const med = (xs) => quantile([...xs].sort((a, b) => a - b), 0.5);
+      const [tool, version = "", setting = "default"] = h.name.split(":");
+      lines.push({
+        scenario: "overhead/moatbench-claude-code",
+        arm: { tool, version, setting, boundary: "none", tier: null, host: "claude-code" },
+        machine,
+        steps: samples.map((s, i) => ({ answer: answers[i], msPerCall: Math.round(med(s) * 100) / 100 })),
+      });
+      writeFileSync(join(out, "raw", `${h.name.replaceAll(":", "_")}.json`), JSON.stringify({ name: h.name, command, setup, reps, samples }) + "\n");
+      summary.push({ name: h.name, command, setup, n: all.length, median: quantile(all, 0.5), p95: quantile(all, 0.95), min: all[0], max: all[all.length - 1] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  writeFileSync(join(out, "results.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  writeFileSync(join(out, "run.json"), JSON.stringify({ started, finished: new Date().toISOString(), machine, reps, payloads: payloads.length, summary }, null, 1) + "\n");
+  writeFileSync(join(out, "README.md"), report(out));
+  console.log(`overhead: ${summary.map((s) => `${s.name} median ${s.median.toFixed(1)} ms`).join(", ")}`);
+}
+
+export function report(dir) {
+  const meta = JSON.parse(readFileSync(join(dir, "run.json"), "utf8"));
+  const m = meta.machine;
+  const rows = meta.summary.map((s) => [s.name, s.median.toFixed(2), s.p95.toFixed(2), s.min.toFixed(2), s.max.toFixed(2), s.n, `\`${s.setup ? `${s.setup}; ` : ""}${s.command}\``]);
+  return [
+    `# Per-call overhead, ${basename(dir)}`,
+    "",
+    `Generated by \`node tests/eval/run.mjs --suite overhead --run\` (lane 6F, plan 6F (c)). Each of the ${meta.payloads} Claude Code payloads MoatBench 0.19.0 sends (\`tests/eval/fixtures/moatbench-claude-code-verbose.txt\`), ${meta.reps} times, through \`sh -c\` with PATH, HOME and USERPROFILE only and a throwaway home, process start included. Raw samples in \`raw/\`; per call medians in \`results.jsonl\`.`,
+    "",
+    `- Machine: ${m.name}, ${m.os}, kernel ${m.kernel}, ${m.cpu}, ${m.ram}. ${meta.started} to ${meta.finished}, one session.`,
+    `- derm runs with no daemon and no chat token, so it posts no record; with a daemon each call also writes over the socket (not measured here). Good for ratios on this machine only.`,
+    "",
+    table(["Hook", "median ms", "p95 ms", "min ms", "max ms", "calls", "command"], rows),
+    "",
+  ].join("\n");
+}
+
+// The scenario file for this suite: the recorded payloads as contract steps (no
+// `expect`: overhead measures time, not decisions). `node -e` writes it once:
+//   node -e 'import("./tests/eval/lib/overhead.mjs").then(m => m.writeScenario())'
+export function writeScenario() {
+  const kind = (p) => {
+    const t = p.tool_name;
+    const rel = (f) => String(f).replace(/^@HOME@\//, "~/").replace(/^~\/proj\//, "");
+    if (t === "Bash") return { kind: "shell", input: { command: p.tool_input.command } };
+    if (t === "Read") return { kind: "read", input: { path: rel(p.tool_input.file_path) } };
+    if (t === "Write") return { kind: "write", input: { path: rel(p.tool_input.file_path) } };
+    if (t === "Edit") return { kind: "edit", input: { path: rel(p.tool_input.file_path) } };
+    if (t === "WebFetch") return { kind: "fetch", input: { url: p.tool_input.url } };
+    const m = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(t);
+    if (m) return { kind: "mcp", input: { server: m[1], tool: m[2], args: p.tool_input } };
+    throw new Error(`unknown tool ${t}`);
+  };
+  const steps = recordedPayloads().map((s) => kind(JSON.parse(s)));
+  const sc = {
+    suite: "overhead",
+    id: "moatbench-claude-code",
+    source: { name: "openmoat", version: "0.19.0", path: "moatbench/*.yaml, as `openmoat bench --host claude-code --verbose` sends them", licence: "MIT OR Apache-2.0" },
+    split: "dev",
+    steps,
+  };
+  const dir = join(here, "..", "scenarios", "overhead");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "moatbench-claude-code.json"), JSON.stringify(sc, null, 1) + "\n");
+  return steps.length;
+}

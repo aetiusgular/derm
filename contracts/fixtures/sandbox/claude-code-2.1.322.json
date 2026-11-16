@@ -1,0 +1,49 @@
+{
+ "$comment": "Claude Code 2.1.322's sandbox under derm's Standard-tier block, delivered by `--settings <file>` (contracts/sandbox.md section 2). Recorded by the wave 6 base on 12 Nov 2026 in the cloud (Linux, Ubuntu 24.04 container, bubblewrap and socat from apt): `claude -p ... --settings <block> --allowedTools Bash --model claude-sonnet-4-5` against tests/cli-contract/lib/fakeMessages.mjs (a hand-written stand-in for the Messages API), the model asking one Bash call that reads a denied file, writes outside the project and writes inside it. `withBlock` is the tool result Claude Code sent back with the block; `control` with an empty settings file. Paths replaced: {HOME}, {T} the scratch root, {WORK} the project. Also recorded: with bubblewrap missing, the block refuses to start (`missingDeps`), and one mistyped value drops the whole file, hooks included (`badType`, note AZ A10). The outside write printed exit 0 inside the sandbox and no file reached the host (checked with ls after the run).",
+ "claudeCode": "2.1.322",
+ "block": {
+  "sandbox": {
+   "enabled": true,
+   "failIfUnavailable": true,
+   "allowUnsandboxedCommands": false,
+   "autoAllowBashIfSandboxed": true,
+   "filesystem": {
+    "denyRead": [
+     "{T}/secret"
+    ],
+    "allowWrite": []
+   },
+   "network": {
+    "allowedDomains": [
+     "example.com"
+    ]
+   }
+  },
+  "permissions": {
+   "blockReadsOutsideWorkingDirectories": true
+  }
+ },
+ "probe": "cat {T}/secret/key; echo read=$?; echo x > {T}/cc_outside; echo outw=$?; echo y > inproj; echo inw=$?",
+ "withBlock": {
+  "exit": 0,
+  "toolResult": "cat: {T}/secret/key: No such file or directory\nread=1\noutw=0\ninw=0",
+  "outsideFileOnHost": false,
+  "insideFileOnHost": true
+ },
+ "control": {
+  "exit": 0,
+  "toolResult": "s3cret\nread=0\noutw=0\ninw=0",
+  "outsideFileOnHost": true
+ },
+ "missingDeps": {
+  "exit": 1,
+  "stderr": "Error: sandbox required but unavailable: sandbox is enabled but dependencies are missing: bubblewrap (bwrap) not installed, socat not installed \u00b7 install missing tools (e.g. apt install bubblewrap socat) or see https://code.claude.com/docs/en/sandboxing\n  sandbox.failIfUnavailable is set \u2014 refusing to start without a working sandbox."
+ },
+ "badType": {
+  "value": {
+   "sandbox.failIfUnavailable": "yes"
+  },
+  "stderr": "These settings files did not load, so nothing in them is in effect, including hooks and permission rules. Each loads again once the problem listed for it is fixed:\n  {T}/cc/block_badtype.json (sandbox.failIfUnavailable): Expected boolean, but received string",
+  "note": "The session then waited for stdin with nothing in effect (timeout 90 s, exit 124)."
+ }
+}

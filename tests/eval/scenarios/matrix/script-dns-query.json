@@ -1,0 +1,22 @@
+{
+  "suite": "matrix",
+  "id": "script-dns-query",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "path": "tests/differential/scenarios.yaml (scripts)",
+    "licence": "MIT OR Apache-2.0"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "payload": "/bin/bash -c 'printf q > /dev/udp/127.0.0.1/{udp}'"
+      }
+    }
+  ],
+  "targets": [
+    "host"
+  ]
+}

@@ -58,6 +58,7 @@ fn inputs(d: &Dirs) -> Inputs {
         cwd: Some(d.work.to_string_lossy().into_owned()),
         inherited: Vec::new(),
         claude_managed: d.root.join("managed/managed-settings.json"),
+        preview: false,
     }
 }
 
@@ -703,5 +704,79 @@ fn mw5_40_a_tap_refusal_carries_no_prefix_of_its_own() {
         .1;
     assert!(vm.contains("sbx VM would read it"), "{vm}");
     assert!(!vm.starts_with("derm run:"), "{vm}");
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// Box test w6, BW6-5: the tap runs in the daemon (rules section 5, item
+/// 8), so a daemon stop cut a tapped Claude Code chat off from its model
+/// (ten `api_retry` events, "Connection error"); with `--no-tap` the same
+/// chat went on. A restart keeps the route and the tap's port
+/// (`crates/derm-daemon/src/daemon.rs`,
+/// `a_restart_brings_back_a_running_chats_route_and_the_taps_port`). The
+/// start line says so.
+#[test]
+fn bw6_5_a_tapped_chat_is_told_a_daemon_stop_cuts_its_model_route() {
+    let d = dirs("bw65", Some("http://127.0.0.1:45003"));
+    let mut p = plan("codex", &["exec", "x"], true);
+    environment_with("codex", &mut p, &inputs(&d))
+        .unwrap()
+        .unwrap();
+    let note = p
+        .notes
+        .iter()
+        .find(|n| n.contains("daemon"))
+        .unwrap_or_else(|| panic!("{:?}", p.notes));
+    assert!(note.contains("stop"), "{note}");
+    assert!(note.contains("--no-tap"), "{note}");
+    // Untapped: no such line.
+    let mut q = plan("codex", &["exec", "x"], false);
+    environment_with("codex", &mut q, &inputs(&d)).unwrap();
+    assert!(q.notes.is_empty(), "{:?}", q.notes);
+    let _ = std::fs::remove_dir_all(d.root);
+}
+
+/// Mac test w6 retest, MW6R-1: a dry run mints no token, so the tap's seam
+/// took the untapped path, and the dry run's srt list showed the harness's
+/// model hosts and "the model tap is off", while the real run of the same
+/// command is tapped and srt gets the tap's port. A dry run now builds the
+/// tapped plan with a stand-in route and says so.
+#[test]
+fn mw6r_1_a_dry_run_shows_the_tap_the_real_run_will_have() {
+    let d = dirs("dry", Some("http://127.0.0.1:45009"));
+    let srt =
+        json!({"network": {"allowedDomains": ["127.0.0.1:4318"], "deniedDomains": []}}).to_string();
+    let mut p = plan(
+        "srt",
+        &["--settings", "/s.json", "--", "/bin/claude", "-p", "hi"],
+        false,
+    );
+    p.srt_settings = Some(srt);
+    let mut i = inputs(&d);
+    i.preview = true;
+    let rec = environment_with("claude-code", &mut p, &i)
+        .unwrap()
+        .unwrap();
+    assert_eq!(rec["on"], true, "{rec}");
+    let v: Value = serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+    assert!(
+        v["network"]["allowedDomains"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("127.0.0.1:45009")),
+        "{v}"
+    );
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n.contains("dry run") && n.contains("stand-in")),
+        "{:?}",
+        p.notes
+    );
+    // A real run with no token (`--no-daemon`) stays untapped.
+    let mut q = plan("claude", &["-p", "hi"], false);
+    assert_eq!(
+        environment_with("claude-code", &mut q, &inputs(&d)).unwrap(),
+        None
+    );
     let _ = std::fs::remove_dir_all(d.root);
 }

@@ -1,0 +1,83 @@
+{
+  "suite": "moatbench",
+  "id": "rust-crate",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "licence": "MIT OR Apache-2.0",
+    "path": "moatbench/workflows.yaml"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "read",
+      "input": {
+        "path": "Cargo.toml"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cargo build"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cargo test --workspace"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cargo clippy --all-targets -- -D warnings"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cargo fmt --all -- --check"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "ls target/debug"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "read",
+      "input": {
+        "path": "target/debug/build/app-1f2e3d/output"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "edit",
+      "input": {
+        "path": "src/main.rs"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cargo run -- --help"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cargo add serde --features derive"
+      },
+      "expect": "defer"
+    }
+  ]
+}

@@ -39,6 +39,11 @@ mod preflight;
 pub(crate) mod boundary; // lane T (pub(crate) for lane W's `derm setup sandbox`, request T-8)
 mod tap; // lane S
 mod user; // lane V
+          // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
+          // part 3): the Standard tier, lane 6A's. The stub changes nothing.
+mod broker;
+mod claude_gate; // fix pass 6, note BE section 1.5 (e)
+mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -203,6 +208,97 @@ pub fn main(argv: &[String]) -> u8 {
     }
 }
 
+/// What taint does in a chat under sbx (lane 6D's request 6D-8, its other
+/// half; integration w6's close). No gate in the VM keeps taint: the sbx
+/// kit's hook (Claude Code only, `run/boundary/kit.rs`) decides in
+/// TypeScript with no taint at all (the wave 6 base's S1), and derm's Rust
+/// gate does not run in the VM (wave 5b's 5bF moves the kit to it; fix
+/// pass 4's review, FP4-T1 and FP4-T2, redone by fix pass 6). `None` under
+/// any other boundary: under srt on Linux the gate keeps taint in the
+/// daemon through srt's route since fix pass 6 (`POST /derm/v1/taint`; the
+/// redo of fix pass 4's part 2, FP4-R1), and with no daemon answer the
+/// chat counts as tainted with deny (`gate/taint/mod.rs`), which the srt
+/// notes in `plan.rs` say.
+fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+    let not_applied = match verdict {
+        Some(v) => format!("--taint {v} is not applied: "),
+        None => String::new(),
+    };
+    match boundary {
+        Boundary::Sbx => Some(format!(
+            "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (the sbx kit's hook, for Claude Code only, decides with no taint, and derm's own gate does not run in the VM yet)"
+        )),
+        _ => None,
+    }
+}
+
+/// Whether macOS hides `pid`'s start environment (MW6R5-1): true when, by
+/// `wait`, the process still runs and its environment never showed the
+/// chat's token. Before its exec the child is a fork of this derm, whose
+/// environment lacks the token, so the read is polled until the exec shows.
+#[cfg(target_os = "macos")]
+pub(crate) fn start_env_hidden(pid: u32, token: &str, wait: Duration) -> bool {
+    use derm_core::platform::peer;
+    let until = Instant::now() + wait;
+    loop {
+        if peer::environ_var(pid, "DERM_CHAT_TOKEN").as_deref() == Some(token) {
+            return false;
+        }
+        if Instant::now() >= until {
+            return peer::program(pid).is_some();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The start line for MW6R5-1.
+pub(crate) fn start_env_note(program: &str) -> String {
+    format!(
+        "derm run: macOS hides the start environment of the program this chat started ({program} runs as a system program that SIP restricts), so derm's hooks cannot tell this chat is derm run's: they keep the light tier's rules, and a call whose record nothing kept is denied. Start the harness's own program rather than a shell script that forks it"
+    )
+}
+
+/// derm as the gate derm run registers names it (fix pass 7, FP6-R3): by
+/// Homebrew's `opt` link when Homebrew installed it, as `derm connect`
+/// names it (`connect::gate::self_path`, MW5B-6: `brew upgrade` removes the
+/// keg a chat's gate would name), else its real path ([`derm_exe`]).
+fn gate_exe() -> Option<String> {
+    #[cfg(not(windows))]
+    if let Ok(p) = crate::connect::gate::self_path() {
+        return Some(p);
+    }
+    derm_exe()
+}
+
+/// The derm binary running now, by its real path; `None` when it cannot be
+/// read (BW6R3-2, FP4-R1).
+fn derm_exe() -> Option<String> {
+    std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        // Windows: `C:\x`, not the `\\?\C:\x` canonicalize gives, as
+        // `derm connect` writes it (fix pass 6's review): the hook command
+        // and `derm status` read a plain drive path.
+        .map(|p| crate::connect::gate::without_verbatim(&p.to_string_lossy()))
+}
+
+/// The dry run's `taint:` line. Under srt on Linux with `--no-daemon` the
+/// gate keeps no record and denies every call it gates (the no-daemon note
+/// in `plan.rs`), so `--taint` decides nothing there either (box test w6
+/// retest 3, BW6R3-3). Under srt on Linux with the daemon it holds (fix
+/// pass 6).
+fn taint_summary(boundary: Boundary, linux: bool, no_daemon: bool, verdict: &str) -> String {
+    match boundary {
+        Boundary::Sbx => {
+            format!("taint: {verdict} (--taint; not applied under sbx, see the note above)")
+        }
+        Boundary::Srt if linux && no_daemon => format!(
+            "taint: {verdict} (--taint; not applied under srt on Linux with no daemon: the gate denies every call it gates, see the note above)"
+        ),
+        _ => format!("taint: {verdict} (--taint)"),
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -242,6 +338,41 @@ fn event(
 
 /// Writes srt's settings as a new 0600 file in a 0700 folder, refusing a
 /// symlink at the file's place.
+/// R7, option 1 (case 270): where the gate's route out of srt goes and what
+/// it says, on Linux under srt for a chat with a token: the daemon's HTTP
+/// port (its `otlp.endpoint`, `http://127.0.0.1:<port>`) and srt's proxy
+/// port inside the sandbox, under `home`'s `.derm`, which srt hides and
+/// re-opens this one file of.
+fn srt_route_path(
+    boundary: Boundary,
+    with_token: bool,
+    otlp: Option<&str>,
+    home: &str,
+    chat: &str,
+) -> Option<(PathBuf, String)> {
+    if !cfg!(target_os = "linux") || boundary != Boundary::Srt || !with_token {
+        return None;
+    }
+    let port: u16 = otlp?
+        .strip_prefix("http://127.0.0.1:")?
+        .trim_end_matches('/')
+        .parse()
+        .ok()
+        .filter(|p| *p > 0)?;
+    if !home.starts_with('/') {
+        return None;
+    }
+    let text = serde_json::json!({
+        "daemonPort": port,
+        "proxyPort": crate::gate::daemon::SRT_PROXY_PORT,
+    })
+    .to_string();
+    Some((
+        crate::gate::daemon::srt_route_file(Path::new(home), chat),
+        text,
+    ))
+}
+
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -281,6 +412,11 @@ impl Daemon {
     /// since `derm run` started. The new token must still give daemon scope,
     /// as at the start.
     fn post_after_restart(&self, e: &Event) -> Result<(), String> {
+        self.post_with_new_token(e).map(|_| ())
+    }
+
+    /// [`Daemon::post_after_restart`], returning the token it posted with.
+    fn post_with_new_token(&self, e: &Event) -> Result<String, String> {
         let dir = self.socket.parent().ok_or("the socket has no folder")?;
         let token = client::read_daemon_token(dir).map_err(|e| e.to_string())?;
         if token == self.token {
@@ -291,7 +427,73 @@ impl Daemon {
         if hello.scope != "daemon" {
             return Err("the daemon's token file gave chat scope, not daemon scope".into());
         }
-        c.post(e).map(|_| ()).map_err(|e| e.to_string())
+        c.post(e).map(|_| token).map_err(|e| e.to_string())
+    }
+}
+
+/// The poster of derm-egress's records (box test w6 retest 2, BW6R2-4): its
+/// daemon token, read again when the daemon restarted during the chat, as
+/// `run.stop` already does (box test w1, BX8). The record that met the new
+/// token is marked `daemonRestarted`, as `run.stop` is, and later records go
+/// with the new token.
+struct RunPoster {
+    socket: PathBuf,
+    token: std::sync::Mutex<String>,
+}
+
+impl RunPoster {
+    fn new(d: &Daemon) -> RunPoster {
+        RunPoster {
+            socket: d.socket.clone(),
+            token: std::sync::Mutex::new(d.token.clone()),
+        }
+    }
+
+    /// The token, from a lock a panic never leaves unusable (FP3-R5).
+    fn token(&self) -> std::sync::MutexGuard<'_, String> {
+        self.token.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// One record. The lock is held only to read or change the token, not
+    /// across a post (fix pass 3's review, FP3-R5); a refusal with a token
+    /// another thread has replaced since is tried once with the new one, and
+    /// a token file the daemon has not rewritten yet is read again once,
+    /// 250 ms later.
+    fn post(&self, e: &Event) -> Result<(), String> {
+        let used = self.token().clone();
+        let d = Daemon {
+            socket: self.socket.clone(),
+            token: used.clone(),
+        };
+        let err = match d.post(e) {
+            Err(err) if err.contains("bad token") => err,
+            other => return other,
+        };
+        let now = self.token().clone();
+        if now != used {
+            return Daemon {
+                socket: self.socket.clone(),
+                token: now,
+            }
+            .post(e);
+        }
+        let mut again = e.clone();
+        if let Some(o) = again.detail.as_object_mut() {
+            o.insert("daemonRestarted".into(), json!(true));
+        }
+        let new = match d.post_with_new_token(&again) {
+            Err(e2) if e2.contains("has not changed") => {
+                std::thread::sleep(Duration::from_millis(250));
+                d.post_with_new_token(&again)
+            }
+            other => other,
+        }
+        .map_err(|e2| format!("{err}; after reading the token again: {e2}"))?;
+        let mut held = self.token();
+        if *held == used {
+            *held = new;
+        }
+        Ok(())
     }
 }
 
@@ -1166,6 +1368,26 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ),
     ))?;
     let chat = a.chat.clone().unwrap_or_else(new_chat_id);
+    // Fix pass 6 (note BE section 1.5, option (e)): Claude Code's gate is
+    // derm's own `--settings` registration, by the path of this derm. Both
+    // are checked before anything starts.
+    let claude_gate_by =
+        if a.harness.id == "claude-code" && a.boundary != Boundary::Sbx {
+            claude_gate::check_user_settings(&a.rest).map_err(|e| (2, e))?;
+            claude_gate::check_settings_files(
+                Path::new(&home),
+                std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+                Path::new(&cwd),
+            )
+            .map_err(|e| (2, e))?;
+            Some(gate_exe().ok_or((
+            1,
+            "derm's own path cannot be read, so derm cannot register its gate for Claude Code"
+                .to_string(),
+        ))?)
+        } else {
+            None
+        };
 
     // The daemon, unless the user said to run without it.
     let socket = env.socket.clone();
@@ -1246,6 +1468,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // Cline's approval folder sits in its own state, which it can write
     // under srt as under none (T2.9).
     let cline_dir = format!("{}/.cline/derm-approval/{chat}", home.trim_end_matches('/'));
+    // R7, option 1: the daemon's port for the gate's route out of srt.
+    let otlp_endpoint = otlp.clone();
     let inputs = plan::Inputs {
         args: &a,
         chat: chat.clone(),
@@ -1274,6 +1498,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        // FP4-R1: derm's own binary stays read-only under srt.
+        derm_exe: derm_exe(),
         // FP8-S2, FP8R-5: the git files srt's own denies leave out.
         git_controls: if a.boundary == Boundary::Srt {
             git_controls(Path::new(&cwd))
@@ -1285,6 +1511,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
         macos: cfg!(target_os = "macos"),
         terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        // R7, option 1 (case 270): the gate's route out of srt on Linux.
+        srt_route: srt_route_path(
+            a.boundary,
+            token.is_some() || (a.dry_run && !a.no_daemon),
+            otlp_endpoint.as_deref(),
+            &home,
+            &chat,
+        )
+        .map(|(path, _)| path.to_string_lossy().into_owned()),
         // FP5R-5: read only for Codex under srt, where it decides.
         codex_store: if a.harness.id == "codex" && a.boundary == Boundary::Srt {
             codex_store::read(
@@ -1361,8 +1596,52 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         );
         Some(json!({"on": false, "via": "none", "reason": "no-tap-flag"}))
     } else {
-        tap::environment(a.harness.id, &mut p)?
+        // A dry run that would mint a token shows the tapped plan (MW6R-1).
+        tap::environment(a.harness.id, &mut p, a.dry_run && !a.no_daemon)?
     };
+    // BW6-11: under srt, the tap off and no `--model-url`: srt admits the
+    // harness's own model host, or the chat cannot reach its model.
+    let tapped = tap_record
+        .as_ref()
+        .and_then(|t| t.get("on"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    if a.boundary == Boundary::Srt && !tapped && a.model_url.is_none() {
+        plan::srt_admit_model_hosts(&mut p, a.harness.id).map_err(|e| (1, e))?;
+    }
+    // R7, option 1 (case 270): whether derm's gate is registered here and
+    // blocks when it fails (`probe::gate_holds`, the boundary choice's own
+    // reading), for the daemon's check of calls the tap saw that no gate
+    // record names (`gate.expected` in `run.start`).
+    // Claude Code's gate is derm run's own registration outside sbx since
+    // fix pass 6, so it holds wherever derm run registers it.
+    let gate_expected = a.harness.id != "other" && {
+        let mut e = crate::watch::status::Env::real();
+        e.cwd = Some(PathBuf::from(&cwd));
+        claude_gate_by.is_some() || boundary::probe::gate_holds(a.harness.id, &e)
+    };
+    if cfg!(target_os = "linux") && a.boundary == Boundary::Srt && gate_expected && !a.no_daemon {
+        p.notes.push(if tapped {
+            "derm run: the daemon flags any call the model tap saw come back that no gate record names (a gate that did not run, or a record that was lost)".to_string()
+        } else {
+            "derm run: the model tap is off, so nothing beside the gate sees the chat's calls: a call whose gate record never reached the daemon shows nowhere".to_string()
+        });
+    }
+    let gate_record = Some(json!({"expected": gate_expected}));
+    // The Standard tier (lane 6A's seam; `contracts/sandbox.md`): the agent's
+    // own sandbox from derm's policy, as `detail.tier`. The base's stub
+    // returns none.
+    let tier_record = standard::environment(a.harness.id, a.boundary, a.tier, &mut p)?;
+    // The chat's taint verdict when the person named one (`--taint`;
+    // `contracts/events.md` section 6.2): the gate (lane 6D) reads it from
+    // the daemon's record of this chat, never from the harness's
+    // environment, which a project's settings can set (case 227).
+    let taint_record: Option<serde_json::Value> = a
+        .taint
+        .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
+    if let Some(n) = taint_not_reached(a.boundary, a.taint.map(|v| v.as_str())) {
+        p.notes.push(n);
+    }
     // Content capture's switch as the chat starts (lane S's request 3). It
     // replaced DERM_LOG_CONTENT (request 3's rest, integration w5): with it
     // on, the harness's own argument words and its OTel prompts go to
@@ -1383,6 +1662,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // The helper script prints the chat token: it goes on every way out.
         cleanup.dirs.push(helper_dir.clone());
     }
+    // Box test w6, BW6-2: Codex's Standard tier with `/tmp` read-only; its
+    // commands' temporary files go to a folder of this chat's own, removed
+    // on every way out.
+    if standard::wants_chat_tmp(a.harness.id, a.boundary, tier_record.as_ref()) {
+        let dir =
+            standard::chat_tmp_dir(&std::env::temp_dir(), &chat, a.dry_run).map_err(|e| (1, e))?;
+        if !a.dry_run {
+            cleanup.dirs.push(dir.clone());
+        }
+        p.env_set.retain(|(k, _)| k != "TMPDIR");
+        p.env_set
+            .push(("TMPDIR".into(), dir.to_string_lossy().into_owned()));
+    }
     let (export, export_at) = if a.dry_run {
         (json!("dry run"), None)
     } else {
@@ -1396,6 +1688,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             content_days.is_some(),
         )
     };
+    // Claude Code's gate, as the last `--settings`: after the Standard
+    // tier's block and the export's, which it holds (fix pass 6).
+    if let Some(derm) = &claude_gate_by {
+        // The chat in the hook's own words only when a daemon holds its
+        // taint (fix pass 6's review): with `--no-daemon` the light tier is
+        // the store, as derm run's start line says.
+        let held = token.is_some() || (a.dry_run && !a.no_daemon);
+        claude_gate::register(&mut p, derm, held.then_some(chat.as_str())).map_err(|e| (1, e))?;
+    }
     // Only a run that wrote a helper clears the receiver's helpers: one
     // `derm run` is one chat, so they are this run's.
     cleanup.otel_helpers = export == json!("claude-code, token through otelHeadersHelper");
@@ -1461,8 +1762,68 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     } else {
         None
     };
+    // The secrets broker (lane 6C's R1; Tony's R2, 12 Nov 23:53 PST: one per
+    // chat, inside `derm run`): read the values, start derm-egress, and chain
+    // the harness to it. Its records go to the daemon over this run's own
+    // daemon-scope connection as source `run`; a dry run reads no value.
+    let tier_name = tier_record
+        .as_ref()
+        .and_then(|r| r.get("tier"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("whole")
+        .to_string();
+    let broker_sink: Option<derm_egress::Sink> = daemon.as_ref().map(|d| {
+        let d = RunPoster::new(d);
+        let sink: derm_egress::Sink = Arc::new(move |events: Vec<Event>| {
+            for mut e in events {
+                e.source = Source::Run;
+                if let Err(err) = d.post(&e) {
+                    eprintln!("derm run: an egress record was not recorded: {err}");
+                }
+            }
+        });
+        sink
+    });
+    let mut chat_broker = broker::wire(
+        &broker::Chat {
+            chat: &chat,
+            harness: a.harness.id,
+            tier: &tier_name,
+            boundary: a.boundary.name(),
+            home: Path::new(&home),
+            dry_run: a.dry_run,
+            temp: &std::env::temp_dir(),
+        },
+        &mut p,
+        &|k| std::env::var(k).ok(),
+        broker_sink,
+    )
+    .map_err(|e| (1, e))?;
+    if let Some(dir) = chat_broker.trust_dir.take() {
+        cleanup.dirs.push(dir);
+    }
     if a.dry_run {
         print!("{}", plan::describe(&p));
+        // The wave 6 base: the two per-chat choices, as `run.start` will
+        // record them (`contracts/events.md` sections 6.1 and 6.2).
+        if let Some(t) = tier_record
+            .as_ref()
+            .and_then(|r| r.get("tier"))
+            .and_then(|t| t.as_str())
+        {
+            println!("tier: {t}");
+        }
+        if let Some(v) = &a.taint {
+            println!(
+                "{}",
+                taint_summary(
+                    a.boundary,
+                    cfg!(target_os = "linux"),
+                    a.no_daemon,
+                    v.as_str()
+                )
+            );
+        }
         // BW5-5's rest: under sbx the plan's one-step argv is not what runs.
         if a.boundary == Boundary::Sbx {
             if let Some(steps) = boundary::sbx::describe_steps(&p.args, &p.env_set) {
@@ -1481,6 +1842,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         write_private(&settings_path, text)
             .map_err(|e| (1, format!("{}: {e}", settings_path.display())))?;
         cleanup.files.push(settings_path.clone());
+    }
+    // R7, option 1 (case 270): the gate's route out of srt on Linux, which
+    // the plan re-opened read-only inside the hidden `~/.derm`.
+    if let Some((route, text)) = srt_route_path(
+        a.boundary,
+        token.is_some(),
+        otlp_endpoint.as_deref(),
+        &home,
+        &chat,
+    ) {
+        write_private(&route, &format!("{text}\n"))
+            .map_err(|e| (1, format!("{}: {e}", route.display())))?;
+        cleanup.files.push(route);
     }
     let token_file_named = p.env_set.iter().any(|(k, _)| k == "DERM_CHAT_TOKEN_FILE");
     if let (true, Some(t)) = (token_file_named, &token) {
@@ -1632,6 +2006,33 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let mut child = exec::spawn(&launch, &cwd, filter.is_some())
         .map_err(|e| (127, format!("{}: {e}", p.program)))?;
     let pid = child.id();
+    // Fix pass 11 (Mac), MW6R5-1: a hook binds its chat token to the start
+    // environment of the process this `derm run` started (`gate::daemon::
+    // run_gave`, case 268). macOS hides another program's environment when
+    // that program is code-signing restricted (`CS_RESTRICT`), which every
+    // platform binary is under SIP (xnu `bsd/kern/kern_sysctl.c`,
+    // `sysctl_procargsx`'s `omit_env_vars`, at `f6217f8`; run on the Mac:
+    // `/bin/sh` and `/usr/bin/env` 28 bytes, Claude Code's binary and node in
+    // full). A harness started as a shell script that forks its program
+    // leaves `/bin/sh` there, and its hooks then keep the light tier's rules.
+    // That fails safe; this says so.
+    let start_env_hidden = {
+        #[cfg(target_os = "macos")]
+        {
+            a.boundary == Boundary::None
+                && agent_user.is_none()
+                && token
+                    .as_deref()
+                    .is_some_and(|t| start_env_hidden(pid, t, Duration::from_millis(300)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    };
+    if start_env_hidden {
+        eprintln!("{}", start_env_note(&p.program));
+    }
     // The filter starts after `run.start` is posted (below), so no record
     // of the chat reaches the daemon before the run's own start; what the
     // agent writes meanwhile waits in its pipe.
@@ -1671,6 +2072,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "dangerousFlags": dangerous,
         "fullAccess": !dangerous.is_empty(),
         "outsideShapeOnly": a.harness.id == "other",
+        // MW6R5-1: macOS hid the started process's environment, so the
+        // chat's hooks keep the light tier's rules.
+        "startEnvHidden": start_env_hidden,
         // The harness's executable by its real path, so the daemon's join
         // can find the harness under a boundary's wrappers by what it execs
         // (MW5-16, review FP3-S2); null when it cannot be resolved here.
@@ -1684,6 +2088,10 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             a.program.as_deref().unwrap_or(a.harness.command),
             std::env::var("PATH").ok().as_deref(),
         ),
+        // The derm that started the chat, by its real path, so the daemon
+        // knows the gate's own state writes in a sandbox's tmpfs (box test
+        // w6 retest 3, BW6R3-2); null when it cannot be read.
+        "dermExe": derm_exe(),
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
@@ -1724,6 +2132,13 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ("content", &content_record),
         ("agentUser", &agent_user),
         ("sbxKit", &sbx_kit),
+        // Wave 6 (`contracts/events.md` section 6.1).
+        ("tier", &tier_record),
+        ("taint", &taint_record),
+        // Integration w6's close (lane 6C's R1; `contracts/events.md` 6.3).
+        ("broker", &chat_broker.record),
+        // R7, option 1 (case 270).
+        ("gate", &gate_record),
     ] {
         if let Some(v) = record {
             base[key] = v.clone();
@@ -1805,6 +2220,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let status =
         exec::wait(&mut child).map_err(|e| (1, format!("waiting for {}: {e}", p.program)))?;
     let (code, signal) = exec::code(&status);
+    // The chat's broker ends with its harness, before `run.stop`: its values
+    // leave memory with it, and its last records are posted first.
+    if let Some(e) = chat_broker.egress.take() {
+        e.stop();
+    }
     // The agents' user's bridge (lane V) ends with the harness.
     user::finish();
     // The sandbox goes before `run.stop`, so no VM writes into the project
@@ -1874,6 +2294,41 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    /// Fix pass 7 (FP6-R3): a derm Homebrew installed registers its chat
+    /// gate by the `opt` link, which `brew upgrade` keeps, not the keg it
+    /// removes.
+    #[cfg(unix)]
+    #[test]
+    fn fp7_derm_runs_gate_names_a_homebrew_derm_by_its_opt_link() {
+        let root = std::env::temp_dir().join(format!("derm-fp7-opt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let prefix = std::fs::canonicalize(&root).unwrap();
+        let bin = prefix.join("Cellar/derm/1.2.3/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for d in [
+            prefix.clone(),
+            prefix.join("Cellar"),
+            prefix.join("Cellar/derm"),
+            prefix.join("Cellar/derm/1.2.3"),
+            bin.clone(),
+        ] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let real = bin.join("derm");
+        std::fs::write(&real, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let opt = prefix.join("opt");
+        std::fs::create_dir_all(&opt).unwrap();
+        std::fs::set_permissions(&opt, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("../Cellar/derm/1.2.3", opt.join("derm")).unwrap();
+        crate::connect::gate::TEST_SELF.with(|t| *t.borrow_mut() = Some(real.clone()));
+        let got = gate_exe();
+        crate::connect::gate::TEST_SELF.with(|t| *t.borrow_mut() = None);
+        assert_eq!(got, Some(opt.join("derm/bin/derm").display().to_string()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// MW5-32's Linux half: a missing `~/.codex` and `config.toml` are made
     /// (0700 and 0600, empty); nothing that exists is changed, a link to a
@@ -2801,6 +3256,71 @@ mod end_to_end {
     }
 
     #[cfg(unix)]
+    /// Box test w6, BW6-11: under srt with the tap off (`--no-tap`, the
+    /// setting, or no daemon), srt's allow list held derm's own ports and
+    /// the sign-in host only, so Claude Code's requests to its own model
+    /// host got srt's 403 ("Couldn't connect through your proxy" after ten
+    /// retries). The tap's route reaches exactly that host (`derm_tap::
+    /// upstream::builtin`); with the tap off, srt admits it instead, says
+    /// so, and admits nothing more. A `--model-url` names the route itself.
+    #[test]
+    fn bw6_11_under_srt_with_the_tap_off_the_harness_reaches_its_model_host() {
+        let st = setup("bw611");
+        let claude = script(&st.fake.dir, "claude", "exit 0");
+        let mut env = RunEnv {
+            programs: st.env.programs.clone(),
+            ..clone_env(&st.env)
+        };
+        env.programs.push(("claude".into(), claude));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let copy = || -> serde_json::Value {
+            serde_json::from_str(
+                &std::fs::read_to_string(st.fake.dir.join("settings.copy")).unwrap(),
+            )
+            .unwrap()
+        };
+        let argv = |extra: &[&str]| {
+            let mut v = vec![
+                "claude-code",
+                "--boundary",
+                "srt",
+                "--chat",
+                "chat-bw611",
+                "--cwd",
+                &cwd,
+            ];
+            v.extend_from_slice(extra);
+            v.extend(["--", "-p", "x"]);
+            s(&v)
+        };
+        run(&argv(&["--no-tap"]), &env).unwrap();
+        let allowed = copy()["network"]["allowedDomains"].clone();
+        let list: Vec<&str> = allowed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(list.contains(&"api.anthropic.com:443"), "{allowed}");
+        assert!(!list.contains(&"api.openai.com:443"), "{allowed}");
+        // With a model URL of the person's own, the provider is not opened.
+        run(
+            &argv(&["--no-tap", "--model-url", "http://127.0.0.1:8080"]),
+            &env,
+        )
+        .unwrap();
+        let allowed = copy()["network"]["allowedDomains"].clone();
+        assert!(
+            !allowed
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "api.anthropic.com:443"),
+            "{allowed}"
+        );
+    }
+
+    #[cfg(unix)]
     #[test]
     fn run_stop_is_recorded_after_the_daemon_restarted() {
         // Box test w1, BX8: `systemctl --user restart derm-daemon` during a
@@ -2852,6 +3372,89 @@ mod end_to_end {
         );
     }
 
+    /// Box test w6 retest 2, BW6R2-4: after a daemon restart during a chat,
+    /// derm-egress's records were refused ("bad token", three lost) while
+    /// the gate's chat token was restored (BX8). They are posted again with
+    /// the token file read again, and later ones go with the new token.
+    #[cfg(unix)]
+    #[test]
+    fn bw6r2_4_egress_records_are_kept_after_the_daemon_restarted() {
+        let fake = fake::start("bw6r2-4", fake::Mode::Normal);
+        let d = Daemon {
+            socket: fake.socket.clone(),
+            token: fake::DAEMON_TOKEN.into(),
+        };
+        let poster = RunPoster::new(&d);
+        let rec = |n: u32| {
+            event(
+                "chat-e",
+                "claude-code",
+                "egress.request",
+                format!("record {n}"),
+                json!({"n": n}),
+                None,
+            )
+        };
+        poster.post(&rec(1)).unwrap();
+        // The daemon restarts: its token file and its token change.
+        std::fs::write(
+            fake.dir.join("daemon.token"),
+            format!("{}\n", fake::RESTARTED_TOKEN),
+        )
+        .unwrap();
+        std::fs::write(fake.dir.join("restarted"), "").unwrap();
+        poster.post(&rec(2)).unwrap();
+        poster.post(&rec(3)).unwrap();
+        let got = fake.got.lock().unwrap().clone();
+        let posted: Vec<(u64, bool)> = got
+            .iter()
+            .filter(|l| l["op"] == "event")
+            .map(|l| {
+                (
+                    l["event"]["detail"]["n"].as_u64().unwrap(),
+                    l["event"]["detail"]["daemonRestarted"] == true,
+                )
+            })
+            .collect();
+        assert_eq!(posted, vec![(1, false), (2, true), (3, false)], "{got:?}");
+        let hellos: Vec<&str> = got
+            .iter()
+            .filter(|l| l["op"] == "hello")
+            .filter_map(|l| l["token"].as_str())
+            .collect();
+        assert_eq!(hellos.last(), Some(&fake::RESTARTED_TOKEN));
+        // A token file that gives no daemon scope is not taken.
+        std::fs::write(
+            fake.dir.join("daemon.token"),
+            format!("{}\n", fake::CHAT_TOKEN),
+        )
+        .unwrap();
+        let p2 = RunPoster::new(&d);
+        let _ = std::fs::remove_file(fake.dir.join("restarted"));
+        std::fs::write(fake.dir.join("restarted"), "").unwrap();
+        assert!(p2.post(&rec(4)).is_err());
+        // FP3-R5: a daemon that refuses before it has rewritten its token
+        // file; the file is read again once, 250 ms later.
+        std::fs::write(
+            fake.dir.join("daemon.token"),
+            format!("{}\n", fake::DAEMON_TOKEN),
+        )
+        .unwrap();
+        let dir = fake.dir.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            std::fs::write(
+                dir.join("daemon.token"),
+                format!("{}\n", fake::RESTARTED_TOKEN),
+            )
+            .unwrap();
+        });
+        let p3 = RunPoster::new(&d);
+        p3.post(&rec(5)).unwrap();
+        writer.join().unwrap();
+        assert_eq!(*p3.token(), fake::RESTARTED_TOKEN);
+    }
+
     #[cfg(unix)]
     #[test]
     fn srt_re_opens_the_policy_only_when_it_is_a_plain_file() {
@@ -2882,12 +3485,16 @@ mod end_to_end {
             )
             .unwrap();
             // The policy's entry only: on macOS the daemon socket is
-            // re-opened beside it (MW5-5's gate half), whatever the policy.
+            // re-opened beside it (MW5-5's gate half), and on Linux the
+            // gate's route file (R7, option 1), whatever the policy.
             let read: Vec<serde_json::Value> = c["filesystem"]["allowRead"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|e| !e["path"].as_str().unwrap_or("").ends_with("/daemon.sock"))
+                .filter(|e| {
+                    let p = e["path"].as_str().unwrap_or("");
+                    !p.ends_with("/daemon.sock") && !p.contains("/.derm/run/routes/")
+                })
                 .cloned()
                 .collect();
             serde_json::Value::Array(read)
@@ -2983,6 +3590,69 @@ mod end_to_end {
             );
         }
         assert!(seen(&st).is_empty(), "the harness never started");
+    }
+
+    /// Box test w6 retest 3, BW6R3-3: with `--no-daemon` under srt on
+    /// Linux the dry run's line said `taint: record (--taint)`, as if it
+    /// held, while the start line says the gate denies every call it gates
+    /// (`plan.rs`, the no-daemon note).
+    #[test]
+    fn bw6r3_3_the_dry_runs_taint_line_says_when_it_is_not_applied() {
+        let srt_none = taint_summary(Boundary::Srt, true, true, "record");
+        assert!(srt_none.contains("not applied"), "{srt_none}");
+        assert!(srt_none.contains("no daemon"), "{srt_none}");
+        // Fix pass 6: with the daemon, taint holds under srt on Linux.
+        assert_eq!(
+            taint_summary(Boundary::Srt, true, false, "record"),
+            "taint: record (--taint)"
+        );
+        let sbx = taint_summary(Boundary::Sbx, true, true, "record");
+        assert!(sbx.contains("not applied under sbx"), "{sbx}");
+        // Elsewhere the line is unchanged: srt on macOS and no boundary.
+        // Whether taint holds under srt on macOS with `--no-daemon` (srt
+        // keeps `~/.derm` read-only there too) is not run (FP4-R4, open).
+        assert_eq!(
+            taint_summary(Boundary::Srt, false, true, "record"),
+            "taint: record (--taint)"
+        );
+        assert_eq!(
+            taint_summary(Boundary::None, true, false, "deny"),
+            "taint: deny (--taint)"
+        );
+    }
+
+    /// Box test w6 retest 3, BW6R3-2: `run.start` names the derm that
+    /// started the chat by its real path, so the daemon knows the gate's
+    /// own writes in a sandbox's tmpfs.
+    #[cfg(unix)]
+    #[test]
+    fn bw6r3_2_run_start_names_derms_own_binary() {
+        let st = setup("derm-exe");
+        let cwd = st.work.to_string_lossy().into_owned();
+        let _ = run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-x",
+                "--cwd",
+                &cwd,
+            ]),
+            &st.env,
+        );
+        let ev = events(&st);
+        assert_eq!(ev[0]["kind"], "run.start");
+        let want = std::fs::canonicalize(std::env::current_exe().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            ev[0]["detail"]["dermExe"],
+            json!(want),
+            "{}",
+            ev[0]["detail"]
+        );
     }
 
     /// Mac test w5, MW5-1: help and argument errors are answered before
@@ -3215,13 +3885,27 @@ mod end_to_end {
         .unwrap();
         assert_eq!(code, 0);
         let seen = std::fs::read_to_string(&out).unwrap();
-        // `--settings <json>` first, the user's words last.
+        // `--settings <json>` first, the user's words, then derm's gate
+        // block, which Claude Code reads (the last `--settings`) and which
+        // holds the export's helper (fix pass 6).
         let args: Vec<&str> = seen
             .lines()
             .filter_map(|l| l.strip_prefix("arg="))
             .collect();
         assert_eq!(args[0], "--settings", "{seen}");
-        assert_eq!(&args[args.len() - 2..], ["-p", "hello"], "{seen}");
+        assert_eq!(&args[2..4], ["-p", "hello"], "{seen}");
+        assert_eq!(args[args.len() - 2], "--settings", "{seen}");
+        let last: serde_json::Value = serde_json::from_str(args[args.len() - 1]).unwrap();
+        assert_eq!(
+            last["otelHeadersHelper"],
+            serde_json::from_str::<serde_json::Value>(args[1]).unwrap()["otelHeadersHelper"],
+            "{seen}"
+        );
+        assert_eq!(
+            last["hooks"]["PreToolUse"][0]["hooks"][0]["onFailure"], "block",
+            "{seen}"
+        );
+        assert_eq!(last["enabledPlugins"]["derm@derm"], false, "{seen}");
         assert!(seen.contains("CLAUDE_CODE_ENABLE_TELEMETRY=1"), "{seen}");
         assert!(
             seen.contains("OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318"),
@@ -3495,6 +4179,7 @@ mod end_to_end {
             .any(|l| l["op"] == "hello" && l["token"] == fake::CHAT_TOKEN));
     }
 
+    #[cfg(unix)]
     const DENY_BASH: &str = r#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#;
 
     /// A scripted ACP agent asks about one bash call; the client answers
@@ -3705,6 +4390,32 @@ mod end_to_end {
         assert!(st.fake.lines().is_empty(), "the daemon heard nothing");
     }
 
+    /// 6D-8's other half (integration w6's close): under sbx the start line
+    /// and the dry run say the verdict is not applied, and nowhere else. Fix
+    /// pass 4's review, FP4-T1 and FP4-T2 (redone by fix pass 6): the note
+    /// names no Claude Code hook a chat may lack and no Rust gate in the VM.
+    #[test]
+    fn under_sbx_the_start_says_taint_is_not_applied() {
+        let n = taint_not_reached(Boundary::Sbx, Some("record")).unwrap();
+        assert!(n.contains("--taint record is not applied"), "{n}");
+        assert!(n.contains("no gate in the VM keeps"), "{n}");
+        assert!(!n.contains("denies any call it flags"), "{n}");
+        assert!(taint_not_reached(Boundary::Sbx, None).is_some());
+        assert!(taint_not_reached(Boundary::None, Some("deny")).is_none());
+    }
+
+    /// Was `bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied`.
+    /// Box test w6 retest 2, BW6R2-5 found the gate kept taint in srt's
+    /// tmpfs; fix pass 6 (the redo of fix pass 4's part 2) puts it in the
+    /// daemon through srt's route, so the start says nothing of taint not
+    /// applying under srt, on Linux or macOS, and the record route note says
+    /// the taint state goes there too.
+    #[test]
+    fn under_srt_taint_is_applied_and_the_start_says_no_otherwise() {
+        assert!(taint_not_reached(Boundary::Srt, Some("record")).is_none());
+        assert!(taint_not_reached(Boundary::Srt, None).is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn dry_run_contacts_nobody_and_starts_nothing() {
@@ -3808,11 +4519,23 @@ mod end_to_end {
     /// Learn, "Win32_Process class"). The reader itself is left out.
     #[cfg(windows)]
     fn ps_running_with(marker: &str) -> Vec<String> {
-        let script = "Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId): $($_.CommandLine)\" }";
+        // `Stop`: a refusal ends the script with a non-zero exit; progress
+        // off, which Windows PowerShell 5.1 can write to a redirected stderr
+        // (review FP5-R3).
+        let script = "$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process | ForEach-Object { \"$($_.ProcessId): $($_.CommandLine)\" }";
         let out = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .output()
             .expect("powershell runs");
+        // WW6R2-1 (3): under the SAFER token WMI refuses Win32_Process
+        // ("Access denied", HRESULT 0x80041003, run on the box), and an empty
+        // answer read as "nothing running", which every no-process-left check
+        // here would pass. A reader that cannot read says so.
+        assert!(
+            out.status.success(),
+            "Win32_Process could not be read: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
         let me = format!("{}:", std::process::id());
         String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -4181,5 +4904,64 @@ mod policy_load_tests {
         std::fs::write(&inside, RULES).unwrap();
         assert!(verdict(&inside, true, &chat).contains("inside the chat's folder"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// Fix pass 11 (Mac), MW6R5-1: what `derm run` sees of the process it
+/// started, on macOS.
+#[cfg(all(test, target_os = "macos"))]
+mod mw6r5_1 {
+    use super::{start_env_hidden, start_env_note};
+    use std::time::Duration;
+
+    fn sip_on() -> bool {
+        std::process::Command::new("/usr/bin/csrutil")
+            .arg("status")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("enabled."))
+            .unwrap_or(false)
+    }
+
+    fn hidden(program: &std::path::Path, args: &[&str]) -> bool {
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .env("DERM_CHAT_TOKEN", "t".repeat(64))
+            .spawn()
+            .unwrap();
+        let h = start_env_hidden(child.id(), &"t".repeat(64), Duration::from_millis(300));
+        let _ = child.kill();
+        let _ = child.wait();
+        h
+    }
+
+    #[test]
+    fn a_shell_script_harness_on_a_sip_mac_is_said_and_a_real_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("derm-mw6r51-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("sleep");
+        std::fs::copy("/bin/sleep", &copy).unwrap();
+        assert!(std::process::Command::new("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&copy)
+            .status()
+            .unwrap()
+            .success());
+        assert!(!hidden(&copy, &["3"]));
+        if sip_on() {
+            assert!(hidden(
+                std::path::Path::new("/bin/sh"),
+                &["-c", "sleep 3; true"]
+            ));
+        }
+        // A process that is gone is not reported.
+        let mut quick = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let _ = quick.wait();
+        assert!(!start_env_hidden(
+            quick.id(),
+            "x",
+            Duration::from_millis(50)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(start_env_note("/bin/sh").contains("light tier's rules"));
     }
 }

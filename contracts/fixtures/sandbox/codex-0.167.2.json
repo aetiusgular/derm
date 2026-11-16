@@ -1,0 +1,11 @@
+{
+ "$comment": "Codex 0.167.2's own sandbox under derm's Standard-tier profile (contracts/sandbox.md section 3). Recorded by the wave 6 base on 12 Nov 2026 in the cloud (Linux, bubblewrap from apt): CODEX_HOME with `config` below, `codex sandbox --permission-profile derm --cd {T}/proj -- sh -c <probe>`. The profile's shape is Codex's own (`config/src/permissions_toml.rs`, `PermissionProfileToml`, `FilesystemPermissionToml`; `protocol/src/permissions.rs:120`, access `read`, `write`, `deny`; built-in parents `:workspace`, `:read-only`, `protocol/src/models.rs:414-417`, all at rust-v0.167.2 = ce21072). `unknownKey`: a profile key Codex does not know (`bogus_key`) is accepted with no word (exit 0): derm cannot rely on Codex to refuse a typo in what it writes, so lane 6A tests effective behaviour. Paths replaced: {T} the scratch root.",
+ "codex": "0.167.2",
+ "config": "default_permissions = \"derm\"\n\n[permissions.derm]\ndescription = \"derm Standard tier\"\nextends = \":workspace\"\n\n[permissions.derm.filesystem]\n\"{T}/secret\" = \"deny\"\n",
+ "probe": "echo in > ok; echo projw=$?; cat {T}/secret/key; echo read=$?; echo x > {T}/outside; echo outw=$?",
+ "result": "projw=0\ncat: {T}/secret/key: Permission denied\nread=1\nsh: 1: cannot create {T}/outside: Read-only file system\noutw=2\nexit 0\n",
+ "unknownKey": {
+  "output": "exit 0\n",
+  "exit": 0
+ }
+}

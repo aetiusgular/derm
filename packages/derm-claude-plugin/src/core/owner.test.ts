@@ -12,6 +12,11 @@ import { _setOwnersForTest, ownersFor, readAnchor } from "./owner.ts";
 import { loadPolicy } from "./policy.ts";
 
 const me = typeof process.getuid === "function" ? process.getuid() : 0;
+// On Windows Node gives every file a made-up mode that others may write
+// (libuv `src/win/fs.c`), so the anchor is always refused there, which
+// trusts no agents' user: fail closed (note BF section 4.2). There is no
+// agents' user on Windows (wave 5 lane V is Unix's).
+const WIN = process.platform === "win32";
 const entry = (uid: number, ownerUid: number) =>
   JSON.stringify({ version: 1, agents: [{ user: "derm-agent", uid, owner: "tony", ownerUid, path: "/usr/bin", how: "sudo" }] });
 
@@ -53,7 +58,7 @@ describe("readAnchor", () => {
   };
   it("reads a file whose whole path the trusted user holds", () => {
     const { root, file } = tree();
-    expect(readAnchor(file, root, me)).toBe(entry(998, 1000));
+    expect(readAnchor(file, root, me)).toEqual(WIN ? { problem: expect.stringContaining("written by group or others") } : entry(998, 1000));
     expect(readAnchor(path.join(root, "none.json"), root, me)).toBeUndefined();
     rmSync(root, { recursive: true, force: true });
   });
@@ -71,7 +76,8 @@ describe("readAnchor", () => {
     writeFileSync(real, entry(998, 1000), { mode: 0o644 });
     rmSync(t.file);
     symlinkSync(real, t.file);
-    expect(readAnchor(t.file, t.root, me)).toEqual({ problem: expect.stringContaining("is a link") });
+    // Windows: refused before the link is reached, by the made-up mode.
+    expect(readAnchor(t.file, t.root, me)).toEqual({ problem: expect.stringContaining(WIN ? "written by group or others" : "is a link") });
     rmSync(t.root, { recursive: true, force: true });
     t = tree();
     expect(readAnchor(t.file, t.root, me + 1)).toEqual({ problem: expect.stringContaining("not owned by uid") });

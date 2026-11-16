@@ -153,7 +153,9 @@ fn agent_row(row: &Value, planned_row: bool, env: &Env, probe: bool) -> Value {
             .and_then(crate::doctor::version_token),
         crate::doctor::version_token(&verified),
     ) {
-        (Some(have), Some(want)) if have == want => Value::from("matches"),
+        (Some(have), Some(_)) if crate::doctor::verified_matches(&verified, &have) => {
+            Value::from("matches")
+        }
         (Some(have), Some(_)) => Value::from(format!("unverified at {have}")),
         _ => Value::Null,
     };
@@ -275,8 +277,19 @@ pub fn find_on_path(name: &str, path: &str) -> Option<PathBuf> {
     crate::platform::windows::shim::find_program(name, Some(&absolute.join(";")), &|p| p.is_file())
 }
 
+/// The variables `probe_version` keeps: HOME, PATH, LANG and TERM, and on
+/// Windows `SystemRoot` and `USERPROFILE` (`doctor::NODE_WINDOWS_ENV`), with
+/// no `SystemRoot` node aborts before any script runs (fix pass 9, note BG
+/// section 4: `codex.cmd --version` exited 134 on the box, and printed its
+/// version once `SystemRoot` was given).
+pub fn probe_env_keys() -> Vec<&'static str> {
+    let mut keys = vec!["HOME", "PATH", "LANG", "TERM"];
+    keys.extend_from_slice(crate::doctor::NODE_WINDOWS_ENV);
+    keys
+}
+
 /// `<program> --version`, argv only, stdin closed, a clean environment but
-/// HOME and PATH, killed after `PROBE_TIMEOUT`. The first line of output,
+/// [`probe_env_keys`], killed after `PROBE_TIMEOUT`. The first line of output,
 /// cleaned and cut, or why there is none. A program that exits with a
 /// status other than 0 is said not to be a working install, with its first
 /// line (stdout, else stderr): a shim on PATH that only says the real CLI
@@ -289,7 +302,7 @@ pub fn probe_version(program: &Path) -> String {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear();
-    for k in ["HOME", "PATH", "LANG", "TERM"] {
+    for k in probe_env_keys() {
         if let Some(v) = std::env::var_os(k) {
             cmd.env(k, v);
         }
@@ -521,6 +534,15 @@ fn chat_marks(c: &Value) -> Vec<String> {
         out.push(format!("as the agents' user {}", clean(user, 32)));
     } else if boundary == "none" {
         out.push("runs as you".into());
+        // Fix pass 6 (note BE section 2.3, item 4): with no boundary the
+        // agent is the same user as derm's daemon, so it can stop the
+        // daemon or edit ~/.derm and the log (Windows test w6 retest 3,
+        // WW6R3-1). The gate then denies what taint covers, but taint holds
+        // against a mistake there, not against an agent.
+        out.push(
+            "taint holds against mistakes, not the agent (it can stop derm's daemon or edit ~/.derm)"
+                .into(),
+        );
     }
     if boundary == "sbx" {
         // Only Claude Code has derm's kit (P4-R3: run.start does not yet say
@@ -907,6 +929,19 @@ fn render_daemon(d: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Fix pass 9 (note BG section 4): on Windows the version probe keeps
+    /// SystemRoot, which node needs to start; elsewhere nothing new.
+    #[test]
+    fn fp9_the_version_probe_keeps_what_node_needs_on_windows() {
+        let keys = super::probe_env_keys();
+        assert!(keys.starts_with(&["HOME", "PATH", "LANG", "TERM"]));
+        if cfg!(windows) {
+            assert!(keys.contains(&"SystemRoot") && keys.contains(&"USERPROFILE"));
+        } else {
+            assert_eq!(keys.len(), 4);
+        }
+    }
+
     use super::*;
 
     fn env(home: &Path) -> Env {
@@ -982,6 +1017,11 @@ mod tests {
             "tap": {"on": false, "reason": "no-tap-flag"},
             "content": {"on": true, "retentionDays": 3}})));
         assert!(t.contains("runs as you"), "{t}");
+        // Fix pass 6: what taint holds against with no boundary.
+        assert!(
+            t.contains("taint holds against mistakes, not the agent"),
+            "{t}"
+        );
         assert!(t.contains("io_uring not audited"), "{t}");
         assert!(t.contains("untapped (no-tap-flag)"), "{t}");
         assert!(t.contains("content kept 3 days"), "{t}");
@@ -989,6 +1029,7 @@ mod tests {
         let t = render(row(serde_json::json!({"agentUser": "derm-agent"})));
         assert!(t.contains("as the agents' user derm-agent"), "{t}");
         assert!(!t.contains("runs as you"), "{t}");
+        assert!(!t.contains("taint holds against mistakes"), "{t}");
         let t = render(row(
             serde_json::json!({"boundary": "sbx", "harness": "codex",
             "ioUring": "own-kernel", "tap": {"on": true}}),

@@ -10,6 +10,9 @@
 
 // Wave 5 lane W: command rules (contracts/policy.md section 7).
 pub mod argv;
+// Wave 6 (the wave 6 base): the chain v2 line format, `contracts/events.md`
+// section 6.4, which lanes 6B and 6E build against.
+pub mod audit_chain;
 pub mod command;
 pub mod event;
 pub mod harness;

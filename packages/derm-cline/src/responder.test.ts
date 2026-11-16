@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,7 +7,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { defaultDeps, type Deps } from "./cline.ts";
 import { GateServe } from "./serve/client.ts";
-import { decisionName, folderProblem, main, PARTIAL_GRACE_MS, parseArgs, parseRequestName, Responder, UNTAKEN_MS } from "./responder.ts";
+import { accessEntries } from "../../derm-pi/test/modes.ts";
+import { APPROVAL_DIR_VAR, decisionName, folderProblem, main, PARTIAL_GRACE_MS, parseArgs, parseRequestName, Responder, SERVE_JUDGES_FOLDER, UNTAKEN_MS } from "./responder.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Wave 5b (lane 5bC): the decision is `derm gate serve`'s, so the answers
@@ -32,14 +33,31 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
 });
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
+
+/**
+ * Opens a folder to others: its mode, and on Windows, where Node's chmod sets
+ * only the read-only bit, an access-list entry that lets Everyone write it
+ * (the form derm gate serve judges there; note BF section 4.4).
+ */
+function openToOthers(dir: string, mode: number): void {
+  chmodSync(dir, mode);
+  if (SERVE_JUDGES_FOLDER) execFileSync("icacls", [dir, "/grant", "*S-1-1-0:(M)"], { stdio: "ignore" });
+}
+/** What the folder check says of a folder others may use: here (Unix) or derm gate serve's (Windows). */
+const OPEN_FOLDER = SERVE_JUDGES_FOLDER ? "yours alone" : "0700";
 
 let k = 0;
 function folder(): string {
@@ -55,12 +73,14 @@ function request(dir: string, sessionId: string, toolCallId: string, toolName: s
   writeFileSync(path.join(dir, name), `${JSON.stringify({ requestId, sessionId, createdAt: new Date().toISOString(), toolCallId, toolName, input, iteration: 1, agentId: "agent_1", conversationId: "conv_1", ...extra }, null, 2)}\n`);
   return requestId;
 }
-function responder(dir: string, opts: { now?: () => number; log?: string[] } = {}): Responder {
+function responder(dir: string, opts: { now?: () => number; log?: string[]; serveJudges?: boolean; serveDir?: string } = {}): Responder {
   const log = opts.log ?? [];
-  const env = { DERM_POLICY: policyFile, ...daemon.env() };
+  // The co-process is told the folder, as `main` tells it (approvals.check).
+  const env = { DERM_POLICY: policyFile, ...daemon.env(), [APPROVAL_DIR_VAR]: opts.serveDir ?? dir };
   const s = new GateServe({ agent: "cline", env, cwd: () => work, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   const deps: Deps = { ...defaultDeps(env, () => work), serve: () => s };
-  return new Responder({ dir, cwd: work, deps, log: (l) => log.push(l), ...(opts.now ? { now: opts.now } : {}) });
+  return new Responder({ dir, cwd: work, deps, log: (l) => log.push(l), ...(opts.now ? { now: opts.now } : {}), ...(opts.serveJudges !== undefined ? { serveJudges: opts.serveJudges } : {}) });
 }
 async function pass(r: Responder): Promise<void> {
   await r.tick();
@@ -77,9 +97,12 @@ describe("the folder", () => {
     expect(folderProblem(ok, work)).toBeUndefined();
     expect(folderProblem("rel/dir", work)).toMatch("not an absolute path");
     expect(folderProblem(path.join(root, "absent"), work)).toMatch("does not exist");
+    // Who may use the folder is judged here on Unix; on Windows by derm gate
+    // serve (below, "stops answering when the folder is opened to others").
     const open = folder();
     chmodSync(open, 0o755);
-    expect(folderProblem(open, work)).toMatch("0700");
+    if (SERVE_JUDGES_FOLDER) expect(folderProblem(open, work)).toBeUndefined();
+    else expect(folderProblem(open, work)).toMatch("0700");
     const link = path.join(root, `link-${k}`);
     symlinkSync(ok, link);
     expect(folderProblem(link, work)).toMatch("is a link");
@@ -108,7 +131,14 @@ describe.runIf(DERM !== undefined)("answers (needs a derm build)", () => {
     const rid = request(dir, "s1", "call_1", "run_commands", { commands: ["ls"] });
     await pass(responder(dir));
     expect(decision(dir, "s1", rid)).toEqual({ approved: true });
-    expect(lstatSync(path.join(dir, decisionName("s1", rid))).mode & 0o777).toBe(0o600);
+    // Windows: the file takes the folder's access list, which derm gate serve
+    // judged private before the write (Node's mode there is made up): no
+    // entry for Everyone, Users or Authenticated Users (fix pass 8's review).
+    if (SERVE_JUDGES_FOLDER) {
+      const entries = accessEntries(path.join(dir, decisionName("s1", rid))).map((e) => e.toLowerCase());
+      expect(entries.length).toBeGreaterThan(0);
+      for (const e of entries) expect(e, e).not.toMatch(/^(everyone|builtin\\users|nt authority\\authenticated users):/);
+    } else expect(lstatSync(path.join(dir, decisionName("s1", rid))).mode & 0o777).toBe(0o600);
     expect(readdirSync(dir).filter((n) => n.endsWith(".tmp"))).toEqual([]);
   });
   it("a denied call and the reject list: approved false with derm's reason", async () => {
@@ -180,14 +210,36 @@ describe.runIf(DERM !== undefined)("answers (needs a derm build)", () => {
   it("stops answering when the folder is opened to others or swapped", async () => {
     const dir = folder();
     const r = responder(dir);
-    expect(r.start()).toBeUndefined();
-    chmodSync(dir, 0o777);
+    expect(await r.begin()).toBeUndefined();
+    openToOthers(dir, 0o777);
     request(dir, "s1", "c1", "run_commands", { commands: ["ls"] });
     await pass(r);
-    expect(r.stopped).toMatch("0700");
+    expect(r.stopped).toMatch(OPEN_FOLDER);
     r.stop();
     expect(decision(dir, "s1", "c1")).toBeUndefined();
     chmodSync(dir, 0o700);
+  });
+  // Windows' path (note BF section 4.4), run on every system: derm gate
+  // serve judges who may use the folder, by the platform seam.
+  it("with derm gate serve judging the folder: a private one is answered in, one opened to others stops it", async () => {
+    const dir = folder();
+    const r = responder(dir, { serveJudges: true });
+    expect(await r.begin()).toBeUndefined();
+    const rid = request(dir, "s1", "c1", "run_commands", { commands: ["ls"] });
+    await pass(r);
+    expect(decision(dir, "s1", rid)).toEqual({ approved: true });
+    openToOthers(dir, 0o770);
+    request(dir, "s1", "c2", "run_commands", { commands: ["ls"] });
+    await pass(r);
+    expect(r.stopped).toMatch("yours alone");
+    expect(decision(dir, "s1", "c2")).toBeUndefined();
+    chmodSync(dir, 0o700);
+  });
+  it("with derm gate serve judging the folder: one it was not told is refused, and an unjudged one is never used", async () => {
+    const dir = folder();
+    const other = folder();
+    expect(await responder(dir, { serveJudges: true, serveDir: other }).begin()).toMatch("was not given this approval folder");
+    expect(responder(dir, { serveJudges: true }).start()).toMatch("has not been judged");
   });
   it("ignores files that are not requests: its own temp files, decisions, others", async () => {
     const dir = folder();
@@ -241,7 +293,7 @@ describe.runIf(DERM !== undefined)("an agent that writes in the folder (review P
   it("stops when the folder is swapped for another at the same path", async () => {
     const dir = folder();
     const r = responder(dir);
-    expect(r.start()).toBeUndefined();
+    expect(await r.begin()).toBeUndefined();
     renameSync(dir, `${dir}-moved`);
     mkdirSync(dir, { mode: 0o700 });
     chmodSync(dir, 0o700);
@@ -286,14 +338,19 @@ describe("the command", () => {
     expect(decision(dir, "s9", rid)).toEqual({ approved: true });
     child.kill("SIGTERM");
     const code = await new Promise<number | null>((r) => child.on("exit", r));
-    expect(code, err).toBe(0);
+    // Windows has no SIGTERM to catch: Node's kill ends the process there
+    // (TerminateProcess), so no exit code of its own is given; `derm run`
+    // stops it by --until-pid, the next test.
+    if (!SERVE_JUDGES_FOLDER) expect(code, err).toBe(0);
     expect(err).toContain("answering in");
     expect(err).not.toContain("derm-not-logged");
   });
-  it("stops by itself when the agent it was started for exits", async () => {
+  // Windows: the folder is judged by derm gate serve at start, so a derm is needed there.
+  it.runIf(DERM !== undefined || !SERVE_JUDGES_FOLDER)("stops by itself when the agent it was started for exits", async () => {
     const dir = folder();
     const agent = spawn(process.execPath, ["-e", "setTimeout(() => {}, 300)"]);
-    const child = spawn(process.execPath, ["--no-warnings", path.join(here, "../bin/derm-cline-approvals.mjs"), "--dir", dir, "--cwd", work, "--until-pid", String(agent.pid)], { stdio: "ignore" });
+    const env = SERVE_JUDGES_FOLDER ? { ...process.env, DERM_POLICY: policyFile, DERM_BIN: DERM ?? "" } : process.env;
+    const child = spawn(process.execPath, ["--no-warnings", path.join(here, "../bin/derm-cline-approvals.mjs"), "--dir", dir, "--cwd", work, "--until-pid", String(agent.pid)], { stdio: "ignore", env });
     const code = await new Promise<number | null>((r) => child.on("exit", r));
     expect(code).toBe(0);
   });

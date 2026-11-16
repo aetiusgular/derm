@@ -144,7 +144,12 @@ impl Drop for Prepared {
 /// What [`prepare`] decided for the chat.
 #[derive(Debug)]
 pub(crate) enum Kit {
-    /// The kit is built; pass it to the create.
+    /// The kit is built; pass it to the create. Built only on Unix
+    /// ([`prepare`]); sbx's start matches it on every system.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "prepare builds a kit on Unix hosts only")
+    )]
     Built(Prepared),
     /// No kit for this run, and why, for the start line.
     Without(String),

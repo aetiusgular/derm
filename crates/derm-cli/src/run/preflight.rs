@@ -325,7 +325,7 @@ fn checked(
 /// the chat's folder (`derm run` starts it there). A relative entry's match is
 /// returned relative, for the caller to refuse.
 #[cfg(unix)]
-fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
+pub(crate) fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
     use std::os::unix::fs::PermissionsExt;
     path_var.split(':').find_map(|d| {
         let d = if d.is_empty() { "." } else { d };
@@ -344,7 +344,7 @@ fn first_on_path(path_var: &str, bin: &str, cwd: &str) -> Option<String> {
 /// Windows (lane Z): PATH split on `;`, the name tried with Windows'
 /// program extensions (`platform::windows::shim::find_program`).
 #[cfg(windows)]
-fn first_on_path(path_var: &str, bin: &str, _cwd: &str) -> Option<String> {
+pub(crate) fn first_on_path(path_var: &str, bin: &str, _cwd: &str) -> Option<String> {
     crate::platform::windows::shim::find_program(bin, Some(path_var), &|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
 }

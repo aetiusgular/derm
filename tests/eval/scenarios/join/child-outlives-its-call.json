@@ -1,0 +1,35 @@
+{
+  "suite": "join",
+  "id": "child-outlives-its-call",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "( sleep 0.4; echo late > late.txt ) & true"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo done > done.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "late.txt",
+      "after": 400
+    },
+    {
+      "what": "write",
+      "path": "done.txt"
+    }
+  ]
+}

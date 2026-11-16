@@ -105,7 +105,17 @@ pub fn parse(text: &str) -> Result<Settings, String> {
     for k in obj.keys() {
         if !matches!(
             k.as_str(),
-            "version" | "boundary" | "tap" | "content" | "installs" | "computerUse"
+            "version"
+                | "boundary"
+                | "tap"
+                | "content"
+                | "installs"
+                | "computerUse"
+                // Wave 6 (the wave 6 base): lane 6A's and lane 6D's keys,
+                // read by their own code; named here so a file that sets
+                // them stays valid for the keys this crate reads.
+                | "tier"
+                | "taint"
         ) {
             return Err(format!("has a key the schema does not name ({k})"));
         }
@@ -240,6 +250,17 @@ mod tests {
                 .content_days,
             None
         );
+    }
+
+    /// The wave 6 base: `tier` and `taint` (contracts/settings.schema.json)
+    /// are named, so a file that sets them keeps the tap's own keys.
+    #[test]
+    fn the_wave6_keys_leave_the_taps_keys_read() {
+        let s = parse(
+            r#"{"version":1,"tap":{"on":false},"tier":{"default":"whole"},"taint":{"verdict":"record"}}"#,
+        )
+        .unwrap();
+        assert!(!s.tap_on);
     }
 
     /// Lane S's request 6 (case 113): the confirmed upstreams, as the schema

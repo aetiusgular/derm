@@ -91,6 +91,25 @@ fn subst(s: &str, map: &BTreeMap<String, String>) -> String {
     out
 }
 
+/// [`subst`] for a hook's stdin: in JSON, a placeholder sits inside a
+/// string, so its value goes in escaped (a Windows path's backslashes;
+/// Windows CI run 43716584933, "hook input is not JSON"). Elsewhere, and
+/// for any value with nothing to escape (every Unix path), the same text.
+fn subst_stdin(s: &str, map: &BTreeMap<String, String>) -> String {
+    let t = s.trim_start();
+    if !(t.starts_with('{') || t.starts_with('[')) {
+        return subst(s, map);
+    }
+    let escaped: BTreeMap<String, String> = map
+        .iter()
+        .map(|(k, v)| {
+            let j = serde_json::to_string(v).unwrap();
+            (k.clone(), j[1..j.len() - 1].to_string())
+        })
+        .collect();
+    subst(s, &escaped)
+}
+
 struct Scratch(PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -117,8 +136,99 @@ fn set_mode(p: &Path, m: u64) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(p, std::fs::Permissions::from_mode(m as u32));
 }
+/// On Windows a mode is given as an access list: the path is made private
+/// to the owner (`set_private_dir`, `set_private_file`), and a mode others
+/// can write under also grants Everyone write (`icacls /grant *S-1-1-0`),
+/// the form "others may write" takes there, which derm's Windows checks
+/// read from the access list (case 225; the same grant as
+/// `run::tests::fpw_s2_*`; a folder's grant is not inherited, as a Unix
+/// folder's mode is not its files'). Note BF section 4.1: the loose-mode cases run
+/// on Windows too, so each is held there by the Rust gate, not skipped.
 #[cfg(not(unix))]
-fn set_mode(_p: &Path, _m: u64) {}
+fn set_mode(p: &Path, m: u64) {
+    let _ = if p.is_dir() {
+        derm_core::platform::set_private_dir(p)
+    } else {
+        derm_core::platform::set_private_file(p)
+    };
+    if m & 0o022 != 0 {
+        let grant = if p.is_dir() {
+            "*S-1-1-0:(M)"
+        } else {
+            "*S-1-1-0:(W)"
+        };
+        let ok = std::process::Command::new("icacls")
+            .arg(p)
+            .args(["/grant", grant])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        assert!(ok, "icacls could not let Everyone write {}", p.display());
+    }
+}
+
+/// Calls whose answer a later rule changed on purpose, with the answer that
+/// rule gives: (case id, call index, the `want` fields it changes, as
+/// JSON). The recording stays as the TypeScript gave it; the rule and its
+/// source are named here.
+///
+/// - Fix pass 6 (note BE section 2.3, Tony's call of 15 Nov): with a chat
+///   token and no daemon answer, a call that taints the chat (an MCP
+///   result) is not run with its mark unkept, since the daemon is the only
+///   store a `derm run` chat's taint has. The TypeScript hook had no taint.
+/// - Fix pass 7 (FP6-R2's rest, Tony's "fix/build these" of 15 Nov): a
+///   token file named to the hook that cannot be read (here the daemon's
+///   own token, refused by name) still names a `derm run` chat, so its
+///   taint is the fail-closed state, not the light tier's file: the MCP
+///   call is denied, where the TypeScript hook asked.
+const CHANGED: &[(&str, usize, &str)] = &[
+    (
+        "claude_plugin_hook_claude_code_pretooluse_no_approver_connected_or_no_daemon_claude_code_s_own_prompt_contract",
+        1,
+        r#"{"stdout":"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (no daemon socket)); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}}"}"#,
+    ),
+    (
+        "gemini_extension_hook_the_hook_s_environment_reaches_the_daemon_through_the_alias_with_the_same_file_checks",
+        1,
+        r#"{"exit":2,"stdout":"{\"decision\":\"deny\",\"reason\":\"derm: derm's taint state: no taint state could be read (the daemon gave no answer (the hook was named a chat token it cannot read (a file gone, loosened or replaced))); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)\"}","stderr":"derm: derm's taint state: no taint state could be read (the daemon gave no answer (the hook was named a chat token it cannot read (a file gone, loosened or replaced))); a call that taints the chat or writes a file is not run with its taint unkept (derm fails closed)"}"#,
+    ),
+];
+
+/// Cases whose recorded Cursor gate is the wave 4 node launcher with Unix
+/// paths (`node --no-warnings "/.../derm-hook.mjs" cursor`), which derm never
+/// writes on Windows: there its Cursor row writes a PowerShell line, which
+/// `marks::is_derm_ps_command` reads (fix pass 9, note BG section 1; the
+/// `fp9_cursor_*` tests). They failed on Windows CI once a mode others may
+/// write stopped keeping them off it (fix pass 8). Unix-only by Tony's go of
+/// 15 Nov 2026 (20:09), after the Windows row was built.
+const UNIX_ONLY_CASES: &[(&str, &str)] = &[
+    (
+        "claude_plugin_hook_claude_code_s_hook_run_by_cursor_with_derm_s_cursor_gate_registered_and_failing_closed_it_g",
+        "its Cursor gate is the Unix node launcher, which derm does not write on Windows (fix pass 9)",
+    ),
+    (
+        "claude_plugin_hook_claude_code_s_hook_run_by_cursor_an_entry_counts_only_when_it_runs_derm_s_own_cursor_hook_f",
+        "its Cursor gate is the Unix node launcher, which derm does not write on Windows (fix pass 9)",
+    ),
+];
+
+/// Why a case's setup holds only on Unix, or `None`: a link or a FIFO,
+/// which the replay makes with Unix calls only. On Windows such a case is
+/// not run, and says why; every other case runs there, a mode others can
+/// write under included (`set_mode`; fix pass 6, note BE section 3.5; note
+/// BF section 4.1).
+pub fn unix_only(case: &Value) -> Option<String> {
+    if let Some((_, why)) = UNIX_ONLY_CASES.iter().find(|(id, _)| case["id"] == *id) {
+        return Some((*why).to_string());
+    }
+    for call in case["calls"].as_array()? {
+        for f in call["files"].as_array().into_iter().flatten() {
+            if matches!(f["kind"].as_str(), Some("link" | "fifo")) {
+                return Some(format!("{} is a {}", f["path"], f["kind"]));
+            }
+        }
+    }
+    None
+}
 
 /// Runs one recorded case: every call in order, each held to its recording.
 pub fn case(cases: &str, id: &str) {
@@ -129,6 +239,12 @@ pub fn case(cases: &str, id: &str) {
         .iter()
         .find(|c| c["id"] == id)
         .unwrap_or_else(|| panic!("no case {id}"));
+    if cfg!(windows) {
+        if let Some(why) = unix_only(case) {
+            eprintln!("not run on Windows: {why}");
+            return;
+        }
+    }
     let mut failures = Vec::new();
     for (i, call) in case["calls"].as_array().unwrap().iter().enumerate() {
         // A call the test made with its own dependencies: listed in
@@ -136,6 +252,17 @@ pub fn case(cases: &str, id: &str) {
         if call.get("manual").is_some() {
             continue;
         }
+        let mut call = call.clone();
+        if let Some((_, _, want)) = CHANGED
+            .iter()
+            .find(|(case_id, n, _)| *case_id == id && *n == i)
+        {
+            let patch: Value = serde_json::from_str(want).expect("CHANGED holds JSON");
+            for (k, v) in patch.as_object().unwrap() {
+                call["want"][k] = v.clone();
+            }
+        }
+        let call = &call;
         if let Err(why) = one(call) {
             failures.push(format!(
                 "call {i} ({} {}): {why}",
@@ -158,8 +285,8 @@ fn one(call: &Value) -> Result<(), String> {
         "{REPO}".to_string(),
         repo().canonicalize().unwrap().display().to_string(),
     );
-    // The fake daemon, when the case had one.
-    #[cfg(unix)]
+    // The fake daemon, when the case had one: a Unix socket, or on Windows
+    // a named pipe and its pointer file (fix pass 6, note BE section 3.5).
     let daemon = call["daemon"].as_str().map(|mode| {
         let d = super::fake_daemon::FakeDaemon::start(
             super::fake_daemon::Approve::parse(mode),
@@ -168,10 +295,6 @@ fn one(call: &Value) -> Result<(), String> {
         map.insert("{D}".into(), d.dir.display().to_string());
         d
     });
-    #[cfg(not(unix))]
-    if call["daemon"].is_string() {
-        return Err("the fake daemon is Unix only".into());
-    }
     // Temp folders: {T0} and on, each a fresh folder under the scratch root.
     for f in call["files"].as_array().unwrap() {
         let p = f["path"].as_str().unwrap();
@@ -244,12 +367,49 @@ fn one(call: &Value) -> Result<(), String> {
     for (k, v) in call["env"].as_object().unwrap() {
         cmd.env(k, subst(v.as_str().unwrap_or(""), &map));
     }
+    // Windows: the Rust gate reads the home in USERPROFILE, not HOME
+    // (`gate/policy.rs`, WB-P1-1); the recordings name HOME. And a process
+    // with no SystemRoot cannot start Windows' own sockets and crypto, so it
+    // passes through (CI run 43712895655: every replay that needed a home
+    // failed with "HOME is not an absolute path"; fix pass 6).
+    #[cfg(windows)]
+    {
+        let named = call["env"]["HOME"].as_str().map(|h| subst(h, &map));
+        cmd.env(
+            "USERPROFILE",
+            named.unwrap_or_else(|| home.to_string_lossy().into_owned()),
+        );
+        for k in ["SystemRoot", "windir"] {
+            if let Ok(v) = std::env::var(k) {
+                cmd.env(k, v);
+            }
+        }
+    }
+    // `derm run` names the chat its token holds (`DERM_CHAT_ID`,
+    // `run/plan.rs`), and since fix pass 6 a taint answer the daemon refuses
+    // (a chat the token does not hold) leaves the chat tainted with deny,
+    // never the light file (note BE section 2.3). These recordings predate
+    // taint and name no chat: a case that gives the fake's chat token gets
+    // the fake's chat, as under `derm run`; one that names its own keeps it.
+    {
+        let env = call["env"].as_object().unwrap();
+        let token = [
+            "DERM_CHAT_TOKEN",
+            "DERM_CHAT_TOKEN_FILE",
+            "GEMINI_CLI_DERM_CHAT_TOKEN_FILE",
+        ]
+        .iter()
+        .any(|k| env.contains_key(*k));
+        if daemon.is_some() && token && !env.contains_key("DERM_CHAT_ID") {
+            cmd.env("DERM_CHAT_ID", "chat-fake");
+        }
+    }
     cmd.current_dir(subst(call["cwd"].as_str().unwrap(), &map));
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("spawn derm: {e}"))?;
-    let stdin = subst(call["stdin"].as_str().unwrap(), &map);
+    let stdin = subst_stdin(call["stdin"].as_str().unwrap(), &map);
     if let Some(mut s) = child.stdin.take() {
         let _ = s.write_all(stdin.as_bytes());
     }
@@ -293,13 +453,24 @@ fn one(call: &Value) -> Result<(), String> {
     }
     // What a call's own text was must never reach a reply it did not have
     // in the TypeScript either (case 77): checked through rule 4.
-    #[cfg(unix)]
     if let Some(d) = &daemon {
         let got: Vec<Value> = d
             .lines()
             .into_iter()
             .map(|(_, l)| l)
             .filter(|l| l["op"] != "hello")
+            // Taint (wave 6, lane 6D) came after these recordings: the
+            // TypeScript hooks had none, so its op and its records are left
+            // out of the comparison, and `gate::taint`'s tests hold them
+            // (integration w6, phase 2, request 6D-1). Its verdict still
+            // reaches the reply, which is compared whole above.
+            .filter(|l| {
+                l["op"] != "taint"
+                    && !(l["op"] == "event"
+                        && l["event"]["kind"]
+                            .as_str()
+                            .is_some_and(|k| k.starts_with("taint.")))
+            })
             .map(|l| match l["op"].as_str() {
                 Some("event") => serde_json::json!({"op": "event", "kind": l["event"]["kind"], "harness": l["event"]["harness"], "decision": l["event"]["detail"]["decision"], "tool": l["event"]["detail"]["tool"]}),
                 Some("approve") => serde_json::json!({"op": "approve", "harness": l["request"]["harness"], "tool": l["request"]["tool"]}),

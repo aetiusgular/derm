@@ -490,10 +490,7 @@ pub fn is_private_path(path: &Path) -> bool {
     let Ok(s) = read_security(sys::raw(&h), SE_FILE_OBJECT) else {
         return false;
     };
-    s.owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
-        && is_private_security(&s, &me)
+    s.owner.as_ref().is_some_and(ident::trusted_owner) && is_private_security(&s, &me)
 }
 
 /// Whether the open file `f` may be changed by no one but this user (and its
@@ -510,9 +507,7 @@ pub fn only_owner_writes_file(f: &std::fs::File) -> bool {
         return false;
     }
     read_security(h, SE_FILE_OBJECT).is_ok_and(|s| {
-        s.owner
-            .as_ref()
-            .is_some_and(|o| ident::acceptable_owners().contains(o))
+        s.owner.as_ref().is_some_and(ident::trusted_owner)
             && only_owner_writes_security(&s, &ident::effective_user())
     })
 }
@@ -535,9 +530,7 @@ pub fn only_owner_writes(path: &Path) -> bool {
     let Ok(s) = read_security(sys::raw(&h), SE_FILE_OBJECT) else {
         return false;
     };
-    s.owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
+    s.owner.as_ref().is_some_and(ident::trusted_owner)
         && only_owner_writes_security(&s, &ident::effective_user())
 }
 
@@ -551,7 +544,7 @@ pub fn owned_plain_dir(path: &Path) -> bool {
     read_security(sys::raw(&h), SE_FILE_OBJECT)
         .ok()
         .and_then(|s| s.owner)
-        .is_some_and(|o| ident::acceptable_owners().contains(&o))
+        .is_some_and(|o| ident::trusted_owner(&o))
 }
 
 /// Opens a regular file of ours that no one else may use, for reading: the
@@ -571,17 +564,92 @@ pub fn open_private_file(path: &Path) -> io::Result<std::fs::File> {
         return Err(refuse("has a link, junction or short name on its path"));
     }
     let s = read_security(sys::raw(&h), SE_FILE_OBJECT)?;
-    if !s
-        .owner
-        .as_ref()
-        .is_some_and(|o| ident::acceptable_owners().contains(o))
-    {
+    if !s.owner.as_ref().is_some_and(ident::trusted_owner) {
         return Err(refuse("is not this user's"));
     }
     if !is_private_security(&s, &ident::effective_user()) {
         return Err(refuse("may be used by another user"));
     }
     Ok(std::fs::File::from(h))
+}
+
+/// The light tier's file rule on Windows, as on Unix (Windows test w6,
+/// WW6-6: only a reparse point was refused there): the open file's owner is
+/// one derm trusts (`trusted_owner`), it has one name (a second would let a
+/// line land in another file of the user's), and when others may read or
+/// write it, it is made the user's alone, as Unix sets 0600.
+pub fn check_light_file(file: &std::fs::File, path: &Path) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    let h = file.as_raw_handle() as HANDLE;
+    let s = read_security(h, SE_FILE_OBJECT).map_err(|e| format!("{}: {e}", path.display()))?;
+    match &s.owner {
+        Some(o) if ident::trusted_owner(o) => {}
+        Some(o) => return Err(format!("{} belongs to another user ({o})", path.display())),
+        None => return Err(format!("{}: its owner could not be read", path.display())),
+    }
+    match links(h) {
+        Some(1) => {}
+        Some(n) => {
+            return Err(format!(
+                "{} has {n} names (a hard link); derm writes only a file with one",
+                path.display()
+            ))
+        }
+        None => {
+            return Err(format!(
+                "{}: its names could not be counted",
+                path.display()
+            ))
+        }
+    }
+    if !is_private_security(&s, &ident::effective_user()) {
+        let w = open_plain(path, READ_CONTROL | WRITE_DAC, false)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        // The handle by path must name the file checked above.
+        if file_id(sys::raw(&w)).is_none() || file_id(sys::raw(&w)) != file_id(h) {
+            return Err(format!("{} changed while it was checked", path.display()));
+        }
+        set_user_only(sys::raw(&w), SE_FILE_OBJECT, false)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The light tier's folder rule on Windows, as on Unix (WW6-6): a plain
+/// folder (no reparse point), an owner derm trusts, no one else may write
+/// it, and when made here or `tighten`, the user's alone (Unix 0700).
+pub fn check_light_folder(dir: &Path, made: bool, tighten: bool) -> Result<(), String> {
+    let h = open_plain(dir, READ_CONTROL, true).map_err(|e| format!("{}: {e}", dir.display()))?;
+    if !path_is_plain(sys::raw(&h), dir).unwrap_or(false) {
+        return Err(format!(
+            "{} is not a folder (a link or a junction is refused)",
+            dir.display()
+        ));
+    }
+    let s = read_security(sys::raw(&h), SE_FILE_OBJECT)
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
+    match &s.owner {
+        Some(o) if ident::trusted_owner(o) => {}
+        Some(o) => return Err(format!("{} belongs to another user ({o})", dir.display())),
+        None => return Err(format!("{}: its owner could not be read", dir.display())),
+    }
+    let me = ident::effective_user();
+    if !only_owner_writes_security(&s, &me) {
+        return Err(format!("{} can be written by others", dir.display()));
+    }
+    if (made || tighten) && !is_private_security(&s, &me) {
+        set_private(dir, true).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+/// The owner of an open file, read from its handle (WW6-7: a refusal names
+/// it).
+pub fn owner_of_file(f: &std::fs::File) -> io::Result<UserId> {
+    use std::os::windows::io::AsRawHandle;
+    read_security(f.as_raw_handle() as HANDLE, SE_FILE_OBJECT)?
+        .owner
+        .ok_or_else(|| io::Error::other("the owner could not be read"))
 }
 
 /// The volume serial number and file id of an open object, to tell whether
@@ -683,6 +751,15 @@ pub fn private_dir(dir: &Path) -> io::Result<()> {
                 return Err(link());
             }
         }
+    }
+    // WW6R2-1 (Windows test w6 retest 2, settled in fix pass 5): a junction
+    // that is already there is refused before `create_dir_all`, which on it
+    // checks `is_dir()` through the junction (std 1.97.0 `fs.rs:3427`); where
+    // the system will not traverse it (RedirectionGuard, error 448, seen under
+    // the SAFER token) that check is false and std returns the create's
+    // "already exists" (183), so the reason was lost (the call still failed).
+    if is_reparse_point(dir) {
+        return Err(link());
     }
     std::fs::create_dir_all(dir)?;
     if is_reparse_point(dir) {
@@ -993,10 +1070,17 @@ mod tests {
             .status()
             .unwrap();
         assert!(ok.success());
+        // Made through the folder itself: where the system will not traverse
+        // a junction this token made (RedirectionGuard, error 448, under the
+        // SAFER token; WW6R2-1), a create through it fails before any derm
+        // code runs. The open through the junction is then refused by the
+        // system (448), or opens and is not plain; either refuses the path.
+        std::fs::create_dir_all(d.join("x")).unwrap();
         let inside = j.join("x");
-        std::fs::create_dir_all(&inside).unwrap();
-        let h = open_plain(&inside, READ_CONTROL, true).unwrap();
-        assert!(!path_is_plain(sys::raw(&h), &inside).unwrap());
+        match open_plain(&inside, READ_CONTROL, true) {
+            Ok(h) => assert!(!path_is_plain(sys::raw(&h), &inside).unwrap()),
+            Err(e) => assert_eq!(e.raw_os_error(), Some(448), "{e}"),
+        }
         assert!(
             open_plain(&j, READ_CONTROL, true).is_err(),
             "the junction itself"

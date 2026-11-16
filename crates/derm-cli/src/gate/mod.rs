@@ -11,17 +11,26 @@
 //! - [`daemon`]: the daemon client (`daemon.ts`): `approve` and `event`.
 //! - [`decide`]: `derm acp`'s decide path, moved unchanged from `acp/`.
 //! - `serve/`: `derm gate serve`, lane 5bC's (a stub on the base).
+//! - `locallog/`: the light tier's per-chat log, lane 6B's; `taint/`: taint
+//!   at the gate, lane 6D's (the wave 6 base's stubs; `post_event` and
+//!   `decide_call` call them).
+//! - [`daemon_stop`]: a shell call that stops derm's daemon or a feed asks
+//!   (fix pass 6, note BE section 2.3).
 //!
-//! Everything here but `serve/` is integration's after the base (wave 5b
-//! plan section 2.0, part 3): a lane that needs a change writes a request.
+//! Everything here but `serve/`, `locallog/` and `taint/` is integration's
+//! (wave 5b plan section 2.0, part 3; wave 6 plan section 2.0, part 3): a
+//! lane that needs a change writes a request.
 
 pub mod core;
 pub mod daemon;
+pub mod daemon_stop;
 pub mod decide;
+pub mod locallog;
 pub mod policy;
 pub mod serve;
+pub mod taint;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "../../tests/support/fake_daemon.rs"]
 pub(crate) mod fake_daemon;
 

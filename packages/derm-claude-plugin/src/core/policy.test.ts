@@ -189,6 +189,17 @@ describe("loadPolicy (contract section 1; case 46 is the caller's)", () => {
     expect(d.reason).toBe("no rule (no policy file)");
   });
   it("bad JSON, a bad schema, an unknown field or a folder never fail open", () => {
+    // Windows: no file reaches the parser (WW5-3); each is the empty policy
+    // with the Windows reason, so none fails open there either. The parser's
+    // own cases (parsePolicy) run on every system.
+    if (process.platform === "win32") {
+      for (const [name, text] of [["a.json", "{"], ["b.json", '{"version":2}'], ["e.json", '{"version":1,"rules":[{"tool":"Bash","action":"allow"}]}']] as const) {
+        const l = loadPolicy(file(name, text));
+        expect(l.problem, name).toBe(WINDOWS_POLICY_PROBLEM);
+        expect(l.policy.rules, name).toEqual([]);
+      }
+      return;
+    }
     expect(loadPolicy(file("a.json", "{")).problem).toBe("policy file is not JSON");
     expect(loadPolicy(file("b.json", '{"version":2}')).problem).toContain("version");
     expect(loadPolicy(file("c.json", '{"version":1,"rules":[{"tool":"*","action":"allow","extra":1}]}')).problem).toContain("unknown field");
@@ -218,8 +229,13 @@ describe("loadPolicy (contract section 1; case 46 is the caller's)", () => {
     expect(loadPolicy("policy.json").problem).toBe("policy path is not absolute");
     const loose = file("loose.json", JSON.stringify(policyFixture));
     chmodSync(loose, 0o666);
-    expect(loadPolicy(loose).problem).toBe("policy file writable by group or others");
     expect(loadPolicy(loose).policy.rules).toEqual([]);
+    // Windows: no policy at all, so the loose file is not used either.
+    if (process.platform === "win32") {
+      expect(loadPolicy(loose).problem).toBe(WINDOWS_POLICY_PROBLEM);
+      return;
+    }
+    expect(loadPolicy(loose).problem).toBe("policy file writable by group or others");
     const openDir = path.join(dir, "open");
     mkdirSync(openDir);
     chmodSync(openDir, 0o777);
@@ -230,7 +246,8 @@ describe("loadPolicy (contract section 1; case 46 is the caller's)", () => {
   it("reads a good file through a symlink", () => {
     const good = file("good.json", JSON.stringify(policyFixture));
     symlinkSync(good, path.join(dir, "link.json"));
-    expect(loadPolicy(path.join(dir, "link.json")).policy.rules.length).toBe(20);
+    // Windows: the hook uses no policy there (WW5-3), through a link or not.
+    expect(loadPolicy(path.join(dir, "link.json")).policy.rules.length).toBe(process.platform === "win32" ? 0 : 20);
   });
   it("cleans up", () => {
     rmSync(dir, { recursive: true, force: true });

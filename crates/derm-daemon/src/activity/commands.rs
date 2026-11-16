@@ -75,6 +75,12 @@ pub fn clean_context(mut context: ChatContext) -> Option<ChatContext> {
         }
     }
     context.folders = folders;
+    // BW6R3-2: an absolute path with no `..` part, as a folder is, or none.
+    context.derm_exe = context
+        .derm_exe
+        .as_deref()
+        .and_then(plain_folder)
+        .filter(|p| p.len() <= MAX_FOLDER_LEN && !p.contains('\0'));
     Some(context)
 }
 
@@ -105,7 +111,9 @@ fn plain_folder(folder: &str) -> Option<String> {
 
 /// The chat's harness and folders, for the check. Sent by the webview when a
 /// chat opens or its folders change.
-pub fn activity_set_chat(context: ChatContext) {
+pub fn activity_set_chat(mut context: ChatContext) {
+    // Only a daemon-scope `run.start` names the chat's derm (BW6R3-2).
+    context.derm_exe = None;
     let Some(context) = clean_context(context) else {
         return;
     };
@@ -505,6 +513,28 @@ mod tests {
         dir
     }
 
+    /// BW6R3-2: a chat's derm is kept only as a plain absolute path.
+    #[cfg(not(windows))]
+    #[test]
+    fn bw6r3_2_a_chats_derm_is_a_plain_absolute_path() {
+        let with = |p: &str| {
+            clean_context(ChatContext {
+                chat_id: "c1".into(),
+                derm_exe: Some(p.into()),
+                ..ChatContext::default()
+            })
+            .unwrap()
+            .derm_exe
+        };
+        assert_eq!(
+            with("/home/t/.local/bin/derm").as_deref(),
+            Some("/home/t/.local/bin/derm")
+        );
+        assert_eq!(with("derm"), None);
+        assert_eq!(with("/home/t/../x/derm"), None);
+        assert_eq!(with("/home/t/d\0erm"), None);
+    }
+
     #[test]
     fn contexts_keep_only_safe_folders() {
         let context = clean_context(ChatContext {
@@ -517,6 +547,7 @@ mod tests {
                 "/Users/t/app".into(),
                 "/Users/t/with space".into(),
             ],
+            derm_exe: None,
         })
         .unwrap();
         assert_eq!(context.folders, vec!["/Users/t/app", "/Users/t/with space"]);
@@ -555,6 +586,7 @@ mod tests {
                 chat_id: "c1".into(),
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
+                derm_exe: None,
             },
         )]);
         let collector_events = collector::EventsReply {
@@ -640,6 +672,7 @@ mod tests {
                 chat_id: "c1".into(),
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
+                derm_exe: None,
             },
         )]);
         let reply = collector::EventsReply {
@@ -697,6 +730,7 @@ mod tests {
                 chat_id: "c1".into(),
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
+                derm_exe: None,
             },
         )]);
         let reply = collector::EventsReply {

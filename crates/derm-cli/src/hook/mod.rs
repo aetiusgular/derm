@@ -61,6 +61,44 @@ pub struct Reply {
     pub exit: u8,
 }
 
+/// The reason a hook input is refused when its byte-order mark arrived read
+/// as Windows-1252 and non-ASCII text follows it.
+pub const GARBLED_INPUT: &str = "hook input was read as Windows-1252 on its way here (its byte-order mark arrived as \u{ef}\u{bb}\u{bf}), so its non-ASCII text is garbled; derm does not decide on it";
+
+/// The hook's input without the byte-order marks Windows PowerShell puts in
+/// front of it: at most two, each a real one (U+FEFF) or one read as
+/// Windows-1252 (`\u00ef\u00bb\u00bf`, which UTF-8 then carries as six bytes).
+/// Cursor pipes a hook's payload through `$input` with `$OutputEncoding`
+/// UTF-8, and Windows PowerShell 5.1 writes a BOM first: `efbbbf` on the box
+/// under Cursor's own wrapper (fix pass 9); Cursor staff say to strip it
+/// (forum.cursor.com/t/172787); a mangled one, sometimes two, is reported
+/// too (vectorize-io/hindsight#5366). A BOM is not JSON, so the call was
+/// denied as "not JSON" (RFC 8259 section 8.1: a parser may ignore one).
+///
+/// A mark read as Windows-1252 means the whole stream was, so every
+/// non-ASCII character after it is garbled too (`José` arrives as `JosÃ©`)
+/// and a rule naming the real text would not match it. Such input is
+/// refused with [`GARBLED_INPUT`] unless the rest is ASCII, which that
+/// misreading leaves as it was (fix pass 9's second review, finding 1).
+pub fn without_bom(text: &str) -> Result<&str, &'static str> {
+    let mut t = text;
+    let mut garbled = false;
+    for _ in 0..2 {
+        if let Some(rest) = t.strip_prefix('\u{feff}') {
+            t = rest;
+        } else if let Some(rest) = t.strip_prefix("\u{ef}\u{bb}\u{bf}") {
+            t = rest;
+            garbled = true;
+        } else {
+            break;
+        }
+    }
+    if garbled && !t.is_ascii() {
+        return Err(GARBLED_INPUT);
+    }
+    Ok(t)
+}
+
 /// The agent's own deny, with `derm: <reason>` (each dialect's `deny` or
 /// `block` in the TypeScript, `bin/fallback.mjs` for the native ones; Hermes's
 /// plugin adds the prefix itself). For an
@@ -111,16 +149,39 @@ pub fn fail_closed(agent: &str, reason: &str) -> Reply {
     }
 }
 
-pub const USAGE: &str = "usage: derm hook <agent> <event>
+pub const USAGE: &str = "usage: derm hook <agent> <event> [--run-chat <chat>]
 
   The gate for an agent's command hook: the agent's hook input on stdin, its
   reply on stdout, stderr and the exit code (contracts/hook-dialects.md).
   The agent's registration names the event (`derm connect <agent> --gate`).";
 
 /// Runs one hook call: reads stdin, answers, writes the reply.
+/// Set by `derm hook` itself from `--run-chat <chat>`, never read from the
+/// environment it was started with: the chat `derm run` registered this
+/// hook for (fix pass 6's review). Then the chat is that one, and its
+/// taint is the daemon's or the fail-closed state, never the light tier's
+/// file, even when a project's or the agent's settings `env` unset the chat
+/// token (`gate::taint`).
+pub const RUN_CHAT: &str = "DERM_RUN_CHAT";
+
 pub fn main(args: &[String]) -> u8 {
     let agent = args.first().map(String::as_str).unwrap_or("");
     let event = args.get(1).map(String::as_str).unwrap_or("");
+    // Whatever the hook inherited is not derm run's word.
+    std::env::remove_var(RUN_CHAT);
+    match &args[2.min(args.len())..] {
+        [] => {}
+        [flag, chat] if flag == "--run-chat" && !chat.trim().is_empty() => {
+            std::env::set_var(RUN_CHAT, chat);
+            std::env::set_var("DERM_CHAT_ID", chat);
+        }
+        _ => {
+            let r = fail_closed(agent, "derm hook takes <agent> <event> [--run-chat <chat>]");
+            let _ = std::io::stdout().write_all(r.stdout.as_bytes());
+            let _ = std::io::stderr().write_all(r.stderr.as_bytes());
+            return r.exit;
+        }
+    }
     let reply = answer(agent, event, &mut std::io::stdin().lock());
     let _ = std::io::stdout().write_all(reply.stdout.as_bytes());
     let _ = std::io::stderr().write_all(reply.stderr.as_bytes());
@@ -171,6 +232,45 @@ fn agent_list() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Fix pass 9 (note BG section 1): a leading UTF-8 BOM, as Windows
+    /// PowerShell 5.1 can put on a hook's stdin, is not a reason to deny.
+    #[test]
+    fn fp9_a_leading_bom_is_not_part_of_the_input() {
+        let with = b"\xEF\xBB\xBF{\"hook_event_name\":\"PreToolUse\"}";
+        assert!(super::claude_format::parse_input(with).is_ok());
+        let read = super::native::read_stdin(&mut &with[..]).unwrap();
+        assert!(read.starts_with('{'), "{read:?}");
+        assert!(serde_json::from_str::<serde_json::Value>(&read).is_ok());
+        // At most two, real or read as Windows-1252, and only at the start.
+        assert_eq!(
+            super::without_bom("\u{feff}\u{feff}\u{feff}x"),
+            Ok("\u{feff}x")
+        );
+        assert_eq!(super::without_bom("\u{ef}\u{bb}\u{bf}\u{feff}{}"), Ok("{}"));
+        assert_eq!(super::without_bom("x\u{feff}"), Ok("x\u{feff}"));
+        assert_eq!(super::without_bom("\u{ef}\u{bb}x"), Ok("\u{ef}\u{bb}x"));
+        // A real BOM with UTF-8 text after it is fine.
+        assert_eq!(
+            super::without_bom("\u{feff}{\"p\":\"Jos\u{e9}\"}"),
+            Ok("{\"p\":\"Jos\u{e9}\"}")
+        );
+        // A garbled one with non-ASCII after it: the rest is garbled too.
+        let garbled = b"\xC3\xAF\xC2\xBB\xC2\xBF{\"p\":\"C:\\\\Users\\\\Jos\xC3\x83\xC2\xA9\"}";
+        assert_eq!(
+            super::claude_format::parse_input(garbled).err(),
+            Some(super::GARBLED_INPUT)
+        );
+        assert_eq!(
+            super::native::read_stdin(&mut &garbled[..])
+                .err()
+                .as_deref(),
+            Some(super::GARBLED_INPUT)
+        );
+        // The mangled one as bytes (UTF-8 of U+00EF U+00BB U+00BF).
+        let mangled = b"\xC3\xAF\xC2\xBB\xC2\xBF{\"hook_event_name\":\"PreToolUse\"}";
+        assert!(super::claude_format::parse_input(mangled).is_ok());
+    }
+
     use super::*;
 
     #[test]

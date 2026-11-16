@@ -429,9 +429,10 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
     );
 }
 
-// Linux only since fix pass 1: where no check is built (macOS) the daemon
-// asks for no password (MW5-4), and the test below is that platform's.
-#[cfg(target_os = "linux")]
+// Where a check is built: Linux (`unix_chkpwd`) and, since fix pass 12
+// (Mac), macOS (its PAM service `checkpw`). Where none is, the daemon asks
+// for no password (MW5-4), and the test below is that platform's.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 /// S2 part b (wave 5 lane V), end to end: the chat runs as you, so the
 /// daemon refuses a `yes` until the person's password comes with it. The
 /// approver asks for it with echo off, sends it once, shows the card again
@@ -439,6 +440,16 @@ fn status_finds_an_open_chat_between_two_floods_of_events() {
 /// password reaches the screen or a record.
 #[test]
 fn a_yes_for_a_chat_that_runs_as_you_asks_for_the_password() {
+    // macOS: the wrong password below counts as a failed login for this
+    // account (`derm-daemon` `approver/person.rs`, `MacPam`), so there it
+    // runs only in CI or with `DERM_TEST_PAM=1`.
+    if cfg!(target_os = "macos")
+        && std::env::var_os("CI").is_none()
+        && std::env::var_os("DERM_TEST_PAM").is_none()
+    {
+        eprintln!("a failed login for this account; set DERM_TEST_PAM=1 to run");
+        return;
+    }
     let l = live("person");
     let (tx, rx) = mpsc::channel::<In>();
     let conn = Conn::open(&l.socket, "test approver").unwrap();
@@ -487,10 +498,11 @@ fn a_yes_for_a_chat_that_runs_as_you_asks_for_the_password() {
     let _ = harness.wait();
 }
 
-/// S2 part b where no person check is built (macOS; Mac test w5, MW5-4):
+/// S2 part b where no person check is built (the BSDs; macOS until fix pass
+/// 12 (Mac), Mac test w5, MW5-4):
 /// the daemon refuses the `yes` and asks for no password, since none could
 /// pass; the approver shows why and the card again, and Enter answers no.
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
 #[test]
 fn a_yes_for_a_chat_that_runs_as_you_is_refused_with_no_password_where_no_check_is_built() {
     let l = live("person-none");

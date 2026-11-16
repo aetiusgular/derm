@@ -11,9 +11,15 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { chatToken, decisionId, exchange, insideFolder, socketLooksOwned } from "./daemon.ts";
-import { loadPolicyFrom } from "./policy.ts";
+import { loadPolicyFrom, WINDOWS_POLICY_PROBLEM } from "./policy.ts";
 import { startFakeDaemon } from "../testing/fakeDaemon.ts";
 
+// On Windows Node reads no owner and a made-up mode (libuv `src/win/fs.c`,
+// policy.ts loadPolicy), so the core trusts no token file, policy file or
+// daemon endpoint there, and each test below that needs one asserts that
+// refusal instead (WW5-3, case 225, AU-1; note BF section 4.2). The Rust
+// gate, which reads the access list, is what decides on Windows.
+const WIN = process.platform === "win32";
 const root = mkdtempSync(path.join(tmpdir(), "derm-tok-"));
 chmodSync(root, 0o700);
 const safe = path.join(root, "safe");
@@ -44,7 +50,8 @@ describe("chatToken", () => {
   });
 
   it("reads DERM_CHAT_TOKEN_FILE when it is absolute, yours, private and outside the session folder", () => {
-    expect(chatToken({ DERM_CHAT_TOKEN_FILE: tokenFile }, project)).toBe(CHAT);
+    // Windows: who may read the file cannot be read, so it is never used.
+    expect(chatToken({ DERM_CHAT_TOKEN_FILE: tokenFile }, project)).toBe(WIN ? undefined : CHAT);
   });
 
   it("refuses a token file that is relative, readable by others, a link, malformed or inside the session folder", () => {
@@ -82,10 +89,13 @@ describe("a daemon-scope token is never presented (security finding S3)", () => 
       writeFileSync(copy, `${d.token}\n`, { mode: 0o600 });
       const env = { DERM_DAEMON_SOCKET: d.socket, DERM_CHAT_TOKEN_FILE: copy };
       const r = await exchange([{ op: "approve", request: { id: "ap-1" } }], { env, client: "t", replyTimeoutMs: 500, cwd: project });
-      expect("error" in r && r.error).toMatch(/daemon scope/);
+      // Windows: the copied file is not read (as above), and the endpoint is
+      // never trusted, so the token reaches no daemon at all.
+      expect("error" in r && r.error).toMatch(WIN ? /no chat token/ : /daemon scope/);
       expect(d.lines.filter((l) => l.line.op !== "hello")).toHaveLength(0);
       const r2 = await exchange([{ op: "approve", request: { id: "ap-2" } }], { env: { DERM_DAEMON_SOCKET: d.socket, DERM_CHAT_TOKEN: d.token }, client: "t", replyTimeoutMs: 500, cwd: project });
-      expect("error" in r2 && r2.error).toMatch(/daemon scope/);
+      expect("error" in r2 && r2.error).toMatch(WIN ? /cannot be checked on Windows/ : /daemon scope/);
+      if (WIN) expect(d.lines).toHaveLength(0);
     } finally {
       await d.close();
     }
@@ -125,7 +135,10 @@ describe("paths from the environment", () => {
     const refused = loadPolicyFrom({ DERM_POLICY: inProject }, project);
     expect(refused.problem).toMatch(/inside the session folder/);
     expect(refused.policy.rules).toHaveLength(0);
-    expect(loadPolicyFrom({ DERM_POLICY: outside }, project).policy.rules).toHaveLength(1);
+    const accepted = loadPolicyFrom({ DERM_POLICY: outside }, project);
+    // Windows: the path is accepted, and the file is then not used (WW5-3).
+    expect(accepted.problem).toBe(WIN ? WINDOWS_POLICY_PROBLEM : undefined);
+    expect(accepted.policy.rules).toHaveLength(WIN ? 0 : 1);
   });
 
   it("does not apply the folder check to the default ~/.derm/policy.json (a session started in HOME)", () => {
@@ -167,7 +180,11 @@ describe("the daemon's endpoint on Windows (lane Z's request 2)", () => {
   });
 
   it("is still checked the Unix way elsewhere", () => {
-    expect(socketLooksOwned(path.join(tmpdir(), "no-such-derm-socket"), "linux")).toBe("no daemon socket");
+    // On a Windows host there is no uid to check a Unix socket against:
+    // refused, never trusted.
+    expect(socketLooksOwned(path.join(tmpdir(), "no-such-derm-socket"), "linux")).toBe(
+      WIN ? "this system gives no owner to check the daemon socket against" : "no daemon socket",
+    );
   });
 });
 

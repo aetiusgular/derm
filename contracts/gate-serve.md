@@ -30,7 +30,7 @@ The first line is `hello`:
 {"id":1,"ok":true,"action":"allow","normalizedTool":"bash","reason":"rule bash allow","updatedInput":null,"redacted":0,"askTimeoutSeconds":60}
 ```
 
-`call` is `gate::core::GateCall` (`tool` as the agent gave it, `input` the tool's input, `chat`, `toolUseId`, `fullAccess` where the plugin knows it, else `DERM_FULL_ACCESS`); `description` is the tool's description where the host shows one (Pi), for the description pin (case 96). The reply is `gate::core::decide_call`'s `GateAnswer`, one decide path with `derm hook` and `derm acp` (case 229). The co-process posts the decision's `approval` record itself (contracts/events.md section 4, `gate::daemon::post_event`, the id from `decision_id`), and the `install.call` records for an install (`gate::core::install_events`); the plugin posts neither.
+`call` is `gate::core::GateCall` (`tool` as the agent gave it, `input` the tool's input, `chat`, `toolUseId`, `fullAccess` where the plugin knows it, else `DERM_FULL_ACCESS`); `description` is the tool's description where the host shows one (Pi), for the description pin (case 96). The reply is `gate::core::decide_call`'s `GateAnswer`, one decide path with `derm hook` and `derm acp` (case 229). The co-process posts the decision's `approval` record itself (contracts/events.md section 4, `gate::daemon::post_event`, the id from `decision_id`), and the `install.call` records for an install (`gate::core::install_events`); the plugin posts neither. A plugin that keeps its own records sends `"record": false` (derm-pi: its records are the decision notices its emitter sends the daemon); then the co-process posts nothing to the daemon, and when no daemon takes the chat (a `hello` with its token fails) it keeps the light tier's record of the outcome itself, in `~/.derm/local/<chat>.jsonl`, and a record it cannot keep turns the answer into a deny, as for every gate (case 249; box test w6, BW6-3). `approve` with `"record": false` does the same for its outcome, and for `harness` keeps the ask before the host's own prompt shows.
 
 ### 2.2 `approve`
 
@@ -62,6 +62,18 @@ The record is derm-pi's `~/.derm/memory-index.json` (`DERM_MEMORY_STATE` when ab
 ```
 
 `state`: `approved` (the hash matches), `changed` (another hash is approved: `lines` are the approved ones, for the card), `unknown` (none). `trusted: false` when the record cannot be used (a link, others can write it, not the user's, unreadable): then nothing is approved and `memory.approve` answers `written: false`. A missing record is trusted and empty. `memory.approve` writes a new 0600 file beside the record and renames it over, as `memory.ts` does. Only the person's click sends `memory.approve` (case 48); the co-process cannot tell a click from a call, so the plugin's own guard stays.
+
+### 2.5 `approvals.check` (Cline's approval folder, note BF section 4.4)
+
+The folder is the one in the co-process's own environment, `DERM_CLINE_APPROVAL_DIR`, which `derm-cline`'s responder sets from the `--dir` that `derm run cline` gives it; a request names no path. The co-process judges it through the platform seam (`owned_private_dir`), so on Windows, where Node reads no owner and a made-up mode, the folder is judged by its access list.
+
+```
+{"id":6,"op":"approvals.check"}
+{"id":6,"ok":true}
+{"id":6,"ok":true,"problem":"the approval folder can be read or written by others, or is not yours (it must be yours alone)"}
+```
+
+`problem` when the variable is unset, the path is relative, inside the session folder, missing, a link, not a folder, or not the user's alone. The responder uses it on Windows only, before it starts and before each poll and write; on Linux and macOS it judges the folder itself, as before. A problem, or no answer, stops the responder, and Cline denies every waiting call after 5 minutes.
 
 ## 3. Errors
 

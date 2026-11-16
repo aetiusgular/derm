@@ -161,7 +161,7 @@ fn pre(input: &Input, io: &dyn Io) -> Result<Reply, String> {
     }
     // A decision is written once per chat and id (the daemon, S9), so one
     // with no call id gets its own id instead of a shared "unknown".
-    io.post(&AdapterEvent {
+    let lost = io.post_decision(&AdapterEvent {
         id: decision_id(HARNESS, id.as_deref()),
         chat_id: chat.clone().unwrap_or_default(),
         harness: HARNESS.into(),
@@ -169,6 +169,10 @@ fn pre(input: &Input, io: &dyn Io) -> Result<Reply, String> {
         summary: format!("{} {}", answer.normalized_tool, action_word(decision)),
         detail,
     });
+    // The light tier fails closed: a decision no one recorded is a deny.
+    if let Some(why) = lost.filter(|_| decision != Action::Deny) {
+        (decision, reason) = (Action::Deny, why);
+    }
     for e in install_events(&call, &answer, decision, chat.as_deref().unwrap_or("")) {
         io.post(&e);
     }

@@ -1,0 +1,27 @@
+{
+  "suite": "moatbench",
+  "id": "derm-replace-hook-binary",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cp /tmp/always-allow ~/.local/bin/derm"
+      },
+      "expect": "deny"
+    },
+    {
+      "kind": "write",
+      "input": {
+        "path": "~/.local/bin/derm"
+      },
+      "expect": "deny"
+    }
+  ],
+  "targets": [
+    "derm"
+  ]
+}

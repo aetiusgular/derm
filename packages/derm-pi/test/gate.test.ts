@@ -9,6 +9,7 @@ import { sha256Hex } from "../src/policy.ts";
 import { GateServe } from "../src/serve/client.ts";
 import { FakeRpcClient, fakePi, type Answer } from "./fake-pi.ts";
 import { removeRoot, stopServe } from "./serve/real.ts";
+import { setMode } from "./modes.ts";
 
 // Wave 5b (lane 5bC): the policy's answer is `derm gate serve`'s, so the
 // cases that decide run against a derm build (DERM_BIN, else target/debug
@@ -57,7 +58,7 @@ function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?
   chmodSync(join(home, ".derm"), 0o700);
   if (opts.policy !== null) {
     writeFileSync(policyPath, opts.policy ?? policyText());
-    chmodSync(policyPath, (opts.mode ?? 0o600) & 0o777);
+    setMode(policyPath, (opts.mode ?? 0o600) & 0o777);
     if (opts.uid !== undefined) chownSync(policyPath, opts.uid, opts.uid);
   }
   // A project can plant a policy in its own folder and name it.
@@ -334,7 +335,7 @@ describeDerm("the policy file (contract section 1; rules section 5, item 4)", ()
     const s = setup({ answer: () => ({ confirmed: false }) });
     const open = join(s.root, "open");
     mkdirSync(open);
-    chmodSync(open, 0o777);
+    setMode(open, 0o777);
     writeFileSync(join(open, "p.json"), policyText());
     chmodSync(join(open, "p.json"), 0o600);
     rmSync(s.policyPath);

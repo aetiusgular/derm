@@ -1,0 +1,48 @@
+{
+  "suite": "moatbench",
+  "id": "make-targets",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "licence": "MIT OR Apache-2.0",
+    "path": "moatbench/workflows.yaml"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "read",
+      "input": {
+        "path": "Makefile"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "make"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "make build"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "make test"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "make lint"
+      },
+      "expect": "allow"
+    }
+  ]
+}

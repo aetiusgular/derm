@@ -27,6 +27,8 @@ fork-docker-mcp = []
 # [lane-D]
 # [lane-5bA]
 # [lane-5bB]
+# [lane-6A]
+# [lane-6B]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -45,6 +47,15 @@ name = "derm-core"
 serde = "1"
 # [lane-X]
 # [lane-Z]
+`;
+
+const tapCargo = `[package]
+name = "derm-tap"
+
+[dependencies]
+serde = "1"
+# [lane-6C]
+# [lane-6D]
 `;
 
 git("init", "-q", "-b", "main");
@@ -83,6 +94,18 @@ for (const [p, t] of Object.entries({
   "crates/derm-core/Cargo.toml": coreCargo,
   "package.json": "{}\n",
   "README.md": "# r\n",
+  // Wave 6 (the wave 6 base): its seams, red tests and the shared tap manifest.
+  "crates/derm-cli/src/run/standard/mod.rs": "// 6a\n",
+  "crates/derm-cli/src/gate/locallog/mod.rs": "// 6b\n",
+  "crates/derm-cli/src/gate/taint/mod.rs": "// 6d\n",
+  "crates/derm-cli/tests/contracts_w6.rs": "// red\n",
+  "crates/derm-egress/src/lib.rs": "// 6c\n",
+  "crates/derm-egress/tests/contract.rs": "// red\n",
+  "crates/derm-tap/src/tap.rs": "// s\n",
+  "crates/derm-tap/src/results/mod.rs": "// 6d\n",
+  "crates/derm-tap/Cargo.toml": tapCargo,
+  "crates/derm-core/src/audit_chain.rs": "// contract\n",
+  "tests/eval/README.md": "# e\n",
 })) write(p, t);
 git("add", "-A");
 git("commit", "-q", "-m", "base");
@@ -146,6 +169,25 @@ const cases = [
   ["wave 5b: lane 5bE's red test is not its own", "5bE", () => write("crates/derm-sysmon/tests/contract.rs", "// x\n"), 1, "owned by no lane"],
   ["wave 5b: shared Cargo.toml, own section (5bA)", "5bA", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-5bA]\n", "# [lane-5bA]\nx = []\n")), 0, "clean"],
   ["wave 5b: shared Cargo.toml, 5bB writes under 5bA", "5bB", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-5bA]\n", "# [lane-5bA]\nx = []\n")), 1, "lane 5bA's section changed"],
+  // Wave 6 (the wave 6 base): digit-letter names, the seams, the red tests,
+  // the chain reference, and derm-tap's manifest shared by 6C and 6D.
+  ["wave 6: lane 6A's run/standard/", "6A", () => write("crates/derm-cli/src/run/standard/mod.rs", "// 6a2\n"), 0, "clean"],
+  ["wave 6: lowercase lane name", "6a", () => write("crates/derm-cli/src/run/standard/mod.rs", "// 6a3\n"), 0, "clean"],
+  ["wave 6: lane R no longer owns run/standard/", "R", () => write("crates/derm-cli/src/run/standard/mod.rs", "// r\n"), 1, "owned by lane 6A"],
+  ["wave 6: lane 6B's gate/locallog/", "6B", () => write("crates/derm-cli/src/gate/locallog/mod.rs", "// 6b2\n"), 0, "clean"],
+  ["wave 6: lane 6B cannot edit gate/taint/", "6B", () => write("crates/derm-cli/src/gate/taint/mod.rs", "// x\n"), 1, "owned by lane 6D"],
+  ["wave 6: gate/ outside its lane folders is still no lane's", "6D", () => write("crates/derm-cli/src/gate/core.rs", "// x\n"), 1, "owned by no lane"],
+  ["wave 6: the red tests are no lane's", "6A", () => write("crates/derm-cli/tests/contracts_w6.rs", "// x\n"), 1, "no lane edits this"],
+  ["wave 6: lane 6C's crate", "6C", () => write("crates/derm-egress/src/lib.rs", "// 6c2\n"), 0, "clean"],
+  ["wave 6: lane 6C's red test is not its own", "6C", () => write("crates/derm-egress/tests/contract.rs", "// x\n"), 1, "owned by no lane"],
+  ["wave 6: lane S no longer owns derm-tap's results/", "S", () => write("crates/derm-tap/src/results/mod.rs", "// s\n"), 1, "owned by lane 6D"],
+  ["wave 6: lane 6D cannot edit the tap's server", "6D", () => write("crates/derm-tap/src/tap.rs", "// x\n"), 1, "owned by lane S"],
+  ["wave 6: the chain reference is no lane's", "6B", () => write("crates/derm-core/src/audit_chain.rs", "// x\n"), 1, "no lane edits this"],
+  ["wave 6: lane 6F's tests/eval/", "6F", () => write("tests/eval/run.mjs", "// 6f\n"), 0, "clean"],
+  ["wave 6: derm-cli's manifest, own section (6A)", "6A", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-6A]\n", "# [lane-6A]\nx = []\n")), 0, "clean"],
+  ["wave 6: derm-cli's manifest, 6B writes under 6A", "6B", () => write("crates/derm-cli/Cargo.toml", cargo.replace("# [lane-6A]\n", "# [lane-6A]\nx = []\n")), 1, "lane 6A's section changed"],
+  ["wave 6: derm-tap's manifest, own section (6D)", "6D", () => write("crates/derm-tap/Cargo.toml", tapCargo.replace("# [lane-6D]\n", "# [lane-6D]\nurl = \"=2.5.8\"\n")), 0, "clean"],
+  ["wave 6: derm-tap's manifest, a lane with no section (6A)", "6A", () => write("crates/derm-tap/Cargo.toml", tapCargo.replace("# [lane-6C]\n", "# [lane-6C]\nx = \"1\"\n")), 1, "has no section"],
 ];
 
 let failed = 0;
@@ -166,6 +208,7 @@ for (const [name, argv, code] of [
   // the wave 5 base made lane Z.
   ["bad lane letter", ["O", "--base", base], 2],
   ["bad wave 5b lane", ["5bG", "--base", base], 2],
+  ["bad wave 6 lane", ["6G", "--base", base], 2],
   ["bad base", ["A", "--base", "no-such-commit"], 2],
   ["stray argument", ["A", "--frob"], 2],
 ]) {
@@ -176,6 +219,6 @@ for (const [name, argv, code] of [
 }
 
 rmSync(repo, { recursive: true, force: true });
-const total = cases.length + 4;
+const total = cases.length + 5;
 console.log(`${total - failed} of ${total} as expected`);
 process.exit(failed ? 1 : 0);

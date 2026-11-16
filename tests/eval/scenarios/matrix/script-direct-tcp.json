@@ -1,0 +1,22 @@
+{
+  "suite": "matrix",
+  "id": "script-direct-tcp",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "path": "tests/differential/scenarios.yaml (scripts)",
+    "licence": "MIT OR Apache-2.0"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "payload": "/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/{tcp}'"
+      }
+    }
+  ],
+  "targets": [
+    "host"
+  ]
+}

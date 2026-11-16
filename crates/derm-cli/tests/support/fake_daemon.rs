@@ -3,13 +3,20 @@
 //! (the wave 5b base): `contracts/daemon-protocol.md` section 2 on a Unix
 //! socket in a fresh 0700 folder, a `daemon.token` beside it, every client
 //! line recorded. Used by `gate/`'s unit tests (through `#[path]`) and by
-//! the `derm hook` red tests in `tests/`. Unix only, as the TypeScript's.
-#![cfg(unix)]
+//! the `derm hook` red tests in `tests/`. Since integration w6's phase 2
+//! merge it answers `taint` with the real daemon's store
+//! (`derm_daemon::taint::Taints`, no settings), one per fake, with the chat
+//! the token holds as its scope (case 112: the value one side sends is
+//! checked by the real counterpart).
+//!
+//! Since fix pass 6 (note BE section 3.5, Tony's call of 15 Nov 2026) it
+//! binds through `derm_core::platform::bind`, the daemon's own seam: a Unix
+//! socket on Unix, a named pipe and its pointer file at the same path on
+//! Windows (`platform/windows/pipe.rs`), so the replays speak the real
+//! transport on every system and only the daemon's answers are scripted.
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -68,18 +75,17 @@ impl FakeDaemon {
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("fake daemon folder");
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        derm_core::platform::private_dir(&dir).expect("fake daemon folder");
         let token = dir.join("daemon.token");
         std::fs::write(&token, format!("{DAEMON_TOKEN}\n")).unwrap();
-        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        derm_core::platform::set_private_file(&token).unwrap();
         let socket = dir.join("daemon.sock");
-        let listener = UnixListener::bind(&socket).expect("fake daemon socket");
-        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let listener = derm_core::platform::bind(&socket).expect("fake daemon endpoint");
         listener.set_nonblocking(true).unwrap();
         let lines = Arc::new(Mutex::new(Vec::new()));
         let behaviour = Arc::new(Mutex::new(approve));
         let stop = Arc::new(AtomicBool::new(false));
+        let taints = Arc::new(derm_daemon::taint::Taints::new(None));
         let (l2, b2, s2) = (lines.clone(), behaviour.clone(), stop.clone());
         std::thread::spawn(move || {
             let mut conns = 0;
@@ -90,10 +96,12 @@ impl FakeDaemon {
                         // BSD and macOS hand the accepted socket the
                         // listener's O_NONBLOCK; Linux does not (accept(2),
                         // VERSIONS, man7.org). The connection reads blocking.
+                        // A pipe's connection blocks already.
+                        #[cfg(unix)]
                         let _ = stream.set_nonblocking(false);
-                        let (l3, b3) = (l2.clone(), b2.clone());
+                        let (l3, b3, t3) = (l2.clone(), b2.clone(), taints.clone());
                         let conn = conns;
-                        std::thread::spawn(move || serve(stream, conn, l3, b3));
+                        std::thread::spawn(move || serve(stream, conn, l3, b3, t3));
                     }
                     Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
                 }
@@ -154,11 +162,13 @@ impl Drop for FakeDaemon {
 }
 
 fn serve(
-    stream: UnixStream,
+    stream: derm_core::platform::Stream,
     conn: usize,
     lines: Arc<Mutex<Vec<(usize, Value)>>>,
     behaviour: Arc<Mutex<Approve>>,
+    taints: Arc<derm_daemon::taint::Taints>,
 ) {
+    let mut scope: Option<&str> = None;
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
         Err(_) => return,
@@ -183,7 +193,10 @@ fn serve(
                 Some(DAEMON_TOKEN) => send(
                     json!({"ok": true, "scope": "daemon", "daemon": {"version": "0.0.0-fake", "pid": std::process::id(), "protocol": 1}}),
                 ),
-                Some(CHAT_TOKEN) => send(json!({"ok": true, "scope": "chat", "chat": "chat-fake"})),
+                Some(CHAT_TOKEN) => {
+                    scope = Some("chat-fake");
+                    send(json!({"ok": true, "scope": "chat", "chat": "chat-fake"}))
+                }
                 _ => {
                     send(json!({"ok": false, "error": "bad token"}));
                     return;
@@ -194,6 +207,7 @@ fn serve(
         }
         match line["op"].as_str() {
             Some("event") => send(json!({"ok": true, "id": line["event"]["id"]})),
+            Some("taint") => send(taints.handle(scope, &line)),
             Some("approve") => {
                 let id = line["request"]["id"].clone();
                 match *behaviour.lock().unwrap() {

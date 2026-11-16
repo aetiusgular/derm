@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { REDACTED } from "./core/redact.ts";
 import { CLINE_SHELL_TOOLS, Unreadable, answerRequest, beforeTool, defaultDeps, gateCallOf, shellCommandsOf, type BeforeToolContext, type Deps } from "./cline.ts";
@@ -39,11 +39,19 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
 });
+// Each test is a chat of its own: taint a test's calls made stays with it
+// (the fake answers `taint` as the daemon does since fix pass 6).
+beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -51,6 +59,7 @@ afterAll(async () => {
 // One co-process per environment, with derm by its absolute path (case 227).
 function depsWith(env: Record<string, string>): Deps {
   const s = new GateServe({ agent: "cline", env, cwd: () => work, trusted: () => true, startMs: 1200, requestMs: 1200, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   return { ...defaultDeps(env, () => work), serve: () => s };
 }
 const deps = (extra: Record<string, string> = {}): Deps => depsWith({ DERM_POLICY: policyFile, ...daemon.env(), ...extra });
@@ -96,7 +105,12 @@ describe("beforeTool (the SDK plugin)", () => {
     daemon.setApprove("hang");
     const started = Date.now();
     expect(await beforeTool(ctx("github__create_issue", {}), deps())).toEqual({ policy: { autoApprove: false } });
-    expect(await beforeTool(ctx("run_commands", { commands: ["ls"] }), depsWith({ DERM_POLICY: policyFile, DERM_DAEMON_SOCKET: path.join(root, "absent.sock") }))).toBeUndefined();
+    // With no daemon the decision is kept in the light tier's log under the
+    // home (box test w6, BW6-3: a plugin that keeps its own records gets it
+    // too), so this environment names one; with none the light tier fails
+    // closed, as Claude Code's hook does.
+    const home = { HOME: root, USERPROFILE: root };
+    expect(await beforeTool(ctx("run_commands", { commands: ["ls"] }), depsWith({ DERM_POLICY: policyFile, DERM_DAEMON_SOCKET: path.join(root, "absent.sock"), ...home }))).toBeUndefined();
     expect(Date.now() - started).toBeLessThan(500);
     daemon.setApprove("yes");
   });
@@ -349,6 +363,7 @@ describe("install records", () => {
 describe("a co-process that is not running", () => {
   const without = (o: Partial<ConstructorParameters<typeof GateServe>[0]>): Deps => {
     const s = new GateServe({ agent: "cline", env: {}, cwd: () => work, trusted: () => true, startMs: 1200, requestMs: 1200, locate: () => ({ problem: "no derm to run: DERM_BIN is not set" }), ...o });
+    live.push(s);
     return { env: {}, cwd: () => work, serve: () => s };
   };
   it("skips every call with the reason, which Cline counts as an answer, not a failure", async () => {

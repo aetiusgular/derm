@@ -101,6 +101,29 @@ fn record_id(input: &Map<String, Value>) -> String {
     format!("{HARNESS}-{}-{at}", call_key(input))
 }
 
+/// Gemini CLI 0.68.0's own tools under the names the policy's rules use
+/// (integration w6's close, E0's R-E0-4; rules cases 82 and 243):
+/// `run_shell_command` is a shell (`coverage.shellAliases`), the rest its
+/// file, search and fetch tools (`coverage.toolAliases`). Names from
+/// `@google/gemini-cli-core@0.68.0` `dist/src/tools/definitions/
+/// base-declarations.js:25-75` (read). Held equal to the preset row by a
+/// test. E0 found every call of these asking under the default preset. The
+/// hook decides on Gemini's own name first and on this one only when no
+/// rule names Gemini's, so a policy written for Gemini's names keeps its
+/// meaning.
+pub const TOOL_ALIASES: &[(&str, &str)] = &[
+    ("run_shell_command", "bash"),
+    ("read_file", "read"),
+    ("read_many_files", "read"),
+    ("list_directory", "ls"),
+    ("grep_search", "grep"),
+    ("write_file", "write"),
+    ("replace", "edit"),
+    ("web_fetch", "webfetch"),
+    ("google_web_search", "websearch"),
+    ("write_todos", "todowrite"),
+];
+
 /// The name the gate matches (`toolForGate`): `mcp__<server>__<tool>` from
 /// `mcp_context` when it names both, since `mcp_<server>_<tool>` misreads a
 /// server whose name holds `_`; else the tool's own name.
@@ -119,6 +142,20 @@ pub fn tool_for_gate(input: &Map<String, Value>) -> String {
         (Some(s), Some(t)) => format!("mcp__{s}__{t}"),
         _ => name,
     }
+}
+
+/// The policy's name for one of Gemini's own tools (`TOOL_ALIASES`), for a
+/// call with no `mcp_context`: a call with one is an MCP tool's, whatever it
+/// is called, and a read rule must not widen to it.
+pub fn policy_name(input: &Map<String, Value>) -> Option<&'static str> {
+    if input.get("mcp_context").is_some_and(|c| !c.is_null()) {
+        return None;
+    }
+    let name = input.get("tool_name").and_then(Value::as_str)?;
+    TOOL_ALIASES
+        .iter()
+        .find(|(raw, _)| *raw == name)
+        .map(|(_, policy)| *policy)
 }
 
 pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
@@ -142,7 +179,26 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
         tool_use_id: None,
         full_access: None,
     };
-    let mut answer = decide_call(&deps.policy(), &call, &deps.env);
+    let policy = deps.policy();
+    let mut answer = decide_call(&policy, &call, &deps.env);
+    // Gemini's own tool names first, so a policy that names them keeps its
+    // meaning; with no rule for that name, the policy's name for the tool
+    // (E0's R-E0-4, integration w6's close): the presets' read, write and
+    // shell rules then apply to Gemini CLI 0.68.0's own tools.
+    let mut call = call;
+    if answer.reason.starts_with("no rule") {
+        if let Some(alias) = policy_name(input) {
+            let aliased = GateCall {
+                tool: alias.to_string(),
+                ..call.clone()
+            };
+            let second = decide_call(&policy, &aliased, &deps.env);
+            if !second.reason.starts_with("no rule") {
+                answer = second;
+                call = aliased;
+            }
+        }
+    }
     let text = input_text_for(&answer.normalized_tool, &tool_input).unwrap_or_default();
     if let (a, Some(control)) =
         super::control::narrow(answer.action, super::control::gemini_control_path(&text))
@@ -164,7 +220,7 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
     let key = call_key(input);
     let shown = if gemini_asks { Action::Ask } else { action };
     let chat_s = chat.unwrap_or_default();
-    deps.post(
+    let lost = deps.post_decision(
         &Decision {
             harness: HARNESS,
             id_part: Some(&key),
@@ -178,6 +234,14 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
         }
         .event(),
     );
+    // The light tier fails closed: a decision no one recorded is a deny.
+    let shown = match lost {
+        Some(why) if shown != Action::Deny => {
+            (action, gemini_asks, reason) = (Action::Deny, false, why);
+            Action::Deny
+        }
+        _ => shown,
+    };
     // Gemini gives no call id: the install record joins by the call key.
     let install_call = GateCall {
         tool_use_id: Some(key.clone()),

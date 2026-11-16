@@ -68,6 +68,10 @@ fn gate_serve_answers_the_fixture_exchange() {
     let mut child = derm()
         .args(["gate", "serve", "--agent", "pi"])
         .env("HOME", &dir)
+        // The light tier's home on Windows (`gate::locallog`): with no home
+        // folder its record is lost, and since the wave 6 phase 1 merge a
+        // lost decision record denies in a hook with no chat token.
+        .env("USERPROFILE", &dir)
         .env("DERM_POLICY", &policy)
         .current_dir(&work)
         .stdin(Stdio::piped())

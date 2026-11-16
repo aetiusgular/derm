@@ -104,6 +104,13 @@ jobs:
       - run: cargo build -p derm-cli
       - run: npx vitest run
       - run: node scripts/lane-scope.test.mjs
+      # vitest skips scripts/windows-held.json's files on Windows only; this
+      # fails when a test in them has no Rust holder (note BF section 4.1).
+      # It runs here, not on Windows, where some of those files cannot even
+      # be collected (registration.test.ts takes POSIX paths at load); the
+      # files and the fixtures are the same on every system.
+      - run: node scripts/windows-holders.test.mjs
+      - run: node scripts/windows-holders.mjs
       # The Rust fold's tables and contracts/fixtures/policy/fold.json come
       # from the hook core; this fails when they drift (it skips, saying why,
       # on a Node whose Unicode version differs from the tables').
@@ -116,6 +123,9 @@ jobs:
       # A contract check's own predicate, against a reply recorded from the
       # real Hermes (box test w5b retest, BW5B-R4).
       - run: node tests/cli-contract/lib/ran.selftest.mjs
+      # The Standard tier checks' own reading of a host that kills Claude
+      # Code's sandboxed commands (box test w6 retest, BW6R-2).
+      - run: node tests/cli-contract/lib/standardHost.selftest.mjs
       # tests/cli-contract needs the real Claude Code and Codex CLIs; it runs
       # when they are installed (integration installs them under /tmp/cli).
       - name: cli contract
@@ -147,6 +157,11 @@ jobs:
           node-version: "24"
       - name: cargo build
         run: cargo build --workspace
+      # Fix pass 11: Windows-only code (cfg(windows), and what only Unix
+      # uses) was linted nowhere; 17 warnings had built up since 10 Nov.
+      - name: cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: cargo test
         if: ${{ !cancelled() }}
         run: cargo test --workspace --no-fail-fast

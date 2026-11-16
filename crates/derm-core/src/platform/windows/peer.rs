@@ -230,6 +230,13 @@ pub fn parent(pid: u32) -> Option<u32> {
     }
 }
 
+/// Not read on Windows: another process's environment sits in its PEB and
+/// needs `ReadProcessMemory`; `None` makes the caller fail closed
+/// (integration w6's re-review, W6C-R6).
+pub fn environ_var(_pid: u32, _name: &str) -> Option<String> {
+    None
+}
+
 /// Ancestors of `pid`, nearest first, without `pid` itself, up to 256.
 pub fn ancestors(pid: u32) -> Vec<u32> {
     let mut out = Vec::new();

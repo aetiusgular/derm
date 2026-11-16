@@ -34,7 +34,9 @@ const POL = {
 
 let daemon: FakeDaemon;
 beforeAll(async () => {
-  daemon = await startFakeDaemon({ root: "/tmp" });
+  // A short folder for the Unix socket's path limit; on Windows the fake
+  // listens on a named pipe and the folder is the system's own (fix pass 7).
+  daemon = await startFakeDaemon(process.platform === "win32" ? {} : { root: "/tmp" });
 });
 afterAll(async () => {
   await daemon.close();

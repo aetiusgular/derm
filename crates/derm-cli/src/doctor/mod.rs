@@ -183,6 +183,42 @@ pub fn find_row(id: &str) -> Option<Value> {
         .cloned()
 }
 
+/// The versions a row's `verifiedAt` names. Its leading comma-separated
+/// parts that hold only versions, each part one version or several joined
+/// by " and ": `"0.169.0 and 0.167.2, run (...)"` gives both, `"1.0.70,
+/// 1.0.71, 1.0.74, run"` gives all three. A row that does not start with a
+/// bare version (`"docs, 3 Nov 2026 (CLI changelog v2026.10.22); ..."`)
+/// keeps the one version it always gave, the first in it ([`version_token`];
+/// fix pass 9's second review, finding 2: Cursor's and Kiro's rows had lost
+/// theirs).
+pub fn verified_versions(verified_at: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in verified_at.split(',') {
+        let versions: Option<Vec<String>> = part
+            .split(" and ")
+            .map(|v| {
+                let v = v.trim();
+                version_token(v).filter(|t| v == t || v.strip_prefix('v') == Some(t))
+            })
+            .collect();
+        match versions {
+            Some(vs) if !vs.is_empty() => out.extend(vs),
+            _ => break,
+        }
+    }
+    if out.is_empty() {
+        out.extend(version_token(verified_at));
+    }
+    out
+}
+
+/// `installed` is one of the versions `verified_at` names.
+pub fn verified_matches(verified_at: &str, installed: &str) -> bool {
+    verified_versions(verified_at)
+        .iter()
+        .any(|v| v == installed)
+}
+
 /// The first `N.N[.N...]` in a string: `"2.1.311, run"` gives `2.1.311`,
 /// `"claude 2.1.318 (Claude Code)"` gives `2.1.318`, `"v0.22.5"` gives
 /// `0.22.5`.
@@ -217,6 +253,10 @@ pub fn version_token(s: &str) -> Option<String> {
 pub struct Probes {
     pub version: fn(&Path) -> String,
     pub node: Option<PathBuf>,
+    /// The program the plugins' hooks files start their launcher with,
+    /// `/bin/sh` by its absolute path (contracts/hook-dialects.md 9.1);
+    /// a field so a test can name one that is not there, as on Windows.
+    pub sh: PathBuf,
 }
 
 impl Probes {
@@ -224,6 +264,7 @@ impl Probes {
         Probes {
             version: probe_version,
             node: find_on_path("node", &std::env::var("PATH").unwrap_or_default()),
+            sh: PathBuf::from("/bin/sh"),
         }
     }
 }
@@ -237,6 +278,7 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
     };
     let id = s(row, "/id");
     let mut problems: Vec<String> = Vec::new();
+    let secrets = secrets_check(env.home.as_deref(), &mut problems);
 
     // The program and its version (case 81).
     let cli = row
@@ -247,9 +289,10 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
     let program = cli.as_deref().and_then(|c| find_on_path(c, &env.path));
     let verified_at = s(row, "/coverage/verifiedAt");
     let installed = program.as_deref().map(probes.version);
-    let version = match (&installed, version_token(&verified_at)) {
+    let wants = verified_versions(&verified_at);
+    let version = match (&installed, (!wants.is_empty()).then(|| wants.join(" and "))) {
         (Some(out), Some(want)) => match version_token(out) {
-            Some(have) if have == want => {
+            Some(have) if verified_matches(&verified_at, &have) => {
                 json!({"state": "matches", "installed": have, "verifiedAt": want})
             }
             Some(have) => {
@@ -263,6 +306,20 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         (Some(out), None) => json!({"state": "no verified version", "probe": out}),
         (None, _) => json!({"state": "not found", "cli": cli}),
     };
+
+    // Fix pass 9 (note BG section 1): on Windows, Cursor started with Git
+    // Bash's MSYSTEM runs its hooks with bash, and derm's gate then blocks
+    // every call.
+    if cfg!(windows) {
+        if let Some(w) = crate::connect::gate::cursor_git_bash_warning(
+            &id,
+            Some("windows"),
+            env.var("MSYSTEM"),
+            env.var("SHELL"),
+        ) {
+            problems.push(w);
+        }
+    }
 
     // Registration, for a built gate.
     let status = s(row, "/coverage/gate/status");
@@ -348,8 +405,58 @@ pub fn doctor(row: &Value, env: &Env, probes: &Probes, live: bool, run_gate: boo
         } else {
             json!("not asked (--live)")
         },
+        "secrets": secrets,
         "problems": problems,
     })
+}
+
+/// The secrets broker's files (lane 6C's request R6, integration w6's
+/// close): whether `~/.derm/secrets.json` is one derm reads (owner-only, as
+/// `secrets::load` checks it) and how many secrets it names, and, when it
+/// names any, whether derm's CA is there and valid for more than a day (a
+/// chat with secrets refuses to start otherwise) and for how many days.
+/// Reads no value. Each fault is a problem with its fix.
+pub fn secrets_check(home: Option<&Path>, problems: &mut Vec<String>) -> Value {
+    use derm_egress::ca::{self, Ca};
+    use derm_egress::secrets;
+    let Some(home) = home else {
+        return json!({"state": "no home folder"});
+    };
+    let path = secrets::path_for(home);
+    let file = match secrets::load(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            problems.push(format!(
+                "{e}: derm cannot read the secrets file, so every chat refuses to start; fix it with `derm secret`"
+            ));
+            return json!({"state": "unreadable", "file": path.to_string_lossy()});
+        }
+    };
+    let n = file.secrets.len();
+    let ca = match Ca::load(&ca::dir_for(home)) {
+        Ok(Some(c)) => {
+            let days = c.days_left();
+            if !c.valid_for(1) {
+                problems.push(
+                    "derm's CA expires within a day: run `derm secret ca create --replace` from a terminal".into(),
+                );
+            }
+            json!({"state": "present", "sha256": c.fingerprint(), "daysLeft": days})
+        }
+        Ok(None) => {
+            if n > 0 {
+                problems.push(format!(
+                    "{n} secret(s) but no CA: run `derm secret ca create` from a terminal"
+                ));
+            }
+            json!({"state": "none"})
+        }
+        Err(e) => {
+            problems.push(format!("derm's CA cannot be read: {e}"));
+            json!({"state": "unreadable"})
+        }
+    };
+    json!({"state": "ok", "secrets": n, "ca": ca})
 }
 
 fn platform() -> &'static str {
@@ -666,6 +773,109 @@ fn plugin_hook(copy: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// The derm Claude Code's settings gate runs (`watch::register::settings_gate`),
+/// when there is one: `Ok` only when it is this derm by its real path, so
+/// doctor, which runs it as you outside any sandbox, never runs a program a
+/// settings file an agent can write names (security review L9's rule).
+fn settings_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
+    let home = env.home.as_ref()?;
+    let config = env
+        .var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let file = config.join("settings.json");
+    let v = read_json_small(&file)?;
+    let gate = crate::watch::register::settings_gate(&v)?;
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let me = std::env::current_exe().ok().and_then(|p| real(&p));
+    #[cfg(test)]
+    let me = TEST_SELF.with(|t| t.borrow().clone()).or(me);
+    let named = real(Path::new(&gate));
+    Some(match (me, named) {
+        (Some(me), Some(named)) if me == named => Ok(named),
+        _ => Err(format!(
+            "the gate in {} runs {}, which is not this derm; doctor runs only its own binary there",
+            file.display(),
+            gate.chars().take(120).collect::<String>()
+        )),
+    })
+}
+
+fn codex_hooks_gate_hook(env: &Env) -> Option<Result<PathBuf, String>> {
+    let home = env.home.as_ref()?;
+    let codex = env
+        .var("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".codex"));
+    let file = codex.join("hooks.json");
+    let v = read_json_small(&file)?;
+    let (gate, _, _, ps) = crate::watch::register::codex_hooks_gate(&v)?;
+    if !ps {
+        return Some(Err(format!(
+            "the gate in {} is an older derm's line, which lets calls through on Windows (Codex runs it with PowerShell); run derm connect codex --gate --write again",
+            file.display()
+        )));
+    }
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let me = std::env::current_exe().ok().and_then(|p| real(&p));
+    #[cfg(test)]
+    let me = TEST_SELF.with(|t| t.borrow().clone()).or(me);
+    let named = real(Path::new(&gate));
+    Some(match (me, named) {
+        (Some(me), Some(named)) if me == named => Ok(named),
+        _ => Err(format!(
+            "the gate in {} runs {}, which is not this derm; doctor runs only its own binary there",
+            file.display(),
+            gate.chars().take(120).collect::<String>()
+        )),
+    })
+}
+
+/// On Windows, the line Codex runs for the plugin's PreToolUse hook
+/// (`commandWindows`, Codex 0.167.2 `discovery.rs:654-662`), when the
+/// installed hooks file has one (fix pass 7).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn codex_windows_line(hook: &Path) -> Option<String> {
+    let file = hook.parent()?.join("hooks.json");
+    let v = read_json_small(&file)?;
+    v.pointer("/hooks/PreToolUse/0/hooks/0/commandWindows")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The shell Codex runs a Windows hook with (fix pass 8, the box run): its
+/// session shell, PowerShell, `pwsh` first, then `powershell` (Codex 0.167.2
+/// `shell-command/src/shell_detect.rs:270-293`, on PATH or at its fallback
+/// path), as `<shell> -NoProfile -Command <line>` (`core/src/shell.rs:34-43`,
+/// `core/src/session/mod.rs:5805-5813`, `command_runner.rs:444-470`).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn codex_windows_shell(path_var: Option<&std::ffi::OsStr>) -> PathBuf {
+    let on_path = |name: &str| {
+        path_var.and_then(|p| {
+            std::env::split_paths(p)
+                .map(|d| d.join(name))
+                .find(|f| f.is_file())
+        })
+    };
+    on_path("pwsh.exe")
+        .or_else(|| {
+            let f = PathBuf::from(r"C:\Program Files\PowerShell\7\pwsh.exe");
+            f.is_file().then_some(f)
+        })
+        .or_else(|| on_path("powershell.exe"))
+        .unwrap_or_else(|| {
+            let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+            PathBuf::from(root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+        })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for this derm's own path.
+    pub static TEST_SELF: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Whether a hook is the wave 5b launcher.
 fn is_launcher(hook: &Path) -> bool {
     hook.file_name().is_some_and(|n| n == "derm-gate.sh")
@@ -980,21 +1190,58 @@ fn gone_derms(text: &str, id: &str) -> Vec<String> {
 /// `USERPROFILE` is Windows' HOME. srt's sandbox keeps the same two from the
 /// account's profile (`enter/handoff.rs`, `RESERVED`). From lane/windows-ci.
 #[cfg(windows)]
-const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
+pub const NODE_WINDOWS_ENV: &[&str] = &["SystemRoot", "USERPROFILE"];
 #[cfg(not(windows))]
-const NODE_WINDOWS_ENV: &[&str] = &[];
+pub const NODE_WINDOWS_ENV: &[&str] = &[];
+
+/// What doctor's run of a Windows PowerShell line keeps of its environment.
+/// `PATHEXT` too: with it unset, Windows PowerShell 5.1 does not start
+/// `& '<abs>\derm.exe'` at all and `$LASTEXITCODE` stays `$null`, so the
+/// guard reports "derm.exe did not start" (V on the box, fix pass 9 `w9d`:
+/// SystemRoot and USERPROFILE alone fail, adding PATHEXT runs it). Codex runs
+/// the line with the session's environment, which has it.
+pub const POWERSHELL_ENV: &[&str] = &["SystemRoot", "USERPROFILE", "PATHEXT"];
+
+/// Gives a command whose environment was cleared the [`POWERSHELL_ENV`]
+/// variables of this process, as doctor's Windows gate run does.
+pub fn keep_powershell_env(cmd: &mut Command) {
+    for k in POWERSHELL_ENV {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+}
 
 /// Runs the installed hook once on a shell call, under a policy that denies
 /// `bash`, from a folder of its own (the hook refuses a `DERM_POLICY` inside
 /// the session folder). Pass: the agent's own deny form.
 pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
-    let hook = match installed_hook(id, env) {
+    // Fix pass 6 (note BE section 1.5, option (d)): Claude Code's gate in
+    // the user's settings, in exec form, runs before any plugin's and is
+    // what Claude Code runs; doctor runs it only when it is this derm.
+    // Fix pass 7: Codex's gate in its own hooks.json (the Windows row), a
+    // quoted path to derm and its words, likewise run only when it is this
+    // derm.
+    let direct = match match id {
+        "claude-code" => settings_gate_hook(env),
+        "codex" => codex_hooks_gate_hook(env),
+        _ => None,
+    } {
+        Some(Ok(d)) => Some(d),
+        Some(Err(why)) => return json!({"state": "not run", "why": why}),
+        None => None,
+    };
+    let hook = match direct
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(|| installed_hook(id, env))
+    {
         Ok(h) => h,
         Err(why) => return json!({"state": "not run", "why": why}),
     };
-    let launcher = is_launcher(&hook);
+    let launcher = direct.is_none() && is_launcher(&hook);
     let node = probes.node.clone();
-    if !launcher && node.is_none() {
+    if direct.is_none() && !launcher && node.is_none() {
         return json!({"state": "not run", "why": "node is not on PATH"});
     }
     let scratch =
@@ -1042,11 +1289,42 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             })
         };
         let event = if id == "gemini" { "before" } else { "pre" };
-        let mut cmd = if launcher {
+        #[cfg(windows)]
+        let windows_line = (id == "codex" && launcher)
+            .then(|| codex_windows_line(&hook))
+            .flatten();
+        #[cfg(not(windows))]
+        let windows_line: Option<String> = None;
+        // Codex's hooks.json gate on Windows: the line derm connect writes,
+        // run as Codex runs it there (fix pass 8).
+        #[cfg(windows)]
+        let windows_line = if id == "codex" && direct.is_some() {
+            Some(format!(
+                "& '{}'{}",
+                hook.display(),
+                crate::watch::register::CODEX_PS_PRE_TAIL
+            ))
+        } else {
+            windows_line
+        };
+        let mut cmd = if let Some(line) = &windows_line {
+            // As Codex runs a hook on Windows: its PowerShell, `-NoProfile
+            // -Command <line>`, with PLUGIN_ROOT set for the plugin's
+            // (discovery.rs:314; `codex_windows_shell`).
+            let mut c = Command::new(codex_windows_shell(std::env::var_os("PATH").as_deref()));
+            c.args(["-NoProfile", "-Command", line]);
+            c
+        } else if direct.is_some() {
+            // As Claude Code runs an exec-form hook, and Codex's hooks.json
+            // gate off Windows: the program and its arguments, no shell.
+            let mut c = Command::new(&hook);
+            c.args(["hook", id, event]);
+            c
+        } else if launcher {
             // As the agent runs it: /bin/sh by its absolute path on the
             // launcher, which runs `derm hook <agent> <event>` from derm's
             // install folders (never PATH).
-            let mut c = Command::new("/bin/sh");
+            let mut c = Command::new(&probes.sh);
             c.arg(&hook).arg(id).arg(event);
             c
         } else {
@@ -1060,26 +1338,42 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if windows_line.is_some() {
+            if launcher {
+                if let Some(root) = hook.parent().and_then(Path::parent) {
+                    cmd.env("PLUGIN_ROOT", root);
+                }
+            }
+            // PowerShell needs these to start with an empty environment.
+            keep_powershell_env(&mut cmd);
+        }
         // HOME is doctor's own (the launcher finds derm under it); PATH only
         // for node, which the launcher never reads.
         if let Some(h) = &env.home {
             cmd.env("HOME", h);
         }
-        if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher) {
+        if let Some(v) = std::env::var_os("PATH").filter(|_| !launcher && direct.is_none()) {
             cmd.env("PATH", v);
         }
         // An older plugin's node on Windows needs these too (lane/windows-ci,
         // `NODE_WINDOWS_ENV`); the launcher never runs there.
-        if !launcher {
+        if !launcher && direct.is_none() {
             for k in NODE_WINDOWS_ENV {
                 if let Some(v) = std::env::var_os(k) {
                     cmd.env(k, v);
                 }
             }
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("{}: {e}", if launcher { "/bin/sh" } else { "node" }))?;
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            // Only a program that is not there (Windows' os errors 2 and 3 map to
+            // NotFound): another error (EMFILE, a failed chdir into doctor's
+            // own folder) says nothing about the agent (review FP5-R2).
+            Err(e) if launcher && e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(launcher_did_not_start(id, &hook, &probes.sh, &e))
+            }
+            Err(e) => return Err(format!("node: {e}")),
+        };
         if let Some(mut stdin) = child.stdin.take() {
             let _ = std::io::Write::write_all(&mut stdin, input.to_string().as_bytes());
         }
@@ -1140,12 +1434,87 @@ pub fn run_fixture(id: &str, env: &Env, probes: &Probes) -> Value {
             "exit {}, {}",
             code.map(|c| c.to_string())
                 .unwrap_or_else(|| "on a signal".into()),
-            crate::watch::text::clean(if out.trim().is_empty() { &err } else { &out }, 160)
+            crate::watch::text::clean(
+                if out.trim().is_empty() {
+                    err.trim_end()
+                } else {
+                    out.trim_end()
+                },
+                160
+            )
         );
         Ok(json!({"state": state, "hook": hook, "saw": saw}))
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     result.unwrap_or_else(|why| json!({"state": "not run", "why": why}))
+}
+
+/// The launcher could not start (WW6R4-1, Windows CI run 43687193459:
+/// "/bin/sh: The system cannot find the path specified. (os error 3)"; on
+/// Windows every plugin's hooks file starts `/bin/sh`, which Windows does
+/// not have, WW5B-2). The agent starts the same program the same way, so it
+/// cannot start it either, and what happens to the call is the agent's fail
+/// mode, read from its preset row: Claude Code's plugin hook is
+/// `onFailure: block`, so every call is blocked (`fail-closed`); Codex and
+/// Gemini let the call through (`fail`; case 70). Never "not run": the gate
+/// was run as the agent runs it, and this is its outcome.
+fn launcher_did_not_start(id: &str, hook: &Path, sh: &Path, e: &std::io::Error) -> Value {
+    let mode = find_row(id)
+        .and_then(|r| {
+            r.pointer("/coverage/failMode")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    // Review FP5-R1: the row says what the agent can do; whether this
+    // install blocks is the installed hooks file's own word. Claude Code
+    // blocks on a hook that could not start only with `onFailure: "block"`
+    // on the PreToolUse entry that runs the launcher (2.1.322's schema:
+    // "'block': the failure counts as exit code 2").
+    let blocks = mode.starts_with("blocks") && (id != "claude-code" || blocks_on_failure(hook));
+    let windows = if cfg!(windows) {
+        "; on Windows the plugin's hooks file starts /bin/sh, which Windows does not have (lane 5bF's Windows half, WW5B-2)"
+    } else {
+        ""
+    };
+    let outcome = if blocks {
+        "the agent cannot start it either, and blocks every call"
+    } else {
+        "the agent cannot start it either, and lets every call through (rules case 70)"
+    };
+    json!({
+        "state": if blocks { "fail-closed" } else { "fail" },
+        "hook": hook,
+        "saw": format!("{} did not start: {e}{windows}; {outcome}", sh.display()),
+    })
+}
+
+/// Whether the Claude Code hooks file beside `hook` (`<copy>/hooks/
+/// hooks.json`) has a PreToolUse entry that runs the launcher with
+/// `onFailure: "block"`. Anything unread is `false`: the report then says
+/// the call runs, which is the agent's default (`continue`).
+fn blocks_on_failure(hook: &Path) -> bool {
+    let Some(v) = hook
+        .parent()
+        .and_then(|d| read_json_small(&d.join("hooks.json")))
+    else {
+        return false;
+    };
+    v.pointer("/hooks/PreToolUse")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .any(|h| {
+            h.get("onFailure").and_then(Value::as_str) == Some("block")
+                && h.get("args").and_then(Value::as_array).is_some_and(|a| {
+                    a.iter().any(|x| {
+                        x.as_str()
+                            .is_some_and(|x| x.ends_with("hooks/derm-gate.sh"))
+                    })
+                })
+        })
 }
 
 pub fn render(r: &Value) -> String {
@@ -1164,6 +1533,25 @@ pub fn render(r: &Value) -> String {
         s("/os"),
         s("/arch")
     );
+    match s("/secrets/state").as_str() {
+        "ok" => out.push_str(&format!(
+            "secrets: {} in ~/.derm/secrets.json; CA {}\n",
+            r.pointer("/secrets/secrets")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            match s("/secrets/ca/state").as_str() {
+                "present" => format!(
+                    "{}, {} days left",
+                    s("/secrets/ca/sha256").get(..16).unwrap_or(""),
+                    r.pointer("/secrets/ca/daysLeft")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0)
+                ),
+                other => other.to_string(),
+            }
+        )),
+        other => out.push_str(&format!("secrets: {other}\n")),
+    }
     let version = match s("/version/state").as_str() {
         "matches" => format!("{}, as verified", s("/version/installed")),
         "unverified" => format!(

@@ -53,10 +53,16 @@ fn env(h: &Home) -> Env {
     }
 }
 
+/// A path printed by this OS, its separators as `/` (Windows prints `\\`).
+fn slashed(text: &str) -> String {
+    text.replace('\\', "/")
+}
+
 fn probes() -> Probes {
     Probes {
         version: probe_version,
         node: find_on_path("node", &std::env::var("PATH").unwrap_or_default()),
+        sh: PathBuf::from("/bin/sh"),
     }
 }
 
@@ -158,7 +164,7 @@ fn a_version_other_than_the_rows_is_unverified() {
     let r = doctor(&row, &env(&h), &probes(), false, false);
     assert_eq!(r["version"]["state"], "unverified");
     assert_eq!(r["version"]["installed"], "2.1.318");
-    assert_eq!(r["version"]["verifiedAt"], "2.1.311");
+    assert_eq!(r["version"]["verifiedAt"], "2.1.322");
     assert!(r["problems"]
         .as_array()
         .unwrap()
@@ -166,7 +172,7 @@ fn a_version_other_than_the_rows_is_unverified() {
         .any(|p| p.as_str().unwrap().contains("unverified at 2.1.318")));
     assert!(render(&r).contains("unverified at 2.1.318"));
     // The same version: nothing to say about it.
-    program(&h, "claude", "echo '2.1.311 (Claude Code)'");
+    program(&h, "claude", "echo '2.1.322 (Claude Code)'");
     let r = doctor(&row, &env(&h), &probes(), false, false);
     assert_eq!(r["version"]["state"], "matches");
     // Not installed: said, not a problem.
@@ -244,11 +250,19 @@ fn the_installed_claude_code_gate_denies_a_denied_call() {
     derm_at_home(&h);
     let dest = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
     let r = run_fixture("claude-code", &env(&h), &probes());
+    // On Windows the plugin's hooks file starts /bin/sh, which is not
+    // there, so Claude Code blocks every call (onFailure: block): the
+    // plugin is not derm's route there since fix pass 6 (note BE section
+    // 1.5, option (d); `fp6_the_settings_gate_is_run_as_claude_code_runs_it`).
+    if cfg!(windows) {
+        assert_eq!(r["state"], "fail-closed", "{r}");
+        return;
+    }
     assert_eq!(r["state"], "pass", "{r}");
     std::fs::remove_dir_all(&dest).unwrap();
     // The launcher ran `derm hook claude-code pre` from ~/.local/bin.
     assert!(
-        r["hook"].as_str().unwrap().ends_with("hooks/derm-gate.sh"),
+        Path::new(r["hook"].as_str().unwrap()).ends_with("hooks/derm-gate.sh"),
         "{r}"
     );
     assert_eq!(
@@ -286,6 +300,13 @@ fn the_installed_codex_gate_denies_a_denied_call() {
         &cache.join("0.1.3"),
     );
     let r = run_fixture("codex", &env(&h), &probes());
+    // Fix pass 7: on Windows Codex runs the plugin's `commandWindows`, which
+    // blocks every call and names `derm connect codex --gate --write`, the
+    // route there (`fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm`).
+    if cfg!(windows) {
+        assert_eq!(r["state"], "fail-closed", "{r}");
+        return;
+    }
     assert_eq!(r["state"], "pass", "{r}");
     // Nothing installed: not run, and why.
     let h2 = home("cx-none");
@@ -546,10 +567,7 @@ fn the_hook_derm_runs_is_the_agents_own_copy_and_no_other() {
     let r = run_fixture("codex", &env(&h), &probes());
     assert_eq!(r["state"], "pass", "{r}");
     assert!(
-        r["hook"]
-            .as_str()
-            .unwrap()
-            .ends_with("0.10.0/hooks/derm-gate.sh"),
+        Path::new(r["hook"].as_str().unwrap()).ends_with("0.10.0/hooks/derm-gate.sh"),
         "{r}"
     );
 }
@@ -570,16 +588,20 @@ fn the_gate_runs_only_when_asked_and_the_file_is_named() {
     assert_eq!(r["gateRun"]["state"], "not run", "{r}");
     let why = r["gateRun"]["why"].as_str().unwrap();
     assert!(why.contains("--run-gate"), "{why}");
-    assert!(why.contains("0.1.3/hooks/derm-gate.sh"), "{why}");
+    // A path as this OS prints it: `\\` between parts on Windows.
+    assert!(slashed(why).contains("0.1.3/hooks/derm-gate.sh"), "{why}");
     assert!(why.contains("/bin/sh, which runs derm hook"), "{why}");
     assert!(render(&r).contains("--run-gate"));
     let r = doctor(&row, &env(&h), &probes(), false, true);
-    assert_eq!(r["gateRun"]["state"], "pass", "{r}");
-    assert!(
-        render(&r).contains("0.1.3/hooks/derm-gate.sh"),
-        "{}",
-        render(&r)
-    );
+    // Fix pass 7: the plugin blocks every call on Windows (above).
+    let want = if cfg!(windows) { "fail-closed" } else { "pass" };
+    assert_eq!(r["gateRun"]["state"], want, "{r}");
+    let named = if cfg!(windows) {
+        "derm connect codex"
+    } else {
+        "0.1.3/hooks/derm-gate.sh"
+    };
+    assert!(slashed(&render(&r)).contains(named), "{}", render(&r));
 }
 
 /// Mac test w4, MW4-4: with two `derm@derm` records, a local install for
@@ -815,4 +837,281 @@ fn fp1_s11_goose_scopes_decide_in_order_and_the_old_name_counts() {
             .any(|p| p.ends_with("home/.config/goose/settings.json")),
         "{s:?}"
     );
+}
+
+/// Lane 6C's request R6 (integration w6's close): the report names the
+/// secrets file's state and the CA's, and each fault is a problem with its
+/// fix; no value is read.
+#[cfg(unix)]
+#[test]
+fn the_report_names_the_secrets_file_and_the_ca() {
+    use derm_egress::ca::{self, Ca};
+    use derm_egress::secrets::{self, Entry, File, From};
+    use std::os::unix::fs::PermissionsExt;
+    let h = std::env::temp_dir().join(format!("ddoc-secrets-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&h);
+    std::fs::create_dir_all(h.join(".derm")).unwrap();
+    std::fs::set_permissions(h.join(".derm"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["state"], "ok");
+    assert_eq!(r["secrets"], 0);
+    assert_eq!(r["ca"]["state"], "none");
+    assert!(problems.is_empty(), "{problems:?}");
+    let path = secrets::path_for(&h);
+    secrets::save(
+        &path,
+        &File {
+            version: 1,
+            secrets: vec![Entry {
+                id: "gh".into(),
+                hosts: vec!["api.github.com".into()],
+                from: From::File("/nonexistent".into()),
+                placement: None,
+                note: None,
+            }],
+        },
+    )
+    .unwrap();
+    let mut problems = Vec::new();
+    super::secrets_check(Some(&h), &mut problems);
+    assert!(
+        problems.iter().any(|p| p.contains("derm secret ca create")),
+        "{problems:?}"
+    );
+    Ca::generate()
+        .unwrap()
+        .save(&ca::dir_for(&h), false)
+        .unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["ca"]["state"], "present");
+    assert!(r["ca"]["daysLeft"].as_i64().unwrap() > 300);
+    assert!(problems.is_empty(), "{problems:?}");
+    // A file others can read is refused, as a chat start refuses it.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["state"], "unreadable");
+    assert!(
+        problems.iter().any(|p| p.contains("derm secret")),
+        "{problems:?}"
+    );
+    let _ = std::fs::remove_dir_all(&h);
+}
+
+/// Windows CI (run 43687193459): the plugins' hooks files start `/bin/sh`,
+/// which Windows does not have, and doctor said "not run" for a gate it had
+/// run as the agent runs it. The agent cannot start it either: Claude Code's
+/// plugin hook blocks every call (`onFailure: block`), Codex lets every call
+/// through (case 70). A `/bin/sh` that is not there stands in for Windows.
+#[test]
+fn a_launcher_that_cannot_start_is_the_agents_own_outcome() {
+    let h = home("no-sh");
+    derm_at_home(&h);
+    let cc = claude_install(&h, &repo().join("packages/derm-claude-plugin"));
+    let cache = h.root.join("home/.codex/plugins/cache/derm/derm");
+    copy_dir(
+        &repo().join("packages/derm-codex-plugin"),
+        &cache.join("0.1.3"),
+    );
+    let mut p = probes();
+    p.sh = h.root.join("no-such-sh");
+    let r = run_fixture("claude-code", &env(&h), &p);
+    assert_eq!(r["state"], "fail-closed", "{r}");
+    assert!(
+        r["saw"].as_str().unwrap().contains("blocks every call"),
+        "{r}"
+    );
+    let r = run_fixture("codex", &env(&h), &p);
+    // Fix pass 7: on Windows Codex runs the hooks file's `commandWindows`,
+    // which blocks every call and names derm's Windows route; elsewhere a
+    // missing /bin/sh lets every call through (case 70).
+    if cfg!(windows) {
+        assert_eq!(r["state"], "fail-closed", "{r}");
+        assert!(
+            r["saw"].as_str().unwrap().contains("derm connect codex"),
+            "{r}"
+        );
+    } else {
+        assert_eq!(r["state"], "fail", "{r}");
+        assert!(
+            r["saw"]
+                .as_str()
+                .unwrap()
+                .contains("lets every call through"),
+            "{r}"
+        );
+    }
+    // Review FP5-R1: a copy whose hooks file does not block on a failure
+    // lets the call run, whatever the row says Claude Code can do.
+    let hooks = cc.join("hooks/hooks.json");
+    let text = std::fs::read_to_string(&hooks).unwrap();
+    std::fs::write(
+        &hooks,
+        text.replace("\"onFailure\": \"block\"", "\"onFailure\": \"continue\""),
+    )
+    .unwrap();
+    let r = run_fixture("claude-code", &env(&h), &p);
+    assert_eq!(r["state"], "fail", "{r}");
+    std::fs::remove_dir_all(&cc).unwrap();
+}
+
+/// Fix pass 6 (note BE section 1.5, option (d)): Claude Code's gate in the
+/// user's settings, in exec form, is run as Claude Code runs it (the program
+/// and its arguments, no shell), before any plugin's, and only when it is
+/// this derm.
+#[cfg(unix)]
+#[test]
+fn fp6_the_settings_gate_is_run_as_claude_code_runs_it() {
+    let h = home("cc-settings");
+    derm_at_home(&h);
+    let derm = h.root.join("home/.local/bin/derm");
+    put(
+        &h.root.join("home/.claude/settings.json"),
+        &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": derm, "args": ["hook", "claude-code", "pre"], "onFailure": "block"}]}]}})
+        .to_string(),
+    );
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(derm.canonicalize().unwrap()));
+    let r = run_fixture("claude-code", &env(&h), &probes());
+    assert_eq!(r["state"], "pass", "{r}");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook claude-code pre\n"
+    );
+    // A settings gate that runs another program is not run.
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(PathBuf::from("/usr/bin/true")));
+    let r = run_fixture("claude-code", &env(&h), &probes());
+    super::TEST_SELF.with(|t| *t.borrow_mut() = None);
+    assert_eq!(r["state"], "not run", "{r}");
+    assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");
+}
+
+/// Fix pass 7: Codex's gate in its own hooks.json (the Windows row) is run
+/// only when it is this derm. Fix pass 8: the row's line is PowerShell's
+/// (Codex runs a Windows hook with PowerShell; the box run), which doctor
+/// runs through PowerShell on Windows and as derm and its words here; fix
+/// pass 7's cmd.exe line is not run, and doctor says to connect again.
+#[cfg(unix)]
+#[test]
+fn fp7_codexs_hooks_json_gate_is_run_when_it_is_this_derm() {
+    let h = home("cx-hooks");
+    derm_at_home(&h);
+    let derm = h.root.join("home/.local/bin/derm");
+    put(
+        &h.root.join("home/.codex/hooks.json"),
+        &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": format!("\"{}\" hook codex pre", derm.display()), "timeout": 120}]}]}})
+        .to_string(),
+    );
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(derm.canonicalize().unwrap()));
+    let r = run_fixture("codex", &env(&h), &probes());
+    assert_eq!(r["state"], "not run", "{r}");
+    assert!(r["why"].as_str().unwrap().contains("PowerShell"), "{r}");
+    put(
+        &h.root.join("home/.codex/hooks.json"),
+        &json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+            "command": format!("& '{}'{}", derm.display(), crate::watch::register::CODEX_PS_PRE_TAIL), "timeout": 120}]}]}})
+        .to_string(),
+    );
+    let r = run_fixture("codex", &env(&h), &probes());
+    assert_eq!(r["state"], "pass", "{r}");
+    assert_eq!(
+        std::fs::read_to_string(h.root.join("home/derm-argv")).unwrap(),
+        "hook codex pre\n"
+    );
+    super::TEST_SELF.with(|t| *t.borrow_mut() = Some(PathBuf::from("/usr/bin/true")));
+    let r = run_fixture("codex", &env(&h), &probes());
+    super::TEST_SELF.with(|t| *t.borrow_mut() = None);
+    assert_eq!(r["state"], "not run", "{r}");
+    assert!(r["why"].as_str().unwrap().contains("not this derm"), "{r}");
+}
+
+/// Fix pass 9: doctor runs a Windows PowerShell line with an emptied
+/// environment and `keep_powershell_env`. That is enough for Windows
+/// PowerShell to start a program by `&` and its absolute path and give its
+/// exit code back; with `SystemRoot` and `USERPROFILE` alone it started none
+/// (the box, `w9d`), so the guard said "derm.exe did not start" and doctor
+/// reported every Codex gate as failing closed.
+#[cfg(windows)]
+#[test]
+fn fp9_doctors_powershell_environment_starts_a_program_by_its_path() {
+    let root = std::env::var_os("SystemRoot").expect("SystemRoot");
+    let ps = std::path::Path::new(&root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let cmd_exe = std::path::Path::new(&root).join("System32\\cmd.exe");
+    let line = format!(
+        "& '{}' /c exit 7; if ($null -eq $LASTEXITCODE) {{ [Console]::Error.WriteLine('did not start'); exit 2 }}; exit $LASTEXITCODE",
+        cmd_exe.display()
+    );
+    let mut c = std::process::Command::new(&ps);
+    c.args(["-NoProfile", "-Command", &line]).env_clear();
+    super::keep_powershell_env(&mut c);
+    let out = c.output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Fix pass 9: a row verified at more than one version lists them in its
+/// leading comma parts, a part holding one version or several joined by
+/// " and "; an installed version that is any of them matches.
+#[test]
+fn fp9_a_row_can_be_verified_at_more_than_one_version() {
+    let two = "0.169.0 and 0.167.2, run (0.169.0 on the Windows box, fix pass 9)";
+    assert_eq!(super::verified_versions(two), vec!["0.169.0", "0.167.2"]);
+    assert!(super::verified_matches(two, "0.167.2"));
+    assert!(super::verified_matches(two, "0.169.0"));
+    assert!(!super::verified_matches(two, "0.168.0"));
+    assert_eq!(
+        super::verified_versions("1.0.70, 1.0.71, 1.0.74, run (custom model, fake chat server)"),
+        vec!["1.0.70", "1.0.71", "1.0.74"]
+    );
+    // A version inside the note after the list is not the row's.
+    assert!(!super::verified_matches(
+        "1.0.105, run (COPILOT_OFFLINE, 9.9.9)",
+        "9.9.9"
+    ));
+    assert_eq!(super::verified_versions("v0.22.5, source"), vec!["0.22.5"]);
+    assert!(super::verified_versions("NF").is_empty());
+}
+
+/// Fix pass 9's second review, finding 2: every preset row's `verifiedAt`
+/// still gives the version it gave before (the first in it), so a row that
+/// starts with words (Cursor's, Kiro's) is not made "unverified".
+#[test]
+fn fp9_every_presets_verified_version_still_reads() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/connect/presets");
+    let mut seen = 0;
+    for e in std::fs::read_dir(&dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let Some(at) = v.pointer("/coverage/verifiedAt").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        seen += 1;
+        if let Some(first) = super::version_token(at) {
+            assert!(
+                super::verified_versions(at).contains(&first),
+                "{}: {at:?} lost {first}",
+                p.display()
+            );
+        }
+    }
+    assert!(seen > 20, "{seen} rows read");
+    assert!(super::verified_matches(
+        "docs, 3 Nov 2026 (CLI changelog v2026.10.22); unverified, not run",
+        "2026.10.22"
+    ));
+    assert!(super::verified_matches(
+        "docs (hooks/actions 10 Oct 2026, CLI 2.36.0 and V3), 3 Nov 2026; unverified, not run",
+        "2.36.0"
+    ));
 }

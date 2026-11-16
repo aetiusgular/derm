@@ -49,6 +49,11 @@ pub struct ChatContext {
     pub harness: String,
     /// Absolute folders the chat may write in: its working folder first.
     pub folders: Vec<String>,
+    /// The derm binary that started the chat, by its real path (`run.start`'s
+    /// `dermExe`, which only the daemon scope posts). Box test w6 retest 3,
+    /// BW6R3-2: the gate's own state in a sandbox's tmpfs is read by it.
+    #[serde(default)]
+    pub derm_exe: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -61,6 +66,9 @@ pub enum FlagReason {
     NewHost,
     /// Computer use's recording did not start (`cua.recording`, `on` false).
     RecordingOff,
+    /// A call the tap saw come back, in a chat whose gate was expected, that
+    /// no gate record names (Tony's R7 call, option 1; the P4-R7 pattern).
+    NoGateRecord,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -989,6 +997,208 @@ fn sensitive_file(path: &str) -> bool {
 }
 
 /// The written path a write flag is about (a copy's or link's destination).
+/// What a write by bubblewrap is (box test w6, BW6-4).
+enum BwrapSetup {
+    /// The user namespace's maps: a kernel interface, no file.
+    Own,
+    /// A path under the new root before its `pivot_root`: the host's path.
+    Host(String),
+    /// Anything else, or a writer that is not bubblewrap.
+    Other,
+}
+
+/// Claude Code runs the first `bwrap` on PATH, srt its own copy, and Codex
+/// 0.167.2 its `codex-resources/bwrap` (`linux-sandbox/src/bundled_bwrap.rs:130-134`):
+/// each is a program named `bwrap`. bubblewrap writes the new user
+/// namespace's `uid_map`, `gid_map` and `setgroups` through a `/proc/<pid>`
+/// descriptor (the audit feed cannot resolve the name, so it reads
+/// `?uid_map`), and builds the sandbox under `/newroot/` before it pivots
+/// there (`strings /usr/bin/bwrap`, bubblewrap 0.9.0 in the cloud; the box runs 0.11.1, where the report showed the same paths). Only the maps are dropped: a path under
+/// the new root is the host's path a bind put there, so it is checked by
+/// that name, and fails safe if no bind did.
+fn bubblewrap_setup(path: &str, exe: &str) -> BwrapSetup {
+    let name = exe.rsplit('/').next().unwrap_or("");
+    const MAPS: &[&str] = &["uid_map", "gid_map", "setgroups"];
+    // Box test w6 retest, BW6R-3: srt 0.0.82's `apply-seccomp` and Claude
+    // Code 2.1.322's own binary (which runs that helper as a multicall
+    // program) set up a nested user namespace: its maps and its own
+    // `user.max_user_namespaces` (the strings of each binary; a limit under
+    // `/proc/sys/user` is the namespace's own). No file is written.
+    let userns_helper = name == "apply-seccomp"
+        || name == "claude"
+        || name == "claude.exe"
+        || exe.contains("/claude/versions/");
+    if userns_helper {
+        if path == "/proc/sys/user/max_user_namespaces" || own_map(path, MAPS) {
+            return BwrapSetup::Own;
+        }
+        return BwrapSetup::Other;
+    }
+    if name != "bwrap" {
+        return BwrapSetup::Other;
+    }
+    // bubblewrap 0.11.1's `mkstemp("/bindfileXXXXXX")` in its own tmpfs root
+    // (`bubblewrap.c:1517`; the tmpfs, 3314-3315), never the host's.
+    let bindfile = |p: &str| {
+        p.strip_prefix("/bindfile")
+            .is_some_and(|x| x.len() == 6 && x.bytes().all(|b| b.is_ascii_alphanumeric()))
+    };
+    if bindfile(path) || path.strip_prefix("/newroot").is_some_and(bindfile) {
+        return BwrapSetup::Own;
+    }
+    if own_map(path, MAPS) {
+        return BwrapSetup::Own;
+    }
+    if let Some(rest) = path.strip_prefix("/newroot/") {
+        return BwrapSetup::Host(format!("/{rest}"));
+    }
+    BwrapSetup::Other
+}
+
+/// A user namespace's map of the writer's own (`?uid_map` when the feed
+/// could not resolve the name, or `/proc/<self|thread-self|pid>/<map>`).
+fn own_map(path: &str, maps: &[&str]) -> bool {
+    if let Some(name) = path.strip_prefix('?') {
+        return maps.contains(&name);
+    }
+    let Some(rest) = path.strip_prefix("/proc/") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    let who = parts.next().unwrap_or("");
+    let name = parts.next().unwrap_or("");
+    let per_process = who == "self"
+        || who == "thread-self"
+        || (!who.is_empty() && who.bytes().all(|b| b.is_ascii_digit()));
+    per_process && parts.next().is_none() && maps.contains(&name)
+}
+
+/// bubblewrap 0.11.1's links in the new `/dev` (`bubblewrap.c:1390-1422`):
+/// `stdin`, `stdout` and `stderr` to `/proc/self/fd/<n>`, `fd` to
+/// `/proc/self/fd`, `core` to `/proc/kcore`, `ptmx` to `pts/ptmx`. The
+/// feed reads the link's own name as `?` (or `/newroot/dev/...`), and the
+/// target as the event's `path` (box test w6 retest, BW6R-3).
+fn bubblewrap_dev_link(event: &ActivityEvent, exe: &str) -> bool {
+    if event.kind != "link" || exe.rsplit('/').next() != Some("bwrap") {
+        return false;
+    }
+    let from = str_field(event, "path").unwrap_or("");
+    let to = str_field(event, "dest").unwrap_or("");
+    let target = matches!(
+        from,
+        "/proc/self/fd"
+            | "/proc/self/fd/0"
+            | "/proc/self/fd/1"
+            | "/proc/self/fd/2"
+            | "/proc/kcore"
+            | "pts/ptmx"
+    );
+    // Never the host's own `/dev` (fix pass 2's review, FP2-R2).
+    let own = to.starts_with('?') || to.starts_with("/newroot/dev/");
+    target && own
+}
+
+/// The rule that hides bubblewrap's mount points in a tmpfs only its
+/// sandbox sees (BW6R2-2), counted in `suppressed`.
+pub const RULE_BWRAP_TMPFS: &str = "bubblewrapOwnTmpfs";
+
+/// The rule that hides bubblewrap's `O_PATH` look at a bind it made
+/// (BW6R3-1), counted in `suppressed`.
+pub const RULE_BWRAP_BIND_CHECK: &str = "bubblewrapBindCheck";
+
+/// The rule that hides derm's gate reading its chat's own route out of srt,
+/// counted in `suppressed`.
+pub const RULE_DERM_OWN_ROUTE: &str = "dermGateOwnRoute";
+
+/// A path bubblewrap wrote under its new root on a filesystem the host had
+/// no mount of when the feed read the event (box test w6 retest 2,
+/// BW6R2-2): the mount point of a bind, made in bubblewrap's own tmpfs root
+/// (`00:2a` in the feed's fixture `links_6_18.enriched.audit`) or in a tmpfs
+/// a sandbox put over a folder (srt's `denyRead` of `~/.derm`, `00:2b`). The
+/// feed decides it then (`devMounted`, `derm-audit-linux` `hostdev.rs`), not
+/// this check from the mounts of a later report (fix pass 3's review,
+/// FP3-R2). A writable bind of a host folder is on a filesystem the host has
+/// mounted (`fe:00`, the same fixture) and stays flagged, and so does an
+/// event that does not say (any feed but Linux's, an older feed, a feed
+/// that could not read the mounts).
+fn made_off_the_host(event: &ActivityEvent) -> bool {
+    event.source == ActivitySource::Auditd
+        && event.detail.get("devMounted").and_then(Value::as_bool) == Some(false)
+}
+
+/// bubblewrap's `O_PATH` look at a bind it made under its new root
+/// (BW6R3-1): bubblewrap 0.11.1's `bind_mount()` opens each destination
+/// with `O_PATH | O_CLOEXEC` after the mount, to find it in the mount table
+/// (`bind-mount.c:397-408` at v0.11.1). An `O_PATH` open reads nothing:
+/// "The file itself is not opened" (open(2)). Only the Linux feed says so
+/// (`pathOnly`); an event that does not say stays flagged.
+fn bubblewrap_bind_check(event: &ActivityEvent, path: &str, folders: &[String]) -> bool {
+    let exe = str_field(event, "exe").unwrap_or("");
+    event.source == ActivitySource::Auditd
+        && !chat_could_replace(exe, folders)
+        && event.kind == "open"
+        && exe.rsplit('/').next() == Some("bwrap")
+        && path.starts_with("/newroot/")
+        && event.detail.get("pathOnly").and_then(Value::as_bool) == Some(true)
+}
+
+/// derm's gate reading its chat's own route out of srt on Linux,
+/// `<home>/.derm/run/routes/<chat>.json` (`derm-cli` `gate/daemon.rs`,
+/// `srt_route_file`), which holds two port numbers (`run/mod.rs`,
+/// `srt_route`). Box test w6 retest 4: three reads a chat, each "Opened"
+/// that file. Only the derm the chat's `run.start` names, reading that
+/// chat's own route, from the Linux feed.
+fn derm_gate_own_route(event: &ActivityEvent, path: &str, chat: Option<&ChatContext>) -> bool {
+    event.kind == "open" && by_chats_own_derm(event, path, chat, ".derm/run/routes", ".json")
+}
+
+/// The event is the Linux feed's, its writer the derm binary the chat's
+/// `run.start` names (`dermExe`), and its path `<home>/<folder>/<chat><suffix>`
+/// for a plain chat id (as the gate names its files: `gate/locallog`,
+/// `file_name`; `srt_route_file`).
+fn by_chats_own_derm(
+    event: &ActivityEvent,
+    path: &str,
+    chat: Option<&ChatContext>,
+    folder: &str,
+    suffix: &str,
+) -> bool {
+    let Some(derm) = chat.and_then(|c| c.derm_exe.as_deref()) else {
+        return false;
+    };
+    let id = event.chat_id.as_str();
+    let plain_id = !id.is_empty()
+        && !id.starts_with('.')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    let own_file =
+        home_of(path).is_some_and(|home| path == format!("{home}/{folder}/{id}{suffix}"));
+    let folders = chat.map(|c| c.folders.as_slice()).unwrap_or(&[]);
+    event.source == ActivitySource::Auditd
+        && str_field(event, "exe") == Some(derm)
+        && !chat_could_replace(derm, folders)
+        && plain_id
+        && own_file
+}
+
+/// A program the chat may have put in place: inside one of its folders, or
+/// under a temp root a sandbox lets it write (srt's `/tmp`, Claude Code's
+/// `/tmp/claude-<uid>`; fix pass 4's review, FP4-R1, FP4-R2). Such a binary
+/// is trusted for no hide.
+fn chat_could_replace(exe: &str, folders: &[String]) -> bool {
+    const TEMP: &[&str] = &[
+        "/tmp",
+        "/var/tmp",
+        "/dev/shm",
+        "/private/tmp",
+        "/private/var/tmp",
+        "/private/var/folders",
+        "/var/folders",
+    ];
+    TEMP.iter().any(|t| inside(exe, t)) || folders.iter().any(|f| inside(exe, f))
+}
+
 fn written_paths(event: &ActivityEvent) -> Vec<&str> {
     let path = str_field(event, "path");
     let dest = str_field(event, "dest");
@@ -1194,7 +1404,30 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                     })
                 })
             });
-            for path in written_paths(event) {
+            let exe = str_field(event, "exe").unwrap_or("");
+            if bubblewrap_dev_link(event, exe) {
+                continue;
+            }
+            for raw in written_paths(event) {
+                // Box test w6, BW6-4: bubblewrap's own setup.
+                let mapped;
+                let path = match bubblewrap_setup(raw, exe) {
+                    BwrapSetup::Own => continue,
+                    BwrapSetup::Host(p) => {
+                        if made_off_the_host(event) {
+                            *suppressed.entry(RULE_BWRAP_TMPFS.to_string()).or_default() += 1;
+                            continue;
+                        }
+                        mapped = p;
+                        mapped.as_str()
+                    }
+                    BwrapSetup::Other => raw,
+                };
+                // Box test w6 retest 3's BW6R3-2 hid the gate's own taint
+                // state in a sandbox's tmpfs. Since fix pass 6 (the redo of
+                // fix pass 4's part 2) the gate keeps taint in the daemon
+                // behind every route and never writes that file, so a write
+                // of it is the agent's, and is flagged.
                 // The chat's own runtime writing its recording (T1).
                 if own_runtime && in_recordings(path, data_dir) {
                     continue;
@@ -1245,7 +1478,15 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
         // Sensitive opens.
         if flag.is_none() && kernel_feed(event.source) && event.kind == "open" {
             if let Some(path) = str_field(event, "path") {
-                if !expected_sensitive(path, folders) {
+                if bubblewrap_bind_check(event, path, folders) {
+                    *suppressed
+                        .entry(RULE_BWRAP_BIND_CHECK.to_string())
+                        .or_default() += 1;
+                } else if derm_gate_own_route(event, path, chat) {
+                    *suppressed
+                        .entry(RULE_DERM_OWN_ROUTE.to_string())
+                        .or_default() += 1;
+                } else if !expected_sensitive(path, folders) {
                     flag = Some((
                         FlagReason::SensitivePath,
                         format!("Opened {path}"),
@@ -1342,6 +1583,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
     }
 
     found.extend(left_running(input, &windows, &tree));
+    found.extend(no_gate_record(input));
     let flags = dedupe(input.events, found);
     let mut expected = dedupe(input.events, hidden);
     expected.truncate(MAX_EXPECTED_ROWS);
@@ -1350,6 +1592,79 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
         expected,
         suppressed,
     }
+}
+
+/// Tony's R7 call, option 1 (14 Nov 2026; case 270; the P4-R7 pattern): a
+/// call the tap saw come back with a result, in a chat whose `run.start`
+/// says derm's gate was expected (`gate.expected`) and the tap on, that no
+/// gate record (`approval` or `tool.call`, by `toolUseId`, which is the
+/// tap's `callId`) names in the window. The tap's records come from the
+/// daemon's own tap, which no chat token can post; a chat token can post a
+/// gate record for a call id it reads from its own tail (case 66), so this
+/// shows a gate that did not run (a project's settings that turn hooks off)
+/// or records that were lost, not an agent that forges them. A code tool's
+/// call is not judged: Codex sends no hook for Code Mode's `exec` or `wait`
+/// (`core/src/tools/registry.rs:168-177` at 0.167.2: the default hook
+/// payload is for function calls only).
+fn no_gate_record<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
+    let mut watched: HashSet<&str> = HashSet::new();
+    for e in input.events {
+        if e.source == ActivitySource::Run && e.kind == "run.start" {
+            let expected =
+                e.detail.pointer("/gate/expected").and_then(Value::as_bool) == Some(true);
+            let tapped = e.detail.pointer("/tap/on").and_then(Value::as_bool) == Some(true);
+            if expected && tapped {
+                watched.insert(e.chat_id.as_str());
+            }
+        }
+    }
+    if watched.is_empty() {
+        return Vec::new();
+    }
+    let gated: HashSet<(&str, &str)> = input
+        .events
+        .iter()
+        .filter(|e| {
+            e.source == ActivitySource::Adapter && (e.kind == "approval" || e.kind == "tool.call")
+        })
+        .filter_map(|e| Some((e.chat_id.as_str(), str_field(e, "toolUseId")?)))
+        .collect();
+    let mut out = Vec::new();
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    for e in input.events {
+        if e.source != ActivitySource::Tap
+            || e.kind != "tap.call"
+            || !watched.contains(e.chat_id.as_str())
+            || e.detail.get("resultSha256").is_none_or(Value::is_null)
+        {
+            continue;
+        }
+        let Some(call) = str_field(e, "callId") else {
+            continue;
+        };
+        let tool = str_field(e, "toolNormalized").unwrap_or("");
+        if derm_core::policy::code_tool(&e.harness, tool)
+            || gated.contains(&(e.chat_id.as_str(), call))
+            || !seen.insert((e.chat_id.as_str(), call))
+        {
+            continue;
+        }
+        out.push(Candidate {
+            event: e,
+            reason: FlagReason::NoGateRecord,
+            summary: one_line(
+                &format!(
+                    "the tap saw {tool} call {call} come back, and no gate record names it: the gate did not run for it, or its record was lost"
+                ),
+                300,
+            ),
+            tier: None,
+            subject: call.to_string(),
+            grouped_path: None,
+            alone: true,
+        });
+    }
+    out
 }
 
 /// Processes a tool call started that were still running 10 s after it
@@ -1468,6 +1783,7 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
         FlagReason::SensitivePath => "sensitivePath",
         FlagReason::NewHost => "newHost",
         FlagReason::RecordingOff => "recordingOff",
+        FlagReason::NoGateRecord => "noGateRecord",
     }
 }
 
@@ -1552,6 +1868,7 @@ mod tests {
                 chat_id: "c1".into(),
                 harness: "claude".into(),
                 folders: vec!["/Users/t/code/app".into(), "/Users/t/code/my lib".into()],
+                derm_exe: None,
             },
         )])
     }
@@ -1588,6 +1905,573 @@ mod tests {
             json!({ "path": path }),
             Some(10),
         )
+    }
+
+    fn auditd_by(id: &str, at: i64, kind: &str, path: &str, exe: &str) -> ActivityEvent {
+        ev(
+            id,
+            at,
+            ActivitySource::Auditd,
+            kind,
+            json!({ "path": path, "exe": exe }),
+            Some(10),
+        )
+    }
+
+    /// Box test w6, BW6-4: in every Standard (and srt) chat, bubblewrap's
+    /// own setup was flagged "write outside folders": the user namespace's
+    /// maps (`?uid_map`, `?setgroups`, `?gid_map`, written through a
+    /// `/proc/<pid>` descriptor, so unresolved) and the new root before its
+    /// `pivot_root` (`/newroot/dev/null`). bubblewrap names both
+    /// (`strings /usr/bin/bwrap`: "uid_map", "error writing to setgroups",
+    /// "/newroot/", "pivot_root(/newroot)"); Claude Code runs the first
+    /// `bwrap` on PATH and Codex 0.167.2 its own `codex-resources/bwrap`
+    /// (`linux-sandbox/src/bundled_bwrap.rs:130-134`).
+    #[test]
+    fn bw6_4_bubblewraps_own_setup_is_not_a_write_outside_the_folders() {
+        let flags = check(
+            &[
+                auditd_by("1", 1, "write", "?uid_map", "/usr/bin/bwrap"),
+                auditd_by("2", 2, "write", "?setgroups", "/usr/bin/bwrap"),
+                auditd_by(
+                    "3",
+                    3,
+                    "write",
+                    "/proc/4242/gid_map",
+                    "/x/codex-resources/bwrap",
+                ),
+                auditd_by("4", 4, "create", "/newroot/dev/null", "/usr/bin/bwrap"),
+            ],
+            &[],
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+        // The new root's binds are the host's paths: a write there is still
+        // a write outside the folders, under the host's name.
+        let flags = check(
+            &[auditd_by(
+                "5",
+                5,
+                "create",
+                "/newroot/home/t/.bashrc",
+                "/usr/bin/bwrap",
+            )],
+            &[],
+        );
+        assert_eq!(flags.len(), 1, "{flags:?}");
+        assert!(flags[0].summary.contains("/home/t/.bashrc"), "{flags:?}");
+        assert!(!flags[0].summary.contains("/newroot"), "{flags:?}");
+        // Anything else writing those names is flagged as before.
+        let flags = check(
+            &[
+                auditd_by("6", 6, "write", "?uid_map", "/usr/bin/python3"),
+                auditd_by("7", 7, "create", "/newroot/dev/null", "/usr/bin/python3"),
+                auditd_by("8", 8, "write", "?notes", "/usr/bin/bwrap"),
+            ],
+            &[],
+        );
+        assert_eq!(flags.len(), 3, "{flags:?}");
+    }
+
+    fn auditd_link(id: &str, at: i64, from: &str, to: &str, exe: &str) -> ActivityEvent {
+        ev(
+            id,
+            at,
+            ActivitySource::Auditd,
+            "link",
+            json!({ "path": from, "dest": to, "exe": exe }),
+            Some(10),
+        )
+    }
+
+    /// Box test w6 retest, BW6R-3: what BW6-4 left in every Standard and srt
+    /// chat's report. srt 0.0.82's `apply-seccomp` (its strings: "write
+    /// /proc/self/uid_map", "/proc/sys/user/max_user_namespaces", "could not
+    /// set user.max_user_namespaces") and Claude Code 2.1.322's own binary,
+    /// which runs the same helper as a multicall program, set up a nested
+    /// user namespace; bubblewrap 0.11.1 makes `/bindfileXXXXXX` in its own
+    /// tmpfs root (`bubblewrap.c:1517`, the tmpfs at 3314-3315, pivoted to
+    /// at 3352) and the new `/dev`'s links to `/proc/self/fd`, `/proc/kcore`
+    /// and `pts/ptmx` (1390-1422), whose own names the feed cannot resolve.
+    #[test]
+    fn bw6r_3_the_sandbox_helpers_own_setup_is_not_a_write_outside_the_folders() {
+        let helper = "/home/u/cli/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp";
+        let claude = "/home/u/cli/node_modules/@anthropic-ai/claude-code/bin/claude.exe";
+        let native = "/home/u/.local/share/claude/versions/2.1.322";
+        let flags = check(
+            &[
+                auditd_by("1", 1, "write", "/proc/self/setgroups", helper),
+                auditd_by("2", 2, "write", "/proc/self/uid_map", helper),
+                auditd_by("3", 3, "write", "/proc/self/gid_map", claude),
+                auditd_by(
+                    "4",
+                    4,
+                    "write",
+                    "/proc/sys/user/max_user_namespaces",
+                    helper,
+                ),
+                auditd_by(
+                    "5",
+                    5,
+                    "write",
+                    "/proc/sys/user/max_user_namespaces",
+                    claude,
+                ),
+                auditd_by("6", 6, "write", "/proc/self/uid_map", native),
+                auditd_by("7", 7, "create", "/bindfileAb3xYz", "/usr/bin/bwrap"),
+                auditd_by(
+                    "8",
+                    8,
+                    "create",
+                    "/newroot/bindfile9q2WeR",
+                    "/x/codex-resources/bwrap",
+                ),
+                auditd_link("9", 9, "/proc/self/fd", "?", "/usr/bin/bwrap"),
+                auditd_link(
+                    "10",
+                    10,
+                    "/proc/self/fd/0",
+                    "/newroot/dev/stdin",
+                    "/usr/bin/bwrap",
+                ),
+                auditd_link("11", 11, "/proc/kcore", "?", "/usr/bin/bwrap"),
+                auditd_link("12", 12, "pts/ptmx", "?", "/usr/bin/bwrap"),
+            ],
+            &[],
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+        // Still flagged: another program writing those names, bubblewrap
+        // linking anything else, a bindfile name of another shape, and the
+        // helper writing a real file.
+        let flags = check(
+            &[
+                auditd_by(
+                    "21",
+                    21,
+                    "write",
+                    "/proc/sys/user/max_user_namespaces",
+                    "/usr/bin/python3",
+                ),
+                auditd_link("22", 22, "/home/u/.ssh/id_rsa", "?", "/usr/bin/bwrap"),
+                auditd_by(
+                    "23",
+                    23,
+                    "create",
+                    "/bindfile-not-mkstemp",
+                    "/usr/bin/bwrap",
+                ),
+                auditd_by("24", 24, "write", "/home/u/.bashrc", helper),
+                auditd_by("25", 25, "create", "/bindfileAb3xYz", "/usr/bin/python3"),
+            ],
+            &[],
+        );
+        assert_eq!(flags.len(), 5, "{flags:?}");
+        // The host's own /dev is never bubblewrap's new one (FP2-R2); a
+        // write under /dev is the check's noise either way, so the rule is
+        // checked on its own.
+        let host_dev = auditd_link("26", 26, "/proc/self/fd", "/dev/fd", "/usr/bin/bwrap");
+        assert!(!bubblewrap_dev_link(&host_dev, "/usr/bin/bwrap"));
+        let new_dev = auditd_link("27", 27, "/proc/self/fd", "?", "/usr/bin/bwrap");
+        assert!(bubblewrap_dev_link(&new_dev, "/usr/bin/bwrap"));
+    }
+
+    /// Box test w6 retest 2, BW6R2-1: the feed now names a symlink's target
+    /// and the link it made the way the kernel's record holds them
+    /// (`derm-audit-linux` `Paths::symlink`; its fixture `links_6_18`):
+    /// bubblewrap's `/dev/fd` is `/proc/self/fd` to `/newroot/dev/fd`, and
+    /// is its own; a link it makes in a host folder is not.
+    #[test]
+    fn bw6r2_1_bubblewraps_dev_fd_as_the_feed_now_reads_it_is_its_own() {
+        let bw = "/usr/bin/bwrap";
+        let flags = check(
+            &[
+                auditd_link("1", 1, "/proc/self/fd", "/newroot/dev/fd", bw),
+                auditd_link("2", 2, "pts/ptmx", "/newroot/dev/ptmx", bw),
+                auditd_link("3", 3, "/proc/kcore", "/newroot/dev/core", bw),
+            ],
+            &[],
+        );
+        assert!(flags.is_empty(), "{flags:?}");
+        let flags = check(
+            &[auditd_link("4", 4, "/proc/self/fd", "/Users/t/.ssh/fd", bw)],
+            &[],
+        );
+        assert_eq!(flags.len(), 1, "{flags:?}");
+    }
+
+    /// Box test w6 retest 2, BW6R2-2: bubblewrap's mount points under
+    /// `/newroot`, made in its own tmpfs root or in a tmpfs over a folder,
+    /// were flagged as writes to the host's `~/.gitconfig`, `~/.derm/policy.json`
+    /// and the route file. The feed now says of each write whether its
+    /// filesystem was one the host had mounted (`devMounted`; the devices are
+    /// its fixture `links_6_18`); only `false` from the kernel feed hides one.
+    #[test]
+    fn bw6r2_2_a_mount_point_bubblewrap_made_in_a_tmpfs_is_not_the_hosts_file() {
+        let bw = |id: &str, path: &str, mounted: Option<bool>, exe: &str, src: ActivitySource| {
+            let mut d = json!({ "path": path, "exe": exe, "dev": "00:2a" });
+            if let Some(m) = mounted {
+                d["devMounted"] = json!(m);
+            }
+            ev(id, id.parse().unwrap(), src, "create", d, Some(10))
+        };
+        let a = ActivitySource::Auditd;
+        let events = [
+            bw(
+                "1",
+                "/newroot/Users/t/.gitconfig",
+                Some(false),
+                "/usr/bin/bwrap",
+                a,
+            ),
+            bw(
+                "2",
+                "/newroot/Users/t/.derm/policy.json",
+                Some(false),
+                "/x/srt/vendor/bwrap",
+                a,
+            ),
+            bw(
+                "3",
+                "/newroot/Users/t/code/other/.gitconfig",
+                Some(true),
+                "/usr/bin/bwrap",
+                a,
+            ),
+            bw("4", "/newroot/Users/t/.npmrc", None, "/usr/bin/bwrap", a),
+            bw(
+                "5",
+                "/newroot/Users/t/.bashrc",
+                Some(false),
+                "/usr/bin/python3",
+                a,
+            ),
+            bw(
+                "6",
+                "/newroot/Users/t/.zshrc",
+                Some(false),
+                "/usr/bin/bwrap",
+                ActivitySource::Eslogger,
+            ),
+        ];
+        let out = check_full(&events, &[], DATA);
+        let ids: Vec<&str> = out.flags.iter().map(|f| f.event_id.as_str()).collect();
+        assert_eq!(ids, vec!["3", "4", "5", "6"], "{:?}", out.flags);
+        assert_eq!(out.suppressed.get(RULE_BWRAP_TMPFS), Some(&2));
+    }
+
+    /// The box's own records, as its feed wrote them at `e8e05c3`
+    /// (`tests/fixtures/bw6r3_box_7_0.md` says what each is).
+    fn box_records() -> Vec<ActivityEvent> {
+        include_str!("../../tests/fixtures/bw6r3_box_7_0.jsonl")
+            .lines()
+            .map(|l| {
+                let v: Value = serde_json::from_str(l).unwrap();
+                serde_json::from_value(v["event"].clone()).unwrap()
+            })
+            .collect()
+    }
+
+    fn check_with(events: &[ActivityEvent], chats: &HashMap<String, ChatContext>) -> CheckOutput {
+        let hosts = HashSet::new();
+        run_full(&CheckInput {
+            events,
+            approvals: &[],
+            chats,
+            known_hosts: &hosts,
+            now_ms: 1_794_721_000_000,
+            data_dir: None,
+        })
+    }
+
+    /// Box test w6 retest 3, BW6R3-1: bubblewrap 0.11.1 opens each bind it
+    /// made with `O_PATH` to find it in the mount table (`bind-mount.c:397-408`
+    /// at v0.11.1), and derm's rule on `~/.derm/run` records the one of an srt
+    /// chat's route file, which read as "Opened .../routes/<chat>.json". An
+    /// `O_PATH` open reads nothing (open(2)); only bubblewrap's, under its new
+    /// root, said so by the feed, is hidden.
+    #[test]
+    fn bw6r3_1_bubblewraps_look_at_its_own_bind_is_not_a_read() {
+        let base = box_records().remove(0);
+        let with = |f: &dyn Fn(&mut ActivityEvent)| {
+            let mut e = base.clone();
+            e.detail["pathOnly"] = json!(true);
+            f(&mut e);
+            e
+        };
+        let none = HashMap::new();
+        let out = check_with(&[with(&|_| {})], &none);
+        assert!(out.flags.is_empty(), "{:?}", out.flags);
+        assert_eq!(out.suppressed.get(RULE_BWRAP_BIND_CHECK), Some(&1));
+        // An older feed, which does not say, fails safe.
+        let out = check_with(std::slice::from_ref(&base), &none);
+        assert_eq!(out.flags.len(), 1, "{:?}", out.flags);
+        assert_eq!(out.flags[0].reason, FlagReason::SensitivePath);
+        for (why, e) in [
+            (
+                "another program",
+                with(&|e| e.detail["exe"] = json!("/usr/bin/python3")),
+            ),
+            (
+                "the host's path",
+                with(&|e| {
+                    e.detail["path"] = json!("/home/opone/.derm/run/routes/derm-129cd74c6533.json")
+                }),
+            ),
+            (
+                "pathOnly false",
+                with(&|e| e.detail["pathOnly"] = json!(false)),
+            ),
+            (
+                "another feed",
+                with(&|e| e.source = ActivitySource::Eslogger),
+            ),
+        ] {
+            let out = check_with(&[e], &none);
+            assert_eq!(out.flags.len(), 1, "{why}: {:?}", out.flags);
+            assert!(out.suppressed.is_empty(), "{why}: {:?}", out.suppressed);
+        }
+    }
+
+    /// Box test w6 retest 3, BW6R3-2 hid derm's gate writing a chat's taint
+    /// state in srt's tmpfs over `~/.derm` (records 1 and 2 of the box's
+    /// fixture). Since fix pass 6 (the redo of fix pass 4's part 2, FP4-R1)
+    /// the gate keeps taint in the daemon behind srt's route and writes no
+    /// such file, so a write of it, by any program, is the agent's and is
+    /// flagged: `{"v":1}` there would have cleared the chat's taint.
+    #[test]
+    fn bw6r3_2_a_taint_file_in_a_sandboxs_tmpfs_is_flagged_whoever_writes_it() {
+        let recs = box_records();
+        let writes = [recs[1].clone(), recs[2].clone()];
+        let chat = "derm-544da2c1fa2c";
+        let own = HashMap::from([(
+            chat.to_string(),
+            ChatContext {
+                chat_id: chat.into(),
+                harness: "claude-code".into(),
+                folders: vec!["/home/opone/w6box/rt3/a5cp".into()],
+                derm_exe: Some("/home/opone/.local/bin/derm".into()),
+            },
+        )]);
+        let out = check_with(&writes, &own);
+        // The create and the write, as one flag of two.
+        assert_eq!(out.flags.len(), 1, "{:?}", out.flags);
+        assert_eq!(out.flags[0].count, 2, "{:?}", out.flags);
+        assert!(
+            out.flags[0].summary.contains(".taint.json"),
+            "{:?}",
+            out.flags
+        );
+        assert!(
+            !out.suppressed.contains_key("dermGateSandboxState"),
+            "{:?}",
+            out.suppressed
+        );
+    }
+
+    /// Box test w6 retest 4 (on the fix of retest 3): derm's gate reads
+    /// its chat's route out of srt (`gate/daemon.rs` `srt_route_file`),
+    /// three times in a Claude Code srt chat, each "Opened
+    /// ~/.derm/run/routes/<chat>.json". The file holds two port numbers.
+    /// Only the derm the chat's `run.start` names reading that chat's own
+    /// route is hidden; the new feed's bwrap look (`pathOnly`, recorded at
+    /// `0f1d9ca`) is hidden as BW6R3-1's rule says.
+    #[test]
+    fn bw6r3_1_the_gates_read_of_its_own_route_is_not_a_flag() {
+        let recs = box_records();
+        let (look, read) = (recs[3].clone(), recs[4].clone());
+        let chat = "derm-3827ee1711f4";
+        let ctx = |exe: Option<&str>| {
+            HashMap::from([(
+                chat.to_string(),
+                ChatContext {
+                    chat_id: chat.into(),
+                    harness: "claude-code".into(),
+                    folders: vec!["/home/opone/w6box/rt4/a5cp".into()],
+                    derm_exe: exe.map(str::to_string),
+                },
+            )])
+        };
+        let own = ctx(Some("/home/opone/.local/bin/derm"));
+        let out = check_with(&[look, read.clone()], &own);
+        assert!(out.flags.is_empty(), "{:?}", out.flags);
+        assert_eq!(out.suppressed.get(RULE_BWRAP_BIND_CHECK), Some(&1));
+        assert_eq!(out.suppressed.get(RULE_DERM_OWN_ROUTE), Some(&1));
+        let edit = |f: &dyn Fn(&mut ActivityEvent)| {
+            let mut e = read.clone();
+            f(&mut e);
+            e
+        };
+        for (why, e, chats) in [
+            ("no run.start path", read.clone(), ctx(None)),
+            (
+                "another writer",
+                edit(&|e| e.detail["exe"] = json!("/usr/bin/cat")),
+                own.clone(),
+            ),
+            (
+                "another chat's route",
+                edit(&|e| {
+                    e.detail["path"] = json!("/home/opone/.derm/run/routes/derm-000000000000.json")
+                }),
+                own.clone(),
+            ),
+            (
+                "another file",
+                edit(&|e| e.detail["path"] = json!("/home/opone/.derm/run/daemon.token")),
+                own.clone(),
+            ),
+            (
+                "another feed",
+                edit(&|e| e.source = ActivitySource::Eslogger),
+                own.clone(),
+            ),
+        ] {
+            let out = check_with(&[e], &chats);
+            assert_eq!(out.flags.len(), 1, "{why}: {:?}", out.flags);
+            assert!(!out.suppressed.contains_key(RULE_DERM_OWN_ROUTE), "{why}");
+        }
+    }
+
+    /// Fix pass 4's review, FP4-R1 and FP4-R2: a derm or a bwrap the chat
+    /// could have replaced (in its own folder, or a temp root a sandbox lets
+    /// it write) is not trusted for either hide. A write of `{"v":1}` clears
+    /// a chat's taint (`gate/taint/state.rs` `load` reads the file as it is).
+    #[test]
+    fn fp4_r1_a_derm_or_bwrap_the_chat_can_replace_hides_nothing() {
+        let recs = box_records();
+        // The gate's read of its own route (record 4), by a derm the chat
+        // could have replaced: flagged. (Fix pass 6 removed the taint-file
+        // hide this test also held: no derm write of that file is hidden.)
+        let chat = "derm-3827ee1711f4";
+        let folder = "/home/opone/w6box/rt4/a5cp";
+        let ctx = |exe: &str| {
+            HashMap::from([(
+                chat.to_string(),
+                ChatContext {
+                    chat_id: chat.into(),
+                    harness: "claude-code".into(),
+                    folders: vec![folder.into()],
+                    derm_exe: Some(exe.into()),
+                },
+            )])
+        };
+        for exe in [
+            format!("{folder}/target/release/derm"),
+            "/tmp/derm-build/derm".to_string(),
+            "/var/tmp/x/derm".to_string(),
+            "/dev/shm/derm".to_string(),
+        ] {
+            let mut e = recs[4].clone();
+            e.detail["exe"] = json!(exe);
+            let out = check_with(&[e], &ctx(&exe));
+            assert_eq!(out.flags.len(), 1, "{exe}: {:?}", out.flags);
+            assert!(!out.suppressed.contains_key(RULE_DERM_OWN_ROUTE), "{exe}");
+        }
+        let mut look = recs[0].clone();
+        look.detail["pathOnly"] = json!(true);
+        for exe in ["/tmp/bwrap", "/home/opone/w6box/rt3/a5xr/bwrap"] {
+            let mut e = look.clone();
+            e.detail["exe"] = json!(exe);
+            let chats = HashMap::from([(
+                e.chat_id.clone(),
+                ChatContext {
+                    chat_id: e.chat_id.clone(),
+                    folders: vec!["/home/opone/w6box/rt3/a5xr".into()],
+                    ..ChatContext::default()
+                },
+            )]);
+            let out = check_with(&[e], &chats);
+            assert_eq!(out.flags.len(), 1, "{exe}: {:?}", out.flags);
+        }
+    }
+
+    fn chat_ev(
+        id: &str,
+        at: i64,
+        chat: &str,
+        source: ActivitySource,
+        kind: &str,
+        detail: Value,
+    ) -> ActivityEvent {
+        let mut e = ev(id, at, source, kind, detail, None);
+        e.chat_id = chat.into();
+        e.harness = "claude-code".into();
+        e
+    }
+
+    /// Tony's R7 call, option 1 (14 Nov 2026; the P4-R7 pattern): in a
+    /// chat whose `run.start` says derm's gate was expected and the tap on,
+    /// a call the tap saw come back with a result, and that no gate record
+    /// names, is flagged. A chat token can still post a record for a call id
+    /// it reads from its own tail (case 66), so this catches a gate that did
+    /// not run or a record that was lost, not an agent that forges one.
+    #[test]
+    fn r7_a_tapped_call_no_gate_record_names_is_flagged() {
+        let start = |chat: &str, expected: bool, tap: bool| {
+            chat_ev(
+                &format!("start-{chat}"),
+                1,
+                chat,
+                ActivitySource::Run,
+                "run.start",
+                json!({"boundary": "srt", "gate": {"expected": expected}, "tap": {"on": tap}}),
+            )
+        };
+        let tap = |id: &str, chat: &str, call: &str, tool: &str, result: bool| {
+            let mut d = json!({"callId": call, "toolNormalized": tool});
+            if result {
+                d["resultSha256"] = json!("ab");
+            }
+            chat_ev(id, 10, chat, ActivitySource::Tap, "tap.call", d)
+        };
+        let gate = |id: &str, chat: &str, call: &str| {
+            chat_ev(
+                id,
+                9,
+                chat,
+                ActivitySource::Adapter,
+                "approval",
+                json!({"toolUseId": call, "decision": "allow", "tool": "bash"}),
+            )
+        };
+        let flags = check(
+            &[
+                start("c1", true, true),
+                tap("t1", "c1", "toolu_a", "bash", true),
+                gate("g1", "c1", "toolu_a"),
+                tap("t2", "c1", "toolu_b", "bash", true),
+                // No result yet: not judged.
+                tap("t3", "c1", "toolu_c", "bash", false),
+            ],
+            &[],
+        );
+        let ungated: Vec<&Flag> = flags
+            .iter()
+            .filter(|f| f.reason == FlagReason::NoGateRecord)
+            .collect();
+        assert_eq!(ungated.len(), 1, "{flags:?}");
+        assert_eq!(ungated[0].event_id, "t2");
+        assert!(ungated[0].summary.contains("toolu_b"), "{flags:?}");
+        // No flag where the gate was not expected, the tap was off, or the
+        // call is a code tool's (Codex sends no hook for those).
+        let mut codex = tap("t6", "c4", "c_x", "exec", true);
+        codex.harness = "codex".into();
+        let mut codex_start = start("c4", true, true);
+        codex_start.harness = "codex".into();
+        let flags = check(
+            &[
+                start("c2", false, true),
+                tap("t4", "c2", "toolu_d", "bash", true),
+                start("c3", true, false),
+                tap("t5", "c3", "toolu_e", "bash", true),
+                codex_start,
+                codex,
+            ],
+            &[],
+        );
+        assert!(
+            flags.iter().all(|f| f.reason != FlagReason::NoGateRecord),
+            "{flags:?}"
+        );
     }
 
     #[test]
@@ -1668,6 +2552,7 @@ mod tests {
                 chat_id: "c1".into(),
                 harness: "claude".into(),
                 folders: vec![r"\\?\C:\derm-win-w5\proj-w5b12".into()],
+                derm_exe: None,
             },
         )]);
         let events = [

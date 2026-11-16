@@ -22,6 +22,8 @@
 // (case 228).
 
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 import { ownedByTrusted } from "./core/owner.ts";
 import { approve, decide, event, record, redact, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "./serve/client.ts";
 
@@ -37,7 +39,23 @@ export type Deps = {
 };
 
 export function defaultDeps(env: NodeJS.ProcessEnv = process.env, cwd: () => string = () => process.cwd(), harness: string = HARNESS): Deps {
-  return { env, serve: () => sharedServe({ agent: harness, env, cwd, trusted: ownedByTrusted }) };
+  return { env, serve: () => sharedServe({ agent: harness, env, cwd, trusted: ownedByTrusted, pathFile: dermPathFile(env) }) };
+}
+
+/**
+ * Where `derm connect opencode --gate --write` writes derm's path on
+ * Windows (fix pass 6, note BE section 3.2): beside opencode.json in
+ * OpenCode's global folder, `$XDG_CONFIG_HOME/opencode` or
+ * `~/.config/opencode` on every system (OpenCode 1.19.4
+ * packages/core/src/global.ts:3,13 with xdg-basedir 5.1.0 index.js:10-11).
+ * The client reads it on Windows only, after DERM_BIN.
+ */
+export function dermPathFile(env: NodeJS.ProcessEnv, home: string = os.homedir()): string {
+  // As xdg-basedir 5.1.0 reads it (`env.XDG_CONFIG_HOME || ~/.config`, no
+  // trim, a relative value kept), so the plugin looks where OpenCode keeps
+  // its config (FP6-R11, fix pass 7). derm connect refuses a relative one.
+  const base = env.XDG_CONFIG_HOME || path.join(home, ".config");
+  return path.join(base, "opencode", "derm-path");
 }
 
 /** The error a blocked call throws; OpenCode shows its message as the tool's failure. */

@@ -138,6 +138,27 @@ fn claude(env: &Env, home: &Path) -> Registered {
         files.push(cwd.join(".claude/settings.json"));
     }
     files.push(config.join("settings.json"));
+    // Fix pass 6 (note BE section 1.5, option (d)): derm's gate in the
+    // user's settings, in exec form, as `derm connect claude-code --gate`
+    // writes it on Windows. Claude Code runs it whatever the plugin is.
+    if let Ok(Some(v)) = read_json(&config.join("settings.json"), false) {
+        if let Some(gate) = settings_gate(&v) {
+            let file = config.join("settings.json");
+            let shown: String = gate.chars().take(120).collect();
+            // FP6-R12 (fix pass 7): a gate naming another derm (one the agent
+            // planted, an old install) is not this one's registration.
+            if !is_this_derm(&gate) {
+                return Registered::YesNote(format!(
+                    "a gate in {} runs {shown}, which is not this derm; run derm connect claude-code --gate --write to name this one",
+                    file.display()
+                ));
+            }
+            return Registered::Yes(format!(
+                "derm's gate in {} runs {shown} hook claude-code pre in exec form and blocks when it fails",
+                file.display()
+            ));
+        }
+    }
     let mut settings = config.join("settings.json");
     let mut enabled = None;
     for file in files {
@@ -253,6 +274,120 @@ fn claude(env: &Env, home: &Path) -> Registered {
     }
 }
 
+/// The derm a settings file's own exec-form gate runs (`connect/gates.json`,
+/// Claude Code's Windows row): a `PreToolUse` hook whose command is an
+/// absolute path to a file named `derm` or `derm.exe`, whose arguments are
+/// `hook claude-code pre`, and which blocks when it fails. The path as the
+/// file gives it; a reader that prints it cuts it (the file is one an agent
+/// can write).
+pub fn settings_gate(v: &Value) -> Option<String> {
+    let entries = v.pointer("/hooks/PreToolUse")?.as_array()?;
+    entries
+        .iter()
+        .filter_map(|e| e.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .find_map(|h| {
+            let cmd = h.get("command").and_then(Value::as_str)?;
+            let base = cmd.rsplit(['/', '\\']).next().unwrap_or(cmd);
+            let named = base == "derm" || base.eq_ignore_ascii_case("derm.exe");
+            let absolute = cmd.starts_with('/')
+                || (cmd.len() > 3 && cmd.as_bytes()[1] == b':' && cmd.as_bytes()[2] == b'\\');
+            let args_ok = h.get("args") == Some(&serde_json::json!(["hook", "claude-code", "pre"]));
+            let blocks = h.get("onFailure").and_then(Value::as_str) == Some("block");
+            (named && absolute && args_ok && blocks).then(|| cmd.to_string())
+        })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for this derm's own path.
+    pub static TEST_SELF: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Whether `path` names this derm, every link followed (doctor's rule for
+/// running a settings gate, `doctor::settings_gate_hook`).
+fn is_this_derm(path: &str) -> bool {
+    let real = |p: &Path| std::fs::canonicalize(p).ok();
+    let me = std::env::current_exe().ok().and_then(|p| real(&p));
+    #[cfg(test)]
+    let me = TEST_SELF
+        .with(|t| t.borrow().clone())
+        .and_then(|p| real(&p))
+        .or(me);
+    me.is_some_and(|me| real(Path::new(path)) == Some(me))
+}
+
+/// derm's gate in Codex's own `hooks.json`, as `derm connect codex --gate
+/// --write` writes it on Windows: a PreToolUse command under an every-call
+/// matcher that runs an absolute path to `derm` or `derm.exe` with `hook
+/// codex pre`. Fix pass 8's form is PowerShell's, which Codex runs a Windows
+/// hook with (`& '<path>'` and [`CODEX_PS_PRE_TAIL`]); fix pass 7's
+/// cmd.exe form (`"<path>" hook codex pre`) is found too, with `false`, since
+/// PowerShell reads it as a parse error and Codex lets the call through.
+/// Its path, the index of its group and handler, which Codex's trust key
+/// names (`<file>:pre_tool_use:<group>:<handler>`, Codex 0.167.2
+/// `codex-rs/hooks/src/lib.rs:125-135`), and whether it is PowerShell's form.
+/// What follows derm's quoted path in the Windows row's PreToolUse line
+/// (gates.json): a derm.exe that does not start blocks, since PowerShell's
+/// `exit $null` would be 0, an allow (fix pass 8's review, run on the box).
+pub const CODEX_PS_PRE_TAIL: &str = " hook codex pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE";
+
+pub fn codex_hooks_gate(v: &Value) -> Option<(String, usize, usize, bool)> {
+    let groups = v.pointer("/hooks/PreToolUse")?.as_array()?;
+    groups.iter().enumerate().find_map(|(g, group)| {
+        // Every call: no matcher, "" or "*" (Codex 0.167.2
+        // `engine/matcher.rs:12-13`); a narrower one is not the gate.
+        let every = match group.get("matcher") {
+            None | Some(Value::Null) => true,
+            Some(Value::String(m)) => m.is_empty() || m == "*",
+            _ => false,
+        };
+        if !every {
+            return None;
+        }
+        group
+            .get("hooks")?
+            .as_array()?
+            .iter()
+            .enumerate()
+            .find_map(|(h, hook)| {
+                let cmd = hook.get("command").and_then(Value::as_str)?;
+                let (path, ps) = if let Some(rest) = cmd.strip_prefix("& '") {
+                    let (path, tail) = rest.split_once('\'')?;
+                    if tail == CODEX_PS_PRE_TAIL && crate::connect::gate::ps_reads(path).is_none() {
+                        (path, true)
+                    } else if tail == " hook codex pre; exit $LASTEXITCODE" {
+                        // An earlier fix pass 8 line, which exits 0 (an
+                        // allow) when derm.exe does not start.
+                        (path, false)
+                    } else {
+                        return None;
+                    }
+                } else {
+                    let rest = cmd.strip_prefix('"')?;
+                    let (path, tail) = rest.split_once('"')?;
+                    (tail == " hook codex pre").then_some((path, false))?
+                };
+                let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                let named = base == "derm" || base.eq_ignore_ascii_case("derm.exe");
+                let absolute = path.starts_with('/')
+                    || (path.len() > 3
+                        && path.as_bytes()[1] == b':'
+                        && path.as_bytes()[2] == b'\\');
+                (named && absolute).then(|| (path.to_string(), g, h, ps))
+            })
+    })
+}
+
+/// This derm, for the Cursor check (a test's stand-in in tests).
+fn cursor_self() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(p) = TEST_SELF.with(|t| t.borrow().clone()) {
+        return Some(p);
+    }
+    std::env::current_exe().ok()
+}
+
 /// Cursor's CLI (Mac test w4, 4.3; lane Q's Q7, lane N's N4): derm's gate is
 /// two entries in `~/.cursor/hooks.json` (`connect/gates.json`, its
 /// `json-array-entry` steps: `preToolUse` and `beforeMCPExecution`, each
@@ -284,11 +419,19 @@ fn cursor(home: &Path) -> Registered {
                 // `hook cursor pre` (`hook::claude_format::marks`).
                 is_derm_cursor_entry(e)
                     || e.get("command").and_then(Value::as_str).is_some_and(|c| {
+                        let me = cursor_self();
                         crate::hook::claude_format::marks::is_derm_rust_command(
                             c,
                             "cursor",
-                            std::env::current_exe().ok().as_deref(),
+                            me.as_deref(),
                         )
+                            // Fix pass 9: the Windows row's PowerShell line.
+                            || crate::hook::claude_format::marks::is_derm_ps_command(
+                                c,
+                                "cursor",
+                                "pre",
+                                me.as_deref(),
+                            )
                     })
             })
             .collect();
@@ -549,6 +692,74 @@ fn codex(env: &Env, home: &Path) -> Registered {
             return Registered::Unknown(format!("{} does not parse as TOML", config.display()))
         }
     };
+    // Fix pass 7: derm's gate in Codex's own hooks.json (the Windows row),
+    // which Codex runs whatever the plugin is, once trusted.
+    let hooks_file = codex_home.join("hooks.json");
+    if let Ok(Some(v)) = read_json(&hooks_file, false) {
+        if let Some((gate, g, h, ps)) = codex_hooks_gate(&v) {
+            let shown: String = gate.chars().take(120).collect();
+            if !ps {
+                // Fix pass 8 (the box run): Codex runs this line with
+                // PowerShell, where it is a parse error, a failure Codex lets
+                // through.
+                return Registered::No(format!(
+                    "derm's gate in {} is an older derm's line, which lets calls through on Windows (Codex runs it with PowerShell); run derm connect codex --gate --write again",
+                    hooks_file.display()
+                ));
+            }
+            if !is_this_derm(&gate) {
+                return Registered::YesNote(format!(
+                    "a gate in {} runs {shown}, which is not this derm; run derm connect codex --gate --write to name this one",
+                    hooks_file.display()
+                ));
+            }
+            // Codex names the file by its canonical folder, `\\?\` dropped
+            // (`utils/home-dir/src/lib.rs:43-49`; fix pass 7's review).
+            let canonical = std::fs::canonicalize(&codex_home)
+                .map(|c| {
+                    crate::connect::gate::without_verbatim(&c.join("hooks.json").to_string_lossy())
+                })
+                .unwrap_or_else(|_| hooks_file.display().to_string());
+            let key = format!("{canonical}:pre_tool_use:{g}:{h}");
+            let state = doc
+                .get("hooks")
+                .and_then(|x| x.as_table_like())
+                .and_then(|x| x.get("state"))
+                .and_then(|x| x.as_table_like())
+                .and_then(|x| x.get(&key))
+                .and_then(|x| x.as_table_like());
+            if state
+                .and_then(|t| t.get("enabled"))
+                .and_then(|v| v.as_bool())
+                == Some(false)
+            {
+                return Registered::No(format!(
+                    "derm's gate in {} is turned off in /hooks ({})",
+                    hooks_file.display(),
+                    config.display()
+                ));
+            }
+            let trusted = state
+                .and_then(|t| t.get("trusted_hash"))
+                .and_then(|x| x.as_str())
+                .is_some_and(|x| x.starts_with("sha256:"));
+            return if trusted {
+                // Codex runs it only while that hash is the entry's own
+                // (`discovery.rs:1000-1021`), which derm does not compute.
+                Registered::Yes(format!(
+                    "derm's gate in {} runs {shown} hook codex pre, and its PreToolUse hook has a trust record in {}; whether it still matches the entry is not checked here (Codex re-asks when it changes)",
+                    hooks_file.display(),
+                    config.display()
+                ))
+            } else {
+                Registered::YesNote(format!(
+                    "derm's gate in {} runs {shown} hook codex pre, but it has no trust record in {}; Codex skips an untrusted hook without a word: trust it in /hooks",
+                    hooks_file.display(),
+                    config.display()
+                ))
+            };
+        }
+    }
     let version = env!("CARGO_PKG_VERSION");
     let readd = format!(
         "codex plugin marketplace remove derm, then codex plugin marketplace add aetiusgular/derm --ref v{version}, then codex plugin add derm@derm"
@@ -867,6 +1078,156 @@ mod tests {
     fn put(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    /// Fix pass 6 (note BE section 1.5, option (d)): derm's gate in the
+    /// user's settings in exec form, as `derm connect claude-code --gate`
+    /// writes it on Windows, is a registration; one that does not block, or
+    /// runs another program or other arguments, is not.
+    /// Fix pass 7: Codex's own hooks.json gate (the Windows row) is its
+    /// registration once trusted; untrusted, or naming another derm, a note.
+    #[test]
+    fn fp7_a_hooks_json_gate_is_codexs_registration_once_trusted() {
+        let (h, env) = home("fp7-cxhooks");
+        let me = h.0.join("bin/derm");
+        put(&me, "#!/bin/sh\n");
+        TEST_SELF.with(|t| *t.borrow_mut() = Some(me.clone()));
+        let hooks = h.0.join(".codex/hooks.json");
+        let entry = |cmd: String| {
+            serde_json::json!({"hooks": {"PreToolUse": [
+                {"matcher": "^x$", "hooks": [{"type": "command", "command": "mine"}]},
+                {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}]}})
+            .to_string()
+        };
+        // Fix pass 8: fix pass 7's cmd.exe line fails in Codex's PowerShell
+        // and lets every call through: a no that says to connect again.
+        put(
+            &hooks,
+            &entry(format!("\"{}\" hook codex pre", me.display())),
+        );
+        put(&h.0.join(".codex/config.toml"), "model = \"m\"\n");
+        assert!(
+            matches!(check("codex", &env), Registered::No(n) if n.contains("PowerShell") && n.contains("connect codex"))
+        );
+        // An earlier fix pass 8 line, which allows when derm.exe does not
+        // start: a no too.
+        put(
+            &hooks,
+            &entry(format!(
+                "& '{}' hook codex pre; exit $LASTEXITCODE",
+                me.display()
+            )),
+        );
+        assert!(matches!(check("codex", &env), Registered::No(n) if n.contains("older derm")));
+        put(
+            &hooks,
+            &entry(format!("& '{}'{CODEX_PS_PRE_TAIL}", me.display())),
+        );
+        let r = check("codex", &env);
+        assert!(
+            matches!(&r, Registered::YesNote(n) if n.contains("/hooks")),
+            "untrusted"
+        );
+        // As Codex prints the file: its folder joined with `hooks.json`
+        // (`\` on Windows), not the mixed separators of `hooks` above.
+        // Canonical, as Codex prints it (macOS's /var is /private/var).
+        let canon = std::fs::canonicalize(h.0.join(".codex")).unwrap();
+        let key = format!(
+            "{}:pre_tool_use:1:0",
+            crate::connect::gate::without_verbatim(&canon.join("hooks.json").to_string_lossy())
+        );
+        put(
+            &h.0.join(".codex/config.toml"),
+            // A literal key: a Windows path's backslashes are not TOML escapes.
+            &format!("[hooks.state.'{key}']\ntrusted_hash = \"sha256:aa\"\n"),
+        );
+        assert!(matches!(check("codex", &env), Registered::Yes(_)));
+        // Turned off in /hooks: no.
+        put(
+            &h.0.join(".codex/config.toml"),
+            &format!("[hooks.state.'{key}']\ntrusted_hash = \"sha256:aa\"\nenabled = false\n"),
+        );
+        assert!(matches!(check("codex", &env), Registered::No(n) if n.contains("turned off")));
+        // Under a narrower matcher it is not the gate.
+        let narrow = serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "^Bash$", "hooks": [
+            {"type": "command", "command": format!("& '{}'{CODEX_PS_PRE_TAIL}", me.display())}]}]}});
+        assert!(codex_hooks_gate(&narrow).is_none());
+        put(
+            &hooks,
+            &entry(format!("& '/home/u/bin/derm'{CODEX_PS_PRE_TAIL}")),
+        );
+        assert!(
+            matches!(check("codex", &env), Registered::YesNote(n) if n.contains("not this derm"))
+        );
+        for bad in [
+            "derm hook codex pre",
+            "\"/x/derm\" hook codex pre && x",
+            "\"/x/other\" hook codex pre",
+            "& '/x/derm' hook codex pre",
+            "& '/x/derm' hook codex pre; exit 0",
+            "& '/x/other' hook codex pre; exit $LASTEXITCODE",
+            "& 'derm' hook codex pre; exit $LASTEXITCODE",
+            // Review item 4: a curly quote ends the path in PowerShell.
+            "& '/x/a\u{2019}b/derm' hook codex pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE",
+        ] {
+            assert!(
+                codex_hooks_gate(&serde_json::from_str(&entry(bad.into())).unwrap()).is_none(),
+                "{bad}"
+            );
+        }
+        TEST_SELF.with(|t| *t.borrow_mut() = None);
+    }
+
+    #[test]
+    fn fp6_a_settings_gate_in_exec_form_is_claude_codes_registration() {
+        let (h, env) = home("fp6-settings");
+        let gate = |cmd: &str, args: serde_json::Value, fail: &str| {
+            serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": cmd, "args": args, "onFailure": fail}]}]}})
+            .to_string()
+        };
+        let pre = serde_json::json!(["hook", "claude-code", "pre"]);
+        // FP6-R12 (fix pass 7): a gate naming another derm is a note, not a
+        // registration; only this derm's path is a yes.
+        let me = h.0.join("bin/derm");
+        put(&me, "#!/bin/sh\n");
+        TEST_SELF.with(|t| *t.borrow_mut() = Some(me.clone()));
+        put(
+            &h.0.join(".claude/settings.json"),
+            &gate(me.to_str().unwrap(), pre.clone(), "block"),
+        );
+        assert!(matches!(check("claude-code", &env), Registered::Yes(_)));
+        for other in [r"C:\Users\u\.local\bin\derm.exe", "/home/u/.local/bin/derm"] {
+            put(
+                &h.0.join(".claude/settings.json"),
+                &gate(other, pre.clone(), "block"),
+            );
+            let r = check("claude-code", &env);
+            assert!(
+                matches!(&r, Registered::YesNote(n) if n.contains("not this derm")),
+                "{other}"
+            );
+        }
+        TEST_SELF.with(|t| *t.borrow_mut() = None);
+        for (cmd, args, fail) in [
+            ("/home/u/.local/bin/derm", pre.clone(), "continue"),
+            ("derm", pre.clone(), "block"),
+            ("/home/u/bin/other", pre.clone(), "block"),
+            (
+                "/home/u/.local/bin/derm",
+                serde_json::json!(["hook", "codex", "pre"]),
+                "block",
+            ),
+        ] {
+            put(
+                &h.0.join(".claude/settings.json"),
+                &gate(cmd, args.clone(), fail),
+            );
+            assert!(
+                !matches!(check("claude-code", &env), Registered::Yes(_)),
+                "{cmd} {args} {fail}"
+            );
+        }
     }
 
     /// Release check RC4: a release user has no clone. The hints name the
@@ -1287,6 +1648,66 @@ mod cursor_tests {
             assert_eq!(r.word(), want, "{line}: {:?}", r.detail());
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    /// Fix pass 9 (note BG section 1): the Windows row's PowerShell line is
+    /// Cursor's registration on Windows only (the box: status "yes" with this
+    /// line in the user's hooks.json); elsewhere a shell runs it and `&` is a
+    /// syntax error, so it is never a gate that can run (fix pass 9's review,
+    /// F3). The parse itself is `ps_command_path` (tested on every system).
+    #[test]
+    fn fp9_cursor_reads_the_windows_rows_powershell_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "derm-reg-cursorps-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(dir.join(".cursor")).unwrap();
+        let env = env_in(&dir);
+        let file = dir.join(".cursor/hooks.json");
+        let me = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let tail = crate::hook::claude_format::marks::ps_tail("cursor", "pre", 2);
+        for (line, closed, want) in [
+            (format!("& '{}'{tail}", me.display()), true, "no"),
+            (format!("& '{}'{tail}", me.display()), false, "no"),
+            (format!("& '/x/derm'{tail}"), true, "no"),
+            (
+                format!("& '{}' hook cursor pre; exit $LASTEXITCODE", me.display()),
+                true,
+                "no",
+            ),
+            (
+                format!(
+                    "& '{}'{}",
+                    me.display(),
+                    crate::hook::claude_format::marks::ps_tail("codex", "pre", 2)
+                ),
+                true,
+                "no",
+            ),
+        ] {
+            let e = entry_for(&line, closed);
+            std::fs::write(
+                &file,
+                format!(
+                    r#"{{"version":1,"hooks":{{"preToolUse":[{e}],"beforeMCPExecution":[{e}]}}}}"#
+                ),
+            )
+            .unwrap();
+            let r = check("cursor", &env);
+            assert_eq!(r.word(), want, "{line} {closed}: {:?}", r.detail());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Codex constant is the shared PowerShell tail.
+    #[test]
+    fn fp9_codex_tail_is_ps_tail() {
+        assert_eq!(
+            super::CODEX_PS_PRE_TAIL,
+            crate::hook::claude_format::marks::ps_tail("codex", "pre", 2)
+        );
     }
 
     #[cfg(unix)]

@@ -22,6 +22,7 @@ pub mod assemble;
 pub mod checks;
 pub mod client;
 pub mod feed;
+pub mod hostdev;
 pub mod map;
 pub mod record;
 pub mod redact;

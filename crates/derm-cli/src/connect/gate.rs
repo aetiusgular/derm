@@ -54,6 +54,18 @@ pub struct Agent {
     /// so `--gate` names it for removal and `--ungate` and `derm doctor`
     /// still find it (BC-1, BC-2; the wave 5b close).
     pub legacy_name: Option<String>,
+    /// A plugin whose being on refuses the registration: Claude Code's
+    /// own plugin on Windows, whose hooks file cannot start there and which,
+    /// beside a settings gate, would gate every call twice (fix pass 6).
+    pub refuse_if_plugin_on: Option<String>,
+    /// The gate's command for the post event, where it differs from
+    /// `command` only in its last word (`{command_post}`; Codex's Windows
+    /// row, fix pass 7).
+    pub command_post: Option<String>,
+    /// The one system this row is for (`windows`), or `None` for a row
+    /// that holds everywhere its agent has no row of its own. A Windows row
+    /// names derm by [`self_path_exec`] (fix pass 6).
+    pub os: Option<String>,
 }
 
 /// BC-1 and BC-2 (note BC sections 8 and 11, run by the wave 5b base): goose
@@ -255,6 +267,73 @@ fn members(v: &Value, key: &str) -> Result<Vec<(String, Value)>, String> {
     }
 }
 
+/// The warning for Cursor's Windows row when derm's own environment looks
+/// like Git Bash's: cursor-agent then runs its PowerShell-built hook line
+/// with bash, so derm's gate fails and, failing closed, blocks every call.
+/// `MSYSTEM` alone triggers it (Cursor staff reproduced it on 12 Aug 2026:
+/// "`MSYSTEM` makes the CLI pick bash", forum.cursor.com/t/168129; hooks in
+/// `.cursor/hooks.json` too, t/170945); a `SHELL` naming Git's bash is
+/// reported to as well (leeguooooo/AgentParty#1123; I).
+pub fn cursor_git_bash_warning(
+    agent: &str,
+    os: Option<&str>,
+    msystem: Option<&str>,
+    shell: Option<&str>,
+) -> Option<String> {
+    if agent != "cursor" || os != Some("windows") {
+        return None;
+    }
+    let marker = match (msystem.filter(|m| !m.is_empty()), shell) {
+        (Some(m), _) => format!("MSYSTEM={m}"),
+        (None, Some(s))
+            if s.to_ascii_lowercase()
+                .replace('\\', "/")
+                .ends_with("/bash.exe") =>
+        {
+            format!("SHELL={s}")
+        }
+        _ => return None,
+    };
+    Some(format!(
+        "{marker} is set here (Git Bash or MSYS2); a cursor-agent started with it runs its hooks with bash, where derm's PowerShell line fails, so every call is blocked. Start Cursor from a terminal without MSYSTEM or a bash SHELL (PowerShell, not Git Bash)"
+    ))
+}
+
+/// The first character of `path` that cmd.exe reads inside double quotes
+/// (`"` ends them; `%` and `!` expand), if any (a `"{derm}"` line).
+pub fn cmd_reads(path: &str) -> Option<char> {
+    path.chars().find(|c| matches!(c, '"' | '%' | '!'))
+}
+
+/// The first character of `path` that ends a PowerShell single-quoted
+/// string, if any (a `'{derm}'` line, Codex's Windows row): `'` and the curly
+/// single quotes PowerShell reads as the same (U+2018 to U+201B,
+/// `about_Quoting_Rules`). Nothing else is read inside single quotes, `$`
+/// and the backtick included. A line break is refused too.
+pub fn ps_reads(path: &str) -> Option<char> {
+    path.chars().find(|c| {
+        matches!(
+            c,
+            '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\n' | '\r'
+        )
+    })
+}
+
+/// Where a step writes, for the steps that write a file.
+fn step_place(st: &Step) -> Option<&Place> {
+    match st {
+        Step::JsonArrayEntry { at, .. }
+        | Step::JsonPermission { at, .. }
+        | Step::JsonMember { at, .. }
+        | Step::TomlArrayEntry { at, .. }
+        | Step::TomlSet { at, .. }
+        | Step::OwnedFile { at, .. }
+        | Step::PluginFolder { at, .. }
+        | Step::TextFile { at, .. } => Some(at),
+        Step::Commands { .. } => None,
+    }
+}
+
 fn place(v: &Value) -> Result<Place, String> {
     let path = s(v, "path")?.to_string();
     if !path.starts_with("~/") {
@@ -337,12 +416,52 @@ fn step(v: &Value) -> Result<Step, String> {
 /// The table, read with derm connect's own JSON reader so every entry keeps
 /// its key order (serde_json's map is sorted in this build).
 pub fn table() -> Result<Vec<Agent>, String> {
+    #[cfg(test)]
+    if let Some(os) = TEST_OS.with(std::cell::Cell::get) {
+        return table_for(os);
+    }
+    table_for(this_os())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for the system `table` reads its rows for.
+    pub static TEST_OS: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// This system as a row's `os` names it.
+pub fn this_os() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
+}
+
+/// The table for `os`: a row with an `os` of another system is left out, so
+/// an agent's own row for this system, listed first, is the one found (fix
+/// pass 6: Claude Code's Windows row).
+pub fn table_for(os: &str) -> Result<Vec<Agent>, String> {
     let doc = json::parse(TABLE, false).map_err(|e| format!("gates.json: {e}"))?;
     let root = doc.root.map(|n| n.to_value()).ok_or("gates.json: empty")?;
     let Some(Value::Array(rows)) = root.get("agents") else {
         return Err("gates.json: no agents".into());
     };
+    let mut seen: Vec<String> = Vec::new();
     rows.iter()
+        .filter(|r| opt_s(r, "os").is_none_or(|o| o == os))
+        // The first row of an agent for this system is its row: a row with
+        // this system's `os` comes before the agent's general one.
+        .filter(|r| match opt_s(r, "agent") {
+            Some(a) if seen.contains(&a) => false,
+            Some(a) => {
+                seen.push(a);
+                true
+            }
+            None => true,
+        })
         .map(|r| {
             let steps = match r.get("steps") {
                 Some(Value::Array(st)) => st.iter().map(step).collect::<Result<Vec<_>, _>>()?,
@@ -369,6 +488,9 @@ pub fn table() -> Result<Vec<Agent>, String> {
                 steps,
                 notes: strs(r, "notes")?,
                 legacy_name: opt_s(r, "legacyName"),
+                refuse_if_plugin_on: opt_s(r, "refuseIfPluginOn"),
+                command_post: opt_s(r, "commandPost"),
+                os: opt_s(r, "os"),
             })
         })
         .collect()
@@ -378,6 +500,8 @@ pub fn table() -> Result<Vec<Agent>, String> {
 #[derive(Clone, Debug, Default)]
 pub struct Vars {
     pub command: Option<String>,
+    /// `{command_post}`.
+    pub command_post: Option<String>,
     pub hook_dir: Option<String>,
     pub version: String,
     /// `{gatename}` ([`GATE_NAME_FILE`]).
@@ -387,6 +511,7 @@ pub struct Vars {
 /// Placeholders a whole string may be.
 const WHOLE: &[&str] = &[
     "{command}",
+    "{command_post}",
     "{hook_url}",
     "{hook_dir}",
     "{version}",
@@ -404,10 +529,13 @@ pub fn fill(v: &Value, vars: &Vars) -> Result<Value, String> {
             };
             match x.as_str() {
                 "{command}" => Value::Str(need(&vars.command, "the gate's command")?),
+                "{command_post}" => {
+                    Value::Str(need(&vars.command_post, "the gate's post command")?)
+                }
                 "{hook_dir}" => Value::Str(need(&vars.hook_dir, "the hook folder")?),
-                "{hook_url}" => Value::Str(format!(
-                    "file://{}",
-                    need(&vars.hook_dir, "the hook folder")?
+                "{hook_url}" => Value::Str(file_url(
+                    &need(&vars.hook_dir, "the hook folder")?,
+                    cfg!(windows),
                 )),
                 "{version}" => Value::Str(vars.version.clone()),
                 "{gatename}" => Value::Str(
@@ -459,11 +587,64 @@ fn plain_path(p: &str) -> bool {
             .any(|c| matches!(c, Component::ParentDir))
 }
 
+/// A `--hook` folder as this system reads an absolute path (WW6R4-2,
+/// Windows test w6 retest 4: on Windows no path starts with `/`, so
+/// [`plain_path`] refused every one and OpenCode's Windows row could not be
+/// registered; rules case 224).
+fn hook_dir_ok(p: &str) -> bool {
+    if cfg!(windows) {
+        windows_plain_dir(p)
+    } else {
+        plain_path(p)
+    }
+}
+
+/// A Windows folder by a drive path (`C:\Users\me\pkg`), as Microsoft's
+/// "File path formats on Windows systems" names a fully qualified DOS path:
+/// a letter, `:`, `\`, then parts of letters, digits and `._@+~ -` split by
+/// `\` alone. Refused: a relative or drive-relative path (`C:x`), a rooted
+/// one (`\x`), a UNC or device path (`\\server\share`, `\\?\`, `\\.\`),
+/// `/` as a separator, an empty, `.` or `..` part, and a part ending in `.`
+/// or a space, which Windows drops when it opens the path (case 137). What
+/// the path resolves to is checked by [`check_hook`] against its real path.
+pub fn windows_plain_dir(p: &str) -> bool {
+    let p = p.trim_end_matches('\\');
+    let b = p.as_bytes();
+    if b.len() < 4 || b.len() > 1024 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\'
+    {
+        return false;
+    }
+    p[3..].split('\\').all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && !part.ends_with(['.', ' '])
+            && part.bytes().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, b'.' | b'_' | b'@' | b'+' | b'~' | b' ' | b'-')
+            })
+    })
+}
+
+/// The `file:` URL an agent's plugin list names a folder by. On Windows,
+/// Node's `pathToFileURL` form, which OpenCode 1.19.4 reads back with
+/// `fileURLToPath` (`packages/opencode/src/plugin/shared.ts`,
+/// `resolvePathPluginTarget`): `file:///C:/Users/me/pkg`, a space as `%20`.
+/// `file://C:\...` is not a URL Node writes (WW6R4-2).
+pub fn file_url(dir: &str, windows: bool) -> String {
+    if windows {
+        format!("file:///{}", dir.replace('\\', "/").replace(' ', "%20"))
+    } else {
+        format!("file://{dir}")
+    }
+}
+
 /// A path a hook line names bare: absolute, letters, digits and `._/@+~-`
 /// only, no `.` or `..` part. With no space or quote, every agent's runner
 /// (a shell string in sh, bash, zsh, cmd or PowerShell, or an exec form)
 /// reads it as one word, and lane 5bA's `is_derm_rust_command` knows it as
 /// derm's (`hook/claude_format/marks.rs`, `plain`).
+#[cfg(not(windows))]
 pub fn plain_hook_path(p: &str) -> bool {
     p.starts_with('/')
         && p.len() <= 1024
@@ -495,6 +676,253 @@ pub fn self_path() -> Result<String, String> {
     }
     let exe = std::env::current_exe().map_err(|e| format!("cannot read derm's own path: {e}"))?;
     checked_self(&exe)
+}
+
+/// Whether Claude Code's `plugin` may be on for a chat (fix pass 6, and
+/// fix pass 7 for FP6-R8). Claude Code reads `enabledPlugins` from managed
+/// settings over the command line, the project's local file, its shared
+/// file and the user's file, in that order (code.claude.com settings docs,
+/// "Settings precedence"; managed files: `/Library/Application
+/// Support/ClaudeCode/`, `/etc/claude-code/`, `C:\Program Files\ClaudeCode\`,
+/// `managed-settings.json` then `managed-settings.d/*.json` by name). The
+/// first source that sets the plugin decides; with none, an install record
+/// (`CLAUDE_CODE_PLUGIN_CACHE_DIR`, else `<config>/plugins`) for you, or
+/// for this folder or any other project, means it is on there. Not read:
+/// the Windows registry's policy keys and server-managed settings.
+pub fn plugin_on(plugin: &str, home: &Path, cwd: &Path, env: &dyn Env) -> Option<String> {
+    let config = env
+        .var("CLAUDE_CONFIG_DIR")
+        .filter(|d| super::names::absolute(d))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let read = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    };
+    let set_in =
+        |p: &Path| read(p).and_then(|v| v.pointer(&format!("/enabledPlugins/{plugin}")).cloned());
+    let managed_dir = managed_settings_dir();
+    let mut managed: Vec<PathBuf> = vec![managed_dir.join("managed-settings.json")];
+    if let Ok(rd) = std::fs::read_dir(managed_dir.join("managed-settings.d")) {
+        let mut more: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|x| x == "json")
+                    && !p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.'))
+            })
+            .collect();
+        more.sort();
+        managed.extend(more);
+    }
+    // Later managed files win over earlier ones.
+    let managed_set = managed
+        .iter()
+        .rev()
+        .find_map(|f| set_in(f).map(|v| (v, f.clone())));
+    let ordered = managed_set.into_iter().chain(
+        [
+            cwd.join(".claude").join("settings.local.json"),
+            cwd.join(".claude").join("settings.json"),
+            config.join("settings.json"),
+        ]
+        .into_iter()
+        .filter_map(|f| set_in(&f).map(|v| (v, f))),
+    );
+    if let Some((v, f)) = ordered.into_iter().next() {
+        return (v == serde_json::Value::Bool(true))
+            .then(|| format!("{plugin} is on in {} (enabledPlugins)", f.display()));
+    }
+    let plugins = env
+        .var("CLAUDE_CODE_PLUGIN_CACHE_DIR")
+        .filter(|d| super::names::absolute(d))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.join("plugins"));
+    let installed = plugins.join("installed_plugins.json");
+    let records = read(&installed)?;
+    let records = records
+        .pointer(&format!("/plugins/{plugin}"))
+        .and_then(serde_json::Value::as_array)?
+        .clone();
+    let mut projects: Vec<String> = Vec::new();
+    for r in &records {
+        match r.get("scope").and_then(serde_json::Value::as_str) {
+            Some("user" | "managed") => {
+                return Some(format!(
+                    "{plugin} is installed for you ({}) and no settings file turns it off",
+                    installed.display()
+                ))
+            }
+            Some("project" | "local") => projects.push(
+                r.get("projectPath")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("a project not named in the record")
+                    .to_string(),
+            ),
+            _ => {}
+        }
+    }
+    (!projects.is_empty()).then(|| {
+        format!(
+            "{plugin} is installed for {} ({}), where it is on unless that project's settings turn it off",
+            projects.join(", "),
+            installed.display()
+        )
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for the system's managed-settings folder.
+    pub static TEST_MANAGED: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Claude Code's managed-settings folder on this system (code.claude.com,
+/// managed settings).
+pub(crate) fn managed_settings_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(d) = TEST_MANAGED.with(|t| t.borrow().clone()) {
+        return d;
+    }
+    if cfg!(target_os = "macos") {
+        PathBuf::from("/Library/Application Support/ClaudeCode")
+    } else if cfg!(windows) {
+        PathBuf::from(r"C:\Program Files\ClaudeCode")
+    } else {
+        PathBuf::from("/etc/claude-code")
+    }
+}
+
+/// Whether Codex's `plugin` is on (fix pass 7): `[plugins."<plugin>"]` in
+/// `$CODEX_HOME/config.toml` (else `~/.codex`), its `enabled` missing
+/// meaning true (`watch/register.rs`'s reading of Codex 0.163.0).
+pub fn codex_plugin_on(plugin: &str, home: &Path, env: &dyn Env) -> Option<String> {
+    let codex = env
+        .var("CODEX_HOME")
+        .filter(|d| super::names::absolute(d))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let config = codex.join("config.toml");
+    let text = std::fs::read_to_string(&config).ok()?;
+    let Ok(doc) = text.parse::<toml_edit::DocumentMut>() else {
+        return Some(format!(
+            "{} is not TOML derm can read, so derm cannot tell whether {plugin} is on",
+            config.display()
+        ));
+    };
+    let entry = doc
+        .get("plugins")
+        .and_then(|p| p.as_table_like())
+        .and_then(|p| p.get(plugin))
+        .and_then(|e| e.as_table_like())?;
+    let on = entry
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    on.then(|| format!("{plugin} is on in {}", config.display()))
+}
+
+/// derm's own path for a row whose agent runs the gate in exec form (a
+/// program and its arguments, no shell; Claude Code's Windows row, fix pass
+/// 6): on Windows, by its real path without the `\\?\` prefix
+/// `canonicalize` adds to a drive path, named `derm.exe`, a regular file
+/// that only its owner can write, in a folder only its owner can write. On
+/// other systems the same checks as every `{derm}` row ([`self_path`]).
+pub fn self_path_exec() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        #[cfg(test)]
+        if let Some(p) = TEST_SELF.with(|t| t.borrow().clone()) {
+            return checked_self_exec(&p);
+        }
+        let exe =
+            std::env::current_exe().map_err(|e| format!("cannot read derm's own path: {e}"))?;
+        checked_self_exec(&exe)
+    }
+    #[cfg(not(windows))]
+    {
+        self_path()
+    }
+}
+
+/// Whether `t` is a file derm wrote naming a derm: one line, an absolute
+/// path (`/...` or a drive path `C:\...`) to a file named `derm` or
+/// `derm.exe`. derm-path files hold this and nothing else (Hermes's, and
+/// OpenCode's on Windows, fix pass 6).
+pub fn derm_line(t: &str) -> bool {
+    let line = t.strip_suffix('\n').unwrap_or(t);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.is_empty() || line.contains(['\n', '\r']) {
+        return false;
+    }
+    let b = line.as_bytes();
+    let drive = b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
+    if !(line.starts_with('/') || drive) {
+        return false;
+    }
+    let name = line.rsplit(['/', '\\']).next().unwrap_or("");
+    if drive {
+        name.eq_ignore_ascii_case("derm.exe")
+    } else {
+        name == "derm"
+    }
+}
+
+/// `\\?\C:\x` as `C:\x`; any other path as it is (a `\\?\UNC\` path keeps
+/// its prefix: a hook on a share is not one derm names).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn without_verbatim(p: &str) -> String {
+    match p.strip_prefix(r"\\?\") {
+        Some(rest)
+            if rest.len() > 2
+                && rest.as_bytes()[0].is_ascii_alphabetic()
+                && rest.as_bytes()[1] == b':'
+                && rest.as_bytes()[2] == b'\\' =>
+        {
+            rest.to_string()
+        }
+        _ => p.to_string(),
+    }
+}
+
+#[cfg(windows)]
+fn checked_self_exec(exe: &Path) -> Result<String, String> {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    let real = std::fs::canonicalize(exe)
+        .map_err(|e| format!("cannot read derm's own path {}: {e}", exe.display()))?;
+    let text = without_verbatim(&real.to_string_lossy());
+    let name_ok = real
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("derm.exe"));
+    if !name_ok {
+        return Err(format!(
+            "{text} is not named derm.exe; a registration names derm by its own file, which is how derm finds its entry again"
+        ));
+    }
+    let meta = std::fs::symlink_metadata(&real).map_err(|e| format!("{text}: {e}"))?;
+    if !meta.is_file() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!("{text} is not a regular file"));
+    }
+    if !derm_core::platform::windows::only_owner_writes(&real) {
+        return Err(format!(
+            "{text} can be written by someone other than its owner; a gate registered on it would run whatever is put there"
+        ));
+    }
+    let dir = real.parent().ok_or("derm has no folder")?;
+    if !derm_core::platform::windows::only_owner_writes(dir) {
+        return Err(format!(
+            "{} can be written by someone other than its owner; derm in it could be replaced",
+            without_verbatim(&dir.to_string_lossy())
+        ));
+    }
+    Ok(text)
 }
 
 #[cfg(windows)]
@@ -631,10 +1059,16 @@ const FINDS_DERM: &[&str] = &[
 /// note says that. `None` for every other agent.
 pub fn windows_gate(agent: &str) -> Option<Result<String, String>> {
     match agent {
-        "claude-code" | "codex" | "gemini" => Some(Err(format!(
+        "codex" => Some(Ok(
+            "on Windows Codex runs derm's gate from your hooks.json through its PowerShell, derm.exe by its absolute path with the call operator; trust both hooks in /hooks, and keep the derm plugin off, whose hooks file blocks every call there (fix pass 8)".into(),
+        )),
+        "gemini" => Some(Err(format!(
             "on Windows derm's {agent} gate cannot run in this build: the plugin's hooks file starts /bin/sh on hooks/derm-gate.sh, which Windows does not have, and an agent may run a call whose hook cannot start (rules case 70); nothing is registered (lane 5bF's Windows half, contracts/hook-dialects.md 9.1)"
         ))),
-        "pi" | "oh-my-pi" | "opencode" | "kilo" | "openclaw" => Some(Ok(format!(
+        "opencode" => Some(Ok(
+            "on Windows OpenCode's gate runs the derm DERM_BIN names (`derm run` sets it to itself), else the derm.exe named in derm-path beside opencode.json, by that absolute path, and runs it without checking who may write it (Node cannot read that there; case 109 does not hold on Windows yet, FP2-S10); derm connect wrote derm-path only after checking that only its owner can write this derm.exe and its folder".into(),
+        )),
+        "pi" | "oh-my-pi" | "kilo" | "openclaw" => Some(Ok(format!(
             "on Windows {agent}'s gate runs only the derm DERM_BIN names, which `derm run` sets to itself, and runs it without checking who may write it (Node cannot read that there; case 109 does not hold on Windows yet, FP2-S10); with no DERM_BIN it refuses every call (rules case 227)"
         ))),
         _ => None,
@@ -903,14 +1337,33 @@ pub fn check_hook(
     agent: &Agent,
     uid: derm_core::platform::UserId,
 ) -> Result<Option<String>, String> {
-    if !plain_path(dir) {
-        return Err(format!(
-            "--hook `{dir}` must be an absolute path of letters, digits and ._/@+~ - (no `..`)"
-        ));
+    if !hook_dir_ok(dir) {
+        return Err(if cfg!(windows) {
+            format!(
+                "--hook `{dir}` must be an absolute drive path (C:\\...) of letters, digits and ._@+~ - split by \\ (no `..`, no part ending in . or a space)"
+            )
+        } else {
+            format!(
+                "--hook `{dir}` must be an absolute path of letters, digits and ._/@+~ - (no `..`)"
+            )
+        });
     }
     let meta = std::fs::symlink_metadata(dir).map_err(|e| format!("{dir}: {e}"))?;
     if meta.file_type().is_symlink() || !meta.is_dir() {
         return Err(format!("{dir}: not a folder (a link is refused)"));
+    }
+    // On Windows the folder by its real path, every junction and link
+    // followed and a short (8.3) name expanded (case 137): the path written
+    // into the agent's config is the one checked.
+    #[cfg(windows)]
+    {
+        let real = std::fs::canonicalize(dir).map_err(|e| format!("{dir}: {e}"))?;
+        let real = without_verbatim(&real.to_string_lossy());
+        if !real.eq_ignore_ascii_case(dir.trim_end_matches('\\')) {
+            return Err(format!(
+                "{dir}: its real path is {real} (a junction, a link or a short name on the way); give --hook that path"
+            ));
+        }
     }
     if !closed(Path::new(dir), &meta, uid) {
         return Err(format!(
@@ -1740,11 +2193,79 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             return Err(why);
         }
     }
+    // A row whose command is derm itself, its arguments apart (exec form,
+    // no shell): Claude Code's Windows row (fix pass 6).
+    let exec_form = agent.command.as_deref() == Some("{derm}");
     let derm = if uses_derm && !o.ungate {
-        Some(self_path()?)
+        // A Windows row names derm.exe as self_path_exec checks it (OpenCode's
+        // derm-path, fix pass 6, note BE section 3.2); self_path refuses there.
+        Some(if exec_form || agent.os.as_deref() == Some("windows") {
+            self_path_exec()?
+        } else {
+            self_path()?
+        })
     } else {
         None
     };
+    // FP6-R11 (fix pass 7): an agent that reads `$XDG_CONFIG_HOME` as
+    // xdg-basedir does takes a relative value as it is, relative to the
+    // folder it starts in (xdg-basedir 5.1.0 `index.js:10-11`, OpenCode
+    // 1.19.4 `packages/core/src/global.ts:3,13`); derm cannot know that
+    // folder, so it writes nowhere and says why.
+    if agent
+        .steps
+        .iter()
+        .any(|st| step_place(st).is_some_and(|p| p.xdg_config))
+    {
+        if let Some(x) = ctx.env.var("XDG_CONFIG_HOME").filter(|x| !x.is_empty()) {
+            if !super::names::absolute(&x) {
+                return Err(format!(
+                    "XDG_CONFIG_HOME is {x:?}, not an absolute path: {} reads it relative to the folder it starts in, which derm cannot know; set it to an absolute path, or unset it",
+                    agent.name
+                ));
+            }
+        }
+    }
+    // A shell reads some characters even inside the quotes a command line
+    // puts derm's path in: cmd.exe `"`, `%` and `!` in double quotes; and
+    // PowerShell, which runs Codex's hooks on Windows (fix pass 8), a single
+    // quote in single quotes.
+    if let (Some(d), Some(line)) = (&derm, agent.command.as_deref()) {
+        if line.contains("\"{derm}\"") {
+            if let Some(c) = cmd_reads(d) {
+                return Err(format!(
+                    "derm's path {d} holds {c}, which cmd.exe would read in the line {} runs; install derm where its path holds none of \" % !",
+                    agent.name
+                ));
+            }
+        }
+        if line.contains("'{derm}'") {
+            if let Some(c) = ps_reads(d) {
+                return Err(format!(
+                    "derm's path {d} holds {}, which would end the quoted path in the PowerShell line {} runs; install derm where its path holds no quote",
+                    c.escape_default(),
+                    agent.name
+                ));
+            }
+        }
+    }
+    if let (Some(plugin), false) = (&agent.refuse_if_plugin_on, o.ungate) {
+        let on = if agent.agent == "codex" {
+            codex_plugin_on(plugin, &ctx.home, ctx.env)
+        } else {
+            plugin_on(plugin, &ctx.home, &ctx.cwd, ctx.env)
+        };
+        if let Some(why) = on {
+            let off = if agent.agent == "codex" {
+                format!("codex plugin remove {plugin}, or enabled = false under [plugins.\"{plugin}\"] in config.toml")
+            } else {
+                format!("claude plugin disable {plugin}, or claude plugin uninstall {plugin}")
+            };
+            return Err(format!(
+                "{why}; with derm's gate in your settings too every call would be gated twice, and on Windows the plugin's own hooks file cannot reach derm and blocks every call. Turn the plugin off first ({off}) and run this again"
+            ));
+        }
+    }
     let mut hook_ignored = false;
     let hook_file = match o.hook {
         Some(_)
@@ -1763,7 +2284,7 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     let hook_dir = o
         .hook
         .filter(|_| !hook_ignored)
-        .map(|d| d.trim_end_matches('/').to_string());
+        .map(|d| d.trim_end_matches(['/', '\\']).to_string());
     let node = match o.node {
         Some(n) => {
             if !plain_path(n) {
@@ -1797,8 +2318,13 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     } else {
         (None, false)
     };
+    let command_post = agent.command_post.as_deref().and_then(|t| {
+        derm.as_deref()
+            .map(|d| fill_text(t, &node, None, None, &version, d))
+    });
     let vars = Vars {
         command,
+        command_post,
         hook_dir: hook_dir.clone(),
         version: version.clone(),
         gate_name: gate_name.clone(),
@@ -1828,7 +2354,11 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
             agent.name
         ));
     }
-    route_note(agent, ctx);
+    // An exec-form row runs this derm by its path, not a launcher that
+    // looks derm up (fix pass 6).
+    if !exec_form {
+        route_note(agent, ctx);
+    }
 
     // Agents whose gate installs through their own command: print only.
     let printed: Vec<&Step> = agent
@@ -2249,7 +2779,10 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
                     Box::new(move |t, exists| {
                         // derm's own: one line naming a derm. Anything else
                         // is someone else's and is never replaced.
-                        if exists && !(t.lines().count() == 1 && t.starts_with('/') && hit(t, &m)) {
+                        if exists
+                            && !(derm_line(t)
+                                || t.lines().count() == 1 && t.starts_with('/') && hit(t, &m))
+                        {
                             return Err(
                                 "the file exists and is not derm's; derm will not replace it"
                                     .into(),
@@ -2309,6 +2842,16 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
     }
     for n in &agent.notes {
         ctx.out.push_str(&format!("note:   {n}\n"));
+    }
+    // Fix pass 9 (note BG section 1): Cursor's own bug runs its hooks with
+    // bash when Git Bash's MSYSTEM is set, and every call then blocks.
+    if let Some(w) = cursor_git_bash_warning(
+        &agent.agent,
+        agent.os.as_deref(),
+        ctx.env.var("MSYSTEM").as_deref(),
+        ctx.env.var("SHELL").as_deref(),
+    ) {
+        ctx.out.push_str(&format!("warning: {w}\n"));
     }
     let changed: Vec<&FilePlan> = plans
         .iter()

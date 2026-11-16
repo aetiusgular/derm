@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "overlapping-reads",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cat shared.txt > /dev/null"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cat shared.txt > /dev/null"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "read",
+      "path": "shared.txt"
+    },
+    {
+      "what": "read",
+      "path": "shared.txt"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "suite": "matrix",
+  "id": "script-reads-ssh-key",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "path": "tests/differential/scenarios.yaml (scripts)",
+    "licence": "MIT OR Apache-2.0"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "payload": "cat \"$HOME/.ssh/id_rsa\""
+      }
+    }
+  ],
+  "targets": [
+    "host"
+  ]
+}

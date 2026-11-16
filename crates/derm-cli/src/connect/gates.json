@@ -4,6 +4,37 @@
   "agents": [
     {
       "agent": "claude-code",
+      "os": "windows",
+      "name": "Claude Code",
+      "package": "@aetiusgular/derm-claude-plugin",
+      "command": "{derm}",
+      "source": "fix pass 6 (note BE section 1.5, option (d), Tony's call of 15 Nov 2026): Claude Code 2.1.322 runs a hook in exec form (command and args) with child_process.spawn and no shell, from any settings file; on Windows the plugin's hooks file starts /bin/sh, which is not there, so outside derm run derm registers its gate in the user's settings by derm's absolute path",
+      "markers": ["\"hook\", \"claude-code\", \""],
+      "installedIf": ["~/.claude"],
+      "cli": "claude",
+      "refuseIfPluginOn": "derm@derm",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.claude/settings.json",
+          "homeEnv": "CLAUDE_CONFIG_DIR",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "args": ["hook", "claude-code", "pre"], "timeout": 120, "onFailure": "block"}]}
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.claude/settings.json",
+          "homeEnv": "CLAUDE_CONFIG_DIR",
+          "format": "json",
+          "array": ["hooks", "PostToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "args": ["hook", "claude-code", "post"], "timeout": 120}]}
+        }
+      ],
+      "notes": ["Fails closed (onFailure: block): a gate that cannot start blocks the call.", "derm run claude-code registers its own gate in its --settings block on every system and turns the plugin off for the chat; this registration is for chats started without derm run.", "disableAllHooks, --safe-mode and --bare run no hook at all."]
+    },
+    {
+      "agent": "claude-code",
       "name": "Claude Code",
       "package": "@aetiusgular/derm-claude-plugin",
       "source": "docs/install/agents.md at 824ae83",
@@ -23,6 +54,42 @@
             ]
           }
         }
+      ]
+    },
+    {
+      "agent": "codex",
+      "os": "windows",
+      "name": "Codex",
+      "package": "@aetiusgular/derm-codex-plugin",
+      "command": "& '{derm}' hook codex pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE",
+      "commandPost": "& '{derm}' hook codex post; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 1 }; exit $LASTEXITCODE",
+      "source": "fix pass 8 (the Windows box, 15 Nov 2026): Codex 0.167.2 reads the user's $CODEX_HOME/hooks.json (codex-rs/hooks/src/engine/discovery.rs:176-180, config/src/state.rs:239-243) and runs a hook's line through the session's shell, which on Windows is PowerShell (shell-command/src/shell_detect.rs:363-365: pwsh, else powershell), as `<shell> -NoProfile -Command <line>` (core/src/session/mod.rs:5805-5813, hooks/src/engine/command_runner.rs:444-470); cmd.exe /C only when the session has no shell. So derm.exe is called by its absolute path with PowerShell's call operator, in single quotes, and `exit $LASTEXITCODE` gives Codex derm's exit code, which -Command would turn into 1 (a non-blocking error) (V by run on the box: exit 2 blocks and the program gets the hook's stdin). When derm.exe does not start (moved, removed, blocked), `&` is a statement error and $LASTEXITCODE is $null, which `exit` turns into 0, an allow; so that case writes a reason and exits 2 (fix pass 8's review, run on the box). Fix pass 7's cmd.exe line ran in PowerShell as a parse error, which Codex lets through. cmd.exe runs the line instead when the session has no shell or not exactly one local environment (environment_selection.rs:1466-1477), where the leading `&` fails and the call goes through: a known gap.",
+      "markers": ["' hook codex ", "\" hook codex "],
+      "installedIf": ["~/.codex"],
+      "cli": "codex",
+      "refuseIfPluginOn": "derm@derm",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.codex/hooks.json",
+          "homeEnv": "CODEX_HOME",
+          "format": "json",
+          "array": ["hooks", "PreToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command}", "timeout": 120}]}
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.codex/hooks.json",
+          "homeEnv": "CODEX_HOME",
+          "format": "json",
+          "array": ["hooks", "PostToolUse"],
+          "entry": {"matcher": "*", "hooks": [{"type": "command", "command": "{command_post}", "timeout": 120}]}
+        }
+      ],
+      "notes": [
+        "Then trust both hooks in /hooks: Codex skips an untrusted hook without a word (case 70), and asks again when a hook changes.",
+        "Codex lets a call through when its hook process dies or times out (case 70); derm's hook never crashes on purpose and caps its own waits below this timeout.",
+        "derm.exe's path may not hold a single quote (or a curly one), which would end PowerShell's quoted path."
       ]
     },
     {
@@ -129,6 +196,61 @@
           ],
           "note": "--link reads the folder in place; keep it where it is."
         }
+      ]
+    },
+    {
+      "agent": "opencode",
+      "os": "windows",
+      "name": "OpenCode",
+      "package": "@aetiusgular/derm-opencode-plugin",
+      "source": "fix pass 6 (note BE section 3.2, Tony's call of 15 Nov 2026): the opencode row's steps, and derm-path beside opencode.json, which the plugin's serve client reads on Windows after DERM_BIN (packages/derm-pi/src/serve/client.ts locateDerm); OpenCode 1.19.4's global folder is $XDG_CONFIG_HOME/opencode or ~/.config/opencode on every system (packages/core/src/global.ts:3,13; xdg-basedir 5.1.0 index.js:10-11)",
+      "marker": "derm-opencode-plugin",
+      "installedIf": ["~/.config/opencode"],
+      "cli": "opencode",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.config/opencode/opencode.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/opencode/config.json",
+            "~/.config/opencode/opencode.json",
+            "~/.config/opencode/opencode.jsonc"
+          ],
+          "array": ["plugin"],
+          "entry": "{hook_url}"
+        },
+        {
+          "kind": "json-permission",
+          "path": "~/.config/opencode/opencode.json",
+          "xdgConfig": true,
+          "format": "jsonc",
+          "mergeChain": [
+            "~/.config/opencode/config.json",
+            "~/.config/opencode/opencode.json",
+            "~/.config/opencode/opencode.jsonc"
+          ],
+          "keys": {
+            "bash": "ask",
+            "edit": "ask",
+            "webfetch": "ask",
+            "external_directory": "ask"
+          },
+          "fragment": "packages/derm-opencode-plugin/opencode.fragment.json"
+        },
+        {
+          "kind": "text-file",
+          "path": "~/.config/opencode/derm-path",
+          "xdgConfig": true,
+          "content": "{derm}\n"
+        }
+      ],
+      "notes": [
+        "derm-path names this derm.exe by its absolute path; the plugin runs it when DERM_BIN is not set (outside derm run), and refuses every call when neither names a derm it can run.",
+        "derm writes the last of config.json, opencode.json and opencode.jsonc that exists: OpenCode merges them in that order and a later `plugin` list replaces an earlier one.",
+        "The `permission` keys keep OpenCode's own prompts as a second layer. They only narrow: an allow becomes ask, a key is added only beside allows and asks, and a deny, a pattern list or a `tools` switch set to false is left as it is.",
+        "A project's own opencode.json, OPENCODE_PERMISSION, OPENCODE_CONFIG_DIR's files and an agent's own `permission` are read after these files and can override them; derm does not see them."
       ]
     },
     {
@@ -408,6 +530,66 @@
         "failClosed exists from Grok 1.0.71; 1.0.70 ignores it and fails open.",
         "Grok also runs hooks from Claude Code's and Cursor's files; the compat switches stop a second derm gate (case 75). --ungate leaves them off.",
         "User hooks run only in a trusted folder."
+      ]
+    },
+    {
+      "agent": "cursor",
+      "os": "windows",
+      "name": "Cursor CLI",
+      "package": "@aetiusgular/derm-hooks-native",
+      "command": "& '{derm}' hook cursor pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE",
+      "source": "fix pass 9 (Tony's go of 15 Nov 2026, note BG section 1): Cursor runs a hook on Windows through PowerShell and pipes the JSON into it (cursor.com/docs/hooks: \"On Windows, the desktop app runs hook commands through PowerShell and pipes the JSON into the command\"); that sentence is about the desktop app; cursor-agent, the CLI this row is for, composes `$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath <payload> -Raw | & { $input | <command> }` (read from the installed agent CLI 2026.09.28, RepoQL/RepoQL#17; logged in forum.cursor.com/t/168129 and t/170945). Run on the box under that exact wrapper with Windows PowerShell 5.1 (fix pass 9): stdin starts with a BOM (efbbbf), derm allows and denies, and exit 2 comes out of the script block. So derm.exe is called as on Codex's Windows row: by its absolute path in single quotes with the call operator, a reason and exit 2 when it does not start, else derm's exit code. failClosed: a crash, timeout, non-zero exit or no output blocks (cursor.com/docs/hooks). Not run against a real Cursor (it needs an account, call 8).",
+      "markers": [
+        "' hook cursor ",
+        "/derm hook cursor ",
+        "derm-hook.mjs"
+      ],
+      "installedIf": [
+        "~/.cursor"
+      ],
+      "cli": "cursor-agent",
+      "steps": [
+        {
+          "kind": "json-array-entry",
+          "path": "~/.cursor/hooks.json",
+          "format": "json",
+          "array": [
+            "hooks",
+            "preToolUse"
+          ],
+          "createWith": {
+            "version": 1
+          },
+          "entry": {
+            "type": "command",
+            "command": "{command}",
+            "timeout": 120,
+            "failClosed": true
+          }
+        },
+        {
+          "kind": "json-array-entry",
+          "path": "~/.cursor/hooks.json",
+          "format": "json",
+          "array": [
+            "hooks",
+            "beforeMCPExecution"
+          ],
+          "createWith": {
+            "version": 1
+          },
+          "entry": {
+            "type": "command",
+            "command": "{command}",
+            "timeout": 120,
+            "failClosed": true
+          }
+        }
+      ],
+      "notes": [
+        "Not run against the real CLI (it needs an account, call 8).",
+        "With Git Bash's MSYSTEM set, cursor-agent runs a PowerShell-built hook line with bash, so every hook fails and, failing closed, every call is blocked (Cursor staff reproduced it 12 Aug 2026; forum.cursor.com/t/168129). Start Cursor from an environment without MSYSTEM.",
+        "derm.exe's path may not hold a single quote (or a curly one), which would end PowerShell's quoted path."
       ]
     },
     {

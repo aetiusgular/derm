@@ -5,7 +5,7 @@
 //! collector/src/filter.rs:92-170`), because the daemon's checks read those
 //! (`crates/derm-daemon/src/activity/check.rs`): `exec`, `fork`, `write`,
 //! `create`, `open`, `truncate`, `rename`, `unlink`, `link`, with `path`,
-//! `dest`, `argv`, `ppid`, `child`, `tier`, `exe`. Connections are
+//! `dest`, `argv`, `ppid`, `child`, `tier`, `exe`, and on Linux `dev`. Connections are
 //! `net.connect` with `host` (`check.rs` `event_host` reads `host`). The
 //! bounds are the collector's: 32 argv items of 512 bytes, 4,096 bytes per
 //! field; the summary is at most 200 characters (the contract).
@@ -82,10 +82,13 @@ pub fn to_event(action: &Action, placed: &Placement, reasons: &[Reason]) -> Even
                 d.insert("flagsKnown".into(), json!(false));
             }
         }
-        What::Open { path } => {
+        What::Open { path, path_only } => {
             kind = "open";
             summary = format!("open {path}");
             put(&mut d, "path", path);
+            if *path_only {
+                d.insert("pathOnly".into(), json!(true));
+            }
         }
         What::Truncate { path } => {
             kind = "truncate";
@@ -128,6 +131,11 @@ pub fn to_event(action: &Action, placed: &Placement, reasons: &[Reason]) -> Even
     d.insert("syscall".into(), json!(action.syscall));
     if let Some(cwd) = &action.cwd {
         put(&mut d, "cwd", cwd);
+    }
+    // The written file's device (box test w6 retest 2, BW6R2-2): the daemon
+    // tells bubblewrap's mount points in its own tmpfs from the host's file.
+    if let Some(dev) = &action.dev {
+        put(&mut d, "dev", dev);
     }
     if action.denied {
         d.insert("denied".into(), json!(true));

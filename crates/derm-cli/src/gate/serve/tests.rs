@@ -102,7 +102,7 @@ fn run_text(se: &Session, agent: &str, input: &[u8], approver: ApproveOutcome) -
     let asked = RefCell::new(Vec::new());
     let post = |e: &AdapterEvent| {
         posted.borrow_mut().push(e.clone());
-        true
+        crate::gate::daemon::Posted::Daemon
     };
     let later = RefCell::new(Vec::new());
     let post_later = |e: AdapterEvent| {
@@ -121,6 +121,7 @@ fn run_text(se: &Session, agent: &str, input: &[u8], approver: ApproveOutcome) -
         post: &post,
         post_later: &post_later,
         approve: &approve,
+        daemon_up: &|| false,
     };
     let mut out = Vec::new();
     let code = run(&ctx, &mut Cursor::new(input.to_vec()), &mut out);
@@ -331,6 +332,43 @@ fn decide_with_record_false_posts_nothing() {
     let r = run_lines(&se, "pi", &[hello("pi"), d], no_approver());
     assert_eq!(r.replies[1]["action"], "allow");
     assert!(r.posted.is_empty());
+}
+
+/// Box test w6, BW6-3: derm-pi asks with `record: false` (its records are the
+/// decision notices its emitter sends the daemon), so with no daemon nothing
+/// kept Pi's decisions and nothing failed closed. With no daemon to take the
+/// chat, the co-process keeps the light tier's record itself, and a record
+/// it cannot keep is a deny, as for every other gate (case 249). Run against
+/// the real light log in the session's home.
+#[test]
+fn bw6_3_a_plugin_that_keeps_its_own_records_still_fails_closed_with_no_daemon() {
+    let se = session(FIXTURE_POLICY, &[]);
+    let home = se.s.0.join("home");
+    let local = home.join(".derm").join("local");
+    // The light log's folder made a plain file: nothing can be kept.
+    std::fs::write(&local, b"").unwrap();
+    let mut d = decide(1, "bash", json!({"command": "ls"}));
+    d["record"] = json!(false);
+    let r = run_lines(&se, "pi", &[hello("pi"), d], no_approver());
+    assert_eq!(r.replies[1]["action"], "deny", "{}", r.replies[1]);
+    let why = r.replies[1]["reason"].as_str().unwrap_or("");
+    assert!(why.contains("light tier fails closed"), "{why}");
+    assert!(r.posted.is_empty(), "nothing goes to the daemon's post");
+    // An ask Pi's own card would answer is kept before the card, or denied.
+    let mut a = approve_req(2, true);
+    a["record"] = json!(false);
+    let r = run_lines(&se, "pi", &[hello("pi"), a], no_approver());
+    assert_eq!(r.replies[1]["kind"], "deny", "{}", r.replies[1]);
+    // With the folder back, the decision is a line of the chat's light log.
+    std::fs::remove_file(&local).unwrap();
+    let mut d = decide(3, "bash", json!({"command": "ls"}));
+    d["record"] = json!(false);
+    d["call"]["chat"] = json!("bw6-3");
+    let r = run_lines(&se, "pi", &[hello("pi"), d], no_approver());
+    assert_eq!(r.replies[1]["action"], "allow", "{}", r.replies[1]);
+    let log = std::fs::read_to_string(local.join("bw6-3.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.contains("bash allow"), "{log}");
 }
 
 #[test]
@@ -1002,4 +1040,129 @@ mod unix {
             .file_type()
             .is_symlink());
     }
+}
+
+// ---- approvals.check (Cline's approval folder; note BF section 4.4) -----
+
+fn approvals_check(se: &Session) -> Value {
+    let r = run_lines(
+        se,
+        "cline",
+        &[hello("cline"), json!({"id": 1, "op": "approvals.check"})],
+        no_approver(),
+    );
+    r.replies[1].clone()
+}
+
+#[test]
+fn approvals_check_takes_a_private_folder_of_yours_outside_the_session() {
+    let base = session(r#"{"version":1,"rules":[]}"#, &[]);
+    let dir = base.s.0.join("cline-approvals");
+    std::fs::create_dir_all(&dir).unwrap();
+    derm_core::platform::set_private_dir(&dir).unwrap();
+    let se = session(
+        r#"{"version":1,"rules":[]}"#,
+        &[(approvals::DIR_VAR, &dir.to_string_lossy())],
+    );
+    let r = approvals_check(&se);
+    assert_eq!(r["ok"], true, "{r}");
+    assert!(r.get("problem").is_none(), "{r}");
+}
+
+#[test]
+fn approvals_check_refuses_no_folder_a_relative_one_a_missing_one_and_one_in_the_session() {
+    let se = session(r#"{"version":1,"rules":[]}"#, &[]);
+    assert!(approvals_check(&se)["problem"]
+        .as_str()
+        .unwrap()
+        .contains("no approval folder"));
+    let se = session(
+        r#"{"version":1,"rules":[]}"#,
+        &[(approvals::DIR_VAR, "cline-approvals")],
+    );
+    assert!(approvals_check(&se)["problem"]
+        .as_str()
+        .unwrap()
+        .contains("not an absolute path"));
+    let gone = scratch().0.join("gone");
+    let se = session(
+        r#"{"version":1,"rules":[]}"#,
+        &[(approvals::DIR_VAR, &gone.to_string_lossy())],
+    );
+    assert!(approvals_check(&se)["problem"]
+        .as_str()
+        .unwrap()
+        .contains("does not exist"));
+    let mut se = session(r#"{"version":1,"rules":[]}"#, &[]);
+    let inside = se.cwd.join("approvals");
+    std::fs::create_dir_all(&inside).unwrap();
+    derm_core::platform::set_private_dir(&inside).unwrap();
+    se.env
+        .0
+        .insert(approvals::DIR_VAR.into(), inside.to_string_lossy().into());
+    assert!(approvals_check(&se)["problem"]
+        .as_str()
+        .unwrap()
+        .contains("inside the session folder"));
+}
+
+/// The case the responder could not judge on Windows (note BF section 2,
+/// group C): a folder others may write is refused there by its access list.
+#[test]
+fn approvals_check_refuses_a_folder_others_may_write() {
+    let base = scratch();
+    let dir = base.0.join("open");
+    std::fs::create_dir_all(&dir).unwrap();
+    derm_core::platform::set_private_dir(&dir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o770)).unwrap();
+    }
+    #[cfg(windows)]
+    assert!(std::process::Command::new("icacls")
+        .arg(&dir)
+        .args(["/grant", "*S-1-1-0:(M)"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let se = session(
+        r#"{"version":1,"rules":[]}"#,
+        &[(approvals::DIR_VAR, &dir.to_string_lossy())],
+    );
+    let r = approvals_check(&se);
+    assert!(
+        r["problem"].as_str().unwrap().contains("yours alone"),
+        "{r}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn approvals_check_refuses_a_link_and_a_file() {
+    let base = scratch();
+    let real = base.0.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    derm_core::platform::set_private_dir(&real).unwrap();
+    let link = base.0.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let se = session(
+        r#"{"version":1,"rules":[]}"#,
+        &[(approvals::DIR_VAR, &link.to_string_lossy())],
+    );
+    assert!(approvals_check(&se)["problem"]
+        .as_str()
+        .unwrap()
+        .contains("is a link"));
+    let file = base.0.join("file");
+    std::fs::write(&file, "").unwrap();
+    let se = session(
+        r#"{"version":1,"rules":[]}"#,
+        &[(approvals::DIR_VAR, &file.to_string_lossy())],
+    );
+    assert!(approvals_check(&se)["problem"]
+        .as_str()
+        .unwrap()
+        .contains("not a folder"));
 }

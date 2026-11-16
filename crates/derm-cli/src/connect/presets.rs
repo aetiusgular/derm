@@ -60,12 +60,26 @@ const WAVE5: &[(&str, &str)] = &[
     ),
 ];
 
+/// Wave 6's sibling table (the wave 6 base, `plans/toolkit_wave6_plan.md`
+/// section 2.0, part 3): `sandbox`, lane 6A's, from `presets/wave6/`.
+const WAVE6: &[(&str, &str)] = &[("sandbox", include_str!("presets/wave6/sandbox.json"))];
+
+/// The folder a sibling table lives in, for its error messages.
+fn folder_of(field: &str) -> &'static str {
+    if WAVE6.iter().any(|(f, _)| *f == field) {
+        "wave6"
+    } else {
+        "wave5"
+    }
+}
+
 /// The assembled table as JSON text: `{"$comment", "version", "harnesses",
 /// "planned"}`, rows in the index's order, with wave 5's fields merged in.
 pub fn table_json() -> &'static str {
     static TABLE: OnceLock<String> = OnceLock::new();
     TABLE.get_or_init(|| {
-        assemble_with(INDEX, ROWS, WAVE5).expect("presets/ is checked by its tests")
+        let tables: Vec<(&str, &str)> = WAVE5.iter().chain(WAVE6).copied().collect();
+        assemble_with(INDEX, ROWS, &tables).expect("presets/ is checked by its tests")
     })
 }
 
@@ -84,15 +98,16 @@ fn merge_wave5(
 ) -> Result<(), String> {
     use serde_json::Value;
     for (field, text) in tables {
+        let folder = folder_of(field);
         let table: Value =
-            serde_json::from_str(text).map_err(|e| format!("wave5/{field}.json: {e}"))?;
+            serde_json::from_str(text).map_err(|e| format!("{folder}/{field}.json: {e}"))?;
         if table.get("field").and_then(Value::as_str) != Some(field) {
-            return Err(format!("wave5/{field}.json: its field is not {field}"));
+            return Err(format!("{folder}/{field}.json: its field is not {field}"));
         }
         let values = table
             .get("rows")
             .and_then(Value::as_object)
-            .ok_or(format!("wave5/{field}.json: no rows object"))?;
+            .ok_or(format!("{folder}/{field}.json: no rows object"))?;
         for (id, value) in values {
             let shape_ok = match *field {
                 "executables" => value
@@ -101,7 +116,9 @@ fn merge_wave5(
                 _ => value.is_object() || value.is_null(),
             };
             if !shape_ok {
-                return Err(format!("wave5/{field}.json: {id}'s value is not a {field}"));
+                return Err(format!(
+                    "{folder}/{field}.json: {id}'s value is not a {field}"
+                ));
             }
             // Find the row by position first, then borrow it once.
             let at = ["harnesses", "planned"].iter().find_map(|list| {
@@ -115,7 +132,7 @@ fn merge_wave5(
                     .map(|i| (*list, i))
             });
             let (list, i) = at.ok_or(format!(
-                "wave5/{field}.json names {id}, which index.json does not"
+                "{folder}/{field}.json names {id}, which index.json does not"
             ))?;
             let row = out
                 .get_mut(list)
@@ -125,7 +142,7 @@ fn merge_wave5(
                 .ok_or(format!("{id}.json: not an object"))?;
             if row.contains_key(*field) {
                 return Err(format!(
-                    "{id}.json sets {field}, which wave5/{field}.json owns"
+                    "{id}.json sets {field}, which {folder}/{field}.json owns"
                 ));
             }
             row.insert((*field).to_string(), value.clone());
@@ -422,6 +439,36 @@ mod tests {
             "every wave5 table is embedded, and only those"
         );
         assemble_with(INDEX, ROWS, WAVE5).unwrap();
+        // Wave 6's: every file in presets/wave6/ is embedded, and the whole
+        // table assembles with both waves' tables.
+        let mut tables: Vec<String> = std::fs::read_dir(dir.join("wave6"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        tables.sort();
+        let mut embedded: Vec<String> = WAVE6.iter().map(|(f, _)| format!("{f}.json")).collect();
+        embedded.sort();
+        assert_eq!(
+            tables, embedded,
+            "every wave6 table is embedded, and only those"
+        );
+        let both: Vec<(&str, &str)> = WAVE5.iter().chain(WAVE6).copied().collect();
+        assemble_with(INDEX, ROWS, &both).unwrap();
+        assert!(table_json().contains("\"harnesses\""));
+    }
+
+    #[test]
+    fn a_wave6_table_merges_and_names_its_own_folder() {
+        let index = r#"{"version":1,"harnesses":["a"],"planned":[]}"#;
+        let rows = &[("a", r#"{"id":"a"}"#)];
+        let sb = r#"{"field":"sandbox","rows":{"a":{"via":"settings-flag"}}}"#;
+        let t: serde_json::Value =
+            serde_json::from_str(&assemble_with(index, rows, &[("sandbox", sb)]).unwrap()).unwrap();
+        assert_eq!(t["harnesses"][0]["sandbox"]["via"], "settings-flag");
+        let stranger = r#"{"field":"sandbox","rows":{"zzz":{}}}"#;
+        assert!(assemble_with(index, rows, &[("sandbox", stranger)])
+            .unwrap_err()
+            .starts_with("wave6/sandbox.json names zzz"));
     }
 
     #[test]

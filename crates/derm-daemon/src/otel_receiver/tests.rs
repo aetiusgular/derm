@@ -3,6 +3,19 @@
 use super::*;
 use std::sync::mpsc;
 
+/// Mac test w6 retest 4, MW6R4-3: each flood test holds 64 client sockets
+/// and the receiver's 64 server sockets in this one process, and macOS's
+/// default limit is 256 open files (`launchctl limit maxfiles`), so two of
+/// them in parallel failed with EMFILE in their own `connect`. They run one
+/// at a time.
+static FLOOD: Mutex<()> = Mutex::new(());
+
+fn flood_alone() -> std::sync::MutexGuard<'static, ()> {
+    FLOOD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 struct Fixture {
     receiver: Arc<Receiver>,
     settings: Arc<Mutex<Settings>>,
@@ -367,6 +380,7 @@ fn rate_cap_answers_429_after_the_burst() {
 
 #[test]
 fn connection_cap_answers_503() {
+    let _flood = flood_alone();
     let f = fixture(true);
     let port = f.receiver.port();
     // Idle connections hold their slots until the head deadline.
@@ -376,6 +390,38 @@ fn connection_cap_answers_503() {
     std::thread::sleep(Duration::from_millis(300));
     let status = send_raw(port, b"POST /v1/logs HTTP/1.1\r\n\r\n");
     assert_eq!(status, 503);
+    drop(held);
+}
+
+/// Fix pass 9 (note BG section 5): at the cap, a client whose request
+/// arrives after the accept thread's drain still reads the 503 to a clean
+/// end. Closing a socket with input unread resets it (Winsock's closesocket;
+/// RFC 1122 4.2.2.13), and a reset can cost the client the reply (status 0
+/// on the box, once, under the full suite).
+#[test]
+fn fp9_a_refused_clients_late_request_does_not_reset_the_503() {
+    let _flood = flood_alone();
+    let f = fixture(true);
+    let port = f.receiver.port();
+    let held: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+        .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(300));
+    let mut late = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    late.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    // Long past the accept thread's drain.
+    std::thread::sleep(Duration::from_millis(300));
+    let _ = late.write_all(b"POST /v1/logs HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n");
+    std::thread::sleep(Duration::from_millis(200));
+    let _ = late.shutdown(std::net::Shutdown::Write);
+    let mut reply = Vec::new();
+    let end = late.read_to_end(&mut reply);
+    assert!(
+        reply.starts_with(b"HTTP/1.1 503 "),
+        "{:?} {end:?}",
+        String::from_utf8_lossy(&reply)
+    );
+    assert!(end.is_ok(), "the connection was reset: {end:?}");
     drop(held);
 }
 
@@ -1452,6 +1498,7 @@ fn one_request_makes_one_content_file_per_part_within_the_chats_allowance() {
 /// hold it out.
 #[test]
 fn idle_connections_before_a_token_cannot_hold_a_chat_out() {
+    let _flood = flood_alone();
     let f = fixture(true);
     let port = f.receiver.port();
     let token = f.receiver.mint("chat-w5r2", "claude-code").unwrap();
@@ -1498,4 +1545,20 @@ fn a_chats_content_files_are_counted_as_well_as_its_bytes() {
     assert!(f
         .receiver
         .allow_content("chat-w5r9", 1, now + 24 * 60 * 60 * 1000));
+}
+
+/// Fix pass 9's review, F2: a failed accept waits 5 ms, doubling to 1 s,
+/// and none after a success; a peer's reset or abort is not waited on.
+#[test]
+fn fp9_a_failed_accept_backs_off_and_a_peers_reset_does_not() {
+    use std::io::{Error, ErrorKind};
+    let mut b = AcceptBackoff::default();
+    let emfile = Error::from_raw_os_error(24);
+    let waits: Vec<_> = (0..10).map(|_| b.after(&emfile).unwrap()).collect();
+    assert_eq!(waits[0], Duration::from_millis(5));
+    assert_eq!(waits[1], Duration::from_millis(10));
+    assert_eq!(waits[9], Duration::from_secs(1));
+    assert_eq!(b.after(&Error::from(ErrorKind::ConnectionAborted)), None);
+    b.reset();
+    assert_eq!(b.after(&emfile), Some(Duration::from_millis(5)));
 }

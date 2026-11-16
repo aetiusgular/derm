@@ -14,7 +14,7 @@
 // `readGoSum`). A line they cannot read is skipped: a missed entry can only
 // make the gate ask.
 
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import type { Manager } from "./parse.ts";
 
@@ -273,6 +273,11 @@ export function readLockfileText(file: string): string | undefined {
   try {
     // O_NOFOLLOW: a lockfile planted as a link to somewhere else is not read.
     // O_NONBLOCK: a FIFO in its place does not hang the gate.
+    // Windows has neither flag (Node's `fs.constants` has no O_NOFOLLOW
+    // there), so a link is refused by its own entry first, as derm-core's
+    // `read_lockfile_text` does off Unix (`installs/lockfile.rs:555-563`;
+    // note BF section 4.2: the Windows CI run read a linked lockfile).
+    if ((constants.O_NOFOLLOW ?? 0) === 0 && lstatSync(file).isSymbolicLink()) return undefined;
     fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const st = fstatSync(fd);
     if (!st.isFile() || st.size > MAX_LOCKFILE_BYTES) return undefined;

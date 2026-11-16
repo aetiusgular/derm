@@ -91,6 +91,20 @@ impl Client {
         self.recv()
     }
 
+    /// `ask`, with a longer wait for the reply: a report over thousands of
+    /// events took past the 10 s read timeout on CI's macOS runner (run
+    /// 43474083257, `WouldBlock` at `recv`; Rust's `set_read_timeout` docs:
+    /// "Unix typically returns an error of the kind `WouldBlock`").
+    fn ask_slow(&mut self, v: Value, wait: Duration) -> Value {
+        self.r.get_ref().set_read_timeout(Some(wait)).unwrap();
+        let reply = self.ask(v);
+        self.r
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        reply
+    }
+
     fn closed(&mut self) -> bool {
         let mut buf = [0u8; 1];
         matches!(self.r.read(&mut buf), Ok(0))
@@ -1291,6 +1305,16 @@ fn no_socket_client_posts_a_cu_action_record() {
 /// The password is never in a record.
 #[test]
 fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
+    // macOS: the wrong password below counts as a failed login for this
+    // account (`approver/person.rs`, `MacPam`), so there it runs only in CI
+    // or with `DERM_TEST_PAM=1`.
+    if cfg!(target_os = "macos")
+        && std::env::var_os("CI").is_none()
+        && std::env::var_os("DERM_TEST_PAM").is_none()
+    {
+        eprintln!("a failed login for this account; set DERM_TEST_PAM=1 to run");
+        return;
+    }
     let f = fixture();
     let mut d = Client::daemon(&f);
     let mut a = Client::daemon(&f);
@@ -1316,9 +1340,9 @@ fn a_yes_for_a_chat_that_runs_as_you_needs_the_persons_password() {
     assert_eq!(r["ok"], false, "{r}");
     let why = r["error"].as_str().unwrap_or("");
     assert!(
-        // Linux asks for the password; where no check is built (macOS) the
-        // daemon says so and asks for none (Mac test w5, MW5-4).
-        why.contains(if cfg!(target_os = "linux") {
+        // Linux and macOS (fix pass 12 (Mac)) ask for the password; where no check is built the
+        // daemon says so and asks for none (MW5-4).
+        why.contains(if cfg!(any(target_os = "linux", target_os = "macos")) {
             "your password is needed"
         } else {
             "needs a person check"
@@ -1648,7 +1672,10 @@ fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
     }
     let mut reply = Value::Null;
     for _ in 0..100 {
-        reply = d.ask(json!({"op": "report", "chat": "chat-b", "since": 0, "until": i64::MAX}));
+        reply = d.ask_slow(
+            json!({"op": "report", "chat": "chat-b", "since": 0, "until": i64::MAX}),
+            Duration::from_secs(60),
+        );
         if reply["report"]["events"] == n + 1 {
             break;
         }
@@ -1694,4 +1721,142 @@ fn a_report_of_a_busy_window_fits_one_client_line_and_says_what_it_left_out() {
     // A quiet window carries no mark.
     let quiet = d.ask(json!({"op": "report", "chat": "chat-none", "since": 0, "until": i64::MAX}));
     assert!(quiet["report"]["check"].get("flagsOmitted").is_none());
+}
+
+/// Lane 6D's request 6D-1 (integration w6, phase 2): `taint` is routed to
+/// the daemon's store, the verdict comes from `derm run`'s own `run.start`,
+/// a chat token names only its own chat, and what it sends only adds.
+#[test]
+fn taint_is_routed_and_a_chat_token_names_only_its_own_chat_and_only_adds() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    // The store is the process's one; the chat ids are this test's own.
+    let own = format!("taint-a-{}", &derm_core::token::mint().unwrap()[..8]);
+    let other = format!("taint-b-{}", &derm_core::token::mint().unwrap()[..8]);
+    let token = mint(&mut d, &own, "claude-code");
+    let (mut c, _) = Client::hello(&f, &token);
+    // Before any run.start: the default verdict.
+    let r = c.ask(json!({"op": "taint", "chat": own, "hosts": []}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["verdict"], "ask", "{r}");
+    assert_eq!(r["from"], "default", "{r}");
+    // A chat token cannot name the verdict: its run.start is refused, and a
+    // run.start it could not post never reaches the store.
+    let forged = c.ask(json!({"op": "event", "event": {
+        "id": "forged-start", "at": 0, "chatId": own, "harness": "claude-code",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"taint": {"verdict": "record", "from": "flag"}}
+    }}));
+    assert_eq!(forged["ok"], false, "{forged}");
+    // derm run's own start names it.
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": format!("run-start-{own}"), "at": 0, "chatId": own, "harness": "claude-code",
+        "source": "run", "kind": "run.start", "summary": "",
+        "detail": {"taint": {"verdict": "deny", "from": "flag"}}
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    let r = c.ask(json!({"op": "taint", "chat": own}));
+    assert_eq!(
+        (r["verdict"].clone(), r["from"].clone()),
+        (json!("deny"), json!("flag")),
+        "{r}"
+    );
+    // Another chat: refused.
+    let r = c.ask(json!({"op": "taint", "chat": other, "hosts": []}));
+    assert_eq!(r["ok"], false, "{r}");
+    assert_eq!(r["error"], "a chat token names only its own chat", "{r}");
+    // A field the op does not have: refused, as every op's.
+    let r = c.ask(json!({"op": "taint", "chat": own, "verdict": "record"}));
+    assert_eq!(r["ok"], false, "{r}");
+    // A mark added by the chat token stays, and an empty add removes nothing.
+    let mark = json!({"v": 1, "marks": [{"id": "m-1", "reason": "untrusted-content",
+        "kind": "web", "tool": "webfetch"}]});
+    let r = c.ask(json!({"op": "taint", "chat": own, "hosts": [], "add": mark}));
+    assert_eq!(r["ok"], true, "{r}");
+    let r = c.ask(json!({"op": "taint", "chat": own, "add": {"v": 1}}));
+    assert_eq!(r["state"]["marks"][0]["id"], "m-1", "{r}");
+    // The daemon scope reads it too.
+    let r = d.ask(json!({"op": "taint", "chat": own}));
+    assert_eq!(r["state"]["marks"].as_array().map(Vec::len), Some(1), "{r}");
+}
+
+/// Fix pass 6 (the redo of fix pass 4's part 2, FP4-R1): a gate behind
+/// srt's route on Linux, or the VM's, keeps its chat's taint in the daemon
+/// through `POST /derm/v1/taint`, under the socket's chat scope: its own
+/// chat only, adding only, and answered as the socket answers.
+#[test]
+fn a_taint_op_over_http_is_the_chat_scoped_socket_op() {
+    let f = fixture();
+    let mut d = Client::daemon(&f);
+    let token = mint(&mut d, "chat-ht", "claude-code");
+    let endpoint = f.daemon.endpoint();
+    let port = endpoint.rsplit(':').next().unwrap().to_string();
+    let local = format!("127.0.0.1:{port}");
+    let mark =
+        json!({"id": "m-ht", "reason": "untrusted-content", "kind": "web", "tool": "webfetch"});
+    let add = json!({"taint": {"chat": "chat-ht", "hosts": [], "add": {"v": 1, "marks": [mark]}}});
+    let (status, body) = http(
+        &port,
+        "/derm/v1/taint",
+        &local,
+        Some(&token),
+        &add.to_string(),
+    );
+    assert_eq!(status, 200, "{body}");
+    let r: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(r["ok"], true, "{body}");
+    assert_eq!(r["state"]["marks"][0]["id"], "m-ht", "{body}");
+    // The socket sees what the route added: one store.
+    let (mut c, _) = Client::hello(&f, &token);
+    let on_socket = c.ask(json!({"op": "taint", "chat": "chat-ht", "hosts": ["a.test"]}));
+    assert_eq!(on_socket["state"]["marks"][0]["id"], "m-ht", "{on_socket}");
+    // Another chat's taint is refused, as on the socket.
+    let other = json!({"taint": {"chat": "chat-other", "hosts": []}}).to_string();
+    let (_, body) = http(&port, "/derm/v1/taint", &local, Some(&token), &other);
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["ok"],
+        false,
+        "{body}"
+    );
+    // An add cannot remove: an empty state leaves the mark.
+    let empty = json!({"taint": {"chat": "chat-ht", "add": {"v": 1}}}).to_string();
+    let (_, body) = http(&port, "/derm/v1/taint", &local, Some(&token), &empty);
+    let r: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(r["state"]["marks"][0]["id"], "m-ht", "{body}");
+    // A body that names its own op, a field the op does not take, the
+    // wrong field name, or no token: refused.
+    for bad in [
+        json!({"taint": {"op": "token.mint", "chat": "chat-ht"}}),
+        json!({"taint": {"chat": "chat-ht", "verdict": "record"}}),
+        json!({"taint": 1}),
+    ] {
+        let (status, body) = http(
+            &port,
+            "/derm/v1/taint",
+            &local,
+            Some(&token),
+            &bad.to_string(),
+        );
+        assert_eq!(status, 200, "{bad}: {body}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["ok"],
+            false,
+            "{bad}: {body}"
+        );
+    }
+    assert_eq!(
+        http(
+            &port,
+            "/derm/v1/taint",
+            &local,
+            Some(&token),
+            &json!({"request": {}}).to_string()
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        http(&port, "/derm/v1/taint", &local, None, &add.to_string()).0,
+        401
+    );
 }

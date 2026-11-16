@@ -94,17 +94,37 @@ pub trait Confirm {
 /// without a terminal): `--write` then refuses.
 pub struct Tty;
 
+/// The console's input and output: `/dev/tty` on Unix; on Windows the
+/// console itself, `CONIN$` and `CONOUT$` (Microsoft, "Console Handles":
+/// CreateFile on these names opens the console's input buffer and active
+/// screen buffer whatever stdin and stdout are), which Windows has in place
+/// of `/dev/tty` (fix pass 8: on the box every `--write` was refused, as
+/// `/dev/tty` is not there).
+/// Also `derm watch --approve`'s terminal (fix pass 9, note BG section 3).
+/// The error names the device and why it did not open.
+pub fn console() -> Result<(std::fs::File, std::fs::File), String> {
+    #[cfg(windows)]
+    let (input, output) = ("CONIN$", "CONOUT$");
+    #[cfg(not(windows))]
+    let (input, output) = ("/dev/tty", "/dev/tty");
+    let open = |name: &str, write: bool| {
+        OpenOptions::new()
+            .read(true)
+            .write(write || cfg!(not(windows)))
+            .open(name)
+            .map_err(|e| format!("{name}: {e}"))
+    };
+    Ok((open(input, false)?, open(output, true)?))
+}
+
 impl Confirm for Tty {
     fn confirm(&mut self, question: &str) -> Result<bool, String> {
-        let mut tty = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/tty")
-            .map_err(|e| format!("no terminal to confirm on (/dev/tty: {e}); nothing written"))?;
-        write!(tty, "{question} [y/N] ").map_err(|e| e.to_string())?;
-        tty.flush().map_err(|e| e.to_string())?;
+        let (input, mut output) =
+            console().map_err(|e| format!("no terminal to confirm on ({e}); nothing written"))?;
+        write!(output, "{question} [y/N] ").map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
         let mut line = String::new();
-        BufReader::new(&tty)
+        BufReader::new(&input)
             .read_line(&mut line)
             .map_err(|e| e.to_string())?;
         let a = line.trim();
@@ -156,6 +176,19 @@ fn mode_of(_meta: &fs::Metadata) -> u32 {
 
 /// Copies the old bytes to `backups/<harness>-<ms>-<file name>`, mode 0600.
 fn backup(backups: &Path, harness: &str, path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    backup_at(backups, harness, path, bytes, now_ms())
+}
+
+/// A backup named by `ms`. Two writes in one millisecond (a script, or a
+/// fast box: box retest 5's fix pass) each get their own file, numbered as
+/// GNU `cp --backup=numbered` does; an existing backup is never replaced.
+fn backup_at(
+    backups: &Path,
+    harness: &str,
+    path: &Path,
+    bytes: &[u8],
+    ms: u128,
+) -> Result<PathBuf, String> {
     make_private_dir(backups)?;
     // Windows (lane Z): derm's own backups folder, user-only.
     #[cfg(windows)]
@@ -163,14 +196,32 @@ fn backup(backups: &Path, harness: &str, path: &Path, bytes: &[u8]) -> Result<Pa
     let base = path
         .file_name()
         .map_or("config".into(), |n| n.to_string_lossy().into_owned());
-    let dest = backups.join(format!("{harness}-{}-{base}", now_ms()));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut f = options
-        .open(&dest)
-        .map_err(|e| format!("backup {}: {e}", dest.display()))?;
+    let mut opened = None;
+    for n in 0..100u32 {
+        let dest = backups.join(if n == 0 {
+            format!("{harness}-{ms}-{base}")
+        } else {
+            format!("{harness}-{ms}-{n}-{base}")
+        });
+        match options.open(&dest) {
+            Ok(f) => {
+                opened = Some((f, dest));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("backup {}: {e}", dest.display())),
+        }
+    }
+    let (mut f, dest) = opened.ok_or_else(|| {
+        format!(
+            "backup in {}: 100 backups of {base} in one millisecond",
+            backups.display()
+        )
+    })?;
     f.write_all(bytes)
         .and_then(|_| f.sync_all())
         .map_err(|e| format!("backup {}: {e}", dest.display()))?;
@@ -386,6 +437,24 @@ pub(crate) mod tests {
         .unwrap_err();
         assert!(e.contains("changed since the diff was shown"), "{e}");
         assert_eq!(fs::read_to_string(&p).unwrap(), "{\"other\": 1}");
+    }
+
+    /// Box retest 5's fix pass: two writes in one millisecond. The second
+    /// backup failed with "File exists" and the write did not happen.
+    #[test]
+    fn two_backups_in_one_millisecond_each_get_their_own_file() {
+        let d = scratch("same-ms");
+        let p = d.join("settings.json");
+        let a = backup_at(&d.join("bk"), "qwen-code", &p, b"one", 42).unwrap();
+        let b = backup_at(&d.join("bk"), "qwen-code", &p, b"two", 42).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(fs::read(&a).unwrap(), b"one");
+        assert_eq!(fs::read(&b).unwrap(), b"two");
+        assert!(
+            b.ends_with("qwen-code-42-1-settings.json"),
+            "{}",
+            b.display()
+        );
     }
 
     #[cfg(unix)]

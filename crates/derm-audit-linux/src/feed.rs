@@ -31,7 +31,14 @@ pub struct Feed {
     own_keys: std::collections::HashSet<(i64, u64)>,
     own_order: std::collections::VecDeque<(i64, u64)>,
     last_own: bool,
+    /// Reads the host's mountinfo, set by the binary (this module does no
+    /// I/O); with none, no event says whether its device is mounted.
+    mounts_reader: Option<MountsReader>,
+    mounts: Option<crate::hostdev::Mounts>,
 }
+
+/// What reads `/proc/self/mountinfo` for [`Feed::set_mounts_reader`].
+pub type MountsReader = Box<dyn FnMut() -> Option<String> + Send>;
 
 /// How many of the feed's own event keys are remembered.
 const OWN_KEYS: usize = 4096;
@@ -52,7 +59,26 @@ impl Feed {
             own_keys: std::collections::HashSet::new(),
             own_order: std::collections::VecDeque::new(),
             last_own: false,
+            mounts_reader: None,
+            mounts: None,
         }
+    }
+
+    /// How the feed reads the host's mounts, to say of each write whether
+    /// its filesystem is one the host has mounted (`devMounted`, BW6R2-2).
+    /// Read again when an event's device is not among them, so a mount made
+    /// since is seen; a read that fails or holds no device says nothing.
+    pub fn set_mounts_reader(&mut self, reader: MountsReader) {
+        self.mounts_reader = Some(reader);
+    }
+
+    fn dev_mounted(&mut self, dev: crate::hostdev::Dev) -> Option<bool> {
+        let reader = self.mounts_reader.as_mut()?;
+        if self.mounts.as_ref().is_some_and(|m| m.has_dev(dev)) {
+            return Some(true);
+        }
+        self.mounts = reader().and_then(|t| crate::hostdev::Mounts::parse(&t));
+        self.mounts.as_ref().map(|m| m.has_dev(dev))
     }
 
     /// The feed's own process id: its records are never a chat's and do
@@ -161,7 +187,15 @@ impl Feed {
             }
             None => Vec::new(),
         };
-        to_event(a, p, &reasons)
+        let mut event = to_event(a, p, &reasons);
+        if let Some(dev) = a.dev.as_deref().and_then(crate::hostdev::parse_audit_dev) {
+            if let Some(mounted) = self.dev_mounted(dev) {
+                if let Some(d) = event.detail.as_object_mut() {
+                    d.insert("devMounted".into(), serde_json::json!(mounted));
+                }
+            }
+        }
+        event
     }
 
     /// A chat started: its root process and folders. Returns the actions

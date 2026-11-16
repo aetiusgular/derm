@@ -16,7 +16,7 @@ import { decodeEscapes, foldText } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, contracts/policy.md section 6.
 import { installDecision, parseInstalls } from "./installs/index.ts";
 // Wave 5 lane W: command rules, contracts/policy.md section 7 (the hook core's file, held equal by a test).
-import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands } from "./command.ts";
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram } from "./command.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -569,6 +569,62 @@ const NAME_CHAR = /[a-z0-9_-]/;
 const LEFT_NAME_CHAR = /[a-z0-9_.-]/;
 
 /** Whether folded `text` names the control path `entry` (contract section 4, step 7a). */
+// Each text, and beside it each one that holds a `\` with every `\` read as
+// `/` (Windows test w6, WW6-1): a file tool on Windows names a path the way
+// Windows writes it (`C:\Users\u\.git\hooks\pre-commit`), and Windows takes
+// `\` and `/` alike as separators, so an entry with an inner `/` is also looked
+// for there. Only ever adds an ask; run before withCollapsedSlashes. derm-core's
+// `with_native_separators`.
+export function withNativeSeparators(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) if (t.includes("\\")) out.push(t.replace(/\\/g, "/"));
+  return out;
+}
+
+// Each text, and beside it, where it differs, the text with each part's
+// trailing dots and spaces read away (Windows test w6 retest, WW6R-1):
+// Windows' path normalization drops a single trailing dot from a part before
+// a separator and every trailing dot and space from the last part, so a Win32
+// caller writing `.git.\hooks\pre-commit` lands in `.git\hooks` (Jeremy
+// Kuhne, "Path Normalization"). A run of dots and spaces is read away where it
+// ends a part that holds something else, before `/`, a quote, a separator of
+// words or the end of the text; more than Windows does, which only adds an
+// ask. `.`, `..` and a part of dots alone are left. Run after
+// withNativeSeparators. derm-core's `with_win32_trimmed`.
+export function withWin32Trimmed(texts: string[]): string[] {
+  const out = [...texts];
+  for (const t of texts) {
+    const trimmed = win32Trim(t);
+    if (trimmed !== t) out.push(trimmed);
+  }
+  return out;
+}
+
+const WIN32_PART_END = new Set(["/", '"', "'", "`", "\n", "\t", "\r", ";", "|", "&", ")", ",", "}", "]"]);
+const WIN32_NOT_A_NAME = new Set(["/", '"', "'", "`", "(", "=", ":"]);
+
+function win32Trim(t: string): string {
+  const chars = Array.from(t);
+  let out = "";
+  let i = 0;
+  while (i < chars.length) {
+    const c = chars[i];
+    if (c === "." || c === " ") {
+      const start = i;
+      while (i < chars.length && (chars[i] === "." || chars[i] === " ")) i++;
+      const before = start > 0 ? chars[start - 1] : undefined;
+      const named = before !== undefined && !WIN32_NOT_A_NAME.has(before) && !/[ \t\n\f\r]/.test(before);
+      const next = chars[i];
+      if (named && (next === undefined || WIN32_PART_END.has(next))) continue;
+      out += chars.slice(start, i).join("");
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
 // The path the shell opens is the same with `//` or `/./` in it, so a
 // control path is also looked for in the text with those collapsed to `/`
 // (review W4-S5). Only ever adds an ask.
@@ -611,6 +667,104 @@ export function namesControlPath(text: string, entry: string): boolean {
     if ((prev === undefined || !LEFT_NAME_CHAR.test(prev)) && (next === undefined || !NAME_CHAR.test(next))) return true;
   }
   return false;
+}
+
+/**
+ * Secret material (contracts/policy.md section 4, step 7a; integration w6's
+ * close, E0's R-E0-2): keys, cloud, registry and database credentials,
+ * password stores, shell history and `.env` files, for every tool. From
+ * OpenMoat 0.19.0's `secrets-paths` (policies/default-v1.yaml:17-75) and its
+ * key-file names (:1336-1338). Matched by `namesEntry`; derm-core's
+ * `SECRET_PATHS` and derm-pi's are the same list.
+ */
+export const SECRET_PATHS = [
+  ".ssh/", ".aws/", ".gnupg/", ".config/gh/", ".netrc", ".authinfo", ".docker/config.json",
+  ".config/containers/auth.json", ".config/doctl/", ".kube/", ".config/gcloud/", ".azure/",
+  ".git-credentials", ".pypirc", ".cargo/credentials", ".gem/credentials", ".pgpass", ".my.cnf",
+  ".mylogin.cnf", ".vault-token", ".terraform.d/credentials", ".config/op/", ".password-store/",
+  ".local/share/keyrings/", "library/keychains/", ".zsh_history", ".bash_history", ".env", ".envrc",
+  "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+  // Windows test w6, WW6-9: gcloud's, gh's and PSReadLine's places on Windows (derm-core's list says where from).
+  "appdata/roaming/gcloud/", "appdata/roaming/github cli/", "powershell/psreadline/",
+] as const;
+
+/**
+ * Files something runs later, outside the call (step 7a; R-E0-2's start-up
+ * half and R-E0-3): CI and commit hooks, editor run configurations, package
+ * manager configuration that runs code, agent skill, hook and MCP files, and
+ * every shell's start-up files with curl's and wget's. From OpenMoat 0.19.0's
+ * `runs-later` (:1152-1230) and `shell-rc` (:645-658). A leading `*` matches
+ * a suffix. Matched by `namesEntry`; derm-core's and derm-pi's list.
+ */
+export const RUNS_LATER_PATHS = [
+  ".github/workflows/", ".github/agents/", ".github/hooks/", ".github/mcp.json", ".gitlab-ci.yml", ".circleci/",
+  "azure-pipelines.yml", "jenkinsfile", ".buildkite/", ".husky/", ".pre-commit-config.yaml", "lefthook.yml",
+  ".lefthook.yml", ".githooks/", ".git-hooks/", "githooks/", "git-hooks/", ".vscode/", "*.code-workspace",
+  ".idea/", "*.run.xml", ".npmrc", ".yarnrc", ".cargo/config", "bunfig.toml", ".mcp.json", ".agents/",
+  ".opencode/", ".continue/", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile",
+  ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".zlogout", ".config/fish/", ".login", ".cshrc", ".tcshrc",
+  ".kshrc", ".mkshrc", ".curlrc", "_curlrc", ".config/curlrc", ".wgetrc", ".config/wget/",
+  // Windows test w6, WW6-9: PowerShell's profiles and modules, and the Startup folder (derm-core's list says where from).
+  "documents/powershell/", "documents/windowspowershell/", ".config/powershell/", "start menu/programs/startup/",
+] as const;
+
+/**
+ * Cloud instance metadata and link-local addresses (step 7a; R-E0-5), from
+ * OpenMoat 0.19.0's `cloud-metadata` (:659-664). Matched by `namesEntry`, so
+ * `10.169.254.1` is not `169.254.`.
+ */
+export const METADATA_ADDRESSES = ["169.254.", "fe80:", "fd00:ec2:", "100.100.100.200", "168.63.129.16", "192.0.0.192", "fd20:ce::254", "fd00:c1::a9fe:a9fe", "fd00:42::42", "fd00:a9fe:a9fe::1", "fd00:100::100:200", "2852039166", "0xa9fea9fe", "0251.0376.0251.0376", "metadata.google.internal", "metadata.goog"] as const;
+
+// `.env` followed by one of these is a committed template with no values
+// (OpenMoat 0.19.0's `.env.example` exception and its siblings, :61-67).
+const ENV_TEMPLATES = [".example", ".sample", ".template", ".dist"] as const;
+
+/**
+ * Whether folded `text` names `entry` of the lists above as a whole name: no
+ * name character runs into it on the left (`.` counts there), and, when it
+ * ends in a name character, none on the right. A folder entry also matches
+ * its bare name; a leading `*` drops the left check; `.env` followed by a
+ * template's suffix is not the file. derm-core's `names_entry`.
+ */
+export function namesEntry(text: string, entry: string): boolean {
+  const suffix = entry.startsWith("*");
+  const e = suffix ? entry.slice(1) : entry;
+  const base = e.endsWith("/") ? e.slice(0, -1) : e;
+  if (base === "") return false;
+  const endsInName = NAME_CHAR.test(base[base.length - 1] as string);
+  for (let i = text.indexOf(base); i >= 0; i = text.indexOf(base, i + 1)) {
+    const prev = i === 0 ? undefined : text[i - 1];
+    const after = text.slice(i + base.length);
+    const next = after[0];
+    const leftOk = suffix || prev === undefined || !LEFT_NAME_CHAR.test(prev);
+    // `.env-production` and `.env_local` are `.env` files too (W6C-S3).
+    const rightOk = !endsInName || next === undefined || !NAME_CHAR.test(next) || (base === ".env" && (next === "-" || next === "_"));
+    // A template only when the whole name ends in its suffix: `.env.example`, not `.env.example.local`.
+    let tail = "";
+    for (const c of after) {
+      if (!NAME_CHAR.test(c) && c !== ".") break;
+      tail += c;
+    }
+    const template = base === ".env" && ENV_TEMPLATES.some((t) => tail.endsWith(t));
+    if (leftOk && rightOk && !template) return true;
+  }
+  return false;
+}
+
+/** Step 7a's other lists and the reason each gives (integration w6's close). */
+export const MORE_STEP_7A_LISTS: ReadonlyArray<[readonly string[], string]> = [
+  [SECRET_PATHS, "a secret path"],
+  [RUNS_LATER_PATHS, "a file that runs later"],
+  [METADATA_ADDRESSES, "a cloud metadata address"],
+];
+
+/** The first entry of step 7a's other lists that `texts` name, with its reason. */
+export function moreStep7a(texts: readonly string[]): string | undefined {
+  for (const [list, what] of MORE_STEP_7A_LISTS) {
+    const entry = list.find((e) => texts.some((t) => namesEntry(t, e)));
+    if (entry !== undefined) return `input names ${what} (${entry})`;
+  }
+  return undefined;
 }
 
 const GIT_WORD = /(^|[^a-z0-9_])git(?![a-z0-9_])/g;
@@ -755,7 +909,7 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
 function allowSteps(normalizedTool: string, folded: string, reason: string): Decision {
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
-  const texts = withCollapsedSlashes([folded, unquoted]);
+  const texts = withCollapsedSlashes(withWin32Trimmed(withNativeSeparators([folded, unquoted])));
   const control = CONTROL_PATH_MARKERS.find((m) => texts.some((t) => namesControlPath(t, m)));
   if (control !== undefined) {
     return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
@@ -775,6 +929,13 @@ function allowSteps(normalizedTool: string, folded: string, reason: string): Dec
   // after an install the lockfile vouches for (installDecision keeps the allow by answering nothing).
   const unplain = POWERSHELL_TOOLS.has(normalizedTool) ? powershellUnplain(folded) : undefined;
   if (unplain !== undefined) return { action: "ask", normalizedTool, reason: powershellReason(unplain) };
+  // Step 7d (integration w6's close, E0's R-E0-1, 2, 3 and 5), last, so an
+  // earlier step's reason stands where both apply: step 7a's other lists for
+  // every tool, then a shell or interpreter that reads its program from its input.
+  const more = moreStep7a(texts);
+  if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
+  const fed = SHELL_TOOLS.has(normalizedTool) ? stdinProgram(folded) : undefined;
+  if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
   return { action: "allow", normalizedTool, reason };
 }
 

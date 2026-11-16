@@ -70,7 +70,8 @@ fn flag_rank(f: &Value) -> u8 {
         "recordingOff" => 2,
         "newHost" => 3,
         "leftRunning" => 4,
-        _ => 5,
+        "noGateRecord" => 5,
+        _ => 6,
     }
 }
 
@@ -1167,11 +1168,12 @@ impl Daemon {
         daemon
             .receiver
             .set_ops(Arc::new(move |chat, harness, op, gone| {
-                let reply = match weak.upgrade() {
+                match weak.upgrade() {
                     Some(d) => d.http_op(chat, harness, op, gone),
-                    None => error("the daemon is stopping"),
-                };
-                serde_json::to_value(reply).unwrap_or(Value::Null)
+                    None => {
+                        serde_json::to_value(error("the daemon is stopping")).unwrap_or(Value::Null)
+                    }
+                }
             }));
         if let Some(saved) = saved {
             daemon.restore_state(&saved);
@@ -1231,6 +1233,11 @@ impl Daemon {
                 runs.insert(chat.to_string(), run);
             }
         }
+        // The taint of the chats that still run (fix pass 6, note BE
+        // section 2.3): a restart must not lower it. Before the tokens, so
+        // no hook whose token is back reads a chat with its taint not yet
+        // restored (fix pass 6's review).
+        crate::taint::global().restore(saved.get("taint"), &|chat| runs.contains_key(chat));
         let mut restored = 0;
         let mut minted_at = HashMap::new();
         for t in saved
@@ -1315,6 +1322,12 @@ impl Daemon {
         let Some(path) = self.state_file.as_deref() else {
             return;
         };
+        // One save at a time, read and written together, so a later save
+        // never puts an older state in place (fix pass 6's review).
+        static SAVING: Mutex<()> = Mutex::new(());
+        let _one = SAVING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let minted = self.minted_at.lock().map(|m| m.clone()).unwrap_or_default();
         let tokens: Vec<Value> = self
             .receiver
@@ -1357,6 +1370,8 @@ impl Daemon {
             "tapPort": tap_port,
             "tokens": tokens,
             "runs": runs,
+            // The taint of every chat still running (fix pass 6).
+            "taint": crate::taint::global().snapshot(),
         })
         .to_string();
         let _ = crate::service::write_private(path, &text);
@@ -1469,6 +1484,7 @@ impl Daemon {
         crate::platform::windows::sysmon_feed::state()
     }
 
+    #[cfg(not(windows))]
     fn os_feed_state_here(&self) -> Value {
         let Ok(feed) = self.os_feed.lock() else {
             return Value::Null;
@@ -1600,6 +1616,15 @@ impl Daemon {
         if event.source == Source::Run {
             if let Ok(mut watchers) = self.run_watchers.lock() {
                 watchers.retain(|w| w.send(event.clone()).is_ok());
+            }
+            // The chat's taint verdict from `run.start`, dropped at
+            // `run.stop` (lane 6D's request 6D-1). Only `derm run`'s own
+            // records name it: a chat token posts no `run` record.
+            crate::taint::global().on_event(&event);
+            // The verdict a `run.start` named goes into the state file too,
+            // so a restart keeps it (fix pass 6, note BE section 2.3).
+            if event.kind == "run.start" {
+                self.save_state();
             }
         }
         // Install records (lane X's request 4, integration w5 continue): the
@@ -1735,6 +1760,9 @@ impl Daemon {
             Request::TokenMint { chat, harness } => {
                 out.send(&self.op_mint(who, &chat, &harness));
             }
+            Request::Taint { chat, hosts, add } => {
+                out.send(&self.op_taint(who, chat, hosts, add));
+            }
             Request::Cu { action, chat, app } => {
                 out.send(&op_cu(who, action, chat.as_deref(), app.as_deref()));
             }
@@ -1751,22 +1779,35 @@ impl Daemon {
         harness: &str,
         op: otel_receiver::ChatOp,
         gone: &dyn Fn() -> bool,
-    ) -> Reply {
+    ) -> Value {
         let who = Who::Chat {
             chat: chat.to_string(),
             harness: harness.to_string(),
         };
+        let as_value = |r: Reply| serde_json::to_value(r).unwrap_or(Value::Null);
         let line = match op {
             otel_receiver::ChatOp::Event(event) => json!({"op": "event", "event": event}),
             otel_receiver::ChatOp::Approve(request) => {
                 json!({"op": "approve", "request": request})
             }
+            // The socket's `taint` line with its `op`; a body that names an
+            // `op` of its own is not a taint request.
+            otel_receiver::ChatOp::Taint(fields) => match fields {
+                Value::Object(mut m) if !m.contains_key("op") => {
+                    m.insert("op".into(), json!("taint"));
+                    Value::Object(m)
+                }
+                _ => return as_value(error("bad request: taint takes chat, hosts and add")),
+            },
         };
         match serde_json::from_value::<Request>(line) {
-            Ok(Request::Event { event }) => self.op_event(&who, event),
-            Ok(Request::Approve { request }) => self.op_approve_until(&who, request, gone),
-            Ok(_) => error("not an op this route takes"),
-            Err(e) => error(format!("bad request: {e}")),
+            Ok(Request::Event { event }) => as_value(self.op_event(&who, event)),
+            Ok(Request::Approve { request }) => {
+                as_value(self.op_approve_until(&who, request, gone))
+            }
+            Ok(Request::Taint { chat, hosts, add }) => self.op_taint(&who, chat, hosts, add),
+            Ok(_) => as_value(error("not an op this route takes")),
+            Err(e) => as_value(error(format!("bad request: {e}"))),
         }
     }
 
@@ -2131,10 +2172,17 @@ impl Daemon {
         if let Some(cwd) = event.detail.get("cwd").and_then(Value::as_str) {
             folders.insert(0, cwd.to_string());
         }
+        // Box test w6 retest 3, BW6R3-2: the derm that started the chat.
+        let derm_exe = event
+            .detail
+            .get("dermExe")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let Some(context) = clean_context(ChatContext {
             chat_id: event.chat_id.clone(),
             harness: event.harness.clone(),
             folders,
+            derm_exe,
         }) else {
             return;
         };
@@ -2523,6 +2571,49 @@ impl Daemon {
             pid: None,
             approval_id: Some(request.id.clone()),
         });
+    }
+
+    /// `taint` (lane 6D's request 6D-1): answered by the daemon's one taint
+    /// store, which checks every field and the chat again. A chat token's
+    /// requests come out of its chat's share of the socket, as its events
+    /// do (re-review W5R-3): what it adds is bounded per request, not per
+    /// second.
+    fn op_taint(
+        &self,
+        who: &Who,
+        chat: String,
+        hosts: Option<Vec<String>>,
+        add: Option<Value>,
+    ) -> Value {
+        let mut line = json!({"op": "taint", "chat": chat});
+        if let Some(h) = hosts {
+            line["hosts"] = json!(h);
+        }
+        if let Some(a) = add {
+            line["add"] = a;
+        }
+        let scope = match who {
+            Who::Daemon => None,
+            Who::Chat { chat: own, .. } => {
+                let bytes = serde_json::to_vec(&line).map(|v| v.len()).unwrap_or(0);
+                if let Err(why) =
+                    self.take_chat_quota(own, bytes, now_ms(), std::time::Instant::now())
+                {
+                    self.counters.refused_events.fetch_add(1, Ordering::Relaxed);
+                    return json!({"ok": false, "error": why});
+                }
+                Some(own.as_str())
+            }
+        };
+        let adds = line.get("add").is_some();
+        let reply = crate::taint::global().handle(scope, &line);
+        // What a chat added survives a restart (fix pass 6, note BE section
+        // 2.3): the state file is written before the gate hears its add
+        // was kept.
+        if adds && reply.get("ok") == Some(&Value::Bool(true)) {
+            self.save_state();
+        }
+        reply
     }
 
     fn op_mint(&self, who: &Who, chat: &str, harness: &str) -> Reply {
@@ -3134,6 +3225,79 @@ mod tests {
         let log: &'static ActivityLog =
             Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
         (Daemon::new(TOKEN, log, &data, false).unwrap(), root)
+    }
+
+    /// Box test w6 retest 3, BW6R3-2: `run.start`'s `dermExe` reaches the
+    /// chat's context, before and after a restart, and the gate's read of
+    /// its own route out of srt is then no flag (`dermGateOwnRoute`; fix
+    /// pass 6 removed the taint-file hide this test held first, since the
+    /// gate no longer writes that file). A chat whose `run.start` named no
+    /// derm keeps the flag.
+    #[test]
+    fn bw6r3_2_run_starts_derm_exe_hides_the_gates_read_of_its_own_route() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let first = Daemon::new(TOKEN, log, &data, false).unwrap();
+        let now = now_ms();
+        for (n, (chat, derm)) in [
+            ("chat-g", Some("/home/t/.local/bin/derm")),
+            ("chat-h", None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut detail = json!({"boundary": "srt", "argv": ["srt"], "cwd": "/home/t/proj"});
+            if let Some(d) = derm {
+                detail["dermExe"] = json!(d);
+            }
+            let mut start = ev_of(chat, Source::Run, "run.start", None, detail);
+            start.at = now - 60_000;
+            assert!(first.op_event(&Who::Daemon, start).ok);
+            let mut write = ev_of(
+                chat,
+                Source::Auditd,
+                "open",
+                Some(77),
+                json!({
+                    "path": format!("/home/t/.derm/run/routes/{chat}.json"),
+                    "exe": "/home/t/.local/bin/derm",
+                    "tier": "child",
+                }),
+            );
+            write.id = format!("auditd-2-{n}");
+            write.at = now - 50_000;
+            assert!(first.op_event(&Who::Daemon, write).ok);
+        }
+        // The restore runs on its own thread (as BW5R5-1's test waits).
+        let report = |d: &Daemon, chat: &str| {
+            let mut held = Value::Null;
+            for _ in 0..100 {
+                held = d.report(Some(chat), 0, i64::MAX);
+                if held["events"] == 2 && (chat != "chat-g" || held["flags"] == 0) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            held
+        };
+        let g = report(&first, "chat-g");
+        assert_eq!(g["events"], 2, "{g}");
+        assert_eq!(g["flags"], 0, "{g}");
+        let h = report(&first, "chat-h");
+        assert_eq!(h["flags"], 1, "no dermExe, no hide: {h}");
+        drop(first);
+        let log2: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
+        let g = report(&second, "chat-g");
+        assert_eq!(g["flags"], 0, "after a restart: {g}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Box retest of fix pass 13r (BW5R5-1, run on the box 8 Nov): the

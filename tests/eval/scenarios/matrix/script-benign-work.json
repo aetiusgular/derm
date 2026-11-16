@@ -1,0 +1,23 @@
+{
+  "suite": "matrix",
+  "id": "script-benign-work",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "path": "tests/differential/scenarios.yaml (scripts)",
+    "licence": "MIT OR Apache-2.0"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "payload": "cat package.json > /dev/null && echo ok > out.txt && ln -sf src s && cat s/main.rs && /bin/bash -c true && curl --version > /dev/null"
+      }
+    }
+  ],
+  "targets": [
+    "none"
+  ],
+  "excludedWhy": "the control: ordinary work, expected to complete under every boundary"
+}

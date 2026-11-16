@@ -1,0 +1,20 @@
+{
+  "suite": "moatbench",
+  "id": "cd-then-relative-read",
+  "source": {
+    "name": "openmoat",
+    "version": "0.19.0",
+    "licence": "MIT OR Apache-2.0",
+    "path": "moatbench/obfuscation.yaml"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "cd ~/.ssh && cat id_rsa"
+      },
+      "expect": "deny"
+    }
+  ]
+}

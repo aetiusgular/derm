@@ -648,7 +648,7 @@ pub fn handle_pre(d: &Dialect, input: &Map<String, Value>, deps: &Deps) -> Reply
     let chat = chat_of(&deps.env, read.session.as_deref()).unwrap_or_default();
     let key = call_key(d, &read);
     let decision = super::action_str(out.decision);
-    deps.post(
+    let lost = deps.post_decision(
         &Decision {
             harness: d.id,
             id_part: Some(read.call_id.as_deref().unwrap_or(&key)),
@@ -665,6 +665,11 @@ pub fn handle_pre(d: &Dialect, input: &Map<String, Value>, deps: &Deps) -> Reply
         }
         .event(),
     );
+    // The light tier fails closed: a decision no one recorded is a deny.
+    let mut out = out;
+    if let Some(why) = lost.filter(|_| out.decision != Action::Deny) {
+        (out.decision, out.reason) = (Action::Deny, why);
+    }
     // With no call id the records join by the call key, so the install
     // record carries it as its toolUseId.
     let install_call = GateCall {

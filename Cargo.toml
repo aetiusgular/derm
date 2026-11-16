@@ -10,6 +10,8 @@ members = [
     "crates/derm-audit-windows",
     # Wave 5b (the wave 5b base): lane 5bE's Sysmon reader service.
     "crates/derm-sysmon",
+    # Wave 6 (the wave 6 base): lane 6C's egress proxy and secrets broker.
+    "crates/derm-egress",
 ]
 # The two macos/ crates are their own workspaces (each has [workspace] in its
 # Cargo.toml), as in the fork. `cargo check` at the root never builds them.

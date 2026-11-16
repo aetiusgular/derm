@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import entry from "../index.ts";
 import { REDACTED } from "./core/redact.ts";
@@ -36,11 +36,19 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
 });
+// Each test is a chat of its own: taint a test's calls made stays with it
+// (the fake answers `taint` as the daemon does since fix pass 6).
+beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -49,6 +57,7 @@ afterAll(async () => {
 function deps(extra: Record<string, string> = {}): Deps {
   const e = { DERM_POLICY: policyFile, ...daemon.env(), ...extra };
   const s = new GateServe({ agent: "openclaw", env: e, cwd: () => project, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   return { ...defaultDeps(e), serve: () => s };
 }
 const ctx = { sessionId: "ses-1", sessionKey: "agent:main" };

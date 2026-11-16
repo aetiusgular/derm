@@ -16,6 +16,12 @@ mod unix {
         safe: PathBuf,
         project: PathBuf,
         token_file: PathBuf,
+        // Every test with a tree holds the owners lock for its whole run:
+        // `trusted_owners` is process-wide, and two tests here set it, so a
+        // test that reads a token or a policy while they ran saw another
+        // user's owners (the wave 6 base, finding W6B-1: 5 of 40 runs of
+        // this module failed at 8 threads on `main` at 4dbb2fa).
+        _owners: std::sync::MutexGuard<'static, ()>,
     }
     impl Drop for Tree {
         fn drop(&mut self) {
@@ -48,6 +54,7 @@ mod unix {
             safe,
             project,
             token_file,
+            _owners: lock(),
         }
     }
     fn opts<'a>(env: &'a Env, cwd: &'a Path) -> Opts<'a> {
@@ -289,7 +296,6 @@ mod unix {
 
     #[test]
     fn under_an_agents_user_the_persons_files_are_trusted_and_the_agents_are_not() {
-        let _g = lock();
         let t = tree();
         mode(&t.root, 0o711);
         let token = t.root.join("chat.token");
@@ -329,7 +335,6 @@ mod unix {
 
     #[test]
     fn a_policy_owned_by_the_agent_is_refused_and_the_persons_is_read() {
-        let _g = lock();
         let t = tree();
         let policy = t.safe.join("policy.json");
         std::fs::write(&policy, r#"{"version":1,"rules":[]}"#).unwrap();
@@ -550,11 +555,22 @@ mod unix {
         assert!(listener.accept().is_err(), "the listener was never asked");
     }
 
-    fn http_server(status: u16) -> (u16, std::sync::mpsc::Receiver<(String, String, String)>) {
+    /// A one-shot HTTP server for two requests. Its thread drops the
+    /// listener when it ends; a test that then needs "nothing listening"
+    /// joins it first (the wave 6 base, finding W6B-2: a third connection
+    /// made before the thread ended sat in the listener's backlog and got
+    /// "daemon reply failed", 4 of 40 runs on `main` at 4dbb2fa).
+    pub(super) fn http_server(
+        status: u16,
+    ) -> (
+        u16,
+        std::sync::mpsc::Receiver<(String, String, String)>,
+        std::thread::JoinHandle<()>,
+    ) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let server = std::thread::spawn(move || {
             for s in listener.incoming().take(2) {
                 let Ok(mut s) = s else { return };
                 // Read the head, then the body by its Content-Length.
@@ -600,12 +616,27 @@ mod unix {
                 let _ = tx.send((path, token, body));
             }
         });
-        (port, rx)
+        (port, rx, server)
+    }
+
+    /// Review FP1-R4: `exchange(&[], ..)` on the VM route sent nothing and
+    /// said the daemon answers; the check is now a connect to its port.
+    #[test]
+    fn fp1_r4_the_vm_route_says_a_daemon_answers_only_when_its_port_does() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let url = VmUrl {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        assert!(vm_listens(&url).is_ok());
+        drop(l);
+        assert!(vm_listens(&url).is_err());
     }
 
     #[test]
     fn post_vm_sends_each_op_to_its_route_with_the_chat_token() {
-        let (port, rx) = http_server(200);
+        let (port, rx, server) = http_server(200);
         let url = VmUrl {
             host: "127.0.0.1".into(),
             port,
@@ -645,7 +676,8 @@ mod unix {
             post_vm(&url, &chat, &json!({"op": "tail"}), Duration::from_secs(1)).unwrap_err(),
             "no route for tail from a VM"
         );
-        // Nothing listening any more.
+        // Nothing listening any more, once the server's thread has ended.
+        server.join().unwrap();
         let dead = post_vm(
             &url,
             &chat,
@@ -661,7 +693,7 @@ mod unix {
 
     #[test]
     fn a_status_other_than_200_is_not_a_reply() {
-        let (port, _rx) = http_server(401);
+        let (port, _rx, _server) = http_server(401);
         let url = VmUrl {
             host: "127.0.0.1".into(),
             port,
@@ -714,4 +746,304 @@ fn a_decision_id_names_an_unknown_call_and_stays_under_the_cap() {
     assert!(long.len() <= 128);
     assert!(long.contains("-decision-"));
     assert!(decision_id("hermes", Some("a\nb c/d")).starts_with("hermes-a_b_c_d-decision-"));
+}
+
+/// Tony's R7 call, option 1 (case 270): the route a hook inside derm's srt
+/// chat on Linux takes to the daemon, and every way it is refused.
+#[cfg(unix)]
+mod srt_route {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const LO: &str = "Inter-|   Receive\n face |bytes\n    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n";
+    const ETH: &str = "Inter-|   Receive\n face |bytes\n    lo: 0 0\n  eth0: 1 2\n";
+    const PROXY: &str = "http://srt.bGFiZWw%3D:s3cret@localhost:3128";
+
+    struct Home(PathBuf);
+    impl Drop for Home {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn home(name: &str, route: Option<&str>, mode: u32) -> Home {
+        let h = std::env::temp_dir().join(format!("derm-srt-route-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&h);
+        let f = srt_route_file(&h, "derm-abc");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        if let Some(r) = route {
+            std::fs::write(&f, r).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        Home(h)
+    }
+    fn env_of(extra: &[(&str, &str)]) -> Env {
+        let mut v = vec![("DERM_CHAT_ID", "derm-abc"), ("HTTPS_PROXY", PROXY)];
+        v.extend_from_slice(extra);
+        Env::of(&v)
+    }
+    fn route(env: &Env, h: &Home, net: &str, bound: bool) -> Result<SrtRoute, String> {
+        let dir = h.0.clone();
+        let net = net.to_string();
+        srt_route_with(
+            env,
+            &SrtReads {
+                netdev: &|| Some(net.clone()),
+                home: &|| Some(dir.clone()),
+                uid: derm_core::runtime::current_uid(),
+                bound: &|_| bound,
+                unix_refused: true,
+            },
+        )
+    }
+    const GOOD: &str = r#"{"daemonPort":41861,"proxyPort":3128}"#;
+
+    #[test]
+    fn the_route_is_the_daemons_port_through_srts_own_proxy() {
+        let h = home("good", Some(GOOD), 0o600);
+        let r = route(&env_of(&[]), &h, LO, true).unwrap();
+        assert_eq!(r.port, 41861);
+        assert!(r.proxy.addrs.iter().all(|a| a.port() == 3128), "{r:?}");
+        assert_eq!(r.proxy.auth.as_deref(), Some("srt.bGFiZWw=:s3cret"));
+    }
+
+    #[test]
+    fn no_route_outside_a_sandboxs_own_network_or_for_a_file_srt_did_not_bind() {
+        let h = home("refused", Some(GOOD), 0o600);
+        let e = env_of(&[]);
+        assert!(route(&e, &h, ETH, true).unwrap_err().contains("network"));
+        assert!(route(&e, &h, LO, false).unwrap_err().contains("bound"));
+        let loose = home("loose", Some(GOOD), 0o644);
+        assert!(route(&e, &loose, LO, true)
+            .unwrap_err()
+            .contains("yours alone"));
+        let none = home("none", None, 0o600);
+        assert!(route(&e, &none, LO, true)
+            .unwrap_err()
+            .contains("no route file"));
+        let bad = home("bad", Some(r#"{"daemonPort":0,"proxyPort":3128}"#), 0o600);
+        assert!(route(&e, &bad, LO, true)
+            .unwrap_err()
+            .contains("daemon port"));
+    }
+
+    #[test]
+    fn a_proxy_or_a_chat_id_a_project_names_gives_no_route() {
+        let h = home("env", Some(GOOD), 0o600);
+        for (k, v, why) in [
+            ("HTTPS_PROXY", "http://localhost:4444", "not srt's"),
+            (
+                "HTTPS_PROXY",
+                "http://proxy.example.com:3128",
+                "no loopback proxy",
+            ),
+            ("DERM_CHAT_ID", "../derm-abc", "not a chat id"),
+            ("DERM_CHAT_ID", ".derm-abc", "not a chat id"),
+            ("DERM_CHAT_ID", "derm-other", "no route file"),
+        ] {
+            let got = route(&env_of(&[(k, v)]), &h, LO, true).unwrap_err();
+            assert!(got.contains(why), "{k}={v}: {got}");
+        }
+    }
+
+    /// Fix pass 2's review, FP2-R1: where a Unix socket can be made (a host
+    /// network with only `lo`, `docker --network none`), the socket is the
+    /// route, and the route file is not even looked for.
+    #[test]
+    fn no_route_where_a_unix_socket_can_be_made() {
+        let h = home("unix", Some(GOOD), 0o600);
+        let dir = h.0.clone();
+        let got = srt_route_with(
+            &env_of(&[]),
+            &SrtReads {
+                netdev: &|| Some(LO.to_string()),
+                home: &|| Some(dir.clone()),
+                uid: derm_core::runtime::current_uid(),
+                bound: &|_| true,
+                unix_refused: false,
+            },
+        )
+        .unwrap_err();
+        assert!(got.contains("Unix socket"), "{got}");
+    }
+
+    #[test]
+    fn only_lo_is_a_sandboxs_own_network() {
+        assert!(only_loopback_netns(LO));
+        assert!(!only_loopback_netns(ETH));
+        assert!(!only_loopback_netns("Inter-|\n face |\n"));
+    }
+
+    /// A record goes through the proxy as a CONNECT to 127.0.0.1:<port> and
+    /// a POST of the event with the chat token; an ask goes nowhere.
+    #[test]
+    fn a_record_tunnels_through_the_proxy_and_an_ask_does_not() {
+        use std::io::{BufRead, BufReader, Write};
+        let daemon = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = daemon.local_addr().unwrap().port();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let pport = proxy.local_addr().unwrap().port();
+        let seen = std::thread::spawn(move || {
+            let (c, _) = proxy.accept().unwrap();
+            let mut r = BufReader::new(c.try_clone().unwrap());
+            let mut connect = String::new();
+            r.read_line(&mut connect).unwrap();
+            let mut l = String::new();
+            let mut auth = String::new();
+            while r.read_line(&mut l).unwrap() > 2 {
+                if l.to_ascii_lowercase().starts_with("proxy-authorization") {
+                    auth = l.trim().to_string();
+                }
+                l.clear();
+            }
+            (&c).write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+            let mut up = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let mut head = String::new();
+            let mut body_len = 0usize;
+            loop {
+                let mut l = String::new();
+                r.read_line(&mut l).unwrap();
+                if l == "\r\n" {
+                    break;
+                }
+                if let Some(n) = l.to_ascii_lowercase().strip_prefix("content-length:") {
+                    body_len = n.trim().parse().unwrap();
+                }
+                head.push_str(&l);
+            }
+            let mut body = vec![0u8; body_len];
+            std::io::Read::read_exact(&mut r, &mut body).unwrap();
+            up.write_all(b"ok").unwrap();
+            let reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+            (&c).write_all(reply.as_bytes()).unwrap();
+            (connect, auth, head, String::from_utf8(body).unwrap())
+        });
+        let route = SrtRoute {
+            port,
+            proxy: derm_daemon::computer_use::bridge_cli::Proxy {
+                addrs: vec![std::net::SocketAddr::from(([127, 0, 0, 1], pport))],
+                auth: Some("srt.x:s3cret".into()),
+            },
+        };
+        let ask = json!({"op": "approve", "request": {}});
+        assert!(
+            post_srt(&route, &"a".repeat(64), &ask, Duration::from_secs(2))
+                .unwrap_err()
+                .contains("records and taint only")
+        );
+        let ev = json!({"op": "event", "event": {"id": "x1", "kind": "approval"}});
+        let reply = post_srt(&route, &"a".repeat(64), &ev, Duration::from_secs(5)).unwrap();
+        assert_eq!(reply, json!({"ok": true}));
+        let (connect, auth, head, body) = seen.join().unwrap();
+        assert_eq!(connect.trim(), format!("CONNECT 127.0.0.1:{port} HTTP/1.1"));
+        assert!(auth.starts_with("Proxy-Authorization: Basic "), "{auth}");
+        assert!(head.starts_with("POST /derm/v1/event HTTP/1.1"), "{head}");
+        assert!(head.contains(&format!("Host: 127.0.0.1:{port}")), "{head}");
+        assert!(
+            head.contains(&format!("x-derm-token: {}", "a".repeat(64))),
+            "{head}"
+        );
+        assert_eq!(body, r#"{"event":{"id":"x1","kind":"approval"}}"#);
+    }
+
+    /// Fix pass 6 (the redo of fix pass 4's part 2): the chat's taint goes
+    /// over a sandbox's route as `POST /derm/v1/taint`, the socket's line
+    /// without its `op`, on the VM's route and srt's alike.
+    #[test]
+    fn post_vm_and_post_srt_send_taint_to_the_daemons_taint_route() {
+        let line = json!({"op": "taint", "chat": "c-1", "hosts": ["a.test"], "add": {"v": 1}});
+        assert_eq!(
+            derm_route(&line, false).unwrap(),
+            (
+                "/derm/v1/taint",
+                json!({"taint": {"chat": "c-1", "hosts": ["a.test"], "add": {"v": 1}}}).to_string()
+            )
+        );
+        assert!(derm_route(&json!({"op": "approve", "request": {}}), false).is_none());
+        assert!(derm_route(&json!({"op": "approve", "request": {}}), true).is_some());
+        assert!(derm_route(&json!({"op": "token.mint"}), true).is_none());
+        let (port, rx, _server) = super::unix::http_server(200);
+        let url = VmUrl {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        let r = post_vm(&url, &"a".repeat(64), &line, Duration::from_secs(1)).unwrap();
+        assert_eq!(r["ok"], true, "{r}");
+        let (path, token, body) = rx.recv().unwrap();
+        assert_eq!(path, "/derm/v1/taint");
+        assert_eq!(token, "a".repeat(64));
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({"taint": {"chat": "c-1", "hosts": ["a.test"], "add": {"v": 1}}})
+        );
+    }
+}
+
+/// Fix pass 7 (Windows CI on e334037,
+/// `gemini_extension_hook_the_hook_s_environment_reaches_the_daemon_through_the_alias_with_the_same_file_checks`):
+/// the token file is read on Windows too, by the seam the light tier uses,
+/// and refused when another user may use it.
+#[cfg(windows)]
+mod windows_token_file {
+    use super::super::*;
+
+    #[test]
+    fn a_private_token_file_is_read_and_a_shared_one_is_not() {
+        let dir = std::env::temp_dir().join(format!("derm-tok-{}", uuid::Uuid::new_v4().simple()));
+        derm_core::platform::private_dir(&dir).unwrap();
+        let project = dir.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let file = dir.join("chat.token");
+        std::fs::write(&file, format!("{}\n", "a".repeat(64))).unwrap();
+        derm_core::platform::set_private_file(&file).unwrap();
+        let env = Env::of(&[("DERM_CHAT_TOKEN_FILE", &file.display().to_string())]);
+        assert_eq!(chat_token(&env, &project), Some("a".repeat(64)));
+        // Everyone may read it: refused.
+        derm_core::platform::windows::set_dacl_sddl(&file, "D:P(A;;FA;;;OW)(A;;FR;;;WD)").unwrap();
+        assert_eq!(chat_token(&env, &project), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Fix pass 7, FP6-R2's rest: a token named to the hook counts as derm
+/// run's chat whether or not it can be read.
+#[test]
+fn a_named_token_is_named_whether_or_not_it_reads() {
+    assert!(token_named(&Env::of(&[(
+        "DERM_CHAT_TOKEN_FILE",
+        "/gone/chat.token"
+    )])));
+    assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN", "x")])));
+    // Fix pass 7's review: an empty value set by a project's `env` is named.
+    assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN_FILE", " ")])));
+    assert!(token_named(&Env::of(&[("DERM_CHAT_TOKEN", "")])));
+    assert!(!token_named(&Env::of(&[])));
+}
+
+/// Fix pass 7's review: the daemon's own token is refused by its name as a
+/// case-insensitive file system reads it (Windows, APFS), a trailing dot or
+/// space dropped, and by the name its canonical path gives.
+#[test]
+fn the_daemon_token_is_refused_by_any_spelling_of_its_name() {
+    for n in [
+        "daemon.token",
+        "DAEMON.TOKEN",
+        "Daemon.Token.",
+        "daemon.token ",
+        "daemon.token. .",
+    ] {
+        assert!(is_daemon_token_name(Path::new(&format!("/x/{n}"))), "{n}");
+    }
+    for n in ["chat.token", "daemon.tokens", "my-daemon.token"] {
+        assert!(!is_daemon_token_name(Path::new(&format!("/x/{n}"))), "{n}");
+    }
+    #[cfg(unix)]
+    {
+        let d = std::env::temp_dir().join(format!("derm-dtn-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("daemon.token"), "x").unwrap();
+        let _ = std::fs::remove_file(d.join("other"));
+        std::os::unix::fs::symlink(d.join("daemon.token"), d.join("other")).unwrap();
+        assert!(is_daemon_token_name(&d.join("other")), "its real name");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

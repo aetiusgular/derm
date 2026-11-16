@@ -18,6 +18,7 @@ import type { ToolCallResult } from "../src/pi-api.ts";
 import { FakeRpcClient, fakePi } from "./fake-pi.ts";
 import { DERM, removeRoot, stopServe } from "./serve/real.ts";
 import { GateServe } from "../src/serve/client.ts";
+import { setMode, WIN } from "./modes.ts";
 
 const itDerm = it.runIf(DERM !== undefined);
 const root = realpathSync(mkdtempSync(path.join(tmpdir(), "derm-pi-policy-")));
@@ -84,7 +85,7 @@ describe("the policy file on disk", () => {
     expect(await gateWith(link).call()).toBeUndefined();
     const open = path.join(root, "open");
     mkdirSync(open);
-    chmodSync(open, 0o777);
+    setMode(open, 0o777);
     const swappable = path.join(open, "t.json");
     writeFileSync(swappable, allowRead, { mode: 0o600 });
     chmodSync(swappable, 0o600);
@@ -95,7 +96,10 @@ describe("the policy file on disk", () => {
     expect(g.client.requests[0]?.message).toContain("the policy file's folder");
   });
 
-  itDerm("a FIFO at the path neither hangs the turn nor loads", async () => {
+  // Windows has no FIFO file (Git's MSYS mkfifo makes an emulation the Rust
+  // loader reads as no file); the case is Unix's, and the loader's own Unix
+  // tests hold it (gate::policy, note BF section 4.3).
+  it.runIf(DERM !== undefined && !WIN)("a FIFO at the path neither hangs the turn nor loads", async () => {
     const fifo = path.join(root, "policy.fifo");
     execFileSync("mkfifo", [fifo]);
     const g = gateWith(fifo);
@@ -108,7 +112,7 @@ describe("the policy file on disk", () => {
   itDerm("a file others can write is refused on the handle that would be read", async () => {
     const file = path.join(root, "open.json");
     writeFileSync(file, allowRead);
-    chmodSync(file, 0o666);
+    setMode(file, 0o666);
     const g = gateWith(file);
     expect(await g.call()).toMatchObject({ block: true });
     expect(g.client.requests[0]?.message).toContain("someone other than you may write this policy file");

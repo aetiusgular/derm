@@ -38,6 +38,9 @@ pub(crate) mod gate;
 // Windows twin yet).
 #[cfg(all(test, unix))]
 mod gate_tests;
+// The Windows half (fix pass 10, WW6R4-2): drive paths, junctions.
+#[cfg(all(test, windows))]
+mod gate_tests_windows;
 mod json;
 mod log;
 mod names;
@@ -47,9 +50,11 @@ mod render;
 mod rules;
 #[cfg(test)]
 mod rules_tests;
+// Wave 6: the Standard tier's writers (lane 6A), which `run/standard/` calls.
+pub(crate) mod sandbox;
 mod spec;
 mod tomlfile;
-mod write;
+pub(crate) mod write;
 
 #[cfg(test)]
 mod tests;

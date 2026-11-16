@@ -437,9 +437,9 @@ mod tests {
         assert!(!r.ok, "{r:?}");
         let err = r.error.unwrap_or_default();
         assert!(
-            // Linux asks for the password; where no check is built (macOS)
-            // the daemon says so and asks for none (Mac test w5, MW5-4).
-            err.contains(if cfg!(target_os = "linux") {
+            // Linux and macOS (fix pass 12 (Mac)) ask for the password; where no check is built
+            // the daemon says so and asks for none (MW5-4).
+            err.contains(if cfg!(any(target_os = "linux", target_os = "macos")) {
                 "your password is needed"
             } else {
                 "needs a person check"

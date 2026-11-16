@@ -732,6 +732,303 @@ pub const CONTROL_PATHS: &[&str] = &[
     "derm_bin",
 ];
 
+/// Secret material (contract, section 4, step 7a; integration w6's close,
+/// E0's R-E0-2): keys, cloud, registry and database credentials, password
+/// stores, shell history and `.env` files. An `allow` whose folded input names
+/// one is `Ask` (Tony's call of 12 Nov on R-E0-7: ask, not deny), for every
+/// tool, so a file tool and a shell read it alike. From OpenMoat 0.19.0's
+/// `secrets-paths` (`policies/default-v1.yaml:17-75`) and its key-file names
+/// (`:1336-1338`). Matched by `names_entry`. The hook core's `SECRET_PATHS`
+/// and derm-pi's are the same list.
+pub const SECRET_PATHS: &[&str] = &[
+    ".ssh/",
+    ".aws/",
+    ".gnupg/",
+    ".config/gh/",
+    ".netrc",
+    ".authinfo",
+    ".docker/config.json",
+    ".config/containers/auth.json",
+    ".config/doctl/",
+    ".kube/",
+    ".config/gcloud/",
+    ".azure/",
+    ".git-credentials",
+    ".pypirc",
+    ".cargo/credentials",
+    ".gem/credentials",
+    ".pgpass",
+    ".my.cnf",
+    ".mylogin.cnf",
+    ".vault-token",
+    ".terraform.d/credentials",
+    ".config/op/",
+    ".password-store/",
+    ".local/share/keyrings/",
+    "library/keychains/",
+    ".zsh_history",
+    ".bash_history",
+    ".env",
+    ".envrc",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    // Windows test w6, WW6-9: the same secrets where Windows keeps them.
+    // gcloud in `%APPDATA%\gcloud` (google-auth's `_cloud_sdk.py`,
+    // `_WINDOWS_CONFIG_ROOT_ENV_VAR = "APPDATA"`), gh in `%AppData%\GitHub
+    // CLI` (https://cli.github.com/manual/gh_help_environment), and
+    // PSReadLine's command history (`$Env:APPDATA\Microsoft\Windows\
+    // PowerShell\PSReadLine` on Windows, `.local/share/powershell/PSReadLine`
+    // elsewhere; about_PSReadLine), PowerShell's `.bash_history`.
+    "appdata/roaming/gcloud/",
+    "appdata/roaming/github cli/",
+    "powershell/psreadline/",
+];
+
+/// Files that something runs later, outside the call (step 7a; R-E0-2's
+/// start-up half and R-E0-3): CI and commit hooks, editor run configurations,
+/// package-manager configuration that runs code, agent skill, hook and MCP
+/// files, and every shell's start-up files with curl's and wget's. From
+/// OpenMoat 0.19.0's `runs-later` (`policies/default-v1.yaml:1152-1230`) and
+/// `shell-rc` (`:645-658`). A leading `*` matches a suffix (`*.run.xml`).
+/// Matched by `names_entry`; the hook core's and derm-pi's `RUNS_LATER_PATHS`.
+pub const RUNS_LATER_PATHS: &[&str] = &[
+    ".github/workflows/",
+    ".github/agents/",
+    ".github/hooks/",
+    ".github/mcp.json",
+    ".gitlab-ci.yml",
+    ".circleci/",
+    "azure-pipelines.yml",
+    "jenkinsfile",
+    ".buildkite/",
+    ".husky/",
+    ".pre-commit-config.yaml",
+    "lefthook.yml",
+    ".lefthook.yml",
+    ".githooks/",
+    ".git-hooks/",
+    "githooks/",
+    "git-hooks/",
+    ".vscode/",
+    "*.code-workspace",
+    ".idea/",
+    "*.run.xml",
+    ".npmrc",
+    ".yarnrc",
+    ".cargo/config",
+    "bunfig.toml",
+    ".mcp.json",
+    ".agents/",
+    ".opencode/",
+    ".continue/",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".bash_logout",
+    ".profile",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".zlogout",
+    ".config/fish/",
+    ".login",
+    ".cshrc",
+    ".tcshrc",
+    ".kshrc",
+    ".mkshrc",
+    ".curlrc",
+    "_curlrc",
+    ".config/curlrc",
+    ".wgetrc",
+    ".config/wget/",
+    // Windows test w6, WW6-9: PowerShell's profiles and modules, which every
+    // PowerShell session runs or loads (about_Profiles: `$HOME\Documents\
+    // PowerShell\` for pwsh on Windows, `$HOME\Documents\WindowsPowerShell\`
+    // for Windows PowerShell 5.1, `~/.config/powershell/` on Linux and
+    // macOS), and the Startup folder, whose items run at sign-in
+    // (support.microsoft.com, "Configure Startup applications in Windows":
+    // `%userprofile%\AppData\Roaming\...\Startup` and
+    // `%ProgramData%\...\Startup`).
+    "documents/powershell/",
+    "documents/windowspowershell/",
+    ".config/powershell/",
+    "start menu/programs/startup/",
+];
+
+/// Cloud instance metadata and link-local addresses, which hand out the
+/// machine's cloud credentials (step 7a; R-E0-5). From OpenMoat 0.19.0's
+/// `cloud-metadata` (`policies/default-v1.yaml:659-664`). Matched by
+/// `names_entry`, so `10.169.254.1` is not `169.254.`.
+pub const METADATA_ADDRESSES: &[&str] = &[
+    // srt 0.0.82's cloud metadata list (`resolved-address-guard.js:37-47`)
+    // and 169.254.169.254 in its decimal, hex and octal forms (W6C-S3).
+    // Advisory: other spellings exist; a boundary blocks the address itself.
+    "169.254.",
+    "fe80:",
+    "fd00:ec2:",
+    "100.100.100.200",
+    "168.63.129.16",
+    "192.0.0.192",
+    "fd20:ce::254",
+    "fd00:c1::a9fe:a9fe",
+    "fd00:42::42",
+    "fd00:a9fe:a9fe::1",
+    "fd00:100::100:200",
+    "2852039166",
+    "0xa9fea9fe",
+    "0251.0376.0251.0376",
+    "metadata.google.internal",
+    "metadata.goog",
+];
+
+/// `.env` followed by one of these is a committed template with no values
+/// (OpenMoat 0.19.0's `!**/.env.example` and its siblings, `:61-67`).
+const ENV_TEMPLATES: &[&str] = &[".example", ".sample", ".template", ".dist"];
+
+/// Whether folded `text` names `entry` of the lists above as a whole name:
+/// no name character (`a-z`, `0-9`, `_`, `-`, or `.`) runs into it on the
+/// left, and, when it ends in a name character, none on the right (a `.` on
+/// the right is allowed, so `.env.local` is `.env`). A folder entry (`/` at
+/// the end) also matches its bare name (`tar czf k.tgz ~/.ssh`). A leading
+/// `*` drops the left check (`my.code-workspace`). `.env` followed by a
+/// template's suffix is not the file. The hook core's and derm-pi's
+/// `namesEntry`; the policy fixtures hold the three equal.
+pub fn names_entry(text: &str, entry: &str) -> bool {
+    let (suffix, entry) = match entry.strip_prefix('*') {
+        Some(e) => (true, e),
+        None => (false, entry),
+    };
+    let base = entry.strip_suffix('/').unwrap_or(entry);
+    if base.is_empty() {
+        return false;
+    }
+    let name = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-';
+    let ends_in_name = base.chars().next_back().is_some_and(name);
+    let mut from = 0;
+    while let Some(off) = text[from..].find(base) {
+        let i = from + off;
+        let after = &text[i + base.len()..];
+        let prev = text[..i].chars().next_back();
+        let next = after.chars().next();
+        let left_ok = suffix || prev.is_none_or(|c| !(name(c) || c == '.'));
+        // `.env-production` and `.env_local` are `.env` files too (W6C-S3).
+        let right_ok = !ends_in_name
+            || next.is_none_or(|c| !name(c))
+            || (base == ".env" && matches!(next, Some('-' | '_')));
+        // A template only when the whole name ends in its suffix:
+        // `.env.example` and `.env.local.example`, not `.env.example.local`.
+        let tail: String = after
+            .chars()
+            .take_while(|c| name(*c) || *c == '.')
+            .collect();
+        let template = base == ".env" && ENV_TEMPLATES.iter().any(|t| tail.ends_with(t));
+        if left_ok && right_ok && !template {
+            return true;
+        }
+        from = i + text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
+/// Each text, and beside it each one that holds a `\` with every `\` read as
+/// `/` (Windows test w6, WW6-1). A file tool on Windows names a path the way
+/// Windows writes it (`C:\Users\u\.git\hooks\pre-commit`; serialized as JSON
+/// the `\` is doubled), and Windows takes `\` and `/` alike as separators
+/// (Microsoft, "File path formats on Windows systems"), so a list entry that
+/// holds an inner `/` (`.git/hooks/`, `.github/workflows/`,
+/// `.docker/config.json`) is also looked for there. Claude Code's own
+/// permission rules read a Windows path in POSIX form for the same reason
+/// (https://code.claude.com/docs/en/permissions, read 13 Nov 2026). On Unix a
+/// `\` is a name character or a shell escape; reading it as `/` only adds a
+/// text to look in, so it only ever adds an ask. Run before
+/// [`with_collapsed_slashes`], which folds the doubled `//` back to `/`. The
+/// hook core's and derm-pi's `withNativeSeparators`.
+pub fn with_native_separators(texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = texts.to_vec();
+    for t in texts {
+        if t.contains('\\') {
+            out.push(t.replace('\\', "/"));
+        }
+    }
+    out
+}
+
+/// Each text, and beside it, where it differs, the text with each part's
+/// trailing dots and spaces read away (Windows test w6 retest, WW6R-1):
+/// Windows' path normalization drops a single trailing dot from a part
+/// before a separator and every trailing dot and space from the last part,
+/// so a Win32 caller writing `.git.\hooks\pre-commit` lands in `.git\hooks`
+/// (Jeremy Kuhne, "Path Normalization", Microsoft's .NET blog: "If a segment
+/// ends in a single period, that period will be removed ... all trailing
+/// periods and spaces ... will be removed"; run on the box: .NET's
+/// `WriteAllText` wrote `.git\hooks\w6r-dot2`). A run of dots and spaces is
+/// read away where it ends a part that holds something else, before `/`, a
+/// quote, a separator of words or the end of the text. That reads more away
+/// than Windows does (two dots, a space before a separator, on any system),
+/// which only adds a text to look in, so only ever an ask; `.`, `..` and a
+/// part of dots alone are left. Run after [`with_native_separators`]. The
+/// hook core's and derm-pi's `withWin32Trimmed`.
+pub fn with_win32_trimmed(texts: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = texts.to_vec();
+    for t in texts {
+        let trimmed = win32_trim(t);
+        if trimmed != *t {
+            out.push(trimmed);
+        }
+    }
+    out
+}
+
+fn win32_trim(t: &str) -> String {
+    let chars: Vec<char> = t.chars().collect();
+    let ends_part = |c: Option<&char>| {
+        c.is_none_or(|c| {
+            matches!(
+                c,
+                '/' | '"'
+                    | '\''
+                    | '`'
+                    | '\n'
+                    | '\t'
+                    | '\r'
+                    | ';'
+                    | '|'
+                    | '&'
+                    | ')'
+                    | ','
+                    | '}'
+                    | ']'
+            )
+        })
+    };
+    let mut out = String::with_capacity(t.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '.' || c == ' ' {
+            let start = i;
+            while i < chars.len() && (chars[i] == '.' || chars[i] == ' ') {
+                i += 1;
+            }
+            let before = start
+                .checked_sub(1)
+                .map(|b| chars[b])
+                .filter(|b| *b != '/' && !b.is_ascii_whitespace() && !"\"'`(=:".contains(*b));
+            if before.is_some() && ends_part(chars.get(i)) {
+                continue;
+            }
+            out.extend(&chars[start..i]);
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// The path the shell opens is the same with `//` or `/./` in it, so a
 /// control path is also looked for in the text with those collapsed to `/`
 /// (review W4-S5). Only ever adds an ask; the hook core's
@@ -1263,7 +1560,10 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
     };
     // Control files before shell text (contract, section 4, step 7).
     let unquoted = unquote(folded);
-    let texts = with_collapsed_slashes(&[folded.to_string(), unquoted]);
+    let texts = with_collapsed_slashes(&with_win32_trimmed(&with_native_separators(&[
+        folded.to_string(),
+        unquoted,
+    ])));
     if let Some(control) = CONTROL_PATHS
         .iter()
         .find(|p| texts.iter().any(|t| names_control_path(t, p)))
@@ -1300,6 +1600,29 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
             if let Some(c) = powershell_unplain(folded) {
                 return decide(Action::Ask, powershell_reason(c));
             }
+        }
+    }
+    // Step 7d (integration w6's close, E0's R-E0-1, 2, 3 and 5), last, so an
+    // earlier step's reason stands where both apply: secret material, files
+    // run later and cloud metadata addresses for every tool; then a shell or
+    // interpreter that reads its program from its input (a pipe, a
+    // here-string, a process substitution or xargs), so the line does not
+    // show what runs.
+    for (list, what) in [
+        (SECRET_PATHS, "a secret path"),
+        (RUNS_LATER_PATHS, "a file that runs later"),
+        (METADATA_ADDRESSES, "a cloud metadata address"),
+    ] {
+        if let Some(entry) = list
+            .iter()
+            .find(|e| texts.iter().any(|t| names_entry(t, e)))
+        {
+            return decide(Action::Ask, format!("input names {what} ({entry})"));
+        }
+    }
+    if SHELL_TOOLS.contains(&normalized) {
+        if let Some(program) = crate::command::stdin_program(folded) {
+            return decide(Action::Ask, format!("program read from input: `{program}`"));
         }
     }
     decide(Action::Allow, reason)
@@ -1712,6 +2035,14 @@ mod tests {
                 d.reason
             );
         }
+        // A secret path with no other step's text asks by step 7d
+        // (integration w6's close, R-E0-2).
+        let d = evaluate(
+            &p,
+            &call("bash", "claude-code", "cat /home/u/.ssh/id_ed25519"),
+        );
+        assert_eq!(d.action, Action::Ask);
+        assert_eq!(d.reason, "input names a secret path (.ssh/)");
         // The reason names the token, and calls a glob one (Mac test w1, M9);
         // the same text as the hook core and derm-pi.
         assert_eq!(

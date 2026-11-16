@@ -97,6 +97,12 @@ impl Probe for Real {
     }
 
     fn gate(&mut self, h: &harness::Harness, cwd: Option<&str>) -> bool {
+        // Outside sbx, `derm run` registers Claude Code's gate itself, in
+        // exec form with `onFailure: "block"` (fix pass 6, note BE section
+        // 1.5 (e); `run/claude_gate.rs`): it holds whatever is installed.
+        if h.id == "claude-code" {
+            return true;
+        }
         let mut env = crate::watch::status::Env::real();
         if let Some(c) = cwd {
             env.cwd = Some(PathBuf::from(c));

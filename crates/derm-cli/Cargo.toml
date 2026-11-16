@@ -3,6 +3,7 @@
 # U, V, W and Z in wave 5 (sections and the Windows table added by the wave 5
 # base).
 # Wave 5b (the wave 5b base): sections for lanes 5bA to 5bD.
+# Wave 6 (the wave 6 base): sections for lanes 6A to 6E.
 # Each lane edits only the lines under its own `# [lane-X]` comment, in any
 # table, and pins every dependency to an exact version
 # (plans/parallel_build_tk.md, section 2, point 5). A section ends at the
@@ -29,6 +30,11 @@ default = []
 # purpose. Since the close (11 Nov) they pass and always build; the feature
 # is kept, empty, so the lanes' recorded commands still run.
 w5b-red = []
+# The wave 6 base's red tests (`tests/contracts_w6.rs`) built only with this
+# feature while they failed on purpose. Since the close (13 Nov) they pass and
+# always build; the feature is kept, empty, so the lanes' recorded commands
+# still run.
+w6-red = []
 # [lane-C]
 # [lane-D]
 # [lane-J]
@@ -44,6 +50,11 @@ w5b-red = []
 # [lane-5bB]
 # [lane-5bC]
 # [lane-5bD]
+# [lane-6A]
+# [lane-6B]
+# [lane-6C]
+# [lane-6D]
+# [lane-6E]
 
 [dependencies]
 derm-core = { path = "../derm-core" }
@@ -51,6 +62,10 @@ serde.workspace = true
 serde_json.workspace = true
 # Shared by lanes C and D since integration w1 (lane D's request 6).
 libc.workspace = true
+# Integration w6, fix pass 10 (WW6R4-1): decode PowerShell's -EncodedCommand
+# (base64 of UTF-16LE) in the gate's shell reading; the workspace's exact pin,
+# already in derm-daemon and derm-egress.
+base64.workspace = true
 # [lane-C]
 # Format-preserving TOML edits for Codex's config.toml: comments and key
 # order survive a write. Reason and pin in the lane C status doc.
@@ -83,6 +98,15 @@ derm-tap = { path = "../derm-tap" }
 # [lane-5bB]
 # [lane-5bC]
 # [lane-5bD]
+# [lane-6A]
+# [lane-6B]
+# [lane-6C]
+# `derm secret` and the chain per tier read and write derm-egress's own files
+# (secrets.json, the local CA). A path crate of this workspace; its own
+# third-party code is pinned in its manifest (plans/parallel/tk_lane_6C.md).
+derm-egress = { path = "../derm-egress" }
+# [lane-6D]
+# [lane-6E]
 
 [[test]]
 name = "hook_cases_5bA"
@@ -92,6 +116,9 @@ name = "hook_cases_5bB"
 
 [[test]]
 name = "contracts_w5b"
+
+[[test]]
+name = "contracts_w6"
 
 [dev-dependencies]
 # [lane-C]
@@ -114,6 +141,11 @@ derm-daemon = { path = "../derm-daemon" }
 # [lane-5bB]
 # [lane-5bC]
 # [lane-5bD]
+# [lane-6A]
+# [lane-6B]
+# [lane-6C]
+# [lane-6D]
+# [lane-6E]
 
 # Wave 5 lane Z's Windows-only dependencies (the wave 5 base).
 

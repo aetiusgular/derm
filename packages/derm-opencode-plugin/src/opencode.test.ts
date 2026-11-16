@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { REDACTED } from "./core/redact.ts";
 import { decide } from "./decide.ts";
-import { DermBlocked, after, before, defaultDeps, type Deps } from "./opencode.ts";
+import { DermBlocked, after, before, defaultDeps, dermPathFile, type Deps } from "./opencode.ts";
 import * as entry from "./plugin.ts";
 import { GateServe } from "./serve/client.ts";
 
@@ -37,11 +37,19 @@ writeFileSync(
   }),
 );
 
+/** The co-processes the tests start, ended before the folder is removed. */
+const live: GateServe[] = [];
 let daemon: FakeDaemon;
 beforeAll(async () => {
   daemon = await startFakeDaemon();
 });
+// Each test is a chat of its own: taint a test's calls made stays with it
+// (the fake answers `taint` as the daemon does since fix pass 6).
+beforeEach(() => daemon.resetTaint());
 afterAll(async () => {
+  // Every co-process ends before its folder goes: on Windows a running
+  // process holds its current folder (fix pass 7).
+  await Promise.all(live.map((s) => s.closeAndWait()));
   await daemon.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -50,6 +58,7 @@ afterAll(async () => {
 function deps(extra: Record<string, string> = {}, env?: Record<string, string>): Deps {
   const e = env ?? { DERM_POLICY: policyFile, ...daemon.env(), ...extra };
   const s = new GateServe({ agent: "opencode", env: e, cwd: () => project, trusted: () => true, locate: () => ({ path: DERM as string }) });
+  live.push(s);
   return { ...defaultDeps(e), serve: () => s };
 }
 const call = (tool: string) => ({ tool, sessionID: "ses_1", callID: `call_${Math.random().toString(36).slice(2)}` });
@@ -172,3 +181,14 @@ describe("a co-process that is not running", () => {
 function execFileSyncSpawn() {
   return spawn(process.execPath, ["-e", "process.exit(3)"], { stdio: ["pipe", "pipe", "pipe"] });
 }
+
+describe("derm-path (fix pass 6, note BE section 3.2)", () => {
+  it("is beside opencode.json in OpenCode's global folder, where derm connect writes it", () => {
+    expect(dermPathFile({}, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
+    expect(dermPathFile({ XDG_CONFIG_HOME: "/x" }, "/h")).toBe(path.join("/x", "opencode", "derm-path"));
+    // FP6-R11 (fix pass 7): a relative or padded value is OpenCode's too
+    // (xdg-basedir keeps it as it is); derm connect refuses to write there.
+    expect(dermPathFile({ XDG_CONFIG_HOME: "rel" }, "/h")).toBe(path.join("rel", "opencode", "derm-path"));
+    expect(dermPathFile({ XDG_CONFIG_HOME: "" }, "/h")).toBe(path.join("/h", ".config", "opencode", "derm-path"));
+  });
+});

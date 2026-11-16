@@ -164,7 +164,19 @@ fn crush_walks_from_the_working_folder_to_the_git_root_and_only_the_working_fold
     );
     let loose = tree(&[("x/y/.keep", "")]);
     let y = loose.0.join("x").join("y");
-    // No .git anywhere up to / in a temp folder: the folder alone.
+    // No .git anywhere up to / in a temp folder: the folder alone. The temp
+    // folder's own ancestors are not this test's, so name a `.git` there
+    // first: Codex's Linux sandbox leaves an empty `/tmp/.git` (case 248,
+    // open item 6A-5; note BD), and the walk then rightly stops at `/tmp`.
+    let stray: Vec<_> = loose
+        .0
+        .ancestors()
+        .filter(|a| a.join(".git").exists())
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "a .git above the test's temp folder at {stray:?} (case 248's litter? rmdir it and rerun)"
+    );
     assert_eq!(project_folders(&y), vec![y.clone()]);
     // `.` and `..` are read as path.resolve reads them.
     assert_eq!(project_folders(&y.join("..").join("y").join(".")), vec![y]);

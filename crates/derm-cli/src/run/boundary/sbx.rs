@@ -208,7 +208,7 @@ pub(crate) fn describe_steps(args: &[String], env_set: &[(String, String)]) -> O
     }
     out.push_str(&line(&st.attach));
     out.push_str(&line(&st.remove));
-    out.push_str("  (derm's kit, when it goes on, is added to the create as --kit <kit>; the rules go with the sandbox)\n");
+    out.push_str("  (derm's kit, when it goes on, is added to the create as --kit <kit>, which sbx builds with Docker's API, so Docker must be running; the rules go with the sandbox)\n");
     Some(out)
 }
 
@@ -433,11 +433,13 @@ pub(crate) fn start_with(
     Ok(sandbox)
 }
 
-/// Why a create made no sandbox, and what to do. With derm's kit on the
-/// create, sbx's refusal may be of the kit: sbx 0.51.0 ships `claude` as a
-/// v3 kit and refuses a v1 or v2 mixin beside it ("cannot mix v3 kits with
-/// v1/v2 kits in one sandbox"; box test w5 BW5-6, Mac test w5 MW5-7), and
-/// derm's kit is v2 until its v3 form is built and run.
+/// Why a create made no sandbox, and what to do. sbx prints its own error
+/// above. With derm's kit on the create, sbx builds the kit first, which
+/// needs Docker's API (Mac test w6, MW6-2: `dial unix
+/// ~/.docker/run/docker.sock: connect: no such file or directory` with
+/// Docker Desktop not running); sbx also refuses with its OS keychain locked
+/// (box test w6, BW6-8). derm's kit is v3 since fix pass 11 (MW5-7,
+/// `kit/tests.rs`, `the_kit_is_a_v3_mixin_whose_parts_agree`).
 fn create_failed(name: &str, code: Option<i32>, kit_went_on: bool) -> String {
     let mut why = format!(
         "sbx create did not make the sandbox {name} (exit {code:?}); nothing started. \
@@ -445,8 +447,9 @@ fn create_failed(name: &str, code: Option<i32>, kit_went_on: bool) -> String {
     );
     if kit_went_on {
         why.push_str(&format!(
-            ". derm's gate went on this create as a kit, and sbx may have refused the kit: \
-             sbx 0.51.0 cannot compose derm's v2 kit with its own v3 claude kit (its error above names it). \
+            ". derm's gate went on this create as a kit (v3), which sbx builds with Docker's API first; \
+             sbx's error above names the cause, such as Docker not running (docker.sock) or the OS keychain locked \
+             (unlock it, or sign in to the desktop). \
              To run under sbx without derm's gate in the VM: {}=off; to keep the gate: --boundary srt",
             super::kit::SWITCH
         ));
@@ -697,12 +700,18 @@ mod tests {
         d
     }
 
-    /// BW5-6 and MW5-7: with derm's kit on the create, a failure names the
-    /// v3 refusal and both ways on; without the kit, it does not.
+    /// BW5-6 and MW5-7: with derm's kit on the create, a failure names both
+    /// ways on; without the kit, it does not. Box test w6 BW6-8 and Mac test
+    /// w6 MW6-2: derm's kit is v3 since fix pass 11, and the two failures
+    /// seen were sbx's own (Docker's API not running for the kit's build,
+    /// `docker.sock`; the OS keychain locked), so the hint names those and
+    /// no "v2 kit".
     #[test]
-    fn a_failed_create_with_the_kit_names_the_v3_refusal_and_the_way_on() {
+    fn a_failed_create_with_the_kit_names_the_way_on() {
         let with = create_failed("derm-x", Some(1), true);
-        assert!(with.contains("v3 claude kit"), "{with}");
+        assert!(!with.contains("v2"), "{with}");
+        assert!(with.contains("docker.sock"), "{with}");
+        assert!(with.contains("keychain"), "{with}");
         assert!(with.contains("DERM_SBX_KIT=off"), "{with}");
         assert!(with.contains("--boundary srt"), "{with}");
         let without = create_failed("derm-x", Some(1), false);

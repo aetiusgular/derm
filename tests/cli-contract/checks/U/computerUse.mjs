@@ -159,6 +159,27 @@ function toolResults(body) {
   return out;
 }
 
+// Starts a copy of the first program that keeps running when named `calc`,
+// or returns null. A multi-call binary (uutils coreutils on Ubuntu 25.10 and
+// later, BusyBox) exits at once under a name it does not know.
+async function startApp(calc) {
+  const tries = [
+    ["/usr/bin/gnusleep", ["300"]],
+    ["/bin/sleep", ["300"]],
+    [process.execPath, ["-e", "setTimeout(() => {}, 300000)"]],
+  ];
+  for (const [from, args] of tries) {
+    if (!existsSync(from)) continue;
+    rmSync(calc, { force: true });
+    copyFileSync(from, calc);
+    chmodSync(calc, 0o755);
+    const child = spawn(calc, args, { stdio: "ignore" });
+    await sleep(300);
+    if (child.exitCode === null && child.signalCode === null) return child;
+  }
+  return null;
+}
+
 async function claudeToolCheck({ claudePath }) {
   const bin = daemonBin();
   if (!bin) return { status: "skip", finding: "no debug derm-daemon (cargo build -p derm-daemon, or DERM_DAEMON_DEBUG)" };
@@ -172,11 +193,16 @@ async function claudeToolCheck({ claudePath }) {
   writeFileSync(path.join(HOME, ".derm", "settings.json"), JSON.stringify({ version: 1, computerUse: { on: true } }), { mode: 0o600 });
   const driver = path.join(BIN, "cua-driver");
   writeFileSync(driver, FAKE_DRIVER, { mode: 0o755 });
-  // The app: a copy of sleep named calc, running as us.
+  // The app: a program copied as `calc` that keeps running under that name,
+  // as us. Ubuntu 25.10 and later ship /bin/sleep as uutils coreutils'
+  // multi-call binary, which picks its utility by its own name and exits on
+  // one it does not know ("coreutils: unknown program 'calc'"; box retest 5,
+  // BW6R5-1). So GNU's own sleep is tried first where Ubuntu keeps it
+  // (/usr/bin/gnusleep), then sleep, then node itself, each kept only if it
+  // is still running a moment after it starts.
   const calc = path.join(BIN, "calc");
-  copyFileSync("/bin/sleep", calc);
-  chmodSync(calc, 0o755);
-  const app = spawn(calc, ["300"], { stdio: "ignore" });
+  const app = await startApp(calc);
+  if (!app) { rmSync(top, { recursive: true, force: true }); return { status: "fail", finding: "no program here keeps running when copied as calc (gnusleep, sleep, node)" }; }
   const SOCK = path.join(RUN, "derm", "daemon.sock");
   const daemon = spawn(bin, ["--foreground"], {
     env: { PATH: process.env.PATH, HOME, XDG_RUNTIME_DIR: RUN, XDG_DATA_HOME: DATA, LANG: "C.UTF-8", DERM_CUA_DRIVER: driver, DISPLAY: ":99" },

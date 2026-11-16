@@ -197,6 +197,11 @@ pub struct Inputs<'a> {
     /// names; `gate_paths` in `run/mod.rs` reads them). srt keeps them
     /// read-only wherever they sit (re-review FP5-R2).
     pub gate_paths: Vec<String>,
+    /// The derm binary running `derm run`, by its real path (`run.start`'s
+    /// `dermExe`). srt keeps it read-only, so an agent cannot replace the
+    /// binary the daemon trusts for the gate's own files (fix pass 4's
+    /// review, FP4-R1).
+    pub derm_exe: Option<String>,
     /// The git files in the chat's folder that srt's own denies (the
     /// folder's `.git/hooks` and `.git/config`) leave out, by absolute path
     /// (`run/mod.rs` lists them): each submodule's `config` and `hooks` under
@@ -218,6 +223,12 @@ pub struct Inputs<'a> {
     /// What the files Codex reads say of its sign-in store (fix pass 6,
     /// FP5R-5; `run::codex_store` reads them, this module reads no file).
     pub codex_store: CodexStoreFiles,
+    /// Under srt on Linux, the route file `derm run` writes for the gate
+    /// (`gate::daemon::srt_route_file`), by absolute path: re-opened
+    /// read-only inside the hidden `~/.derm`, so the hook finds the daemon's
+    /// port without reading it from an environment a project can set (Tony's
+    /// R7 call, option 1; case 270). `None` when the gate has no route out.
+    pub srt_route: Option<String>,
 }
 
 /// Why Codex's sign-in may live in a store srt cannot write, from its files
@@ -589,7 +600,7 @@ pub fn srt_temp_root(macos: bool) -> &'static str {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub program: String,
     pub args: Vec<String>,
@@ -990,6 +1001,9 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             if !cfg!(target_os = "macos") {
                 deny_read.push(super::content_root(&i.home).to_string_lossy().into_owned());
             }
+            // The files brokered secrets are read from, as written and by
+            // their real paths (integration w6's review, W6C-S1).
+            deny_read.extend(crate::secret::value_files(std::path::Path::new(&i.home)));
             deny_read.sort();
             deny_read.dedup();
             // The gate's policy file, re-opened read-only inside the hidden
@@ -1031,6 +1045,39 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     unix_sockets.push(sock.to_string());
                     allow_read.push(json!({"path": sock, "literal": true}));
                     env.push(("DERM_DAEMON_SOCKET".into(), sock.to_string()));
+                }
+            }
+            // R7, option 1 (case 270): the gate's route out of srt on Linux,
+            // a literal path inside the hidden `~/.derm`, re-opened read-only
+            // (srt 0.0.82 binds an `allowRead` under a `denyRead` back over its
+            // tmpfs, `pushReadDenyDirMounts`, run). srt refuses the daemon's
+            // socket there, so the hook's records go to the daemon's port
+            // through srt's own proxy. A program with no preset (case 80) is
+            // not named as having a gate: derm wrote none for it, though one
+            // it starts (a harness run by its path, a wrapper) may run one
+            // the person registered (box test w6 retest 2, BW6R2-6).
+            if !i.macos {
+                let (gate, own) = if h.id == "other" {
+                    (
+                        format!("a derm gate that {command} runs (derm registered none for it)"),
+                        "the harness's".to_string(),
+                    )
+                } else {
+                    (format!("{}'s gate", h.id), format!("{}'s", h.id))
+                };
+                match &i.srt_route {
+                    Some(r) if r.starts_with('/') => {
+                        allow_read.push(json!({"path": r, "literal": true}));
+                        notes.push(format!(
+                            "derm run: under srt on Linux srt refuses the daemon's socket, so {gate} sends its records and this chat's taint state to the daemon's port through srt's proxy; a record it cannot post denies the call, a taint state it cannot read counts as tainted with deny, and an ask goes to {own} own prompt or is denied (no approver reaches into srt here)"
+                        ));
+                    }
+                    _ if !i.args.no_daemon => notes.push(format!(
+                        "derm run: under srt on Linux {gate} has no route to the daemon here (the daemon published no OTLP port), so it denies every call it gates"
+                    )),
+                    _ => notes.push(format!(
+                        "derm run: under srt on Linux with no daemon {gate} can keep no record (srt's ~/.derm is a tmpfs that goes with the sandbox), so it denies every call it gates"
+                    )),
                 }
             }
             // MW5-22: `cu.endpoint` beside the socket, re-opened read-only
@@ -1119,6 +1166,8 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             // What derm's registered gate runs, wherever it sits (re-review
             // FP5-R2): a chat folder that is a derm clone holds the gate.
             deny_write.extend(i.gate_paths.iter().filter(|p| p.starts_with('/')).cloned());
+            // FP4-R1: the derm the daemon trusts for the gate's own files.
+            deny_write.extend(i.derm_exe.iter().filter(|p| p.starts_with('/')).cloned());
             deny_write.push(under_home(".derm"));
             deny_write.push(under_home(".tk"));
             // The daemon's data folder: its activity log, content files and
@@ -1373,6 +1422,55 @@ pub fn describe(p: &Plan) -> String {
 pub const SRT_NO_PROXY_WITHOUT_LOOPBACK: &str =
     "169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
 
+/// The host and port each harness sends its model requests to when nothing
+/// redirects it: the hosts the tap forwards to (`derm_tap::upstream::builtin`:
+/// Anthropic's API for Claude Code; OpenAI's API and ChatGPT's backend for
+/// Codex, by API key and by sign-in; Google's Generative Language API for
+/// Gemini CLI). Empty for a harness with no fixed provider (Pi and the rest).
+pub fn model_hosts(harness: &str) -> &'static [&'static str] {
+    match harness {
+        "claude-code" => &["api.anthropic.com:443"],
+        "codex" => &["api.openai.com:443", "chatgpt.com:443"],
+        "gemini" => &["generativelanguage.googleapis.com:443"],
+        _ => &[],
+    }
+}
+
+/// Box test w6, BW6-11: under srt the model tap's loopback port is how a
+/// harness reaches its provider (`run/tap/` adds it to srt's allow list). With
+/// the tap off (`--no-tap`, the setting, no daemon, no endpoint) and no
+/// `--model-url`, srt admits the harness's own model hosts instead, and the
+/// start line says so: srt admits by host and port, so every path on them is
+/// open to every process in the sandbox (FP4-S7's reading for the sign-in
+/// host), as the tap's route already was. Nothing for a harness with none.
+pub fn srt_admit_model_hosts(p: &mut Plan, harness: &str) -> Result<(), String> {
+    let hosts = model_hosts(harness);
+    let Some(text) = p.srt_settings.as_deref() else {
+        return Ok(());
+    };
+    if hosts.is_empty() {
+        return Ok(());
+    }
+    let mut v: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if let Some(list) = v
+        .pointer_mut("/network/allowedDomains")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for h in hosts {
+            if !list.iter().any(|x| x.as_str() == Some(h)) {
+                list.push(serde_json::json!(h));
+            }
+        }
+    }
+    p.srt_settings = Some(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
+    p.notes.push(format!(
+        "derm run: the model tap is off for this chat, so srt admits {harness}'s own model host{} {} directly; srt admits any request on that host and port, and derm records none of them (the gate and the OS feed still record the chat)",
+        if hosts.len() > 1 { "s" } else { "" },
+        hosts.join(" and ")
+    ));
+    Ok(())
+}
+
 /// Mac test w5, MW5-5 (and Linux, run in the cloud): under srt the harness
 /// reaches derm's own loopback ports (the tap, the OTLP receiver) only
 /// through srt's proxy, which admits exactly the `allowedDomains` derm
@@ -1466,11 +1564,13 @@ mod tests {
             cline_dir: "/home/u/.cline/derm-approval/chat-b".into(),
             cline_responder: Some("/usr/local/bin/derm-cline-responder".into()),
             gate_paths: Vec::new(),
+            derm_exe: None,
             git_controls: Vec::new(),
             cu_endpoint: None,
             macos: false,
             terminal: false,
             codex_store: CodexStoreFiles::default(),
+            srt_route: None,
         }
     }
 
@@ -1638,6 +1738,67 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn srts_deny_read_names_a_secrets_value_file_as_written_and_by_its_real_path() {
+        // Integration w6's re-review, W6C-R9: the srt half of W6C-S1 had no
+        // test, and the broker's test named a file through a final link,
+        // which the broker itself refuses. Here the value file sits in a
+        // linked folder, as a real setup may have it.
+        use derm_egress::secrets::{Entry, File, From};
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("dplan-r9-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let real_dir = root.join("vault");
+        std::fs::create_dir_all(home.join(".derm")).unwrap();
+        std::fs::create_dir_all(&real_dir).unwrap();
+        for d in [&root, &home, &home.join(".derm"), &real_dir] {
+            std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        std::os::unix::fs::symlink(&real_dir, home.join("keys")).unwrap();
+        let value = real_dir.join("gh");
+        std::fs::write(&value, "fake-secret-value-not-a-token-0000\n").unwrap();
+        std::fs::set_permissions(&value, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let written = home.join("keys").join("gh");
+        derm_egress::secrets::save(
+            &derm_egress::secrets::path_for(&home),
+            &File {
+                version: 1,
+                secrets: vec![Entry {
+                    id: "gh".into(),
+                    hosts: vec!["api.github.com".into()],
+                    from: From::File(written.to_string_lossy().into_owned()),
+                    placement: None,
+                    note: None,
+                }],
+            },
+        )
+        .unwrap();
+        let args = a(&["pi", "--boundary", "srt", "--", "-c"]);
+        let mut i = inputs(&args);
+        i.home = home.to_string_lossy().into_owned();
+        let p = build(&i).unwrap();
+        let s: serde_json::Value =
+            serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+        let deny: Vec<String> = s["filesystem"]["denyRead"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let real = std::fs::canonicalize(&value).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            deny.contains(&written.to_string_lossy().into_owned()),
+            "{deny:?}"
+        );
+        assert!(
+            deny.contains(&real.to_string_lossy().into_owned()),
+            "{deny:?}"
+        );
+    }
+
+    #[test]
     fn srt_puts_the_separator_before_the_harness_and_allows_only_named_hosts() {
         let args = a(&[
             "pi",
@@ -1758,6 +1919,96 @@ mod tests {
 
     fn srt_of(p: &Plan) -> serde_json::Value {
         serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap()
+    }
+
+    /// Tony's R7 call, option 1 (case 270): under srt on Linux the gate's
+    /// route file is re-opened read-only inside the hidden `~/.derm`, as a
+    /// literal path, and the start line says where the records go; with no
+    /// route, it says the gate denies every call it gates.
+    #[test]
+    fn r7_srt_re_opens_the_gates_route_file_on_linux_and_says_where_records_go() {
+        let args = a(&["claude-code", "--boundary", "srt"]);
+        let route = "/home/u/.derm/run/routes/chat-b.json".to_string();
+        let p = build(&Inputs {
+            srt_route: Some(route.clone()),
+            ..inputs(&args)
+        })
+        .unwrap();
+        let read = srt_of(&p)["filesystem"]["allowRead"].clone();
+        assert!(
+            read.as_array()
+                .unwrap()
+                .contains(&json!({"path": route, "literal": true})),
+            "{read}"
+        );
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| n.contains("through srt's proxy") && n.contains("denies the call")),
+            "{:?}",
+            p.notes
+        );
+        let none = build(&inputs(&args)).unwrap();
+        assert!(!srt_of(&none)["filesystem"]["allowRead"]
+            .to_string()
+            .contains("/routes/"),);
+        assert!(
+            none.notes
+                .iter()
+                .any(|n| n.contains("has no route to the daemon")),
+            "{:?}",
+            none.notes
+        );
+        // macOS reaches the socket (case 174): no route file.
+        let mac = build(&Inputs {
+            srt_route: Some(route),
+            macos: true,
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(!srt_of(&mac)["filesystem"]["allowRead"]
+            .to_string()
+            .contains("/routes/"));
+    }
+
+    /// Box test w6 retest 2, BW6R2-6: `derm run --boundary srt -- /bin/bash`
+    /// named "other's gate" on the start line. derm registers no gate in a
+    /// program with no preset (case 80); one it starts may run a gate the
+    /// person registered (`/usr/bin/claude` is `other`, args.rs L15), so
+    /// the route stays and the line names the program.
+    #[test]
+    fn bw6r2_6_a_program_with_no_preset_is_not_named_as_having_a_gate() {
+        let args = a(&["--boundary", "srt", "--", "/bin/bash"]);
+        assert_eq!(args.harness.id, "other");
+        let route = "/home/u/.derm/run/routes/chat-b.json".to_string();
+        for r in [None, Some(route.clone())] {
+            let p = build(&Inputs {
+                srt_route: r,
+                ..inputs(&args)
+            })
+            .unwrap();
+            assert!(
+                !p.notes.iter().any(|n| n.contains("other's")),
+                "{:?}",
+                p.notes
+            );
+            assert!(
+                p.notes
+                    .iter()
+                    .any(|n| n.contains("a derm gate that /bin/bash runs")),
+                "{:?}",
+                p.notes
+            );
+        }
+        let p = build(&Inputs {
+            srt_route: Some(route.clone()),
+            ..inputs(&args)
+        })
+        .unwrap();
+        assert!(srt_of(&p)["filesystem"]["allowRead"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"path": route, "literal": true})));
     }
 
     /// Mac test w5 retest 4, MW5-24: under derm's srt, Claude Code could not
@@ -2556,6 +2807,24 @@ mod tests {
                 "{want} in {deny:?}"
             );
         }
+    }
+
+    /// Fix pass 4's review, FP4-R1: the daemon hides the gate's own state
+    /// writes by the derm `run.start` names, so srt keeps that binary
+    /// read-only wherever it sits (a derm clone as the chat's folder, /tmp).
+    #[test]
+    fn fp4_r1_srt_keeps_derms_own_binary_read_only() {
+        let args = a(&["pi", "--boundary", "srt"]);
+        let i = Inputs {
+            derm_exe: Some("/home/u/proj dir/target/release/derm".into()),
+            ..inputs(&args)
+        };
+        let p = build(&i).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(p.srt_settings.as_deref().unwrap()).unwrap();
+        let deny = v["filesystem"]["denyWrite"].as_array().unwrap();
+        let want = json!({"path": "/home/u/proj dir/target/release/derm", "literal": true});
+        assert!(deny.contains(&want), "{deny:?}");
     }
 
     #[test]

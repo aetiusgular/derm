@@ -1,6 +1,6 @@
 # Contracts
 
-Written by tk session 0 on 27 Oct 2026. Lanes build against these and their fixtures, not against each other's code (`plans/parallel_build_tk.md`, section 2, point 3). No lane edits this folder during a wave; a change is a request for integration. Since the wave 5 base, two exceptions: lane S may add files in `fixtures/tap/` and lane X in `fixtures/installs/` (`scripts/lane-ownership.json`). Wave 5b's red tests read `fixtures/hook-cases/`, `gate-serve/`, `srt-windows/` and `sysmon-service/`; a lane that finds a recorded case wrong writes it under "Requests for integration" and does not change the case.
+Written by tk session 0 on 27 Oct 2026. Lanes build against these and their fixtures, not against each other's code (`plans/parallel_build_tk.md`, section 2, point 3). No lane edits this folder during a wave; a change is a request for integration. Since the wave 5 base, two exceptions: lane S may add files in `fixtures/tap/` and lane X in `fixtures/installs/` (`scripts/lane-ownership.json`). Wave 5b's red tests read `fixtures/hook-cases/`, `gate-serve/`, `srt-windows/` and `sysmon-service/`; wave 6's (`crates/derm-cli/tests/contracts_w6.rs`, `crates/derm-egress/tests/contract.rs`) read `fixtures/eval/`, `hook-w6/`, `audit/` and `sandbox/`; a lane that finds a recorded case wrong writes it under "Requests for integration" and does not change the case.
 
 | Contract | Fixture | Filled by | Read by |
 |---|---|---|---|
@@ -20,6 +20,10 @@ Written by tk session 0 on 27 Oct 2026. Lanes build against these and their fixt
 | `srt-windows.md` (wave 5b): the handoff and `derm enter` | `fixtures/srt-windows/handoff.json` | 5bD | 5bD |
 | `sysmon-service.md` (wave 5b): `derm-sysmon`'s pipe | `fixtures/sysmon-service/exchange.jsonl`, `tests/windows/fixtures/sysmon/chat.xml` | 5bE | 5bE |
 | `fixtures/redact/` (wave 5b): the hook redactor's outputs, recorded from `core/redact.ts` | itself | the base (`derm_core::redact::hook`) | everyone |
+| `sandbox.md` (wave 6, the wave 6 base): the Standard tier, policy to each agent's own sandbox; `harness-presets.schema.json`'s `sandbox` | `fixtures/sandbox/` (Claude Code 2.1.322 and Codex 0.167.2, recorded); the empty table `presets/wave6/sandbox.json` | 6A | 6A, 6B, 6C, 6F |
+| `events.md` section 6 (wave 6): `run.start`'s `tier`, taint, egress and broker records, the light tier's log and chain v2, the export | `fixtures/audit/` (chain v2 and tampered copies; `derm_core::audit_chain` is the reference), `fixtures/hook-w6/` (Claude Code 2.1.322's hook inputs, recorded) | 6A, 6B, 6C, 6D, 6E | 6B, 6D, 6E, 6F |
+| `policy.md` sections 8 and 9 (wave 6): secrets the broker injects, taint; `secrets.schema.json`, `settings.schema.json`'s `tier` and `taint` | `fixtures/secrets/secrets.example.json` | 6C, 6D | 6A, 6C, 6D |
+| `eval.md`, `eval.schema.json` (wave 6): scenarios and results | `fixtures/eval/` (E0's allowed MoatBench steps, copied from OpenMoat 0.19.0, NOTICE; one scenario and one result) | 6F | 6F, E1, every lane's first tests |
 
 A server's tool list is not in `server.json` (upstream's 2025-12-11 schema has no tool list, and derm's `_meta` object is `additionalProperties: false`): it lives in a sibling `tools.json` in the entry's folder, as the seed catalog does since wave 1. Integration w2 blessed that form at lane G's request: a tool list inside `_meta` would push a large server past the official registry's 4,096-byte cap on the publisher object (lane G, `validators.go:727-737`), and a mirrored entry has no tool list at all unless something connected to the server.
 

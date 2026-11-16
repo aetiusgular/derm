@@ -1,5 +1,5 @@
 {
-  "$comment": "Folder-level ownership for plans/parallel_build_tk.md, sections 2, 6 and 7. A path is owned by the lane whose `owns` prefix matches it and whose `except` list does not. `shared` names files with per-lane sections marked `# [lane-X]`. `noLane` paths no lane edits during a wave. Written by tk session 0; only integration edits it. Integration w1 extended it for wave 2: lane I gains derm-kilo-plugin, derm-pi except memory.ts, and tests/cli-contract/checks/I/; derm-daemon's Cargo.toml is shared with lane K. Integration w2: lane K also owns derm-pi's memory test and live check (its request 2); its edit to packages/derm-pi/test/load.test.ts was accepted at merge. Integration w2 scaffolded wave 4 (section 7a): lanes L, N, P own their packages (the synced src/core/ excepted) and their agents' preset files by name, which `except` takes out of lane Q's crates/derm-cli/src/connect/; lane R owns acp/, doctor/, run/ and watch/; derm-cli's Cargo.toml has # [lane-Q] and # [lane-R] sections. The wave 5 base (4 Nov 2026, plans/parallel_build_tk.md section 7c) added lanes Y, V, S, T, U, X, W and Z over the seams it cut (run/boundary, run/user and run/tap; the daemon's approver/, join/, content/, installs/; the install hook's three installs/ folders, the canonical one inside the synced core; the preset rows' wave5/ sibling tables; cu/, setup/ and the platform/windows/ folders; the derm-tap and derm-audit-windows crates), the `except` entries that take those folders out of the wave 1 to 4 lanes that owned them, sections for wave 5's lanes in the three shared manifests (derm-core's is new), and one change to the script: a path a lane owns by name is not refused for lying under a `noLane` folder, so lanes S and X own contracts/fixtures/tap/ and installs/ (and only those in contracts/). In wave 5, run/ outside its three folders, watch/, the matcher core outside installs/ and every noLane path are integration's. The wave 5b base (10 Nov 2026, plans/toolkit_wave5b_plan.md section 2.0, part 3) added lanes 5bA to 5bF over the seams it cut: crates/derm-cli/src/hook/claude_format/ and native/, gate/serve/, enter/, run/boundary/windows_srt/, the derm-sysmon crate and the daemon's platform/windows/sysmon_feed/; crates/derm-cli/src/gate/ outside serve/ and hook/mod.rs are integration's. Each package lane keeps the synced src/core/ excepted, as wave 4 did. Lane names with digits are taken as written (`5bA`), and their markers are `# [lane-5bA]`.",
+  "$comment": "Folder-level ownership for plans/parallel_build_tk.md, sections 2, 6 and 7. A path is owned by the lane whose `owns` prefix matches it and whose `except` list does not. `shared` names files with per-lane sections marked `# [lane-X]`. `noLane` paths no lane edits during a wave. Written by tk session 0; only integration edits it. Integration w1 extended it for wave 2: lane I gains derm-kilo-plugin, derm-pi except memory.ts, and tests/cli-contract/checks/I/; derm-daemon's Cargo.toml is shared with lane K. Integration w2: lane K also owns derm-pi's memory test and live check (its request 2); its edit to packages/derm-pi/test/load.test.ts was accepted at merge. Integration w2 scaffolded wave 4 (section 7a): lanes L, N, P own their packages (the synced src/core/ excepted) and their agents' preset files by name, which `except` takes out of lane Q's crates/derm-cli/src/connect/; lane R owns acp/, doctor/, run/ and watch/; derm-cli's Cargo.toml has # [lane-Q] and # [lane-R] sections. The wave 5 base (4 Nov 2026, plans/parallel_build_tk.md section 7c) added lanes Y, V, S, T, U, X, W and Z over the seams it cut (run/boundary, run/user and run/tap; the daemon's approver/, join/, content/, installs/; the install hook's three installs/ folders, the canonical one inside the synced core; the preset rows' wave5/ sibling tables; cu/, setup/ and the platform/windows/ folders; the derm-tap and derm-audit-windows crates), the `except` entries that take those folders out of the wave 1 to 4 lanes that owned them, sections for wave 5's lanes in the three shared manifests (derm-core's is new), and one change to the script: a path a lane owns by name is not refused for lying under a `noLane` folder, so lanes S and X own contracts/fixtures/tap/ and installs/ (and only those in contracts/). In wave 5, run/ outside its three folders, watch/, the matcher core outside installs/ and every noLane path are integration's. The wave 5b base (10 Nov 2026, plans/toolkit_wave5b_plan.md section 2.0, part 3) added lanes 5bA to 5bF over the seams it cut: crates/derm-cli/src/hook/claude_format/ and native/, gate/serve/, enter/, run/boundary/windows_srt/, the derm-sysmon crate and the daemon's platform/windows/sysmon_feed/; crates/derm-cli/src/gate/ outside serve/ and hook/mod.rs are integration's. Each package lane keeps the synced src/core/ excepted, as wave 4 did. Lane names with digits are taken as written (`5bA`), and their markers are `# [lane-5bA]`. The wave 6 base (12 Nov 2026, plans/toolkit_wave6_plan.md section 2.0, part 3) added lanes 6A to 6F over the seams it cut: run/standard/ and connect/sandbox/ with presets/wave6/sandbox.json (6A); gate/locallog/ and init/ (6B); audit/ (6E); tests/eval/ and docs/evidence/ (6F); the derm-egress crate, derm-tap's src/broker/ and secret/ (6C); gate/taint/, the daemon's taint/ and derm-tap's src/results/ (6D); the `except` entries that take those folders out of lanes B, C, D, Q, R, S, F and W; sections for 6A to 6E in derm-cli's manifest, 6D in derm-daemon's, and 6C and 6D in derm-tap's, which becomes shared. The base's red tests (crates/derm-cli/tests/contracts_w6.rs, crates/derm-egress/tests/contract.rs) and the chain v2 reference (crates/derm-core/src/audit_chain.rs) are no lane's. Markers for these lanes are `# [lane-6A]`.",
   "lanes": {
     "A": {
       "wave": 1,
@@ -27,7 +27,9 @@
         "crates/derm-daemon/src/platform/windows/",
         "crates/derm-core/src/installs/",
         "crates/derm-core/src/platform/windows/",
-        "crates/derm-core/tests/installs_fixture.rs"
+        "crates/derm-core/tests/installs_fixture.rs",
+        "crates/derm-daemon/src/taint/",
+        "crates/derm-core/src/audit_chain.rs"
       ]
     },
     "C": {
@@ -36,7 +38,9 @@
         "crates/derm-cli/src/connect/"
       ],
       "except": [
-        "crates/derm-cli/src/connect/presets/wave5/"
+        "crates/derm-cli/src/connect/presets/wave5/",
+        "crates/derm-cli/src/connect/sandbox/",
+        "crates/derm-cli/src/connect/presets/wave6/"
       ]
     },
     "D": {
@@ -48,7 +52,8 @@
       "except": [
         "crates/derm-cli/src/run/boundary/",
         "crates/derm-cli/src/run/user/",
-        "crates/derm-cli/src/run/tap/"
+        "crates/derm-cli/src/run/tap/",
+        "crates/derm-cli/src/run/standard/"
       ]
     },
     "E": {
@@ -77,7 +82,13 @@
         "tests/cli-contract/checks/T/",
         "tests/cli-contract/checks/U/",
         "tests/cli-contract/checks/W/",
-        "tests/cli-contract/checks/X/"
+        "tests/cli-contract/checks/X/",
+        "tests/cli-contract/checks/6A/",
+        "tests/cli-contract/checks/6B/",
+        "tests/cli-contract/checks/6C/",
+        "tests/cli-contract/checks/6D/",
+        "tests/cli-contract/checks/6E/",
+        "tests/cli-contract/checks/6F/"
       ]
     },
     "G": {
@@ -213,7 +224,9 @@
         "crates/derm-cli/src/connect/presets/kiro.json",
         "crates/derm-cli/src/connect/presets/amp.json",
         "crates/derm-cli/src/connect/presets/cline.json",
-        "crates/derm-cli/src/connect/presets/wave5/"
+        "crates/derm-cli/src/connect/presets/wave5/",
+        "crates/derm-cli/src/connect/sandbox/",
+        "crates/derm-cli/src/connect/presets/wave6/"
       ]
     },
     "R": {
@@ -228,7 +241,8 @@
       "except": [
         "crates/derm-cli/src/run/boundary/",
         "crates/derm-cli/src/run/user/",
-        "crates/derm-cli/src/run/tap/"
+        "crates/derm-cli/src/run/tap/",
+        "crates/derm-cli/src/run/standard/"
       ]
     },
     "Y": {
@@ -261,7 +275,10 @@
         "contracts/fixtures/tap/",
         "tests/cli-contract/checks/S/"
       ],
-      "except": []
+      "except": [
+        "crates/derm-tap/src/results/",
+        "crates/derm-tap/src/broker/"
+      ]
     },
     "T": {
       "wave": 5,
@@ -304,7 +321,9 @@
         "docs/install/",
         "tests/cli-contract/checks/W/"
       ],
-      "except": []
+      "except": [
+        "docs/install/quick.md"
+      ]
     },
     "Z": {
       "wave": 5,
@@ -392,6 +411,64 @@
         "tests/cli-contract/checks/5bF/"
       ],
       "except": []
+    },
+    "6A": {
+      "wave": 6,
+      "owns": [
+        "crates/derm-cli/src/run/standard/",
+        "crates/derm-cli/src/connect/sandbox/",
+        "crates/derm-cli/src/connect/presets/wave6/sandbox.json",
+        "tests/cli-contract/checks/6A/"
+      ],
+      "except": []
+    },
+    "6B": {
+      "wave": 6,
+      "owns": [
+        "crates/derm-cli/src/gate/locallog/",
+        "crates/derm-cli/src/init/",
+        "docs/install/quick.md",
+        "tests/cli-contract/checks/6B/"
+      ],
+      "except": []
+    },
+    "6E": {
+      "wave": 6,
+      "owns": [
+        "crates/derm-cli/src/audit/",
+        "tests/cli-contract/checks/6E/"
+      ],
+      "except": []
+    },
+    "6F": {
+      "wave": 6,
+      "owns": [
+        "tests/eval/",
+        "docs/evidence/"
+      ],
+      "except": []
+    },
+    "6C": {
+      "wave": 6,
+      "owns": [
+        "crates/derm-egress/",
+        "crates/derm-tap/src/broker/",
+        "crates/derm-cli/src/secret/",
+        "tests/cli-contract/checks/6C/"
+      ],
+      "except": [
+        "crates/derm-egress/tests/contract.rs"
+      ]
+    },
+    "6D": {
+      "wave": 6,
+      "owns": [
+        "crates/derm-cli/src/gate/taint/",
+        "crates/derm-daemon/src/taint/",
+        "crates/derm-tap/src/results/",
+        "tests/cli-contract/checks/6D/"
+      ],
+      "except": []
     }
   },
   "shared": {
@@ -410,7 +487,12 @@
       "5bA",
       "5bB",
       "5bC",
-      "5bD"
+      "5bD",
+      "6A",
+      "6B",
+      "6C",
+      "6D",
+      "6E"
     ],
     "crates/derm-daemon/Cargo.toml": [
       "K",
@@ -420,11 +502,16 @@
       "X",
       "Y",
       "Z",
-      "5bE"
+      "5bE",
+      "6D"
     ],
     "crates/derm-core/Cargo.toml": [
       "X",
       "Z"
+    ],
+    "crates/derm-tap/Cargo.toml": [
+      "6C",
+      "6D"
     ]
   },
   "noLane": [
@@ -447,6 +534,8 @@
     "crates/derm-cli/tests/hook_cases_5bA.rs",
     "crates/derm-cli/tests/hook_cases_5bB.rs",
     "crates/derm-cli/tests/contracts_w5b.rs",
-    "crates/derm-cli/tests/support/"
+    "crates/derm-cli/tests/support/",
+    "crates/derm-cli/tests/contracts_w6.rs",
+    "crates/derm-core/src/audit_chain.rs"
   ]
 }
