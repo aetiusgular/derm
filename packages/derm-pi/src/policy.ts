@@ -16,7 +16,9 @@ import { decodeEscapes, foldText } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, contracts/policy.md section 6.
 import { installDecision, parseInstalls } from "./installs/index.ts";
 // Wave 5 lane W: command rules, contracts/policy.md section 7 (the hook core's file, held equal by a test).
-import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram } from "./command.ts";
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram, tokenIsText } from "./command.ts";
+// E1-1: destructive commands, section 4 step 7e.
+import { destructive } from "./destructive.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -830,7 +832,10 @@ function describeRule(r: Rule): string {
 export function evaluate(policy: PolicyFile, call: Call, problem?: string): Decision {
   const normalizedTool = normalizeToolName(call.tool, policy.servers, call.harness);
   // JSON and TOML escapes decoded before folding (section 3; integration w1).
-  const folded = foldText(decodeEscapes(call.inputText));
+  const decoded = decodeEscapes(call.inputText);
+  // E1-5: whether the fold could have changed a character's kind.
+  const plain = /^[\x00-\x7f]*$/.test(decoded);
+  const folded = foldText(decoded);
   const hit = rejectKeyFolded(folded);
   if (hit !== undefined) return { action: "deny", normalizedTool, reason: `reject list: ${hit}` };
 
@@ -866,7 +871,7 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
     if (parseInstalls(folded).length > 0) return asked; // never an install of section 6
     const ask = narrowAsk !== undefined && !(narrowAsk.tool === "bash" && compareRank(rankOf(rule), rankOf(narrowAsk)) >= 0) ? narrowAsk : undefined;
     if (ask !== undefined) return asked;
-    const d = allowSteps(normalizedTool, folded, commandReason(rule.command as string[]));
+    const d = allowSteps(normalizedTool, folded, plain, commandReason(rule.command as string[]));
     return d.action === "allow" ? d : asked;
   };
 
@@ -902,11 +907,11 @@ export function evaluate(policy: PolicyFile, call: Call, problem?: string): Deci
       return { action: "ask", normalizedTool, reason: "description changed since it was approved" };
     }
   }
-  return allowSteps(normalizedTool, folded, describeRule(winner));
+  return allowSteps(normalizedTool, folded, plain, describeRule(winner));
 }
 
 /** Step 7 for an allow that stands so far: control files, shell text, an install, PowerShell's plain words. */
-function allowSteps(normalizedTool: string, folded: string, reason: string): Decision {
+function allowSteps(normalizedTool: string, folded: string, plain: boolean, reason: string): Decision {
   // Control files before shell text (section 4, step 7; the hook core's order).
   const unquoted = unquote(folded);
   const texts = withCollapsedSlashes(withWin32Trimmed(withNativeSeparators([folded, unquoted])));
@@ -915,7 +920,8 @@ function allowSteps(normalizedTool: string, folded: string, reason: string): Dec
     return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   }
   // On the folded text, so `＄HOME` asks (integration w1; the hook core and derm-core do the same).
-  const token = SHELL_TOOLS.has(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
+  // E1-5: a quoted brace in a text program's argument and a tilde after a revision's name are text.
+  const token = SHELL_TOOLS.has(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t) && !tokenIsText(folded, t, plain)) : undefined;
   if (token !== undefined) {
     // The token named, a glob called one (Mac test w1, M9; the hook core's text).
     const glob = token === "*" || token === "?" || token === "[";
@@ -936,6 +942,10 @@ function allowSteps(normalizedTool: string, folded: string, reason: string): Dec
   if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
   const fed = SHELL_TOOLS.has(normalizedTool) ? stdinProgram(folded) : undefined;
   if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
+  // Step 7e (E1-1): a command that changes the root, a system or home folder,
+  // a disk or a parent folder, or signals every process.
+  const harm = SHELL_TOOLS.has(normalizedTool) ? destructive(folded) : undefined;
+  if (harm !== undefined) return { action: "ask", normalizedTool, reason: harm };
   return { action: "allow", normalizedTool, reason };
 }
 

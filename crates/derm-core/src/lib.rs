@@ -14,6 +14,7 @@ pub mod argv;
 // section 6.4, which lanes 6B and 6E build against.
 pub mod audit_chain;
 pub mod command;
+pub mod destructive;
 pub mod event;
 pub mod harness;
 // Wave 5 lane X's seam (the wave 5 base): `policy::evaluate` calls it.

@@ -11,7 +11,9 @@ import { decodeEscapes, fold } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, section 6.
 import { installDecision, parseInstalls } from "./installs/index.ts";
 // Wave 5 lane W: command rules, section 7.
-import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram } from "./command.ts";
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram, tokenIsText } from "./command.ts";
+// E1-1: destructive commands, section 4 step 7e.
+import { destructive } from "./destructive.ts";
 
 export type Action = "allow" | "ask" | "deny";
 
@@ -1038,7 +1040,11 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   // On the folded text, so `＄HOME` asks: stricter than the raw input, the
   // side that fails safe (integration w1; derm-core and derm-pi do the same).
-  const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
+  // E1-5: a quoted brace in a text program's argument and a tilde after a
+  // revision's name are text (`tokenIsText`); only for input that was ASCII before the fold.
+  const decoded = decodeEscapes(call.inputText);
+  const plain = /^[\x00-\x7f]*$/.test(decoded);
+  const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t) && !tokenIsText(folded, t, plain)) : undefined;
   if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
   // Package installs (contracts/policy.md section 6; lane X's seam). An
   // install's ask or deny names its packages, so it comes first.
@@ -1055,5 +1061,9 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
   const fed = isShellTool(normalizedTool) ? stdinProgram(folded) : undefined;
   if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
+  // Step 7e (E1-1): a command that changes the root, a system or home folder,
+  // a disk or a parent folder, or signals every process.
+  const harm = isShellTool(normalizedTool) ? destructive(folded) : undefined;
+  if (harm !== undefined) return { action: "ask", normalizedTool, reason: harm };
   return { action: "allow", normalizedTool, reason };
 }

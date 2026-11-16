@@ -215,6 +215,84 @@ fn read(input: &[String], heads: &[&str], depth: usize, out: &mut Vec<Vec<String
     }
 }
 
+// --- Step 7b's two exceptions (E1-5, eval pass 1) ----------------------------
+
+/// Programs that hand no argument to a shell, so text inside quotes stays
+/// text: quoted braces in their arguments are not expanded by anything.
+/// `curl` is not here (it expands braces in a URL itself, "URL globbing",
+/// curl(1)), nor `find`, `xargs`, `ssh`, `watch` or any wrapper.
+const TEXT_PROGRAMS: &[&str] = &["echo", "printf", "grep", "egrep", "fgrep", "rg", "jq"];
+/// git subcommands that take a message or a revision and run no command
+/// string (`rebase -x`, `bisect run`, `submodule foreach` and
+/// `filter-branch` do).
+const TEXT_GIT: &[&str] = &["commit", "log", "show", "diff", "tag"];
+
+/// Whether a step 7b token that the folded text holds is plain text there
+/// (E1-5), so it need not ask. `plain` says the input was ASCII before the
+/// fold: a typographic quote folds to an ASCII one and is no quote to the
+/// shell. Two tokens only:
+///
+/// - `{` and `}`: every one sits inside single or double quotes, all quotes
+///   closed, and every simple command is one of `TEXT_PROGRAMS` or a
+///   `TEXT_GIT` git subcommand, named plainly as its first word. bash and
+///   zsh expand braces only outside quotes (bash(1), Brace Expansion), and
+///   none of these programs reads an argument as shell text.
+/// - `~`: every one follows a letter or digit and is followed by a digit,
+///   `^`, `.`, a space, a quote, `)`, `;`, `&`, `|` or the end (`HEAD~1`,
+///   `main~`). The shell expands a tilde only at a word's start, or after
+///   `:` or `=` in an assignment (bash(1), Tilde Expansion); zsh's
+///   EXTENDED_GLOB reads `x~y` as a pattern, which a digit or an end after
+///   the tilde is not worth an ask for: both sides are on the line.
+pub fn token_is_text(folded: &str, token: &str, plain: bool) -> bool {
+    if !plain {
+        return false;
+    }
+    let chars: Vec<char> = folded.chars().collect();
+    match token {
+        "~" => chars.iter().enumerate().all(|(i, c)| {
+            if *c != '~' {
+                return true;
+            }
+            let before = i
+                .checked_sub(1)
+                .and_then(|j| chars.get(j))
+                .is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit());
+            let after = chars.get(i + 1).is_none_or(|n| {
+                n.is_ascii_digit()
+                    || matches!(
+                        n,
+                        '^' | '.' | ' ' | '\t' | '\n' | '\'' | '"' | ')' | ';' | '&' | '|'
+                    )
+            });
+            before && after
+        }),
+        "{" | "}" => {
+            let mut quote: Option<char> = None;
+            for c in &chars {
+                match quote {
+                    Some(q) if *c == q => quote = None,
+                    Some(_) => {}
+                    None if *c == '\'' || *c == '"' => quote = Some(*c),
+                    None if *c == '{' || *c == '}' => return false,
+                    None => {}
+                }
+            }
+            if quote.is_some() {
+                return false;
+            }
+            let cmds = commands(folded);
+            !cmds.is_empty()
+                && cmds.iter().all(|w| {
+                    let head = w[0].as_str();
+                    TEXT_PROGRAMS.contains(&head)
+                        || (head == "git"
+                            && w.get(1).is_some_and(|s| TEXT_GIT.contains(&s.as_str())))
+                })
+        }
+        _ => false,
+    }
+}
+
 // --- A program read from input (contract section 4, step 7b; E0's R-E0-1) --
 
 /// What feeds a simple command's standard input, as the line shows it.

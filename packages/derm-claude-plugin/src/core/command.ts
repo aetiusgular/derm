@@ -253,6 +253,51 @@ const orFeed = (a: Feed, b: Feed): Feed => ({
   process: a.process || b.process,
 });
 
+// --- Step 7b's two exceptions (E1-5, eval pass 1) ----------------------------
+
+/**
+ * Programs that hand no argument to a shell, so text inside quotes stays
+ * text. `curl` is not here (it expands braces in a URL itself), nor `find`,
+ * `xargs`, `ssh`, `watch` or any wrapper.
+ */
+const TEXT_PROGRAMS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "rg", "jq"]);
+/** git subcommands that take a message or a revision and run no command string. */
+const TEXT_GIT = new Set(["commit", "log", "show", "diff", "tag"]);
+const AFTER_TILDE = new Set(["^", ".", " ", "\t", "\n", "'", '"', ")", ";", "&", "|"]);
+
+/**
+ * Whether a step 7b token that the folded text holds is plain text there, so
+ * it need not ask (derm-core's `token_is_text`, which holds the sources).
+ * `plain` says the input was ASCII before the fold. `{` and `}`: every one
+ * inside closed quotes, and every simple command a text program or a text git
+ * subcommand named plainly. `~`: every one after a letter or digit and before
+ * a digit, `^`, `.`, a space, a quote, `)`, `;`, `&`, `|` or the end.
+ */
+export function tokenIsText(folded: string, token: string, plain: boolean): boolean {
+  if (!plain) return false;
+  const chars = Array.from(folded);
+  if (token === "~") {
+    return chars.every((c, i) => {
+      if (c !== "~") return true;
+      const before = i > 0 && /^[a-z0-9]$/.test(chars[i - 1]!);
+      const next = chars[i + 1];
+      const after = next === undefined || /^[0-9]$/.test(next) || AFTER_TILDE.has(next);
+      return before && after;
+    });
+  }
+  if (token !== "{" && token !== "}") return false;
+  let quote: string | undefined;
+  for (const c of chars) {
+    if (quote !== undefined) {
+      if (c === quote) quote = undefined;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "}") return false;
+  }
+  if (quote !== undefined) return false;
+  const cmds = commands(folded);
+  return cmds.length > 0 && cmds.every((w) => TEXT_PROGRAMS.has(w[0]!) || (w[0] === "git" && w[1] !== undefined && TEXT_GIT.has(w[1])));
+}
+
 // Words that open a compound command whose inner commands share the input it
 // was given (`curl x | if true; then sh; fi`), the words that close one, and
 // the reserved words a simple command may start with before its program

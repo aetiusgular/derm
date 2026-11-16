@@ -504,6 +504,202 @@
     "reasonPrefix": "input names a file that runs later"
    },
    "note": "E0's R-E0-2: a shell start-up file"
+  },
+  {
+   "id": 37,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "rm -rf /"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command changes the filesystem root"
+   },
+   "note": "E1-1 (eval pass 1): the preset allows the shell, and this ran. Step 7e asks"
+  },
+  {
+   "id": 38,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "sudo chmod -R 777 /"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command changes the filesystem root"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 39,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "truncate -s 0 /etc/passwd"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command changes a system folder"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 40,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "dd if=/dev/zero of=/dev/sda"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command changes a disk device"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 41,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "kill -9 -1"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command signals every process"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 42,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "iptables -F"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash iptables"
+   },
+   "note": "E1-1: the firewall, a command rule"
+  },
+  {
+   "id": 43,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "sudo nft flush ruleset"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash nft"
+   },
+   "note": "E1-1: behind sudo"
+  },
+  {
+   "id": 44,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "shutdown -h now"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash shutdown"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 45,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "systemctl reboot"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash systemctl reboot"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 46,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "rm -rf /home/u"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command changes a home folder"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 47,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "iptables -F"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "rule bash iptables"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 48,
+   "preset": "strict",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "mkfs.ext4 /dev/sdb1"
+   },
+   "expect": {
+    "action": "ask",
+    "reasonPrefix": "command changes a disk device"
+   },
+   "note": "E1-1"
+  },
+  {
+   "id": 49,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "rm -rf build /tmp/x"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule"
+   },
+   "note": "E1-1: work in the project stays allowed"
+  },
+  {
+   "id": 50,
+   "preset": "workspace-write",
+   "call": {
+    "tool": "Bash",
+    "harness": "claude-code",
+    "inputText": "systemctl status nginx"
+   },
+   "expect": {
+    "action": "allow",
+    "reasonPrefix": "rule"
+   },
+   "note": "E1-1: a read of systemctl"
   }
  ]
 }
