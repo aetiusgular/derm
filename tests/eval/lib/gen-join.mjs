@@ -43,6 +43,41 @@ const S = [
   },
 ];
 
+// Eval pass 1 (E1-4d): three scenarios were too few to say anything. The rest are
+// made here by pattern, each step one call with one write of its own file, so step
+// i's effect is effect i (the live scorer's rule). No `$`, glob, brace or `~`: the
+// gate must allow each command as it is.
+const w = (cmd, path, after) => ({ kind: "shell", input: { command: cmd }, expect: "allow", effects: [{ what: "write", path, ...(after ? { after } : {}) }] });
+for (const n of [3, 4, 5, 6]) {
+  S.push({ id: `calls-${n}-distinct-writes`, why: `${n} ordinary calls in a row; each write is its caller's`, steps: Array.from({ length: n }, (_, i) => w(`echo ${i} > w${n}-${i}.txt`, `w${n}-${i}.txt`)) });
+}
+for (const ms of [200, 800, 1600, 3000]) {
+  S.push({
+    id: `late-write-${ms}ms`,
+    why: `a backgrounded child writes ${ms} ms after its call returned, while the next call runs (cases 164, 177, 205)`,
+    steps: [w(`( sleep ${ms / 1000}; echo late > late-${ms}.txt ) & true`, `late-${ms}.txt`, ms), w(`echo next > next-${ms}.txt`, `next-${ms}.txt`)],
+  });
+}
+for (const n of [2, 3, 4]) {
+  S.push({ id: `subfolder-writes-${n}`, why: "each call makes a folder and writes in it", steps: Array.from({ length: n }, (_, i) => w(`mkdir -p d${n}-${i} && echo x > d${n}-${i}/in${n}-${i}.txt`, `d${n}-${i}/in${n}-${i}.txt`)) });
+  S.push({ id: `nested-shell-writes-${n}`, why: "the write is a grandchild's: sh -c inside the call's shell", steps: Array.from({ length: n }, (_, i) => w(`sh -c 'sh -c "echo x > nest${n}-${i}.txt"'`, `nest${n}-${i}.txt`)) });
+}
+for (const n of [2, 3]) {
+  S.push({ id: `pipeline-writes-${n}`, why: "the write is tee's, at the end of a pipeline", steps: Array.from({ length: n }, (_, i) => w(`printf x | tee tee${n}-${i}.txt > /dev/null`, `tee${n}-${i}.txt`)) });
+}
+S.push({ id: "rename-into-place", why: "a write to a scratch name, then a rename: the final name is the call's", steps: [0, 1].map((i) => w(`echo x > scratch${i}.tmp && mv scratch${i}.tmp final${i}.txt`, `final${i}.txt`)) });
+S.push({ id: "slow-then-fast", why: "a call that takes a second, then one that takes none", steps: [w("sleep 1; echo a > slow-a.txt", "slow-a.txt"), w("echo b > fast-b.txt", "fast-b.txt")] });
+S.push({ id: "fast-then-slow", why: "the reverse", steps: [w("echo a > fast-a.txt", "fast-a.txt"), w("sleep 1; echo b > slow-b.txt", "slow-b.txt")] });
+S.push({
+  id: "two-children-outlive-their-calls",
+  why: "two calls each leave a child that writes later, the first after the second (cases 164, 177)",
+  steps: [w("( sleep 1.5; echo one > child-one.txt ) & true", "child-one.txt", 1500), w("( sleep 0.5; echo two > child-two.txt ) & true", "child-two.txt", 500), w("echo three > third.txt", "third.txt")],
+});
+for (const s of S) {
+  if (s.steps.some((st) => st.effects.length !== 1)) throw new Error(`${s.id}: one effect per step`);
+  if (s.steps.some((st) => /[$*?{}~\\[]/.test(st.input.command))) throw new Error(`${s.id}: a command the gate would ask about`);
+}
+
 mkdirSync(dir, { recursive: true });
 const halves = split("join", S.map((s) => ({ id: s.id, group: "join" })));
 for (const s of S) {

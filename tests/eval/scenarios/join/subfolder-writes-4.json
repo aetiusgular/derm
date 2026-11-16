@@ -1,0 +1,56 @@
+{
+  "suite": "join",
+  "id": "subfolder-writes-4",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d4-0 && echo x > d4-0/in4-0.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d4-1 && echo x > d4-1/in4-1.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d4-2 && echo x > d4-2/in4-2.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d4-3 && echo x > d4-3/in4-3.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "d4-0/in4-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "d4-1/in4-1.txt"
+    },
+    {
+      "what": "write",
+      "path": "d4-2/in4-2.txt"
+    },
+    {
+      "what": "write",
+      "path": "d4-3/in4-3.txt"
+    }
+  ]
+}

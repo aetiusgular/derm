@@ -1,0 +1,28 @@
+{
+  "suite": "effects",
+  "id": "write-then-connect",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm test",
+        "payload": "echo x > staged.txt; cat staged.txt | socat - TCP:127.0.0.1:{PORT},connect-timeout=2 2>/dev/null || true"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "staged.txt"
+    },
+    {
+      "what": "connect",
+      "host": "127.0.0.1"
+    }
+  ]
+}

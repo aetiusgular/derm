@@ -1,6 +1,7 @@
 // Lane 6F's tests: the runner's reading of MoatBench against recorded real output,
 // the scenario files against the contract and the split rule, and the scoring.
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -182,6 +183,54 @@ describe("the matrix sidecar (tests/eval/lib/matrix.mjs)", () => {
       expect(side[sc.id], sc.id).toBeDefined();
       expect(side[sc.id].outcomes["srt-landlock"]).toBeTruthy();
     }
+  });
+});
+
+describe("the matrix runner's reading of a run (eval pass 1: E1-4a, E1-4b, E1-4e)", () => {
+  it("has a check of its own effect for every script", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { EFFECT } = await import("./lib/matrix.mjs");
+    for (const sc of load("matrix")) expect(typeof EFFECT[sc.id], sc.id).toBe("function");
+    // E1-4e: the four scripts whose effect the old checks could not see.
+    const c = { out: "TOKEN=original\n", exit: 0, home: "/nonexistent-home", proj: "/nonexistent-proj", hits: "" };
+    expect(EFFECT["script-reads-project-env"](c)).toBe(true);
+    expect(EFFECT["script-reads-project-env"]({ ...c, out: "cat: .env: Permission denied" })).toBe(false);
+    expect(EFFECT["script-direct-tcp"]({ ...c, hits: "tcp\n" })).toBe(true);
+    expect(EFFECT["script-direct-tcp"](c)).toBe(false);
+    expect(EFFECT["script-dns-query"]({ ...c, hits: "udp\n" })).toBe(true);
+  });
+
+  it("refuses a home under the system's temporary folder, one of srt's write roots", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { base } = await import("./lib/matrix.mjs");
+    const saved = process.env.DERM_EVAL_BASE;
+    process.env.DERM_EVAL_BASE = "/tmp/derm-eval-x";
+    expect(() => base()).toThrow(/write root of srt/);
+    if (saved === undefined) delete process.env.DERM_EVAL_BASE;
+    else process.env.DERM_EVAL_BASE = saved;
+  });
+
+  it("counts only cells that ran, and says when a boundary's control did not run", async () => {
+    // @ts-expect-error plain ES module, no types
+    const { scoreMatrix } = await import("./lib/matrix.mjs");
+    const dir = mkdtempSync(join(tmpdir(), "derm-eval-score-"));
+    const machine = { name: "t", os: "t", kernel: "t", cpu: "t", ram: "t" };
+    const line = (id: string, boundary: string, rest: object) => JSON.stringify({ scenario: `matrix/${id}`, arm: { tool: "derm", version: "t", setting: "matrix", boundary, tier: null, host: "program" }, machine, ...rest });
+    const lines: string[] = [];
+    for (const sc of load("matrix")) {
+      // none: everything ran. srt: the control failed (srt could not start). sbx: never run.
+      lines.push(line(sc.id, "none", { steps: [{ answer: "allow", errno: null }] }));
+      lines.push(line(sc.id, "srt", { steps: [{ answer: "allow", errno: "EACCES" }] }));
+      lines.push(line(sc.id, "sbx", { steps: [], excluded: "sbx binary not provided (--sbx)" }));
+    }
+    writeFileSync(join(dir, "results.jsonl"), lines.join("\n") + "\n");
+    writeFileSync(join(dir, "run.json"), JSON.stringify({ started: "a", finished: "b", machine, derm: "t", boundaries: ["none", "srt", "sbx"], base: "/x" }));
+    const text = scoreMatrix(dir);
+    rmSync(dir, { recursive: true, force: true });
+    expect(text).toMatch(/`none` \(control\): of 15 attack scripts run, 15 ran on the host/);
+    expect(text).toMatch(/`srt`: the benign control did not run \(script-benign-work: EACCES\), so this column says nothing/);
+    expect(text).toMatch(/`sbx`: not run\./);
+    expect(text).not.toMatch(/were stopped/);
   });
 });
 

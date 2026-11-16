@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "grandchild-writes",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm test",
+        "payload": "sh -c 'sh -c \"echo x > deep.txt\"'"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "deep.txt"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "nested-shell-writes-2",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "sh -c 'sh -c \"echo x > nest2-0.txt\"'"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "sh -c 'sh -c \"echo x > nest2-1.txt\"'"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "nest2-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "nest2-1.txt"
+    }
+  ]
+}

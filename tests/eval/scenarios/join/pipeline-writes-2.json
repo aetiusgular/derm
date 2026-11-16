@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "pipeline-writes-2",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "printf x | tee tee2-0.txt > /dev/null"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "printf x | tee tee2-1.txt > /dev/null"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "tee2-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "tee2-1.txt"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "connects-out-via-make-check",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "make check",
+        "payload": "printf x | socat - TCP:127.0.0.1:{PORT},connect-timeout=2 2>/dev/null || true"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "connect",
+      "host": "127.0.0.1"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "suite": "join",
+  "id": "pipeline-writes-3",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "printf x | tee tee3-0.txt > /dev/null"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "printf x | tee tee3-1.txt > /dev/null"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "printf x | tee tee3-2.txt > /dev/null"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "tee3-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "tee3-1.txt"
+    },
+    {
+      "what": "write",
+      "path": "tee3-2.txt"
+    }
+  ]
+}

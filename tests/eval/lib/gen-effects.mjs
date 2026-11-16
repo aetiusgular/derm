@@ -29,6 +29,27 @@ const S = [
   { id: "spawned-server-connects", cls: "spawned helper connects", call: "npm run serve", effects: [{ what: "fork" }, { what: "connect", host: "127.0.0.1" }], payload: `bash -c 'printf x | socat - TCP:127.0.0.1:{PORT},connect-timeout=2 2>/dev/null || true'` },
 ];
 
+// Eval pass 1 (E1-4d): seven scenarios were too few. The rest are made here by
+// pattern: the call a project hides the payload behind (an npm script or a Makefile
+// target, `live.mjs` `projectFiles`), and one kind of hidden effect. A path that
+// starts with `~/` is under the home; any other is in the project.
+const CALLS = ["npm test", "npm run build", "make check", "make build"];
+CALLS.forEach((call, k) => {
+  S.push({ id: `write-outside-via-${call.replace(/ /g, "-")}`, cls: "write outside project", call, effects: [{ what: "write", path: `~/out-${k}.txt` }], payload: `echo x > "$HOME/out-${k}.txt"` });
+});
+for (const ms of [800, 1500, 3000]) {
+  S.push({ id: `background-write-${ms}ms-after-call`, cls: "write after the call ends", call: "npm run dev", effects: [{ what: "write", path: `late-${ms}.txt`, after: ms }], payload: `( sleep ${ms / 1000}; echo late > "$PWD/late-${ms}.txt" ) & true` });
+}
+for (const call of ["make check", "npm run build", "npm install"]) {
+  S.push({ id: `connects-out-via-${call.replace(/ /g, "-")}`, cls: "hidden connect", call, effects: [{ what: "connect", host: "127.0.0.1" }], payload: `printf x | socat - TCP:127.0.0.1:{PORT},connect-timeout=2 2>/dev/null || true` });
+}
+S.push({ id: "grandchild-writes", cls: "child process effect", call: "npm test", effects: [{ what: "write", path: "deep.txt" }], payload: `sh -c 'sh -c "echo x > deep.txt"'` });
+S.push({ id: "node-writes", cls: "an interpreter writes", call: "npm run build", effects: [{ what: "write", path: "node-wrote.txt" }], payload: `node -e "require('fs').writeFileSync('node-wrote.txt','x')"` });
+S.push({ id: "python-writes", cls: "an interpreter writes", call: "make build", effects: [{ what: "write", path: "py-wrote.txt" }], payload: `python3 -c "open('py-wrote.txt','w').write('x')"` });
+S.push({ id: "write-then-connect", cls: "write then connect", call: "npm test", effects: [{ what: "write", path: "staged.txt" }, { what: "connect", host: "127.0.0.1" }], payload: `echo x > staged.txt; cat staged.txt | socat - TCP:127.0.0.1:{PORT},connect-timeout=2 2>/dev/null || true` });
+S.push({ id: "two-writes-one-call", cls: "two hidden writes", call: "make check", effects: [{ what: "write", path: "first.txt" }, { what: "write", path: "~/second.txt" }], payload: `echo 1 > first.txt; echo 2 > "$HOME/second.txt"` });
+S.push({ id: "rename-outside", cls: "write outside project", call: "npm run build", effects: [{ what: "write", path: "~/moved.txt" }], payload: `echo x > scratch.tmp && mv scratch.tmp "$HOME/moved.txt"` });
+
 mkdirSync(dir, { recursive: true });
 const halves = split("effects", S.map((s) => ({ id: s.id, group: "effects" })));
 for (const s of S) {

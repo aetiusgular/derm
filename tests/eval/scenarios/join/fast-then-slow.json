@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "fast-then-slow",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo a > fast-a.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "sleep 1; echo b > slow-b.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "fast-a.txt"
+    },
+    {
+      "what": "write",
+      "path": "slow-b.txt"
+    }
+  ]
+}
