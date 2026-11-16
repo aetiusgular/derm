@@ -105,8 +105,10 @@ jobs:
       - run: npx vitest run
       - run: node scripts/lane-scope.test.mjs
       # vitest skips scripts/windows-held.json's files on Windows only; this
-      # fails on every system when a test in them has no Rust holder (note BF
-      # section 4.1).
+      # fails when a test in them has no Rust holder (note BF section 4.1).
+      # It runs here, not on Windows, where some of those files cannot even
+      # be collected (registration.test.ts takes POSIX paths at load); the
+      # files and the fixtures are the same on every system.
       - run: node scripts/windows-holders.test.mjs
       - run: node scripts/windows-holders.mjs
       # The Rust fold's tables and contracts/fixtures/policy/fold.json come
@@ -164,9 +166,6 @@ jobs:
       - name: tsc
         if: ${{ !cancelled() }}
         run: npx tsc --noEmit
-      - name: holders of the tests vitest skips here
-        if: ${{ !cancelled() }}
-        run: node scripts/windows-holders.mjs
       - name: vitest
         if: ${{ !cancelled() }}
         run: npx vitest run

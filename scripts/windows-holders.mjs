@@ -5,7 +5,8 @@
 //
 // vitest skips the files in scripts/windows-held.json on Windows. That is
 // only safe while every test in them is held by a Rust test that runs on
-// Windows, so this script fails, on every system, when one is not:
+// Windows, so this script fails when one is not (CI runs it in the Linux
+// node job: on Windows some of these files cannot be collected at all):
 //   - every listed file exists and has at least one test;
 //   - every test (`<file> :: <name>`, as `vitest list` names it) has an entry
 //     in contracts/fixtures/hook-cases/5bA.json, 5bB.json or manual.json;
