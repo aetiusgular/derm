@@ -405,7 +405,14 @@ fn mac_verdict(code: i32) -> Verdict {
             "macOS says the account is locked after wrong passwords; unlock it by logging in"
                 .into(),
         ),
-        7 => Verdict::Unavailable("macOS says the account is disabled or inactive".into()),
+        // Also what a lockout policy answers for the right password while
+        // the account is locked (run on the Mac with a test account locked
+        // after 3 failures: 7, never 1024; a wrong password there still
+        // answers 9).
+        7 => Verdict::Unavailable(
+            "macOS says the account is disabled, inactive, or locked by its password policy after wrong passwords; wait for the lock to end or log in to clear it"
+                .into(),
+        ),
         n => Verdict::Unavailable(format!(
             "macOS's password check (PAM service checkpw) answered {n}"
         )),
@@ -940,6 +947,9 @@ mod tests {
     fn mac_only_pams_auth_error_is_a_wrong_password() {
         assert_eq!(mac_verdict(0), Verdict::Person);
         assert!(matches!(mac_verdict(9), Verdict::Wrong(_)));
+        assert!(
+            matches!(mac_verdict(7), Verdict::Unavailable(w) if w.contains("locked by its password policy"))
+        );
         for code in [7, 1024, 1025, 3, 4, 6, 12, 13, -1] {
             assert!(
                 matches!(mac_verdict(code), Verdict::Unavailable(_)),
