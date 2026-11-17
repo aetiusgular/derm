@@ -22,7 +22,7 @@
 // Linux only: the chat reaches the live daemon through XDG_RUNTIME_DIR, with HOME a
 // throwaway. The Mac's collector arm is not built here.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import http from "node:http";
 import { homedir } from "node:os";
@@ -101,7 +101,21 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
         mkdirSync(dirname(join(work, f)), { recursive: true });
         writeFileSync(join(work, f), body.replaceAll("{PORT}", String(port)), { mode: 0o755 });
       }
-      writeFileSync(join(bin, "claude"), `#!/bin/sh\nHOME='${home}' exec '${claude}' "$@"\n`, { mode: 0o755 });
+      // With no boundary the gate runs on the host and finds the daemon by
+      // the password database's home, so derm keeps the real HOME and the
+      // harness gets the throwaway one through this script. Under srt derm
+      // builds the sandbox from its own HOME (the harness's state folders),
+      // so derm gets the throwaway home too, with its `.derm/run/derm` a
+      // link to the live daemon's folder; the gate there goes through
+      // srt's route, not the socket. Both run on the box, 16 Nov 2026.
+      const ownHome = boundary === "srt";
+      if (ownHome) {
+        symlinkSync(claude, join(bin, "claude"));
+        mkdirSync(join(home, ".derm", "run"), { recursive: true, mode: 0o700 });
+        symlinkSync(join(realHome, ".derm", "run", "derm"), join(home, ".derm", "run", "derm"));
+      } else {
+        writeFileSync(join(bin, "claude"), `#!/bin/sh\nHOME='${home}' exec '${claude}' "$@"\n`, { mode: 0o755 });
+      }
       const tag = `${sc.id.replace(/[^a-z0-9]/gi, "").slice(0, 10)}${rep}x${Date.now() % 100000}`;
       const ids = commands.map((_, i) => `toolu_ev${tag}n${i}`);
       const fake = await startFakeMessages({
@@ -130,7 +144,7 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
       const chat = `evl-${suite}-${tag}`;
       const env = {
         PATH: [bin, dirname(process.execPath), dirname(derm), "/usr/local/libexec/derm-srt", "/usr/local/bin", "/usr/bin", "/bin", ...(process.env.DERM_EVAL_PATH ?? "").split(":").filter(Boolean)].join(":"),
-        HOME: realHome, DERM_POLICY: join(home, ".derm", "policy.json"), LANG: "C.UTF-8", NO_COLOR: "1",
+        ...(ownHome ? { HOME: home } : { HOME: realHome, DERM_POLICY: join(home, ".derm", "policy.json") }), LANG: "C.UTF-8", NO_COLOR: "1",
         DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         // The contract tests' published dummy; the fake server never checks it.
         ANTHROPIC_API_KEY: "sk-ant-api03-contract-test-dummy-key-not-real",
