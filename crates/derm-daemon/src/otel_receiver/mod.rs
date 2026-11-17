@@ -1488,12 +1488,6 @@ pub fn apply_export(export: &Export, args: &[String], cmd: &mut Command) -> Appl
     if !matches!(export.harness, "claude-code" | "codex") {
         return Applied::StoodDown("no OTel export for this harness");
     }
-    // E1-12: only Claude Code was run in a VM with the export on. Codex's
-    // rides in `-c` flags and its own config, which the VM's Codex was
-    // never seen to take.
-    if export.sbx && export.harness != "claude-code" {
-        return Applied::StoodDown("no OTel export for this harness under sbx");
-    }
     // Under sbx the VM gets only the variables derm names to sbx, so the
     // user's own OTel variables on the host configure nothing there, and
     // standing down for them left the chat with no telemetry at all (the
@@ -1501,9 +1495,24 @@ pub fn apply_export(export: &Export, args: &[String], cmd: &mut Command) -> Appl
     if !export.sbx && harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
         return Applied::StoodDown("the user already exports OTel");
     }
+    // A compressed body is refused by the receiver (415); the exporters
+    // compress only when told to by these variables.
+    for name in [
+        "OTEL_EXPORTER_OTLP_COMPRESSION",
+        "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
+    ] {
+        cmd.env_remove(name);
+    }
     if export.harness == "codex" {
-        let codex_config =
-            codex_home(cmd).and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok());
+        // Under sbx the host's `~/.codex/config.toml` is not in the VM
+        // (Docker's Codex agent page: "Sandboxes don't pick up user-level
+        // configuration from your host"), so it says nothing about the
+        // Codex that runs there.
+        let codex_config = if export.sbx {
+            None
+        } else {
+            codex_home(cmd).and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok())
+        };
         if harness_env::has_own_codex_otel(codex_config.as_deref()) {
             return Applied::StoodDown("the user already exports OTel");
         }

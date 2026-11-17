@@ -910,13 +910,43 @@ fn e1_12_claude_code_in_an_sbx_vm_is_pointed_at_the_hosts_name() {
         Applied::StoodDown(_)
     ));
     assert!(cmd.get_envs().next().is_none(), "nothing set");
-    // Codex in a VM was not run: it stands down and says so.
+    // Codex in a VM: the endpoint in its `-c` words, the token in its two
+    // header variables, and the host's own Codex config not asked, since it
+    // is not in the VM. (Until the review of E1-12 this stood down.)
+    let home = std::env::temp_dir().join(format!("derm-codex-home-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        "[otel]\nexporter = { otlp-http = { endpoint = \"https://collector.example/v1/logs\", protocol = \"json\" } }\n",
+    )
+    .unwrap();
     let mut cmd = Command::new("sbx");
+    cmd.env("CODEX_HOME", &home);
     assert_eq!(
         apply_export(&export("codex", vm, true), &[], &mut cmd),
-        Applied::StoodDown("no OTel export for this harness under sbx")
+        Applied::Codex
     );
-    assert!(cmd.get_envs().next().is_none(), "nothing set");
+    let args = args_of(&cmd);
+    assert!(args
+        .iter()
+        .any(|a| a.contains("http://host.docker.internal:4318/v1/logs")));
+    assert!(args.iter().all(|a| !a.contains(DERM_TOKEN)));
+    assert_eq!(
+        env_of(&cmd, "OTEL_EXPORTER_OTLP_HEADERS"),
+        Some(Some(format!("x-derm-token={DERM_TOKEN}")))
+    );
+    // The same config on the host, outside sbx, still stands the export down.
+    let mut cmd = Command::new("codex");
+    cmd.env("CODEX_HOME", &home);
+    assert!(matches!(
+        apply_export(
+            &export("codex", "http://127.0.0.1:4318", false),
+            &[],
+            &mut cmd
+        ),
+        Applied::StoodDown(_)
+    ));
+    let _ = std::fs::remove_dir_all(&home);
     // Loopback is not what a VM can reach, and no other spelling counts.
     for bad in [
         "http://127.0.0.1:4318",

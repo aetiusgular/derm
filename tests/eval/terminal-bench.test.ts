@@ -103,7 +103,11 @@ describe("the Harbor agent's rewrite of Harbor's exec line", () => {
     expect(gate).not.toContain("codex exec ");
     expect(gate.indexOf("codex plugin add derm@derm")).toBeLessThan(gate.indexOf("derm run codex"));
     expect(gate.indexOf("derm-daemon --foreground")).toBeLessThan(gate.indexOf("derm run codex"));
-    expect(gate.indexOf("derm-report.json")).toBeGreaterThan(gate.indexOf("derm run codex"));
+    // The record is being written before the agent starts, so a trial Harbor
+    // ends at its time limit still has one.
+    expect(gate.indexOf("derm watch tail")).toBeLessThan(gate.indexOf("derm run codex"));
+    expect(gate.indexOf("while :; do derm watch report")).toBeLessThan(gate.indexOf("derm run codex"));
+    expect(gate.lastIndexOf("derm-report.json")).toBeGreaterThan(gate.indexOf("derm run codex"));
     expect(gate.trimEnd().endsWith("exit $derm_rc")).toBe(true);
     expect(wrap("standard", harbor)).toContain("--no-tap --tier standard -- exec ");
   });

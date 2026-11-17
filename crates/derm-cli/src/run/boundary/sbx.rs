@@ -1151,8 +1151,22 @@ mod tests {
             .args
             .windows(2)
             .any(|w| w == ["-e", "OTEL_LOG_USER_PROMPTS"]));
-        // Codex in a VM: stood down, and the plan is as it was.
-        let mut p = plan_for(argv.clone());
+        // Codex in a VM (until the review of E1-12 this stood down): its
+        // two header variables are named to sbx before the agent, its `-c`
+        // words sit with the user's, and no word holds the token.
+        let cargv = s(&[
+            "run",
+            "--name",
+            "derm-c3",
+            "-e",
+            "DERM_CHAT_TOKEN",
+            "codex",
+            "/w",
+            "--",
+            "-p",
+            "hi",
+        ]);
+        let mut p = plan_for(cargv);
         let (what, range) = crate::run::wire_export(
             &mut p,
             &rest,
@@ -1163,12 +1177,26 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(
-            what,
-            "stood down: no OTel export for this harness under sbx"
-        );
-        assert!(range.is_none());
-        assert_eq!(p.args, argv);
+        assert_eq!(what, "codex");
+        let agent = p.args.iter().position(|a| a == "codex").unwrap();
+        let split = p.args.iter().position(|a| a == "--").unwrap();
+        for name in [
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+        ] {
+            assert!(
+                p.args[..agent].windows(2).any(|w| w == ["-e", name]),
+                "{name}: {:?}",
+                p.args
+            );
+        }
+        let range = range.unwrap();
+        assert!(range.start > split && !range.is_empty());
+        assert!(p.args[range]
+            .iter()
+            .any(|a| a.contains("http://host.docker.internal:4318/v1/logs")));
+        assert!(p.args.iter().all(|a| !a.contains(&token)), "{:?}", p.args);
+        assert!(p.args.ends_with(&rest));
     }
 
     /// Phase 4, item 4: Claude Code under sbx gets derm's kit on the create,

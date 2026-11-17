@@ -79,14 +79,19 @@ def wrap_exec(command: str, arm: str, logs: str, tap: bool = False) -> str:
             'export DERM_TB_CHAT="tb-$(date +%s)-$$"',
             f'printf "%s\\n" "$DERM_TB_CHAT" > {lg}/derm-chat.txt',
             f"derm --version >> {lg}/derm-setup.log 2>&1",
+            # The record is written while the agent runs, not only after it:
+            # Harbor ends an agent that passes its time limit, and nothing
+            # after the exec line runs then (the box, 16 Nov 2026: a trial
+            # that timed out at 900 s came back with no derm record).
+            f'(derm watch tail --since 1d --chat "$DERM_TB_CHAT" --json > {lg}/derm-events.jsonl 2>/dev/null &)',
+            f'(while :; do derm watch report --chat "$DERM_TB_CHAT" --json > {lg}/.derm-report.tmp 2>/dev/null && mv {lg}/.derm-report.tmp {lg}/derm-report.json; sleep 15; done &)',
         ]
     )
     after = "\n".join(
         [
             "derm_rc=$?",
             "sleep 6",  # Codex's log export interval, then the daemon's write
-            f'derm watch report --chat "$DERM_TB_CHAT" --json > {lg}/derm-report.json 2>> {lg}/derm-setup.log',
-            f'(derm watch tail --since 1d --chat "$DERM_TB_CHAT" --json > {lg}/derm-events.jsonl 2>/dev/null & t=$!; sleep 4; kill $t 2>/dev/null)',
+            f'derm watch report --chat "$DERM_TB_CHAT" --json > {lg}/.derm-report.tmp 2>> {lg}/derm-setup.log && mv {lg}/.derm-report.tmp {lg}/derm-report.json',
             "exit $derm_rc",
         ]
     )
