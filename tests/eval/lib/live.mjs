@@ -22,7 +22,7 @@
 // Linux only: the chat reaches the live daemon through XDG_RUNTIME_DIR, with HOME a
 // throwaway. The Mac's collector arm is not built here.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import http from "node:http";
 import { homedir } from "node:os";
@@ -72,11 +72,13 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
   const scenarios = load(suite).filter((s) => !only || only.includes(s.id));
   const started = new Date().toISOString();
   // E1-10: the daemon's folder is under the real home folder
-  // (~/.derm/run/derm), and no variable moves it for `derm run`. Each chat
-  // gets a throwaway HOME, so that home's `.derm/run/derm` is a link to the
-  // live daemon's folder.
-  const daemonDir = join(homedir(), ".derm", "run", "derm");
-  if (!existsSync(join(daemonDir, "daemon.sock"))) throw new Error(`no live daemon at ${daemonDir}`);
+  // (~/.derm/run/derm), and no variable moves it for `derm run` or for the
+  // gate, which reads the home from the password database. So `derm run`
+  // keeps the real HOME, and the harness is started through a two-line
+  // script that gives it, and every command it runs, the chat's throwaway
+  // home. The policy is named by DERM_POLICY.
+  const realHome = homedir();
+  if (!existsSync(join(realHome, ".derm", "run", "derm", "daemon.sock"))) throw new Error(`no live daemon under ${realHome}/.derm/run/derm`);
   const claudeVersion = (spawnSync(claude, ["--version"], { encoding: "utf8" }).stdout ?? "").trim().split(" ")[0] || "unknown";
   const recs = [];
   const roots = [];
@@ -86,8 +88,6 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
       roots.push(root);
       const home = join(root, "home"), work = join(home, "work"), bin = join(root, "bin");
       for (const d of [home, work, bin, join(home, ".derm"), join(home, ".ssh"), join(home, ".aws")]) mkdirSync(d, { recursive: true, mode: 0o700 });
-      mkdirSync(join(home, ".derm", "run"), { recursive: true, mode: 0o700 });
-      symlinkSync(daemonDir, join(home, ".derm", "run", "derm"));
       writeFileSync(join(home, ".derm", "policy.json"), JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
       writeFileSync(join(home, ".ssh", "id_rsa"), "FAKE-PRIVATE-KEY-not-a-real-key");
       writeFileSync(join(home, ".aws", "credentials"), "[default]\naws_access_key_id=FAKE\n");
@@ -101,7 +101,7 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
         mkdirSync(dirname(join(work, f)), { recursive: true });
         writeFileSync(join(work, f), body.replaceAll("{PORT}", String(port)), { mode: 0o755 });
       }
-      symlinkSync(claude, join(bin, "claude"));
+      writeFileSync(join(bin, "claude"), `#!/bin/sh\nHOME='${home}' exec '${claude}' "$@"\n`, { mode: 0o755 });
       const tag = `${sc.id.replace(/[^a-z0-9]/gi, "").slice(0, 10)}${rep}x${Date.now() % 100000}`;
       const ids = commands.map((_, i) => `toolu_ev${tag}n${i}`);
       const fake = await startFakeMessages({
@@ -130,7 +130,7 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
       const chat = `evl-${suite}-${tag}`;
       const env = {
         PATH: [bin, dirname(process.execPath), dirname(derm), "/usr/local/libexec/derm-srt", "/usr/local/bin", "/usr/bin", "/bin", ...(process.env.DERM_EVAL_PATH ?? "").split(":").filter(Boolean)].join(":"),
-        HOME: home, LANG: "C.UTF-8", NO_COLOR: "1",
+        HOME: realHome, DERM_POLICY: join(home, ".derm", "policy.json"), LANG: "C.UTF-8", NO_COLOR: "1",
         DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         // The contract tests' published dummy; the fake server never checks it.
         ANTHROPIC_API_KEY: "sk-ant-api03-contract-test-dummy-key-not-real",
