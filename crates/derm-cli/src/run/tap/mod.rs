@@ -195,8 +195,8 @@ pub(crate) fn environment_with(
         // request leaves the VM with the sandbox's sentinel and gets 401.
         eprintln!(
             "derm run: under sbx the model tap is off for this chat: sbx's proxy adds {harness}'s credential only to requests \
-             for its provider's own host, so a request through the tap would carry none. sbx's policy log, derm's gate in the VM \
-             (where derm's kit runs) and the host's OS feed record the chat"
+             for its provider's own host, so a request through the tap would carry none. sbx's policy log and derm's gate in the VM \
+             (where derm's kit runs) record the chat; the host's OS feed does not see inside the VM"
         );
         return Ok(off(Some("sbx-credential")));
     }

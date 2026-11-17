@@ -746,6 +746,7 @@ fn codex_gets_the_endpoint_in_flags_and_the_token_only_in_its_environment() {
             token: DERM_TOKEN,
             log_prompts: false,
             helper_dir: None,
+            sbx: false,
         },
         &[],
         &mut cmd,
@@ -780,6 +781,7 @@ fn claude_code_gets_a_private_helper_and_no_token_in_arguments() {
             token: DERM_TOKEN,
             log_prompts: false,
             helper_dir: Some(&dir),
+            sbx: false,
         },
         &[],
         &mut cmd,
@@ -817,6 +819,7 @@ fn the_export_stands_down_for_a_users_own_otel_and_for_other_harnesses() {
         token: DERM_TOKEN,
         log_prompts: false,
         helper_dir: None,
+        sbx: false,
     };
     let mut cmd = Command::new("claude");
     cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example");
@@ -840,6 +843,127 @@ fn the_export_stands_down_for_a_users_own_otel_and_for_other_harnesses() {
         Applied::StoodDown(_)
     ));
     assert!(cmd.get_envs().next().is_none(), "nothing set");
+}
+
+/// Eval pass 1, E1-12 (the box, 16 Nov 2026, sbx 0.51.0, Claude Code in the
+/// VM): the export stood down for every sbx chat, so the chat's record held
+/// no telemetry at all. Claude Code in the VM exports through sbx's proxy to
+/// `host.docker.internal` (run there against a listener on the host: two
+/// posts to `/v1/logs`, `Host: host.docker.internal:<port>`, the header
+/// variable's header kept). Only that name, only for an sbx chat, only for
+/// Claude Code, and the token in the header variable (no host script exists
+/// in the VM), which sbx copies by name.
+#[test]
+fn e1_12_claude_code_in_an_sbx_vm_is_pointed_at_the_hosts_name() {
+    let export = |harness, endpoint, sbx| Export {
+        harness,
+        endpoint,
+        token: DERM_TOKEN,
+        log_prompts: false,
+        helper_dir: None,
+        sbx,
+    };
+    let vm = "http://host.docker.internal:4318";
+    let mut cmd = Command::new("sbx");
+    let applied = apply_export(&export("claude-code", vm, true), &[], &mut cmd);
+    assert_eq!(applied, Applied::Claude { helper: None });
+    assert!(args_of(&cmd).is_empty(), "nothing rides in an argument");
+    assert_eq!(
+        env_of(&cmd, "OTEL_EXPORTER_OTLP_ENDPOINT"),
+        Some(Some(vm.to_string()))
+    );
+    assert_eq!(
+        env_of(&cmd, "OTEL_EXPORTER_OTLP_HEADERS"),
+        Some(Some(format!("x-derm-token={DERM_TOKEN}")))
+    );
+    // A helper folder on the host is never used for a VM.
+    let root = std::env::temp_dir().join(format!("derm-helper-{}", uuid::Uuid::new_v4()));
+    let mut cmd = Command::new("sbx");
+    let with_dir = Export {
+        helper_dir: Some(&root),
+        ..export("claude-code", vm, true)
+    };
+    assert_eq!(
+        apply_export(&with_dir, &[], &mut cmd),
+        Applied::Claude { helper: None }
+    );
+    assert!(!root.exists());
+    assert!(args_of(&cmd).is_empty());
+    // Not sbx: the name is not the receiver's.
+    let mut cmd = Command::new("claude");
+    assert!(matches!(
+        apply_export(&export("claude-code", vm, false), &[], &mut cmd),
+        Applied::StoodDown(_)
+    ));
+    assert!(cmd.get_envs().next().is_none(), "nothing set");
+    // Codex in a VM was not run: it stands down and says so.
+    let mut cmd = Command::new("sbx");
+    assert_eq!(
+        apply_export(&export("codex", vm, true), &[], &mut cmd),
+        Applied::StoodDown("no OTel export for this harness under sbx")
+    );
+    assert!(cmd.get_envs().next().is_none(), "nothing set");
+    // Loopback is not what a VM can reach, and no other spelling counts.
+    for bad in [
+        "http://127.0.0.1:4318",
+        "https://host.docker.internal:4318",
+        "http://host.docker.internal",
+        "http://host.docker.internal:0",
+        "http://host.docker.internal:4318/v1/logs",
+        "http://host.docker.internal.evil.example:4318",
+        "http://u:p@host.docker.internal:4318",
+        "http://gateway.docker.internal:4318",
+    ] {
+        let mut cmd = Command::new("sbx");
+        assert!(
+            matches!(
+                apply_export(&export("claude-code", bad, true), &[], &mut cmd),
+                Applied::StoodDown(_)
+            ),
+            "{bad}"
+        );
+    }
+}
+
+/// E1-12: the request from the VM arrives with the name the VM used. The
+/// token is still asked for, and no other name is taken.
+#[test]
+fn e1_12_logs_from_an_sbx_vm_arrive_under_the_hosts_docker_name() {
+    let f = fixture(true);
+    let token = f.receiver.token_for("c", "claude").unwrap();
+    let port = f.receiver.port();
+    let with = |host: &str, token: &str| {
+        format!("POST /v1/logs HTTP/1.1\r\nhost: {host}\r\nx-derm-token: {token}\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n{{}}")
+    };
+    for host in [
+        format!("host.docker.internal:{port}"),
+        format!("Host.Docker.Internal:{port}"),
+    ] {
+        assert_eq!(
+            send_raw(port, with(&host, &token).as_bytes()),
+            200,
+            "{host}"
+        );
+    }
+    assert_eq!(
+        send_raw(
+            port,
+            with(&format!("host.docker.internal:{port}"), "not-a-token").as_bytes()
+        ),
+        401
+    );
+    for host in [
+        format!("host.docker.internal:{}", port.wrapping_add(1)),
+        "host.docker.internal".to_string(),
+        format!("host.docker.internal.evil.example:{port}"),
+        format!("gateway.docker.internal:{port}"),
+    ] {
+        assert_eq!(
+            send_raw(port, with(&host, &token).as_bytes()),
+            403,
+            "{host}"
+        );
+    }
 }
 
 #[test]

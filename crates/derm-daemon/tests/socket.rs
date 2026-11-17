@@ -1485,7 +1485,12 @@ fn a_chat_posts_events_over_http_with_the_sockets_chat_rules() {
         .0,
         403
     );
-    assert_eq!(http(&port, "/v1/logs", &vm, Some(&token), "{}").0, 403);
+    // Until eval pass 1's E1-12 this was 403: the VM's name was taken on
+    // derm's routes alone. Claude Code in an sbx VM now exports its
+    // telemetry to `/v1/logs` under that name (contract: daemon-protocol.md,
+    // section 4), with the chat's token as on every route.
+    assert_eq!(http(&port, "/v1/logs", &vm, Some(&token), "{}").0, 200);
+    assert_eq!(http(&port, "/v1/logs", &vm, None, "{}").0, 401);
     let two = json!({"event": event("h-3", "c", "adapter", "tool.call", json!({}))["event"], "request": {}}).to_string();
     assert_eq!(
         http(&port, "/derm/v1/event", &local, Some(&token), &two).0,

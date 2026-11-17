@@ -1336,9 +1336,13 @@ impl Drop for Cleanup {
 /// deferred; integration w1's request for lane R). The export's arguments go
 /// right after the harness's command, before the user's own; its variables
 /// join the plan's. Nothing changes when the user already exports OTel, the
-/// endpoint is not loopback (sbx), or the harness has no export. Returns
-/// what was done, for the run record.
-fn wire_export(
+/// endpoint is not the receiver's, or the harness has no export. Under sbx
+/// (E1-12) the endpoint is the receiver's port as the VM names it, and each
+/// variable the export sets is named to sbx (`-e`), which copies it into
+/// the VM from its own environment: no value is an argument. Returns what
+/// was done, for the run record.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn wire_export(
     p: &mut plan::Plan,
     rest: &[String],
     harness: &str,
@@ -1346,6 +1350,7 @@ fn wire_export(
     token: Option<&str>,
     helper_dir: Option<&Path>,
     log_prompts: bool,
+    sbx: bool,
 ) -> (serde_json::Value, Option<std::ops::Range<usize>>) {
     use derm_daemon::otel_receiver::{apply_export, Applied, Export};
     let (Some(endpoint), Some(token)) = (otlp, token) else {
@@ -1372,6 +1377,7 @@ fn wire_export(
             token,
             log_prompts,
             helper_dir,
+            sbx,
         },
         rest,
         &mut cmd,
@@ -1383,6 +1389,28 @@ fn wire_export(
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    // E1-12: under sbx the variables the export set are named to sbx, right
+    // after the sandbox's name and before the agent.
+    if sbx {
+        let named = |args: &[String], k: &str| args.windows(2).any(|w| w[0] == "-e" && w[1] == k);
+        let at = if p.args.first().map(String::as_str) == Some("run")
+            && p.args.get(1).map(String::as_str) == Some("--name")
+            && p.args.len() >= 3
+        {
+            3
+        } else {
+            return (json!("stood down: not an sbx run"), None);
+        };
+        let mut names: Vec<String> = Vec::new();
+        for (k, v) in cmd.get_envs() {
+            let k = k.to_string_lossy().into_owned();
+            let ours = v.is_some() && !p.env_set.iter().any(|(n, _)| *n == k);
+            if ours && !named(&p.args, &k) {
+                names.extend(["-e".to_string(), k]);
+            }
+        }
+        p.args.splice(at..at, names);
+    }
     // Before the user's first word, wherever the tap spliced its own block
     // (MW5-6). For Codex, every `-c` sits on one side of a session
     // subcommand: its `-c` is a clap global argument, and clap 4.5.58 keeps
@@ -1801,6 +1829,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             token.as_deref(),
             (a.boundary == Boundary::None).then_some(helper_dir.as_path()),
             content_days.is_some(),
+            a.boundary == Boundary::Sbx,
         )
     };
     // Claude Code's gate, as the last `--settings`: after the Standard
