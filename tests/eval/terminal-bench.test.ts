@@ -84,6 +84,7 @@ describe("the Harbor agent's rewrite of Harbor's exec line", () => {
           "mods=['harbor','harbor.agents','harbor.agents.installed','harbor.agents.installed.codex','harbor.environments','harbor.environments.base']",
           "[sys.modules.__setitem__(n, types.ModuleType(n)) for n in mods]",
           "sys.modules['harbor.agents.installed.codex'].Codex=object",
+          "sys.modules['harbor.agents.installed.codex'].CodexOptions=object",
           "sys.modules['harbor.environments.base'].BaseEnvironment=object",
           "import derm_codex",
           "sys.stdout.write(derm_codex.wrap_exec(sys.argv[2], sys.argv[1], '/logs/agent'))",

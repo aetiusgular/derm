@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import Any, override
+from typing import Any, ClassVar, override
 
-from harbor.agents.installed.codex import Codex
+from harbor.agents.installed.codex import Codex, CodexOptions
 from harbor.environments.base import BaseEnvironment
 
 ARMS = ("off", "gate", "standard")
@@ -93,22 +93,29 @@ def wrap_exec(command: str, arm: str, logs: str, tap: bool = False) -> str:
     return f"{before}\n{wrapped}\n{after}"
 
 
+class DermCodexOptions(CodexOptions):
+    """Harbor checks an agent's kwargs against its options model
+    (agents/installed/base.py:370). These three carry no CLI flag."""
+
+    derm_arm: str = "gate"
+    derm_bundle: str | None = None
+    derm_tap: bool = False
+
+
 class DermCodex(Codex):
     """Harbor's Codex agent with derm in the path."""
 
-    def __init__(
-        self,
-        *args: Any,
-        derm_arm: str = "gate",
-        derm_bundle: str | None = None,
-        derm_tap: bool | str = False,
-        **kwargs: Any,
-    ) -> None:
+    options_model: ClassVar[type[CodexOptions] | None] = DermCodexOptions
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        opts = self.options
+        derm_arm = getattr(opts, "derm_arm", "gate")
+        derm_bundle = getattr(opts, "derm_bundle", None)
         if derm_arm not in ARMS:
             raise ValueError(f"derm_arm must be one of {ARMS}, not {derm_arm!r}")
         self._derm_arm = derm_arm
-        self._derm_tap = str(derm_tap).lower() in ("1", "true", "yes")
+        self._derm_tap = bool(getattr(opts, "derm_tap", False))
         self._derm_bundle = Path(derm_bundle) if derm_bundle else None
         if derm_arm != "off":
             if self._derm_bundle is None:
