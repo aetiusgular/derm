@@ -80,6 +80,10 @@ pub enum FlagReason {
     /// A call the tap saw come back, in a chat whose gate was expected, that
     /// no gate record names (Tony's R7 call, option 1; the P4-R7 pattern).
     NoGateRecord,
+    /// An sbx chat whose telemetry export was on, whose agent was seen to
+    /// work, and from which no telemetry record arrived (the review of
+    /// E1-12, 6-4).
+    TelemetrySilent,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1679,6 +1683,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
 
     found.extend(left_running(input, &windows, &tree));
     found.extend(no_gate_record(input));
+    found.extend(telemetry_silent(input));
     let flags = dedupe(input.events, found);
     let mut expected = dedupe(input.events, hidden);
     expected.truncate(MAX_EXPECTED_ROWS);
@@ -1759,6 +1764,94 @@ fn no_gate_record<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
             alone: true,
         });
     }
+    out
+}
+
+/// How long after an sbx chat starts its telemetry may still be on its way
+/// before a chat that is still running is judged: Claude Code exports its
+/// logs every few seconds, and the first model call can take a minute.
+pub const TELEMETRY_GRACE_MS: i64 = 120_000;
+
+/// The review of E1-12, 6-4: an sbx chat whose `run.start` says the harness's
+/// own telemetry export was applied, whose agent was seen to work (a gate
+/// record from the VM, or a call in sbx's policy log to a host that is not
+/// this machine), and that has no `otel` record at all, once it has stopped
+/// or `TELEMETRY_GRACE_MS` has passed. The agent has sudo in the VM and can
+/// cut the route to the daemon's port; the harness then keeps running and
+/// the record would read as a quiet chat. `run.start` is the daemon scope's,
+/// and a chat token cannot remove a record, so the absence is the VM's
+/// doing or a broken export, never a forged quiet. Only sbx chats: on the
+/// host the export shares the daemon's loopback with the gate.
+fn telemetry_silent<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
+    let mut starts: HashMap<&str, &ActivityEvent> = HashMap::new();
+    for e in input.events {
+        if e.source == ActivitySource::Run
+            && e.kind == "run.start"
+            && str_field(e, "boundary") == Some("sbx")
+            && str_field(e, "otelExport")
+                .is_some_and(|x| x.starts_with("claude-code") || x.starts_with("codex"))
+        {
+            starts.entry(e.chat_id.as_str()).or_insert(e);
+        }
+    }
+    if starts.is_empty() {
+        return Vec::new();
+    }
+    let mut worked: HashSet<&str> = HashSet::new();
+    let mut heard: HashSet<&str> = HashSet::new();
+    let mut stopped: HashSet<&str> = HashSet::new();
+    for e in input.events {
+        let chat = e.chat_id.as_str();
+        let Some(start) = starts.get(chat) else {
+            continue;
+        };
+        if e.at < start.at {
+            continue;
+        }
+        match e.source {
+            ActivitySource::Otel => {
+                heard.insert(chat);
+            }
+            ActivitySource::Adapter => {
+                worked.insert(chat);
+            }
+            ActivitySource::Run if e.kind == "run.stop" => {
+                stopped.insert(chat);
+            }
+            ActivitySource::Run if e.kind == "net.connect" => {
+                // `event_host` reads no `run` record; the policy log's host is
+                // the record's own field.
+                let local = str_field(e, "host").is_none_or(|h| {
+                    let name = h.rsplit_once(':').map_or(h, |(n, _)| n);
+                    name.eq_ignore_ascii_case("localhost")
+                        || name == "127.0.0.1"
+                        || name.to_ascii_lowercase().ends_with(".docker.internal")
+                });
+                if !local {
+                    worked.insert(chat);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<Candidate> = starts
+        .into_iter()
+        .filter(|(chat, start)| {
+            worked.contains(chat)
+                && !heard.contains(chat)
+                && (stopped.contains(chat) || input.now_ms - start.at > TELEMETRY_GRACE_MS)
+        })
+        .map(|(chat, start)| Candidate {
+            event: start,
+            reason: FlagReason::TelemetrySilent,
+            summary: "the agent worked in the sbx VM and none of its own telemetry reached the daemon: the route to the daemon's port was cut in the VM, or the export did not start".into(),
+            tier: None,
+            subject: chat.to_string(),
+            grouped_path: None,
+            alone: true,
+        })
+        .collect();
+    out.sort_by(|a, b| a.subject.cmp(&b.subject));
     out
 }
 
@@ -1879,6 +1972,7 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
         FlagReason::NewHost => "newHost",
         FlagReason::RecordingOff => "recordingOff",
         FlagReason::NoGateRecord => "noGateRecord",
+        FlagReason::TelemetrySilent => "telemetrySilent",
     }
 }
 
@@ -2277,6 +2371,123 @@ mod tests {
             now_ms: 1_794_721_000_000,
             data_dir: None,
         })
+    }
+
+    /// The review of E1-12, 6-4: nothing told a quiet sbx chat from one
+    /// whose telemetry was cut inside the VM.
+    #[test]
+    fn review_6_4_an_sbx_chat_that_worked_and_sent_no_telemetry_is_flagged() {
+        let at = 1_794_720_000_000;
+        let ev_in = |chat: &str, id: &str, t: i64, source, kind: &str, detail: Value| {
+            let mut e = ev(id, t, source, kind, detail, None);
+            e.chat_id = chat.into();
+            e.harness = "claude-code".into();
+            e
+        };
+        let start = |chat: &str, boundary: &str, export: &str| {
+            ev_in(
+                chat,
+                &format!("s-{chat}"),
+                at,
+                ActivitySource::Run,
+                "run.start",
+                json!({"boundary": boundary, "otelExport": export}),
+            )
+        };
+        let applied = "claude-code, token in OTEL_EXPORTER_OTLP_HEADERS";
+        let model = |chat: &str, host: &str| {
+            ev_in(
+                chat,
+                &format!("n-{chat}-{host}"),
+                at + 5_000,
+                ActivitySource::Run,
+                "net.connect",
+                json!({"host": host}),
+            )
+        };
+        let gate = |chat: &str| {
+            ev_in(
+                chat,
+                &format!("g-{chat}"),
+                at + 6_000,
+                ActivitySource::Adapter,
+                "approval",
+                json!({"decision": "allow"}),
+            )
+        };
+        let otel = |chat: &str| {
+            ev_in(
+                chat,
+                &format!("o-{chat}"),
+                at + 7_000,
+                ActivitySource::Otel,
+                "model.request",
+                json!({}),
+            )
+        };
+        let stop = |chat: &str| {
+            ev_in(
+                chat,
+                &format!("x-{chat}"),
+                at + 9_000,
+                ActivitySource::Run,
+                "run.stop",
+                json!({}),
+            )
+        };
+        let silent = |events: &[ActivityEvent], now: i64| -> Vec<String> {
+            let chats = HashMap::new();
+            let hosts: HashSet<String> = ["api.anthropic.com:443".to_string()].into();
+            run_full(&CheckInput {
+                events,
+                approvals: &[],
+                chats: &chats,
+                known_hosts: &hosts,
+                now_ms: now,
+                data_dir: None,
+            })
+            .flags
+            .into_iter()
+            .filter(|f| f.reason == FlagReason::TelemetrySilent)
+            .map(|f| f.chat_id)
+            .collect()
+        };
+        let soon = at + 10_000;
+        let late = at + TELEMETRY_GRACE_MS + 1;
+        let events = [
+            // Worked (the policy log names the model's host), stopped, silent.
+            start("cut", "sbx", applied),
+            model("cut", "api.anthropic.com:443"),
+            stop("cut"),
+            // Worked (a gate record), still running.
+            start("running", "sbx", applied),
+            gate("running"),
+            // Heard from.
+            start("ok", "sbx", applied),
+            model("ok", "api.anthropic.com:443"),
+            otel("ok"),
+            stop("ok"),
+            // The export was not applied: nothing was promised.
+            start("stood", "sbx", "stood down: the user already exports OTel"),
+            gate("stood"),
+            stop("stood"),
+            // Never worked: only the daemon's own port and Docker's names.
+            start("idle", "sbx", applied),
+            model("idle", "localhost:38483"),
+            model("idle", "mcp-gateway.docker.internal:80"),
+            stop("idle"),
+            // Not an sbx chat.
+            start(
+                "host",
+                "none",
+                "claude-code, token through otelHeadersHelper",
+            ),
+            gate("host"),
+            stop("host"),
+        ];
+        assert_eq!(silent(&events, soon), ["cut"]);
+        // A running chat is judged once the grace has passed.
+        assert_eq!(silent(&events, late), ["cut", "running"]);
     }
 
     fn sbx_client_records() -> Vec<ActivityEvent> {

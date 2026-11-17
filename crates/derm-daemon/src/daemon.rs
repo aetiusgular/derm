@@ -71,6 +71,7 @@ fn flag_rank(f: &Value) -> u8 {
         "newHost" => 3,
         "leftRunning" => 4,
         "noGateRecord" => 5,
+        "telemetrySilent" => 5,
         _ => 6,
     }
 }
