@@ -46,11 +46,10 @@ fn random_hex() -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// The socket, as `contracts/daemon-protocol.md` section 1 places it, from
-/// the runtime folder `derm_core::runtime::runtime_dir_with` resolved
-/// (`$XDG_RUNTIME_DIR`, else a private `/run/user/<uid>`).
-pub fn socket_path(home: &Path, runtime: Option<&Path>, macos: bool) -> PathBuf {
-    derm_core::runtime::socket_path_with(Some(home), runtime.map(Path::to_path_buf), macos)
+/// The socket, as `contracts/daemon-protocol.md` section 1 places it
+/// (E1-10: under the home folder on Linux).
+pub fn socket_path(home: &Path, macos: bool) -> PathBuf {
+    derm_core::runtime::socket_path_with(Some(home), macos)
         .unwrap_or_else(|| home.join(".derm/run/derm/daemon.sock"))
 }
 
@@ -174,17 +173,12 @@ mod tests {
     fn socket_paths_follow_the_contract() {
         let h = Path::new("/home/u");
         assert_eq!(
-            socket_path(h, None, true),
+            socket_path(h, true),
             h.join("Library/Application Support/derm/daemon.sock")
         );
-        assert_eq!(
-            socket_path(h, Some(Path::new("/run/user/1")), false),
-            Path::new("/run/user/1/derm/daemon.sock")
-        );
-        assert_eq!(
-            socket_path(h, None, false),
-            h.join(".derm/run/derm/daemon.sock")
-        );
+        // E1-10: under the home folder on Linux (until then a runtime
+        // folder, when one was known, came first).
+        assert_eq!(socket_path(h, false), h.join(".derm/run/derm/daemon.sock"));
     }
 
     #[cfg(unix)]

@@ -30,7 +30,6 @@ fn go(home: &Path, args: &[&str]) -> Run {
         cwd: home.join("proj"),
         macos: false,
         env: &NoEnv,
-        run_user: home.join("no-run-user"),
         confirm: &mut a,
         out: String::new(),
         err: String::new(),

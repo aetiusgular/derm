@@ -1,16 +1,25 @@
-//! Where the daemon's socket folder lives on Linux (release check RC6).
+//! Where the daemon's socket folder lives.
 //!
-//! `$XDG_RUNTIME_DIR` when it is an absolute path. When it is unset (an SSH
-//! route that skips PAM, such as Tailscale SSH, gives none, while the systemd
-//! user unit has it), `/run/user/<uid>`, the folder `pam_systemd` would have
-//! named, when it is a real folder (not a link) owned by that uid with no
-//! group or other bits: the XDG Base Directory spec's "owned by the user",
-//! mode 0700. Else `None`, and callers keep `~/.derm/run`. Nothing here
-//! creates a folder.
+//! On Linux it is `~/.derm/run/derm`, always (eval pass 1, E1-10; Tony's
+//! call of 16 Nov 2026). Until then it was `$XDG_RUNTIME_DIR/derm`, else a
+//! private `/run/user/<uid>/derm`, else the home folder. `/run/user/<uid>`
+//! is made at login, after auditd has loaded its rules at boot, and a
+//! `-F dir=` rule for a folder that does not exist does not load: the one
+//! folder whose read gives full daemon scope (`daemon.token`) was the one
+//! the OS feed did not watch after a reboot (seen on the box: `/run/user/
+//! 1000` born 2 hours after the rules loaded). `~/.derm/run` is there at
+//! boot on a local home and is already in the sensitive list
+//! (`derm-audit-linux/src/sensitive.rs`). It also ends the split where a
+//! shell with no `XDG_RUNTIME_DIR` and a systemd unit with it looked in two
+//! places. The folder is on disk, not tmpfs, as on macOS: the daemon makes
+//! a new token and a new socket at every start.
+//!
+//! `runtime_dir` still names the old folder: the OS feed keeps it in its
+//! sensitive list, and a token left there by an older daemon stays watched
+//! where it can be.
 //!
 //! One function for the daemon's bind path and every Rust client, so a
-//! daemon started from one shell and a CLI run from another agree (podman's
-//! `GetRuntimeDir` does the same on both sides, with a looser mode check).
+//! daemon started from one shell and a CLI run from another agree.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -20,11 +29,10 @@ pub const RUN_USER: &str = "/run/user";
 
 /// The daemon's socket per OS (`contracts/daemon-protocol.md` section 1):
 /// macOS `~/Library/Application Support/derm/daemon.sock`; elsewhere
-/// `<runtime_dir>/derm/daemon.sock`, else `~/.derm/run/derm/daemon.sock`.
-/// Computes the path only.
+/// `~/.derm/run/derm/daemon.sock` (E1-10). Computes the path only.
 pub fn socket_path() -> Option<PathBuf> {
     let home = home_dir();
-    socket_path_with(home.as_deref(), runtime_dir(), cfg!(target_os = "macos"))
+    socket_path_with(home.as_deref(), cfg!(target_os = "macos"))
 }
 
 /// The user's home folder: `HOME` on Unix; `USERPROFILE` on Windows, which
@@ -41,19 +49,11 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 /// `socket_path` from its inputs.
-pub fn socket_path_with(
-    home: Option<&Path>,
-    runtime: Option<PathBuf>,
-    macos: bool,
-) -> Option<PathBuf> {
+pub fn socket_path_with(home: Option<&Path>, macos: bool) -> Option<PathBuf> {
     if macos {
         return Some(home?.join("Library/Application Support/derm/daemon.sock"));
     }
-    let dir = match runtime {
-        Some(r) => r,
-        None => home?.join(".derm/run"),
-    };
-    Some(dir.join("derm/daemon.sock"))
+    Some(home?.join(".derm/run/derm/daemon.sock"))
 }
 
 /// The runtime folder from this process's environment and uid.
@@ -113,18 +113,17 @@ mod tests {
     fn the_socket_follows_the_contract() {
         let h = Path::new("/home/u");
         assert_eq!(
-            socket_path_with(Some(h), None, true),
+            socket_path_with(Some(h), true),
             Some(h.join("Library/Application Support/derm/daemon.sock"))
         );
+        // E1-10: under the home folder on Linux, whatever the runtime
+        // folder is. (Until then: `/run/user/1/derm/daemon.sock` when a
+        // runtime folder was known.)
         assert_eq!(
-            socket_path_with(Some(h), Some(PathBuf::from("/run/user/1")), false),
-            Some(PathBuf::from("/run/user/1/derm/daemon.sock"))
-        );
-        assert_eq!(
-            socket_path_with(Some(h), None, false),
+            socket_path_with(Some(h), false),
             Some(h.join(".derm/run/derm/daemon.sock"))
         );
-        assert_eq!(socket_path_with(None, None, false), None);
+        assert_eq!(socket_path_with(None, false), None);
     }
 
     #[test]

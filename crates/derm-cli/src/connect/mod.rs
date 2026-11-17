@@ -75,10 +75,6 @@ pub struct Ctx<'a> {
     pub cwd: PathBuf,
     pub macos: bool,
     pub env: &'a dyn Env,
-    /// The parent of the per-user runtime folders (`/run/user`), where the
-    /// daemon's socket is when `XDG_RUNTIME_DIR` is unset; tests point it at
-    /// a scratch folder so a daemon on the test machine is never written to.
-    pub run_user: PathBuf,
     pub confirm: &'a mut dyn Confirm,
     pub out: String,
     pub err: String,
@@ -121,7 +117,6 @@ pub fn main(args: &[String]) -> u8 {
         cwd,
         macos: cfg!(target_os = "macos"),
         env: &RealEnv,
-        run_user: PathBuf::from(derm_core::runtime::RUN_USER),
         confirm: &mut tty,
         out: String::new(),
         err: String::new(),
@@ -899,17 +894,10 @@ fn connect(args: &[String], o: &Opts, preset: &Preset, ctx: &mut Ctx) -> Result<
     Ok(0)
 }
 
-/// The daemon's socket, where a write is logged: `$XDG_RUNTIME_DIR`, else a
-/// private `/run/user/<uid>` (release check RC6), the rule the daemon binds
-/// by.
+/// The daemon's socket, where a write is logged (E1-10: under the home
+/// folder on Linux), the rule the daemon binds by.
 fn log_socket(ctx: &Ctx) -> PathBuf {
-    let xdg = ctx.env.var("XDG_RUNTIME_DIR");
-    let runtime = derm_core::runtime::runtime_dir_with(
-        xdg.as_deref().map(std::ffi::OsStr::new),
-        derm_core::runtime::current_uid(),
-        &ctx.run_user,
-    );
-    log::socket_path(&ctx.home, runtime.as_deref(), ctx.macos)
+    log::socket_path(&ctx.home, ctx.macos)
 }
 
 /// `--check-names`: every pair of server names one `_` apart in the user

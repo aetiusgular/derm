@@ -49,7 +49,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const top = mkdtempSync(join(tmpdir(), "derm-int-w4-"));
 const HOME = join(top, "home");
-const RUN = join(top, "run");
+// E1-10: the daemon's folder is under the home folder on Linux (~/.derm/run/derm), no longer $XDG_RUNTIME_DIR/derm.
+const RUN = join(HOME, ".derm", "run");
 const DATA = join(top, "data");
 const WORK = join(HOME, "work");
 const FAKEBIN = join(top, "bin");

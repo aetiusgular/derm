@@ -20,8 +20,10 @@ const MAX_LINE_BYTES = 1024 * 1024;
 export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.DERM_DAEMON_SOCKET && env.DERM_DAEMON_SOCKET.trim() !== "") return env.DERM_DAEMON_SOCKET;
   if (platform() === "darwin") return path.join(homedir(), "Library", "Application Support", "derm", "daemon.sock");
-  const runtime = env.XDG_RUNTIME_DIR;
-  if (runtime && runtime.trim() !== "") return path.join(runtime, "derm", "daemon.sock");
+  // E1-10 (eval pass 1): under the home folder on Linux, never
+  // `$XDG_RUNTIME_DIR`: that folder is made at login, after auditd loads its
+  // rules, so the token beside the socket went unwatched after a reboot
+  // (crates/derm-core/src/runtime.rs).
   return path.join(homedir(), ".derm", "run", "derm", "daemon.sock");
 }
 
@@ -130,12 +132,15 @@ export function vmMarker(
 
 /**
  * Where a daemon socket would be on this machine whatever DERM_DAEMON_SOCKET
- * says: the variable's own path, the defaults with and without the
- * environment's XDG_RUNTIME_DIR, and the home fallback.
+ * says: the variable's own path, the default under the home folder, and the
+ * runtime folders an older daemon used.
  */
 export function socketCandidates(env: NodeJS.ProcessEnv): string[] {
   const out = new Set<string>([socketPath(env), socketPath({ ...env, DERM_DAEMON_SOCKET: "" })]);
-  out.add(socketPath({ ...env, DERM_DAEMON_SOCKET: "", XDG_RUNTIME_DIR: "" }));
+  // Where a daemon older than E1-10 kept its socket: still a sign that this
+  // is a host with a daemon, not derm's VM.
+  const runtime = env.XDG_RUNTIME_DIR;
+  if (runtime && runtime.trim() !== "") out.add(path.join(runtime, "derm", "daemon.sock"));
   // HOME can be moved by a project's env; the password database's home
   // cannot (re-review W5R-7).
   try {

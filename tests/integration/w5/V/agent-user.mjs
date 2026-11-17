@@ -49,7 +49,8 @@ const OWNER_UID = 1600;
 const AGENT = "dermv-agent";
 const OWNER_HOME = `/home/${OWNER}`;
 const AGENT_HOME = `/var/lib/${AGENT}`;
-const RUNTIME = `/run/user/${OWNER_UID}`;
+// E1-10: the daemon's folder is under the home folder on Linux (~/.derm/run/derm), no longer $XDG_RUNTIME_DIR/derm.
+const RUNTIME = `${OWNER_HOME}/.derm/run`;
 const LIB = "/usr/local/lib/dermv"; // root's: derm, the daemon, the hook core
 const PROJECT = "/srv/dermv-project";
 const results = [];
@@ -168,7 +169,7 @@ try {
   chmodSync(`${OWNER_HOME}/.derm/policy.json`, 0o600);
   sh("chown", ["-R", `${OWNER}:${OWNER}`, `${OWNER_HOME}/.derm`]);
   mkdirSync(RUNTIME, { recursive: true, mode: 0o700 });
-  sh("chown", [`${OWNER}:${OWNER}`, RUNTIME]);
+  sh("chown", ["-R", `${OWNER}:${OWNER}`, `${OWNER_HOME}/.derm`]);
   chmodSync(RUNTIME, 0o700);
   daemon = spawn("runuser", ["-u", OWNER, "--", "env", "-i", `HOME=${OWNER_HOME}`, `XDG_RUNTIME_DIR=${RUNTIME}`,
     "PATH=/usr/bin:/bin", `${LIB}/bin/derm-daemon`, "--foreground"], { stdio: "ignore" });

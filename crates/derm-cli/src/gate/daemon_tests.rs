@@ -205,14 +205,15 @@ mod unix {
         if cfg!(target_os = "macos") {
             return;
         }
+        // E1-10: the socket's folder comes from the home folder alone on
+        // Linux, so the variable a project could aim into itself is HOME
+        // now (until then this loop set `XDG_RUNTIME_DIR`, which is no
+        // longer read).
         for runtime in [
             t.project.join("run").display().to_string(),
             "relative/run".to_string(),
         ] {
-            let env = Env::of(&[
-                ("XDG_RUNTIME_DIR", &runtime),
-                ("DERM_CHAT_TOKEN", CHAT_TOKEN),
-            ]);
+            let env = Env::of(&[("HOME", &runtime), ("DERM_CHAT_TOKEN", CHAT_TOKEN)]);
             let e = exchange(
                 &[json!({"op": "event", "event": {"id": "x"}})],
                 &opts(&env, &t.project),
@@ -516,7 +517,7 @@ mod unix {
             ],
         );
         // Where this OS's default socket is for that environment (macOS:
-        // under HOME's Library; elsewhere: under XDG_RUNTIME_DIR).
+        // under HOME's Library; elsewhere, since E1-10: under HOME's .derm).
         let default = socket_path(&env.with("DERM_DAEMON_SOCKET", ""));
         std::fs::create_dir_all(default.parent().unwrap()).unwrap();
         std::fs::write(&default, "").unwrap();

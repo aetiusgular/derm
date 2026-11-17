@@ -31,7 +31,6 @@ fn go(home: &Path, env: &[(&str, &str)], args: &[&str]) -> (u8, String, String) 
         cwd: home.join("proj"),
         macos: false,
         env: &env,
-        run_user: home.join("no-run-user"),
         confirm: &mut a,
         out: String::new(),
         err: String::new(),

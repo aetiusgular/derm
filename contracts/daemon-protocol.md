@@ -7,7 +7,7 @@ Written by tk session 0, 27 Oct 2026; brought to what lane B built, and to integ
 | OS | Socket |
 |---|---|
 | macOS | `~/Library/Application Support/derm/daemon.sock` |
-| Linux | `$XDG_RUNTIME_DIR/derm/daemon.sock` when the variable is an absolute path, else `/run/user/<uid>/derm/daemon.sock` when `/run/user/<uid>` is a folder (not a link) owned by the uid with no group or other bits, else `~/.derm/run/derm/daemon.sock` (`derm_core::runtime`; release check RC6, 0.1.2). The daemon and every client resolve it the same way; nothing creates `/run/user/<uid>` |
+| Linux | `~/.derm/run/derm/daemon.sock`, always (eval pass 1's E1-10, Tony's call of 16 Nov 2026: `/run/user/<uid>` is made at login, after auditd loads its rules, so the token beside the socket was not watched after a reboot; `crates/derm-core/src/runtime.rs`). Until then: `$XDG_RUNTIME_DIR/derm/`, else a private `/run/user/<uid>/derm/`, else `~/.derm/run/derm/daemon.sock` (`derm_core::runtime`; release check RC6, 0.1.2). The daemon and every client resolve it the same way; nothing creates `/run/user/<uid>` |
 
 Beside the socket: `daemon.pid`, `daemon.token`, `otlp.endpoint`, each 0600, and on Linux `chats/<chat>.token` while a `derm run --boundary none` chat runs (section 2, rule 4). The activity log is elsewhere on Linux: `$XDG_DATA_HOME/derm/activity`, else `~/.local/share/derm/activity`. On macOS everything is under `~/Library/Application Support/derm/`. `derm-daemon --foreground [--socket PATH] [--data-dir PATH]`; the two flags are for tests.
 

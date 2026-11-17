@@ -25,6 +25,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import http from "node:http";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { load, ROOT } from "./scenarios.mjs";
 import { table } from "./score.mjs";
@@ -65,12 +66,17 @@ export function projectFiles(sc) {
 }
 
 export async function runLive({ suite, out, derm, claude, boundary = "none", delayMs = 0, reps = 1, settleMs = 20_000, machine, dermVersion, only }) {
-  if (process.platform !== "linux") throw new Error("the live run is Linux only (the daemon is reached through XDG_RUNTIME_DIR)");
+  if (process.platform !== "linux") throw new Error("the live run is Linux only");
   const { startFakeMessages, textBlock, toolUse } = await import(join(ROOT, "tests", "cli-contract", "lib", "fakeMessages.mjs"));
   mkdirSync(join(out, "raw"), { recursive: true });
   const scenarios = load(suite).filter((s) => !only || only.includes(s.id));
   const started = new Date().toISOString();
-  const runtime = process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`;
+  // E1-10: the daemon's folder is under the real home folder
+  // (~/.derm/run/derm), and no variable moves it for `derm run`. Each chat
+  // gets a throwaway HOME, so that home's `.derm/run/derm` is a link to the
+  // live daemon's folder.
+  const daemonDir = join(homedir(), ".derm", "run", "derm");
+  if (!existsSync(join(daemonDir, "daemon.sock"))) throw new Error(`no live daemon at ${daemonDir}`);
   const claudeVersion = (spawnSync(claude, ["--version"], { encoding: "utf8" }).stdout ?? "").trim().split(" ")[0] || "unknown";
   const recs = [];
   const roots = [];
@@ -80,6 +86,8 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
       roots.push(root);
       const home = join(root, "home"), work = join(home, "work"), bin = join(root, "bin");
       for (const d of [home, work, bin, join(home, ".derm"), join(home, ".ssh"), join(home, ".aws")]) mkdirSync(d, { recursive: true, mode: 0o700 });
+      mkdirSync(join(home, ".derm", "run"), { recursive: true, mode: 0o700 });
+      symlinkSync(daemonDir, join(home, ".derm", "run", "derm"));
       writeFileSync(join(home, ".derm", "policy.json"), JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "allow" }] }), { mode: 0o600 });
       writeFileSync(join(home, ".ssh", "id_rsa"), "FAKE-PRIVATE-KEY-not-a-real-key");
       writeFileSync(join(home, ".aws", "credentials"), "[default]\naws_access_key_id=FAKE\n");
@@ -122,7 +130,7 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
       const chat = `evl-${suite}-${tag}`;
       const env = {
         PATH: [bin, dirname(process.execPath), dirname(derm), "/usr/local/libexec/derm-srt", "/usr/local/bin", "/usr/bin", "/bin", ...(process.env.DERM_EVAL_PATH ?? "").split(":").filter(Boolean)].join(":"),
-        HOME: home, XDG_RUNTIME_DIR: runtime, LANG: "C.UTF-8", NO_COLOR: "1",
+        HOME: home, LANG: "C.UTF-8", NO_COLOR: "1",
         DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         // The contract tests' published dummy; the fake server never checks it.
         ANTHROPIC_API_KEY: "sk-ant-api03-contract-test-dummy-key-not-real",
@@ -147,7 +155,7 @@ export async function runLive({ suite, out, derm, claude, boundary = "none", del
   }
   await sleep(settleMs);
   const log = join(out, "raw", "activity.jsonl");
-  const ex = spawnSync(derm, ["audit", "export", "--out", log], { env: { ...process.env, XDG_RUNTIME_DIR: runtime }, encoding: "utf8", maxBuffer: 1 << 28 });
+  const ex = spawnSync(derm, ["audit", "export", "--out", log], { env: { ...process.env }, encoding: "utf8", maxBuffer: 1 << 28 });
   const chats = new Set(recs.map((r) => r.chat));
   const events = {};
   if (existsSync(log)) {

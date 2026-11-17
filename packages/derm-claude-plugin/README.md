@@ -16,7 +16,7 @@ node --no-warnings "${CLAUDE_PLUGIN_ROOT}/bin/derm-hook.mjs" pre     # PreToolUs
 node --no-warnings "${CLAUDE_PLUGIN_ROOT}/bin/derm-hook.mjs" post    # PostToolUse, every tool, timeout 30 s
 ```
 
-`bin/derm-hook.mjs` loads `src/hook.ts`, which reads only the policy file and, when present, the daemon's socket and token file (`~/Library/Application Support/derm/` on macOS, `$XDG_RUNTIME_DIR/derm/` on Linux). It makes no network call. It has no dependencies.
+`bin/derm-hook.mjs` loads `src/hook.ts`, which reads only the policy file and, when present, the daemon's socket and token file (`~/Library/Application Support/derm/` on macOS, `~/.derm/run/derm/` on Linux). It makes no network call. It has no dependencies.
 
 ## Needs
 

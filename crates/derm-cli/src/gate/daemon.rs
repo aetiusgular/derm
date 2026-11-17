@@ -139,19 +139,8 @@ pub fn socket_path(env: &Env) -> PathBuf {
             .join("derm")
             .join("daemon.sock");
     }
-    if let Some(rt) = env.raw("XDG_RUNTIME_DIR").filter(|r| !r.trim().is_empty()) {
-        return Path::new(rt).join("derm").join("daemon.sock");
-    }
-    // Case 105: the folder pam_systemd would have named, when it is ours.
-    #[cfg(target_os = "linux")]
-    {
-        let uid = derm_core::runtime::current_uid();
-        if let Some(rt) =
-            derm_core::runtime::runtime_dir_with(None, uid, Path::new(derm_core::runtime::RUN_USER))
-        {
-            return rt.join("derm").join("daemon.sock");
-        }
-    }
+    // E1-10: under the home folder on Linux, never `$XDG_RUNTIME_DIR` or
+    // `/run/user/<uid>` (`derm_core::runtime`).
     home.join(".derm")
         .join("run")
         .join("derm")
@@ -371,10 +360,11 @@ pub fn socket_candidates(env: &Env) -> Vec<PathBuf> {
         socket_path(env),
         socket_path(&env.with("DERM_DAEMON_SOCKET", "")),
     ];
-    out.push(socket_path(
-        &env.with("DERM_DAEMON_SOCKET", "")
-            .with("XDG_RUNTIME_DIR", ""),
-    ));
+    // Where a daemon older than E1-10 kept its socket: still a sign that
+    // this is a host with a daemon, not derm's VM.
+    if let Some(rt) = env.raw("XDG_RUNTIME_DIR").filter(|r| !r.trim().is_empty()) {
+        out.push(Path::new(rt).join("derm").join("daemon.sock"));
+    }
     // HOME can be moved by a project's env; the password database's home
     // cannot (re-review W5R-7).
     #[cfg(unix)]

@@ -44,7 +44,6 @@ fn go_with(home: &Path, env: &MapEnv, answer: Answer, args: &[&str]) -> Run {
         cwd: home.join("proj"),
         macos: false,
         env,
-        run_user: home.join("no-run-user"),
         confirm: &mut a,
         out: String::new(),
         err: String::new(),

@@ -74,13 +74,13 @@ derm changes none of this. Without a root change, use `--boundary sbx` (Claude C
 | What | Where |
 |---|---|
 | Your policy | `~/.derm/policy.json` (`DERM_POLICY` moves it) |
-| The daemon's socket, token and OTLP port | `$XDG_RUNTIME_DIR/derm/`; when the variable is unset, `/run/user/<uid>/derm/` if that folder is yours and 0700, else `~/.derm/run/derm/` (0700; the files 0600) |
+| The daemon's socket, token and OTLP port | `~/.derm/run/derm/` (0700; the files 0600). Until eval pass 1 (E1-10) it was `$XDG_RUNTIME_DIR/derm/`; restart the daemon and the feed after an upgrade, and install the audit rules again |
 | The activity log | `$XDG_DATA_HOME/derm` or `~/.local/share/derm` |
 | Backups of configs `derm connect` changed | `~/.derm/backups/` |
 
 ### Over SSH
 
-The systemd user unit runs with `XDG_RUNTIME_DIR=/run/user/<uid>`. A shell that did not come through PAM's `pam_systemd`, such as one from Tailscale SSH, has no `XDG_RUNTIME_DIR`. Since 0.1.2 derm then looks in `/run/user/<uid>` when that folder exists, belongs to you and is 0700, so `derm status`, `derm watch` and `derm run` find the unit's daemon from such a shell. 0.1.0 looked in `~/.derm/run` and said "not reachable"; there, `export XDG_RUNTIME_DIR=/run/user/$(id -u)` first. A daemon started by hand picks its folder by the same rule.
+The daemon keeps its socket and token under your home folder, not in `/run/user/<uid>`. That folder is made at login, after auditd has loaded its rules at boot, and a rule for a folder that does not exist yet does not load, so reads of the token were not recorded after a reboot (`derm watch report` said `OS FEED NOT WATCHING`). `~/.derm/run` is there at boot. A home that is not there at boot (encrypted at login, or on the network) still has that gap until the rules are loaded again after login, and `derm watch report` still says so. The folder is on disk, so the daemon writes a new token and a new socket at every start.
 
 Two things you will see under srt that are not derm's doing (eval pass 1, E1-6 and E1-7):
 

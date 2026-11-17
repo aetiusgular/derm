@@ -119,10 +119,19 @@ describe("paths from the environment", () => {
   });
 
   it("refuses a daemon socket inside the session folder or relative, whichever variable named it (S14)", async () => {
-    if (process.platform === "darwin") return; // the socket there is under HOME, not XDG_RUNTIME_DIR
-    for (const runtime of [path.join(project, "run"), "relative/run"]) {
-      const r = await exchange([{ op: "event", event: { id: "x" } }], { env: { XDG_RUNTIME_DIR: runtime, DERM_CHAT_TOKEN: CHAT }, client: "t", replyTimeoutMs: 500, cwd: project });
-      expect("error" in r && r.error, runtime).toMatch(/the daemon socket is (inside the session folder|not an absolute path)/);
+    // E1-10: the socket's folder comes from the home folder alone, on Linux
+    // as on macOS, so HOME is the variable a project could aim into itself
+    // (until then this set XDG_RUNTIME_DIR, which is no longer read).
+    const saved = process.env.HOME;
+    try {
+      for (const home of [path.join(project, "run"), "relative/run"]) {
+        process.env.HOME = home;
+        const r = await exchange([{ op: "event", event: { id: "x" } }], { env: { DERM_CHAT_TOKEN: CHAT }, client: "t", replyTimeoutMs: 500, cwd: project });
+        expect("error" in r && r.error, home).toMatch(/the daemon socket is (inside the session folder|not an absolute path)/);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.HOME;
+      else process.env.HOME = saved;
     }
   });
 
