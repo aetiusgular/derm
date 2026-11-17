@@ -109,7 +109,11 @@ describe("the Harbor agent's rewrite of Harbor's exec line", () => {
     expect(gate.indexOf("while :; do derm watch report")).toBeLessThan(gate.indexOf("derm run codex"));
     expect(gate.lastIndexOf("derm-report.json")).toBeGreaterThan(gate.indexOf("derm run codex"));
     expect(gate.trimEnd().endsWith("exit $derm_rc")).toBe(true);
-    expect(wrap("standard", harbor)).toContain("--no-tap --tier standard -- exec ");
+    // Standard is Codex's own sandbox, so Harbor's flag that turns it off goes.
+    const standard = wrap("standard", harbor);
+    expect(standard).toContain("--no-tap --tier standard -- exec --skip-git-repo-check");
+    expect(standard).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(gate).toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   it.skipIf(!py)("leaves the control arm and every other command alone", () => {

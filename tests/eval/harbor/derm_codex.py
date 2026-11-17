@@ -39,6 +39,7 @@ from harbor.environments.base import BaseEnvironment
 ARMS = ("off", "gate", "standard")
 REMOTE = "/installed-agent/derm"
 EXEC_MARK = "codex exec "
+BYPASS = "--dangerously-bypass-approvals-and-sandbox "
 
 
 def wrap_exec(command: str, arm: str, logs: str, tap: bool = False) -> str:
@@ -60,6 +61,13 @@ def wrap_exec(command: str, arm: str, logs: str, tap: bool = False) -> str:
         run += ["--tier", "standard"]
     run += ["--", "exec "]
     wrapped = command.replace(EXEC_MARK, " ".join(run), 1)
+    if arm == "standard":
+        # Harbor's flag turns Codex's own sandbox off, and that sandbox is
+        # the Standard tier: derm refuses to start with both (the box, 16
+        # Nov 2026: every trial of this arm ended in 9 s with no call).
+        if BYPASS not in wrapped:
+            raise ValueError("expected Harbor's bypass flag in its exec line")
+        wrapped = wrapped.replace(BYPASS, "", 1)
     q = shlex.quote
     b, lg = q(REMOTE), q(logs)
     before = "\n".join(
