@@ -2249,8 +2249,17 @@ impl Daemon {
             harness: event.harness.clone(),
             folders,
             derm_exe,
-            // E1-11: the registered process of an sbx chat is sbx's client.
-            sbx: event.detail.get("boundary").and_then(Value::as_str) == Some("sbx"),
+            // E1-11, review 6-1 and 6-6: the client derm started for an sbx
+            // chat, by its real path, and the home its state is under.
+            sbx_exe: (event.detail.get("boundary").and_then(Value::as_str) == Some("sbx"))
+                .then(|| event.detail.get("sbxExe").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_string),
+            home: event
+                .detail
+                .get("home")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }) else {
             return;
         };
@@ -3411,7 +3420,7 @@ mod tests {
                 Source::Run,
                 "run.start",
                 None,
-                json!({"boundary": boundary, "argv": ["sbx"], "cwd": "/home/t/proj"}),
+                json!({"boundary": boundary, "argv": ["sbx"], "cwd": "/home/t/proj", "sbxExe": "/usr/bin/sbx", "home": "/home/t"}),
             );
             start.at = now - 60_000;
             assert!(d.op_event(&Who::Daemon, start).ok);

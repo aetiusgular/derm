@@ -54,11 +54,17 @@ pub struct ChatContext {
     /// BW6R3-2: the gate's own state in a sandbox's tmpfs is read by it.
     #[serde(default)]
     pub derm_exe: Option<String>,
-    /// The chat's boundary is an sbx VM (`run.start`'s `boundary`, which only
-    /// the daemon scope posts). The registered process is then sbx's own
-    /// client on the host, never the agent (eval pass 1, E1-11).
+    /// The sbx client `derm run` started for a chat whose boundary is an
+    /// sbx VM, by its real path (`run.start`'s `sbxExe`, which only the
+    /// daemon scope posts). That process is sbx's own client on the host,
+    /// never the agent (eval pass 1, E1-11). A name alone is not enough:
+    /// any program called `sbx` would get the rule's cover (review 6-1).
     #[serde(default)]
-    pub sbx: bool,
+    pub sbx_exe: Option<String>,
+    /// The home folder of the user who ran `derm run` (`run.start`'s
+    /// `home`), which is where that client keeps its state (review 6-6).
+    #[serde(default)]
+    pub home: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -804,38 +810,59 @@ const SBX_STATE: &[&str] = &[
 /// Linux feed names it when the kernel gave the name with no folder (the
 /// only files of that name on the box are under
 /// `~/.config/com.docker.sandboxes`).
-fn sbx_state(path: &str) -> bool {
+fn sbx_state(path: &str, home: &str) -> bool {
     if path == "?.posixage.lock" {
         return true;
     }
     if path.split('/').any(|p| p == "..") {
         return false;
     }
-    home_of(path).is_some_and(|home| {
-        path.strip_prefix(&format!("{home}/"))
-            .is_some_and(|rest| SBX_STATE.iter().any(|dir| rest.starts_with(dir)))
-    })
+    path.strip_prefix(home)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| SBX_STATE.iter().any(|dir| rest.starts_with(dir)))
 }
 
+/// The ports sbx's client was seen to connect to: 443 for Docker's
+/// services and 65535 for its address probes (the fixture; review 6-5).
+const SBX_CLIENT_PORTS: &[i64] = &[443, 65535];
+
 /// E1-11: in an sbx chat the process derm registered is sbx's client, which
-/// derm started itself. The agent runs in the VM and the host's feed never
-/// sees it. The client's writes to its own state and its own connections
-/// (Docker Hub, its feature flags, its analytics) are sbx's, not the chat's:
-/// expected, counted, and kept behind the toggle. Anything else the client
-/// does still flags, and so does every child it starts.
-fn sbx_client_rule(event: &ActivityEvent, tier: Tier, reason: FlagReason, sbx: bool) -> bool {
-    if !sbx || tier != Tier::Root {
+/// derm started itself by its real path. The agent runs in the VM and the
+/// host's feed never sees it. The client's writes to its own state under
+/// the user's home and its own connections (Docker Hub, its feature flags,
+/// its analytics) are sbx's, not the chat's: expected, counted, and kept
+/// behind the toggle. Anything else the client does still flags, and so
+/// does every child it starts. Only what the client was seen to do is
+/// covered: opens for writing, creates, renames and unlinks. A link or a
+/// copy into its state would make a second name for another file, and is
+/// flagged (review 6-2).
+fn sbx_client_rule(
+    event: &ActivityEvent,
+    tier: Tier,
+    reason: FlagReason,
+    chat: Option<&ChatContext>,
+) -> bool {
+    let Some(chat) = chat else { return false };
+    let (Some(client), Some(home)) = (chat.sbx_exe.as_deref(), chat.home.as_deref()) else {
         return false;
-    }
-    let exe = str_field(event, "exe").unwrap_or("");
-    if !exe.starts_with('/') || basename(exe) != "sbx" {
+    };
+    if tier != Tier::Root || str_field(event, "exe") != Some(client) {
         return false;
     }
     match reason {
-        FlagReason::NewHost => event.kind == "net.connect",
+        FlagReason::NewHost => {
+            event.kind == "net.connect"
+                && int_field(event, "port").is_some_and(|p| SBX_CLIENT_PORTS.contains(&p))
+        }
         FlagReason::WriteOutsideFolders => {
+            if !matches!(
+                event.kind.as_str(),
+                "write" | "create" | "rename" | "unlink"
+            ) {
+                return false;
+            }
             let paths = written_paths(event);
-            !paths.is_empty() && paths.iter().all(|p| sbx_state(p))
+            !paths.is_empty() && paths.iter().all(|p| sbx_state(p, home))
         }
         _ => false,
     }
@@ -1601,8 +1628,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                 .pid
                 .is_some_and(|pid| tree.forked_by_root(&event.chat_id, pid, event.at));
             let during_turn = in_turn(&turns, &event.chat_id, event.at);
-            let sbx_client = sbx_client_rule(event, tier, reason, chat.is_some_and(|c| c.sbx))
-                .then_some(RULE_SBX_CLIENT);
+            let sbx_client = sbx_client_rule(event, tier, reason, chat).then_some(RULE_SBX_CLIENT);
             let rule = sbx_client.or_else(|| {
                 expected_rule(
                     event,
@@ -1938,7 +1964,8 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/code/app".into(), "/Users/t/code/my lib".into()],
                 derm_exe: None,
-                sbx: false,
+                sbx_exe: None,
+                home: None,
             },
         )])
     }
@@ -2263,6 +2290,10 @@ mod tests {
     }
 
     fn sbx_chat(sbx: bool) -> HashMap<String, ChatContext> {
+        sbx_chat_of(sbx.then_some("/usr/bin/sbx"), Some("/home/opone"))
+    }
+
+    fn sbx_chat_of(exe: Option<&str>, home: Option<&str>) -> HashMap<String, ChatContext> {
         HashMap::from([(
             "e1sbx-turn1".to_string(),
             ChatContext {
@@ -2270,7 +2301,8 @@ mod tests {
                 harness: "claude-code".into(),
                 folders: vec!["/home/opone/w6box/e1/sbxturn/proj".into()],
                 derm_exe: Some("/home/opone/.local/bin/derm".into()),
-                sbx,
+                sbx_exe: exe.map(str::to_string),
+                home: home.map(str::to_string),
             },
         )])
     }
@@ -2321,7 +2353,15 @@ mod tests {
         let child = with(&|e| e.detail["tier"] = json!("child"));
         assert_eq!(child.flags.len(), 1, "{:?}", child.flags);
         // A program that is not sbx, or is named by no absolute path.
-        for exe in ["/usr/bin/bash", "/tmp/x/sbxx", "sbx"] {
+        // Review 6-1: nor one that is only called sbx, wherever it sits.
+        for exe in [
+            "/usr/bin/bash",
+            "/tmp/x/sbxx",
+            "sbx",
+            "/tmp/x/sbx",
+            "/home/opone/w6box/e1/sbxturn/proj/sbx",
+            "/home/opone/w6box/e1/sbxturn/proj/node_modules/.bin/sbx",
+        ] {
             let other = with(&|e| e.detail["exe"] = json!(exe));
             assert_eq!(other.flags.len(), 1, "{exe}: {:?}", other.flags);
         }
@@ -2341,6 +2381,35 @@ mod tests {
         let mut mv = recs.iter().find(|e| e.kind == "rename").cloned().unwrap();
         mv.detail["dest"] = json!("/home/opone/.profile");
         assert_eq!(check_with(&[mv], &sbx_chat(true)).flags.len(), 1);
+        // Review 6-2: a link or a copy of another file into its state is a
+        // second name for that file, and flags.
+        for kind in ["link", "copyfile", "clone"] {
+            let mut ln = recs[0].clone();
+            ln.kind = kind.into();
+            ln.detail["path"] = json!("/home/opone/.ssh/id_ed25519");
+            ln.detail["dest"] = json!("/home/opone/.sbx/k");
+            assert_eq!(check_with(&[ln], &sbx_chat(true)).flags.len(), 1, "{kind}");
+        }
+        // Review 6-5: a connection to a port the client was never seen on.
+        let mut ssh = recs
+            .iter()
+            .find(|e| e.kind == "net.connect")
+            .cloned()
+            .unwrap();
+        ssh.detail["port"] = json!(22);
+        ssh.detail["host"] = json!("203.0.113.9:22");
+        ssh.detail["addr"] = json!("203.0.113.9");
+        assert_eq!(check_with(&[ssh], &sbx_chat(true)).flags.len(), 1);
+        // Review 6-6: another user's home is not this client's state.
+        let other = with(&|e| e.detail["path"] = json!("/home/other/.sbx/evil"));
+        assert_eq!(other.flags.len(), 1, "{:?}", other.flags);
+        // No client path or no home in the record: nothing is hidden.
+        for chats in [
+            sbx_chat_of(None, Some("/home/opone")),
+            sbx_chat_of(Some("/usr/bin/sbx"), None),
+        ] {
+            assert_eq!(check_with(&recs[..1], &chats).flags.len(), 1);
+        }
         // A sensitive open by the client is not covered.
         let mut open = recs[0].clone();
         open.kind = "open".into();
@@ -2415,7 +2484,8 @@ mod tests {
                 harness: "claude-code".into(),
                 folders: vec!["/home/opone/w6box/rt3/a5cp".into()],
                 derm_exe: Some("/home/opone/.local/bin/derm".into()),
-                sbx: false,
+                sbx_exe: None,
+                home: None,
             },
         )]);
         let out = check_with(&writes, &own);
@@ -2454,7 +2524,8 @@ mod tests {
                     harness: "claude-code".into(),
                     folders: vec!["/home/opone/w6box/rt4/a5cp".into()],
                     derm_exe: exe.map(str::to_string),
-                    sbx: false,
+                    sbx_exe: None,
+                    home: None,
                 },
             )])
         };
@@ -2519,7 +2590,8 @@ mod tests {
                     harness: "claude-code".into(),
                     folders: vec![folder.into()],
                     derm_exe: Some(exe.into()),
-                    sbx: false,
+                    sbx_exe: None,
+                    home: None,
                 },
             )])
         };
@@ -2722,7 +2794,8 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec![r"\\?\C:\derm-win-w5\proj-w5b12".into()],
                 derm_exe: None,
-                sbx: false,
+                sbx_exe: None,
+                home: None,
             },
         )]);
         let events = [

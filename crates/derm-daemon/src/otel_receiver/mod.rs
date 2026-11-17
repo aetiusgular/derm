@@ -1494,7 +1494,11 @@ pub fn apply_export(export: &Export, args: &[String], cmd: &mut Command) -> Appl
     if export.sbx && export.harness != "claude-code" {
         return Applied::StoodDown("no OTel export for this harness under sbx");
     }
-    if harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
+    // Under sbx the VM gets only the variables derm names to sbx, so the
+    // user's own OTel variables on the host configure nothing there, and
+    // standing down for them left the chat with no telemetry at all (the
+    // review of E1-12, 6-3).
+    if !export.sbx && harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
         return Applied::StoodDown("the user already exports OTel");
     }
     if export.harness == "codex" {

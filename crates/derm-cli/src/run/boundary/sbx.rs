@@ -366,14 +366,24 @@ pub(crate) fn start_with(
         super::kit::Kit::Without(_) => Vec::new(),
     };
     let st = stages(&plan.args, &plan.env_set, interactive, &mixins).map_err(|e| (1, e))?;
+    let exported = plan
+        .env_set
+        .iter()
+        .any(|(k, _)| k == "OTEL_EXPORTER_OTLP_ENDPOINT");
     match &kit {
         super::kit::Kit::Built(_) => eprintln!(
             "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
              The agent runs in full access there, so what your policy would ask is denied. The agent has sudo in the VM and could remove the gate; \
-             the VM stays the boundary. sbx's policy log records the VM's network calls, and Claude Code's own telemetry reaches the daemon \
-             over its port. The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
+             the VM stays the boundary. sbx's policy log records the VM's network calls{} \
+             The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
              The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
             st.workload,
+            // Review 6-4: said only when the export was applied.
+            if exported {
+                ", and Claude Code's own telemetry reaches the daemon over its port."
+            } else {
+                ". Claude Code's own telemetry is NOT exported for this chat (run.start's otelExport says why)."
+            },
             super::kit::SWITCH
         ),
         super::kit::Kit::Without(why) => eprintln!(
@@ -1100,6 +1110,31 @@ mod tests {
             );
         }
         assert_eq!(st.ports, vec![4318]);
+        // Review 6-7: the user's own words after `--` do not count as
+        // naming a variable to sbx.
+        let mut user = argv.clone();
+        user.extend(s(&["-e", "OTEL_EXPORTER_OTLP_HEADERS"]));
+        let mut rest2 = rest.clone();
+        rest2.extend(s(&["-e", "OTEL_EXPORTER_OTLP_HEADERS"]));
+        let mut p = plan_for(user);
+        crate::run::wire_export(
+            &mut p,
+            &rest2,
+            "claude-code",
+            Some("http://127.0.0.1:4318"),
+            Some(&token),
+            None,
+            false,
+            true,
+        );
+        let agent = p.args.iter().position(|a| a == "claude").unwrap();
+        assert!(
+            p.args[..agent]
+                .windows(2)
+                .any(|w| w == ["-e", "OTEL_EXPORTER_OTLP_HEADERS"]),
+            "{:?}",
+            p.args
+        );
         // With prompts in the record, their switch goes too.
         let mut p = plan_for(argv.clone());
         crate::run::wire_export(

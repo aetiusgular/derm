@@ -81,6 +81,13 @@ pub fn clean_context(mut context: ChatContext) -> Option<ChatContext> {
         .as_deref()
         .and_then(plain_folder)
         .filter(|p| p.len() <= MAX_FOLDER_LEN && !p.contains('\0'));
+    // Review 6-1, 6-6: the same shape for the sbx client and the home.
+    for field in [&mut context.sbx_exe, &mut context.home] {
+        *field = field
+            .as_deref()
+            .and_then(plain_folder)
+            .filter(|p| p.len() <= MAX_FOLDER_LEN && !p.contains('\0'));
+    }
     Some(context)
 }
 
@@ -548,7 +555,8 @@ mod tests {
                 "/Users/t/with space".into(),
             ],
             derm_exe: None,
-            sbx: false,
+            sbx_exe: None,
+            home: None,
         })
         .unwrap();
         assert_eq!(context.folders, vec!["/Users/t/app", "/Users/t/with space"]);
@@ -588,7 +596,8 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
                 derm_exe: None,
-                sbx: false,
+                sbx_exe: None,
+                home: None,
             },
         )]);
         let collector_events = collector::EventsReply {
@@ -675,7 +684,8 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
                 derm_exe: None,
-                sbx: false,
+                sbx_exe: None,
+                home: None,
             },
         )]);
         let reply = collector::EventsReply {
@@ -734,7 +744,8 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
                 derm_exe: None,
-                sbx: false,
+                sbx_exe: None,
+                home: None,
             },
         )]);
         let reply = collector::EventsReply {

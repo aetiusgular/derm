@@ -1392,7 +1392,12 @@ pub(crate) fn wire_export(
     // E1-12: under sbx the variables the export set are named to sbx, right
     // after the sandbox's name and before the agent.
     if sbx {
-        let named = |args: &[String], k: &str| args.windows(2).any(|w| w[0] == "-e" && w[1] == k);
+        // Only derm's own words count as naming a variable: the user's,
+        // after `--`, are the agent's arguments (review 6-7).
+        let named = |args: &[String], k: &str| {
+            let end = args.len().saturating_sub(rest.len());
+            args[..end].windows(2).any(|w| w[0] == "-e" && w[1] == k)
+        };
         let at = if p.args.first().map(String::as_str) == Some("run")
             && p.args.get(1).map(String::as_str) == Some("--name")
             && p.args.len() >= 3
@@ -2039,6 +2044,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         None => None,
     };
 
+    // Review 6-1: sbx's client, found once, by its real path, never from a
+    // relative PATH entry or the chat's own folders; every step starts it by
+    // that path and `run.start` names it.
+    let sbx_exe = if a.boundary == Boundary::Sbx {
+        Some(
+            preflight::boundary_client(env.program("sbx"), &env.path, &p.folders, &cwd)
+                .map_err(|e| (1, e))?,
+        )
+    } else {
+        None
+    };
+    let sbx_program = sbx_exe.as_deref().unwrap_or("sbx").to_string();
+
     // sbx: what the log holds before the start is not this run's.
     let mut differ = policy_log::Differ::default();
     let log_args = p.sandbox_name.as_ref().map(|n| {
@@ -2050,7 +2068,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ]
     });
     if let Some(la) = &log_args {
-        if let Some(out) = exec::output_with_timeout(env.program("sbx"), la, POLICY_LOG_TIMEOUT) {
+        if let Some(out) = exec::output_with_timeout(&sbx_program, la, POLICY_LOG_TIMEOUT) {
             differ.baseline(&policy_log::parse(&out));
         }
     }
@@ -2058,7 +2076,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     exec::install_handlers();
     let started = Instant::now();
     let mut launch = p.clone_for_start();
-    launch.program = env.program(&p.program).to_string();
+    launch.program = if a.boundary == Boundary::Sbx && p.program == "sbx" {
+        // Review 6-13: sbx's own telemetry is off on the attach too.
+        if !launch.env_set.iter().any(|(k, _)| k == "SBX_NO_TELEMETRY") {
+            launch.env_set.push(("SBX_NO_TELEMETRY".into(), "1".into()));
+        }
+        sbx_program.clone()
+    } else {
+        env.program(&p.program).to_string()
+    };
     // The companion first, so it is there when the harness writes its first
     // request (lane P's responder).
     if let (Some((prog, cargs)), Some((argv, path))) = (&p.companion, &companion_path) {
@@ -2080,7 +2106,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         .collect();
     let mut sandbox = if p.sandbox_name.is_some() {
         match boundary::sbx::start(
-            env.program("sbx"),
+            &sbx_program,
             &mut launch,
             filter.is_none() && boundary::sbx::interactive(),
         ) {
@@ -2241,6 +2267,10 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // knows the gate's own state writes in a sandbox's tmpfs (box test
         // w6 retest 3, BW6R3-2); null when it cannot be read.
         "dermExe": derm_exe(),
+        // Review 6-1, 6-6: the sbx client this run started, by its real
+        // path, and the home its state is under; null outside sbx.
+        "sbxExe": sbx_exe,
+        "home": env.home,
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
@@ -2334,7 +2364,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let stop = Arc::new(AtomicBool::new(false));
     let poller = match (&daemon, &log_args) {
         (Some(d), Some(la)) => {
-            let sbx_path = env.program("sbx").to_string();
+            let sbx_path = sbx_program.clone();
             let (socket, dtoken, la, chat, harness, stop) = (
                 d.socket.clone(),
                 d.token.clone(),
@@ -3907,7 +3937,7 @@ mod end_to_end {
     #[cfg(unix)]
     #[test]
     fn e1_8_sbx_holds_the_projects_control_paths_and_names_what_the_chat_made() {
-        let st = setup("sbx");
+        let st = setup("sbx-e18");
         let real = std::fs::canonicalize(&st.work).unwrap();
         std::fs::create_dir_all(real.join(".git/hooks")).unwrap();
         std::fs::write(real.join(".git/config"), "[core]\n").unwrap();

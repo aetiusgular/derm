@@ -210,6 +210,10 @@ pub fn code(status: &ExitStatus) -> (u8, Option<i32>) {
 pub fn output_with_timeout(program: &str, args: &[String], limit: Duration) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
+        // Every sbx command derm runs has sbx's own telemetry off
+        // (docs/privacy.md; review 6-13: the log polls did not). The
+        // variable means nothing to any other program run here.
+        .env("SBX_NO_TELEMETRY", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

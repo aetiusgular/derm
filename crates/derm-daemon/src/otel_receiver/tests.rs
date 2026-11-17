@@ -889,6 +889,20 @@ fn e1_12_claude_code_in_an_sbx_vm_is_pointed_at_the_hosts_name() {
     );
     assert!(!root.exists());
     assert!(args_of(&cmd).is_empty());
+    // Review 6-3: the user's own OTel variables on the host do not reach
+    // the VM, so they do not switch the VM's export off; the VM gets derm's
+    // endpoint, not theirs.
+    let mut cmd = Command::new("sbx");
+    cmd.env("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example");
+    cmd.env("OTEL_METRICS_EXPORTER", "otlp");
+    assert_eq!(
+        apply_export(&export("claude-code", vm, true), &[], &mut cmd),
+        Applied::Claude { helper: None }
+    );
+    assert_eq!(
+        env_of(&cmd, "OTEL_EXPORTER_OTLP_ENDPOINT"),
+        Some(Some(vm.to_string()))
+    );
     // Not sbx: the name is not the receiver's.
     let mut cmd = Command::new("claude");
     assert!(matches!(
