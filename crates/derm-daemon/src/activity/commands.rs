@@ -548,6 +548,7 @@ mod tests {
                 "/Users/t/with space".into(),
             ],
             derm_exe: None,
+            sbx: false,
         })
         .unwrap();
         assert_eq!(context.folders, vec!["/Users/t/app", "/Users/t/with space"]);
@@ -587,6 +588,7 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
                 derm_exe: None,
+                sbx: false,
             },
         )]);
         let collector_events = collector::EventsReply {
@@ -673,6 +675,7 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
                 derm_exe: None,
+                sbx: false,
             },
         )]);
         let reply = collector::EventsReply {
@@ -731,6 +734,7 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/app".into()],
                 derm_exe: None,
+                sbx: false,
             },
         )]);
         let reply = collector::EventsReply {

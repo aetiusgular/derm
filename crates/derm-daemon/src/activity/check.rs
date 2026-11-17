@@ -54,6 +54,11 @@ pub struct ChatContext {
     /// BW6R3-2: the gate's own state in a sandbox's tmpfs is read by it.
     #[serde(default)]
     pub derm_exe: Option<String>,
+    /// The chat's boundary is an sbx VM (`run.start`'s `boundary`, which only
+    /// the daemon scope posts). The registered process is then sbx's own
+    /// client on the host, never the agent (eval pass 1, E1-11).
+    #[serde(default)]
+    pub sbx: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -776,6 +781,65 @@ impl<'a> Tree<'a> {
 pub const RULE_HARNESS_READ: &str = "harnessRead";
 pub const RULE_CREDENTIAL_OWNER: &str = "credentialOwner";
 pub const RULE_SHELL_INIT: &str = "shellInit";
+/// E1-11: sbx's own client on the host, keeping its own state and reaching
+/// Docker's services, in a chat whose boundary is sbx.
+pub const RULE_SBX_CLIENT: &str = "sbxClient";
+
+/// Where sbx's client keeps its own state, under the home folder: its
+/// settings, locks, analytics queue and feature-flag cache. Read from the
+/// box's feed (sbx 0.51.0, Linux: every write of its client in a real chat,
+/// `tests/fixtures/e1_sbx_client.md`) and from the folders sbx 0.53.0 made on
+/// the Mac (listed, not seen written in a chat).
+const SBX_STATE: &[&str] = &[
+    ".config/sandboxes/",
+    ".config/com.docker.sandboxes/",
+    ".local/share/sandboxes/",
+    ".cache/sandboxes/",
+    ".sbx/",
+    "Library/Application Support/com.docker.sandboxes/",
+    "Library/Caches/com.docker.sandboxes/",
+];
+
+/// A path in sbx's own state. `?.posixage.lock` is its lock file as the
+/// Linux feed names it when the kernel gave the name with no folder (the
+/// only files of that name on the box are under
+/// `~/.config/com.docker.sandboxes`).
+fn sbx_state(path: &str) -> bool {
+    if path == "?.posixage.lock" {
+        return true;
+    }
+    if path.split('/').any(|p| p == "..") {
+        return false;
+    }
+    home_of(path).is_some_and(|home| {
+        path.strip_prefix(&format!("{home}/"))
+            .is_some_and(|rest| SBX_STATE.iter().any(|dir| rest.starts_with(dir)))
+    })
+}
+
+/// E1-11: in an sbx chat the process derm registered is sbx's client, which
+/// derm started itself. The agent runs in the VM and the host's feed never
+/// sees it. The client's writes to its own state and its own connections
+/// (Docker Hub, its feature flags, its analytics) are sbx's, not the chat's:
+/// expected, counted, and kept behind the toggle. Anything else the client
+/// does still flags, and so does every child it starts.
+fn sbx_client_rule(event: &ActivityEvent, tier: Tier, reason: FlagReason, sbx: bool) -> bool {
+    if !sbx || tier != Tier::Root {
+        return false;
+    }
+    let exe = str_field(event, "exe").unwrap_or("");
+    if !exe.starts_with('/') || basename(exe) != "sbx" {
+        return false;
+    }
+    match reason {
+        FlagReason::NewHost => event.kind == "net.connect",
+        FlagReason::WriteOutsideFolders => {
+            let paths = written_paths(event);
+            !paths.is_empty() && paths.iter().all(|p| sbx_state(p))
+        }
+        _ => false,
+    }
+}
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -1537,15 +1601,20 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                 .pid
                 .is_some_and(|pid| tree.forked_by_root(&event.chat_id, pid, event.at));
             let during_turn = in_turn(&turns, &event.chat_id, event.at);
-            if let Some(rule) = expected_rule(
-                event,
-                tier,
-                reason,
-                harness,
-                folders,
-                forked_by_root,
-                during_turn,
-            ) {
+            let sbx_client = sbx_client_rule(event, tier, reason, chat.is_some_and(|c| c.sbx))
+                .then_some(RULE_SBX_CLIENT);
+            let rule = sbx_client.or_else(|| {
+                expected_rule(
+                    event,
+                    tier,
+                    reason,
+                    harness,
+                    folders,
+                    forked_by_root,
+                    during_turn,
+                )
+            });
+            if let Some(rule) = rule {
                 *suppressed.entry(rule.to_string()).or_default() += 1;
                 hidden.push(Candidate {
                     event,
@@ -1869,6 +1938,7 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/code/app".into(), "/Users/t/code/my lib".into()],
                 derm_exe: None,
+                sbx: false,
             },
         )])
     }
@@ -2182,6 +2252,102 @@ mod tests {
         })
     }
 
+    fn sbx_client_records() -> Vec<ActivityEvent> {
+        include_str!("../../tests/fixtures/e1_sbx_client.jsonl")
+            .lines()
+            .map(|l| {
+                let v: Value = serde_json::from_str(l).unwrap();
+                serde_json::from_value(v["event"].clone()).unwrap()
+            })
+            .collect()
+    }
+
+    fn sbx_chat(sbx: bool) -> HashMap<String, ChatContext> {
+        HashMap::from([(
+            "e1sbx-turn1".to_string(),
+            ChatContext {
+                chat_id: "e1sbx-turn1".into(),
+                harness: "claude-code".into(),
+                folders: vec!["/home/opone/w6box/e1/sbxturn/proj".into()],
+                derm_exe: Some("/home/opone/.local/bin/derm".into()),
+                sbx,
+            },
+        )])
+    }
+
+    /// Eval pass 1, E1-11 (the box, 16 Nov 2026, sbx 0.51.0, one real Claude
+    /// Code turn in an sbx VM): the host's feed sees sbx's client, which derm
+    /// started, and nothing in the VM. Its lock files, its analytics queue,
+    /// its feature-flag cache and its connections to Docker's services read
+    /// as 27 flags on a chat whose agent wrote two files in its own folder.
+    /// They are the client's, expected and counted.
+    #[test]
+    fn e1_11_sbx_clients_own_state_and_hosts_are_expected_in_an_sbx_chat() {
+        let recs = sbx_client_records();
+        assert_eq!(recs.len(), 15);
+        let out = check_with(&recs, &sbx_chat(true));
+        assert!(out.flags.is_empty(), "{:?}", out.flags);
+        // Thirteen by this rule; the two in `~/.cache` never flagged (a
+        // cache folder is noise for any program).
+        assert_eq!(out.suppressed.get(RULE_SBX_CLIENT), Some(&13));
+        assert!(!out.expected.is_empty());
+        let cache = recs
+            .iter()
+            .filter(|e| str_field(e, "path").is_some_and(|p| p.contains("/.cache/")))
+            .count();
+        assert_eq!(cache, 2);
+    }
+
+    /// The rule rests on the chat's boundary, the registered process and the
+    /// place written: the same records flag in a chat with another boundary,
+    /// from a child of the client, from a program of another name, and for a
+    /// write outside sbx's own state.
+    #[test]
+    fn e1_11_nothing_else_is_hidden_by_the_sbx_client_rule() {
+        let recs = sbx_client_records();
+        // Another boundary: every record flags as before (15 records, one
+        // row per file or host after the dedupe).
+        let plain = check_with(&recs, &sbx_chat(false));
+        assert!(plain.flags.len() >= 10, "{:?}", plain.flags.len());
+        assert_eq!(plain.suppressed.get(RULE_SBX_CLIENT), None);
+        let with = |f: &dyn Fn(&mut ActivityEvent)| {
+            let mut e = recs[0].clone();
+            f(&mut e);
+            check_with(&[e], &sbx_chat(true))
+        };
+        // The recorded write alone is expected.
+        assert!(with(&|_| {}).flags.is_empty());
+        // A child of the client.
+        let child = with(&|e| e.detail["tier"] = json!("child"));
+        assert_eq!(child.flags.len(), 1, "{:?}", child.flags);
+        // A program that is not sbx, or is named by no absolute path.
+        for exe in ["/usr/bin/bash", "/tmp/x/sbxx", "sbx"] {
+            let other = with(&|e| e.detail["exe"] = json!(exe));
+            assert_eq!(other.flags.len(), 1, "{exe}: {:?}", other.flags);
+        }
+        // A write outside sbx's own state, and one that climbs out of it.
+        for path in [
+            "/home/opone/.bashrc",
+            "/home/opone/.ssh/authorized_keys",
+            "/home/opone/.config/sandboxes/../../.bashrc",
+            "/home/opone/.config/sandboxes-other/x",
+            "/etc/cron.d/x",
+            "?.bashrc",
+        ] {
+            let out = with(&|e| e.detail["path"] = json!(path));
+            assert_eq!(out.flags.len(), 1, "{path}: {:?}", out.flags);
+        }
+        // A rename out of its state is judged by both names.
+        let mut mv = recs.iter().find(|e| e.kind == "rename").cloned().unwrap();
+        mv.detail["dest"] = json!("/home/opone/.profile");
+        assert_eq!(check_with(&[mv], &sbx_chat(true)).flags.len(), 1);
+        // A sensitive open by the client is not covered.
+        let mut open = recs[0].clone();
+        open.kind = "open".into();
+        open.detail["path"] = json!("/home/opone/.ssh/id_ed25519");
+        assert_eq!(check_with(&[open], &sbx_chat(true)).flags.len(), 1);
+    }
+
     /// Box test w6 retest 3, BW6R3-1: bubblewrap 0.11.1 opens each bind it
     /// made with `O_PATH` to find it in the mount table (`bind-mount.c:397-408`
     /// at v0.11.1), and derm's rule on `~/.derm/run` records the one of an srt
@@ -2249,6 +2415,7 @@ mod tests {
                 harness: "claude-code".into(),
                 folders: vec!["/home/opone/w6box/rt3/a5cp".into()],
                 derm_exe: Some("/home/opone/.local/bin/derm".into()),
+                sbx: false,
             },
         )]);
         let out = check_with(&writes, &own);
@@ -2287,6 +2454,7 @@ mod tests {
                     harness: "claude-code".into(),
                     folders: vec!["/home/opone/w6box/rt4/a5cp".into()],
                     derm_exe: exe.map(str::to_string),
+                    sbx: false,
                 },
             )])
         };
@@ -2351,6 +2519,7 @@ mod tests {
                     harness: "claude-code".into(),
                     folders: vec![folder.into()],
                     derm_exe: Some(exe.into()),
+                    sbx: false,
                 },
             )])
         };
@@ -2553,6 +2722,7 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec![r"\\?\C:\derm-win-w5\proj-w5b12".into()],
                 derm_exe: None,
+                sbx: false,
             },
         )]);
         let events = [

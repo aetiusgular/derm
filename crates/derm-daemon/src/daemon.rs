@@ -2249,6 +2249,8 @@ impl Daemon {
             harness: event.harness.clone(),
             folders,
             derm_exe,
+            // E1-11: the registered process of an sbx chat is sbx's client.
+            sbx: event.detail.get("boundary").and_then(Value::as_str) == Some("sbx"),
         }) else {
             return;
         };
@@ -3382,6 +3384,68 @@ mod tests {
         let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
         let g = report(&second, "chat-g");
         assert_eq!(g["flags"], 0, "after a restart: {g}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Eval pass 1, E1-11: a `run.start` that names sbx as the boundary makes
+    /// the registered process's own state expected (sbx's client, which derm
+    /// started); the same write in a chat with another boundary flags.
+    #[test]
+    fn e1_11_run_starts_sbx_boundary_reaches_the_check() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let d = Daemon::new(TOKEN, log, &data, false).unwrap();
+        let now = now_ms();
+        for (n, (chat, boundary)) in [("chat-s", "sbx"), ("chat-n", "none")]
+            .into_iter()
+            .enumerate()
+        {
+            let mut start = ev_of(
+                chat,
+                Source::Run,
+                "run.start",
+                None,
+                json!({"boundary": boundary, "argv": ["sbx"], "cwd": "/home/t/proj"}),
+            );
+            start.at = now - 60_000;
+            assert!(d.op_event(&Who::Daemon, start).ok);
+            let mut write = ev_of(
+                chat,
+                Source::Auditd,
+                "write",
+                Some(77),
+                json!({
+                    "path": "/home/t/.config/sandboxes/sandboxes/settings.json.lock",
+                    "exe": "/usr/bin/sbx",
+                    "tier": "root",
+                }),
+            );
+            write.id = format!("auditd-3-{n}");
+            write.at = now - 50_000;
+            assert!(d.op_event(&Who::Daemon, write).ok);
+        }
+        let report = |chat: &str, flags: u64| {
+            let mut held = Value::Null;
+            for _ in 0..100 {
+                held = d.report(Some(chat), 0, i64::MAX);
+                if held["events"] == 2 && held["flags"] == flags {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            held
+        };
+        let s = report("chat-s", 0);
+        assert_eq!(s["events"], 2, "{s}");
+        assert_eq!(s["flags"], 0, "{s}");
+        let n = report("chat-n", 1);
+        assert_eq!(n["flags"], 1, "another boundary, no hide: {n}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
