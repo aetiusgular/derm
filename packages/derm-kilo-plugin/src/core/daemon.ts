@@ -360,10 +360,12 @@ export type ApproveRequest = {
   tool: string;
   summary: string;
   timeoutSeconds: number;
+  /** E1-14: ask only whether the chat's boundary answers for it; the daemon replies at once and shows no approver the request. */
+  boundaryOnly?: boolean;
 };
 
 export type ApproveOutcome =
-  | { answer: "yes" | "no"; by: "approver" | "timeout" | "none" }
+  | { answer: "yes" | "no"; by: "approver" | "timeout" | "none" | "boundary" }
   | { unreachable: string };
 
 /** Sends `approve` and waits for the answer (contract section 2, rule 3). */
@@ -377,7 +379,7 @@ export async function approve(request: ApproveRequest, env?: NodeJS.ProcessEnv):
   const reply = result.replies[0];
   if (!reply || reply.ok !== true) return { unreachable: `daemon refused approve: ${String(reply?.error ?? "no reply")}` };
   const answer = reply.answer === "yes" ? "yes" : "no";
-  const by = reply.by === "approver" || reply.by === "timeout" || reply.by === "none" ? reply.by : "approver";
+  const by = reply.by === "approver" || reply.by === "timeout" || reply.by === "none" || reply.by === "boundary" ? reply.by : "approver";
   // Only an explicit yes from an approver counts as yes.
   if (answer === "yes" && by !== "approver") return { answer: "no", by };
   return { answer, by };

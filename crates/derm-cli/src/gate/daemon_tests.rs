@@ -259,6 +259,7 @@ mod unix {
             tool: "bash".into(),
             summary: "bash: ls".into(),
             timeout_seconds: 1,
+            boundary_only: false,
         };
         assert_eq!(
             approve(&r, &env, &t.project),

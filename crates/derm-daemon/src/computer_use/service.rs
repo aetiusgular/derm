@@ -325,6 +325,7 @@ impl Host for DaemonHost {
                 tool: GRANT_TOOL.to_string(),
                 summary: summary.to_string(),
                 timeout_seconds: ASK_SECONDS,
+                boundary_only: false,
             },
         };
         // `approve` answers on `out` before `handle` returns.
@@ -352,6 +353,7 @@ impl Host for DaemonHost {
                 tool: FOREGROUND_TOOL.to_string(),
                 summary: summary.to_string(),
                 timeout_seconds: ASK_SECONDS,
+                boundary_only: false,
             },
         };
         self.0.handle(&who, request, &out);

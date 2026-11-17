@@ -136,6 +136,8 @@ export function readTrial(dir) {
     allowed: by("allow"),
     denied: by("deny"),
     asked: by("ask"),
+    // E1-14: asks the chat's boundary answered (allowed and recorded).
+    askedAllowed: approvals ? approvals.filter((e) => e.detail?.decision === "allow" && /allows what it would ask/.test(String(e.detail?.reason ?? ""))).length : null,
   };
 }
 
@@ -164,6 +166,7 @@ export function summarize(name, trials) {
     withDermRecord: ran.filter((t) => t.derm).length,
     gateCalls: sum("gateCalls"),
     denied: sum("denied"),
+    askedAllowed: sum("askedAllowed"),
     flags: sum("flags"),
     otelRecords: sum("otel"),
     trialsWithNoOtel: ran.filter((t) => t.derm && !t.otel).map((t) => t.task ?? t.trial),

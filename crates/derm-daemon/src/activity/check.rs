@@ -65,6 +65,11 @@ pub struct ChatContext {
     /// `home`), which is where that client keeps its state (review 6-6).
     #[serde(default)]
     pub home: Option<String>,
+    /// `run.start`'s `asks: "allow"`: the chat runs unattended in full
+    /// access inside a boundary, and `derm run` (the daemon scope) said an
+    /// ask is to be allowed and recorded there, not denied.
+    #[serde(default)]
+    pub asks_allow: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -2060,6 +2065,7 @@ mod tests {
                 derm_exe: None,
                 sbx_exe: None,
                 home: None,
+                asks_allow: false,
             },
         )])
     }
@@ -2514,6 +2520,7 @@ mod tests {
                 derm_exe: Some("/home/opone/.local/bin/derm".into()),
                 sbx_exe: exe.map(str::to_string),
                 home: home.map(str::to_string),
+                asks_allow: false,
             },
         )])
     }
@@ -2697,6 +2704,7 @@ mod tests {
                 derm_exe: Some("/home/opone/.local/bin/derm".into()),
                 sbx_exe: None,
                 home: None,
+                asks_allow: false,
             },
         )]);
         let out = check_with(&writes, &own);
@@ -2737,6 +2745,7 @@ mod tests {
                     derm_exe: exe.map(str::to_string),
                     sbx_exe: None,
                     home: None,
+                    asks_allow: false,
                 },
             )])
         };
@@ -2803,6 +2812,7 @@ mod tests {
                     derm_exe: Some(exe.into()),
                     sbx_exe: None,
                     home: None,
+                    asks_allow: false,
                 },
             )])
         };
@@ -3007,6 +3017,7 @@ mod tests {
                 derm_exe: None,
                 sbx_exe: None,
                 home: None,
+                asks_allow: false,
             },
         )]);
         let events = [

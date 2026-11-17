@@ -1071,18 +1071,25 @@ pub struct ApproveRequest {
     pub tool: String,
     pub summary: String,
     pub timeout_seconds: u64,
+    /// E1-14: ask only whether the chat's boundary answers for it; the
+    /// daemon replies at once and shows no approver the request.
+    pub boundary_only: bool,
 }
 
 impl ApproveRequest {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "id": self.id,
             "chat": self.chat,
             "harness": self.harness,
             "tool": self.tool,
             "summary": self.summary,
             "timeoutSeconds": self.timeout_seconds,
-        })
+        });
+        if self.boundary_only {
+            v["boundaryOnly"] = Value::Bool(true);
+        }
+        v
     }
 }
 
@@ -1092,6 +1099,8 @@ pub enum By {
     Approver,
     Timeout,
     None,
+    /// E1-14: no one; the chat's boundary answers for its asks.
+    Boundary,
 }
 
 /// What `approve` gave (`ApproveOutcome`).
@@ -1133,10 +1142,11 @@ pub fn approve(request: &ApproveRequest, env: &Env, cwd: &Path) -> ApproveOutcom
     let by = match reply.get("by").and_then(Value::as_str) {
         Some("timeout") => By::Timeout,
         Some("none") => By::None,
+        Some("boundary") => By::Boundary,
         _ => By::Approver,
     };
     ApproveOutcome::Answer {
-        yes: yes && by == By::Approver,
+        yes: yes && matches!(by, By::Approver | By::Boundary),
         by,
     }
 }

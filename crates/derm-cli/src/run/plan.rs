@@ -36,7 +36,20 @@ pub const OWNED_VARS: &[&str] = &[
     "DERM_GATEWAY_URL",
     "DERM_DAEMON_SOCKET",
     "DERM_FULL_ACCESS",
+    "DERM_ASKS",
 ];
+
+/// E1-14 (Terminal-Bench on the box, 16 Nov 2026: 112 of 294 calls of an
+/// unattended Codex denied, 64 for a glob, a variable or an escape): in full
+/// access an ask is a deny, because no one can answer. Inside a boundary
+/// that is the containment, the sbx VM or one the user names with `--asks
+/// allow`, the gate allows and records it. Only Claude Code and Codex, whose
+/// gates were read to put every ask to the daemon.
+fn boundary_asks(i: &Inputs, harness: &str, full: &[String]) -> bool {
+    !full.is_empty()
+        && matches!(harness, "claude-code" | "codex")
+        && (i.args.boundary == Boundary::Sbx || i.args.asks_allow)
+}
 
 /// Arguments and variables that turn an agent's own approvals off: Orca's
 /// full-access setting per agent (`src/shared/tui-agent-permissions.ts:12-49`
@@ -657,6 +670,9 @@ pub struct Plan {
     pub notes: Vec<String>,
     /// The words that put the agent in full access (case 83).
     pub full_access: Vec<String>,
+    /// E1-14: the gate allows and records what it would ask (`run.start`'s
+    /// `asks: "allow"`, which the daemon takes from the daemon scope alone).
+    pub asks_allow: bool,
     /// A program derm starts beside the harness, outside any sandbox, and
     /// stops after it: lane P's Cline approval responder.
     pub companion: Option<(String, Vec<String>)>,
@@ -886,6 +902,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             });
             names.retain(|n| *n != "DERM_OTLP_ENDPOINT" || otlp.is_some());
             names.retain(|n| *n != "DERM_FULL_ACCESS" || !full.is_empty());
+            names.retain(|n| *n != "DERM_ASKS" || boundary_asks(i, h.id, &full));
             names.retain(|n| *n != "DERM_GATEWAY_URL" || gateway.is_some());
             for n in names {
                 args.extend(["-e".to_string(), n.to_string()]);
@@ -1382,6 +1399,22 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             full.join(" ")
         ));
     }
+    let asks_allow = boundary_asks(i, h.id, &full);
+    if asks_allow {
+        env.push(("DERM_ASKS".into(), "boundary".into()));
+        notes.push(format!(
+            "derm run: no one can answer an ask in this chat (full access) and {}, so derm's gate allows what it would ask and records each one (run.start says asks: allow; a deny rule still denies). `derm watch report` lists them",
+            if i.args.boundary == Boundary::Sbx {
+                "the sbx VM is its boundary"
+            } else {
+                "--asks allow says it runs inside a boundary of your own"
+            }
+        ));
+    } else if i.args.asks_allow {
+        notes.push(
+            "derm run: --asks allow changes nothing here: it applies to Claude Code and Codex in full access (the harness's own approvals off), where an ask is otherwise a deny".to_string(),
+        );
+    }
     if let (true, Some(prog)) = (i.args.harness.id == "other", i.args.program.as_deref()) {
         if let Some(h) = super::harness::by_basename(prog).filter(|_| prog.contains('/')) {
             notes.push(format!(
@@ -1402,6 +1435,7 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
         state_dirs,
         notes,
         full_access: full,
+        asks_allow,
         companion,
         scratch_dir,
     };
@@ -1437,6 +1471,7 @@ impl Plan {
             state_dirs: Vec::new(),
             notes: Vec::new(),
             full_access: Vec::new(),
+            asks_allow: false,
             companion: None,
             scratch_dir: None,
         }
@@ -2583,6 +2618,87 @@ mod tests {
         // A harness argument that happens to hold the token is refused.
         let args = a(&["pi", "--boundary", "none", "--", TOKEN]);
         assert!(build(&inputs(&args)).unwrap_err().contains("token"));
+    }
+
+    /// E1-14: where the boundary is the containment and no one can answer,
+    /// the gate is told to put its asks to the daemon, and `run.start` will
+    /// say the boundary answers them.
+    #[test]
+    fn e1_14_asks_are_answered_by_the_boundary_under_sbx_or_by_the_flag() {
+        let env = |p: &Plan, k: &str| {
+            p.env_set
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+        // sbx, Claude Code and Codex: on, and named to sbx.
+        for (harness, flag) in [
+            ("claude-code", "--dangerously-skip-permissions"),
+            ("codex", "--dangerously-bypass-approvals-and-sandbox"),
+        ] {
+            let args = a(&[harness, "--boundary", "sbx", "--", flag]);
+            let p = build(&inputs(&args)).unwrap();
+            assert!(p.asks_allow, "{harness}");
+            assert_eq!(env(&p, "DERM_ASKS").as_deref(), Some("boundary"));
+            assert!(p.args.windows(2).any(|w| w == ["-e", "DERM_ASKS"]));
+            assert!(
+                p.notes.iter().any(|n| n.contains("asks: allow")),
+                "{:?}",
+                p.notes
+            );
+        }
+        // No boundary: only on the user's word.
+        let bypass = "--dangerously-bypass-approvals-and-sandbox";
+        let p = build(&inputs(&a(&["codex", "--boundary", "none", "--", bypass]))).unwrap();
+        assert!(!p.asks_allow);
+        assert_eq!(env(&p, "DERM_ASKS"), None);
+        let p = build(&inputs(&a(&[
+            "codex",
+            "--boundary",
+            "none",
+            "--asks",
+            "allow",
+            "--",
+            bypass,
+        ])))
+        .unwrap();
+        assert!(p.asks_allow);
+        assert_eq!(env(&p, "DERM_ASKS").as_deref(), Some("boundary"));
+        // Not full access: an ask can still be answered, so nothing changes.
+        let p = build(&inputs(&a(&[
+            "codex",
+            "--boundary",
+            "none",
+            "--asks",
+            "allow",
+            "--",
+            "exec",
+            "hi",
+        ])))
+        .unwrap();
+        assert!(!p.asks_allow);
+        assert_eq!(env(&p, "DERM_ASKS"), None);
+        assert!(p
+            .notes
+            .iter()
+            .any(|n| n.contains("--asks allow changes nothing")));
+        // An agent whose gate was not read for this.
+        let p = build(&inputs(&a(&[
+            "gemini",
+            "--boundary",
+            "none",
+            "--asks",
+            "allow",
+            "--",
+            "--yolo",
+        ])))
+        .unwrap();
+        assert!(!p.asks_allow);
+        // The variable is derm's own: an inherited one is not the child's.
+        assert!(OWNED_VARS.contains(&"DERM_ASKS"));
+        assert!(
+            crate::run::args::parse(&["codex".into(), "--asks".into(), "deny".into()]).is_err()
+        );
     }
 
     #[test]

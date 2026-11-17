@@ -125,6 +125,11 @@ pub struct ApprovalRequest {
     pub summary: String,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: u32,
+    /// The gate of a chat that runs in full access asks only whether the
+    /// chat's own boundary answers for it (`run.start`'s `asks: "allow"`).
+    /// The daemon answers at once and no approver is shown the request.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub boundary_only: bool,
 }
 
 fn default_timeout() -> u32 {
@@ -144,6 +149,9 @@ pub enum AnsweredBy {
     Approver,
     Timeout,
     None,
+    /// No one answered: the chat runs unattended inside a boundary that
+    /// `derm run` named as the answer to its asks.
+    Boundary,
 }
 
 /// A daemon line. Every request gets exactly one `Reply`; `tail` and

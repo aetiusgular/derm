@@ -262,6 +262,7 @@ mod tests {
             state_dirs: vec![],
             notes: vec![],
             full_access: vec![],
+            asks_allow: false,
             companion: None,
             scratch_dir: None,
         }

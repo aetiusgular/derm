@@ -55,6 +55,7 @@ fn r2_3_a_flags_own_event_is_always_in_its_context() {
             derm_exe: None,
             sbx_exe: None,
             home: None,
+            asks_allow: false,
         },
     );
     let out = run_full(&CheckInput {

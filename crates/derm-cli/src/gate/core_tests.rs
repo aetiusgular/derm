@@ -127,6 +127,92 @@ fn full_access_turns_an_ask_into_a_deny() {
     );
 }
 
+/// Terminal-Bench on the box, 16 Nov 2026 (E1-14): an unattended agent in
+/// full access had 112 of 294 shell calls denied, 64 of them for a glob, a
+/// variable or an escape, because an ask became a deny with no one to ask.
+/// Inside a boundary `derm run` named as the answer (`run.start`'s `asks:
+/// "allow"`, the daemon scope's), the gate asks the daemon, and an ask the
+/// boundary answers is allowed and recorded. The variable is only a hint to
+/// ask: the daemon's word decides, so a forged hint allows nothing.
+#[test]
+fn e1_14_in_a_boundary_that_answers_an_ask_is_allowed_and_recorded() {
+    let hint = Env::of(&[("DERM_FULL_ACCESS", "1"), ("DERM_ASKS", "boundary")]);
+    let full = Env::of(&[("DERM_FULL_ACCESS", "1")]);
+    for harness in ["claude-code", "codex"] {
+        let c = call(harness, "bash", json!({"command": "ls *.py"}));
+        // Without the hint: as before.
+        assert_eq!(decide_call(&ask_bash(), &c, &full).action, Action::Deny);
+        // With it the ask stays an ask, for the adapter's resolve step.
+        let answer = decide_call(&ask_bash(), &c, &hint);
+        assert_eq!(answer.action, Action::Ask, "{harness}");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let boundary = |r: &ApproveRequest| {
+            seen.borrow_mut().push(r.boundary_only);
+            ApproveOutcome::Answer {
+                yes: true,
+                by: By::Boundary,
+            }
+        };
+        let r = resolve_ask(&answer, &c, true, &hint, &boundary);
+        assert!(
+            matches!(&r, AskResolution::Allow(why) if why.contains("allows what it would ask")),
+            "{r:?}"
+        );
+        assert_eq!(*seen.borrow(), [true], "asked once, for the boundary only");
+        // The daemon does not say the boundary answers: a deny, never the
+        // agent's own prompt, whoever else says yes.
+        for (yes, by) in [
+            (false, By::None),
+            (true, By::Approver),
+            (false, By::Timeout),
+        ] {
+            let other = |_: &ApproveRequest| ApproveOutcome::Answer { yes, by };
+            let r = resolve_ask(&answer, &c, true, &hint, &other);
+            assert!(
+                matches!(&r, AskResolution::Deny(why) if why.contains("full access")),
+                "{by:?}: {r:?}"
+            );
+        }
+        let down = |_: &ApproveRequest| ApproveOutcome::Unreachable("no daemon".into());
+        assert!(matches!(
+            resolve_ask(&answer, &c, true, &hint, &down),
+            AskResolution::Deny(_)
+        ));
+    }
+    // A deny rule stays a deny: only asks are put to the boundary.
+    let deny = policy(json!({"version": 1, "rules": [{"tool": "bash", "action": "deny"}]}));
+    let c = call("codex", "bash", json!({"command": "ls"}));
+    assert_eq!(decide_call(&deny, &c, &hint).action, Action::Deny);
+    // Every ask is, the built-in ones too (a secret-like value in the input).
+    let secret = call("codex", "bash", json!({"command": "TOKEN=abc ls"}));
+    assert_eq!(
+        decide_call(&allow_bash(), &secret, &hint).action,
+        Action::Ask
+    );
+    assert_eq!(
+        decide_call(&allow_bash(), &secret, &full).action,
+        Action::Deny
+    );
+    // An agent whose ask path was not read for this keeps the old rule.
+    let other = call("copilot-cli", "bash", json!({"command": "ls"}));
+    assert_eq!(decide_call(&ask_bash(), &other, &hint).action, Action::Deny);
+    // Not full access: the hint changes nothing.
+    let c = call("codex", "bash", json!({"command": "ls"}));
+    let only = Env::of(&[("DERM_ASKS", "boundary")]);
+    let asked = std::cell::Cell::new(false);
+    let none = |r: &ApproveRequest| {
+        asked.set(r.boundary_only);
+        ApproveOutcome::Answer {
+            yes: false,
+            by: By::None,
+        }
+    };
+    let answer = decide_call(&ask_bash(), &c, &only);
+    assert_eq!(answer.action, Action::Ask);
+    let _ = resolve_ask(&answer, &c, false, &only, &none);
+    assert!(!asked.get(), "an ordinary ask is an ordinary request");
+}
+
 #[test]
 fn full_access_denies_an_ask_that_reaches_resolve_ask_without_asking() {
     let c = call("grok", "bash", json!({"command": "ls"}));

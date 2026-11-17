@@ -557,6 +557,7 @@ mod tests {
             derm_exe: None,
             sbx_exe: None,
             home: None,
+            asks_allow: false,
         })
         .unwrap();
         assert_eq!(context.folders, vec!["/Users/t/app", "/Users/t/with space"]);
@@ -598,6 +599,7 @@ mod tests {
                 derm_exe: None,
                 sbx_exe: None,
                 home: None,
+                asks_allow: false,
             },
         )]);
         let collector_events = collector::EventsReply {
@@ -686,6 +688,7 @@ mod tests {
                 derm_exe: None,
                 sbx_exe: None,
                 home: None,
+                asks_allow: false,
             },
         )]);
         let reply = collector::EventsReply {
@@ -746,6 +749,7 @@ mod tests {
                 derm_exe: None,
                 sbx_exe: None,
                 home: None,
+                asks_allow: false,
             },
         )]);
         let reply = collector::EventsReply {

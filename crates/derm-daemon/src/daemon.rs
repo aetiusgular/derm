@@ -2261,6 +2261,7 @@ impl Daemon {
                 .get("home")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            asks_allow: event.detail.get("asks").and_then(Value::as_str) == Some("allow"),
         }) else {
             return;
         };
@@ -2605,7 +2606,23 @@ impl Daemon {
         self.counters.approvals.fetch_add(1, Ordering::Relaxed);
         let record_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
         self.approval_event(&record_id, &request, None, None, Value::Null);
-        let (answer, by, approver) = self.wait_for_answer(&request, gone);
+        // A full-access chat's gate asks only whether its boundary answers
+        // for it. `run.start` said so or it did not; no approver is shown
+        // the request, and nothing here waits.
+        let (answer, by, approver) = if request.boundary_only {
+            let allowed = self
+                .chats
+                .lock()
+                .ok()
+                .is_some_and(|c| c.get(&request.chat).is_some_and(|x| x.asks_allow));
+            if allowed {
+                (Answer::Yes, AnsweredBy::Boundary, Value::Null)
+            } else {
+                (Answer::No, AnsweredBy::None, Value::Null)
+            }
+        } else {
+            self.wait_for_answer(&request, gone)
+        };
         self.approval_event(&record_id, &request, Some(answer), Some(by), approver);
         self.record_approval(ApprovalRecord {
             id: record_id,
@@ -3394,6 +3411,84 @@ mod tests {
         let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
         let g = report(&second, "chat-g");
         assert_eq!(g["flags"], 0, "after a restart: {g}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// E1-14: a full-access chat's gate asks whether its boundary answers
+    /// its asks. Only a `run.start` from the daemon scope that says `asks:
+    /// "allow"` makes the answer yes; no approver is waited for either way.
+    #[test]
+    fn e1_14_the_boundary_answers_only_where_run_start_said_so() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let d = Daemon::new(TOKEN, log, &data, false).unwrap();
+        for (chat, asks) in [("chat-a", json!("allow")), ("chat-b", Value::Null)] {
+            let start = ev_of(
+                chat,
+                Source::Run,
+                "run.start",
+                None,
+                json!({"boundary": "sbx", "argv": ["sbx"], "cwd": "/home/t/proj", "asks": asks}),
+            );
+            assert!(d.op_event(&Who::Daemon, start).ok);
+        }
+        let ask = |chat: &str, boundary_only: bool| {
+            let who = Who::Chat {
+                chat: chat.into(),
+                harness: "codex".into(),
+            };
+            let t0 = std::time::Instant::now();
+            let r = d.op_approve(
+                &who,
+                ApprovalRequest {
+                    id: format!("ap-{chat}-{boundary_only}"),
+                    chat: "ignored".into(),
+                    harness: "ignored".into(),
+                    tool: "bash".into(),
+                    summary: "bash: ls *.py".into(),
+                    timeout_seconds: 60,
+                    boundary_only,
+                },
+            );
+            assert!(t0.elapsed() < std::time::Duration::from_secs(3), "no wait");
+            (r.answer, r.by)
+        };
+        assert_eq!(
+            ask("chat-a", true),
+            (Some(Answer::Yes), Some(AnsweredBy::Boundary))
+        );
+        // A chat whose run.start did not say so, and a chat with none.
+        for chat in ["chat-b", "chat-none"] {
+            assert_eq!(
+                ask(chat, true),
+                (Some(Answer::No), Some(AnsweredBy::None)),
+                "{chat}"
+            );
+        }
+        // The chat's own request is under its own name, whatever it wrote.
+        let who = Who::Chat {
+            chat: "chat-b".into(),
+            harness: "codex".into(),
+        };
+        let r = d.op_approve(
+            &who,
+            ApprovalRequest {
+                id: "ap-forged".into(),
+                chat: "chat-a".into(),
+                harness: "codex".into(),
+                tool: "bash".into(),
+                summary: "x".into(),
+                timeout_seconds: 60,
+                boundary_only: true,
+            },
+        );
+        assert_eq!(r.answer, Some(Answer::No));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -373,7 +373,7 @@ pub(crate) fn start_with(
     match &kit {
         super::kit::Kit::Built(_) => eprintln!(
             "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
-             The agent runs in full access there, so what your policy would ask is denied. The agent has sudo in the VM and could remove the gate; \
+             The agent runs in full access there with no one to ask, so what your policy would ask is allowed and recorded (the VM is the boundary; a deny rule still denies). The agent has sudo in the VM and could remove the gate; \
              the VM stays the boundary. sbx's policy log records the VM's network calls{} \
              The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
              The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
@@ -838,6 +838,7 @@ mod tests {
             state_dirs: vec![],
             notes: vec![],
             full_access: vec![],
+            asks_allow: false,
             companion: None,
             scratch_dir: None,
         }

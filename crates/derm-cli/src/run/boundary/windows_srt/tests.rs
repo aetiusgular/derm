@@ -61,6 +61,7 @@ fn unix_plan(command: &str) -> Plan {
         state_dirs: vec![],
         notes: vec!["derm run: under srt claude-code may reach its sign-in host platform.claude.com:443 to renew".into()],
         full_access: vec![],
+        asks_allow: false,
         companion: None,
         scratch_dir: None,
     }

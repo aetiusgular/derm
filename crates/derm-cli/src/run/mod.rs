@@ -2246,6 +2246,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         },
         "dangerousFlags": dangerous,
         "fullAccess": !dangerous.is_empty(),
+        // E1-14: the daemon answers this chat's full-access asks from here.
+        "asks": p.asks_allow.then_some("allow"),
         "outsideShapeOnly": a.harness.id == "other",
         // MW6R5-1: macOS hid the started process's environment, so the
         // chat's hooks keep the light tier's rules.

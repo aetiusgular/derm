@@ -58,13 +58,13 @@ describe("terminal-bench score", () => {
       { task_name: "regex-log", verifier_result: { rewards: { reward: 1 } }, agent_execution: { started_at: "2026-11-17T00:00:00Z", finished_at: "2026-11-17T00:01:00Z" } },
       {
         "derm-report.json": JSON.stringify({ events: 9, flags: 0, bySource: { otel: 4, adapter: 3 } }),
-        "derm-events.jsonl": [ev("adapter", "approval", { decision: "allow" }), ev("adapter", "approval", { decision: "deny" }), ev("otel", "approval"), "not json"].join("\n"),
+        "derm-events.jsonl": [ev("adapter", "approval", { decision: "allow" }), ev("adapter", "approval", { decision: "allow", reason: "rule bash; no one can answer in this chat and it runs inside its boundary, so derm allows what it would ask and records it" }), ev("adapter", "approval", { decision: "deny" }), ev("otel", "approval"), "not json"].join("\n"),
       },
     );
     trial("b", { task_name: "fix-git", verifier_result: { rewards: { reward: 0 } } }, { "derm-report.json": JSON.stringify({ events: 3, flags: 1, bySource: {} }), "derm-events.jsonl": "" });
     trial("c", { task_name: "qemu-startup", exception_info: { exception_type: "AgentTimeoutError" } });
     const s = summarize("job", readJob(job));
-    expect(s).toMatchObject({ trials: 3, scored: 2, passed: 1, gateCalls: 2, denied: 1, flags: 1, otelRecords: 4, withDermRecord: 2, medianAgentSeconds: 60 });
+    expect(s).toMatchObject({ trials: 3, scored: 2, passed: 1, gateCalls: 3, denied: 1, askedAllowed: 1, flags: 1, otelRecords: 4, withDermRecord: 2, medianAgentSeconds: 60 });
     expect(s.notScored).toEqual(["qemu-startup: AgentTimeoutError"]);
     // Telemetry is required: a derm trial with none is named, never averaged away.
     expect(s.trialsWithNoOtel).toEqual(["fix-git"]);
@@ -109,6 +109,8 @@ describe("the Harbor agent's rewrite of Harbor's exec line", () => {
     expect(gate.indexOf("while :; do derm watch report")).toBeLessThan(gate.indexOf("derm run codex"));
     expect(gate.lastIndexOf("derm-report.json")).toBeGreaterThan(gate.indexOf("derm run codex"));
     expect(gate.trimEnd().endsWith("exit $derm_rc")).toBe(true);
+    expect(wrap("gate-asks", harbor)).toContain("--no-tap --asks allow -- exec --dangerously-bypass-approvals-and-sandbox");
+    expect(gate).not.toContain("--asks");
     // Standard is Codex's own sandbox, so Harbor's flag that turns it off goes.
     const standard = wrap("standard", harbor);
     expect(standard).toContain("--no-tap --tier standard -- exec --skip-git-repo-check");

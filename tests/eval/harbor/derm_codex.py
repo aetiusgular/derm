@@ -10,8 +10,12 @@ Arms (`derm_arm`):
   off       Harbor's Codex agent, untouched. The control.
   gate      `derm run codex --boundary none`: derm's gate (its Codex plugin),
             the daemon's record and Codex's own telemetry to the daemon.
-  standard  the same with `--tier standard`: Codex's own sandbox written
-            from derm's policy.
+            Harbor runs Codex in full access, so every ask is a deny.
+  gate-asks the same with `--asks allow`: the task's container is the
+            boundary, so an ask is allowed and recorded (E1-14).
+  standard  gate with `--tier standard`: Codex's own sandbox written from
+            derm's policy. Not runnable in a stock task container: bubblewrap
+            cannot make a user namespace there (the box, 16 Nov 2026).
 
 Everything else is Harbor's Codex agent (agents/installed/codex.py): the
 install, config.toml, the model connection, the trajectory. This class adds
@@ -36,7 +40,7 @@ from typing import Any, ClassVar, override
 from harbor.agents.installed.codex import Codex, CodexOptions
 from harbor.environments.base import BaseEnvironment
 
-ARMS = ("off", "gate", "standard")
+ARMS = ("off", "gate", "gate-asks", "standard")
 REMOTE = "/installed-agent/derm"
 EXEC_MARK = "codex exec "
 BYPASS = "--dangerously-bypass-approvals-and-sandbox "
@@ -57,6 +61,10 @@ def wrap_exec(command: str, arm: str, logs: str, tap: bool = False) -> str:
     run = ["derm", "run", "codex", "--boundary", "none", "--chat", '"$DERM_TB_CHAT"']
     if not tap:
         run.append("--no-tap")
+    if arm == "gate-asks":
+        # E1-14: the task's container is the boundary and no one can answer,
+        # so an ask is allowed and recorded, not denied.
+        run += ["--asks", "allow"]
     if arm == "standard":
         run += ["--tier", "standard"]
     run += ["--", "exec "]
