@@ -25,7 +25,7 @@
       "from": "sbx-kits-contrib",
       "fullAccess": [],
       "verifiedAt": "sbx 0.51.0, run on the box and the Mac with --kit (plans/parallel/tk_sbx_smoke.md, 4 Nov 2026); the positional form sbx's warning names: not run",
-      "note": "A sandbox kit, so it is the first positional argument of sbx create, not --kit (SB1; sbx-kits-contrib 1de3c1e README.md:227). Pi 1.5.0 in the VM, past the preset's 1.4.0 (case 81). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are) (SB6)."
+      "note": "A sandbox kit, so it is the first positional argument of sbx create, not --kit (SB1; sbx-kits-contrib 1de3c1e README.md:227). Pi 1.5.0 in the VM, past the preset's 1.4.0 (case 81). None of the host's hooks, plugins or extensions are in the VM (SB6); derm adds its own kit (packaging/sbx-kit/pi, a v2 mixin since this kit is a v2 sandbox; DERM_SBX_KIT=off turns it off) with derm's Pi package, whose emitter sends its records to the daemon on the host. Seen on the box through derm run, 17 Nov 2026: Pi 1.5.2 in the VM loaded the package and its prompt, model.request and message records reached the daemon; no tool call was made (no credential), so the gate itself has not decided a call there."
     },
     "opencode": {
       "name": "opencode",
