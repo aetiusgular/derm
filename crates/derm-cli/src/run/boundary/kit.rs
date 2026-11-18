@@ -17,15 +17,16 @@
 //! ("compositions are single-format"; Mac test w5, MW5-7), so the v2 form
 //! this file wrote until fix pass 11 never went on a create there.
 //!
-//! Six agents have a kit: Claude Code (its own hook package, registered in
-//! its managed settings); from 17 Nov 2026 Copilot CLI, Droid, Cursor and
-//! Kiro (derm's command-hook packages, registered in the agent's own config
-//! under its home: `packaging/sbx-kit/hooks/`); and Codex
+//! Seven agents have a kit: Claude Code (its own hook package, registered
+//! in its managed settings); from 17 Nov 2026 Copilot CLI, Droid, Cursor
+//! and Kiro (derm's command-hook packages, registered in the agent's own
+//! config under its home: `packaging/sbx-kit/hooks/`); Codex
 //! (`packaging/sbx-kit/codex/`), whose gate is the Rust `derm hook`, so its
 //! kit carries a Linux derm for the VM and derm's Codex plugin, and no
-//! Node. All six are v3 workloads in sbx 0.51.0, where a v3 mixin composed
-//! with each on the box. Pi's kit is a v2 workload a v3 mixin cannot join,
-//! and its emitter refuses the VM's host name; it is a later step.
+//! Node; and Pi (`packaging/sbx-kit/pi/`), whose kit is a v2 mixin because
+//! Docker's Pi kit is a v2 sandbox, and carries derm's Pi package. The
+//! first six are v3 workloads in sbx 0.51.0. Each form composed with its
+//! workload on the box.
 //!
 //! What the kit holds against: a model's mistakes inside the VM, the gap
 //! sbx's own docs leave (the read-write mount, allowed hosts). What it does
@@ -88,6 +89,15 @@ const CODEX_TRUST: &str = include_str!("../../../../../packaging/sbx-kit/codex/t
 const CODEX_MARKETPLACE: &str =
     r#"{"name":"derm","plugins":[{"name":"derm","source":{"source":"local","path":"./derm"}}]}"#;
 
+/// Pi's kit (`packaging/sbx-kit/pi/`): a v2 mixin's spec and its two
+/// scripts.
+#[cfg_attr(not(unix), allow(dead_code))]
+const PI_SPEC: &str = include_str!("../../../../../packaging/sbx-kit/pi/spec.yaml");
+#[cfg_attr(not(unix), allow(dead_code))]
+const PI_INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/pi/install.sh");
+#[cfg_attr(not(unix), allow(dead_code))]
+const PI_SETUP: &str = include_str!("../../../../../packaging/sbx-kit/pi/setup.sh");
+
 /// A hook package's own files (everything its hook loads outside
 /// `src/core/`, which is the same text in every package and comes from
 /// [`PLUGIN`]). A test checks each list against the hook's imports.
@@ -138,6 +148,35 @@ pub(crate) const CODEX_PLUGIN: &[(&str, &str)] = own!("derm-codex-plugin":
     "hooks/derm-gate.sh",
 );
 
+/// derm's Pi package as Pi loads it: package.json, its three extensions and
+/// everything they import. A test checks the list against the imports.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) const PI_PACKAGE: &[(&str, &str)] = own!("derm-pi":
+    "package.json",
+    "extensions/emitter.ts",
+    "extensions/gate.ts",
+    "extensions/memory.ts",
+    "src/ask.ts",
+    "src/command.ts",
+    "src/confusables.ts",
+    "src/content-switch.ts",
+    "src/destructive.ts",
+    "src/fold.ts",
+    "src/freeze.ts",
+    "src/harness.ts",
+    "src/input-text.ts",
+    "src/installs/index.ts",
+    "src/installs/lockfile.ts",
+    "src/installs/parse.ts",
+    "src/otlp.ts",
+    "src/owner.ts",
+    "src/pi-api.ts",
+    "src/policy.ts",
+    "src/redact.ts",
+    "src/serve/client.ts",
+    "src/vm.ts",
+);
+
 /// What a kit is made of.
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -148,6 +187,8 @@ enum Pack {
     Hooks(&'static [(&'static str, &'static str)]),
     /// A derm for the VM and derm's Codex plugin.
     Codex,
+    /// derm's Pi package, in a v2 mixin.
+    Pi,
 }
 
 /// What derm's kit is for one harness.
@@ -207,6 +248,12 @@ pub(crate) fn spec(harness: &str) -> Option<Spec> {
             "Codex",
             "Codex's own plugins and config.toml (~/.codex)",
             Pack::Codex,
+        ),
+        "pi" => s(
+            "docker.io/sbx/pi-kit:latest",
+            "Pi",
+            "~/.pi/agent/settings.json",
+            Pack::Pi,
         ),
         _ => return None,
     })
@@ -443,9 +490,22 @@ fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
 /// what the Dockerfile copies into `/opt/derm-kit-src` in the VM.
 fn write_kit(dir: &Path, harness: &str, policy: &str, derm: Option<&Path>) -> std::io::Result<()> {
     let spec = spec(harness).ok_or_else(|| std::io::Error::other("no kit for this harness"))?;
-    let stage = dir.join("derm-kit");
+    // A v2 kit's payload is files/home/, which sbx copies into the agent's
+    // home; a v3 kit's is whatever its Dockerfile copies.
+    let stage = match spec.pack {
+        Pack::Pi => dir.join("files/home/.derm-kit-src"),
+        _ => dir.join("derm-kit"),
+    };
     write(&stage.join("policy.json"), policy)?;
     match spec.pack {
+        Pack::Pi => {
+            write(&dir.join("spec.yaml"), PI_SPEC)?;
+            write(&stage.join("install.sh"), PI_INSTALL)?;
+            write(&stage.join("setup.sh"), PI_SETUP)?;
+            for (rel, text) in PI_PACKAGE {
+                write(&stage.join("derm-pi").join(rel), text)?;
+            }
+        }
         Pack::Claude => {
             write(&dir.join("derm-gate-claude.yaml"), DESCRIPTOR)?;
             write(&dir.join("derm-gate-claude.dockerfile"), DOCKERFILE)?;

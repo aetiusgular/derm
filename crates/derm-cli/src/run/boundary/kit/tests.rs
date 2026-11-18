@@ -94,7 +94,10 @@ fn no_kit_and_why_for_another_agent_the_switch_and_every_policy_it_cannot_use() 
     // 17 Nov 2026: Codex has a kit now, so the agent with none is OpenCode.
     assert!(why(prepare("opencode", Some(&good), &d, None).unwrap())
         .contains("no sbx kit for opencode"));
-    assert!(why(prepare("pi", Some(&good), &d, None).unwrap()).contains("no sbx kit for pi"));
+    // 17 Nov 2026: Pi has a kit now; Gemini is another agent with none.
+    assert!(
+        why(prepare("gemini", Some(&good), &d, None).unwrap()).contains("no sbx kit for gemini")
+    );
     assert!(
         why(prepare("claude-code", Some(&good), &d, Some("off")).unwrap())
             .contains("DERM_SBX_KIT=off")
@@ -140,11 +143,17 @@ fn no_kit_and_why_for_another_agent_the_switch_and_every_policy_it_cannot_use() 
 /// until it is listed.
 /// Every file `src/hook.ts` of a package loads by a relative import.
 fn closure(package: &str) -> BTreeSet<String> {
+    closure_from(package, &["src/hook.ts".to_string()])
+}
+
+/// Every file the entries of a package load by a relative import, the
+/// entries included.
+fn closure_from(package: &str, entries: &[String]) -> BTreeSet<String> {
     let pkg = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages")
         .join(package);
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    let mut todo = vec!["src/hook.ts".to_string()];
+    let mut todo = entries.to_vec();
     let import = |line: &str| -> Option<String> {
         let l = line.trim_start();
         if !(l.starts_with("import ") || l.starts_with("export ")) {
@@ -451,7 +460,7 @@ fn the_command_hook_kit_is_a_v3_mixin_whose_parts_agree() {
         assert!(REGISTER_AGENT.contains(&format!("case \"{a}\":")), "{a}");
         assert!(has_kit(a));
     }
-    assert!(!has_kit("pi") && !has_kit("opencode"));
+    assert!(!has_kit("opencode") && !has_kit("gemini"));
 }
 
 /// A small stand-in for the Linux derm the Codex kit carries.
@@ -633,4 +642,104 @@ fn the_codex_kit_is_a_v3_mixin_whose_parts_agree() {
     assert!(CODEX_TRUST.contains("[hooks.state.\"derm@derm:hooks/hooks.json:pre_tool_use:0:0\"]"));
     assert!(CODEX_TRUST.contains("trusted_hash = \"sha256:"));
     assert!(has_kit("codex"));
+}
+
+/// 17 Nov 2026, Pi's kit: a v2 mixin (Docker's Pi kit is a v2 sandbox),
+/// whose payload is files/home/, with derm's Pi package whole.
+#[test]
+fn pi_gets_a_v2_mixin_with_derms_pi_package() {
+    let d = tmp("pi");
+    let policy = policy_at(&d, POLICY, 0o600);
+    let kit = prepare("pi", Some(&policy), &d, None).unwrap();
+    let Kit::Built(p) = kit else {
+        panic!("no kit: {kit:?}")
+    };
+    let root = p.path().to_path_buf();
+    let files = files_under(&root);
+    let stage = "files/home/.derm-kit-src";
+    for want in [
+        "spec.yaml".to_string(),
+        format!("{stage}/install.sh"),
+        format!("{stage}/setup.sh"),
+        format!("{stage}/policy.json"),
+        format!("{stage}/derm-pi/package.json"),
+        format!("{stage}/derm-pi/extensions/gate.ts"),
+        format!("{stage}/derm-pi/extensions/emitter.ts"),
+        format!("{stage}/derm-pi/src/vm.ts"),
+    ] {
+        assert!(files.contains(&want), "{want} missing from {files:?}");
+    }
+    assert_eq!(files.len(), 4 + PI_PACKAGE.len(), "{files:?}");
+    // No v3 descriptor, no Dockerfile: sbx reads a v2 kit's spec.yaml.
+    assert!(!files
+        .iter()
+        .any(|f| f.ends_with(".dockerfile") || f.starts_with("derm-kit/")));
+    assert_eq!(
+        std::fs::read_to_string(root.join(stage).join("policy.json")).unwrap(),
+        POLICY
+    );
+    // The package is the one in the repository, file for file.
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/derm-pi");
+    for (rel, _) in PI_PACKAGE {
+        assert_eq!(
+            std::fs::read_to_string(root.join(stage).join("derm-pi").join(rel)).unwrap(),
+            std::fs::read_to_string(pkg.join(rel)).unwrap(),
+            "{rel}"
+        );
+    }
+    drop(p);
+    assert!(!root.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The Pi kit's list is what Pi loads: package.json's three extensions and
+/// every file they import. And the kit's parts agree.
+#[test]
+fn the_pi_kit_carries_the_packages_whole_import_closure_and_its_parts_agree() {
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/derm-pi");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(pkg.join("package.json")).unwrap()).unwrap();
+    let entries: Vec<String> = manifest["pi"]["extensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e.as_str().unwrap().trim_start_matches("./").to_string())
+        .collect();
+    assert_eq!(entries.len(), 3);
+    let mut seen = closure_from("derm-pi", &entries);
+    seen.insert("package.json".into());
+    let listed: BTreeSet<String> = PI_PACKAGE.iter().map(|(p, _)| p.to_string()).collect();
+    assert_eq!(listed, seen);
+
+    let y = PI_SPEC;
+    assert!(y.contains("\nschemaVersion: \"2\"\n"));
+    assert!(y.contains("\nkind: mixin\n"));
+    assert!(y.contains("\nname: derm-gate-pi\n"));
+    let root_step = y
+        .find("command: \"sh /home/agent/.derm-kit-src/install.sh\"\n      user: \"0\"")
+        .unwrap();
+    let agent_step = y
+        .find("command: \"sh /opt/derm-kit/setup.sh\"\n      user: \"1000\"")
+        .unwrap();
+    assert!(root_step < agent_step);
+    let i = PI_INSTALL;
+    assert!(i.starts_with("#!/bin/sh\n") && i.contains("set -eu"));
+    assert!(i.contains("src=/home/agent/.derm-kit-src") && i.contains("dest=/opt/derm-kit\n"));
+    assert!(i.contains("trap 'rm -rf \"$src\"' EXIT"));
+    assert!(i.contains("chown -R root:root \"$dest\""));
+    let modes = i.find("chmod -R u=rwX,go=rX \"$dest\"").unwrap();
+    assert!(modes < i.find("> \"$dest/sbx-vm\"").unwrap());
+    assert!(i.contains("\"$home/.derm/policy.json\""));
+    // The marker the script writes is the one the emitter looks for.
+    let vm = PI_PACKAGE
+        .iter()
+        .find(|(p, _)| *p == "src/vm.ts")
+        .unwrap()
+        .1;
+    assert!(vm.contains("export const VM_MARKER = \"/opt/derm-kit/sbx-vm\";"));
+    let s = PI_SETUP;
+    assert!(s.contains("pkg=/opt/derm-kit/derm-pi"));
+    assert!(s.contains("pi install \"$pkg\""));
+    assert!(!s.contains("--local"));
+    assert!(has_kit("pi"));
 }

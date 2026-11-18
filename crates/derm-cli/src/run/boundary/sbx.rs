@@ -371,7 +371,11 @@ fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks
         "codex" => " in the VM, which the agent's own user can change",
         _ => " in the VM, a file the agent's own user can rewrite",
     };
-    let ask = if full && asks {
+    let ask = if harness == "pi" {
+        // derm's Pi package asks in Pi's own interface and nowhere else
+        // (`packages/derm-pi/src/ask.ts`).
+        "What your policy would ask is put to you in Pi's own prompt; where Pi shows none (print and JSON modes) it is a no."
+    } else if full && asks {
         "The agent runs in full access there with no one to ask, so what your policy would ask is allowed and recorded (the VM is the boundary; a deny rule still denies)."
     } else if full {
         "The agent runs in full access there with no one to ask, so what your policy would ask is denied."
@@ -380,6 +384,9 @@ fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks
     };
     let telemetry = if exported {
         format!(", and {name}'s own telemetry reaches the daemon over its port.")
+    } else if harness == "pi" {
+        ". derm's Pi package sends each tool call and decision to the daemon over its port."
+            .to_string()
     } else if matches!(harness, "claude-code" | "codex") {
         format!(". {name}'s own telemetry is NOT exported for this chat (run.start's otelExport says why).")
     } else {
@@ -624,6 +631,13 @@ mod tests {
         assert!(!droid.contains("full access"));
         assert!(droid.contains("derm reads no telemetry export of Droid's own under sbx"));
         assert!(!droid.contains("Claude"));
+        let pi = with_kit_line("pi", "docker.io/sbx/pi-kit:latest", false, false, false);
+        assert!(pi.contains("registers it in ~/.pi/agent/settings.json in the VM, a file the agent's own user can rewrite"), "{pi}");
+        assert!(pi.contains("is put to you in Pi's own prompt; where Pi shows none (print and JSON modes) it is a no."));
+        assert!(pi.contains(
+            "derm's Pi package sends each tool call and decision to the daemon over its port."
+        ));
+        assert!(!pi.contains("derm watch --approve") && !pi.contains("NOT exported"));
         let codex = with_kit_line("codex", "codex", true, true, true);
         assert!(codex.contains(
             "registers it in Codex's own plugins and config.toml (~/.codex) in the VM, which the agent's own user can change, with your policy"

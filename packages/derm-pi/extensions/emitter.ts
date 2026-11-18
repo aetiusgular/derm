@@ -36,6 +36,7 @@ import {
 } from "../src/pi-api.ts";
 import { redactText } from "../src/redact.ts";
 import { harnessId } from "../src/harness.ts";
+import { vmLogs } from "../src/vm.ts";
 
 const CONTENT_MAX = 4096;
 const MAX_PENDING = 2000;
@@ -122,7 +123,7 @@ export function createEmitter(options: EmitterOptions = {}): EmitterFactory {
       refused = "DERM_CHAT_TOKEN is not a token";
       return;
     }
-    const target = logsUrl(env.DERM_OTLP_ENDPOINT);
+    const target = logsUrl(env.DERM_OTLP_ENDPOINT, vmLogs(env));
     if ("refused" in target) {
       refused = target.refused;
       return;
