@@ -17,9 +17,14 @@
 //! ("compositions are single-format"; Mac test w5, MW5-7), so the v2 form
 //! this file wrote until fix pass 11 never went on a create there.
 //!
-//! Only Claude Code has a kit yet. Codex's gate lets a call through when it
-//! fails (`coverage.failMode: open`) and Pi's kit runs Pi 1.5.0 past the
-//! preset's 1.4.0 (case 81); both are later steps.
+//! Five agents have a kit: Claude Code (its own hook package, registered in
+//! its managed settings) and, from 17 Nov 2026, Copilot CLI, Droid, Cursor
+//! and Kiro (derm's command-hook packages, registered in the agent's own
+//! config under its home: `packaging/sbx-kit/hooks/`). All five are v3
+//! workloads in sbx 0.51.0, where a v3 mixin composed with each on the box.
+//! Codex's gate is the Rust `derm hook`, which the VM has no binary of, and
+//! Pi's is an extension whose emitter refuses the VM's host name; both are
+//! later steps.
 //!
 //! What the kit holds against: a model's mistakes inside the VM, the gap
 //! sbx's own docs leave (the read-write mount, allowed hosts). What it does
@@ -44,6 +49,108 @@ const CONTEXT: &str = include_str!("../../../../../packaging/sbx-kit/claude/derm
 const INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/claude/install.sh");
 #[cfg_attr(not(unix), allow(dead_code))]
 const REGISTER: &str = include_str!("../../../../../packaging/sbx-kit/register-hooks.mjs");
+
+/// The generic kit for a command-hook agent (`packaging/sbx-kit/hooks/`):
+/// one descriptor with three placeholder words [`write_kit`] fills in, its
+/// Dockerfile, the install script and the registrar.
+#[cfg_attr(not(unix), allow(dead_code))]
+const HOOKS_DESCRIPTOR: &str =
+    include_str!("../../../../../packaging/sbx-kit/hooks/derm-gate-hooks.yaml");
+#[cfg_attr(not(unix), allow(dead_code))]
+const HOOKS_DOCKERFILE: &str =
+    include_str!("../../../../../packaging/sbx-kit/hooks/derm-gate-hooks.dockerfile");
+#[cfg_attr(not(unix), allow(dead_code))]
+const HOOKS_INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/hooks/install.sh");
+#[cfg_attr(not(unix), allow(dead_code))]
+const REGISTER_AGENT: &str = include_str!("../../../../../packaging/sbx-kit/register-agent.mjs");
+
+/// A hook package's own files (everything its hook loads outside
+/// `src/core/`, which is the same text in every package and comes from
+/// [`PLUGIN`]). A test checks each list against the hook's imports.
+macro_rules! own {
+    ($pkg:literal: $($rel:literal),+ $(,)?) => {
+        &[$(($rel, include_str!(concat!("../../../../../packages/", $pkg, "/", $rel)))),+]
+    };
+}
+
+/// derm-hooks-claude-compat: Copilot CLI and Droid.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) const COMPAT_OWN: &[(&str, &str)] = own!("derm-hooks-claude-compat":
+    "package.json",
+    "bin/derm-hook.mjs",
+    "src/agents.ts",
+    "src/control.ts",
+    "src/dialect.ts",
+    "src/env.ts",
+    "src/hook.ts",
+);
+
+/// derm-hooks-native: Cursor and Kiro.
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) const NATIVE_OWN: &[(&str, &str)] = own!("derm-hooks-native":
+    "package.json",
+    "bin/derm-hook.mjs",
+    "bin/fallback.mjs",
+    "src/control.ts",
+    "src/crushServers.ts",
+    "src/dialects/antigravity.ts",
+    "src/dialects/crush.ts",
+    "src/dialects/cursor.ts",
+    "src/dialects/goose.ts",
+    "src/dialects/kiro.ts",
+    "src/dialects/mistralVibe.ts",
+    "src/hook.ts",
+    "src/kiroServers.ts",
+    "src/mcpSplit.ts",
+    "src/runner.ts",
+    "src/shell.ts",
+);
+
+/// What derm's kit is for one harness.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Spec {
+    /// sbx's name for the agent's workload, which the mixin requires.
+    pub workload: &'static str,
+    /// The agent's name in a sentence.
+    pub name: &'static str,
+    /// Where the hook is registered in the VM, for the start line.
+    pub registered: &'static str,
+    /// The hook package's own files; `None` is Claude Code's kit.
+    own: Option<&'static [(&'static str, &'static str)]>,
+}
+
+/// derm's kit for this harness id, if it has one.
+pub(crate) fn spec(harness: &str) -> Option<Spec> {
+    let s = |workload, name, registered, own| Spec {
+        workload,
+        name,
+        registered,
+        own,
+    };
+    Some(match harness {
+        "claude-code" => s(
+            "claude",
+            "Claude Code",
+            "Claude Code's managed settings",
+            None,
+        ),
+        "copilot-cli" => s(
+            "copilot",
+            "Copilot CLI",
+            "~/.copilot/hooks/derm.json",
+            Some(COMPAT_OWN),
+        ),
+        "droid" => s(
+            "droid",
+            "Droid",
+            "~/.factory/settings.json",
+            Some(COMPAT_OWN),
+        ),
+        "cursor" => s("cursor", "Cursor", "~/.cursor/hooks.json", Some(NATIVE_OWN)),
+        "kiro" => s("kiro", "Kiro", "~/.kiro/hooks/derm.json", Some(NATIVE_OWN)),
+        _ => return None,
+    })
+}
 
 /// derm's Claude Code hook as it runs: the launcher, the hook and every
 /// module it imports, by their paths in the package. A test checks this
@@ -125,7 +232,7 @@ const MAX_POLICY: u64 = derm_core::policy::MAX_POLICY_BYTES;
 
 /// Whether derm has a kit for this harness id.
 pub(crate) fn has_kit(harness: &str) -> bool {
-    harness == "claude-code"
+    spec(harness).is_some()
 }
 
 /// A kit folder built for one chat; dropping it removes the folder.
@@ -207,7 +314,7 @@ pub(crate) fn prepare(
         };
         let dir = private_dir(parent).map_err(|e| format!("derm's sbx kit: {e}"))?;
         let prepared = Prepared { dir };
-        write_kit(prepared.path(), &text).map_err(|e| format!("derm's sbx kit: {e}"))?;
+        write_kit(prepared.path(), harness, &text).map_err(|e| format!("derm's sbx kit: {e}"))?;
         Ok(Kit::Built(prepared))
     }
 }
@@ -263,18 +370,43 @@ fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
 /// The kit's layout (SPEC-v3 3.1): the descriptor and its Dockerfile at the
 /// top, the context the descriptor names beside them, and under `derm-kit/`
 /// what the Dockerfile copies into `/opt/derm-kit-src` in the VM.
-fn write_kit(dir: &Path, policy: &str) -> std::io::Result<()> {
+fn write_kit(dir: &Path, harness: &str, policy: &str) -> std::io::Result<()> {
+    let spec = spec(harness).ok_or_else(|| std::io::Error::other("no kit for this harness"))?;
     let stage = dir.join("derm-kit");
-    write(&dir.join("derm-gate-claude.yaml"), DESCRIPTOR)?;
-    write(&dir.join("derm-gate-claude.dockerfile"), DOCKERFILE)?;
-    write(&dir.join("derm-context.md"), CONTEXT)?;
-    write(&stage.join("install.sh"), INSTALL)?;
-    write(&stage.join("register-hooks.mjs"), REGISTER)?;
     write(&stage.join("policy.json"), policy)?;
-    for (rel, text) in PLUGIN {
+    let Some(own) = spec.own else {
+        write(&dir.join("derm-gate-claude.yaml"), DESCRIPTOR)?;
+        write(&dir.join("derm-gate-claude.dockerfile"), DOCKERFILE)?;
+        write(&dir.join("derm-context.md"), CONTEXT)?;
+        write(&stage.join("install.sh"), INSTALL)?;
+        write(&stage.join("register-hooks.mjs"), REGISTER)?;
+        for (rel, text) in PLUGIN {
+            write(&stage.join("plugin").join(rel), text)?;
+        }
+        return Ok(());
+    };
+    let descriptor = HOOKS_DESCRIPTOR
+        .replace("@WORKLOAD@", spec.workload)
+        .replace("@AGENT@", harness)
+        .replace("@NAME@", spec.name);
+    write(&dir.join("derm-gate-hooks.yaml"), &descriptor)?;
+    write(&dir.join("derm-gate-hooks.dockerfile"), HOOKS_DOCKERFILE)?;
+    write(&stage.join("install.sh"), HOOKS_INSTALL)?;
+    write(&stage.join("register-agent.mjs"), REGISTER_AGENT)?;
+    for (rel, text) in own.iter().chain(core()) {
         write(&stage.join("plugin").join(rel), text)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+/// The shared gate core, `src/core/`: the same text in every hook package
+/// (scripts/sync-core.mjs; a test here holds it), so the kit takes it from
+/// the Claude Code package's list.
+fn core() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    PLUGIN
+        .iter()
+        .filter(|(rel, _)| rel.starts_with("src/core/"))
 }
 
 #[cfg(unix)]

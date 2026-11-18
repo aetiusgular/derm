@@ -67,7 +67,10 @@ describe("full access", () => {
     process.env.DERM_FULL_ACCESS = "1";
     process.env.DERM_ASKS = "boundary";
     try {
-      for (const harness of ["claude-code", "codex"]) {
+      // 17 Nov 2026: the four agents derm's command-hook sbx kit covers,
+      // whose hooks put every ask to resolveAsk (derm-hooks-claude-compat
+      // src/hook.ts, derm-hooks-native src/runner.ts).
+      for (const harness of ["claude-code", "codex", "copilot-cli", "droid", "cursor", "kiro"]) {
         const call = { harness, tool: "bash", toolInput: { command: "ls *.py" } };
         const answer = decideCall(ask, call) as GateAnswer;
         expect(answer.action, harness).toBe("ask");
@@ -95,7 +98,7 @@ describe("full access", () => {
       // A deny rule stays a deny; an agent not read for this keeps the old rule.
       const deny = { policy: parsePolicy({ version: 1, rules: [{ tool: "bash", action: "deny" }] }) as PolicyFile };
       expect(decideCall(deny, { harness: "codex", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");
-      expect(decideCall(ask, { harness: "copilot-cli", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");
+      expect(decideCall(ask, { harness: "opencode", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");
       // Without the hint: as before.
       delete process.env.DERM_ASKS;
       expect(decideCall(ask, { harness: "codex", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");

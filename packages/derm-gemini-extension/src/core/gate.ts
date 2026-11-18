@@ -117,10 +117,15 @@ export const BOUNDARY_NOTE = "no one can answer in this chat and it runs inside 
  * `DERM_ASKS=boundary` for this chat. Only a hint that the daemon is to be
  * asked: `run.start` (the daemon scope's) decides there, so a value an agent
  * or a project's settings put in the environment allows nothing. Only the
- * agents whose ask path was read to end in resolveAsk for every ask.
+ * agents whose ask path was read to end in resolveAsk for every ask: Claude
+ * Code and Codex, and the four derm's command-hook sbx kit covers
+ * (derm-hooks-claude-compat src/hook.ts and derm-hooks-native src/runner.ts,
+ * read 17 Nov 2026).
  */
+const BOUNDARY_ASKERS: ReadonlySet<string> = new Set(["claude-code", "codex", "copilot-cli", "droid", "cursor", "kiro"]);
+
 function boundaryAsks(call: GateCall): boolean {
-  return process.env.DERM_ASKS === "boundary" && (call.harness === "claude-code" || call.harness === "codex");
+  return process.env.DERM_ASKS === "boundary" && BOUNDARY_ASKERS.has(call.harness);
 }
 
 /**

@@ -1,0 +1,43 @@
+# syntax=docker/sandbox-kit:3
+#
+# derm's gate inside a Docker Sandboxes VM, for an agent that takes a
+# command hook: a v3 mixin. `derm run --boundary sbx <agent>` writes a copy
+# of this file for the chat with its three placeholder words filled in
+# (crates/derm-cli/src/run/boundary/kit.rs), beside the Dockerfile and
+# derm-kit/ with the person's policy and the hook package, and passes the
+# folder to `sbx create` with --kit. The folder is written by derm and
+# removed after the create; nothing is published.
+#
+# Why v3: sbx 0.51.0 ships copilot, droid, cursor and kiro as v3 kits. A v3
+# mixin that requires each composed with it on the box (17 Nov 2026, a
+# probe mixin, no model call).
+#
+# Grammar: docker/sandbox-kit-spec docs/spec/SPEC-v3.md at 6838e3e (schema
+# "3"; strict decoding refuses any unknown field). The shape is derm's
+# Claude Code kit's (packaging/sbx-kit/claude), without the full-access
+# argument: derm run passes DERM_FULL_ACCESS by name where the agent's kit
+# starts it with its approvals off, and not otherwise.
+schemaVersion: "3"
+kind: mixin
+displayName: derm gate for @NAME@
+description: >-
+  Runs derm's policy gate as @NAME@'s pre-tool hook inside the sandbox, with
+  a copy of the person's derm policy and its own Node.
+sourceUrl: https://github.com/aetiusgular/derm
+licenses: [MIT]
+version: "0.1.0"
+
+requires: ["@WORKLOAD@"]
+provides: ["io.github.aetiusgular/derm-gate-@WORKLOAD@"]
+
+capabilities:
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        # As root: it puts the gate's code and its Node in /opt/derm-kit,
+        # registers the hook in the agent's own config under /home/agent,
+        # and puts the policy where the hook reads it. A failure stops the
+        # create, with the reason (rules case 151).
+        - command: "sh /opt/derm-kit-src/install.sh @AGENT@"
+          user: "0"
+          description: Install derm's gate for @NAME@ (code and Node in /opt/derm-kit, the hook in the agent's config, policy in ~/.derm)

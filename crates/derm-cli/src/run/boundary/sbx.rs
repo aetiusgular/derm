@@ -345,6 +345,45 @@ pub(crate) struct KitInputs<'a> {
     pub switch: Option<&'a str>,
 }
 
+/// The start line for a chat whose VM holds derm's kit. Each sentence is
+/// said only where it is true for this harness and this chat: where the
+/// hook is registered, what becomes of an ask (`full`: the agent's own
+/// approvals are off; `asks`: E1-14, the boundary answers), and whether the
+/// agent's own telemetry is exported (review 6-4).
+fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks: bool) -> String {
+    let spec = super::kit::spec(harness);
+    let name = spec.map_or(harness, |s| s.name);
+    let registered = spec.map_or("its settings", |s| s.registered);
+    let own_config = harness != "claude-code";
+    let ask = if full && asks {
+        "The agent runs in full access there with no one to ask, so what your policy would ask is allowed and recorded (the VM is the boundary; a deny rule still denies)."
+    } else if full {
+        "The agent runs in full access there with no one to ask, so what your policy would ask is denied."
+    } else {
+        "What your policy would ask goes to the agent's own prompt where it shows one for a hook, else to derm watch --approve on this machine, else it is denied."
+    };
+    let telemetry = if exported {
+        format!(", and {name}'s own telemetry reaches the daemon over its port.")
+    } else if matches!(harness, "claude-code" | "codex") {
+        format!(". {name}'s own telemetry is NOT exported for this chat (run.start's otelExport says why).")
+    } else {
+        format!(". derm reads no telemetry export of {name}'s own under sbx: the record is the gate's calls and decisions and sbx's policy log.")
+    };
+    format!(
+        "derm run: inside the sbx VM {workload} runs with derm's gate: derm's kit registers it in {registered}{}, with your policy as it is now. \
+         {ask} The agent has sudo in the VM and could remove the gate; \
+         the VM stays the boundary. sbx's policy log records the VM's network calls{telemetry} \
+         The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
+         The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
+        if own_config {
+            " in the VM, a file the agent's own user can rewrite"
+        } else {
+            ""
+        },
+        super::kit::SWITCH
+    )
+}
+
 pub(crate) fn start_with(
     sbx: &str,
     plan: &mut Plan,
@@ -370,21 +409,17 @@ pub(crate) fn start_with(
         .env_set
         .iter()
         .any(|(k, _)| k == "OTEL_EXPORTER_OTLP_ENDPOINT");
+    let set = |name: &str| plan.env_set.iter().any(|(k, v)| k == name && !v.is_empty());
     match &kit {
         super::kit::Kit::Built(_) => eprintln!(
-            "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
-             The agent runs in full access there with no one to ask, so what your policy would ask is allowed and recorded (the VM is the boundary; a deny rule still denies). The agent has sudo in the VM and could remove the gate; \
-             the VM stays the boundary. sbx's policy log records the VM's network calls{} \
-             The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
-             The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
-            st.workload,
-            // Review 6-4: said only when the export was applied.
-            if exported {
-                ", and Claude Code's own telemetry reaches the daemon over its port."
-            } else {
-                ". Claude Code's own telemetry is NOT exported for this chat (run.start's otelExport says why)."
-            },
-            super::kit::SWITCH
+            "{}",
+            with_kit_line(
+                harness,
+                &st.workload,
+                exported,
+                set("DERM_FULL_ACCESS"),
+                set("DERM_ASKS")
+            )
         ),
         super::kit::Kit::Without(why) => eprintln!(
             "derm run: inside the sbx VM {} runs without derm's gate ({why}): your host's hooks, plugins and extensions are not in the VM. \
@@ -529,6 +564,39 @@ fn create_failed(name: &str, code: Option<i32>, kit_went_on: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 17 Nov 2026, the kits for four more agents: the start line says
+    /// only what holds for this agent and this chat.
+    #[test]
+    fn the_start_line_with_a_kit_is_true_for_each_agent() {
+        let claude = with_kit_line("claude-code", "claude", true, true, true);
+        assert!(claude.contains("registers it in Claude Code's managed settings, with your policy"));
+        assert!(claude.contains("is allowed and recorded"));
+        assert!(claude.contains("Claude Code's own telemetry reaches the daemon"));
+        assert!(!claude.contains("can rewrite"));
+        let off = with_kit_line("claude-code", "claude", false, true, false);
+        assert!(off.contains("would ask is denied."), "{off}");
+        assert!(off.contains("Claude Code's own telemetry is NOT exported"));
+        // Droid's own kit does not turn its approvals off.
+        let droid = with_kit_line("droid", "droid", false, false, false);
+        assert!(droid.contains("registers it in ~/.factory/settings.json in the VM, a file the agent's own user can rewrite"));
+        assert!(droid.contains("else to derm watch --approve on this machine, else it is denied"));
+        assert!(!droid.contains("full access"));
+        assert!(droid.contains("derm reads no telemetry export of Droid's own under sbx"));
+        assert!(!droid.contains("Claude"));
+        for (h, w, file) in [
+            ("copilot-cli", "copilot", "~/.copilot/hooks/derm.json"),
+            ("cursor", "cursor", "~/.cursor/hooks.json"),
+            ("kiro", "kiro", "~/.kiro/hooks/derm.json"),
+        ] {
+            let line = with_kit_line(h, w, false, true, true);
+            assert!(line.contains(&format!("inside the sbx VM {w} runs with derm's gate")));
+            assert!(line.contains(file), "{line}");
+            assert!(line.contains("is allowed and recorded"));
+            assert!(!line.contains("Claude"), "{line}");
+            assert!(line.ends_with("DERM_SBX_KIT=off"));
+        }
+    }
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 

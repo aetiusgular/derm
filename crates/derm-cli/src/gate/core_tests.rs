@@ -138,7 +138,17 @@ fn full_access_turns_an_ask_into_a_deny() {
 fn e1_14_in_a_boundary_that_answers_an_ask_is_allowed_and_recorded() {
     let hint = Env::of(&[("DERM_FULL_ACCESS", "1"), ("DERM_ASKS", "boundary")]);
     let full = Env::of(&[("DERM_FULL_ACCESS", "1")]);
-    for harness in ["claude-code", "codex"] {
+    // 17 Nov 2026: and the four agents derm's command-hook sbx kit covers
+    // (`hook/claude_format/compat.rs` and `hook/native/mod.rs` put every
+    // ask to `resolve_ask`).
+    for harness in [
+        "claude-code",
+        "codex",
+        "copilot-cli",
+        "droid",
+        "cursor",
+        "kiro",
+    ] {
         let c = call(harness, "bash", json!({"command": "ls *.py"}));
         // Without the hint: as before.
         assert_eq!(decide_call(&ask_bash(), &c, &full).action, Action::Deny);
@@ -194,7 +204,7 @@ fn e1_14_in_a_boundary_that_answers_an_ask_is_allowed_and_recorded() {
         Action::Deny
     );
     // An agent whose ask path was not read for this keeps the old rule.
-    let other = call("copilot-cli", "bash", json!({"command": "ls"}));
+    let other = call("opencode", "bash", json!({"command": "ls"}));
     assert_eq!(decide_call(&ask_bash(), &other, &hint).action, Action::Deny);
     // Not full access: the hint changes nothing.
     let c = call("codex", "bash", json!({"command": "ls"}));

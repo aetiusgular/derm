@@ -43,11 +43,11 @@ pub const OWNED_VARS: &[&str] = &[
 /// unattended Codex denied, 64 for a glob, a variable or an escape): in full
 /// access an ask is a deny, because no one can answer. Inside a boundary
 /// that is the containment, the sbx VM or one the user names with `--asks
-/// allow`, the gate allows and records it. Only Claude Code and Codex, whose
-/// gates were read to put every ask to the daemon.
+/// allow`, the gate allows and records it. Only the agents whose gates were
+/// read to put every ask to the daemon (`gate::core::BOUNDARY_ASKERS`).
 fn boundary_asks(i: &Inputs, harness: &str, full: &[String]) -> bool {
     !full.is_empty()
-        && matches!(harness, "claude-code" | "codex")
+        && crate::gate::core::BOUNDARY_ASKERS.contains(&harness)
         && (i.args.boundary == Boundary::Sbx || i.args.asks_allow)
 }
 
@@ -2632,9 +2632,14 @@ mod tests {
                 .map(|(_, v)| v.clone())
         };
         // sbx, Claude Code and Codex: on, and named to sbx.
+        // 17 Nov 2026: and the three agents with a derm kit whose own sbx
+        // kit starts them with approvals off.
         for (harness, flag) in [
             ("claude-code", "--dangerously-skip-permissions"),
             ("codex", "--dangerously-bypass-approvals-and-sandbox"),
+            ("copilot-cli", "--yolo"),
+            ("cursor", "--yolo"),
+            ("kiro", "--trust-all-tools"),
         ] {
             let args = a(&[harness, "--boundary", "sbx", "--", flag]);
             let p = build(&inputs(&args)).unwrap();

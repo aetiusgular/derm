@@ -193,10 +193,21 @@ pub const BOUNDARY_NOTE: &str =
 /// that the daemon is to be asked: `run.start` (the daemon scope's) decides
 /// there, so a value an agent or a project's settings put in the
 /// environment allows nothing. Only the agents whose ask path was read to
-/// end in `resolve_ask` for every ask (Claude Code and Codex).
+/// end in `resolve_ask` for every ask: Claude Code and Codex, and the four
+/// derm's command-hook sbx kit covers (`hook/claude_format/compat.rs` and
+/// `hook/native/mod.rs`, read 17 Nov 2026). `run/plan.rs` holds the same
+/// list.
+pub const BOUNDARY_ASKERS: &[&str] = &[
+    "claude-code",
+    "codex",
+    "copilot-cli",
+    "droid",
+    "cursor",
+    "kiro",
+];
+
 fn boundary_asks(call: &GateCall, env: &Env) -> bool {
-    env.raw("DERM_ASKS") == Some("boundary")
-        && matches!(call.harness.as_str(), "claude-code" | "codex")
+    env.raw("DERM_ASKS") == Some("boundary") && BOUNDARY_ASKERS.contains(&call.harness.as_str())
 }
 
 /// `decideCall`: the policy's answer for one call, with full access applied.
