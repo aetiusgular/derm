@@ -29,6 +29,9 @@ function withKitNode(v: unknown): unknown {
   return v;
 }
 
+// The registrar runs in a Linux VM and joins with "/" whatever the host is,
+// so the files it names are spelled that way here too (Windows opens them
+// either way).
 function home(): string {
   return mkdtempSync(path.join(tmpdir(), "derm-kit-agent-"));
 }
@@ -72,7 +75,7 @@ describe("register", () => {
     const h = home();
     try {
       const wrote = register("copilot-cli", h, NODE, HOOK);
-      const file = path.join(h, ".copilot", "hooks", "derm.json");
+      const file = path.posix.join(h, ".copilot", "hooks", "derm.json");
       expect(wrote).toEqual([file]);
       const first = readFileSync(file, "utf8");
       expect(JSON.parse(first).hooks.preToolUse[0].bash).toBe(`${NODE} --no-warnings "${HOOK}" copilot-cli pre`);
@@ -86,8 +89,8 @@ describe("register", () => {
   it("merges beside what is there: other keys, other hooks, once", () => {
     const h = home();
     try {
-      mkdirSync(path.join(h, ".factory"));
-      const file = path.join(h, ".factory", "settings.json");
+      mkdirSync(path.posix.join(h, ".factory"));
+      const file = path.posix.join(h, ".factory", "settings.json");
       const other = { matcher: "Bash", hooks: [{ type: "command", command: "/usr/bin/true" }] };
       writeFileSync(file, JSON.stringify({ model: "x", hooks: { PreToolUse: [other], Stop: [other] } }));
       register("droid", h, NODE, HOOK);
@@ -106,8 +109,8 @@ describe("register", () => {
   it("Cursor: both events, beside another hook, with the file's version kept", () => {
     const h = home();
     try {
-      mkdirSync(path.join(h, ".cursor"));
-      const file = path.join(h, ".cursor", "hooks.json");
+      mkdirSync(path.posix.join(h, ".cursor"));
+      const file = path.posix.join(h, ".cursor", "hooks.json");
       writeFileSync(file, JSON.stringify({ version: 1, hooks: { preToolUse: [{ type: "command", command: "/x" }], stop: [{ command: "/y" }] } }));
       register("cursor", h, NODE, HOOK);
       register("cursor", h, NODE, HOOK);
@@ -125,19 +128,19 @@ describe("register", () => {
   it("refuses a file that would shadow the gate, a file that is not JSON and a shape it cannot merge; nothing is written", () => {
     const h = home();
     try {
-      mkdirSync(path.join(h, ".factory"));
-      const settings = path.join(h, ".factory", "settings.json");
-      writeFileSync(path.join(h, ".factory", "hooks.json"), "{}");
+      mkdirSync(path.posix.join(h, ".factory"));
+      const settings = path.posix.join(h, ".factory", "settings.json");
+      writeFileSync(path.posix.join(h, ".factory", "hooks.json"), "{}");
       expect(() => register("droid", h, NODE, HOOK)).toThrow(/hooks\.json.*shadow/);
       expect(existsSync(settings)).toBe(false);
-      rmSync(path.join(h, ".factory", "hooks.json"));
+      rmSync(path.posix.join(h, ".factory", "hooks.json"));
       writeFileSync(settings, "not json");
       expect(() => register("droid", h, NODE, HOOK)).toThrow(/not JSON/);
       writeFileSync(settings, JSON.stringify({ hooks: { PreToolUse: {} } }));
       expect(() => register("droid", h, NODE, HOOK)).toThrow(/not a list/);
       expect(readFileSync(settings, "utf8")).toBe(JSON.stringify({ hooks: { PreToolUse: {} } }));
-      mkdirSync(path.join(h, ".kiro", "hooks"), { recursive: true });
-      writeFileSync(path.join(h, ".kiro", "hooks", "derm.json"), JSON.stringify({ version: "v1", hooks: [] }));
+      mkdirSync(path.posix.join(h, ".kiro", "hooks"), { recursive: true });
+      writeFileSync(path.posix.join(h, ".kiro", "hooks", "derm.json"), JSON.stringify({ version: "v1", hooks: [] }));
       expect(() => register("kiro", h, NODE, HOOK)).toThrow(/is not derm's/);
     } finally {
       rmSync(h, { recursive: true, force: true });
@@ -149,7 +152,7 @@ describe("register", () => {
     try {
       const ok = spawnSync(process.execPath, [SCRIPT, "kiro", h, NODE, HOOK], { encoding: "utf8" });
       expect(ok.status).toBe(0);
-      expect(ok.stdout.trim()).toBe(path.join(h, ".kiro", "hooks", "derm.json"));
+      expect(ok.stdout.trim()).toBe(path.posix.join(h, ".kiro", "hooks", "derm.json"));
       const bad = spawnSync(process.execPath, [SCRIPT, "codex", h, NODE, HOOK], { encoding: "utf8" });
       expect(bad.status).toBe(1);
       expect(bad.stderr).toMatch(/derm kit: no registration for codex/);
