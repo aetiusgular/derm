@@ -89,6 +89,47 @@ describe("Claude Code PreToolUse", () => {
     expect(t.permissionDecisionReason).toContain("ask timed out");
   });
 
+  // E1-16 (the box, 17 Nov 2026, derm's kits in four sbx VMs against a
+  // daemon at 8e48f23): every ask was still denied in full access with
+  // DERM_ASKS=boundary. The daemon client turned any yes not given by an
+  // approver into no, the boundary's too, so E1-14's allow never happened on
+  // the TypeScript route. E1-14's own test put a stand-in in the client's
+  // place and did not see it. This one runs the hook against a daemon that
+  // answers as the real one does.
+  it("E1-16: in full access, an ask the chat's boundary answers is allowed, through the real client", async () => {
+    // The gate core reads these two from the process's own environment.
+    const set = (full?: string, asks?: string) => {
+      for (const [k, v] of [["DERM_FULL_ACCESS", full], ["DERM_ASKS", asks]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    };
+    try {
+      daemon.setApprove("boundary");
+      set("1", "boundary");
+      const d = decision((await runHook("pre", pre("mcp__github__create_issue", { title: "t" }), env())).stdout);
+      expect(d.permissionDecision).toBe("allow");
+      expect(d.permissionDecisionReason).toContain("it runs inside its boundary, so derm allows what it would ask and records it");
+      expect(daemon.approvals().at(-1)).toMatchObject({ boundaryOnly: true, chat: "s-1" });
+      // Without the hint the ask is the full-access deny, and the daemon is not asked.
+      set("1", undefined);
+      const before = daemon.approvals().length;
+      expect(decision((await runHook("pre", pre("mcp__github__create_issue", {}), env())).stdout).permissionDecision).toBe("deny");
+      expect(daemon.approvals().length).toBe(before);
+      // A daemon that does not answer for the boundary: deny.
+      set("1", "boundary");
+      daemon.setApprove("none");
+      expect(decision((await runHook("pre", pre("mcp__github__create_issue", {}), env())).stdout).permissionDecision).toBe("deny");
+      // Outside full access a yes by `boundary` was never asked for and is not a yes.
+      set(undefined, undefined);
+      daemon.setApprove("boundary-unasked");
+      expect(decision((await runHook("pre", pre("mcp__github__create_issue", {}), env())).stdout).permissionDecision).not.toBe("allow");
+    } finally {
+      set(undefined, undefined);
+      daemon.setApprove("none");
+    }
+  });
+
   it("no approver connected, or no daemon: Claude Code's own prompt (contract section 5)", async () => {
     daemon.setApprove("none");
     expect(decision((await runHook("pre", pre("mcp__github__create_issue", {}), env())).stdout).permissionDecision).toBe("ask");

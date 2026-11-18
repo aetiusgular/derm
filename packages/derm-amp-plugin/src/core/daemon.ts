@@ -380,8 +380,12 @@ export async function approve(request: ApproveRequest, env?: NodeJS.ProcessEnv):
   if (!reply || reply.ok !== true) return { unreachable: `daemon refused approve: ${String(reply?.error ?? "no reply")}` };
   const answer = reply.answer === "yes" ? "yes" : "no";
   const by = reply.by === "approver" || reply.by === "timeout" || reply.by === "none" || reply.by === "boundary" ? reply.by : "approver";
-  // Only an explicit yes from an approver counts as yes.
-  if (answer === "yes" && by !== "approver") return { answer: "no", by };
+  // Only an explicit yes from an approver counts as yes; or the boundary's,
+  // and that only to a request that asked for nothing else (E1-14). Until
+  // E1-16 the boundary's yes was turned into no here, so on this route an
+  // ask in full access was denied whatever the daemon said.
+  const asked = request.boundaryOnly === true ? "boundary" : "approver";
+  if (answer === "yes" && by !== asked) return { answer: "no", by };
   return { answer, by };
 }
 
