@@ -1111,7 +1111,8 @@ pub enum ApproveOutcome {
 }
 
 /// Sends `approve` and waits for the answer (contract section 2, rule 3).
-/// Only an explicit yes from an approver counts as yes.
+/// Only an explicit yes from an approver counts as yes, or the boundary's
+/// for a request that asked the boundary alone.
 pub fn approve(request: &ApproveRequest, env: &Env, cwd: &Path) -> ApproveOutcome {
     let o = Opts {
         env,
@@ -1145,8 +1146,16 @@ pub fn approve(request: &ApproveRequest, env: &Env, cwd: &Path) -> ApproveOutcom
         Some("boundary") => By::Boundary,
         _ => By::Approver,
     };
+    // A yes counts from the party the request asked: the boundary for a
+    // boundary-only request (E1-14), an approver for any other. The
+    // TypeScript client holds the same rule (E1-16).
+    let asked = if request.boundary_only {
+        By::Boundary
+    } else {
+        By::Approver
+    };
     ApproveOutcome::Answer {
-        yes: yes && matches!(by, By::Approver | By::Boundary),
+        yes: yes && by == asked,
         by,
     }
 }

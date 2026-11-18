@@ -360,6 +360,11 @@
    "test": "packages/derm-hooks-native/src/presets.test.ts :: preset rows and dialects > kiro: shell aliases, ask route and package agree (case 82)",
    "lane": "5bB",
    "how": "a unit case of the dialect: port as a Rust test in the lane's folder"
+  },
+  {
+   "test": "packages/derm-claude-plugin/src/hook.test.ts :: Claude Code PreToolUse > E1-16: in full access, an ask the chat's boundary answers is allowed, through the real client",
+   "lane": "integration",
+   "how": "held by gate::daemon::tests::unix::e1_16_the_boundarys_yes_counts_only_for_a_boundary_only_request (the real client against the fake daemon) and gate::core_tests::e1_14_in_a_boundary_that_answers_an_ask_is_allowed_and_recorded"
   }
  ]
 }

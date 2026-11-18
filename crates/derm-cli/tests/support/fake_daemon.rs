@@ -36,6 +36,12 @@ pub enum Approve {
     Hang,
     Close,
     Refuse,
+    /// As the real daemon answers for a chat whose run.start said
+    /// `asks: "allow"` (E1-14): yes by `boundary` to a request with
+    /// `boundaryOnly`, no approver for any other.
+    Boundary,
+    /// A yes by `boundary` whatever the request asked.
+    BoundaryUnasked,
 }
 
 impl Approve {
@@ -47,6 +53,8 @@ impl Approve {
             "hang" => Approve::Hang,
             "close" => Approve::Close,
             "refuse" => Approve::Refuse,
+            "boundary" => Approve::Boundary,
+            "boundary-unasked" => Approve::BoundaryUnasked,
             _ => Approve::None,
         }
     }
@@ -222,6 +230,16 @@ fn serve(
                     }
                     Approve::Timeout => {
                         send(json!({"ok": true, "id": id, "answer": "no", "by": "timeout"}))
+                    }
+                    Approve::Boundary => {
+                        if line["request"]["boundaryOnly"] == json!(true) {
+                            send(json!({"ok": true, "id": id, "answer": "yes", "by": "boundary"}))
+                        } else {
+                            send(json!({"ok": true, "id": id, "answer": "no", "by": "none"}))
+                        }
+                    }
+                    Approve::BoundaryUnasked => {
+                        send(json!({"ok": true, "id": id, "answer": "yes", "by": "boundary"}))
                     }
                     Approve::Close => return,
                     Approve::Refuse => send(json!({"ok": false, "error": "refused"})),

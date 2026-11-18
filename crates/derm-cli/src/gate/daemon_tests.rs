@@ -296,6 +296,59 @@ mod unix {
         assert!(t0.elapsed() < Duration::from_secs(10));
     }
 
+    /// E1-16 (the box, 17 Nov 2026): the TypeScript client turned the
+    /// boundary's yes into no, so E1-14's allow never happened on that
+    /// route. This holds the same rule for this client against a daemon
+    /// that answers as the real one does: the boundary's yes counts for a
+    /// request that asked the boundary alone, and for no other.
+    #[test]
+    fn e1_16_the_boundarys_yes_counts_only_for_a_boundary_only_request() {
+        let t = tree();
+        let d = FakeDaemon::start(Approve::Boundary, None);
+        let env = Env(d.env(true).into_iter().collect());
+        let ask = |boundary_only: bool| ApproveRequest {
+            id: "ap".into(),
+            chat: "c".into(),
+            harness: "codex".into(),
+            tool: "bash".into(),
+            summary: "bash: ls *.py".into(),
+            timeout_seconds: 1,
+            boundary_only,
+        };
+        assert_eq!(
+            approve(&ask(true), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: true,
+                by: By::Boundary
+            }
+        );
+        assert_eq!(
+            approve(&ask(false), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: false,
+                by: By::None
+            }
+        );
+        // A yes by the boundary to a request that did not ask for one.
+        d.set_approve(Approve::BoundaryUnasked);
+        assert_eq!(
+            approve(&ask(false), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: false,
+                by: By::Boundary
+            }
+        );
+        // And an approver's yes is not the boundary's.
+        d.set_approve(Approve::Yes);
+        assert_eq!(
+            approve(&ask(true), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: false,
+                by: By::Approver
+            }
+        );
+    }
+
     #[test]
     fn under_an_agents_user_the_persons_files_are_trusted_and_the_agents_are_not() {
         let t = tree();

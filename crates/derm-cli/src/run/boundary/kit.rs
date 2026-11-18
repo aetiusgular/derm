@@ -108,6 +108,7 @@ pub(crate) const NATIVE_OWN: &[(&str, &str)] = own!("derm-hooks-native":
 
 /// What derm's kit is for one harness.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct Spec {
     /// sbx's name for the agent's workload, which the mixin requires.
     pub workload: &'static str,
