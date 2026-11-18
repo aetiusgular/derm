@@ -29,7 +29,9 @@ describe("terminal-bench bundle", () => {
     for (const f of ["bin/derm", "bin/derm-daemon", "mkt/.agents/plugins/marketplace.json", "mkt/derm/.codex-plugin/plugin.json", "mkt/derm/hooks/hooks.json", "mkt/derm/hooks/derm-gate.sh", "trust.toml", "policy.json"]) {
       expect(existsSync(path.join(out, f)), f).toBe(true);
     }
-    expect(statSync(path.join(out, "bin", "derm")).mode & 0o111).not.toBe(0);
+    // The bundle goes into a Linux container, where the bit decides. Windows
+    // keeps no such bit, so there is nothing to read there.
+    if (process.platform !== "win32") expect(statSync(path.join(out, "bin", "derm")).mode & 0o111).not.toBe(0);
     const policy = JSON.parse(readFileSync(path.join(out, "policy.json"), "utf8"));
     expect(policy.version).toBe(1);
     expect(policy.rules.length).toBeGreaterThan(10);

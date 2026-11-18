@@ -204,10 +204,24 @@ describe("the matrix runner's reading of a run (eval pass 1: E1-4a, E1-4b, E1-4e
     // @ts-expect-error plain ES module, no types
     const { base } = await import("./lib/matrix.mjs");
     const saved = process.env.DERM_EVAL_BASE;
-    process.env.DERM_EVAL_BASE = "/tmp/derm-eval-x";
-    expect(() => base()).toThrow(/write root of srt/);
-    if (saved === undefined) delete process.env.DERM_EVAL_BASE;
-    else process.env.DERM_EVAL_BASE = saved;
+    try {
+      // The system's own temporary folder, wherever this machine keeps it.
+      // On Windows "/tmp" is a folder on the current drive like any other,
+      // so the literal is only tried where it is the temporary folder
+      // (CI's Windows job, where base() made D:\tmp\derm-eval-x and did not
+      // throw).
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      process.env.DERM_EVAL_BASE = join(tmpdir(), "derm-eval-x");
+      expect(() => base()).toThrow(/write root of srt/);
+      if (process.platform !== "win32") {
+        process.env.DERM_EVAL_BASE = "/tmp/derm-eval-x";
+        expect(() => base()).toThrow(/write root of srt/);
+      }
+    } finally {
+      if (saved === undefined) delete process.env.DERM_EVAL_BASE;
+      else process.env.DERM_EVAL_BASE = saved;
+    }
   });
 
   it("counts only cells that ran, and says when a boundary's control did not run", async () => {

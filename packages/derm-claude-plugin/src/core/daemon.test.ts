@@ -127,7 +127,9 @@ describe("paths from the environment", () => {
       for (const home of [path.join(project, "run"), "relative/run"]) {
         process.env.HOME = home;
         const r = await exchange([{ op: "event", event: { id: "x" } }], { env: { DERM_CHAT_TOKEN: CHAT }, client: "t", replyTimeoutMs: 500, cwd: project });
-        expect("error" in r && r.error, home).toMatch(/the daemon socket is (inside the session folder|not an absolute path)/);
+        // On Windows the client refuses before it places a socket at all
+        // (its documented refusal, note BF 4.2; as the S3 case above).
+        expect("error" in r && r.error, home).toMatch(WIN ? /cannot be checked on Windows/ : /the daemon socket is (inside the session folder|not an absolute path)/);
       }
     } finally {
       if (saved === undefined) delete process.env.HOME;
