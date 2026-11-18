@@ -354,7 +354,12 @@ fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks
     let spec = super::kit::spec(harness);
     let name = spec.map_or(harness, |s| s.name);
     let registered = spec.map_or("its settings", |s| s.registered);
-    let own_config = harness != "claude-code";
+    // Where the registration can be changed from. Claude Code's is root's.
+    let own_config = match harness {
+        "claude-code" => "",
+        "codex" => " in the VM, which the agent's own user can change",
+        _ => " in the VM, a file the agent's own user can rewrite",
+    };
     let ask = if full && asks {
         "The agent runs in full access there with no one to ask, so what your policy would ask is allowed and recorded (the VM is the boundary; a deny rule still denies)."
     } else if full {
@@ -375,11 +380,7 @@ fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks
          the VM stays the boundary. sbx's policy log records the VM's network calls{telemetry} \
          The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
          The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
-        if own_config {
-            " in the VM, a file the agent's own user can rewrite"
-        } else {
-            ""
-        },
+        own_config,
         super::kit::SWITCH
     )
 }
@@ -584,6 +585,12 @@ mod tests {
         assert!(!droid.contains("full access"));
         assert!(droid.contains("derm reads no telemetry export of Droid's own under sbx"));
         assert!(!droid.contains("Claude"));
+        let codex = with_kit_line("codex", "codex", true, true, true);
+        assert!(codex.contains(
+            "registers it in Codex's own plugins and config.toml (~/.codex) in the VM, which the agent's own user can change, with your policy"
+        ), "{codex}");
+        assert!(codex.contains("is allowed and recorded"));
+        assert!(codex.contains("Codex's own telemetry reaches the daemon"));
         for (h, w, file) in [
             ("copilot-cli", "copilot", "~/.copilot/hooks/derm.json"),
             ("cursor", "cursor", "~/.cursor/hooks.json"),

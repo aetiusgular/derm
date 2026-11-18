@@ -91,7 +91,9 @@ fn no_kit_and_why_for_another_agent_the_switch_and_every_policy_it_cannot_use() 
         Kit::Without(w) => w,
         Kit::Built(_) => panic!("a kit was built"),
     };
-    assert!(why(prepare("codex", Some(&good), &d, None).unwrap()).contains("no sbx kit for codex"));
+    // 17 Nov 2026: Codex has a kit now, so the agent with none is OpenCode.
+    assert!(why(prepare("opencode", Some(&good), &d, None).unwrap())
+        .contains("no sbx kit for opencode"));
     assert!(why(prepare("pi", Some(&good), &d, None).unwrap()).contains("no sbx kit for pi"));
     assert!(
         why(prepare("claude-code", Some(&good), &d, Some("off")).unwrap())
@@ -449,5 +451,186 @@ fn the_command_hook_kit_is_a_v3_mixin_whose_parts_agree() {
         assert!(REGISTER_AGENT.contains(&format!("case \"{a}\":")), "{a}");
         assert!(has_kit(a));
     }
-    assert!(!has_kit("codex") && !has_kit("pi") && !has_kit("opencode"));
+    assert!(!has_kit("pi") && !has_kit("opencode"));
+}
+
+/// A small stand-in for the Linux derm the Codex kit carries.
+fn vm_derm_at(dir: &Path, mode: u32) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join("derm-for-the-vm");
+    std::fs::write(&p, b"\x7fELF stand-in").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+    p
+}
+
+/// 17 Nov 2026, Codex's kit. Codex's gate is the Rust `derm hook`, so the
+/// kit carries a derm for the VM, derm's Codex plugin as a local
+/// marketplace, the plugin's trust entries and the policy, and no Node.
+#[test]
+fn codex_gets_a_kit_with_a_derm_for_the_vm_and_its_plugin() {
+    let d = tmp("codex");
+    let policy = policy_at(&d, POLICY, 0o600);
+    let derm = vm_derm_at(&d, 0o755);
+    TEST_VM_DERM.with(|t| *t.borrow_mut() = Some(Ok(derm.clone())));
+    let kit = prepare("codex", Some(&policy), &d, None).unwrap();
+    TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+    let Kit::Built(p) = kit else {
+        panic!("no kit: {kit:?}")
+    };
+    let root = p.path().to_path_buf();
+    let files = files_under(&root);
+    let want: BTreeSet<String> = [
+        "derm-gate-codex.yaml",
+        "derm-gate-codex.dockerfile",
+        "derm-kit/install.sh",
+        "derm-kit/setup.sh",
+        "derm-kit/policy.json",
+        "derm-kit/trust.toml",
+        "derm-kit/derm",
+        "derm-kit/mkt/.agents/plugins/marketplace.json",
+        "derm-kit/mkt/derm/.codex-plugin/plugin.json",
+        "derm-kit/mkt/derm/hooks/hooks.json",
+        "derm-kit/mkt/derm/hooks/derm-gate.sh",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    assert_eq!(files, want);
+    assert_eq!(
+        std::fs::read(root.join("derm-kit/derm")).unwrap(),
+        std::fs::read(&derm).unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("derm-kit/policy.json")).unwrap(),
+        POLICY
+    );
+    let read = |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap();
+    // The plugin is the one in the repository, file for file.
+    let pkg = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packages/derm-codex-plugin");
+    for rel in [
+        ".codex-plugin/plugin.json",
+        "hooks/hooks.json",
+        "hooks/derm-gate.sh",
+    ] {
+        assert_eq!(
+            read(&format!("derm-kit/mkt/derm/{rel}")),
+            std::fs::read_to_string(pkg.join(rel)).unwrap(),
+            "{rel}"
+        );
+    }
+    let mkt: serde_json::Value =
+        serde_json::from_str(&read("derm-kit/mkt/.agents/plugins/marketplace.json")).unwrap();
+    assert_eq!(mkt["name"], "derm");
+    assert_eq!(mkt["plugins"][0]["name"], "derm");
+    assert_eq!(mkt["plugins"][0]["source"]["path"], "./derm");
+    // Everything in the folder is the person's alone.
+    use std::os::unix::fs::PermissionsExt;
+    for f in &files {
+        let m = std::fs::metadata(root.join(f))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(m & 0o077, 0, "{f} is {m:o}");
+    }
+    assert_eq!(spec("codex").unwrap().workload, "codex");
+    drop(p);
+    assert!(!root.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// With no derm that could run in the VM there is no kit, and the reason
+/// says what is missing. Nothing is built.
+#[test]
+fn codex_has_no_kit_without_a_derm_for_the_vm() {
+    let d = tmp("codex-none");
+    let policy = policy_at(&d, POLICY, 0o600);
+    TEST_VM_DERM.with(|t| {
+        *t.borrow_mut() = Some(Err(
+            "no Linux derm for the VM at /x/derm-linux-aarch64".into()
+        ))
+    });
+    let kit = prepare("codex", Some(&policy), &d, None).unwrap();
+    TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+    match kit {
+        Kit::Without(why) => assert!(why.contains("no Linux derm for the VM"), "{why}"),
+        Kit::Built(_) => panic!("a kit was built"),
+    }
+    let left = std::fs::read_dir(&d)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("derm-sbx-kit-"))
+        .count();
+    assert_eq!(left, 0);
+    // A derm others can write is not carried into the VM.
+    let loose = vm_derm_at(&d, 0o777);
+    assert!(checked_vm_derm(&loose)
+        .unwrap_err()
+        .contains("writable by others"));
+    let link = d.join("link");
+    std::os::unix::fs::symlink(&loose, &link).unwrap();
+    assert!(checked_vm_derm(&link)
+        .unwrap_err()
+        .contains("not a regular file"));
+    assert!(checked_vm_derm(&d.join("absent"))
+        .unwrap_err()
+        .contains("no Linux derm for the VM"));
+    assert_eq!(
+        checked_vm_derm(&vm_derm_at(&tmp("codex-ok"), 0o755)).map(|_| ()),
+        Ok(())
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The Codex kit's parts agree with each other and with what they stand on.
+#[test]
+fn the_codex_kit_is_a_v3_mixin_whose_parts_agree() {
+    let y = CODEX_DESCRIPTOR;
+    assert!(y.starts_with("# syntax=docker/sandbox-kit:3\n"));
+    assert!(y.contains("\nschemaVersion: \"3\"\n"));
+    assert!(y.contains("\nkind: mixin\n"));
+    assert!(y.contains("requires: [\"codex\"]"));
+    // Root's step, then the agent's.
+    let root_step = y
+        .find("command: \"sh /opt/derm-kit-src/install.sh\"\n          user: \"0\"")
+        .unwrap();
+    let agent_step = y
+        .find("command: \"sh /opt/derm-kit/setup.sh\"\n          user: agent")
+        .unwrap();
+    assert!(root_step < agent_step);
+    assert!(CODEX_DOCKERFILE.contains("FROM scratch\nCOPY derm-kit/ /opt/derm-kit-src/"));
+    // No Node: the gate is derm itself.
+    assert!(!CODEX_DOCKERFILE.contains("node"));
+    let i = CODEX_INSTALL;
+    assert!(i.starts_with("#!/bin/sh\n") && i.contains("set -eu"));
+    assert!(i.contains("src=/opt/derm-kit-src") && i.contains("dest=/opt/derm-kit\n"));
+    assert!(i.contains("bin=/usr/local/bin/derm"));
+    // The derm is run before anything is installed, and never replaces one.
+    let ran = i.find("\"$src/derm\" --version").unwrap();
+    let placed = i
+        .find("install -o root -g root -m 0755 \"$src/derm\" \"$bin\"")
+        .unwrap();
+    let refused = i.find("if [ -e \"$bin\" ]; then fail").unwrap();
+    assert!(ran < refused && refused < placed);
+    assert!(i.contains("> \"$dest/sbx-vm\"") && i.contains("chown root:root \"$dest/sbx-vm\""));
+    assert!(i.contains("\"$home/.derm/policy.json\""));
+    assert!(i.contains("trap 'rm -rf \"$src\"' EXIT"));
+    // The launcher looks where the script puts derm, and for the marker
+    // where the script writes it.
+    let launcher = CODEX_PLUGIN
+        .iter()
+        .find(|(p, _)| *p == "hooks/derm-gate.sh")
+        .unwrap()
+        .1;
+    assert!(launcher.contains("/usr/local/bin/derm"));
+    assert_eq!(crate::gate::daemon::VM_MARKER, "/opt/derm-kit/sbx-vm");
+    let s = CODEX_SETUP;
+    assert!(s.starts_with("#!/bin/sh\n") && s.contains("set -eu"));
+    let added = s.find("codex plugin marketplace add \"$kit/mkt\"").unwrap();
+    let plugin = s.find("codex plugin add derm@derm").unwrap();
+    let trusted = s.find("cat \"$kit/trust.toml\" >> \"$cfg\"").unwrap();
+    assert!(added < plugin && plugin < trusted);
+    assert!(CODEX_TRUST.contains("[hooks.state.\"derm@derm:hooks/hooks.json:pre_tool_use:0:0\"]"));
+    assert!(CODEX_TRUST.contains("trusted_hash = \"sha256:"));
+    assert!(has_kit("codex"));
 }
