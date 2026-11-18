@@ -435,10 +435,100 @@ fn a_gated_agent_gets_srt_first_and_sbx_is_not_probed() {
         "{}",
         f.said[0]
     );
+    // 17 Nov 2026: Claude Code has derm's kit, so neither the line nor the
+    // record says it would run in the VM without derm's gate.
+    assert!(!f.said[0].contains("without derm's gate"), "{}", f.said[0]);
+    assert!(
+        f.said[0].contains("in the VM derm's kit carries a gate of its own"),
+        "{}",
+        f.said[0]
+    );
+    assert!(!why.contains("without it"), "{why}");
+    assert!(!why.contains("passes the box test"), "{why}");
+}
+
+/// 17 Nov 2026 (Tony: fix the sentence, keep the order). The lines for a
+/// gated agent with no --boundary said it runs in the sbx VM "without
+/// derm's gate". Seven agents have derm's kit now, and for those that was
+/// false: the kit puts a gate in the VM. The order (srt first) is as it
+/// was. An agent with no kit keeps the old words, which are true for it.
+#[test]
+fn the_chooser_says_what_holds_in_the_vm_for_an_agent_with_a_kit_and_for_one_without() {
+    let fall_back = |agent: &str| {
+        let mut f = Fake {
+            gate: true,
+            srt: Some(no("srt", "srt is not installed (no srt on PATH)", None)),
+            sbx: Some(Ok(())),
+            ..Fake::default()
+        };
+        let c = choose_with(&s(&[agent]), &mut f).unwrap();
+        assert_eq!(c.argv, s(&[agent, "--boundary", "sbx"]), "{agent}");
+        f.said[0].clone()
+    };
+    let srt_first = |agent: &str| {
+        let mut f = Fake {
+            gate: true,
+            srt: Some(Ok(())),
+            ..Fake::default()
+        };
+        let c = choose_with(&s(&[agent]), &mut f).unwrap();
+        assert_eq!(c.argv, s(&[agent, "--boundary", "srt"]), "{agent}");
+        let why = c.record.unwrap()["reasons"][0]["why"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(why.chars().count() <= 300, "{why}");
+        (f.said[0].clone(), why)
+    };
+    for agent in [
+        "claude-code",
+        "codex",
+        "pi",
+        "copilot-cli",
+        "droid",
+        "cursor",
+        "kiro",
+    ] {
+        let said = fall_back(agent);
+        assert!(!said.contains("without derm's gate"), "{agent}: {said}");
+        assert!(
+            said.contains("runs under sbx, with derm's gate in the VM through derm's kit where the line about the VM's gate below says it was added (srt: srt is not installed"),
+            "{agent}: {said}"
+        );
+        let (said, why) = srt_first(agent);
+        assert!(
+            said.contains("runs under srt, which keeps derm's gate"),
+            "{said}"
+        );
+        assert!(
+            !said.contains("would run without derm's gate"),
+            "{agent}: {said}"
+        );
+        assert!(
+            why.contains("under sbx the gate is derm's kit's, in a VM where the agent has sudo"),
+            "{agent}: {why}"
+        );
+    }
+    // An agent derm has no kit for.
+    let said = fall_back("opencode");
+    assert!(
+        said.contains("runs under sbx, without derm's gate in the VM (srt: srt is not installed"),
+        "{said}"
+    );
+    let (said, why) = srt_first("opencode");
+    assert!(
+        said.contains("in the VM it would run without derm's gate"),
+        "{said}"
+    );
+    assert!(
+        why.contains("sbx runs the agent in its VM without it (derm has no sbx kit for it)"),
+        "{why}"
+    );
+    assert!(!why.contains("passes the box test"), "{why}");
 }
 
 #[test]
-fn a_gated_agent_falls_back_to_sbx_and_is_told_the_gate_is_not_in_the_vm() {
+fn a_gated_agent_falls_back_to_sbx_and_is_told_what_holds_in_the_vm() {
     let mut f = Fake {
         gate: true,
         srt: Some(no(
@@ -456,9 +546,12 @@ fn a_gated_agent_falls_back_to_sbx_and_is_told_the_gate_is_not_in_the_vm() {
     assert_eq!(r["chosen"], "sbx");
     assert_eq!(r["reasons"].as_array().unwrap().len(), 1);
     assert_eq!(r["reasons"][0]["boundary"], "srt");
+    // Changed on purpose, 17 Nov 2026: this asserted "without derm's gate in
+    // the VM" for Claude Code, which has had derm's kit since wave 5.
     assert!(
-        f.said[0]
-            .contains("runs under sbx, without derm's gate in the VM (srt: srt is not installed"),
+        f.said[0].contains(
+            "runs under sbx, with derm's gate in the VM through derm's kit where the line about the VM's gate below says it was added (srt: srt is not installed"
+        ),
         "{}",
         f.said[0]
     );
