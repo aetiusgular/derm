@@ -345,6 +345,17 @@ pub(crate) struct KitInputs<'a> {
     pub switch: Option<&'a str>,
 }
 
+/// Whether derm wired the agent's own telemetry export for this chat. Both
+/// agents that have one carry the daemon's token in
+/// `OTEL_EXPORTER_OTLP_HEADERS`: Claude Code beside its endpoint variable,
+/// Codex beside the `-c` words that name its endpoint
+/// (`otel_receiver::apply_export`).
+fn export_is_on(env_set: &[(String, String)]) -> bool {
+    env_set
+        .iter()
+        .any(|(k, v)| k == "OTEL_EXPORTER_OTLP_HEADERS" && !v.is_empty())
+}
+
 /// The start line for a chat whose VM holds derm's kit. Each sentence is
 /// said only where it is true for this harness and this chat: where the
 /// hook is registered, what becomes of an ask (`full`: the agent's own
@@ -406,10 +417,7 @@ pub(crate) fn start_with(
         super::kit::Kit::Without(_) => Vec::new(),
     };
     let st = stages(&plan.args, &plan.env_set, interactive, &mixins).map_err(|e| (1, e))?;
-    let exported = plan
-        .env_set
-        .iter()
-        .any(|(k, _)| k == "OTEL_EXPORTER_OTLP_ENDPOINT");
+    let exported = export_is_on(&plan.env_set);
     let set = |name: &str| plan.env_set.iter().any(|(k, v)| k == name && !v.is_empty());
     match &kit {
         super::kit::Kit::Built(_) => eprintln!(
@@ -565,6 +573,37 @@ fn create_failed(name: &str, code: Option<i32>, kit_went_on: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 17 Nov 2026, the box: with its kit Codex's start line said "Codex's
+    /// own telemetry is NOT exported" while run.start said `otelExport:
+    /// codex`. The line looked for `OTEL_EXPORTER_OTLP_ENDPOINT`, which is
+    /// Claude Code's; Codex's export is its `-c` words and the token in
+    /// `OTEL_EXPORTER_OTLP_HEADERS`.
+    #[test]
+    fn the_export_is_seen_for_codex_as_for_claude_code() {
+        let env = |names: &[&str]| -> Vec<(String, String)> {
+            names
+                .iter()
+                .map(|n| (n.to_string(), "x".to_string()))
+                .collect()
+        };
+        assert!(export_is_on(&env(&[
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS"
+        ])));
+        assert!(export_is_on(&env(&[
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS"
+        ])));
+        assert!(!export_is_on(&env(&[
+            "DERM_CHAT_TOKEN",
+            "DERM_OTLP_ENDPOINT"
+        ])));
+        assert!(!export_is_on(&[(
+            "OTEL_EXPORTER_OTLP_HEADERS".into(),
+            String::new()
+        )]));
+    }
 
     /// 17 Nov 2026, the kits for four more agents: the start line says
     /// only what holds for this agent and this chat.

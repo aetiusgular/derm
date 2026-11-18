@@ -17,8 +17,8 @@
       "fullAccess": [
         "--dangerously-bypass-approvals-and-sandbox"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts codex --dangerously-bypass-approvals-and-sandbox (sbx-kits-contrib 1de3c1e codex/spec.yaml:34, extractedFromBuiltin; I for 0.51.0). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Under sbx the tap does not reach Codex yet (lane S, D11)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box through derm run with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0, Codex 0.169.0 in the VM; no model call, Codex itself took no turn)",
+      "note": "The kit starts codex --dangerously-bypass-approvals-and-sandbox (sbx-kits-contrib 1de3c1e codex/spec.yaml:34, extractedFromBuiltin; I for 0.51.0). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit (packaging/sbx-kit/codex, DERM_SBX_KIT=off turns it off) with a Linux derm for the VM and derm's Codex plugin, so the gate there is derm's own and keeps the chat's taint in the daemon. On a host that is not Linux the kit needs ~/.derm/kit/derm-linux-<arch>, and with none the chat runs without it. Under sbx the tap does not reach Codex yet (lane S, D11)."
     },
     "pi": {
       "name": "docker.io/sbx/pi-kit:latest",

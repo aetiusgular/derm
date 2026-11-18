@@ -219,17 +219,31 @@ pub fn main(argv: &[String]) -> u8 {
 /// redo of fix pass 4's part 2, FP4-R1), and with no daemon answer the
 /// chat counts as tainted with deny (`gate/taint/mod.rs`), which the srt
 /// notes in `plan.rs` say.
-fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+fn taint_not_reached(harness: &str, boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+    if boundary != Boundary::Sbx {
+        return None;
+    }
+    // Codex's kit puts derm's own gate in the VM, and that gate keeps the
+    // chat's taint in the daemon over the VM route (`POST /derm/v1/taint`;
+    // seen on the box, 17 Nov 2026). The kit is built after this line and
+    // may not be (no policy, the switch, no derm for the VM), so the line
+    // says both.
+    if harness == "codex" {
+        let named = match verdict {
+            Some(v) => format!(" (--taint {v})"),
+            None => String::new(),
+        };
+        return Some(format!(
+            "derm run: taint under sbx: with derm's kit Codex's gate in the VM keeps this chat's taint in the daemon{named}; without the kit no gate there does (the line about the VM's gate below says which)"
+        ));
+    }
     let not_applied = match verdict {
         Some(v) => format!("--taint {v} is not applied: "),
         None => String::new(),
     };
-    match boundary {
-        Boundary::Sbx => Some(format!(
-            "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (the sbx kit's hook decides with no taint, and derm's own gate does not run in the VM yet)"
-        )),
-        _ => None,
-    }
+    Some(format!(
+        "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (an sbx kit's hook for this agent decides with no taint)"
+    ))
 }
 
 /// Whether macOS hides `pid`'s start environment (MW6R5-1): true when, by
@@ -1787,7 +1801,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let taint_record: Option<serde_json::Value> = a
         .taint
         .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
-    if let Some(n) = taint_not_reached(a.boundary, a.taint.map(|v| v.as_str())) {
+    if let Some(n) = taint_not_reached(a.harness.id, a.boundary, a.taint.map(|v| v.as_str())) {
         p.notes.push(n);
     }
     // Content capture's switch as the chat starts (lane S's request 3). It
@@ -4683,12 +4697,39 @@ mod end_to_end {
     /// names no Claude Code hook a chat may lack and no Rust gate in the VM.
     #[test]
     fn under_sbx_the_start_says_taint_is_not_applied() {
-        let n = taint_not_reached(Boundary::Sbx, Some("record")).unwrap();
+        let n = taint_not_reached("claude-code", Boundary::Sbx, Some("record")).unwrap();
         assert!(n.contains("--taint record is not applied"), "{n}");
         assert!(n.contains("no gate in the VM keeps"), "{n}");
         assert!(!n.contains("denies any call it flags"), "{n}");
-        assert!(taint_not_reached(Boundary::Sbx, None).is_some());
-        assert!(taint_not_reached(Boundary::None, Some("deny")).is_none());
+        assert!(taint_not_reached("claude-code", Boundary::Sbx, None).is_some());
+        assert!(taint_not_reached("opencode", Boundary::Sbx, None).is_some());
+        assert!(taint_not_reached("claude-code", Boundary::None, Some("deny")).is_none());
+    }
+
+    /// 17 Nov 2026, Codex's sbx kit: the gate in the VM is derm's own, and
+    /// it keeps the chat's taint in the daemon over the VM route. Seen on the
+    /// box (sbx 0.51.0, `--taint ask`, the hook run by hand in the VM): a
+    /// `taint.review` for `session-written-code` with "the chat's verdict is
+    /// ask, flag". The start line said taint was not applied and that derm's
+    /// own gate does not run in the VM. For Codex it says what holds with
+    /// the kit and without it, since the kit is built after this line.
+    #[test]
+    fn under_sbx_codex_keeps_taint_through_its_kit_and_the_start_says_so() {
+        let n = taint_not_reached("codex", Boundary::Sbx, Some("ask")).unwrap();
+        assert!(!n.contains("is not applied: no gate"), "{n}");
+        assert!(!n.contains("does not run in the VM"), "{n}");
+        assert!(
+            n.contains(
+                "with derm's kit Codex's gate in the VM keeps this chat's taint in the daemon"
+            ),
+            "{n}"
+        );
+        assert!(n.contains("without the kit"), "{n}");
+        assert!(n.contains("--taint ask"), "{n}");
+        // No line for another agent says derm's own gate does not run there.
+        let other = taint_not_reached("claude-code", Boundary::Sbx, None).unwrap();
+        assert!(!other.contains("does not run in the VM"), "{other}");
+        assert!(taint_not_reached("codex", Boundary::Srt, None).is_none());
     }
 
     /// Was `bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied`.
@@ -4699,8 +4740,8 @@ mod end_to_end {
     /// the taint state goes there too.
     #[test]
     fn under_srt_taint_is_applied_and_the_start_says_no_otherwise() {
-        assert!(taint_not_reached(Boundary::Srt, Some("record")).is_none());
-        assert!(taint_not_reached(Boundary::Srt, None).is_none());
+        assert!(taint_not_reached("claude-code", Boundary::Srt, Some("record")).is_none());
+        assert!(taint_not_reached("claude-code", Boundary::Srt, None).is_none());
     }
 
     #[cfg(unix)]

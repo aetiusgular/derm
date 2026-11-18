@@ -112,7 +112,7 @@ Built on `integration/w5`, run in the cloud only (`plans/parallel/tk_integration
 | Agent id | Tap | Intent source | Boundaries |
 |---|---|---|---|
 | `claude-code` | `ANTHROPIC_BASE_URL`, verified at 2.1.311 | tap | sbx `claude` (full-access words: `--dangerously-skip-permissions`; derm's gate in the VM through derm's kit), srt, none |
-| `codex` | Codex provider flags, verified at 0.163.0 | tap | sbx `codex` (full-access words: `--dangerously-bypass-approvals-and-sandbox`; no derm gate in the VM), srt, none |
+| `codex` | Codex provider flags, verified at 0.163.0 | tap | sbx `codex` (full-access words: `--dangerously-bypass-approvals-and-sandbox`; derm's gate in the VM through derm's kit, which carries a Linux derm), srt, none |
 | `gemini` | `GOOGLE_GEMINI_BASE_URL`, verified at 0.66.0 | tap | sbx `gemini` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
 | `pi` | none: untapped | hooks | sbx `docker.io/sbx/pi-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
 | `cursor` | none: untapped | hooks | sbx `cursor` (full-access words: `--yolo`; derm's gate in the VM through derm's kit), srt, none |
