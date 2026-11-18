@@ -49,8 +49,8 @@
       "fullAccess": [
         "--yolo"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts cursor-agent --yolo (sbx-kits-contrib 1de3c1e cursor/spec.yaml:41, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts cursor-agent --yolo (sbx-kits-contrib 1de3c1e cursor/spec.yaml:41, extractedFromBuiltin). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "hermes": {
       "name": "docker.io/sbx/hermes-agent-kit:latest",
@@ -74,8 +74,8 @@
       "fullAccess": [
         "--yolo"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts copilot --yolo (sbx-kits-contrib 1de3c1e copilot/spec.yaml:16; I that the built-in is the same). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts copilot --yolo (sbx-kits-contrib 1de3c1e copilot/spec.yaml:16; I that the built-in is the same). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "amp": {
       "name": "docker.io/sbx/amp-kit:latest",
@@ -126,8 +126,8 @@
       "name": "droid",
       "from": "sbx",
       "fullAccess": [],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts droid with no flag (sbx-kits-contrib 1de3c1e droid/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts droid with no flag (sbx-kits-contrib 1de3c1e droid/spec.yaml). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "kimi": null,
     "kiro": {
@@ -136,8 +136,8 @@
       "fullAccess": [
         "--trust-all-tools"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts kiro chat --trust-all-tools (sbx-kits-contrib 1de3c1e kiro/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts kiro chat --trust-all-tools (sbx-kits-contrib 1de3c1e kiro/spec.yaml). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "mistral-vibe": {
       "name": "docker.io/sbx/vibe-kit:latest",

@@ -226,7 +226,7 @@ fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String
     };
     match boundary {
         Boundary::Sbx => Some(format!(
-            "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (the sbx kit's hook, for Claude Code only, decides with no taint, and derm's own gate does not run in the VM yet)"
+            "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (the sbx kit's hook decides with no taint, and derm's own gate does not run in the VM yet)"
         )),
         _ => None,
     }

@@ -115,11 +115,11 @@ Built on `integration/w5`, run in the cloud only (`plans/parallel/tk_integration
 | `codex` | Codex provider flags, verified at 0.163.0 | tap | sbx `codex` (full-access words: `--dangerously-bypass-approvals-and-sandbox`; no derm gate in the VM), srt, none |
 | `gemini` | `GOOGLE_GEMINI_BASE_URL`, verified at 0.66.0 | tap | sbx `gemini` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
 | `pi` | none: untapped | hooks | sbx `docker.io/sbx/pi-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
-| `cursor` | none: untapped | hooks | sbx `cursor` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `cursor` | none: untapped | hooks | sbx `cursor` (full-access words: `--yolo`; derm's gate in the VM through derm's kit), srt, none |
 | `amp` | none: untapped | hooks | sbx `docker.io/sbx/amp-kit:latest` (full-access words: `--dangerously-allow-all`; no derm gate in the VM), srt, none |
 | `auggie` | none: untapped | hooks | srt, none (no sbx form) |
-| `droid` | none: untapped | hooks | sbx `droid` (full-access words: none; no derm gate in the VM), srt, none |
-| `kiro` | none: untapped | hooks | sbx `kiro` (full-access words: `--trust-all-tools`; no derm gate in the VM), srt, none |
+| `droid` | none: untapped | hooks | sbx `droid` (full-access words: none; derm's gate in the VM through derm's kit), srt, none |
+| `kiro` | none: untapped | hooks | sbx `kiro` (full-access words: `--trust-all-tools`; derm's gate in the VM through derm's kit), srt, none |
 | `rovo-dev` | none: untapped | none (outside shape) | srt, none (no sbx form) |
 | `codebuff` | none: untapped | none (outside shape) | srt, none (no sbx form) |
 | `opencode` | no tap row: untapped | hooks | sbx `opencode` (full-access words: none; no derm gate in the VM), srt, none |
@@ -127,7 +127,7 @@ Built on `integration/w5`, run in the cloud only (`plans/parallel/tk_integration
 | `openclaw` | no tap row: untapped | hooks | sbx `docker.io/sbx/openclaw-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
 | `goose` | no tap row: untapped | hooks | srt, none (no sbx form) |
 | `qwen-code` | no tap row: untapped | hooks | srt, none (no sbx form) |
-| `copilot-cli` | no tap row: untapped | hooks | sbx `copilot` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `copilot-cli` | no tap row: untapped | hooks | sbx `copilot` (full-access words: `--yolo`; derm's gate in the VM through derm's kit), srt, none |
 | `crush` | no tap row: untapped | hooks | sbx `docker.io/sbx/crush-kit:latest` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
 | `zed` | no tap row: untapped | hooks | srt, none (no sbx form) |
 | `kilo` | no tap row: untapped | hooks | srt, none (no sbx form) |
