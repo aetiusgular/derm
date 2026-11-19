@@ -49,8 +49,7 @@
       "where": "own file ~/.copilot/hooks/derm.json, preToolUse",
       "status": "built",
       "wave": 4,
-      "lane": "L",
-      "package": "packages/derm-hooks-claude-compat"
+      "lane": "L"
     },
     "failMode": "open-on-timeout",
     "failSwitch": null,

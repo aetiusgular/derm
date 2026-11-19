@@ -129,7 +129,7 @@ The base recorded every hook call the TypeScript dialect tests make (`fixtures/h
 3. stderr's first line is cut the same way and equal;
 4. the daemon lines after `hello` are the same sequence of `event` (kind, harness, decision, tool) and `approve` (harness, tool).
 
-The harness was checked against the TypeScript itself: with `DERM_REPLAY_ORACLE=ts` it replays each call against the TypeScript hook's own launcher, and all 227 cases passed (the base, 10 Nov). On the base's stubs all 227 fail.
+The harness was checked against the TypeScript itself: with `DERM_REPLAY_ORACLE=ts` it replayed each call against the TypeScript hook's own launcher, and all 227 cases passed (the base, 10 Nov). On the base's stubs all 227 failed. The TypeScript hooks and that switch were deleted on 19 Nov 2026; the recordings stay and are replayed against `derm hook` as before.
 
 ### 9.4 What the replay cannot hold
 

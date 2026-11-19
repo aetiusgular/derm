@@ -119,7 +119,7 @@ export const checks = [
     async run({ binPath }) {
       const s = await setup(binPath, {});
       try {
-        const files = ["gemini-extension.json", "hooks/hooks.json", "policies/derm.toml", "bin/derm-hook.mjs", "src/hook.ts", "src/core/gate.ts"].map((f) => [f, existsSync(path.join(s.installedAt, f))]);
+        const files = ["gemini-extension.json", "hooks/hooks.json", "hooks/derm-gate.sh", "policies/derm.toml", "bin/derm-gemini-policy.mjs", "src/policyToml.ts", "src/core/policy.ts"].map((f) => [f, existsSync(path.join(s.installedAt, f))]);
         // `extensions list` prints to stderr at 0.66.0 (run 28 Oct).
         const l = await run(binPath, ["extensions", "list"], { PATH: process.env.PATH, HOME: s.home, NO_COLOR: "1", GEMINI_CLI_NO_RELAUNCH: "true" }, s.work, 60);
         const listed = /extensions[\\/]derm\b/.test(l.out + l.err);

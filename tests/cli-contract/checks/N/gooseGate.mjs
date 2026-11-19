@@ -2,24 +2,39 @@
 // goose CLI, driven by `goose run --no-session --with-builtin developer`
 // against a fake OpenAI chat-completions server (../../lib/fakeChat.mjs)
 // through goose's openai provider (OPENAI_HOST, OPENAI_BASE_PATH), with a
-// fake derm daemon. The gate is the plugin in
-// packages/derm-hooks-native/registration/goose/derm/, copied into a scratch
+// fake derm daemon. The gate is the plugin folder `derm connect goose
+// --gate` writes (plugin.json and hooks/hooks.json, below), in a scratch
 // ~/.agents/plugins/derm/. goose's mode is left at its default (Auto), which
 // approves every call itself, so derm's gate is the only check.
 //
 //   node tests/cli-contract/run.mjs --cli goose=/path/to/goose --only goose-derm-deny,...
 
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBin } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PKG = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hooks-native");
-const REG = path.join(PKG, "registration", "goose", "derm");
+// The gate is derm itself: `<derm> hook <agent> pre`, by the absolute path of
+// this repository's build (DERM_BIN, else target/release or target/debug),
+// the command `derm connect <agent> --gate` registers (crates/derm-cli/src/
+// connect/gates.json). Until 19 Nov 2026 these checks ran the TypeScript
+// hook package this lane wrote (`node .../derm-hook.mjs <agent>`), which was
+// deleted that day; they have not been run against the agents since the
+// change.
+function derm() {
+  const b = dermBin();
+  if (!b) throw new Error("no derm build for the gate (DERM_BIN, target/release/derm, target/debug/derm): cargo build -p derm-cli");
+  return b;
+}
+// The plugin folder `derm connect goose --gate` writes (gates.json, the
+// `plugin-folder` step): plugin.json and hooks/hooks.json.
+const PLUGIN_JSON = JSON.stringify({ name: "derm", version: "0.1.3", description: "derm policy gate: a PreToolUse hook that blocks when the gate fails (on_failure: block)" }, null, 2);
+const hooksFile = (command) => JSON.stringify({ hooks: { PreToolUse: [{ matcher: ".*", hooks: [{ type: "command", command, timeout: 120, on_failure: "block" }] }] } }, null, 2);
 
 function run(bin, args, env, cwd, seconds = 150) {
   return new Promise((resolve) => {
@@ -38,11 +53,7 @@ function run(bin, args, env, cwd, seconds = 150) {
 
 /** derm's hooks.json with the package path filled in, or another command in its place. */
 function hooksJson(command) {
-  const text = readFileSync(path.join(REG, "hooks", "hooks.json"), "utf8").replace("<derm-hooks-native>", PKG);
-  if (command === undefined) return text;
-  const v = JSON.parse(text);
-  v.hooks.PreToolUse[0].hooks[0].command = command;
-  return JSON.stringify(v);
+  return hooksFile(command === undefined ? `"${derm()}" hook goose pre` : command);
 }
 
 /** One `goose run`. `extraPlugins` maps a plugin name to its hooks.json text. */
@@ -55,7 +66,7 @@ async function gooseTurn(bin, { policy, script, approve = "none", gateCommand, e
   const plugin = (name, hooks) => {
     const dir = path.join(home, ".agents", "plugins", name);
     mkdirSync(path.join(dir, "hooks"), { recursive: true });
-    writeFileSync(path.join(dir, "plugin.json"), name === "derm" ? readFileSync(path.join(REG, "plugin.json")) : JSON.stringify({ name, version: "0.0.1" }));
+    writeFileSync(path.join(dir, "plugin.json"), name === "derm" ? PLUGIN_JSON : JSON.stringify({ name, version: "0.0.1" }));
     writeFileSync(path.join(dir, "hooks", "hooks.json"), hooks);
   };
   plugin("derm", hooksJson(gateCommand));

@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
-import { REDACTED } from "./core/redact.ts";
+const REDACTED = "[redacted by derm]"; // the gate's mark (derm_core::redact)
 import { DermBlocked, after, before, defaultDeps, type Deps } from "./kilo.ts";
 import * as entry from "./plugin.ts";
 import { GateServe } from "./serve/client.ts";
@@ -145,7 +145,7 @@ describe("plugin files", () => {
   it("the package has no engines.opencode and imports no plugin SDK (Kilo would skip or install it)", () => {
     const pkg = JSON.parse(readFileSync(path.join(here, "..", "package.json"), "utf8"));
     expect(pkg.engines?.opencode).toBeUndefined();
-    for (const f of ["plugin.ts", "kilo.ts", "control.ts"]) expect(readFileSync(path.join(here, f), "utf8")).not.toMatch(/from "@(opencode-ai|kilocode)\//);
+    for (const f of ["plugin.ts", "kilo.ts"]) expect(readFileSync(path.join(here, f), "utf8")).not.toMatch(/from "@(opencode-ai|kilocode)\//);
   });
   it("the core copy is byte-identical to the canonical one", () => {
     const script = path.join(here, "..", "..", "derm-claude-plugin", "scripts", "sync-core.mjs");

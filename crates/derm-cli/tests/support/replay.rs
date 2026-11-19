@@ -350,16 +350,12 @@ fn one(call: &Value) -> Result<(), String> {
     std::fs::create_dir_all(&home).unwrap();
     let agent = call["agent"].as_str().unwrap();
     let event = call["event"].as_str().unwrap();
-    let mut cmd = match std::env::var("DERM_REPLAY_ORACLE").ok().as_deref() {
-        // The harness's own check: the TypeScript hook replayed against its
-        // own recording must pass, or the harness, not derm, is wrong.
-        Some("ts") => oracle(agent, event),
-        _ => {
-            let mut c = Command::new(env!("CARGO_BIN_EXE_derm"));
-            c.args(["hook", agent, event]);
-            c
-        }
-    };
+    // The harness itself was checked once against the TypeScript hooks that
+    // made the recordings (`DERM_REPLAY_ORACLE=ts`, all 227 cases, the base
+    // of 10 Nov 2026). Those hooks are deleted (19 Nov 2026), and the switch
+    // with them: the recordings are what holds derm now.
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_derm"));
+    cmd.args(["hook", agent, event]);
     cmd.env_clear();
     // The TypeScript hook read os.homedir() when the case set no HOME; an
     // empty home of its own stands for it here.
@@ -486,40 +482,6 @@ fn one(call: &Value) -> Result<(), String> {
     } else {
         Err(why.join("; "))
     }
-}
-
-/// The TypeScript hook for `agent` (`DERM_REPLAY_ORACLE=ts`), run with the
-/// `node` found on this test's PATH.
-fn oracle(agent: &str, event: &str) -> Command {
-    let node = std::env::var_os("PATH")
-        .and_then(|p| {
-            std::env::split_paths(&p)
-                .map(|d| d.join("node"))
-                .find(|n| n.is_file())
-        })
-        .expect("node on PATH for DERM_REPLAY_ORACLE=ts");
-    let pkg = |p: &str| repo().join("packages").join(p).join("bin");
-    let mut c = Command::new(node);
-    c.arg("--no-warnings");
-    match agent {
-        "claude-code" => c
-            .arg(pkg("derm-claude-plugin").join("derm-hook.mjs"))
-            .arg(event),
-        "codex" => c
-            .arg(pkg("derm-codex-plugin").join("derm-hook.mjs"))
-            .arg(event),
-        "gemini" => c
-            .arg(pkg("derm-gemini-extension").join("derm-hook.mjs"))
-            .arg(event),
-        "hermes" => c.arg(pkg("derm-hermes-plugin").join("derm-decide.mjs")),
-        "cursor" | "antigravity" | "goose" | "mistral-vibe" | "crush" | "kiro" => c
-            .arg(pkg("derm-hooks-native").join("derm-hook.mjs"))
-            .arg(agent),
-        _ => c
-            .arg(pkg("derm-hooks-claude-compat").join("derm-hook.mjs"))
-            .args([agent, event]),
-    };
-    c
 }
 
 #[cfg(test)]

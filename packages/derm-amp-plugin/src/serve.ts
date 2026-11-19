@@ -5,10 +5,11 @@
 // Cline's are: one decide path (`gate::core::decide_call`, case 229), so Amp
 // gets taint, the light log and Windows policy parity.
 //
-// Built and tested against the real `derm gate serve`, and OFF: index.ts
-// keeps amp.ts's TypeScript gate live until one real Amp run has passed with
-// this one (BBR-13). `DERM_AMP_GATE_SERVE=1` in Amp's environment turns it on
-// for that run.
+// Built and tested against the real `derm gate serve`. It is the plugin's
+// only gate since 19 Nov 2026 (Tony's call): the TypeScript gate that
+// amp.ts held, and the switch `DERM_AMP_GATE_SERVE` that chose between them,
+// are gone. No real Amp run has passed with this path yet (BBR-13); what it
+// does when it cannot decide is refuse the call (reject-and-continue).
 //
 // What stays Amp's, and so stays here: the shell command Amp's helper reads
 // (amp.ts gateCallOf), Amp's own dialog for an ask no approver answered
@@ -17,7 +18,7 @@
 // a tool that sends its input out as it is (MCP, web_search,
 // read_web_page; lane P review, P-S6). Amp's control files are in derm-core's
 // control list (crates/derm-core/src/policy.rs, `.config/amp/` and the rest),
-// so control.ts's narrowing is the co-process's here.
+// so the narrowing control.ts did is the co-process's.
 
 import { createHash } from "node:crypto";
 import { AMP_SEND_OUT_TOOLS, HARNESS, askAmp, gateCallOf, isPlainObject, reject, Unreadable, type HandlerContext, type Resolved, type ShellCommand, type ToolCallEvent, type ToolCallResult, type ToolResultEvent, type ToolResultResult } from "./amp.ts";
@@ -25,14 +26,6 @@ import { defuseValue, overBudget } from "./budget.ts";
 import { ownedByTrusted } from "./core/owner.ts";
 import { redactText, redactValue } from "./core/redact.ts";
 import { approve, decide, event, record, redact, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "./serve/client.ts";
-
-/** The environment variable that turns this path on (index.ts), until BBR-13's run makes it the default. */
-export const SWITCH = "DERM_AMP_GATE_SERVE";
-
-/** Whether `env` turns the gate-serve path on: exactly `1`. */
-export function serveOn(env: NodeJS.ProcessEnv): boolean {
-  return env[SWITCH]?.trim() === "1";
-}
 
 export type ServeDeps = {
   env: NodeJS.ProcessEnv;

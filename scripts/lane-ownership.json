@@ -157,7 +157,6 @@
     "L": {
       "wave": 4,
       "owns": [
-        "packages/derm-hooks-claude-compat/",
         "crates/derm-cli/src/connect/presets/openclaude.json",
         "crates/derm-cli/src/connect/presets/qwen-code.json",
         "crates/derm-cli/src/connect/presets/droid.json",
@@ -168,14 +167,11 @@
         "crates/derm-cli/src/connect/presets/grok.json",
         "tests/cli-contract/checks/L/"
       ],
-      "except": [
-        "packages/derm-hooks-claude-compat/src/core/"
-      ]
+      "except": []
     },
     "N": {
       "wave": 4,
       "owns": [
-        "packages/derm-hooks-native/",
         "crates/derm-cli/src/connect/presets/cursor.json",
         "crates/derm-cli/src/connect/presets/antigravity.json",
         "crates/derm-cli/src/connect/presets/goose.json",
@@ -184,9 +180,7 @@
         "crates/derm-cli/src/connect/presets/kiro.json",
         "tests/cli-contract/checks/N/"
       ],
-      "except": [
-        "packages/derm-hooks-native/src/core/"
-      ]
+      "except": []
     },
     "P": {
       "wave": 4,

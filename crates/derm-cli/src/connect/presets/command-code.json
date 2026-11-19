@@ -13,8 +13,7 @@
       "where": "~/.commandcode/settings.json, PreToolUse, failClosed",
       "status": "built",
       "wave": 4,
-      "lane": "L",
-      "package": "packages/derm-hooks-claude-compat"
+      "lane": "L"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "failClosed: true",

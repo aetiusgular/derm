@@ -2,7 +2,7 @@
 // Crush CLI, driven by `crush run` against a fake OpenAI chat-completions
 // server (../../lib/fakeChat.mjs) with a fake derm daemon. The gate is
 // registered in a scratch ~/.config/crush/crush.json as
-// packages/derm-hooks-native/registration/crush/crush.json gives it.
+// `derm connect crush --gate` writes it (gates.json).
 //
 //   node tests/cli-contract/run.mjs --cli crush=/path/to/crush --only crush-derm-deny,...
 
@@ -13,9 +13,21 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBin } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HOOK = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hooks-native", "bin", "derm-hook.mjs");
+// The gate is derm itself: `<derm> hook <agent> pre`, by the absolute path of
+// this repository's build (DERM_BIN, else target/release or target/debug),
+// the command `derm connect <agent> --gate` registers (crates/derm-cli/src/
+// connect/gates.json). Until 19 Nov 2026 these checks ran the TypeScript
+// hook package this lane wrote (`node .../derm-hook.mjs <agent>`), which was
+// deleted that day; they have not been run against the agents since the
+// change.
+function derm() {
+  const b = dermBin();
+  if (!b) throw new Error("no derm build for the gate (DERM_BIN, target/release/derm, target/debug/derm): cargo build -p derm-cli");
+  return b;
+}
 
 function run(bin, args, env, cwd, seconds = 150) {
   return new Promise((resolve) => {
@@ -43,7 +55,7 @@ async function crushTurn(bin, { policy, script, approve = "none", hooks, mcp = {
   mkdirSync(path.join(work, ".git"), { recursive: true });
   const policyFile = path.join(root, "policy.json");
   writeFileSync(policyFile, JSON.stringify(policy), { mode: 0o600 });
-  const gate = { name: "derm-gate", command: `node --no-warnings "${HOOK}" crush`, timeout: 120 };
+  const gate = { name: "derm-gate", command: `"${derm()}" hook crush pre`, timeout: 120 };
   writeFileSync(
     path.join(home, ".config", "crush", "crush.json"),
     JSON.stringify({

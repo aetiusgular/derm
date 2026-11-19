@@ -1,7 +1,8 @@
 // Amp on `derm gate serve` (serve.ts; fix pass 6, note BE section 3.3),
 // against a derm build (DERM_BIN, else target/debug or target/release), with
-// the fake daemon for the approver, the records and taint. The path is off
-// in index.ts until BBR-13's real Amp run; these tests run it directly.
+// the fake daemon for the approver, the records and taint. It is the
+// plugin's only gate (19 Nov 2026); no real Amp run has passed with it yet
+// (BBR-13).
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,7 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import type { HandlerContext, ToolCallEvent } from "./amp.ts";
 import { REDACTED } from "./core/redact.ts";
-import { onToolCallServe, onToolResultServe, serveOn, type ServeDeps } from "./serve.ts";
+import { onToolCallServe, onToolResultServe, type ServeDeps } from "./serve.ts";
 import { GateServe } from "./serve/client.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -82,13 +83,7 @@ const ui = (answer: boolean | "unavailable"): HandlerContext & { asked: unknown[
 };
 const settle = () => new Promise((r) => setTimeout(r, 100));
 
-describe("the switch", () => {
-  it("is on only for DERM_AMP_GATE_SERVE=1", () => {
-    expect(serveOn({})).toBe(false);
-    for (const v of ["0", "true", "yes", "", "11"]) expect(serveOn({ DERM_AMP_GATE_SERVE: v }), v).toBe(false);
-    expect(serveOn({ DERM_AMP_GATE_SERVE: "1" })).toBe(true);
-    expect(serveOn({ DERM_AMP_GATE_SERVE: " 1\n" })).toBe(true);
-  });
+describe("the serve client", () => {
   it("the client copy is byte-identical to derm-pi's canonical one", () => {
     expect(readFileSync(path.join(here, "serve", "client.ts"), "utf8")).toBe(readFileSync(path.join(ROOT, "packages", "derm-pi", "src", "serve", "client.ts"), "utf8"));
   });

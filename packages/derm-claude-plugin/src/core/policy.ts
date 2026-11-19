@@ -4,7 +4,7 @@
 
 import { createHash } from "node:crypto";
 import { ownedByTrusted } from "./owner.ts";
-import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { decodeEscapes, fold } from "./fold.ts";
@@ -15,7 +15,10 @@ import { commandAllows, commandNarrows, commandProblem, commandReason, headComma
 // E1-1: destructive commands, section 4 step 7e.
 import { destructive } from "./destructive.ts";
 
-export type Action = "allow" | "ask" | "deny";
+// The small text helpers a plugin shim needs without the matcher live in
+// text.ts (19 Nov 2026), so a shim carries that file and not this one.
+import { insideFolder, unquote, type Action } from "./text.ts";
+export { insideFolder, unquote, type Action };
 
 export type Rule = {
   tool: string;
@@ -66,29 +69,6 @@ export function policyPath(env: NodeJS.ProcessEnv = process.env): string {
   const fromEnv = env.DERM_POLICY;
   if (fromEnv && fromEnv.trim() !== "") return fromEnv;
   return path.join(homedir(), ".derm", "policy.json");
-}
-
-/** The real path of `p`, following links on every part that exists; a missing tail is appended as written. */
-function realish(p: string): string {
-  const abs = path.resolve(p);
-  let head = abs;
-  const tail: string[] = [];
-  for (;;) {
-    try {
-      return path.join(realpathSync(head), ...tail.reverse());
-    } catch {
-      const parent = path.dirname(head);
-      if (parent === head) return abs;
-      tail.push(path.basename(head));
-      head = parent;
-    }
-  }
-}
-
-/** True when `file` is `folder` or lies under it, after links are followed. */
-export function insideFolder(file: string, folder: string): boolean {
-  const rel = path.relative(realish(folder), realish(file));
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 /**
@@ -869,15 +849,6 @@ export function powershellReason(ch: string): string {
   const cp = ch.codePointAt(0) ?? 0;
   const shown = cp >= 0x21 && cp <= 0x7e ? ch : `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
   return `PowerShell text the matcher reads only as plain words: \`${shown}\``;
-}
-
-/**
- * The text with every quote removed. The shell joins `ANTHROPIC_"BASE_URL"`
- * and `g''it` into one word, so the reject list and the control files are
- * also read this way (integration w1, finding S1). Only adds matches.
- */
-export function unquote(text: string): string {
-  return text.replace(/["']/g, "");
 }
 
 const GIT_WORD = /(?<![a-z0-9_])git(?![a-z0-9_])/g;

@@ -13,8 +13,7 @@
       "where": "[[hooks]] in ~/.kimi-code/config.toml, keys event, command, timeout",
       "status": "built",
       "wave": 4,
-      "lane": "L",
-      "package": "packages/derm-hooks-claude-compat"
+      "lane": "L"
     },
     "failMode": "open",
     "failSwitch": null,

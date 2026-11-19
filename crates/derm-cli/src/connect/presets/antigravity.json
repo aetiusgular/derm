@@ -10,11 +10,10 @@
     "orcaId": "antigravity",
     "gate": {
       "family": "command-hook",
-      "where": "a named hook \"derm\" in ~/.gemini/config/hooks.json (shared with the app), PreToolUse (packages/derm-hooks-native/registration/antigravity/hooks.json)",
+      "where": "a named hook \"derm\" in ~/.gemini/config/hooks.json (shared with the app), PreToolUse (as `derm connect` writes it)",
       "status": "built",
       "wave": 4,
-      "lane": "N",
-      "package": "packages/derm-hooks-native"
+      "lane": "N"
     },
     "failMode": "unknown",
     "failSwitch": null,

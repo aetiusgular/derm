@@ -1,5 +1,8 @@
-// Amp adapter (T2.7): derm's gate as an Amp plugin's `tool.call` handler, and
-// the result record and redaction as its `tool.result` handler. Read in
+// Amp adapter (T2.7): what is Amp's own in derm's gate for Amp. The handlers
+// are in serve.ts and the decision is `derm gate serve`'s; until 19 Nov 2026
+// this file also held a TypeScript gate, which is gone. Here: Amp's event
+// shapes, the shell command a call runs, the call as the gate reads it,
+// Amp's own dialog for an ask, and the reject shape. Read in
 // @ampcode/plugin 0.0.0-20261104001221-gc8c68be index.d.ts (npm latest on 3
 // Nov 2026; sitemap-lastmod 2026-10-29) and https://ampcode.com/docs/customize/plugins;
 // sources per claim in plans/parallel/tk_lane_P.md, Research.
@@ -10,7 +13,7 @@
 //   for every deny, which blocks that call and lets the agent go on, and never
 //   `error`, which stops the thread worker (case 79).
 // - Amp has no ask result. An ask goes to the derm daemon's approver first
-//   (as for Claude Code, gate.ts resolveAsk), then, when no approver is
+//   (the co-process's `approve`), then, when no approver is
 //   connected or no daemon is reachable, to Amp's own dialog
 //   `ctx.ui.confirm` (cases 71, 63). The dialog resolves false when dismissed
 //   and throws when no one can be shown it (`amp -x`, a code_exec run in a
@@ -31,12 +34,8 @@
 //   result tells a handler what other plugins answered.
 
 import { createHash } from "node:crypto";
-import { approve, decisionId, postEvent } from "./core/daemon.ts";
-import { decideCall, inputTextFor, installEvents, resolveAsk, type GateAnswer, type GateCall } from "./core/gate.ts";
-import { loadPolicyFrom, type LoadedPolicy } from "./core/policy.ts";
-import { redactText, redactValue } from "./core/redact.ts";
-import { defuseValue, overBudget } from "./budget.ts";
-import { narrowForControl } from "./control.ts";
+import { redactText } from "./core/redact.ts";
+import { inputTextFor, type GateCall } from "./preview.ts";
 
 export const HARNESS = "amp";
 
@@ -65,26 +64,13 @@ export type HandlerContext = { ui: { confirm: (options: ConfirmOptions) => Promi
 
 export type Deps = {
   env: NodeJS.ProcessEnv;
-  /** The session folder for the policy's and the token's folder checks: Amp's workspace root, else the plugin process's folder. */
+  /** The session folder: Amp's workspace root, else the plugin process's folder. */
   cwd: () => string;
-  loadPolicy: () => LoadedPolicy;
-  resolveAsk: typeof resolveAsk;
-  postEvent: typeof postEvent;
   /** Amp's `helpers.shellCommandFromToolCall`, when the plugin runs inside Amp. */
   shellCommand?: (event: ToolCallEvent) => ShellCommand | null;
   /** Amp's `helpers.isPluginUINotAvailableError`. */
   uiUnavailable?: (error: Error) => boolean;
 };
-
-export function defaultDeps(env: NodeJS.ProcessEnv = process.env, cwd: () => string = () => process.cwd()): Deps {
-  return {
-    env,
-    cwd,
-    loadPolicy: () => loadPolicyFrom(env, cwd()),
-    resolveAsk: (answer, call, canAsk) => resolveAsk(answer, call, canAsk, (r) => approve(r, env)),
-    postEvent: (e) => postEvent(e, env),
-  };
-}
 
 function chatOf(threadId: unknown, env: NodeJS.ProcessEnv): string | undefined {
   const fromEnv = env.DERM_CHAT_ID?.trim();
@@ -150,8 +136,8 @@ export function gateCallOf(event: ToolCallEvent, deps: Pick<Deps, "env" | "shell
 }
 
 /** The text Amp's dialog shows: what derm asks about, and the input as it will run, redacted. */
-/** What Amp's dialog needs of an answer: the TS core's, or `derm gate serve`'s (serve.ts). */
-export type AskAnswer = Pick<GateAnswer, "normalizedTool" | "reason" | "askTimeoutSeconds">;
+/** What Amp's dialog needs of `derm gate serve`'s answer (serve.ts). */
+export type AskAnswer = { normalizedTool: string; reason: string; askTimeoutSeconds: number };
 
 export function confirmOptions(answer: AskAnswer, call: GateCall, rawTool: string): ConfirmOptions {
   const preview = redactText(inputTextFor(answer.normalizedTool, call.toolInput)).text;
@@ -194,150 +180,4 @@ export async function askAmp(answer: AskAnswer, call: GateCall, rawTool: string,
 
 export function reject(reason: string): ToolCallResult {
   return { action: "reject-and-continue", message: `derm: ${reason}` };
-}
-
-export async function onToolCall(event: ToolCallEvent, ctx: HandlerContext | undefined, deps: Deps): Promise<ToolCallResult> {
-  try {
-    if (!isPlainObject(event) || typeof event.tool !== "string" || event.tool === "") return reject("tool call has no tool name");
-    // Before the core sees it: the core's redaction slows down badly on long
-    // runs of secret-like words (budget.ts), and what Amp does with a slow
-    // handler is not documented.
-    const heavy = overBudget(event.input);
-    if (heavy) return reject(heavy);
-    const call = gateCallOf(event, deps);
-    const answer = decideCall(deps.loadPolicy(), call);
-    const narrowed = narrowForControl(answer.action, inputTextFor(answer.normalizedTool, call.toolInput));
-    if (narrowed.control) {
-      answer.action = narrowed.action;
-      answer.reason = `input names a control file (${narrowed.control})`;
-    }
-    const sendsOut = event.tool.startsWith("mcp__") || (AMP_SEND_OUT_TOOLS as readonly string[]).includes(event.tool);
-    if (answer.updatedInput !== undefined && !sendsOut) {
-      delete answer.updatedInput;
-      if (answer.action === "allow") {
-        answer.action = "ask";
-        answer.reason = "secret-like value in input";
-      }
-    }
-    let resolved: Resolved;
-    if (answer.action === "ask") {
-      const r = await deps.resolveAsk(answer, call, true);
-      resolved = r.kind === "harness" ? await askAmp(answer, call, event.tool, ctx, deps, r.reason) : { action: r.kind, reason: r.reason };
-    } else {
-      resolved = { action: answer.action, reason: answer.reason };
-    }
-    let result: ToolCallResult;
-    if (resolved.action === "deny") result = reject(resolved.reason);
-    else if (answer.updatedInput === undefined) result = { action: "allow" };
-    else if (isPlainObject(answer.updatedInput)) result = { action: "modify", input: answer.updatedInput };
-    else {
-      resolved = { action: "deny", reason: "secret-like value in input that derm cannot rewrite" };
-      result = reject(resolved.reason);
-    }
-    // Not awaited: what Amp does with a slow handler is not documented, so the
-    // record never holds the answer. postEvent is bounded and never throws;
-    // a rejection is caught so it is never unhandled in Amp's process.
-    const record = {
-      id: decisionId(HARNESS, call.toolUseId),
-      chatId: call.chat ?? "",
-      harness: HARNESS,
-      kind: "approval" as const,
-      summary: `${answer.normalizedTool} ${resolved.action}`,
-      detail: {
-        tool: answer.normalizedTool,
-        decision: resolved.action,
-        policyAction: answer.action,
-        reason: resolved.reason,
-        redacted: answer.redacted,
-        ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
-      },
-    };
-    // The install records follow the decision on the same chain, so on Amp
-    // the lockfile is kept a little after the call starts (not awaited, as
-    // above): a diff can miss what the first moments wrote.
-    const installs = installEvents(call, answer, resolved.action, call.chat ?? "");
-    void Promise.resolve()
-      .then(async () => {
-        await deps.postEvent(record);
-        for (const e of installs) await deps.postEvent(e);
-      })
-      .catch(() => undefined);
-    return result;
-  } catch (error) {
-    return reject(error instanceof Unreadable ? error.message : `hook error: ${(error as Error)?.message ?? String(error)}`);
-  }
-}
-
-/**
- * Redacts secret-like strings in a result before it goes back to the model,
- * and records the call. Returns a replacement only when something was
- * redacted; nothing here can stop the result (the tool already ran).
- */
-export async function onToolResult(event: ToolResultEvent, deps: Deps): Promise<ToolResultResult> {
-  try {
-    let serialized = "";
-    try {
-      serialized = JSON.stringify(event?.output ?? null) ?? "";
-    } catch {
-      serialized = "";
-    }
-    const sha = createHash("sha256").update(serialized, "utf8").digest("hex");
-    let count = 0;
-    // Output the agent can shape: long runs of secret-like words are taken out
-    // whole first (budget.ts), so the core's redaction below stays fast.
-    const defused = defuseValue(event?.output);
-    count += defused.count;
-    let output = defused.value;
-    if (typeof output === "string") {
-      const r = redactText(output);
-      count += r.count;
-      output = r.text;
-    } else if (output !== undefined && output !== null && typeof output === "object") {
-      const r = redactValue(output);
-      count += r.count;
-      output = r.value;
-    }
-    const defusedError = defuseValue(event?.error);
-    count += defusedError.count;
-    let error = defusedError.value;
-    if (typeof error === "string") {
-      const r = redactText(error);
-      count += r.count;
-      error = r.text;
-    }
-    // The record is sent and not awaited, as in onToolCall.
-    try {
-      const call = gateCallOf(event, deps);
-      const tool = decideCall(deps.loadPolicy(), { ...call, toolInput: {} }).normalizedTool;
-      const record = {
-        id: `${HARNESS}-${call.toolUseId ?? "unknown"}`,
-        chatId: call.chat ?? "",
-        harness: HARNESS,
-        kind: "tool.call" as const,
-        summary: `${tool} ${event?.status ?? "done"}${count ? `, ${count} redacted` : ""}`,
-        detail: {
-          tool,
-          status: event?.status,
-          resultSha256: sha,
-          resultBytes: Buffer.byteLength(serialized, "utf8"),
-          redacted: count,
-          ...(call.toolUseId ? { toolUseId: call.toolUseId } : {}),
-        },
-      };
-      void Promise.resolve()
-        .then(() => deps.postEvent(record))
-        .catch(() => undefined);
-    } catch {
-      // The record is best effort; the redaction below still applies.
-    }
-    if (count === 0) return undefined;
-    const status = event.status === "error" || event.status === "cancelled" ? event.status : "done";
-    return {
-      status,
-      ...(typeof error === "string" ? { error } : {}),
-      ...(output !== undefined ? { output } : {}),
-    } as ToolResultResult;
-  } catch {
-    return undefined;
-  }
 }

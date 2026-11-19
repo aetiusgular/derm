@@ -7,7 +7,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { REDACTED } from "./core/redact.ts";
 import { CLINE_SHELL_TOOLS, Unreadable, answerRequest, beforeTool, defaultDeps, gateCallOf, shellCommandsOf, type BeforeToolContext, type Deps } from "./cline.ts";
-import { CLINE_CONTROL_PATHS, clineControlPath } from "./control.ts";
 import { overBudget } from "./budget.ts";
 import plugin from "./plugin.ts";
 import { GateServe } from "./serve/client.ts";
@@ -247,27 +246,8 @@ describe("redaction rules and cost (review P-S2, P-S6)", () => {
 });
 
 describe("Cline's control files", () => {
-  it("lists the markers in folded form", async () => {
-    for (const p of CLINE_CONTROL_PATHS) expect(p).toBe(p.toLowerCase());
-  });
-  it.each([
-    ["~/.cline/plugins/evil.ts", ".cline/"],
-    ["<ws>/.cline/hooks/PreToolUse", ".cline/"],
-    ["/home/u/Documents/Cline/Plugins/x.js", "documents/cline/"],
-    [".clinerules/hooks/PreToolUse.sh", ".clinerules"],
-    ["/home/u/.agents/plugins/p/plugin.json", ".agents/plugins"],
-    ["export CLINE_DIR=/tmp/x", "cline_dir"],
-    ["CLINE_DATA_DIR=/tmp/d cline", "cline_data_dir"],
-    ["unset CLINE_TOOL_APPROVAL_MODE", "cline_tool_approval"],
-    ["CLINE_PLUGIN_MODE=sandbox", "cline_plugin_"],
-    ["/run/user/1000/derm/cline-approvals/s.decision.r.json", "cline-approvals/"],
-    ["cd /run/user/1000/cline-approvals && cp /w/d.json s.decision.r.json", "cline-approvals/"],
-    ["cd /home/u/.cline && cp x plugins/zz/index.ts", ".cline/"],
-    ["cd /home/u/Documents/Cline && cp x Plugins/zz.ts", "documents/cline/"],
-    ["mkdir -p .cline && cd .cline && cp x plugins/y.ts", ".cline/"],
-  ])("%s names %s", async (text, marker) => {
-    expect(clineControlPath(text)).toBe(marker);
-  });
+  // The list itself is derm-core's (`CONTROL_PATHS`), read by the co-process;
+  // the TypeScript copy and its marker tests left on 19 Nov 2026.
   itDerm("an allowed write into Cline's plugin folder asks", async () => {
     expect(await beforeTool(ctx("editor", { path: "/home/u/.cline/plugins/x.ts", new_text: "export default {}" }), deps())).toEqual({ policy: { autoApprove: false } });
     expect(await beforeTool(ctx("run_commands", { commands: ["echo '{\"approved\":true}' > /run/user/1000/derm/cline-approvals/a.decision.b.json"] }), deps())).toEqual({ policy: { autoApprove: false } });
@@ -282,10 +262,6 @@ describe("Cline's control files", () => {
     const r = await beforeTool(ctx("editor", input), deps({ DERM_FULL_ACCESS: "1" }));
     expect(r).toMatchObject({ skip: true });
     expect((r as { reason: string }).reason).toMatch(/full access/);
-  });
-  // Review W4-S8: `derm run cline` answers in `~/.cline/derm-approval/<chat>`.
-  it("names derm run's approval folder as a control path", async () => {
-    expect(clineControlPath("cd /tmp/x && cp d.json ~/derm-approval/chat-1/s.decision.r.json")).toBe("derm-approval/");
   });
 });
 
@@ -313,7 +289,7 @@ describe("the plugin module", () => {
     expect(out.seen).toEqual([]);
   });
   it("imports only node: built-ins and files inside src/, so the folder can be copied whole", async () => {
-    for (const name of ["plugin.ts", "cline.ts", "control.ts", "responder.ts"]) {
+    for (const name of ["plugin.ts", "cline.ts", "budget.ts", "responder.ts"]) {
       const text = readFileSync(path.join(here, name), "utf8");
       for (const m of text.matchAll(/^\s*(?:import|export)\s[^;]*?from\s+"([^"]+)"/gms)) {
         const spec = m[1] as string;

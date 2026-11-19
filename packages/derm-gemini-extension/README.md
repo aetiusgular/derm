@@ -4,7 +4,7 @@ The derm policy gate for Gemini CLI (T2.4, wave 2 lane I). Written against Gemin
 
 ## What it does
 
-- **BeforeTool** (`hooks/hooks.json`, hook `derm-gate`) checks every built-in and MCP tool call against `~/.derm/policy.json` (or `$DERM_POLICY`) with derm's shared gate core (`src/core/`, a copy of `packages/derm-claude-plugin/src/core/`; do not edit it here).
+- **BeforeTool** (`hooks/hooks.json`, hook `derm-gate`) checks every built-in and MCP tool call against `~/.derm/policy.json` (or `$DERM_POLICY`): `hooks/derm-gate.sh` runs `derm hook gemini before` from derm's install folders, so the gate is derm itself. `src/core/` (a copy of `packages/derm-claude-plugin/src/core/`; do not edit it here) is read only by the policy printer below.
   - **deny** stops the call: Gemini sends `derm: <reason>` to the model as the tool's error. Works under `--yolo`.
   - **ask** goes to the derm daemon's approver first (`derm watch --approve`). With no approver, or no daemon, Gemini shows its own prompt. A headless run (`gemini -p`) does not pass that prompt: the call does not run. An approver's no, or a timeout, is a deny.
   - **allow** prints nothing. A Gemini hook cannot approve a call, only deny or ask; Gemini's own policy then decides. Under `--yolo` that is a run.
@@ -18,7 +18,7 @@ The derm policy gate for Gemini CLI (T2.4, wave 2 lane I). Written against Gemin
 
 When a hook crashes, is killed, exits with anything but 0 or 2, or times out, Gemini lets the call run. There is no switch for that (run on 0.66.0 and 0.65.0). So:
 
-- the hook never crashes on purpose; every path ends in a decision, and `bin/derm-hook.mjs` turns a load failure into a block;
+- the hook never crashes on purpose; every path ends in a decision, and `hooks/derm-gate.sh` turns a derm it cannot run into a block;
 - an ask waits at most 90 seconds, under the hook's 120 second timeout;
 - the two policy files above are the layer that holds when the hook does not. Save the user-tier file: it is what makes a derm deny hold with the hook down.
 

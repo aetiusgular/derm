@@ -42,8 +42,7 @@
       "where": "plugin ~/.agents/plugins/<the name in ~/.derm/gate-name>/ (plugin.json, hooks/hooks.json), PreToolUse, on_failure: block; a name a repository cannot take first (note BC, BC-1)",
       "status": "built",
       "wave": 4,
-      "lane": "N",
-      "package": "packages/derm-hooks-native"
+      "lane": "N"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "on_failure: \"block\"",

@@ -2,8 +2,8 @@
 // the real Vibe CLI, driven by `vibe -p ... --auto-approve` against a fake
 // OpenAI chat-completions server (../../lib/fakeChat.mjs) as a generic
 // provider in a scratch $VIBE_HOME/config.toml, with a fake derm daemon.
-// The gate is $VIBE_HOME/hooks.toml as packages/derm-hooks-native/
-// registration/mistral-vibe/hooks.toml gives it. --auto-approve approves
+// The gate is $VIBE_HOME/hooks.toml as `derm connect mistral-vibe --gate`
+// writes it (below). --auto-approve approves
 // every call itself, so derm's gate is the only check.
 //
 //   node tests/cli-contract/run.mjs --cli mistral-vibe=/path/to/vibe --only vibe-derm-deny,...
@@ -15,10 +15,24 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBin } from "../../lib/dermBin.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const PKG = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hooks-native");
-const REG = path.join(PKG, "registration", "mistral-vibe", "hooks.toml");
+// The gate is derm itself: `<derm> hook <agent> pre`, by the absolute path of
+// this repository's build (DERM_BIN, else target/release or target/debug),
+// the command `derm connect <agent> --gate` registers (crates/derm-cli/src/
+// connect/gates.json). Until 19 Nov 2026 these checks ran the TypeScript
+// hook package this lane wrote (`node .../derm-hook.mjs <agent>`), which was
+// deleted that day; they have not been run against the agents since the
+// change.
+function derm() {
+  const b = dermBin();
+  if (!b) throw new Error("no derm build for the gate (DERM_BIN, target/release/derm, target/debug/derm): cargo build -p derm-cli");
+  return b;
+}
+// The entry `derm connect mistral-vibe --gate` writes (gates.json, the
+// `toml-array-entry` step).
+const hooksToml = (command) => `[[hooks]]\nname = "derm-gate"\ntype = "pre_tool"\ncommand = ${JSON.stringify(command)}\ntimeout = 120.0\nstrict = true\ndescription = "derm policy gate; strict, so a failed gate denies"\n`;
 
 function run(bin, args, env, cwd, seconds = 180) {
   return new Promise((resolve) => {
@@ -68,8 +82,7 @@ async function vibeTurn(bin, { policy, script, approve = "none", gateCommand, fl
       "",
     ].join("\n"),
   );
-  let hooks = readFileSync(REG, "utf8").replace("<derm-hooks-native>", PKG);
-  if (gateCommand !== undefined) hooks = hooks.replace(/^command = .*$/m, `command = ${tomlString(gateCommand)}`);
+  const hooks = hooksToml(gateCommand !== undefined ? gateCommand : `"${derm()}" hook mistral-vibe pre`);
   writeFileSync(path.join(vibeHome, "hooks.toml"), hooks);
   const env = {
     PATH: process.env.PATH,
