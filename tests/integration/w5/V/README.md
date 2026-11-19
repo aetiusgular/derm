@@ -17,7 +17,7 @@ Linux machine (a cloud workspace, a container), never on the box or the Mac.
   ripgrep. Run 4 Nov 2026: 6 of 6.
 
 ```
-sudo node tests/integration/w5/V/agent-user.mjs --bin target/release --core packages/derm-claude-plugin/src/core
+sudo node tests/integration/w5/V/agent-user.mjs --bin target/release
 sudo node tests/integration/w5/V/srt-token.mjs --bin target/release --srt /tmp/cli/node_modules/.bin/srt
 ```
 

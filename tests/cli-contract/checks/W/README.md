@@ -16,8 +16,4 @@ Both report `info` until integration applies request W-1: before it the preset's
 
 `preset-cases.json`: 24 calls and what each preset answers, read by request W-2's tests in all three matchers.
 
-`requests/`: lane W's requests for integration as patches (the lane does not own those files):
-
-- `W-1-command-rules.patch`: `contracts/policy.md` section 7 built in the three matchers (`command.ts` in the hook core and derm-pi, `crates/derm-core/src/command.rs`), `contracts/policy.schema.json`, fixture rules and cases 85 to 106, `fixtures/policy/invalid.json`, `sync-core.mjs`'s copies in the ten packages, and the writers of an agent's own rules (`connect/rules.rs`, the Gemini printout) leaving command rules to the gate. Applies alone on `integration/w5` at `6d49e3e` (`git apply --index`).
-- `W-2-preset-tests.patch`: three test files, one per matcher, that read `crates/derm-cli/src/setup/presets/` and `preset-cases.json`. Applies after W-1 and the lane's squash.
-- `W-3-kit-carries-command-ts.patch`: `crates/derm-cli/src/run/boundary/kit.rs` (lane T, phase 4): derm's sbx kit compiles in the hook core's files, and W-1 adds `src/core/command.ts` to the hook's import closure, so lane T's `the_kit_carries_the_hooks_whole_import_closure` fails without it (run on lane T's head with W-1) and the in-VM hook would not load. Applies after lane T's squash and W-1.
+Lane W's requests for integration were patches in `requests/`, applied as `1dff932` (W-1, command rules), `2f23a46` (W-2, the preset tests) and `503ea56` (W-3, since moot: the sbx kit carries no TypeScript). The patch files were removed on 19 Nov 2026 and those commits are the record.

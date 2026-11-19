@@ -13,6 +13,7 @@
 //! derm connect <agent> --gate --hook <package folder> [--node <path>] [--write]
 //! derm connect <agent> --ungate [--write]
 //! derm connect <agent> --rules [--clear] [--write]
+//! derm connect gemini --rules --print
 //! ... [--write [--expect-sha256 <hash>]]
 //! ```
 //!
@@ -139,6 +140,7 @@ const USAGE: &str = "usage: derm connect --list
        derm connect <agent> --gate --hook <package folder> [--node <path>] [--write]
        derm connect <agent> --ungate [--write]
        derm connect <agent> --rules [--clear] [--write]
+       derm connect gemini --rules --print
 Dry run unless --write. Writes user-level files only, after a terminal confirmation.
 ";
 
@@ -168,6 +170,7 @@ struct Opts {
     node: Option<String>,
     rules: bool,
     clear: bool,
+    print: bool,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -194,6 +197,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--gate" => o.gate = true,
             "--rules" => o.rules = true,
             "--clear" => o.clear = true,
+            "--print" => o.print = true,
             "--ungate" => o.ungate = true,
             "--hook" => o.hook = Some(value(&mut i, a)?),
             "--node" => o.node = Some(value(&mut i, a)?),
@@ -236,10 +240,17 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             || o.hook.is_some()
             || o.node.is_some();
         if other {
-            return Err("--rules takes the agent, --clear and --write only".into());
+            return Err("--rules takes the agent, --clear, --write and --print only".into());
         }
     } else if o.clear {
         return Err("--clear goes with --rules".into());
+    }
+    // `--print` is Gemini's whole-policy printout; it writes nothing.
+    if o.print && !o.rules {
+        return Err("--print goes with --rules".into());
+    }
+    if o.print && (o.write || o.clear) {
+        return Err("--print writes nothing: it takes neither --write nor --clear".into());
     }
     if o.gate || o.ungate {
         let other = o.from.is_some()
@@ -540,6 +551,7 @@ pub fn run(args: &[String], ctx: &mut Ctx) -> u8 {
             agent: id,
             clear: o.clear,
             write: o.write,
+            print: o.print,
         };
         return match rules::run(&r, ctx) {
             Ok(code) => code,

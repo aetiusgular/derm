@@ -75,6 +75,17 @@ The folder is the one in the co-process's own environment, `DERM_CLINE_APPROVAL_
 
 `problem` when the variable is unset, the path is relative, inside the session folder, missing, a link, not a folder, or not the user's alone. The responder uses it on Windows only, before it starts and before each poll and write; on Linux and macOS it judges the folder itself, as before. A problem, or no answer, stops the responder, and Cline denies every waiting call after 5 minutes.
 
+### 2.6 `reject` (a command the person typed, derm-pi's `user_bash`; 19 Nov 2026)
+
+```
+{"id":7,"op":"reject","text":"git -c core.hooksPath=/tmp/h commit"}
+{"id":7,"ok":true,"key":"core.hookspath"}
+{"id":8,"op":"reject","text":"ls -la"}
+{"id":8,"ok":true,"key":null}
+```
+
+The reject list of `contracts/policy.md` section 3 over `text`, read as the gate reads a call's input (escapes decoded, then folded: `derm_core::policy::reject_hit(fold_text(decode_escapes(text)))`). `key` is the first key hit, or null. No policy is read and nothing is posted: a command the person types is not a tool call, so only the reject list applies, as before. derm-pi refuses the command on a key and also when the co-process cannot answer (fails closed, case 228). Until 19 Nov 2026 derm-pi checked these commands with its own TypeScript copy of the list (`src/policy.ts` `rejectKey`); `text` missing is `ok: false`.
+
 ## 3. Errors
 
 `{"id":<id>,"ok":false,"error":"<text>"}` for a request it refuses (an unknown op, a bad field); the co-process keeps running. A plugin reads any reply without `ok: true` to a `decide` or `approve` as a deny.

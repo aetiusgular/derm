@@ -1,7 +1,7 @@
-// derm's sbx VM, as derm-pi tells it (17 Nov 2026). derm-pi does not import
-// the hook core, so this is a port of its rule
-// (packages/derm-claude-plugin/src/core/daemon.ts, vmMarker and vmEndpoint;
-// test/vm.test.ts holds the marker check equal to the core's).
+// derm's sbx VM, as derm-pi tells it (17 Nov 2026): the gate's rule
+// (crates/derm-cli/src/gate/daemon.rs, SBX_HOST and VM_MARKER), ported from
+// the TypeScript hook core's daemon.ts, which was deleted on 19 Nov 2026;
+// test/vm.test.ts holds the path and host equal to the gate's.
 //
 // In the VM the daemon is on the host, at http://host.docker.internal:<port>
 // (`derm run` names it in DERM_OTLP_ENDPOINT and opens that port for the

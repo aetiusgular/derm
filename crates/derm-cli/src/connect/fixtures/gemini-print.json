@@ -1,0 +1,128 @@
+{
+ "main": {
+  "policy": {
+   "version": 1,
+   "servers": [
+    "my-server",
+    "exa"
+   ],
+   "rules": [
+    {
+     "tool": "run_shell_command",
+     "action": "allow"
+    },
+    {
+     "tool": "write_file",
+     "action": "ask"
+    },
+    {
+     "tool": "my_server/*",
+     "action": "deny"
+    },
+    {
+     "tool": "exa/search",
+     "action": "allow",
+     "descriptionSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+     "tool": "read_file",
+     "harness": "gemini",
+     "action": "deny"
+    },
+    {
+     "tool": "bash",
+     "harness": "pi",
+     "action": "allow"
+    },
+    {
+     "tool": "read_file",
+     "chat": "c1",
+     "action": "allow"
+    }
+   ]
+  },
+  "toml": "# derm policy for Gemini CLI, user tier. Printed from your derm policy by\n# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.\n# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs\n# first and also applies the reject list, the control files and the shell check.\n\n[[rule]]\ntoolName = \"run_shell_command\"\ndecision = \"allow\"\npriority = 201\n\n[[rule]]\ntoolName = \"write_file\"\ndecision = \"ask_user\"\npriority = 211\n\n[[rule]]\nmcpName = \"my-server\"\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 121\ndenyMessage = \"derm: rule my_server/*\"\n\n# exa/search: allow with a description pin; Gemini cannot check the pin, so it asks\n[[rule]]\nmcpName = \"exa\"\ntoolName = \"search\"\ndecision = \"ask_user\"\npriority = 211\n\n[[rule]]\ntoolName = \"read_file\"\ndecision = \"deny\"\npriority = 521\ndenyMessage = \"derm: rule read_file harness=gemini\"\n\n# skipped: bash allow for harness pi\n\n# skipped: read_file allow for one chat (Gemini rules have no chat)\n\n# derm asks when no rule matches; so does this, at the lowest priority.\n[[rule]]\ntoolName = \"*\"\ndecision = \"ask_user\"\npriority = 0\n"
+ },
+ "bash": {
+  "policy": {
+   "version": 1,
+   "rules": [
+    {
+     "tool": "bash",
+     "action": "deny"
+    },
+    {
+     "tool": "bash",
+     "harness": "gemini",
+     "action": "ask"
+    },
+    {
+     "tool": "bash",
+     "action": "allow"
+    }
+   ]
+  },
+  "toml": "# derm policy for Gemini CLI, user tier. Printed from your derm policy by\n# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.\n# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs\n# first and also applies the reject list, the control files and the shell check.\n\n[[rule]]\ntoolName = \"run_shell_command\"\ndecision = \"deny\"\npriority = 950\ndenyMessage = \"derm: rule bash\"\n\n[[rule]]\ntoolName = \"run_shell_command\"\ndecision = \"ask_user\"\npriority = 522\n\n# skipped: bash allow (derm's bash names Gemini's run_shell_command only to deny or ask; name run_shell_command to allow it)\n\n# derm asks when no rule matches; so does this, at the lowest priority.\n[[rule]]\ntoolName = \"*\"\ndecision = \"ask_user\"\npriority = 0\n"
+ },
+ "both": {
+  "policy": {
+   "version": 1,
+   "rules": [
+    {
+     "tool": "run_shell_command",
+     "action": "deny"
+    },
+    {
+     "tool": "bash",
+     "action": "ask"
+    }
+   ]
+  },
+  "toml": "# derm policy for Gemini CLI, user tier. Printed from your derm policy by\n# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.\n# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs\n# first and also applies the reject list, the control files and the shell check.\n\n[[rule]]\ntoolName = \"run_shell_command\"\ndecision = \"deny\"\npriority = 221\ndenyMessage = \"derm: rule run_shell_command\"\n\n# bash ask: kept at its own rank, because a deny in your policy reaches run_shell_command and must outrank it; a run_shell_command allow above it is not asked about here (the hook still asks)\n[[rule]]\ntoolName = \"run_shell_command\"\ndecision = \"ask_user\"\npriority = 211\n\n# derm asks when no rule matches; so does this, at the lowest priority.\n[[rule]]\ntoolName = \"*\"\ndecision = \"ask_user\"\npriority = 0\n"
+ },
+ "star": {
+  "policy": {
+   "version": 1,
+   "rules": [
+    {
+     "tool": "*",
+     "action": "deny"
+    }
+   ]
+  },
+  "toml": "# derm policy for Gemini CLI, user tier. Printed from your derm policy by\n# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.\n# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs\n# first and also applies the reject list, the control files and the shell check.\n\n[[rule]]\ntoolName = \"*\"\ndecision = \"deny\"\npriority = 21\ndenyMessage = \"derm: rule *\"\n"
+ },
+ "command": {
+  "policy": {
+   "version": 1,
+   "rules": [
+    {
+     "tool": "bash",
+     "command": [
+      "gh",
+      "repo",
+      "delete"
+     ],
+     "action": "deny"
+    },
+    {
+     "tool": "bash",
+     "command": [
+      "gh",
+      "pr",
+      "view"
+     ],
+     "action": "allow"
+    }
+   ]
+  },
+  "toml": "# derm policy for Gemini CLI, user tier. Printed from your derm policy by\n# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.\n# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs\n# first and also applies the reject list, the control files and the shell check.\n\n# skipped: bash gh repo delete deny (a command rule; the derm hook applies it)\n\n# skipped: bash gh pr view allow (a command rule; the derm hook applies it)\n\n# derm asks when no rule matches; so does this, at the lowest priority.\n[[rule]]\ntoolName = \"*\"\ndecision = \"ask_user\"\npriority = 0\n"
+ },
+ "empty": {
+  "policy": {
+   "version": 1,
+   "rules": []
+  },
+  "toml": "# derm policy for Gemini CLI, user tier. Printed from your derm policy by\n# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.\n# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs\n# first and also applies the reject list, the control files and the shell check.\n\n# derm asks when no rule matches; so does this, at the lowest priority.\n[[rule]]\ntoolName = \"*\"\ndecision = \"ask_user\"\npriority = 0\n"
+ }
+}

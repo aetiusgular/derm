@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Copies files of the shared hook core from packages/derm-claude-plugin/src/core/
+// Copies the shared TypeScript helpers from packages/derm-claude-plugin/src/core/
 // (the canonical copy) into the packages in `targets` below. Each harness
 // copies a plugin's own folder into its cache and nothing outside it, so a
 // plugin carries what it uses of the core itself. A test in each plugin runs
@@ -16,11 +16,14 @@
 // - redact.ts: Cline's and Amp's guard in front of redaction, and Amp's
 //   dialog text and its redaction with no co-process.
 // - text.ts: Cline's approval responder's folder test.
-// The whole core stays in one more place: derm-gemini-extension, whose policy
-// printer (bin/derm-gemini-policy.mjs) reads the policy with the TypeScript
-// matcher's loader and has no Rust form yet. The copies that left: Codex's
-// and Hermes's at the wave 5b close; the compat and native hook packages',
-// with the packages, and the matcher in the five plugins, on 19 Nov 2026.
+// fold.ts and confusables.ts stay in the canonical folder for library/trust
+// and crates/derm-core/gen/gen-fold-tables.mjs, which read them there.
+// The copies that left: Codex's and Hermes's at the wave 5b close; the
+// compat and native hook packages', with the packages, and the matcher in
+// the five plugins, on 19 Nov 2026; later that day the matcher itself
+// (policy, command, gate, daemon, destructive, installs) and the whole copy
+// in derm-gemini-extension, whose printer became `derm connect gemini
+// --rules --print`.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -31,8 +34,8 @@ const source = path.join(here, "..", "src", "core");
 const check = process.argv.includes("--check");
 
 // Tests stay with the canonical copy. Subfolders the core holds whole are
-// listed here: `installs/` is wave 5 lane X's seam (the wave 5 base).
-const SUBFOLDERS = ["installs"];
+// listed here (none since `installs/` went on 19 Nov 2026).
+const SUBFOLDERS = [];
 const tsIn = (dir) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".ts")) : []);
 const all = [
   ...tsIn(source),
@@ -41,9 +44,8 @@ const all = [
   .filter((f) => !f.endsWith(".test.ts"))
   .sort();
 
-/** Package name to the core files it carries; `all` is the whole core. */
+/** Package name to the core files it carries. */
 const targets = {
-  "derm-gemini-extension": all,
   "derm-opencode-plugin": ["owner.ts"],
   "derm-kilo-plugin": ["owner.ts"],
   "derm-openclaw-plugin": ["owner.ts"],

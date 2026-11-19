@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Gemini CLI extension: a BeforeTool hook on the shared gate core, with deny and allow rules in Gemini's policy TOML (wave 2, lane I, T2.4)",
+  "description": "Gemini CLI extension: BeforeTool and AfterTool hooks that run derm (derm hook gemini), and deny rules in Gemini's policy TOML (wave 2, lane I, T2.4)",
   "engines": { "node": ">=22.19.0" }
 }

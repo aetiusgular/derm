@@ -17,6 +17,8 @@
 //! - `record`: the approval record and the install records for one call,
 //!   with the outcome the plugin settled on.
 //! - `redact`: the hook redactor over a value, for a tool result.
+//! - `reject`: the reject list over a command the person typed (derm-pi's
+//!   `user_bash`; 19 Nov 2026, when Pi's TypeScript copy of the list went).
 //! - `memory.check` also answers `projectKnown`, which derm-pi's card text
 //!   needs.
 //! - `approvals.check`: whether Cline's approval folder, named in the
@@ -35,7 +37,7 @@ mod memory;
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
-use derm_core::policy::Action;
+use derm_core::policy::{decode_escapes, fold_text, reject_hit, Action};
 use derm_core::redact::hook::redact_value;
 use serde_json::{json, Map, Value};
 
@@ -267,6 +269,7 @@ pub(crate) fn run(ctx: &Ctx, input: &mut dyn BufRead, out: &mut dyn Write) -> u8
             "event" => op_event(ctx, &id, &request),
             "record" => op_record(ctx, &id, &request),
             "redact" => op_redact(&id, &request),
+            "reject" => op_reject(&id, &request),
             "memory.check" => memory::op_check(ctx, &id, &request),
             "memory.approve" => memory::op_approve(ctx, &id, &request),
             "approvals.check" => approvals::op_check(ctx, &id, &request),
@@ -807,6 +810,19 @@ fn op_redact(id: &Value, r: &Value) -> Value {
     };
     let (value, count) = redact_value(v);
     json!({"id": id, "ok": true, "value": value, "count": count})
+}
+
+/// The reject list (contracts/policy.md section 3) over text that is not a
+/// tool call: a command the person typed into the host, derm-pi's
+/// `user_bash`. The text is read as the gate reads a call's input (escapes
+/// decoded, folded); no policy is read and nothing is posted. `key` is the
+/// first hit, or null.
+fn op_reject(id: &Value, r: &Value) -> Value {
+    let Some(text) = r.get("text").and_then(Value::as_str) else {
+        return refuse(id, "text is required");
+    };
+    let key = reject_hit(&fold_text(&decode_escapes(text)));
+    json!({"id": id, "ok": true, "key": key})
 }
 
 /// Whether `p` is an absolute path a record may be keyed by.

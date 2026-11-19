@@ -12,8 +12,8 @@
 // changes after approval (note AP section 5).
 //
 // The pin is the hash every matcher checks: SHA-256 of the description's
-// UTF-8 bytes, unnormalized (packages/derm-claude-plugin/src/core/policy.ts:454,
-// packages/derm-pi/src/policy.ts:367, crates/derm-core/src/policy.rs:557).
+// UTF-8 bytes, unnormalized (crates/derm-core/src/policy.rs:557; the TypeScript
+// matchers did the same until 19 Nov 2026).
 
 import { createHash } from "node:crypto";
 import type { ToolsRecord } from "../validate/types.ts";

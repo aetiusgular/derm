@@ -10,7 +10,7 @@
 #
 # Gemini ignores `allow` in an extension's policies (docs/extensions/reference.md
 # at v0.66.0, "Policy Engine"), so this file only denies. Your own rules from
-# ~/.derm/policy.json go in the user tier: `node bin/derm-gemini-policy.mjs` prints
+# ~/.derm/policy.json go in the user tier: `derm connect gemini --rules --print` prints
 # them for ~/.gemini/policies/derm.toml.
 
 # `.tk/` is the old name's folder: derm never reads it, and while a tk install

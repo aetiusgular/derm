@@ -151,7 +151,7 @@
           "kind": "commands",
           "commands": [
             "gemini extensions install \"{hook_dir}\" --consent",
-            "node \"{hook_dir}/bin/derm-gemini-policy.mjs\""
+            "derm connect gemini --rules --print"
           ],
           "note": "Gemini lets a call through on every hook failure; save the user policy the second command prints, as the second layer."
         }

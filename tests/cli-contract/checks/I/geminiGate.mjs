@@ -9,7 +9,7 @@
 //
 //   node tests/cli-contract/run.mjs --cli gemini=/path/to/gemini --only gemini-derm-deny,...
 
-import { installDermAtHome } from "../../lib/dermBin.mjs";
+import { dermBin, installDermAtHome } from "../../lib/dermBin.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -119,7 +119,9 @@ export const checks = [
     async run({ binPath }) {
       const s = await setup(binPath, {});
       try {
-        const files = ["gemini-extension.json", "hooks/hooks.json", "hooks/derm-gate.sh", "policies/derm.toml", "bin/derm-gemini-policy.mjs", "src/policyToml.ts", "src/core/policy.ts"].map((f) => [f, existsSync(path.join(s.installedAt, f))]);
+        // The extension holds no TypeScript since 19 Nov 2026: its policy
+        // printer is `derm connect gemini --rules --print`.
+        const files = ["gemini-extension.json", "hooks/hooks.json", "hooks/derm-gate.sh", "policies/derm.toml"].map((f) => [f, existsSync(path.join(s.installedAt, f))]);
         // `extensions list` prints to stderr at 0.66.0 (run 28 Oct).
         const l = await run(binPath, ["extensions", "list"], { PATH: process.env.PATH, HOME: s.home, NO_COLOR: "1", GEMINI_CLI_NO_RELAUNCH: "true" }, s.work, 60);
         const listed = /extensions[\\/]derm\b/.test(l.out + l.err);
@@ -232,7 +234,7 @@ export const checks = [
   },
   {
     id: "gemini-derm-user-policy",
-    title: "The printed user-tier TOML loads in Gemini and enforces derm's rules with the hook switched off",
+    title: "The user-tier TOML `derm connect gemini --rules --print` prints loads in Gemini and enforces derm's rules with the hook switched off",
     harness: "gemini",
     async run({ binPath }) {
       const policy = { version: 1, rules: [{ tool: "run_shell_command", action: "deny" }, { tool: "read_file", action: "allow" }] };
@@ -240,7 +242,9 @@ export const checks = [
         binPath,
         { policy, settings: { security: { auth: { selectedType: "gemini-api-key" } }, hooksConfig: { disabled: ["derm-gate"] } } },
         (s) => {
-          const printed = execFileSync(process.execPath, ["--no-warnings", path.join(EXTENSION, "bin", "derm-gemini-policy.mjs")], { env: { PATH: process.env.PATH, HOME: s.home, DERM_POLICY: s.policyFile }, encoding: "utf8" });
+          const derm = dermBin();
+          if (!derm) throw new Error("no derm build for the printout (DERM_BIN, target/release/derm, target/debug/derm)");
+          const printed = execFileSync(derm, ["connect", "gemini", "--rules", "--print"], { env: { PATH: process.env.PATH, HOME: s.home, DERM_POLICY: s.policyFile }, encoding: "utf8" });
           mkdirSync(path.join(s.home, ".gemini", "policies"), { recursive: true });
           writeFileSync(path.join(s.home, ".gemini", "policies", "derm.toml"), printed);
           return oneCall("run_shell_command", { command: "echo derm-user-policy-ran" });

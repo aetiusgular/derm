@@ -1,8 +1,8 @@
 //! Command rules (`contracts/policy.md` section 7; wave 5 lane W). A rule may
 //! name a CLI command by its first words (`"tool": "bash", "command": ["gh",
-//! "pr", "create"]`). The same logic as the hook core's `command.ts`
-//! (`packages/derm-claude-plugin/src/core/command.ts`, canonical) and
-//! derm-pi's copy; all three are tested against `contracts/fixtures/policy/`.
+//! "pr", "create"]`). Ported from the hook core's `command.ts`, which with
+//! derm-pi's copy was deleted on 19 Nov 2026: this is the only copy, tested
+//! against `contracts/fixtures/policy/`.
 //!
 //! A deny or an ask rule narrows: it meets any simple command of the text,
 //! past separators, subshells, backticks, lane X's wrappers, `bash -c`,

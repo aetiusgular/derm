@@ -26,9 +26,4 @@ DERM_KIT_ROOT_TEST=1 DERM_BIN=<target>/debug/derm \
   node tests/cli-contract/run.mjs --claude /tmp/cli/node_modules/.bin/claude --only sbx-kit-claude-gate
 ```
 
-`requests/`: lane T's requests for integration as patches (the lane does not own those files). T-1 to T-3 were written against `integration/w5` at `6e147ee` and applied at the phase 3 merge (`2dcc6a2`); they are kept as the record. Phase 4's T-5 is against `6d49e3e`:
-
-- `T-1-contract-default-and-blocked.patch`: `contracts/wave5-records.schema.json`, `contracts/events.md`, `contracts/contracts.test.ts`: `answeredBy: "default"` (derm picked sbx or srt with no question) and `ioUring: "blocked"` (srt's seccomp helper refuses io_uring).
-- `T-2-sbx-create-rule-attach-remove.patch`: `crates/derm-cli/src/run/plan.rs` (the sandbox name, SB2) and `run/mod.rs` (`boundary::sbx::start` before the harness, the removal before `run.stop`, `sandboxRemoved` in `run.stop`; SB1, SB3, case 117), with the end-to-end sbx test extended to the four steps.
-- `T-3-io-uring-mark.patch`: `run/mod.rs`, `run.start`'s `ioUring` (case 128), with assertions in the `none` and `srt` end-to-end tests.
-- `T-5-sbx-forms-from-kit-json.patch` (phase 4): `contracts/harness-presets.schema.json` (`$defs.kit.fullAccess`), `crates/derm-cli/src/connect/presets/wave5/kit.json` (each kit's `fullAccess`), `run/harness.rs` (the sbx form from the kit table; `PI_KIT` goes; Hermes, OpenClaw, Amp, Crush and Grok gain one), `run/plan.rs` (the kit's words in the chat's full access under sbx, so `DERM_FULL_ACCESS=1` reaches the VM) and `run/boundary/probe.rs` (one line, `h.sbx()`). Applies alone on `6d49e3e` and on lane T's head.
+Lane T's requests for integration (T-1 to T-3, and T-5 in phase 4) were patches in `requests/`. They were applied as `2dcc6a2` (phase 3 merge) and `6f26dca` (T-5); the patch files were removed on 19 Nov 2026 and those commits are the record.

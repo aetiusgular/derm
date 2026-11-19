@@ -259,6 +259,57 @@ fn gemini_gets_its_deny_rules_in_a_file_of_its_own() {
     assert!(g.join(".gemini/policies/derm.toml").exists());
 }
 
+/// `derm connect gemini --rules --print`: the whole policy as Gemini's user
+/// tier (allow, ask and deny, with derm's ask-when-nothing-matches at the
+/// bottom), printed and never written. Until 19 Nov 2026
+/// derm-gemini-extension's `bin/derm-gemini-policy.mjs` printed it.
+/// `fixtures/gemini-print.json` is that printer's output for six policies,
+/// recorded from it before it was deleted, with the first two header lines
+/// naming this command instead.
+#[test]
+fn gemini_print_is_the_extensions_printout_and_writes_nothing() {
+    let cases: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/gemini-print.json")).unwrap();
+    for (name, c) in cases.as_object().unwrap() {
+        let home = scratch("rules-gemini-print");
+        fs::create_dir_all(home.join(".gemini")).unwrap();
+        fs::create_dir_all(home.join(".derm")).unwrap();
+        fs::write(home.join(".derm/policy.json"), c["policy"].to_string()).unwrap();
+        let (code, out, err) = go(&home, &[], &["gemini", "--rules", "--print"]);
+        assert_eq!(code, 0, "{name}: {err}");
+        assert_eq!(out, c["toml"].as_str().unwrap(), "{name}");
+        assert!(out.starts_with(super::rules::GEMINI_MARKER), "{name}");
+        assert!(!home.join(".gemini/policies").exists(), "{name}: written");
+    }
+    let home = scratch("rules-gemini-print");
+    fs::create_dir_all(home.join(".derm")).unwrap();
+    // A policy that does not load prints derm's default (ask) and says why.
+    fs::write(home.join(".derm/policy.json"), "{not json").unwrap();
+    let (code, out, err) = go(&home, &[], &["gemini", "--rules", "--print"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("# The derm policy did not load cleanly: "),
+        "{out}"
+    );
+    assert!(
+        out.trim_end()
+            .ends_with("toolName = \"*\"\ndecision = \"ask_user\"\npriority = 0"),
+        "{out}"
+    );
+    // A printout writes nothing, so --write and --clear do not go with it,
+    // and only Gemini has one.
+    for args in [
+        &["gemini", "--rules", "--print", "--write"][..],
+        &["gemini", "--rules", "--print", "--clear"][..],
+        &["gemini", "--print"][..],
+        &["qwen-code", "--rules", "--print"][..],
+    ] {
+        let (code, _, err) = go(&home, &[], args);
+        assert_ne!(code, 0, "{args:?}");
+        assert!(err.contains("--print"), "{args:?}: {err}");
+    }
+}
+
 const CODEX_TOML: &str = "model = \"o4\"\n\n[mcp_servers.GitHub-Tools]\ncommand = \"gh-mcp\"\ndisabled_tools = [\"mine\"]\n\n# my search server\n[mcp_servers.evil]\nurl = \"https://e.example/mcp\"\n\n[mcp_servers.quiet]\ncommand = \"q\"\nenabled = false\n";
 
 const CODEX_POLICY: &str = r#"{"version": 1, "servers": [], "rules": [

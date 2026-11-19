@@ -30,7 +30,7 @@ GitHub makes the source archive from the tag on request: it is not in `SHA256SUM
 | oh-my-pi | `omp install "$PWD/packages/derm-pi"` | No |
 | OpenCode | add `"file://$PWD/packages/derm-opencode-plugin"` to `plugin` in `~/.config/opencode/opencode.json` (see `opencode.fragment.json`) | No |
 | Kilo Code | add `"file://$PWD/packages/derm-kilo-plugin"` to `plugin` in `~/.config/kilo/kilo.json` | No |
-| Gemini CLI | `gemini extensions install "$PWD/packages/derm-gemini-extension" --consent`, then save the user policy it prints (`node bin/derm-gemini-policy.mjs`) | Yes: Gemini lets a call through on every hook failure; the policy file is the second layer |
+| Gemini CLI | `gemini extensions install "$PWD/packages/derm-gemini-extension" --consent`, then save the user policy derm prints (`derm connect gemini --rules --print > ~/.gemini/policies/derm.toml`) | Yes: Gemini lets a call through on every hook failure; the policy file is the second layer |
 | Hermes Agent | `cp -r packages/derm-hermes-plugin ~/.hermes/plugins/derm && hermes plugins enable derm`, then `derm connect hermes --gate --write` (writes `derm-path` beside `derm_gate.py`; the plugin runs derm by that path) | No: it blocks every call while it has no derm it can trust |
 | OpenClaw | `openclaw plugins install --link "$PWD/packages/derm-openclaw-plugin" --force`, then `openclaw plugins enable derm` | No |
 | OpenClaude | `derm connect openclaude --gate --write` (`~/.openclaude/settings.json`) | Yes: a killed or timed-out hook lets the call run; no switch |
