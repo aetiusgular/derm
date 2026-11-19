@@ -1,0 +1,57 @@
+# syntax=docker/sandbox-kit:3
+#
+# derm's gate for Codex inside a Docker Sandboxes VM: a v3 mixin on sbx's
+# own `codex` workload. `derm run --boundary sbx codex` writes this file
+# beside its Dockerfile and derm-kit/ (a Linux derm for the VM, derm's Codex
+# plugin as a local marketplace, the plugin's trust entries, the person's
+# policy) and passes the folder to `sbx create` with --kit
+# (crates/derm-cli/src/run/boundary/kit.rs). The folder is removed after the
+# create; nothing is published.
+#
+# Codex's gate is the Rust `derm hook codex`, reached through the plugin's
+# launcher (packages/derm-codex-plugin/hooks/derm-gate.sh), so the VM needs
+# a derm it can run. That is the one thing this kit has that derm's other
+# kits do not, and why it carries no Node.
+#
+# Seen on the box before this was written (sbx 0.51.0, 17 Nov 2026, a probe
+# kit, no model call): sbx's codex is a v3 workload; a v3 mixin that
+# requires it composes; the agent is uid 1000 `agent` with
+# CODEX_HOME=/home/agent/.codex; the workload's own install step writes
+# config.toml before a mixin's steps run and its start-up step only appends;
+# `codex plugin marketplace add` and `codex plugin add` work there; the
+# plugin's hook, run by hand, found /usr/local/bin/derm and decided.
+#
+# Grammar: docker/sandbox-kit-spec docs/spec/SPEC-v3.md at 6838e3e. Two
+# install commands, in order: root's, then the agent's own (`user: agent`,
+# as the codex workload's own steps name it).
+schemaVersion: "3"
+kind: mixin
+displayName: derm gate for Codex
+description: >-
+  Runs derm's policy gate as Codex's pre-tool and post-tool hooks inside the
+  sandbox, through derm's Codex plugin, with a copy of the person's derm
+  policy and a derm for the VM.
+sourceUrl: https://github.com/aetiusgular/derm
+licenses: [MIT]
+version: "0.1.0"
+
+requires: ["codex"]
+provides: ["io.github.aetiusgular/derm-gate-codex"]
+
+capabilities:
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        # As root: checks the derm it carries runs here, puts it in
+        # /usr/local/bin, the plugin's marketplace and the VM marker in
+        # /opt/derm-kit, and the policy where the hook reads it. A failure
+        # stops the create, with the reason (rules case 151).
+        - command: "sh /opt/derm-kit-src/install.sh"
+          user: "0"
+          description: Install derm for Codex's gate (derm in /usr/local/bin, the plugin's marketplace in /opt/derm-kit, policy in ~/.derm)
+        # As the agent's user, whose Codex config it is: adds the
+        # marketplace and the plugin with Codex's own commands, and the
+        # trust entries Codex wants before it runs a plugin's hook.
+        - command: "sh /opt/derm-kit/setup.sh"
+          user: agent
+          description: Add derm's plugin to Codex and trust its two hooks

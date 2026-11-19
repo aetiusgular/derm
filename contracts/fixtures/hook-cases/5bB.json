@@ -1063,8 +1063,8 @@
    ]
   },
   {
-   "id": "hooks_native_crush_crush_pretooluse_the_documented_example_s_rm_rf_is_allowed_by_an_allow_bash_rule_the_policy",
-   "test": "packages/derm-hooks-native/src/crush.test.ts :: Crush PreToolUse > the documented example's rm -rf / is allowed by an allow-bash rule; the policy, not the dialect, decides",
+   "id": "hooks_native_crush_crush_pretooluse_the_documented_example_s_rm_rf_asks_under_an_allow_bash_rule_step_7e_and_w",
+   "test": "packages/derm-hooks-native/src/crush.test.ts :: Crush PreToolUse > the documented example's rm -rf / asks under an allow-bash rule (step 7e), and with no approver is denied; the policy, not the dialect, decides",
    "entry": "packages/derm-hooks-native/src/runner.ts#runPre",
    "calls": [
     {
@@ -1119,20 +1119,25 @@
      ],
      "daemon": "none",
      "want": {
-      "stdout": "{\"version\":1,\"decision\":\"allow\",\"reason\":\"derm: rule bash\"}\n",
-      "stderr": "",
-      "exit": 0
+      "stdout": "",
+      "stderr": "derm: command changes the filesystem root: `rm`; ask needs an approver and none is connected\n",
+      "exit": 2
      },
      "sent": [
+      {
+       "op": "approve",
+       "harness": "crush",
+       "tool": "bash"
+      },
       {
        "op": "event",
        "kind": "approval",
        "harness": "crush",
-       "decision": "allow",
+       "decision": "deny",
        "tool": "bash"
       }
      ],
-     "ms": 1
+     "ms": 3
     }
    ]
   },

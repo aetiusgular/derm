@@ -13,13 +13,13 @@ import { fileURLToPath } from "node:url";
 import { startFakeMessages, textBlock, toolUse } from "../../lib/fakeMessages.mjs";
 import { spawnGroup, stopGroup } from "../../lib/procs.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { hookCommand } from "./_lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HOOK = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hooks-claude-compat", "bin", "derm-hook.mjs");
 const NODE24 = process.env.DERM_NODE24 ?? "/opt/node24/bin";
 
 function gateEntry(extra = {}) {
-  return { type: "command", command: `node --no-warnings "${HOOK}" openclaude pre`, timeout: 120, ...extra };
+  return { type: "command", command: hookCommand("openclaude"), timeout: 120, ...extra };
 }
 
 /** One `openclaude -p` turn: the model calls Bash once with `command`, then ends. */

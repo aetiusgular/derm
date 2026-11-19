@@ -12,11 +12,11 @@ A hook's `allow` never overrides a deny or ask rule in your Claude Code settings
 Claude Code's plugin pane shows that a hook exists, not what it runs. These are the two commands, from `hooks/hooks.json`, run with your full user rights outside any sandbox:
 
 ```
-node --no-warnings "${CLAUDE_PLUGIN_ROOT}/bin/derm-hook.mjs" pre     # PreToolUse, every tool, timeout 120 s, onFailure block
-node --no-warnings "${CLAUDE_PLUGIN_ROOT}/bin/derm-hook.mjs" post    # PostToolUse, every tool, timeout 30 s
+/bin/sh "${CLAUDE_PLUGIN_ROOT}/hooks/derm-gate.sh" claude-code pre     # PreToolUse, every tool, timeout 120 s, onFailure block
+/bin/sh "${CLAUDE_PLUGIN_ROOT}/hooks/derm-gate.sh" claude-code post    # PostToolUse, every tool
 ```
 
-`bin/derm-hook.mjs` loads `src/hook.ts`, which reads only the policy file and, when present, the daemon's socket and token file (`~/Library/Application Support/derm/` on macOS, `$XDG_RUNTIME_DIR/derm/` on Linux). It makes no network call. It has no dependencies.
+`hooks/derm-gate.sh` runs `derm hook claude-code <event>` from derm's install folders, never a `derm` found on `PATH`. The gate is derm itself (Rust); it reads only the policy file and, when present, the daemon's socket and token file (`~/Library/Application Support/derm/` on macOS, `~/.derm/run/derm/` on Linux), and makes no network call. The plugin holds no gate code of its own: the TypeScript hook it ran through Node before wave 5b (`bin/derm-hook.mjs`, `src/hook.ts`) was deleted on 19 Nov 2026. `src/core/` is the repository's canonical copy of the small files other derm plugins carry, and of the matcher derm-gemini-extension's policy printer still reads; Claude Code does not run it.
 
 ## Needs
 

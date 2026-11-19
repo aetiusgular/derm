@@ -21,6 +21,7 @@ fn plan(program: &str, args: &[&str], token: bool) -> Plan {
         state_dirs: Vec::new(),
         notes: Vec::new(),
         full_access: Vec::new(),
+        asks_allow: false,
         companion: None,
         scratch_dir: None,
     }
@@ -529,6 +530,7 @@ fn codex_export_and_tap_flags_stay_whole_after_a_session_subcommand() {
             Some(TOKEN),
             None,
             false,
+            false,
         );
         assert_eq!(what, json!("codex"), "{user:?}");
         let range = range.unwrap();
@@ -640,6 +642,7 @@ fn codex_pairs_sit_on_one_side_of_a_session_subcommand() {
                     Some("http://127.0.0.1:4318"),
                     Some(TOKEN),
                     None,
+                    false,
                     false,
                 );
                 assert_eq!(what, json!("codex"));

@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "rename-into-place",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo x > scratch0.tmp && mv scratch0.tmp final0.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo x > scratch1.tmp && mv scratch1.tmp final1.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "final0.txt"
+    },
+    {
+      "what": "write",
+      "path": "final1.txt"
+    }
+  ]
+}

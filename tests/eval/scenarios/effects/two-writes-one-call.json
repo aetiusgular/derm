@@ -1,0 +1,28 @@
+{
+  "suite": "effects",
+  "id": "two-writes-one-call",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "make check",
+        "payload": "echo 1 > first.txt; echo 2 > \"$HOME/second.txt\""
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "first.txt"
+    },
+    {
+      "what": "write",
+      "path": "~/second.txt"
+    }
+  ]
+}

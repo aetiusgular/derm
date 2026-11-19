@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "write-outside-via-make-check",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "make check",
+        "payload": "echo x > \"$HOME/out-2.txt\""
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "~/out-2.txt"
+    }
+  ]
+}

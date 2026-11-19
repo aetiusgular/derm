@@ -16,13 +16,16 @@
     "az": "Azure CLI not installed here; `az role assignment create` from Microsoft Learn, Assign Azure roles using Azure CLI (read 5 Nov 2026); `az ad` from its reference index (I)",
     "docker": "Docker 29.9.2 (`docker run --help`, `docker compose --help`; run 5 Nov 2026)",
     "kubectl": "Kubernetes v1.36 reference, kubectl apply (read 5 Nov 2026); the other verbs from the same reference's index (I). Not installed here",
-    "terraform": "Terraform v1.17.x reference, terraform destroy, \"a convenience alias for ... terraform apply -destroy\" (read 5 Nov 2026). Not installed here"
+    "terraform": "Terraform v1.17.x reference, terraform destroy, \"a convenience alias for ... terraform apply -destroy\" (read 5 Nov 2026). Not installed here",
+    "iptables": "iptables v1.8.10 (nf_tables) and nftables v1.0.9 (`--version`, run 16 Nov 2026); `ip6tables` and the `-restore` forms are the same package's programs. `ufw`, `firewall-cmd` (firewalld) and macOS's `pfctl` by name only, not installed here (I)",
+    "shutdown": "systemd 255 (`shutdown --help`: \"Shut down the system\"; `reboot`, `halt` and `poweroff` are its links; `systemctl poweroff|reboot|halt|kexec` from `systemctl --help`; run 16 Nov 2026)"
   },
   "gaps": [
     "Shell text with `$`, a backtick, `!`, braces, `~`, a backslash or a glob asks under every preset (step 7b), so in the sbx VM it is denied: the agent must spell commands plainly.",
     "A command reached through a script, a Makefile target, an alias or `find -exec` is not read (policy.md section 7, known limits); a force push by refspec (`git push origin +main`) has no flag to meet.",
     "Hosts: the presets do not ask about curl or wget, except a cloud metadata or link-local address, which asks under every policy (step 7a, E0's R-E0-5). The boundary's network rules decide which hosts a chat reaches (srt's allowlist on the host, sbx's policy in the VM).",
-    "Interpreter code on the command line (`python3 -c`, `node -e`, `perl -e` and their siblings) asks; a versioned name (`python3.12 -c`) is not met, and a script's own `-c` or `-e` flag asks too (integration w6's close, E0's R-E0-2)."
+    "Interpreter code on the command line (`python3 -c`, `node -e`, `perl -e` and their siblings) asks; a versioned name (`python3.12 -c`) is not met, and a script's own `-c` or `-e` flag asks too (integration w6's close, E0's R-E0-2).",
+    "Destructive commands (step 7e, eval pass 1's E1-1): a shell command that changes the filesystem root, a system folder, a home folder, a top-level folder, a mounted volume, a disk device or a parent folder, or signals every process, asks under every policy that allows the shell; the firewall and power commands ask by rule here. In the sbx VM that is a deny, so an agent there cannot write under /etc or /usr (a package manager it runs with sudo still can: the gate reads the command, not what it does). Not read: Windows commands and paths, a path behind a link, a script."
   ],
   "policy": {
     "version": 1,
@@ -1837,6 +1840,122 @@
         "command": [
           "pwsh",
           "-c"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "iptables"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ip6tables"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "iptables-restore"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ip6tables-restore"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "nft"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "ufw"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "firewall-cmd"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "pfctl"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "shutdown"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "reboot"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "halt"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "poweroff"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "systemctl",
+          "poweroff"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "systemctl",
+          "reboot"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "systemctl",
+          "halt"
+        ],
+        "action": "ask"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "systemctl",
+          "kexec"
         ],
         "action": "ask"
       }

@@ -47,7 +47,7 @@ function needs() {
 function box(name) {
   const base = process.env.CLI_CONTRACT_TMP ?? (existsSync("/var/tmp") ? "/var/tmp" : tmpdir());
   const root = mkdtempSync(path.join(base, `rg6-${name}-`));
-  const d = { root, home: path.join(root, "home"), work: path.join(root, "home", "work"), run: path.join(root, "run"), data: path.join(root, "data"), bin: path.join(root, "bin") };
+  const d = { root, home: path.join(root, "home"), work: path.join(root, "home", "work"), run: path.join(root, "home", ".derm", "run"), /* E1-10: the daemon's folder is under the home folder on Linux */ data: path.join(root, "data"), bin: path.join(root, "bin") };
   for (const x of [d.home, d.work, d.run, d.data, d.bin, path.join(d.home, ".derm"), path.join(d.home, ".local", "bin")]) mkdirSync(x, { recursive: true, mode: 0o700 });
   writeFileSync(path.join(d.home, ".derm", "policy.json"), JSON.stringify({ version: 1, rules: [{ tool: "bash", action: "deny" }] }), { mode: 0o600 });
   return d;
@@ -123,8 +123,12 @@ async function turn(claudePath, { plugin }) {
       }
     }
   }
-  const logDir = path.join(d.data, "derm", "activity");
-  const lines = existsSync(logDir)
+  // The daemon's log: under XDG_DATA_HOME on Linux, under the home's
+  // Application Support on macOS, where it does not read that variable (the
+  // Mac run after eval pass 1's fixes: both checks failed with "approval
+  // records: []" while the deny itself held, because only the first was read).
+  const logDir = [path.join(d.data, "derm", "activity"), path.join(d.home, "Library", "Application Support", "derm", "activity")].find((p) => existsSync(p));
+  const lines = logDir
     ? readdirSync(logDir)
         .flatMap((f) => readFileSync(path.join(logDir, f), "utf8").split("\n"))
         .filter(Boolean)

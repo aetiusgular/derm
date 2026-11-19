@@ -12,7 +12,7 @@
   "cline": {
     "plugins": [{ "paths": ["./src/plugin.ts"], "capabilities": ["hooks"] }]
   },
-  "files": ["src/plugin.ts", "src/cline.ts", "src/control.ts", "src/responder.ts", "src/core/", "bin/", "README.md", "NOTICE"],
+  "files": ["src/plugin.ts", "src/cline.ts", "src/budget.ts", "src/responder.ts", "src/core/", "bin/", "README.md", "NOTICE"],
   "engines": {
     "node": ">=22.19.0"
   }

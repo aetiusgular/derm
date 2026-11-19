@@ -13,8 +13,7 @@
       "where": "own file ~/.grok/hooks/derm.json, PreToolUse, failClosed; compat hook imports off in ~/.grok/config.toml",
       "status": "built",
       "wave": 4,
-      "lane": "L",
-      "package": "packages/derm-hooks-claude-compat"
+      "lane": "L"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "failClosed: true (1.0.71 and later)",

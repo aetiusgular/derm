@@ -108,6 +108,26 @@ export function decideCall(loaded: LoadedPolicy, call: GateCall): GateAnswer {
   return denyAskInFullAccess(decideCallInner(loaded, call), call);
 }
 
+/** What a full-access ask that its boundary answers is allowed with. */
+export const BOUNDARY_NOTE = "no one can answer in this chat and it runs inside its boundary, so derm allows what it would ask and records it";
+
+/**
+ * E1-14 (Terminal-Bench on the box, 16 Nov 2026: 112 of 294 calls of an
+ * unattended agent denied, most for a glob or a variable). `derm run` set
+ * `DERM_ASKS=boundary` for this chat. Only a hint that the daemon is to be
+ * asked: `run.start` (the daemon scope's) decides there, so a value an agent
+ * or a project's settings put in the environment allows nothing. Only the
+ * agents whose ask path was read to end in resolveAsk for every ask: Claude
+ * Code and Codex, and the four derm's command-hook sbx kit covers
+ * (derm-hooks-claude-compat src/hook.ts and derm-hooks-native src/runner.ts,
+ * read 17 Nov 2026).
+ */
+const BOUNDARY_ASKERS: ReadonlySet<string> = new Set(["claude-code", "codex", "copilot-cli", "droid", "cursor", "kiro"]);
+
+function boundaryAsks(call: GateCall): boolean {
+  return process.env.DERM_ASKS === "boundary" && BOUNDARY_ASKERS.has(call.harness);
+}
+
 /**
  * Under full access, an ask becomes a deny. decideCall applies it; an
  * adapter that turns an answer into an ask after decideCall applies it again
@@ -115,7 +135,9 @@ export function decideCall(loaded: LoadedPolicy, call: GateCall): GateAnswer {
  */
 export function denyAskInFullAccess(answer: GateAnswer, call: GateCall): GateAnswer {
   const full = call.fullAccess ?? process.env.DERM_FULL_ACCESS === "1";
-  if (full && answer.action === "ask") {
+  // E1-14: where `derm run` said the chat's boundary answers its asks, the
+  // ask stays an ask for resolveAsk, which puts it to the daemon.
+  if (full && answer.action === "ask" && !boundaryAsks(call)) {
     answer.action = "deny";
     answer.reason = `${answer.reason}; ${FULL_ACCESS_NOTE}`;
     delete answer.updatedInput;
@@ -244,7 +266,29 @@ export async function resolveAsk(
   // makes after decideCall (an unresolved name, a secret it cannot rewrite)
   // is a deny here too, before any approver (review W4-S3; case 83).
   if (call.fullAccess ?? process.env.DERM_FULL_ACCESS === "1") {
-    return { kind: "deny", reason: `${answer.reason}; ${FULL_ACCESS_NOTE}` };
+    const deny: AskResolution = { kind: "deny", reason: `${answer.reason}; ${FULL_ACCESS_NOTE}` };
+    if (!boundaryAsks(call)) return deny;
+    // E1-14: one question, answered at once by the daemon from the chat's
+    // own run.start. Anything but the boundary's yes is the deny full
+    // access always gave, never the agent's own prompt.
+    let outcome: ApproveOutcome;
+    try {
+      outcome = await approveFn({
+        id: `ap-${call.harness}-${call.toolUseId ?? randomUUID()}`,
+        chat: call.chat ?? "",
+        harness: call.harness,
+        tool: answer.normalizedTool,
+        summary: approvalSummary(answer, call.toolInput),
+        timeoutSeconds: 5,
+        boundaryOnly: true,
+      });
+    } catch {
+      return deny;
+    }
+    if (!("unreachable" in outcome) && outcome.answer === "yes" && outcome.by === "boundary") {
+      return { kind: "allow", reason: `${answer.reason}; ${BOUNDARY_NOTE}` };
+    }
+    return deny;
   }
   const request: ApproveRequest = {
     id: `ap-${call.harness}-${call.toolUseId ?? randomUUID()}`,

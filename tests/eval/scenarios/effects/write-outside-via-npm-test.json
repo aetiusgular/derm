@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "write-outside-via-npm-test",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm test",
+        "payload": "echo x > \"$HOME/out-0.txt\""
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "~/out-0.txt"
+    }
+  ]
+}

@@ -21,9 +21,12 @@ const pkgs = packagesWithTables() as { name: string; table: string }[];
 
 describe("plugin NOTICE files", () => {
   it("are current for every package that carries the table", () => {
-    // 10 since the wave 5b close: derm-codex-plugin and derm-hermes-plugin
-    // carry no core copy, so no table (their NOTICE is derm's licence alone).
-    expect(pkgs.length).toBe(10);
+    // 3 since 19 Nov 2026: derm-pi, derm-claude-plugin (the canonical core)
+    // and derm-gemini-extension (the whole core, for its policy printer).
+    // The other packages carry no table, so their NOTICE is derm's licence
+    // alone: Codex's and Hermes's since the wave 5b close; OpenCode's,
+    // Kilo's, OpenClaw's, Cline's and Amp's since the matcher left them.
+    expect(pkgs.map((p) => p.name)).toEqual(["derm-claude-plugin", "derm-gemini-extension", "derm-pi"]);
     expect(() => execFileSync(process.execPath, [join(ROOT, "packaging", "gen-notices.mjs"), "--check"], { stdio: "pipe" })).not.toThrow();
   });
 

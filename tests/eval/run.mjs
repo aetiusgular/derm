@@ -8,8 +8,10 @@
 //        [--hosts claude-code,codex,...] [--arms derm:workspace-write,derm:strict,derm:none,openmoat]
 //        [--arm-file <json>] [--policy-dir <dir>] [--openmoat-tarball <release .tar.xz>]
 //   node tests/eval/run.mjs --suite moatbench --score <dir>
-//   node tests/eval/run.mjs --suite matrix --run --out <dir> --derm <bin> [--boundaries none,srt]
+//   node tests/eval/run.mjs --suite matrix --run --out <dir> --derm <bin> [--boundaries none,srt,sbx] [--srt <bin>] [--sbx <bin>]
 //   node tests/eval/run.mjs --suite matrix --score <dir>
+//   node tests/eval/run.mjs --suite join|effects --live --out <dir> --derm <bin> --claude <bin> [--boundary none|srt] [--delay-ms N] [--reps N] [--only a,b]
+//   node tests/eval/run.mjs --suite join|effects --score-live <dir>
 //   node tests/eval/run.mjs --suite overhead --run --out <dir> --hook '<name>=<command>' ...
 //
 // Third-party tools run in the cloud or on the box only (rules section 5, item 2).
@@ -98,7 +100,8 @@ if (suite === "matrix" && flag("--run")) {
   const derm = binary("--derm", opt("--derm"));
   const boundaries = opt("--boundaries", "none,srt").split(",");
   const srt = opt("--srt");
-  await runMatrix({ out, derm, srt: srt ? resolve(srt) : undefined, boundaries, machine: machine(), dermVersion: version(derm) });
+  const sbx = opt("--sbx");
+  await runMatrix({ out, derm, srt: srt ? resolve(srt) : undefined, sbx: sbx ? resolve(sbx) : undefined, boundaries, machine: machine(), dermVersion: version(derm) });
   process.exit(0);
 }
 
@@ -107,6 +110,33 @@ if (suite === "matrix" && opt("--score")) {
   const dir = resolve(opt("--score"));
   writeFileSync(join(dir, "README.md"), scoreMatrix(dir));
   console.log(`wrote ${join(dir, "README.md")}`);
+  process.exit(0);
+}
+
+// The live run of the join and effects suites, against the person's daemon and
+// feed (tests/eval/lib/live.mjs; eval pass 1, E1-4d). Linux.
+if ((suite === "join" || suite === "effects") && (flag("--live") || opt("--score-live"))) {
+  const { runLive, scoreLive } = await import("./lib/live.mjs");
+  if (opt("--score-live")) {
+    const dir = resolve(opt("--score-live"));
+    writeFileSync(join(dir, "README.md"), scoreLive(dir));
+    console.log(`wrote ${join(dir, "README.md")}`);
+    process.exit(0);
+  }
+  const derm = binary("--derm", opt("--derm"));
+  await runLive({
+    suite,
+    out: resolve(opt("--out") ?? die("--out <dir> is required")),
+    derm,
+    claude: binary("--claude", opt("--claude")),
+    boundary: opt("--boundary", "none"),
+    delayMs: Number(opt("--delay-ms", "0")),
+    reps: Number(opt("--reps", "1")),
+    settleMs: Number(opt("--settle-ms", "20000")),
+    only: opt("--only") ? opt("--only").split(",") : undefined,
+    machine: machine(),
+    dermVersion: version(derm),
+  });
   process.exit(0);
 }
 

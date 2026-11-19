@@ -1,0 +1,67 @@
+{
+  "suite": "join",
+  "id": "calls-5-distinct-writes",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo 0 > w5-0.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo 1 > w5-1.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo 2 > w5-2.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo 3 > w5-3.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo 4 > w5-4.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "w5-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "w5-1.txt"
+    },
+    {
+      "what": "write",
+      "path": "w5-2.txt"
+    },
+    {
+      "what": "write",
+      "path": "w5-3.txt"
+    },
+    {
+      "what": "write",
+      "path": "w5-4.txt"
+    }
+  ]
+}

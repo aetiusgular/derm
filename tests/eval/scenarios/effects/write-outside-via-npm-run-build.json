@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "write-outside-via-npm-run-build",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm run build",
+        "payload": "echo x > \"$HOME/out-1.txt\""
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "~/out-1.txt"
+    }
+  ]
+}

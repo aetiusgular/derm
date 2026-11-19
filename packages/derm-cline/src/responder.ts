@@ -29,7 +29,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
-import { insideFolder } from "./core/policy.ts";
+import { insideFolder } from "./core/text.ts";
 import { answerRequest, defaultDeps, HARNESS, type ApprovalAnswer, type ApprovalRequest, type Deps } from "./cline.ts";
 import { event } from "./serve/client.ts";
 

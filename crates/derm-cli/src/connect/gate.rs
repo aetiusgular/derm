@@ -1172,7 +1172,7 @@ fn refuse_candidate(c: &Path, uid: derm_core::platform::UserId) -> Option<String
 /// Fills a command template's `{node}`, `{hook_file}`, `{hook_dir}`,
 /// `{version}` and `{derm}` (the only place text is spliced, from checked
 /// paths).
-fn fill_text(
+pub(crate) fn fill_text(
     t: &str,
     node: &str,
     hook_file: Option<&str>,
@@ -2134,7 +2134,7 @@ pub struct FilePlan {
 }
 
 /// A file derm owns alone: written when absent or already derm's.
-fn owned(
+pub(crate) fn owned(
     text: &str,
     exists: bool,
     content: &Value,

@@ -147,9 +147,9 @@ pub fn os_feed_time(e: &Event) -> Option<i64> {
 ///
 /// A feed's own `feed.gap` is no OS event: it carries no OS time, and its
 /// `at` is when it was posted, before the feed reads what it fell behind on
-/// (fp13's review, FP13R-5).
+/// (fp13's review, FP13R-5). Nor is its `feed.unwatched` (E1-3).
 pub fn feed_progress(e: &Event) -> Option<i64> {
-    if e.kind == "feed.gap" {
+    if e.kind == "feed.gap" || e.kind == "feed.unwatched" {
         return None;
     }
     os_feed_time(e).filter(|t| *t <= e.at + SLACK_AFTER_MS)
@@ -247,6 +247,12 @@ impl Call {
 
     fn running_at(&self, t: i64) -> bool {
         self.window().is_some_and(|(a, b)| a <= t && t <= b)
+    }
+
+    /// Whether the call's own records put `t` inside it, with no slack: at
+    /// or after its start, and before any end a record gave it (E1-2).
+    fn runs_strictly_at(&self, t: i64) -> bool {
+        self.start.is_some_and(|s| s <= t) && self.end.is_none_or(|e| t <= e)
     }
 
     /// Whether a process the harness starts at `t` may be placed on this
@@ -783,6 +789,31 @@ impl ChatState {
                     .filter(|(_, c)| c.shell())
                     .map(|(id, _)| id.to_string())
                     .collect();
+                // E1-2: a shell call that runs at `at` by its own records
+                // (started, not ended) comes before one `at` meets only
+                // through the slack around a window. Two calls one after the
+                // other, closer than the slack, were both open at each
+                // shell's fork and neither write was credited (E1 on the
+                // box, 16 Nov 2026: 0 of 12; `fixtures/README.md`). Calls
+                // that overlap by their own records stay together, none
+                // chosen (case 123, review F1), and with no call strictly
+                // running the slack decides as before (two clocks).
+                let strict: Vec<String> = running
+                    .iter()
+                    .filter(|(_, c)| c.shell() && c.runs_strictly_at(at))
+                    .map(|(id, _)| id.to_string())
+                    .collect();
+                // No margin around the other calls' windows (the review of
+                // eval pass 1's fixes, E1R-19, asked for one against clock
+                // skew): the order is causal, not a matter of two clocks. A
+                // call's start is stamped when the daemon takes the gate's
+                // record, which the hook waits for before it lets the call
+                // run, so the shell's fork comes after it; its end is stamped
+                // after the command has finished, and the harness starts the
+                // next call only then. On the box the next call's fork came
+                // 17 ms after the first call's end record (the fixture), so
+                // even a 20 ms margin put the finding back.
+                let shells = if strict.is_empty() { shells } else { strict };
                 let shell = program.is_some_and(shell_program);
                 if idle {
                     Some(Owner::Session)

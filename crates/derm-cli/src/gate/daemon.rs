@@ -139,19 +139,8 @@ pub fn socket_path(env: &Env) -> PathBuf {
             .join("derm")
             .join("daemon.sock");
     }
-    if let Some(rt) = env.raw("XDG_RUNTIME_DIR").filter(|r| !r.trim().is_empty()) {
-        return Path::new(rt).join("derm").join("daemon.sock");
-    }
-    // Case 105: the folder pam_systemd would have named, when it is ours.
-    #[cfg(target_os = "linux")]
-    {
-        let uid = derm_core::runtime::current_uid();
-        if let Some(rt) =
-            derm_core::runtime::runtime_dir_with(None, uid, Path::new(derm_core::runtime::RUN_USER))
-        {
-            return rt.join("derm").join("daemon.sock");
-        }
-    }
+    // E1-10: under the home folder on Linux, never `$XDG_RUNTIME_DIR` or
+    // `/run/user/<uid>` (`derm_core::runtime`).
     home.join(".derm")
         .join("run")
         .join("derm")
@@ -371,10 +360,11 @@ pub fn socket_candidates(env: &Env) -> Vec<PathBuf> {
         socket_path(env),
         socket_path(&env.with("DERM_DAEMON_SOCKET", "")),
     ];
-    out.push(socket_path(
-        &env.with("DERM_DAEMON_SOCKET", "")
-            .with("XDG_RUNTIME_DIR", ""),
-    ));
+    // Where a daemon older than E1-10 kept its socket: still a sign that
+    // this is a host with a daemon, not derm's VM.
+    if let Some(rt) = env.raw("XDG_RUNTIME_DIR").filter(|r| !r.trim().is_empty()) {
+        out.push(Path::new(rt).join("derm").join("daemon.sock"));
+    }
     // HOME can be moved by a project's env; the password database's home
     // cannot (re-review W5R-7).
     #[cfg(unix)]
@@ -1081,18 +1071,25 @@ pub struct ApproveRequest {
     pub tool: String,
     pub summary: String,
     pub timeout_seconds: u64,
+    /// E1-14: ask only whether the chat's boundary answers for it; the
+    /// daemon replies at once and shows no approver the request.
+    pub boundary_only: bool,
 }
 
 impl ApproveRequest {
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut v = json!({
             "id": self.id,
             "chat": self.chat,
             "harness": self.harness,
             "tool": self.tool,
             "summary": self.summary,
             "timeoutSeconds": self.timeout_seconds,
-        })
+        });
+        if self.boundary_only {
+            v["boundaryOnly"] = Value::Bool(true);
+        }
+        v
     }
 }
 
@@ -1102,6 +1099,8 @@ pub enum By {
     Approver,
     Timeout,
     None,
+    /// E1-14: no one; the chat's boundary answers for its asks.
+    Boundary,
 }
 
 /// What `approve` gave (`ApproveOutcome`).
@@ -1112,7 +1111,8 @@ pub enum ApproveOutcome {
 }
 
 /// Sends `approve` and waits for the answer (contract section 2, rule 3).
-/// Only an explicit yes from an approver counts as yes.
+/// Only an explicit yes from an approver counts as yes, or the boundary's
+/// for a request that asked the boundary alone.
 pub fn approve(request: &ApproveRequest, env: &Env, cwd: &Path) -> ApproveOutcome {
     let o = Opts {
         env,
@@ -1143,10 +1143,19 @@ pub fn approve(request: &ApproveRequest, env: &Env, cwd: &Path) -> ApproveOutcom
     let by = match reply.get("by").and_then(Value::as_str) {
         Some("timeout") => By::Timeout,
         Some("none") => By::None,
+        Some("boundary") => By::Boundary,
         _ => By::Approver,
     };
+    // A yes counts from the party the request asked: the boundary for a
+    // boundary-only request (E1-14), an approver for any other. The
+    // TypeScript client holds the same rule (E1-16).
+    let asked = if request.boundary_only {
+        By::Boundary
+    } else {
+        By::Approver
+    };
     ApproveOutcome::Answer {
-        yes: yes && by == By::Approver,
+        yes: yes && by == asked,
         by,
     }
 }

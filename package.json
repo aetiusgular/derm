@@ -15,8 +15,6 @@
     "packages/derm-hermes-plugin",
     "packages/derm-openclaw-plugin",
     "packages/derm-kilo-plugin",
-    "packages/derm-hooks-claude-compat",
-    "packages/derm-hooks-native",
     "packages/derm-amp-plugin",
     "packages/derm-cline",
     "library"

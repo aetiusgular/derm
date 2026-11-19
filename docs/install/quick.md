@@ -60,7 +60,7 @@ Calls decided outside derm's Rust gate reach neither the log nor taint:
 
 - Amp's plugin, which decides in TypeScript.
 - A gate registered from an older derm's template files, which runs `node`. `derm init` and `derm doctor <agent>` name it; register it again with `derm connect <agent> --gate --write`.
-- The sbx kit's Claude Code hook (only under `derm run --boundary sbx`, which is not the light tier).
+- The sbx kits' hooks, for Claude Code, Copilot CLI, Droid, Cursor and Kiro (only under `derm run --boundary sbx`, which is not the light tier).
 
 ## Going further
 

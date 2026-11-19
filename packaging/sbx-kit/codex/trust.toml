@@ -1,0 +1,6 @@
+
+[hooks.state."derm@derm:hooks/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:dbe9ab271bfadebc0faacc9a5f47605a515fa1f6f94d3f21ef51d44bdf842dfc"
+
+[hooks.state."derm@derm:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:37bdb5aa0d1866d0b92acea63abfd14d138e646feb1002e5102bc6e06d85ed56"

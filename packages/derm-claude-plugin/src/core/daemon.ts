@@ -20,8 +20,10 @@ const MAX_LINE_BYTES = 1024 * 1024;
 export function socketPath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.DERM_DAEMON_SOCKET && env.DERM_DAEMON_SOCKET.trim() !== "") return env.DERM_DAEMON_SOCKET;
   if (platform() === "darwin") return path.join(homedir(), "Library", "Application Support", "derm", "daemon.sock");
-  const runtime = env.XDG_RUNTIME_DIR;
-  if (runtime && runtime.trim() !== "") return path.join(runtime, "derm", "daemon.sock");
+  // E1-10 (eval pass 1): under the home folder on Linux, never
+  // `$XDG_RUNTIME_DIR`: that folder is made at login, after auditd loads its
+  // rules, so the token beside the socket went unwatched after a reboot
+  // (crates/derm-core/src/runtime.rs).
   return path.join(homedir(), ".derm", "run", "derm", "daemon.sock");
 }
 
@@ -130,12 +132,15 @@ export function vmMarker(
 
 /**
  * Where a daemon socket would be on this machine whatever DERM_DAEMON_SOCKET
- * says: the variable's own path, the defaults with and without the
- * environment's XDG_RUNTIME_DIR, and the home fallback.
+ * says: the variable's own path, the default under the home folder, and the
+ * runtime folders an older daemon used.
  */
 export function socketCandidates(env: NodeJS.ProcessEnv): string[] {
   const out = new Set<string>([socketPath(env), socketPath({ ...env, DERM_DAEMON_SOCKET: "" })]);
-  out.add(socketPath({ ...env, DERM_DAEMON_SOCKET: "", XDG_RUNTIME_DIR: "" }));
+  // Where a daemon older than E1-10 kept its socket: still a sign that this
+  // is a host with a daemon, not derm's VM.
+  const runtime = env.XDG_RUNTIME_DIR;
+  if (runtime && runtime.trim() !== "") out.add(path.join(runtime, "derm", "daemon.sock"));
   // HOME can be moved by a project's env; the password database's home
   // cannot (re-review W5R-7).
   try {
@@ -355,10 +360,12 @@ export type ApproveRequest = {
   tool: string;
   summary: string;
   timeoutSeconds: number;
+  /** E1-14: ask only whether the chat's boundary answers for it; the daemon replies at once and shows no approver the request. */
+  boundaryOnly?: boolean;
 };
 
 export type ApproveOutcome =
-  | { answer: "yes" | "no"; by: "approver" | "timeout" | "none" }
+  | { answer: "yes" | "no"; by: "approver" | "timeout" | "none" | "boundary" }
   | { unreachable: string };
 
 /** Sends `approve` and waits for the answer (contract section 2, rule 3). */
@@ -372,9 +379,13 @@ export async function approve(request: ApproveRequest, env?: NodeJS.ProcessEnv):
   const reply = result.replies[0];
   if (!reply || reply.ok !== true) return { unreachable: `daemon refused approve: ${String(reply?.error ?? "no reply")}` };
   const answer = reply.answer === "yes" ? "yes" : "no";
-  const by = reply.by === "approver" || reply.by === "timeout" || reply.by === "none" ? reply.by : "approver";
-  // Only an explicit yes from an approver counts as yes.
-  if (answer === "yes" && by !== "approver") return { answer: "no", by };
+  const by = reply.by === "approver" || reply.by === "timeout" || reply.by === "none" || reply.by === "boundary" ? reply.by : "approver";
+  // Only an explicit yes from an approver counts as yes; or the boundary's,
+  // and that only to a request that asked for nothing else (E1-14). Until
+  // E1-16 the boundary's yes was turned into no here, so on this route an
+  // ask in full access was denied whatever the daemon said.
+  const asked = request.boundaryOnly === true ? "boundary" : "approver";
+  if (answer === "yes" && by !== asked) return { answer: "no", by };
   return { answer, by };
 }
 

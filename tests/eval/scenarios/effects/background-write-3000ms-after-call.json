@@ -1,0 +1,25 @@
+{
+  "suite": "effects",
+  "id": "background-write-3000ms-after-call",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm run dev",
+        "payload": "( sleep 3; echo late > \"$PWD/late-3000.txt\" ) & true"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "late-3000.txt",
+      "after": 3000
+    }
+  ]
+}

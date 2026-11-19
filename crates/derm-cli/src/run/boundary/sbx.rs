@@ -142,12 +142,25 @@ pub(crate) fn stages(
         i += 1;
     }
     let name = name.ok_or("no --name in the sbx argv")?;
-    let [agent, cwd]: [String; 2] = positional.try_into().map_err(|p: Vec<String>| {
-        format!(
+    if positional.len() < 2 {
+        return Err(format!(
             "the sbx argv names {} things, not an agent and a folder",
-            p.len()
-        )
-    })?;
+            positional.len()
+        ));
+    }
+    // E1-8: after the folder, the paths in it held read-only, each an
+    // absolute path with sbx's `:ro` (the create page: "PATH [PATH...]").
+    let readonly = positional.split_off(2);
+    if let Some(bad) = readonly
+        .iter()
+        .find(|p| !p.starts_with('/') || !p.ends_with(":ro") || p.len() < 5)
+    {
+        return Err(format!(
+            "the sbx argv names {bad:?} after the folder, which is not a read-only path"
+        ));
+    }
+    let cwd = positional.pop().unwrap_or_default();
+    let agent = positional.pop().unwrap_or_default();
     let workload = kit.unwrap_or(agent);
 
     let mut create = vec!["create".to_string(), "--name".into(), name.clone()];
@@ -161,6 +174,7 @@ pub(crate) fn stages(
         create.push("--no-input".into());
     }
     create.extend([workload.clone(), cwd]);
+    create.extend(readonly);
 
     let ports = ports(env_set);
     let allow = ports
@@ -331,6 +345,64 @@ pub(crate) struct KitInputs<'a> {
     pub switch: Option<&'a str>,
 }
 
+/// Whether derm wired the agent's own telemetry export for this chat. Both
+/// agents that have one carry the daemon's token in
+/// `OTEL_EXPORTER_OTLP_HEADERS`: Claude Code beside its endpoint variable,
+/// Codex beside the `-c` words that name its endpoint
+/// (`otel_receiver::apply_export`).
+fn export_is_on(env_set: &[(String, String)]) -> bool {
+    env_set
+        .iter()
+        .any(|(k, v)| k == "OTEL_EXPORTER_OTLP_HEADERS" && !v.is_empty())
+}
+
+/// The start line for a chat whose VM holds derm's kit. Each sentence is
+/// said only where it is true for this harness and this chat: where the
+/// hook is registered, what becomes of an ask (`full`: the agent's own
+/// approvals are off; `asks`: E1-14, the boundary answers), and whether the
+/// agent's own telemetry is exported (review 6-4).
+fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks: bool) -> String {
+    let spec = super::kit::spec(harness);
+    let name = spec.map_or(harness, |s| s.name);
+    let registered = spec.map_or("its settings", |s| s.registered);
+    // Where the registration can be changed from. Claude Code's is root's.
+    let own_config = match harness {
+        "claude-code" => "",
+        "codex" => " in the VM, which the agent's own user can change",
+        _ => " in the VM, a file the agent's own user can rewrite",
+    };
+    let ask = if harness == "pi" {
+        // derm's Pi package asks in Pi's own interface and nowhere else
+        // (`packages/derm-pi/src/ask.ts`).
+        "What your policy would ask is put to you in Pi's own prompt; where Pi shows none (print and JSON modes) it is a no."
+    } else if full && asks {
+        "The agent runs in full access there with no one to ask, so what your policy would ask is allowed and recorded (the VM is the boundary; a deny rule still denies)."
+    } else if full {
+        "The agent runs in full access there with no one to ask, so what your policy would ask is denied."
+    } else {
+        "What your policy would ask goes to the agent's own prompt where it shows one for a hook, else to derm watch --approve on this machine, else it is denied."
+    };
+    let telemetry = if exported {
+        format!(", and {name}'s own telemetry reaches the daemon over its port.")
+    } else if harness == "pi" {
+        ". derm's Pi package sends each tool call and decision to the daemon over its port."
+            .to_string()
+    } else if matches!(harness, "claude-code" | "codex") {
+        format!(". {name}'s own telemetry is NOT exported for this chat (run.start's otelExport says why).")
+    } else {
+        format!(". derm reads no telemetry export of {name}'s own under sbx: the record is the gate's calls and decisions and sbx's policy log.")
+    };
+    format!(
+        "derm run: inside the sbx VM {workload} runs with derm's gate: derm's kit registers it in {registered}{}, with your policy as it is now. \
+         {ask} The agent has sudo in the VM and could remove the gate; \
+         the VM stays the boundary. sbx's policy log records the VM's network calls{telemetry} \
+         The host's OS feed does not see inside the VM: it records only sbx's own client (the model tap is off under sbx: MW5-37). \
+         The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
+        own_config,
+        super::kit::SWITCH
+    )
+}
+
 pub(crate) fn start_with(
     sbx: &str,
     plan: &mut Plan,
@@ -352,18 +424,25 @@ pub(crate) fn start_with(
         super::kit::Kit::Without(_) => Vec::new(),
     };
     let st = stages(&plan.args, &plan.env_set, interactive, &mixins).map_err(|e| (1, e))?;
+    let exported = export_is_on(&plan.env_set);
+    let set = |name: &str| plan.env_set.iter().any(|(k, v)| k == name && !v.is_empty());
     match &kit {
-        super::kit::Kit::Built(_) => eprintln!(
-            "derm run: inside the sbx VM {} runs with derm's gate: derm's kit registers it in Claude Code's managed settings, with your policy as it is now. \
-             The agent runs in full access there, so what your policy would ask is denied. The agent has sudo in the VM and could remove the gate; \
-             the VM stays the boundary, and sbx's policy log and the host's OS feed record the chat (the model tap is off under sbx: MW5-37). \
-             The gate's records and asks reach the host over the daemon's port. To run without the kit: {}=off",
-            st.workload,
-            super::kit::SWITCH
-        ),
+        super::kit::Kit::Built(_) => {
+            eprintln!(
+                "{}",
+                with_kit_line(
+                    harness,
+                    &st.workload,
+                    exported,
+                    set("DERM_FULL_ACCESS"),
+                    set("DERM_ASKS")
+                )
+            );
+        }
         super::kit::Kit::Without(why) => eprintln!(
             "derm run: inside the sbx VM {} runs without derm's gate ({why}): your host's hooks, plugins and extensions are not in the VM. \
-             The VM is the boundary; sbx's policy log and the host's OS feed record the chat (the model tap is off under sbx: MW5-37).",
+             The VM is the boundary; sbx's policy log records the VM's network calls. The host's OS feed does not see inside the VM: \
+             it records only sbx's own client (the model tap is off under sbx: MW5-37).",
             st.workload
         ),
     }
@@ -428,9 +507,52 @@ pub(crate) fn start_with(
                 .join(", ")
         );
     }
+    let key_in_env = plan
+        .env_set
+        .iter()
+        .any(|(k, v)| k == "ANTHROPIC_API_KEY" && !v.is_empty())
+        || (std::env::var_os("ANTHROPIC_API_KEY").is_some_and(|v| !v.is_empty())
+            && !plan.env_remove.iter().any(|k| k == "ANTHROPIC_API_KEY"));
+    // After the create and the rules, before the attach: the sandbox is
+    // there, and the note is the last thing said before the agent's own.
+    if let Some(note) = credential_note(harness, key_in_env, &super::probe::run, sbx) {
+        eprintln!("{note}");
+    }
     plan.args = st.attach;
     plan.sandbox_name = Some(st.name);
     Ok(sandbox)
+}
+
+/// E1-9 (eval pass 1): on the box, Claude Code under sbx answered every
+/// turn "Not logged in" and nothing derm printed said why. sbx keeps the
+/// model credential itself (`sbx secret set`, "Available services:
+/// anthropic, ..." in its help, 0.51.0); `sbx secret ls --service anthropic`
+/// prints `No secrets found for service "anthropic"` with none stored (the
+/// box, 0.51.0) and a table with one (the Mac, 0.53.0: `(global) anthropic
+/// (oauth configured)`), exit 0 both times. A note when that first line
+/// says none is stored and the key is not in derm's environment; nothing
+/// when sbx does not answer or says anything else. Claude Code only: the
+/// other agents' services were not run.
+pub(crate) fn credential_note(
+    harness: &str,
+    key_in_env: bool,
+    run: super::probe::Runner,
+    sbx: &str,
+) -> Option<String> {
+    if harness != "claude-code" || key_in_env {
+        return None;
+    }
+    let args = [
+        "secret".to_string(),
+        "ls".into(),
+        "--service".into(),
+        "anthropic".into(),
+    ];
+    let r = run(Path::new(sbx), &args, Duration::from_secs(10)).ok()?;
+    (r.ok && r.line.starts_with("No secrets found")).then(|| {
+        "derm run: sbx has no Anthropic credential stored (sbx secret ls --service anthropic) and ANTHROPIC_API_KEY is not set here,          so Claude Code in the sandbox will answer \"Not logged in\" until you log in inside it (/login).          To store one for every sandbox: sbx secret set anthropic"
+            .to_string()
+    })
 }
 
 /// Why a create made no sandbox, and what to do. sbx prints its own error
@@ -460,11 +582,173 @@ fn create_failed(name: &str, code: Option<i32>, kit_went_on: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 17 Nov 2026, the box: with its kit Codex's start line said "Codex's
+    /// own telemetry is NOT exported" while run.start said `otelExport:
+    /// codex`. The line looked for `OTEL_EXPORTER_OTLP_ENDPOINT`, which is
+    /// Claude Code's; Codex's export is its `-c` words and the token in
+    /// `OTEL_EXPORTER_OTLP_HEADERS`.
+    #[test]
+    fn the_export_is_seen_for_codex_as_for_claude_code() {
+        let env = |names: &[&str]| -> Vec<(String, String)> {
+            names
+                .iter()
+                .map(|n| (n.to_string(), "x".to_string()))
+                .collect()
+        };
+        assert!(export_is_on(&env(&[
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS"
+        ])));
+        assert!(export_is_on(&env(&[
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS"
+        ])));
+        assert!(!export_is_on(&env(&[
+            "DERM_CHAT_TOKEN",
+            "DERM_OTLP_ENDPOINT"
+        ])));
+        assert!(!export_is_on(&[(
+            "OTEL_EXPORTER_OTLP_HEADERS".into(),
+            String::new()
+        )]));
+    }
+
+    /// 17 Nov 2026, the kits for four more agents: the start line says
+    /// only what holds for this agent and this chat.
+    #[test]
+    fn the_start_line_with_a_kit_is_true_for_each_agent() {
+        let claude = with_kit_line("claude-code", "claude", true, true, true);
+        assert!(claude.contains("registers it in Claude Code's managed settings, with your policy"));
+        assert!(claude.contains("is allowed and recorded"));
+        assert!(claude.contains("Claude Code's own telemetry reaches the daemon"));
+        assert!(!claude.contains("can rewrite"));
+        let off = with_kit_line("claude-code", "claude", false, true, false);
+        assert!(off.contains("would ask is denied."), "{off}");
+        assert!(off.contains("Claude Code's own telemetry is NOT exported"));
+        // Droid's own kit does not turn its approvals off.
+        let droid = with_kit_line("droid", "droid", false, false, false);
+        assert!(droid.contains("registers it in ~/.factory/settings.json in the VM, a file the agent's own user can rewrite"));
+        assert!(droid.contains("else to derm watch --approve on this machine, else it is denied"));
+        assert!(!droid.contains("full access"));
+        assert!(droid.contains("derm reads no telemetry export of Droid's own under sbx"));
+        assert!(!droid.contains("Claude"));
+        let pi = with_kit_line("pi", "docker.io/sbx/pi-kit:latest", false, false, false);
+        assert!(pi.contains("registers it in ~/.pi/agent/settings.json in the VM, a file the agent's own user can rewrite"), "{pi}");
+        assert!(pi.contains("is put to you in Pi's own prompt; where Pi shows none (print and JSON modes) it is a no."));
+        assert!(pi.contains(
+            "derm's Pi package sends each tool call and decision to the daemon over its port."
+        ));
+        assert!(!pi.contains("derm watch --approve") && !pi.contains("NOT exported"));
+        let codex = with_kit_line("codex", "codex", true, true, true);
+        assert!(codex.contains(
+            "registers it in Codex's own plugins and config.toml (~/.codex) in the VM, which the agent's own user can change, with your policy"
+        ), "{codex}");
+        assert!(codex.contains("is allowed and recorded"));
+        assert!(codex.contains("Codex's own telemetry reaches the daemon"));
+        for (h, w, file) in [
+            ("copilot-cli", "copilot", "~/.copilot/hooks/derm.json"),
+            ("cursor", "cursor", "~/.cursor/hooks.json"),
+            ("kiro", "kiro", "~/.kiro/hooks/derm.json"),
+        ] {
+            let line = with_kit_line(h, w, false, true, true);
+            assert!(line.contains(&format!("inside the sbx VM {w} runs with derm's gate")));
+            assert!(line.contains(file), "{line}");
+            assert!(line.contains("is allowed and recorded"));
+            assert!(!line.contains("Claude"), "{line}");
+            assert!(line.ends_with("DERM_SBX_KIT=off"));
+        }
+    }
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
+    }
+
+    /// E1-9: with no Anthropic credential in sbx and none in the
+    /// environment, a Claude Code chat is told before it starts. The lines
+    /// are sbx's own (the box, 0.51.0; the Mac, 0.53.0).
+    #[test]
+    fn e1_9_a_missing_sbx_credential_is_said_before_the_chat() {
+        use super::super::probe::Ran;
+        let none = |_: &Path, a: &[String], _: Duration| {
+            assert_eq!(a, s(&["secret", "ls", "--service", "anthropic"]));
+            Ok(Ran {
+                ok: true,
+                line: "No secrets found for service \"anthropic\"".into(),
+            })
+        };
+        let note = credential_note("claude-code", false, &none, "sbx").expect("a note");
+        assert!(note.contains("Not logged in"), "{note}");
+        assert!(note.contains("sbx secret set anthropic"), "{note}");
+        // The key is in the environment, or the agent is not Claude Code.
+        assert_eq!(credential_note("claude-code", true, &none, "sbx"), None);
+        assert_eq!(credential_note("pi", false, &none, "sbx"), None);
+        // One is stored.
+        let stored = |_: &Path, _: &[String], _: Duration| {
+            Ok(Ran {
+                ok: true,
+                line: "SCOPE      SERVICE     SECRET".into(),
+            })
+        };
+        assert_eq!(credential_note("claude-code", false, &stored, "sbx"), None);
+        // sbx did not answer, or failed: nothing is claimed.
+        let silent = |_: &Path, _: &[String], _: Duration| Err("no answer in 10 s".to_string());
+        assert_eq!(credential_note("claude-code", false, &silent, "sbx"), None);
+        let failed = |_: &Path, _: &[String], _: Duration| {
+            Ok(Ran {
+                ok: false,
+                line: "No secrets found".into(),
+            })
+        };
+        assert_eq!(credential_note("claude-code", false, &failed, "sbx"), None);
+    }
+
+    /// E1-8: the read-only paths go on the create, after the folder; the
+    /// attach names no folder, so none there. A word after the folder that
+    /// is not an absolute `:ro` path is refused, not passed to sbx.
+    #[test]
+    fn e1_8_read_only_paths_go_on_the_create_alone() {
+        let args = s(&[
+            "run",
+            "--name",
+            "derm-c1",
+            "claude",
+            "/work",
+            "/work/.git/hooks:ro",
+            "/work/.git/config:ro",
+            "--",
+            "-p",
+            "hi",
+        ]);
+        let st = stages(&args, &[], false, &[]).unwrap();
+        assert_eq!(
+            st.create,
+            s(&[
+                "create",
+                "--name",
+                "derm-c1",
+                "--no-input",
+                "claude",
+                "/work",
+                "/work/.git/hooks:ro",
+                "/work/.git/config:ro",
+            ])
+        );
+        assert_eq!(
+            st.attach,
+            s(&["run", "--name", "derm-c1", "--", "-p", "hi"])
+        );
+        for bad in ["/work/.git/hooks", "relative:ro", "/etc"] {
+            let args = s(&["run", "--name", "derm-c1", "claude", "/work", bad]);
+            let e = stages(&args, &[], false, &[]).unwrap_err();
+            assert!(e.contains("not a read-only path"), "{e}");
+        }
+        let one = s(&["run", "--name", "derm-c1", "claude"]);
+        assert!(stages(&one, &[], false, &[])
+            .unwrap_err()
+            .contains("names 1 things"));
     }
 
     /// Box test w5, BW5-5's rest: the dry run printed the one-step `sbx run`
@@ -684,6 +968,7 @@ mod tests {
             state_dirs: vec![],
             notes: vec![],
             full_access: vec![],
+            asks_allow: false,
             companion: None,
             scratch_dir: None,
         }
@@ -871,6 +1156,180 @@ mod tests {
         p
     }
 
+    /// Eval pass 1, E1-12: under sbx the export stood down, so an sbx chat's
+    /// record held no telemetry. Claude Code in the VM gets the export's
+    /// variables by name (`-e`, on the create and the attach), the token in
+    /// the header variable and in no argument, and the user's words stay
+    /// last.
+    #[cfg(unix)]
+    #[test]
+    fn e1_12_the_export_reaches_claude_code_in_the_vm_by_name() {
+        let token = derm_core::token::mint().unwrap();
+        let rest = s(&["-p", "hi"]);
+        let argv = s(&[
+            "run",
+            "--name",
+            "derm-c3",
+            "-e",
+            "DERM_CHAT_TOKEN",
+            "-e",
+            "DERM_OTLP_ENDPOINT",
+            "claude",
+            "/w",
+            "/w/.git/config:ro",
+            "--",
+            "-p",
+            "hi",
+        ]);
+        let mut p = plan_for(argv.clone());
+        let (what, range) = crate::run::wire_export(
+            &mut p,
+            &rest,
+            "claude-code",
+            Some("http://127.0.0.1:4318"),
+            Some(&token),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(what, "claude-code, token in OTEL_EXPORTER_OTLP_HEADERS");
+        let agent = p.args.iter().position(|a| a == "claude").unwrap();
+        for name in [
+            "CLAUDE_CODE_ENABLE_TELEMETRY",
+            "OTEL_LOGS_EXPORTER",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_LOGS_EXPORT_INTERVAL",
+            "OTEL_LOG_TOOL_DETAILS",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+        ] {
+            assert!(
+                p.args[..agent].windows(2).any(|w| w == ["-e", name]),
+                "{name}: {:?}",
+                p.args
+            );
+            assert!(p.env_set.iter().any(|(k, _)| k == name), "{name}");
+        }
+        assert!(!p.args.iter().any(|a| a == "OTEL_LOG_USER_PROMPTS"));
+        assert!(p.args.iter().all(|a| !a.contains(&token)), "{:?}", p.args);
+        assert!(p.args.ends_with(&rest));
+        let value = |k: &str| {
+            p.env_set
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(
+            value("OTEL_EXPORTER_OTLP_ENDPOINT").as_deref(),
+            Some("http://host.docker.internal:4318")
+        );
+        assert_eq!(
+            value("OTEL_EXPORTER_OTLP_HEADERS"),
+            Some(format!("x-derm-token={token}"))
+        );
+        // No word was added for the harness: the range is empty and sits
+        // where the user's words start.
+        let range = range.unwrap();
+        assert!(range.is_empty());
+        assert_eq!(&p.args[range.start..], &rest[..]);
+        let st = stages(&p.args, &p.env_set, false, &[]).unwrap();
+        for part in [&st.create, &st.attach] {
+            assert!(
+                part.windows(2)
+                    .any(|w| w == ["-e", "OTEL_EXPORTER_OTLP_HEADERS"]),
+                "{part:?}"
+            );
+        }
+        assert_eq!(st.ports, vec![4318]);
+        // Review 6-7: the user's own words after `--` do not count as
+        // naming a variable to sbx.
+        let mut user = argv.clone();
+        user.extend(s(&["-e", "OTEL_EXPORTER_OTLP_HEADERS"]));
+        let mut rest2 = rest.clone();
+        rest2.extend(s(&["-e", "OTEL_EXPORTER_OTLP_HEADERS"]));
+        let mut p = plan_for(user);
+        crate::run::wire_export(
+            &mut p,
+            &rest2,
+            "claude-code",
+            Some("http://127.0.0.1:4318"),
+            Some(&token),
+            None,
+            false,
+            true,
+        );
+        let agent = p.args.iter().position(|a| a == "claude").unwrap();
+        assert!(
+            p.args[..agent]
+                .windows(2)
+                .any(|w| w == ["-e", "OTEL_EXPORTER_OTLP_HEADERS"]),
+            "{:?}",
+            p.args
+        );
+        // With prompts in the record, their switch goes too.
+        let mut p = plan_for(argv.clone());
+        crate::run::wire_export(
+            &mut p,
+            &rest,
+            "claude-code",
+            Some("http://127.0.0.1:4318"),
+            Some(&token),
+            None,
+            true,
+            true,
+        );
+        assert!(p
+            .args
+            .windows(2)
+            .any(|w| w == ["-e", "OTEL_LOG_USER_PROMPTS"]));
+        // Codex in a VM (until the review of E1-12 this stood down): its
+        // two header variables are named to sbx before the agent, its `-c`
+        // words sit with the user's, and no word holds the token.
+        let cargv = s(&[
+            "run",
+            "--name",
+            "derm-c3",
+            "-e",
+            "DERM_CHAT_TOKEN",
+            "codex",
+            "/w",
+            "--",
+            "-p",
+            "hi",
+        ]);
+        let mut p = plan_for(cargv);
+        let (what, range) = crate::run::wire_export(
+            &mut p,
+            &rest,
+            "codex",
+            Some("http://127.0.0.1:4318"),
+            Some(&token),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(what, "codex");
+        let agent = p.args.iter().position(|a| a == "codex").unwrap();
+        let split = p.args.iter().position(|a| a == "--").unwrap();
+        for name in [
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+        ] {
+            assert!(
+                p.args[..agent].windows(2).any(|w| w == ["-e", name]),
+                "{name}: {:?}",
+                p.args
+            );
+        }
+        let range = range.unwrap();
+        assert!(range.start > split && !range.is_empty());
+        assert!(p.args[range]
+            .iter()
+            .any(|a| a.contains("http://host.docker.internal:4318/v1/logs")));
+        assert!(p.args.iter().all(|a| !a.contains(&token)), "{:?}", p.args);
+        assert!(p.args.ends_with(&rest));
+    }
+
     /// Phase 4, item 4: Claude Code under sbx gets derm's kit on the create,
     /// as a mixin, with the person's policy; the attach does not name it,
     /// and the folder is gone once the create has read it.
@@ -890,7 +1349,15 @@ mod tests {
             parent: &parent,
             switch: None,
         };
-        let sandbox = start_with(&sbx, &mut p, false, &inputs).unwrap();
+        // The kit carries a derm for the VM; a stand-in, so the test does
+        // not turn on what the host has (a Mac has none of its own).
+        let vm_derm = d.join("derm-for-the-vm");
+        std::fs::write(&vm_derm, b"\x7fELF stand-in").unwrap();
+        std::fs::set_permissions(&vm_derm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::super::kit::TEST_VM_DERM.with(|t| *t.borrow_mut() = Some(Ok(vm_derm.clone())));
+        let started = start_with(&sbx, &mut p, false, &inputs);
+        super::super::kit::TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+        let sandbox = started.unwrap();
         let calls = std::fs::read_to_string(d.join("calls")).unwrap();
         let create = calls.lines().next().unwrap();
         let words: Vec<&str> = create.split(' ').collect();
@@ -907,10 +1374,9 @@ mod tests {
         assert!(seen.contains("./derm-gate-claude.yaml"), "{seen}");
         assert!(seen.contains("./derm-gate-claude.dockerfile"), "{seen}");
         assert!(!seen.contains("./spec.yaml"), "{seen}");
-        assert!(
-            seen.contains("./derm-kit/plugin/bin/derm-hook.mjs"),
-            "{seen}"
-        );
+        assert!(seen.contains("./derm-kit/derm"), "{seen}");
+        assert!(seen.contains("./derm-kit/install.sh"), "{seen}");
+        assert!(!seen.contains("./derm-kit/plugin/"), "{seen}");
         assert!(seen.trim_end().ends_with(r#"{"version":1}"#), "{seen}");
         assert!(!p.args.iter().any(|a| a == "--kit"), "{:?}", p.args);
         assert_eq!(

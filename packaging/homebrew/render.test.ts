@@ -5,27 +5,35 @@ import { parseSums, render } from "./render.mjs";
 const mac = "a".repeat(64);
 const lin = "b".repeat(64);
 const deb = "c".repeat(64);
+const arm = "d".repeat(64);
 const sums = [
   `${lin}  derm-0.1.0-x86_64-unknown-linux-musl.tar.gz`,
+  `${arm}  derm-0.1.0-aarch64-unknown-linux-musl.tar.gz`,
   `${deb}  derm_0.1.0_amd64.deb`,
   `${mac}  derm-0.1.0-macos.zip`,
   "",
 ].join("\n");
 
 describe("homebrew formula", () => {
-  it("fills the version and both hashes, nothing left over", () => {
+  it("fills the version and the three hashes, nothing left over", () => {
     const f = render("0.1.0", sums);
     // brew audit --strict: the version is scanned from the URL; a version line is redundant.
     expect(f).not.toMatch(/^  version /m);
     // The universal zip under both on_arm and on_intel (brew style's ComponentsOrder).
     expect(f.split(`releases/download/v0.1.0/derm-0.1.0-macos.zip"\n      sha256 "${mac}"`).length - 1).toBe(2);
     expect(f).toContain(`derm-0.1.0-x86_64-unknown-linux-musl.tar.gz"\n      sha256 "${lin}"`);
+    // The gate for the sbx VM, per Mac architecture: the Linux derm of the
+    // same release, as a resource, installed under the name derm looks for.
+    expect(f).toContain(`resource "vm-derm" do\n        url "https://github.com/aetiusgular/derm/releases/download/v0.1.0/derm-0.1.0-aarch64-unknown-linux-musl.tar.gz"\n        sha256 "${arm}"`);
+    expect(f).toContain(`resource "vm-derm" do\n        url "https://github.com/aetiusgular/derm/releases/download/v0.1.0/derm-0.1.0-x86_64-unknown-linux-musl.tar.gz"\n        sha256 "${lin}"`);
+    expect(f).toContain('(libexec/"kit").install "derm" => "derm-linux-#{vm_arch}"');
     expect(f).not.toMatch(/@[A-Z0-9_]+@/);
     expect(f).not.toContain(deb);
   });
 
   it("refuses a missing file, a bad line, a duplicate and an odd version", () => {
     expect(() => render("0.1.0", sums.replace(/^.*macos\.zip$/m, ""))).toThrow(/no derm-0.1.0-macos.zip/);
+    expect(() => render("0.1.0", sums.replace(/^.*aarch64.*$/m, ""))).toThrow(/no derm-0.1.0-aarch64-unknown-linux-musl.tar.gz/);
     expect(() => render("0.1.0", `${sums}xyz  thing\n`)).toThrow(/malformed/);
     expect(() => parseSums(`${mac}  a\n${mac}  a\n`)).toThrow(/twice/);
     for (const v of ["v0.1.0", "0.1", '0.1.0"; system "x', "0.1.0/../x"]) {

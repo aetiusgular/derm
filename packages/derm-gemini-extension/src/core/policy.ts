@@ -4,16 +4,21 @@
 
 import { createHash } from "node:crypto";
 import { ownedByTrusted } from "./owner.ts";
-import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { decodeEscapes, fold } from "./fold.ts";
 // Wave 5 lane X's seam (the wave 5 base): package installs, section 6.
 import { installDecision, parseInstalls } from "./installs/index.ts";
 // Wave 5 lane W: command rules, section 7.
-import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram } from "./command.ts";
+import { commandAllows, commandNarrows, commandProblem, commandReason, headCommands, stdinProgram, tokenIsText } from "./command.ts";
+// E1-1: destructive commands, section 4 step 7e.
+import { destructive } from "./destructive.ts";
 
-export type Action = "allow" | "ask" | "deny";
+// The small text helpers a plugin shim needs without the matcher live in
+// text.ts (19 Nov 2026), so a shim carries that file and not this one.
+import { insideFolder, unquote, type Action } from "./text.ts";
+export { insideFolder, unquote, type Action };
 
 export type Rule = {
   tool: string;
@@ -64,29 +69,6 @@ export function policyPath(env: NodeJS.ProcessEnv = process.env): string {
   const fromEnv = env.DERM_POLICY;
   if (fromEnv && fromEnv.trim() !== "") return fromEnv;
   return path.join(homedir(), ".derm", "policy.json");
-}
-
-/** The real path of `p`, following links on every part that exists; a missing tail is appended as written. */
-function realish(p: string): string {
-  const abs = path.resolve(p);
-  let head = abs;
-  const tail: string[] = [];
-  for (;;) {
-    try {
-      return path.join(realpathSync(head), ...tail.reverse());
-    } catch {
-      const parent = path.dirname(head);
-      if (parent === head) return abs;
-      tail.push(path.basename(head));
-      head = parent;
-    }
-  }
-}
-
-/** True when `file` is `folder` or lies under it, after links are followed. */
-export function insideFolder(file: string, folder: string): boolean {
-  const rel = path.relative(realish(folder), realish(file));
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 /**
@@ -869,15 +851,6 @@ export function powershellReason(ch: string): string {
   return `PowerShell text the matcher reads only as plain words: \`${shown}\``;
 }
 
-/**
- * The text with every quote removed. The shell joins `ANTHROPIC_"BASE_URL"`
- * and `g''it` into one word, so the reject list and the control files are
- * also read this way (integration w1, finding S1). Only adds matches.
- */
-export function unquote(text: string): string {
-  return text.replace(/["']/g, "");
-}
-
 const GIT_WORD = /(?<![a-z0-9_])git(?![a-z0-9_])/g;
 
 /** contracts/policy.md section 3.2: is folded text a git context? */
@@ -1038,7 +1011,14 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   if (control !== undefined) return { action: "ask", normalizedTool, reason: `input names a control file (${control})` };
   // On the folded text, so `＄HOME` asks: stricter than the raw input, the
   // side that fails safe (integration w1; derm-core and derm-pi do the same).
-  const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t)) : undefined;
+  // E1-5: a quoted brace in a text program's argument and a tilde after a
+  // revision's name are text (`tokenIsText`); only for input that was ASCII before the fold.
+  const decoded = decodeEscapes(call.inputText);
+  // E1R-2: a `\uXXXX` the matcher decoded held a backslash the shell reads its own way.
+  const escaped = decoded !== call.inputText;
+  if (escaped && isShellTool(normalizedTool)) return { action: "ask", normalizedTool, reason: unreadableReason("\\") };
+  const plain = /^[\x00-\x7f]*$/.test(decoded);
+  const token = isShellTool(normalizedTool) ? UNREADABLE_SHELL_TOKENS.find((t) => folded.includes(t) && !tokenIsText(folded, t, plain)) : undefined;
   if (token !== undefined) return { action: "ask", normalizedTool, reason: unreadableReason(token) };
   // Package installs (contracts/policy.md section 6; lane X's seam). An
   // install's ask or deny names its packages, so it comes first.
@@ -1055,5 +1035,9 @@ function allowSteps(normalizedTool: string, call: Call, reason: string, narrowAs
   if (more !== undefined) return { action: "ask", normalizedTool, reason: more };
   const fed = isShellTool(normalizedTool) ? stdinProgram(folded) : undefined;
   if (fed !== undefined) return { action: "ask", normalizedTool, reason: `program read from input: \`${fed}\`` };
+  // Step 7e (E1-1): a command that changes the root, a system or home folder,
+  // a disk or a parent folder, or signals every process.
+  const harm = isShellTool(normalizedTool) ? destructive(folded) : undefined;
+  if (harm !== undefined) return { action: "ask", normalizedTool, reason: harm };
   return { action: "allow", normalizedTool, reason };
 }

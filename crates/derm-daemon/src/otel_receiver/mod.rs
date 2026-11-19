@@ -30,8 +30,11 @@
 //!   and the socket's chat-scope rules, applied by the daemon (`ops`). A
 //!   reply is the socket's reply line as the body. sbx's proxy turns
 //!   `host.docker.internal` into `localhost` (Docker's "Develop and test
-//!   locally" page), and these routes also take `Host: host.docker.internal:
-//!   <port>`, which a client that bypasses the forward proxy may send.
+//!   locally" page), and every route takes `Host: host.docker.internal:
+//!   <port>`, which is what arrives from a VM (the box, 16 Nov 2026, sbx
+//!   0.51.0: the proxy forwards to loopback and leaves the `Host` header as
+//!   the VM sent it). Since E1-12 Claude Code in the VM exports its own
+//!   telemetry to `/v1/logs` under that name.
 //! - A third, `POST /derm/v1/taint`, a body `{"taint": {"chat", "hosts",
 //!   "add"}}`, for a gate behind srt's route on Linux or the VM's: the
 //!   socket's `taint` op under the same chat scope, so a gate behind a
@@ -619,8 +622,10 @@ impl Receiver {
             host == format!("127.0.0.1:{}", self.port)
                 || host.eq_ignore_ascii_case(&format!("localhost:{}", self.port))
                 || mapped_loopback_host(host, self.port)
-                || (derm
-                    && host.eq_ignore_ascii_case(&format!("host.docker.internal:{}", self.port)))
+                // An sbx VM's name for the host: the gate's routes, and since
+                // E1-12 Claude Code's own export from the VM. The token is
+                // asked for all the same.
+                || host.eq_ignore_ascii_case(&format!("host.docker.internal:{}", self.port))
         });
         if !host_ok {
             return Err(403);
@@ -1407,6 +1412,11 @@ pub struct Export<'a> {
     /// emptied and made again 0700, so it must be this run's alone, never a
     /// folder another run uses. `None` puts the token in the header variable.
     pub helper_dir: Option<&'a std::path::Path>,
+    /// The harness runs in an sbx VM (E1-12). The endpoint is then the
+    /// receiver's port under `host.docker.internal`, which sbx's proxy on the
+    /// host forwards to loopback, and no script on the host can be the
+    /// helper.
+    pub sbx: bool,
 }
 
 /// What `apply_export` did.
@@ -1450,24 +1460,59 @@ pub fn loopback_endpoint(endpoint: &str) -> bool {
         .is_some_and(|port| port != 0)
 }
 
+/// True for `http://host.docker.internal:<port>` and nothing else: the
+/// receiver as an sbx VM names it (E1-12). sbx's proxy on the host forwards
+/// that name to loopback, under a rule derm adds for the chat's sandbox
+/// alone, so the export does not leave the machine.
+pub fn sbx_endpoint(endpoint: &str) -> bool {
+    endpoint
+        .strip_prefix("http://host.docker.internal:")
+        .and_then(|port| port.parse::<u16>().ok())
+        .is_some_and(|port| port != 0)
+}
+
 /// Points a Claude Code or Codex child at the receiver, or does nothing.
 /// Never fails the start: whatever cannot be set leaves the harness without
 /// telemetry (corner case 9). The token never goes in an argument. It stands
 /// down when the user already exports OTel (the fork's
 /// `harness_env.rs:40-60`).
 pub fn apply_export(export: &Export, args: &[String], cmd: &mut Command) -> Applied {
-    if !loopback_endpoint(export.endpoint) || !derm_core::token::well_formed(export.token) {
+    let endpoint_ok = if export.sbx {
+        sbx_endpoint(export.endpoint)
+    } else {
+        loopback_endpoint(export.endpoint)
+    };
+    if !endpoint_ok || !derm_core::token::well_formed(export.token) {
         return Applied::StoodDown("endpoint or token not usable");
     }
     if !matches!(export.harness, "claude-code" | "codex") {
         return Applied::StoodDown("no OTel export for this harness");
     }
-    if harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
+    // Under sbx the VM gets only the variables derm names to sbx, so the
+    // user's own OTel variables on the host configure nothing there, and
+    // standing down for them left the chat with no telemetry at all (the
+    // review of E1-12, 6-3).
+    if !export.sbx && harness_env::has_own_env_telemetry(&|name| child_var(cmd, name)) {
         return Applied::StoodDown("the user already exports OTel");
     }
+    // A compressed body is refused by the receiver (415); the exporters
+    // compress only when told to by these variables.
+    for name in [
+        "OTEL_EXPORTER_OTLP_COMPRESSION",
+        "OTEL_EXPORTER_OTLP_LOGS_COMPRESSION",
+    ] {
+        cmd.env_remove(name);
+    }
     if export.harness == "codex" {
-        let codex_config =
-            codex_home(cmd).and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok());
+        // Under sbx the host's `~/.codex/config.toml` is not in the VM
+        // (Docker's Codex agent page: "Sandboxes don't pick up user-level
+        // configuration from your host"), so it says nothing about the
+        // Codex that runs there.
+        let codex_config = if export.sbx {
+            None
+        } else {
+            codex_home(cmd).and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok())
+        };
         if harness_env::has_own_codex_otel(codex_config.as_deref()) {
             return Applied::StoodDown("the user already exports OTel");
         }
@@ -1487,8 +1532,11 @@ pub fn apply_export(export: &Export, args: &[String], cmd: &mut Command) -> Appl
     }
     // The token through `otelHeadersHelper`, as Claude Code's docs ask; the
     // header variable only where the script cannot be made.
+    // In a VM there is no host script to run: the header variable, which
+    // sbx copies by name (`-e`), so the token is in no argument.
     let helper = export
         .helper_dir
+        .filter(|_| !export.sbx)
         .and_then(|dir| helper_in(dir, export.token));
     let settings = helper
         .as_ref()

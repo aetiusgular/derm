@@ -5,6 +5,13 @@
 # notarized) and the Linux x86_64 musl tarball. Homebrew marks only casks as
 # quarantined (Library/Homebrew/cask/download.rb), so Gatekeeper does not check
 # these. The daemon is not started by the install: `brew services start derm`.
+#
+# On a Mac the formula also installs a Linux derm for the machine's
+# architecture as libexec/kit/derm-linux-<arch>, from the same release's
+# Linux tarball. `derm run --boundary sbx` carries it into the sandbox's
+# Linux VM as the agent's gate (crates/derm-cli/src/run/boundary/kit.rs,
+# vm_derm_off_linux, which looks beside the install). It never runs on the
+# Mac itself.
 class Derm < Formula
   desc "Gate, boundary and audit around any coding agent"
   homepage "https://github.com/aetiusgular/derm"
@@ -16,10 +23,20 @@ class Derm < Formula
     on_arm do
       url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-macos.zip"
       sha256 "@MACOS_SHA256@"
+
+      resource "vm-derm" do
+        url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-aarch64-unknown-linux-musl.tar.gz"
+        sha256 "@LINUX_ARM64_SHA256@"
+      end
     end
     on_intel do
       url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-macos.zip"
       sha256 "@MACOS_SHA256@"
+
+      resource "vm-derm" do
+        url "https://github.com/aetiusgular/derm/releases/download/v@VERSION@/derm-@VERSION@-x86_64-unknown-linux-musl.tar.gz"
+        sha256 "@LINUX_SHA256@"
+      end
     end
   end
 
@@ -34,6 +51,14 @@ class Derm < Formula
     bin.install "derm", "derm-daemon"
     bin.install "derm-audit-feed" if OS.linux?
     doc.install "README.md", "NOTICE"
+    return unless OS.mac?
+
+    # The gate for the sbx VM: derm from the Linux tarball, under the name
+    # derm looks for beside its own install.
+    vm_arch = Hardware::CPU.arm? ? "aarch64" : "x86_64"
+    resource("vm-derm").stage do
+      (libexec/"kit").install "derm" => "derm-linux-#{vm_arch}"
+    end
   end
 
   # Runs as you. The daemon makes its folder 0700 and its files 0600 itself;
@@ -47,5 +72,9 @@ class Derm < Formula
 
   test do
     assert_equal "derm #{version}", shell_output("#{bin}/derm --version").strip
+    if OS.mac?
+      vm_arch = Hardware::CPU.arm? ? "aarch64" : "x86_64"
+      assert_predicate libexec/"kit/derm-linux-#{vm_arch}", :executable?
+    end
   end
 end

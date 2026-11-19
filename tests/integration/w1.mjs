@@ -69,7 +69,8 @@ async function until(fn, ms, step = 50) {
 
 const top = mkdtempSync(join(tmpdir(), "derm-int-w1-"));
 const HOME = join(top, "home");
-const RUN = join(top, "run");
+// E1-10: the daemon's folder is under the home folder on Linux (~/.derm/run/derm), no longer $XDG_RUNTIME_DIR/derm.
+const RUN = join(HOME, ".derm", "run");
 const DATA = join(top, "data");
 const WORK = join(HOME, "work");
 for (const d of [HOME, RUN, DATA, WORK]) mkdirSync(d, { recursive: true, mode: 0o700 });

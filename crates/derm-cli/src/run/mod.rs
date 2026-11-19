@@ -42,7 +42,7 @@ mod user; // lane V
           // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
           // part 3): the Standard tier, lane 6A's. The stub changes nothing.
 mod broker;
-mod claude_gate; // fix pass 6, note BE section 1.5 (e)
+pub(crate) mod claude_gate; // fix pass 6, note BE section 1.5 (e); pub(crate) for `derm kit register`
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
 use std::io::Write;
@@ -209,27 +209,44 @@ pub fn main(argv: &[String]) -> u8 {
 }
 
 /// What taint does in a chat under sbx (lane 6D's request 6D-8, its other
-/// half; integration w6's close). No gate in the VM keeps taint: the sbx
-/// kit's hook (Claude Code only, `run/boundary/kit.rs`) decides in
-/// TypeScript with no taint at all (the wave 6 base's S1), and derm's Rust
-/// gate does not run in the VM (wave 5b's 5bF moves the kit to it; fix
-/// pass 4's review, FP4-T1 and FP4-T2, redone by fix pass 6). `None` under
-/// any other boundary: under srt on Linux the gate keeps taint in the
-/// daemon through srt's route since fix pass 6 (`POST /derm/v1/taint`; the
-/// redo of fix pass 4's part 2, FP4-R1), and with no daemon answer the
-/// chat counts as tainted with deny (`gate/taint/mod.rs`), which the srt
-/// notes in `plan.rs` say.
-fn taint_not_reached(boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+/// half; integration w6's close). `None` under any other boundary: under
+/// srt on Linux the gate keeps taint in the daemon through srt's route
+/// since fix pass 6 (`POST /derm/v1/taint`; the redo of fix pass 4's part
+/// 2, FP4-R1), and with no daemon answer the chat counts as tainted with
+/// deny (`gate/taint/mod.rs`), which the srt notes in `plan.rs` say.
+///
+/// Under sbx it turns on the gate derm's kit puts in the VM
+/// (`boundary::kit::gate_is_derm`). Where that gate is derm itself (Codex
+/// since 17 Nov 2026; Claude Code, Copilot CLI, Droid, Cursor and Kiro
+/// since 19 Nov) it keeps the chat's taint in the daemon over the VM route.
+/// Seen on the box (sbx 0.51.0): for Codex a `taint.review` with "the
+/// chat's verdict is ask, flag"; for Claude Code, in a real turn, a
+/// `taint.mark` for a WebFetch and one for the `curl` after it, where the
+/// kit that carried derm's TypeScript hook left none. The kit is built
+/// after this line and may not be (no policy, the switch, no derm for the
+/// VM), so the line says both. For any other agent no gate in the VM keeps
+/// taint: Pi's kit gates with Pi's extension, and the rest have no kit.
+fn taint_not_reached(harness: &str, boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+    if boundary != Boundary::Sbx {
+        return None;
+    }
+    if boundary::kit::gate_is_derm(harness) {
+        let named = match verdict {
+            Some(v) => format!(" (--taint {v})"),
+            None => String::new(),
+        };
+        let name = boundary::kit::spec(harness).map_or(harness, |s| s.name);
+        return Some(format!(
+            "derm run: taint under sbx: with derm's kit {name}'s gate in the VM keeps this chat's taint in the daemon{named}; without the kit no gate there does (the line about the VM's gate below says which)"
+        ));
+    }
     let not_applied = match verdict {
         Some(v) => format!("--taint {v} is not applied: "),
         None => String::new(),
     };
-    match boundary {
-        Boundary::Sbx => Some(format!(
-            "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (the sbx kit's hook, for Claude Code only, decides with no taint, and derm's own gate does not run in the VM yet)"
-        )),
-        _ => None,
-    }
+    Some(format!(
+        "derm run: taint under sbx: {not_applied}no gate in the VM keeps this chat's taint (an sbx kit's hook for this agent decides with no taint)"
+    ))
 }
 
 /// Whether macOS hides `pid`'s start environment (MW6R5-1): true when, by
@@ -559,6 +576,110 @@ fn git_controls(cwd: &Path) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+/// How many paths `derm run` asks sbx to mount read-only in the chat's
+/// folder; the rest are looked at again when the chat ends. sbx's page
+/// names no limit, so this one is derm's own, well above a plain project's
+/// (two git paths and a handful of the harness's).
+const SBX_READONLY_MAX: usize = 32;
+
+/// E1-8: the control paths in the chat's folder for an sbx chat, split into
+/// those sbx can hold read-only (a real file or folder that exists, with no
+/// `:` in its name, which sbx reads as the mode's mark) and those it cannot.
+fn sbx_controls(harness: &harness::Harness, cwd: &str, home: &str) -> (Vec<String>, Vec<String>) {
+    let mut all = plan::project_controls(harness.id, harness.control, cwd, home);
+    all.extend(git_controls(Path::new(cwd)));
+    // `.git/commondir` names another folder whose `config` and `hooks` git
+    // then uses (gitrepository-layout(5); the review's E1R-4: with `.git/
+    // hooks` and `.git/config` read-only, one new file `.git/commondir`
+    // pointing at a folder of the chat's made `git status` run its
+    // fsmonitor). It does not exist in a plain clone, so sbx cannot hold it:
+    // it is looked at again when the chat ends. Only when `.git` is a folder.
+    if std::fs::symlink_metadata(Path::new(cwd).join(".git")).is_ok_and(|m| m.is_dir()) {
+        all.push(format!("{}/.git/commondir", cwd.trim_end_matches('/')));
+    }
+    all.sort();
+    all.dedup();
+    let mut held = Vec::new();
+    let mut unheld = Vec::new();
+    for p in all {
+        let real = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir() || m.is_file());
+        if real && !p.contains(':') && held.len() < SBX_READONLY_MAX {
+            held.push(p);
+        } else {
+            unheld.push(p);
+        }
+    }
+    (held, unheld)
+}
+
+/// What a control path holds now, to tell after the chat whether the
+/// sandbox made or changed it (E1-8): absent, a link and where it points, a
+/// file's hash, or a folder's entries (names, sizes, hashes of files up to
+/// 1 MiB) down 4 levels and 512 entries. Nothing here follows a link.
+fn control_print(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    fn walk(p: &Path, depth: usize, left: &mut usize, h: &mut sha2::Sha256) {
+        use sha2::Digest;
+        let Ok(m) = std::fs::symlink_metadata(p) else {
+            h.update(b"absent");
+            return;
+        };
+        if m.file_type().is_symlink() {
+            h.update(b"link");
+            if let Ok(t) = std::fs::read_link(p) {
+                h.update(t.to_string_lossy().as_bytes());
+            }
+            // What the link names, when it is a file: the sandbox can edit
+            // it through the mount without touching the link (E1R-17).
+            if let Ok(t) = std::fs::metadata(p) {
+                if t.is_file() && t.len() <= 1 << 20 {
+                    if let Ok(b) = std::fs::read(p) {
+                        h.update(&b);
+                    }
+                } else {
+                    h.update(t.len().to_le_bytes());
+                    if let Ok(when) = t.modified() {
+                        h.update(format!("{when:?}").as_bytes());
+                    }
+                }
+            }
+        } else if m.is_file() {
+            h.update(b"file");
+            h.update(m.len().to_le_bytes());
+            if m.len() <= 1 << 20 {
+                if let Ok(b) = std::fs::read(p) {
+                    h.update(&b);
+                }
+            } else if let Ok(t) = m.modified() {
+                h.update(format!("{t:?}").as_bytes());
+            }
+        } else if m.is_dir() {
+            h.update(b"dir");
+            if depth >= 4 {
+                return;
+            }
+            let mut names: Vec<PathBuf> = std::fs::read_dir(p)
+                .map(|rd| rd.flatten().map(|e| e.path()).collect())
+                .unwrap_or_default();
+            names.sort();
+            for n in names {
+                if *left == 0 {
+                    return;
+                }
+                *left -= 1;
+                h.update(n.to_string_lossy().as_bytes());
+                walk(&n, depth + 1, left, h);
+            }
+        } else {
+            h.update(b"other");
+        }
+    }
+    let mut h = Sha256::new();
+    let mut left = 512usize;
+    walk(path, 0, &mut left, &mut h);
+    format!("{:x}", h.finalize())
 }
 
 /// Each submodule's git folder under the chat's `.git/modules` (FP8-S2),
@@ -1232,9 +1353,13 @@ impl Drop for Cleanup {
 /// deferred; integration w1's request for lane R). The export's arguments go
 /// right after the harness's command, before the user's own; its variables
 /// join the plan's. Nothing changes when the user already exports OTel, the
-/// endpoint is not loopback (sbx), or the harness has no export. Returns
-/// what was done, for the run record.
-fn wire_export(
+/// endpoint is not the receiver's, or the harness has no export. Under sbx
+/// (E1-12) the endpoint is the receiver's port as the VM names it, and each
+/// variable the export sets is named to sbx (`-e`), which copies it into
+/// the VM from its own environment: no value is an argument. Returns what
+/// was done, for the run record.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn wire_export(
     p: &mut plan::Plan,
     rest: &[String],
     harness: &str,
@@ -1242,6 +1367,7 @@ fn wire_export(
     token: Option<&str>,
     helper_dir: Option<&Path>,
     log_prompts: bool,
+    sbx: bool,
 ) -> (serde_json::Value, Option<std::ops::Range<usize>>) {
     use derm_daemon::otel_receiver::{apply_export, Applied, Export};
     let (Some(endpoint), Some(token)) = (otlp, token) else {
@@ -1268,6 +1394,7 @@ fn wire_export(
             token,
             log_prompts,
             helper_dir,
+            sbx,
         },
         rest,
         &mut cmd,
@@ -1279,6 +1406,33 @@ fn wire_export(
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
+    // E1-12: under sbx the variables the export set are named to sbx, right
+    // after the sandbox's name and before the agent.
+    if sbx {
+        // Only derm's own words count as naming a variable: the user's,
+        // after `--`, are the agent's arguments (review 6-7).
+        let named = |args: &[String], k: &str| {
+            let end = args.len().saturating_sub(rest.len());
+            args[..end].windows(2).any(|w| w[0] == "-e" && w[1] == k)
+        };
+        let at = if p.args.first().map(String::as_str) == Some("run")
+            && p.args.get(1).map(String::as_str) == Some("--name")
+            && p.args.len() >= 3
+        {
+            3
+        } else {
+            return (json!("stood down: not an sbx run"), None);
+        };
+        let mut names: Vec<String> = Vec::new();
+        for (k, v) in cmd.get_envs() {
+            let k = k.to_string_lossy().into_owned();
+            let ours = v.is_some() && !p.env_set.iter().any(|(n, _)| *n == k);
+            if ours && !named(&p.args, &k) {
+                names.extend(["-e".to_string(), k]);
+            }
+        }
+        p.args.splice(at..at, names);
+    }
     // Before the user's first word, wherever the tap spliced its own block
     // (MW5-6). For Codex, every `-c` sits on one side of a session
     // subcommand: its `-c` is a clap global argument, and clap 4.5.58 keeps
@@ -1470,6 +1624,14 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let cline_dir = format!("{}/.cline/derm-approval/{chat}", home.trim_end_matches('/'));
     // R7, option 1: the daemon's port for the gate's route out of srt.
     let otlp_endpoint = otlp.clone();
+    // E1-8: under sbx, what git and the harness read and run later in the
+    // chat's folder is mounted read-only where it exists; the rest is
+    // looked at again when the chat ends.
+    let (sbx_held, sbx_unheld) = if a.boundary == Boundary::Sbx {
+        sbx_controls(a.harness, &cwd, &home)
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let inputs = plan::Inputs {
         args: &a,
         chat: chat.clone(),
@@ -1506,6 +1668,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         } else {
             Vec::new()
         },
+        // E1-8: the control paths in the chat's folder sbx holds read-only.
+        sbx_readonly: sbx_held.clone(),
+        sbx_unheld: sbx_unheld.clone(),
         // MW5-22: the computer-use bridge's address, when the daemon
         // publishes one (computer use on), for srt's settings.
         cu_endpoint: dir.as_deref().and_then(read_cu_endpoint),
@@ -1639,7 +1804,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let taint_record: Option<serde_json::Value> = a
         .taint
         .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
-    if let Some(n) = taint_not_reached(a.boundary, a.taint.map(|v| v.as_str())) {
+    if let Some(n) = taint_not_reached(a.harness.id, a.boundary, a.taint.map(|v| v.as_str())) {
         p.notes.push(n);
     }
     // Content capture's switch as the chat starts (lane S's request 3). It
@@ -1686,6 +1851,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             token.as_deref(),
             (a.boundary == Boundary::None).then_some(helper_dir.as_path()),
             content_days.is_some(),
+            a.boundary == Boundary::Sbx,
         )
     };
     // Claude Code's gate, as the last `--settings`: after the Standard
@@ -1895,6 +2061,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         None => None,
     };
 
+    // Review 6-1: sbx's client, found once, by its real path, never from a
+    // relative PATH entry or the chat's own folders; every step starts it by
+    // that path and `run.start` names it.
+    let sbx_exe = if a.boundary == Boundary::Sbx {
+        Some(
+            preflight::boundary_client(env.program("sbx"), &env.path, &p.folders, &cwd)
+                .map_err(|e| (1, e))?,
+        )
+    } else {
+        None
+    };
+    let sbx_program = sbx_exe.as_deref().unwrap_or("sbx").to_string();
+
     // sbx: what the log holds before the start is not this run's.
     let mut differ = policy_log::Differ::default();
     let log_args = p.sandbox_name.as_ref().map(|n| {
@@ -1906,7 +2085,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ]
     });
     if let Some(la) = &log_args {
-        if let Some(out) = exec::output_with_timeout(env.program("sbx"), la, POLICY_LOG_TIMEOUT) {
+        if let Some(out) = exec::output_with_timeout(&sbx_program, la, POLICY_LOG_TIMEOUT) {
             differ.baseline(&policy_log::parse(&out));
         }
     }
@@ -1914,7 +2093,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     exec::install_handlers();
     let started = Instant::now();
     let mut launch = p.clone_for_start();
-    launch.program = env.program(&p.program).to_string();
+    launch.program = if a.boundary == Boundary::Sbx && p.program == "sbx" {
+        // Review 6-13: sbx's own telemetry is off on the attach too.
+        if !launch.env_set.iter().any(|(k, _)| k == "SBX_NO_TELEMETRY") {
+            launch.env_set.push(("SBX_NO_TELEMETRY".into(), "1".into()));
+        }
+        sbx_program.clone()
+    } else {
+        env.program(&p.program).to_string()
+    };
     // The companion first, so it is there when the harness writes its first
     // request (lane P's responder).
     if let (Some((prog, cargs)), Some((argv, path))) = (&p.companion, &companion_path) {
@@ -1929,9 +2116,14 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // sbx (lane T's request T-2): create the sandbox, let it reach derm's
     // ports on the host with a rule for it alone (case 117), then attach;
     // it is removed when the harness ends, or on any way out from here (SB3).
+    // E1-8: what the paths sbx cannot hold read-only are now.
+    let unheld_before: Vec<(String, String)> = sbx_unheld
+        .iter()
+        .map(|p| (p.clone(), control_print(Path::new(p))))
+        .collect();
     let mut sandbox = if p.sandbox_name.is_some() {
         match boundary::sbx::start(
-            env.program("sbx"),
+            &sbx_program,
             &mut launch,
             filter.is_none() && boundary::sbx::interactive(),
         ) {
@@ -2071,6 +2263,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         },
         "dangerousFlags": dangerous,
         "fullAccess": !dangerous.is_empty(),
+        // E1-14: the daemon answers this chat's full-access asks from here.
+        "asks": p.asks_allow.then_some("allow"),
         "outsideShapeOnly": a.harness.id == "other",
         // MW6R5-1: macOS hid the started process's environment, so the
         // chat's hooks keep the light tier's rules.
@@ -2092,10 +2286,20 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // knows the gate's own state writes in a sandbox's tmpfs (box test
         // w6 retest 3, BW6R3-2); null when it cannot be read.
         "dermExe": derm_exe(),
+        // Review 6-1, 6-6: the sbx client this run started, by its real
+        // path, and the home its state is under; null outside sbx.
+        "sbxExe": sbx_exe,
+        "home": env.home,
         "otelExport": export,
         "acp": filter.is_some(),
         "trust": "client",
     });
+    if a.boundary == Boundary::Sbx {
+        // E1-8: what sbx holds read-only in the chat's folder, and what it
+        // could not.
+        base["sbxReadOnly"] = json!(sbx_held);
+        base["sbxUnheld"] = json!(sbx_unheld);
+    }
     match argv_file {
         Some(Ok(name)) => {
             base["contentKept"] = json!(true);
@@ -2179,7 +2383,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let stop = Arc::new(AtomicBool::new(false));
     let poller = match (&daemon, &log_args) {
         (Some(d), Some(la)) => {
-            let sbx_path = env.program("sbx").to_string();
+            let sbx_path = sbx_program.clone();
             let (socket, dtoken, la, chat, harness, stop) = (
                 d.socket.clone(),
                 d.token.clone(),
@@ -2236,6 +2440,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             false
         }
     });
+    // E1-8: the sandbox is gone, so nothing in it writes any more; which of
+    // the paths it could write did it make or change.
+    let control_changed: Vec<String> = unheld_before
+        .iter()
+        .filter(|(p, before)| control_print(Path::new(p)) != *before)
+        .map(|(p, _)| p.clone())
+        .collect();
+    if !control_changed.is_empty() {
+        eprintln!(
+            "derm run: this chat made or changed, from inside the sandbox, what git or an agent reads and runs later in your project: {}. Read it before you run git or an agent there.",
+            control_changed.join(", ")
+        );
+    }
     if let Some(c) = cleanup.companion.as_mut() {
         exec::stop_companion(c, Duration::from_secs(2));
     }
@@ -2262,6 +2479,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         detail["durationMs"] = json!(started.elapsed().as_millis() as u64);
         if let Some(removed) = sandbox_removed {
             detail["sandboxRemoved"] = json!(removed);
+        }
+        if !control_changed.is_empty() {
+            detail["sbxControlChanged"] = json!(control_changed);
         }
         let summary = format!(
             "{} under {} ended, code {code}",
@@ -3728,6 +3948,90 @@ mod end_to_end {
         assert!(seen(&st).is_empty(), "the harness never started");
     }
 
+    /// E1-8 (eval pass 1, the box and the Mac): under sbx the chat's folder
+    /// is mounted read-write, and a script in the VM planted a git hook the
+    /// host ran later. The control paths that exist go on the create as
+    /// read-only mounts; one that does not exist cannot, so `derm run`
+    /// looks at it when the sandbox is gone and says it was made.
+    #[cfg(unix)]
+    #[test]
+    fn e1_8_sbx_holds_the_projects_control_paths_and_names_what_the_chat_made() {
+        let st = setup("sbx-e18");
+        let real = std::fs::canonicalize(&st.work).unwrap();
+        std::fs::create_dir_all(real.join(".git/hooks")).unwrap();
+        std::fs::write(real.join(".git/config"), "[core]\n").unwrap();
+        let calls = st.fake.dir.join("sbx-calls");
+        // The stand-in for sbx: the attach makes a control file of pi's in
+        // the project, as an agent in the VM can through the mount.
+        let sbx = script(
+            &st.fake.dir,
+            "sbx",
+            &format!(
+                "echo \"$*\" >> '{calls}'; \
+                 if [ \"$1 $2\" = 'policy log' ]; then echo '{{\"blocked\":[]}}'; exit 0; fi; \
+                 if [ \"$1\" = run ]; then mkdir -p '{work}/.pi/agent' && echo '{{}}' > '{work}/.pi/agent/settings.json' && echo ../elsewhere > '{work}/.git/commondir'; fi; \
+                 exit 0",
+                calls = calls.display(),
+                work = real.display(),
+            ),
+        );
+        let mut env = RunEnv {
+            socket: st.env.socket.clone(),
+            home: st.env.home.clone(),
+            gateway: None,
+            programs: st.env.programs.clone(),
+            policy: None,
+            path: String::new(),
+            userns: None,
+            bwrap_profile: false,
+            goose_mode: None,
+            cline_responder: None,
+        };
+        env.programs.push(("sbx".into(), sbx));
+        let cwd = st.work.to_string_lossy().into_owned();
+        let code = run(
+            &s(&["pi", "--boundary", "sbx", "--chat", "chat-h", "--cwd", &cwd]),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        let calls = std::fs::read_to_string(&calls).unwrap();
+        let create = calls
+            .lines()
+            .find(|l| l.starts_with("create "))
+            .expect("a create");
+        let real = real.to_string_lossy();
+        assert!(
+            create.ends_with(&format!(
+                " {real} {real}/.git/config:ro {real}/.git/hooks:ro"
+            )),
+            "{create}"
+        );
+        let attach = calls.lines().find(|l| l.starts_with("run ")).unwrap();
+        assert!(!attach.contains(":ro"), "{attach}");
+        let ev = events(&st);
+        let start = ev.iter().find(|e| e["kind"] == "run.start").unwrap();
+        assert_eq!(
+            start["detail"]["sbxReadOnly"],
+            json!([format!("{real}/.git/config"), format!("{real}/.git/hooks")])
+        );
+        let made = format!("{real}/.pi/agent/settings.json");
+        assert!(
+            start["detail"]["sbxUnheld"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(made)),
+            "{start}"
+        );
+        let stop = ev.iter().find(|e| e["kind"] == "run.stop").unwrap();
+        // E1R-4: `.git/commondir`, made by the chat, is named too.
+        assert_eq!(
+            stop["detail"]["sbxControlChanged"],
+            json!([format!("{real}/.git/commondir"), made]),
+            "{stop}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn sbx_names_the_variables_and_posts_the_blocks_its_log_shows() {
@@ -4396,12 +4700,72 @@ mod end_to_end {
     /// names no Claude Code hook a chat may lack and no Rust gate in the VM.
     #[test]
     fn under_sbx_the_start_says_taint_is_not_applied() {
-        let n = taint_not_reached(Boundary::Sbx, Some("record")).unwrap();
-        assert!(n.contains("--taint record is not applied"), "{n}");
-        assert!(n.contains("no gate in the VM keeps"), "{n}");
-        assert!(!n.contains("denies any call it flags"), "{n}");
-        assert!(taint_not_reached(Boundary::Sbx, None).is_some());
-        assert!(taint_not_reached(Boundary::None, Some("deny")).is_none());
+        // An agent whose kit's gate is not derm (Pi), and one with no kit.
+        for harness in ["pi", "opencode"] {
+            let n = taint_not_reached(harness, Boundary::Sbx, Some("record")).unwrap();
+            assert!(n.contains("--taint record is not applied"), "{n}");
+            assert!(n.contains("no gate in the VM keeps"), "{n}");
+            assert!(!n.contains("denies any call it flags"), "{n}");
+        }
+        assert!(taint_not_reached("pi", Boundary::Sbx, None).is_some());
+        assert!(taint_not_reached("opencode", Boundary::Sbx, None).is_some());
+        assert!(taint_not_reached("claude-code", Boundary::None, Some("deny")).is_none());
+    }
+
+    /// 17 Nov 2026, Codex's sbx kit: the gate in the VM is derm's own, and
+    /// it keeps the chat's taint in the daemon over the VM route. Seen on the
+    /// box (sbx 0.51.0, `--taint ask`, the hook run by hand in the VM): a
+    /// `taint.review` for `session-written-code` with "the chat's verdict is
+    /// ask, flag". The start line said taint was not applied and that derm's
+    /// own gate does not run in the VM. For Codex it says what holds with
+    /// the kit and without it, since the kit is built after this line.
+    #[test]
+    fn under_sbx_codex_keeps_taint_through_its_kit_and_the_start_says_so() {
+        let n = taint_not_reached("codex", Boundary::Sbx, Some("ask")).unwrap();
+        assert!(!n.contains("is not applied: no gate"), "{n}");
+        assert!(!n.contains("does not run in the VM"), "{n}");
+        assert!(
+            n.contains(
+                "with derm's kit Codex's gate in the VM keeps this chat's taint in the daemon"
+            ),
+            "{n}"
+        );
+        assert!(n.contains("without the kit"), "{n}");
+        assert!(n.contains("--taint ask"), "{n}");
+        // No line for another agent says derm's own gate does not run there.
+        let other = taint_not_reached("claude-code", Boundary::Sbx, None).unwrap();
+        assert!(!other.contains("does not run in the VM"), "{other}");
+        assert!(taint_not_reached("codex", Boundary::Srt, None).is_none());
+    }
+
+    /// 19 Nov 2026: the kits of Claude Code and the four command-hook agents
+    /// have derm itself as their gate, as Codex's has, and that gate keeps
+    /// taint over the VM route. The start does not say that no gate there
+    /// does, and names the verdict asked for. (Until that day those kits
+    /// carried derm's TypeScript hook, which kept none, and the line said
+    /// so.)
+    #[test]
+    fn under_sbx_a_kit_whose_gate_is_derm_keeps_taint_and_the_start_says_so() {
+        for (harness, name) in [
+            ("claude-code", "Claude Code"),
+            ("droid", "Droid"),
+            ("cursor", "Cursor"),
+            ("kiro", "Kiro"),
+            ("copilot-cli", "Copilot CLI"),
+            ("codex", "Codex"),
+        ] {
+            let n = taint_not_reached(harness, Boundary::Sbx, Some("deny")).unwrap();
+            assert!(
+                n.contains(&format!(
+                    "with derm's kit {name}'s gate in the VM keeps this chat's taint in the daemon (--taint deny)"
+                )),
+                "{n}"
+            );
+            assert!(!n.contains("is not applied"), "{n}");
+            assert!(!n.contains("decides with no taint"), "{n}");
+            assert!(n.contains("without the kit no gate there does"), "{n}");
+            assert!(taint_not_reached(harness, Boundary::Srt, None).is_none());
+        }
     }
 
     /// Was `bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied`.
@@ -4412,8 +4776,8 @@ mod end_to_end {
     /// the taint state goes there too.
     #[test]
     fn under_srt_taint_is_applied_and_the_start_says_no_otherwise() {
-        assert!(taint_not_reached(Boundary::Srt, Some("record")).is_none());
-        assert!(taint_not_reached(Boundary::Srt, None).is_none());
+        assert!(taint_not_reached("claude-code", Boundary::Srt, Some("record")).is_none());
+        assert!(taint_not_reached("claude-code", Boundary::Srt, None).is_none());
     }
 
     #[cfg(unix)]

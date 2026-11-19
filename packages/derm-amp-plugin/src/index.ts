@@ -4,14 +4,15 @@
 // import files beside it by relative path, and must resolve inside its plugin
 // folder (https://ampcode.com/docs/customize/plugins; the binary's "Plugin must
 // resolve inside its plugin directory"). So this folder is copied whole, never
-// linked: index.ts, amp.ts, control.ts and core/ (README.md, "Install").
+// linked: index.ts, amp.ts, preview.ts, budget.ts, serve.ts, serve/ and
+// core/ (README.md, "Install").
 //
-// Nothing is read when the plugin loads (rules case 46): the policy file is
-// read on the first tool call. No import of @ampcode/plugin: its licence is
+// Nothing is read when the plugin loads (rules case 46): `derm gate serve`
+// is started on the first tool call, and it reads the policy. No import of @ampcode/plugin: its licence is
 // Amp's, and the types are not needed at run time.
 
-import { defaultDeps, onToolCall, onToolResult, type ShellCommand, type ToolCallEvent, type ToolResultEvent, type HandlerContext } from "./amp.ts";
-import { onToolCallServe, onToolResultServe, serveDeps, serveOn } from "./serve.ts";
+import type { ShellCommand, ToolCallEvent, ToolResultEvent, HandlerContext } from "./amp.ts";
+import { onToolCallServe, onToolResultServe, serveDeps } from "./serve.ts";
 
 export const description = "derm: checks each tool call against your derm policy (~/.derm/policy.json), asks where it says ask, and records the call";
 
@@ -44,24 +45,13 @@ function workspaceFolder(amp: AmpLike): string {
 export default function (amp: AmpLike): void {
   const shellCommand = amp.helpers?.shellCommandFromToolCall;
   const uiUnavailable = amp.helpers?.isPluginUINotAvailableError;
-  // Fix pass 6 (note BE section 3.3): `derm gate serve` decides only when
-  // DERM_AMP_GATE_SERVE=1, until one real Amp run passes with it (BBR-13);
-  // the TypeScript gate below stays the live one.
-  if (serveOn(process.env)) {
-    const sd = {
-      ...serveDeps(process.env, () => workspaceFolder(amp)),
-      ...(shellCommand ? { shellCommand: (e: ToolCallEvent) => shellCommand.call(amp.helpers, e) } : {}),
-      ...(uiUnavailable ? { uiUnavailable: (e: Error) => uiUnavailable.call(amp.helpers, e) } : {}),
-    };
-    amp.on("tool.call", ((event: ToolCallEvent, ctx: HandlerContext) => onToolCallServe(event, ctx, sd)) as never);
-    amp.on("tool.result", ((event: ToolResultEvent) => onToolResultServe(event, sd)) as never);
-    return;
-  }
-  const deps = {
-    ...defaultDeps(process.env, () => workspaceFolder(amp)),
+  // `derm gate serve` decides (fix pass 6, note BE section 3.3; the only
+  // gate since 19 Nov 2026).
+  const sd = {
+    ...serveDeps(process.env, () => workspaceFolder(amp)),
     ...(shellCommand ? { shellCommand: (e: ToolCallEvent) => shellCommand.call(amp.helpers, e) } : {}),
     ...(uiUnavailable ? { uiUnavailable: (e: Error) => uiUnavailable.call(amp.helpers, e) } : {}),
   };
-  amp.on("tool.call", ((event: ToolCallEvent, ctx: HandlerContext) => onToolCall(event, ctx, deps)) as never);
-  amp.on("tool.result", ((event: ToolResultEvent) => onToolResult(event, deps)) as never);
+  amp.on("tool.call", ((event: ToolCallEvent, ctx: HandlerContext) => onToolCallServe(event, ctx, sd)) as never);
+  amp.on("tool.result", ((event: ToolResultEvent) => onToolResultServe(event, sd)) as never);
 }

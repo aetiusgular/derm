@@ -28,6 +28,8 @@ mod run;
 mod secret;
 #[cfg(unix)]
 mod setup;
+// `derm kit register`, run by derm's sbx kit inside its VM (19 Nov 2026).
+mod vmkit;
 mod watch;
 
 use std::process::ExitCode;
@@ -83,6 +85,8 @@ fn dispatch(args: &[String]) -> u8 {
         Some("hook") => hook::main(&args[1..]),
         Some("gate") => gate::main(&args[1..]),
         Some("enter") => enter::main(&args[1..]),
+        // Run by derm's sbx kit inside its VM, and refused anywhere else.
+        Some("kit") => vmkit::main(&args[1..]),
         // Wave 6 (the wave 6 base's stubs).
         Some("init") => init::main(&args[1..]),
         Some("audit") => audit::main(&args[1..]),
@@ -98,7 +102,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|init|audit|secret|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|--version> ...");
             2
         }
     }
@@ -132,7 +136,7 @@ mod tests {
         // integration w2). `watch::status` has its own tests on fixtures.
         for cmd in [
             "connect", "run", "watch", "cu", "acp", "doctor", "setup", "hook", "gate", "enter",
-            "init", "audit", "secret",
+            "kit", "init", "audit", "secret",
         ] {
             assert_eq!(dispatch(&s(&[cmd])), 2, "{cmd}");
         }

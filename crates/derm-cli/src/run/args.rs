@@ -80,6 +80,11 @@ pub struct Args {
     /// `--no-tap`: this chat runs untapped (case 127); its gate and the OS
     /// feed still record it.
     pub no_tap: bool,
+    /// `--asks allow` (E1-14): this chat runs unattended inside a boundary
+    /// of the user's own (a benchmark's container, a CI job's VM), so in
+    /// full access the gate allows and records what it would ask. Under
+    /// `--boundary sbx` that is so without the flag.
+    pub asks_allow: bool,
     pub dry_run: bool,
     /// `--tier`; `None` means the setting's default (`tier.default`).
     pub tier: Option<Tier>,
@@ -94,7 +99,7 @@ pub struct Args {
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--no-tap] [--tier standard|whole] [--taint ask|deny|record] [--dry-run] [-- harness args...]
+[--no-tap] [--asks allow] [--tier standard|whole] [--taint ask|deny|record] [--dry-run] [-- harness args...]
        derm run --boundary sbx|srt|none [options] -- <program> [args...]";
 
 /// A program named after `--` (case 80): an absolute path, or a bare name
@@ -307,6 +312,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         kit: None,
         no_daemon: false,
         no_tap: false,
+        asks_allow: false,
         dry_run: false,
         tier: None,
         taint: None,
@@ -356,6 +362,13 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "--kit" => out.kit = Some(take("--kit")?),
             "--no-daemon" => out.no_daemon = true,
             "--no-tap" => out.no_tap = true,
+            "--asks" => {
+                let v = take("--asks")?;
+                if v != "allow" {
+                    return Err(format!("--asks {v:?}: the one value is allow"));
+                }
+                out.asks_allow = true;
+            }
             "--dry-run" => out.dry_run = true,
             // Wave 6 (the wave 6 base): the two choices a person makes per
             // chat. Their effect is lanes 6A's and 6D's.

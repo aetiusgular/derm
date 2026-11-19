@@ -285,6 +285,27 @@ pub fn companion_path(path_var: &str, writable: &[String]) -> String {
         .unwrap_or_default()
 }
 
+/// The boundary's own client (`sbx`), found once and held to the
+/// companion's rule, as its real path (the review of E1-11, 6-1). `derm run`
+/// starts it outside any sandbox with the chat token, at every step by this
+/// path, and the daemon takes this path alone as "sbx's client" for the
+/// chat. A bare `sbx` looked up at each step would be whatever a relative or
+/// project-writable PATH entry holds.
+pub fn boundary_client(
+    program: &str,
+    path_var: &str,
+    writable: &[String],
+    cwd: &str,
+) -> Result<String, String> {
+    checked(program, path_var, writable, cwd).map_err(|e| {
+        if e.contains("not found on PATH") {
+            format!("{program} not found on PATH; --boundary sbx needs Docker's sbx (docs/install)")
+        } else {
+            e
+        }
+    })
+}
+
 /// One program, found and held to the companion's rule, as an absolute path.
 fn checked(
     program: &str,
@@ -379,6 +400,50 @@ fn absolute(p: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The review of E1-11, 6-1: `sbx` was looked up on PATH at every step,
+    /// so a stand-in in the project folder, reached through a relative PATH
+    /// entry, ran as the boundary's client with the chat token, and the
+    /// daemon's rule then hid its writes and connections. It is found once
+    /// and refused as the companion is.
+    #[cfg(unix)]
+    #[test]
+    fn review_6_1_a_stand_in_sbx_is_not_the_boundarys_client() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "derm-sbx-client-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..8]
+        ));
+        let proj = root.join("proj");
+        let bin = root.join("bin");
+        for d in [&proj, &bin] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for f in [proj.join("sbx"), bin.join("sbx")] {
+            std::fs::write(&f, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let real = |p: &std::path::Path| s(&std::fs::canonicalize(p).unwrap());
+        let (cwd, folders) = (s(&proj), vec![real(&proj)]);
+        // A relative PATH entry ahead of the real one.
+        let e = boundary_client("sbx", &format!(".:{}", s(&bin)), &folders, &cwd).unwrap_err();
+        assert!(e.contains("relative PATH entry"), "{e}");
+        // The chat's own folder on PATH, by its absolute name.
+        let e = boundary_client("sbx", &format!("{}:{}", s(&proj), s(&bin)), &folders, &cwd)
+            .unwrap_err();
+        assert!(e.contains("which the sandbox can write"), "{e}");
+        // The installed one: its real path.
+        assert_eq!(
+            boundary_client("sbx", &s(&bin), &folders, &cwd).unwrap(),
+            real(&bin.join("sbx"))
+        );
+        // None at all.
+        let e = boundary_client("sbx", &s(&root.join("none")), &folders, &cwd).unwrap_err();
+        assert!(e.contains("--boundary sbx needs Docker's sbx"), "{e}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// WW5-8 (the Windows test): the srt check stopped at "srt needs rg",
     /// then at "a relative PATH entry" for every Windows entry. Fails on

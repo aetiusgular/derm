@@ -103,11 +103,17 @@ fn hooks_native_crush_crush_pretooluse_allow_pre_approves_with_crush_s_envelope_
     support::replay::case(CASES, "hooks_native_crush_crush_pretooluse_allow_pre_approves_with_crush_s_envelope_only_for_a_rule_s_allow_case_72");
 }
 
-/// packages/derm-hooks-native/src/crush.test.ts :: Crush PreToolUse > the documented example's rm -rf / is allowed by an allow-bash rule; the policy, not the dialect, decides
+/// packages/derm-hooks-native/src/crush.test.ts :: Crush PreToolUse > the documented example's rm -rf / asks under an allow-bash rule (step 7e), and with no approver is denied; the policy, not the dialect, decides
+///
+/// Until eval pass 1 (E1-1) this case was "rm -rf / is allowed by an
+/// allow-bash rule", which was the finding. Its recorded call was taken
+/// again from the TypeScript test (record-setup.ts) and put in 5bB.json by
+/// hand: a full run of gen.mjs drops the cases whose TypeScript tests the
+/// wave 5b close removed.
 #[test]
-fn hooks_native_crush_crush_pretooluse_the_documented_example_s_rm_rf_is_allowed_by_an_allow_bash_rule_the_policy(
+fn hooks_native_crush_crush_pretooluse_the_documented_example_s_rm_rf_asks_under_an_allow_bash_rule_step_7e_and_w(
 ) {
-    support::replay::case(CASES, "hooks_native_crush_crush_pretooluse_the_documented_example_s_rm_rf_is_allowed_by_an_allow_bash_rule_the_policy");
+    support::replay::case(CASES, "hooks_native_crush_crush_pretooluse_the_documented_example_s_rm_rf_asks_under_an_allow_bash_rule_step_7e_and_w");
 }
 
 /// packages/derm-hooks-native/src/crush.test.ts :: Crush PreToolUse > deny is exit 2 with the reason on stderr and nothing on stdout (never exit 49 or halt, case 79)

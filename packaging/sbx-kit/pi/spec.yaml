@@ -1,0 +1,40 @@
+# derm's gate and emitter for Pi inside a Docker Sandboxes VM: a v2 mixin.
+# `derm run --boundary sbx pi` writes this file as spec.yaml in a folder of
+# its own, with files/home/.derm-kit-src/ beside it (derm's Pi package, the
+# two scripts, the person's policy), and passes the folder to `sbx create`
+# with --kit (crates/derm-cli/src/run/boundary/kit.rs). The folder is removed
+# after the create; nothing is published.
+#
+# Why v2, when derm's other kits are v3: Docker's Pi kit
+# (docker.io/sbx/pi-kit:latest, sbx-kits-contrib pi/spec.yaml) is a
+# `schemaVersion: "2"` sandbox, and sbx composes kits of one format only. A
+# v2 mixin with files/home and a root install step composed with it on the
+# box (sbx 0.51.0, 17 Nov 2026, a probe mixin, no model call): Pi 1.5.2 and
+# Node 22.22.1 in the VM, the agent uid 1000 in /home/agent, files/home
+# copied before the install commands, and `pi install <folder>` recorded in
+# ~/.pi/agent/settings.json.
+#
+# Grammar: sbx-kits-contrib README.md ("Write your spec.yaml") and
+# tck/testdata/args-install/spec.yaml at c279c9d. files/home/ lands in
+# /home/agent as the agent's own, so root's step moves the package out of
+# there before Pi first starts.
+schemaVersion: "2"
+kind: mixin
+name: derm-gate-pi
+version: "0.1.0"
+displayName: derm gate for Pi
+description: "Runs derm's Pi package inside the sandbox: its tool_call gate with a copy of the person's derm policy, and its emitter, which sends each call and decision to the derm daemon on the host."
+
+setup:
+  install:
+    # As root: moves derm's Pi package from the agent's home into
+    # /opt/derm-kit, writes the VM marker there, and puts the policy where
+    # the gate reads it. A failure stops the create, with the reason.
+    - command: "sh /home/agent/.derm-kit-src/install.sh"
+      user: "0"
+      description: Install derm's Pi package (in /opt/derm-kit, policy in ~/.derm)
+    # As the agent's user, whose Pi settings they are: Pi's own install
+    # command adds the package to ~/.pi/agent/settings.json.
+    - command: "sh /opt/derm-kit/setup.sh"
+      user: "1000"
+      description: Add derm's package to Pi

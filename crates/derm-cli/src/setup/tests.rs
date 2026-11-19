@@ -723,9 +723,14 @@ fn a_derm_hook_gate_needs_no_package_folder() {
 fn the_gate_package_comes_from_connects_table() {
     assert_eq!(super::gate_package("pi").as_deref(), Some("derm-pi"));
     assert_eq!(
-        super::gate_package("cursor").as_deref(),
-        Some("derm-hooks-native")
+        super::gate_package("opencode").as_deref(),
+        Some("derm-opencode-plugin")
     );
+    // A command-hook agent's gate is `derm hook` itself: its row names
+    // derm, and no package folder is ever asked for (19 Nov 2026: the
+    // wave 4 hook packages it once named are deleted).
+    assert_eq!(super::gate_package("cursor").as_deref(), Some("derm"));
+    assert!(super::gate_is_derm_hook("cursor"));
     assert_eq!(super::gate_package("zed"), None);
 }
 

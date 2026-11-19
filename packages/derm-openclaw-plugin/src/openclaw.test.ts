@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
 import entry from "../index.ts";
-import { REDACTED } from "./core/redact.ts";
+const REDACTED = "[redacted by derm]"; // the gate's mark (derm_core::redact)
 import { DERM_PRIORITY, afterToolCall, beforeToolCall, defaultDeps, toolForGate, type Deps } from "./openclaw.ts";
 import { GateServe } from "./serve/client.ts";
 
@@ -152,11 +152,9 @@ describe("plugin files", () => {
     expect(pkg.openclaw.extensions).toEqual(["./index.ts"]);
   });
 
-  it("the core copy is byte-identical to the canonical one (sync-core.mjs does not list this package yet)", () => {
-    const canonical = path.join(here, "..", "..", "derm-claude-plugin", "src", "core");
-    const files = readdirSync(canonical).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts")).sort();
-    expect(readdirSync(path.join(here, "core")).filter((f) => f.endsWith(".ts")).sort()).toEqual(files);
-    for (const f of files) expect(readFileSync(path.join(here, "core", f)).equals(readFileSync(path.join(canonical, f))), f).toBe(true);
+  it("the core copy is byte-identical to the canonical one", () => {
+    const script = path.join(here, "..", "..", "derm-claude-plugin", "scripts", "sync-core.mjs");
+    expect(() => execFileSync(process.execPath, [script, "--check"], { encoding: "utf8" })).not.toThrow();
   });
 });
 

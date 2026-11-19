@@ -52,8 +52,7 @@
       "where": "~/.qwen/settings.json, PreToolUse",
       "status": "built",
       "wave": 4,
-      "lane": "L",
-      "package": "packages/derm-hooks-claude-compat"
+      "lane": "L"
     },
     "failMode": "open",
     "failSwitch": null,

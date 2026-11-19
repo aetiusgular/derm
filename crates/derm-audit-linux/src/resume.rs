@@ -181,15 +181,22 @@ pub fn decide(
     if Path::new(&p.log) != log {
         return (Start::End, None);
     }
+    // E1-15: the file is known by its inode and the line kept at the place
+    // (its bytes' end and its event's time and serial). The device number is
+    // not asked to match when that line holds: `st_dev` is the disk's
+    // major:minor, which the kernel hands out in probe order, and a machine
+    // with two NVMe drives came up with them swapped (the box, 17 Nov 2026:
+    // root on nvme0n1p2, then on nvme1n1p2). With no line to check, the
+    // device must match as before.
     let holds = |f: Found, which: Which| {
-        (f.dev, f.inode) == (p.dev, p.inode)
+        f.inode == p.inode
             && p.offset <= f.len
             && match p.check {
                 Some(c) => {
                     (c.start == p.offset || c.end <= p.offset)
                         && line_at(which, c.start) == Some((c.end, (c.ts_ms, c.serial)))
                 }
-                None => p.offset == 0,
+                None => f.dev == p.dev && p.offset == 0,
             }
     };
     if holds(cur, Which::Log) {
@@ -206,10 +213,10 @@ pub fn decide(
             );
         }
     }
-    let same_file = (cur.dev, cur.inode) == (p.dev, p.inode);
+    let same_file = cur.inode == p.inode;
     let reason = if same_file && p.offset > cur.len {
         "the audit log was cut shorter than the feed's place"
-    } else if same_file || rotated.iter().any(|r| (r.dev, r.inode) == (p.dev, p.inode)) {
+    } else if same_file || rotated.iter().any(|r| r.inode == p.inode) {
         "the line at the feed's place is not the one it kept (the file was rewritten, or its inode reused)"
     } else {
         "the audit log rotated past the feed's place while it was down"
@@ -533,6 +540,89 @@ mod tests {
         assert!(g.is_none());
     }
 
+    /// E1-15 (the box's reboot check, 17 Nov 2026): the root disk was
+    /// `nvme0n1p2` on one boot and `nvme1n1p2` on the next (the kernel log
+    /// of both boots, the same filesystem UUID), so every file's `st_dev`
+    /// changed. The place, kept by device and inode, was read as "rotated
+    /// past": a gap was reported from 19:03 back to 16:30 and the feed read
+    /// `<log>.1` again from its start. The inode and the line at the place
+    /// still held. A place whose line holds is the place, whatever the
+    /// device number says.
+    #[test]
+    fn e1_15_a_device_number_that_changed_across_a_reboot_is_not_a_gap() {
+        let moved = |inode: u64, len: u64| Found { dev: 2, inode, len };
+        // In the log itself.
+        let (s, g) = decide(
+            &Loaded::Kept(pos(7, 500)),
+            Path::new(LOG),
+            moved(7, 900),
+            &[moved(6, 600)],
+            false,
+            true,
+            &same,
+        );
+        assert_eq!(s, Start::At(500));
+        assert!(g.is_none(), "{g:?}");
+        // In a rotated file.
+        let only_rotated =
+            |w: Which, start: u64| (w == Which::Rotated(2)).then_some((start + 40, K));
+        let (s, g) = decide(
+            &Loaded::Kept(pos(7, 500)),
+            Path::new(LOG),
+            moved(9, 40),
+            &[moved(8, 600), moved(7, 600)],
+            false,
+            true,
+            &only_rotated,
+        );
+        assert_eq!(
+            s,
+            Start::Rotated {
+                file: 2,
+                offset: 500
+            }
+        );
+        assert!(g.is_none(), "{g:?}");
+        // The same inode number on the other device with another line
+        // there is not the place: a gap, as before.
+        let (s, g) = decide(
+            &Loaded::Kept(pos(7, 500)),
+            Path::new(LOG),
+            moved(7, 900),
+            &[],
+            false,
+            true,
+            &other,
+        );
+        assert_eq!(s, Start::Beginning);
+        assert!(g.is_some());
+        // A place with no line to check (offset 0 of an empty read) is held
+        // only on the device it was kept on: the inode alone proves nothing.
+        let mut bare = pos(7, 0);
+        bare.check = None;
+        let (_, g) = decide(
+            &Loaded::Kept(bare.clone()),
+            Path::new(LOG),
+            moved(7, 900),
+            &[],
+            false,
+            true,
+            &same,
+        );
+        assert!(g.is_some());
+        let (s, g) = decide(
+            &Loaded::Kept(bare),
+            Path::new(LOG),
+            found(7, 900),
+            &[],
+            false,
+            true,
+            &same,
+        );
+        assert_eq!(s, Start::At(0));
+        assert!(g.is_none());
+    }
+
     #[test]
     fn bw5r4_1_a_place_in_the_rotated_log_is_read_on_there_first() {
         let only_rotated =
@@ -717,9 +807,27 @@ mod tests {
         );
         assert_eq!(s, Start::Rotated { file: 1, offset: 0 });
         assert!(g.unwrap().reason.contains("inode reused"));
-        // Another device with the same inode number is not the file either.
+        // Another device with the same inode number and another line at
+        // the place is not the file either.
+        //
+        // Changed on purpose by E1-15 (17 Nov 2026, Tony's yes): this used
+        // to assert a gap here even with the kept line at the place. That
+        // was the box's reboot, where the disk's device number changed and
+        // the file had not (`e1_15_...` above). The line at the place is
+        // what tells the file from one that reused its inode number.
         let mut p = pos(7, 500);
         p.dev = 2;
+        let (s, g) = decide(
+            &Loaded::Kept(p.clone()),
+            Path::new(LOG),
+            found(7, 800),
+            &[],
+            false,
+            true,
+            &other,
+        );
+        assert_eq!(s, Start::Beginning);
+        assert!(g.unwrap().reason.contains("inode reused"));
         let (s, g) = decide(
             &Loaded::Kept(p),
             Path::new(LOG),
@@ -729,8 +837,8 @@ mod tests {
             true,
             &same,
         );
-        assert_eq!(s, Start::Beginning);
-        assert!(g.is_some());
+        assert_eq!(s, Start::At(500));
+        assert!(g.is_none());
     }
 
     #[test]

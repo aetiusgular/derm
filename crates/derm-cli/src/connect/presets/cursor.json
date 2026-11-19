@@ -36,11 +36,10 @@
     "orcaId": "cursor",
     "gate": {
       "family": "command-hook",
-      "where": "~/.cursor/hooks.json version 1: preToolUse and beforeMCPExecution, failClosed: true (packages/derm-hooks-native/registration/cursor/hooks.json)",
+      "where": "~/.cursor/hooks.json version 1: preToolUse and beforeMCPExecution, failClosed: true (as `derm connect` writes it)",
       "status": "built",
       "wave": 4,
-      "lane": "N",
-      "package": "packages/derm-hooks-native"
+      "lane": "N"
     },
     "failMode": "blocks-with-switch",
     "failSwitch": "failClosed: true",

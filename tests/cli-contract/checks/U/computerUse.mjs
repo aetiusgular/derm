@@ -185,7 +185,8 @@ async function claudeToolCheck({ claudePath }) {
   if (!bin) return { status: "skip", finding: "no debug derm-daemon (cargo build -p derm-daemon, or DERM_DAEMON_DEBUG)" };
   const top = mkdtempSync(path.join(os.tmpdir(), "derm-cu-u-"));
   const HOME = path.join(top, "home");
-  const RUN = path.join(top, "run");
+  // E1-10: the daemon's folder is under the home folder on Linux (~/.derm/run/derm), no longer $XDG_RUNTIME_DIR/derm.
+  const RUN = path.join(top, "home", ".derm", "run");
   const DATA = path.join(top, "data");
   const BIN = path.join(top, "bin");
   for (const d of [HOME, RUN, DATA, BIN, path.join(HOME, ".derm")]) mkdirSync(d, { recursive: true, mode: 0o700 });

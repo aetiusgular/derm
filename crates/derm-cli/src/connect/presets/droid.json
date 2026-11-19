@@ -13,8 +13,7 @@
       "where": "hooks in ~/.factory/settings.json beside Orca's entry; never create ~/.factory/hooks.json or ~/.factory/hooks/hooks.json",
       "status": "built",
       "wave": 4,
-      "lane": "L",
-      "package": "packages/derm-hooks-claude-compat"
+      "lane": "L"
     },
     "failMode": "open",
     "failSwitch": null,

@@ -5,8 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { startFakeDaemon, type FakeDaemon } from "../../derm-claude-plugin/src/testing/fakeDaemon.ts";
-import { REDACTED } from "./core/redact.ts";
-import { decide } from "./decide.ts";
+const REDACTED = "[redacted by derm]"; // the gate's mark (derm_core::redact)
 import { DermBlocked, after, before, defaultDeps, dermPathFile, type Deps } from "./opencode.ts";
 import * as entry from "./plugin.ts";
 import { GateServe } from "./serve/client.ts";
@@ -125,14 +124,6 @@ describe("plugin files", () => {
     expect(entry.default.id).toBe("derm");
     const hooks = await entry.default.server();
     expect(Object.keys(hooks).sort()).toEqual(["tool.execute.after", "tool.execute.before"]);
-  });
-  it("MCP names with a dash in the server match the server (lane F's gap, closed by integration w1: servers are normalized with step 1)", () => {
-    const d = decide({ tool: "my-server_x", args: {} }, { policy: { version: 1, askTimeoutSeconds: 60, servers: ["my-server"], rules: [{ tool: "my_server/*", action: "allow" }] } });
-    expect(d.action).toBe("allow");
-    expect(d.reason).toMatch(/^rule my_server\/\*/);
-  });
-  it("decide denies anything that is not a tool call", () => {
-    expect(decide({}).action).toBe("deny");
   });
   it("the core copy is byte-identical to the canonical one", () => {
     const script = path.join(here, "..", "..", "derm-claude-plugin", "scripts", "sync-core.mjs");

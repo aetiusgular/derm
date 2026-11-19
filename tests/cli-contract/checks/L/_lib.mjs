@@ -5,15 +5,25 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawnGroup, stopGroup } from "../../lib/procs.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
+import { dermBin } from "../../lib/dermBin.mjs";
 
 export const checks = [];
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const HOOK = path.resolve(HERE, "..", "..", "..", "..", "packages", "derm-hooks-claude-compat", "bin", "derm-hook.mjs");
-export const hookCommand = (agent) => `node --no-warnings "${HOOK}" ${agent} pre`;
+// The gate is derm itself: `<derm> hook <agent> pre`, by the absolute path of
+// this repository's build (DERM_BIN, else target/release or target/debug),
+// the command `derm connect <agent> --gate` registers (crates/derm-cli/src/
+// connect/gates.json). Until 19 Nov 2026 these checks ran the TypeScript
+// hook package this lane wrote (`node .../derm-hook.mjs <agent>`), which was
+// deleted that day; they have not been run against the agents since the
+// change.
+export function derm() {
+  const b = dermBin();
+  if (!b) throw new Error("no derm build for the gate (DERM_BIN, target/release/derm, target/debug/derm): cargo build -p derm-cli");
+  return b;
+}
+export const hookCommand = (agent) => `"${derm()}" hook ${agent} pre`;
 
 export const ALLOW = { version: 1, askTimeoutSeconds: 5, rules: [{ tool: "bash", action: "allow" }] };
 export const DENY = { version: 1, rules: [{ tool: "bash", action: "deny" }] };

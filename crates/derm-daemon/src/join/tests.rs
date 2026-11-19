@@ -3342,6 +3342,62 @@ fn fp13r_5_a_feed_gap_does_not_tell_the_join_the_feed_is_current() {
     assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
 }
 
+/// The review of eval pass 1's fixes, E1R-19, asked for a margin around the
+/// other call's window before the call running at a fork is taken alone. Not
+/// taken (`place_child` says why); this holds the behaviour the fixture
+/// needs: a fork 12 ms after one call's end record, inside the next call, is
+/// the next call's.
+#[test]
+fn e1r_19_a_fork_just_past_a_calls_end_is_the_running_calls() {
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_A", "bash", &[], 1_000, Some(2_000));
+    call(&mut j, "toolu_B", "bash", &[], 2_010, None);
+    effect(&mut j, "fork", 2_012, ROOT, 1, json!({"child": 7001}));
+    let near = effect(
+        &mut j,
+        "exec",
+        2_013,
+        7001,
+        ROOT,
+        json!({"exe": "/bin/zsh"}),
+    );
+    assert_eq!(near.len(), 1, "{near:?}");
+    assert_eq!(near[0].detail["chosen"], "tap-chat-j-toolu_B");
+}
+
+/// E1-3: the feed's `feed.unwatched` is its own note like `feed.gap`: it
+/// has no OS time, so it says nothing about how far the feed has read.
+#[test]
+fn e1_3_a_feed_unwatched_note_does_not_tell_the_join_the_feed_is_current() {
+    let mut note = ev(
+        Source::Auditd,
+        "feed.unwatched",
+        42_500,
+        None,
+        json!({"paths": ["/home/u/.aws"], "checkedMs": 42_500}),
+    );
+    note.chat_id = String::new();
+    note.id = "auditd-unwatched-42500".into();
+    assert_eq!(feed_progress(&note), None);
+    let mut j = Join::new();
+    start(&mut j);
+    call(&mut j, "toolu_G", "bash", &[], 1_000, Some(2_000));
+    effect(&mut j, "fork", 1_100, ROOT, 1, json!({"child": 6301}));
+    j.observe(&ev(Source::Run, "run.stop", 2_500, Some(ROOT), json!({})));
+    j.observe(&note);
+    let mut late = ev(
+        Source::Auditd,
+        "exec",
+        42_501,
+        Some(6301),
+        json!({"ppid": ROOT, "auditAt": 1_150, "exe": "/bin/sh"}),
+    );
+    late.id = "auditd-1150-1".into();
+    let r = j.observe(&late);
+    assert_eq!(j.after_for(CHAT), None, "counted as after the stop: {r:?}");
+}
+
 /// Box retest of fix pass 13r, BW5R5-4: a real Claude Code 2.1.319 chat under
 /// srt 0.0.81 on Linux, its records as the daemon logged them on the box
 /// (`fixtures/README.md`). Inside bubblewrap's PID namespace a fork's
@@ -3386,4 +3442,64 @@ fn bw5r5_4_under_srt_on_linux_the_harnesss_shell_is_its_calls() {
         "{}",
         write.detail
     );
+}
+
+/// E1-2 (E1 on the box, 16 Nov 2026), from the daemon's own records
+/// (`fixtures/README.md`): two shell calls one after the other, 59 ms
+/// apart. Each call's window stays open `SLACK_AFTER_MS` after its end and
+/// opens `SLACK_BEFORE_MS` before its start, so both were open at each
+/// shell's fork and neither write was credited. A call that runs at the
+/// fork by its own records (started, not ended) comes before one the fork
+/// meets only through the slack.
+fn e1_2_events() -> Vec<Event> {
+    include_str!("fixtures/none-linux-claude-2.1.322-two-calls.jsonl")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("a recorded event"))
+        .collect()
+}
+
+fn e1_2_chosen(out: &[Event], effect: &str) -> Value {
+    out.iter()
+        .find(|r| r.detail.get("effect").and_then(Value::as_str) == Some(effect))
+        .unwrap_or_else(|| panic!("no join record for {effect}: {} records", out.len()))
+        .detail["chosen"]
+        .clone()
+}
+
+const E1_2_A: &str = "auditd-1794827388250-508885";
+const E1_2_B: &str = "auditd-1794827388274-508921";
+const E1_2_CALL_A: &str =
+    "claude-code-toolu_e1twocallsdi0x88048-decision-0a3e73bb492741b8ac67e43c91a6307b";
+const E1_2_CALL_B: &str =
+    "claude-code-toolu_e1twocallsdi1x88048-decision-2896d60df7a44b9aa852839945a47398";
+
+#[test]
+fn e1_2_two_calls_one_after_the_other_each_own_their_write_as_the_daemon_received_them() {
+    // The order the daemon got them in: every gate record, then the OS feed.
+    let mut j = Join::new();
+    let mut out = Vec::new();
+    for e in &e1_2_events() {
+        out.extend(j.observe(e));
+    }
+    assert_eq!(e1_2_chosen(&out, E1_2_A), E1_2_CALL_A);
+    assert_eq!(e1_2_chosen(&out, E1_2_B), E1_2_CALL_B);
+}
+
+#[test]
+fn e1_2_two_calls_one_after_the_other_each_own_their_write_in_time_order() {
+    let mut events = e1_2_events();
+    events.sort_by_key(|e| {
+        e.detail
+            .get("auditAt")
+            .and_then(Value::as_i64)
+            .unwrap_or(e.at)
+    });
+    let mut j = Join::new();
+    let mut out = Vec::new();
+    for e in &events {
+        out.extend(j.observe(e));
+    }
+    assert_eq!(e1_2_chosen(&out, E1_2_A), E1_2_CALL_A);
+    assert_eq!(e1_2_chosen(&out, E1_2_B), E1_2_CALL_B);
 }

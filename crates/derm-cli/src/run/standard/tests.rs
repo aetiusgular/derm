@@ -18,6 +18,7 @@ fn plan(program: &str, args: &[&str], folders: &[&str]) -> Plan {
         state_dirs: Vec::new(),
         notes: Vec::new(),
         full_access: Vec::new(),
+        asks_allow: false,
         companion: None,
         scratch_dir: None,
     }

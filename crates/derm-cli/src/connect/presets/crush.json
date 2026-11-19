@@ -40,11 +40,10 @@
     "orcaId": "crush",
     "gate": {
       "family": "command-hook",
-      "where": "hooks.PreToolUse in ~/.config/crush/crush.json (packages/derm-hooks-native/registration/crush/crush.json)",
+      "where": "hooks.PreToolUse in ~/.config/crush/crush.json (as `derm connect` writes it)",
       "status": "built",
       "wave": 4,
-      "lane": "N",
-      "package": "packages/derm-hooks-native"
+      "lane": "N"
     },
     "failMode": "open",
     "failSwitch": null,

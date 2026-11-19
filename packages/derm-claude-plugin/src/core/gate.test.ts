@@ -58,6 +58,58 @@ describe("full access", () => {
   // name, a secret they cannot rewrite) and hand them to resolveAsk; under
   // full access none of them may go back to the agent's own prompt, which is
   // off, nor wait for an approver.
+  // E1-14 (Terminal-Bench on the box, 16 Nov 2026): inside a boundary that
+  // derm run named as the answer, the gate asks the daemon and an ask the
+  // boundary answers is allowed and recorded. The variable is a hint to ask;
+  // the daemon's word decides.
+  it("allows an ask the chat's boundary answers, and nothing a forged hint asks for", async () => {
+    const saved = { full: process.env.DERM_FULL_ACCESS, asks: process.env.DERM_ASKS };
+    process.env.DERM_FULL_ACCESS = "1";
+    process.env.DERM_ASKS = "boundary";
+    try {
+      // 17 Nov 2026: the four agents derm's command-hook sbx kit covers,
+      // whose hooks put every ask to resolveAsk (derm-hooks-claude-compat
+      // src/hook.ts, derm-hooks-native src/runner.ts).
+      for (const harness of ["claude-code", "codex", "copilot-cli", "droid", "cursor", "kiro"]) {
+        const call = { harness, tool: "bash", toolInput: { command: "ls *.py" } };
+        const answer = decideCall(ask, call) as GateAnswer;
+        expect(answer.action, harness).toBe("ask");
+        const seen: (boolean | undefined)[] = [];
+        const boundary = async (r: { boundaryOnly?: boolean }) => (seen.push(r.boundaryOnly), { answer: "yes" as const, by: "boundary" as const });
+        const r = await resolveAsk(answer, call, true, boundary);
+        expect(r.kind).toBe("allow");
+        expect(r.reason).toMatch(/allows what it would ask and records it/);
+        expect(seen).toEqual([true]);
+        for (const out of [
+          { answer: "no" as const, by: "none" as const },
+          { answer: "yes" as const, by: "approver" as const },
+          { answer: "no" as const, by: "timeout" as const },
+          { unreachable: "no daemon" },
+        ]) {
+          const d = await resolveAsk(answer, call, true, async () => out);
+          expect(d.kind, JSON.stringify(out)).toBe("deny");
+          expect(d.reason).toMatch(/full access/);
+        }
+        const thrown = await resolveAsk(answer, call, true, async () => {
+          throw new Error("x");
+        });
+        expect(thrown.kind).toBe("deny");
+      }
+      // A deny rule stays a deny; an agent not read for this keeps the old rule.
+      const deny = { policy: parsePolicy({ version: 1, rules: [{ tool: "bash", action: "deny" }] }) as PolicyFile };
+      expect(decideCall(deny, { harness: "codex", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");
+      expect(decideCall(ask, { harness: "opencode", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");
+      // Without the hint: as before.
+      delete process.env.DERM_ASKS;
+      expect(decideCall(ask, { harness: "codex", tool: "bash", toolInput: { command: "ls" } }).action).toBe("deny");
+    } finally {
+      for (const [k, v] of [["DERM_FULL_ACCESS", saved.full], ["DERM_ASKS", saved.asks]] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it("denies an ask that reaches resolveAsk, without asking anyone", async () => {
     const answer = decideCall(ask, { harness: "grok", tool: "bash", toolInput: { command: "ls" } }) as GateAnswer;
     expect(answer.action).toBe("ask");

@@ -17,15 +17,15 @@
       "fullAccess": [
         "--dangerously-bypass-approvals-and-sandbox"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts codex --dangerously-bypass-approvals-and-sandbox (sbx-kits-contrib 1de3c1e codex/spec.yaml:34, extractedFromBuiltin; I for 0.51.0). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are). Under sbx the tap does not reach Codex yet (lane S, D11)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box through derm run with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0, Codex 0.169.0 in the VM; no model call, Codex itself took no turn)",
+      "note": "The kit starts codex --dangerously-bypass-approvals-and-sandbox (sbx-kits-contrib 1de3c1e codex/spec.yaml:34, extractedFromBuiltin; I for 0.51.0). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit (packaging/sbx-kit/codex, DERM_SBX_KIT=off turns it off) with a Linux derm for the VM and derm's Codex plugin, so the gate there is derm's own and keeps the chat's taint in the daemon. On a host that is not Linux the kit needs ~/.derm/kit/derm-linux-<arch>, and with none the chat runs without it. Under sbx the tap does not reach Codex yet (lane S, D11)."
     },
     "pi": {
       "name": "docker.io/sbx/pi-kit:latest",
       "from": "sbx-kits-contrib",
       "fullAccess": [],
       "verifiedAt": "sbx 0.51.0, run on the box and the Mac with --kit (plans/parallel/tk_sbx_smoke.md, 4 Nov 2026); the positional form sbx's warning names: not run",
-      "note": "A sandbox kit, so it is the first positional argument of sbx create, not --kit (SB1; sbx-kits-contrib 1de3c1e README.md:227). Pi 1.5.0 in the VM, past the preset's 1.4.0 (case 81). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are) (SB6)."
+      "note": "A sandbox kit, so it is the first positional argument of sbx create, not --kit (SB1; sbx-kits-contrib 1de3c1e README.md:227). Pi 1.5.0 in the VM, past the preset's 1.4.0 (case 81). None of the host's hooks, plugins or extensions are in the VM (SB6); derm adds its own kit (packaging/sbx-kit/pi, a v2 mixin since this kit is a v2 sandbox; DERM_SBX_KIT=off turns it off) with derm's Pi package, whose emitter sends its records to the daemon on the host. Seen on the box through derm run, 17 Nov 2026: Pi 1.5.2 in the VM loaded the package and its prompt, model.request and message records reached the daemon; no tool call was made (no credential), so the gate itself has not decided a call there."
     },
     "opencode": {
       "name": "opencode",
@@ -49,8 +49,8 @@
       "fullAccess": [
         "--yolo"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts cursor-agent --yolo (sbx-kits-contrib 1de3c1e cursor/spec.yaml:41, extractedFromBuiltin). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts cursor-agent --yolo (sbx-kits-contrib 1de3c1e cursor/spec.yaml:41, extractedFromBuiltin). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "hermes": {
       "name": "docker.io/sbx/hermes-agent-kit:latest",
@@ -74,8 +74,8 @@
       "fullAccess": [
         "--yolo"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts copilot --yolo (sbx-kits-contrib 1de3c1e copilot/spec.yaml:16; I that the built-in is the same). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts copilot --yolo (sbx-kits-contrib 1de3c1e copilot/spec.yaml:16; I that the built-in is the same). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "amp": {
       "name": "docker.io/sbx/amp-kit:latest",
@@ -126,8 +126,8 @@
       "name": "droid",
       "from": "sbx",
       "fullAccess": [],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts droid with no flag (sbx-kits-contrib 1de3c1e droid/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts droid with no flag (sbx-kits-contrib 1de3c1e droid/spec.yaml). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "kimi": null,
     "kiro": {
@@ -136,8 +136,8 @@
       "fullAccess": [
         "--trust-all-tools"
       ],
-      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); not run here",
-      "note": "The kit starts kiro chat --trust-all-tools (sbx-kits-contrib 1de3c1e kiro/spec.yaml). derm's gate is not in the VM (none of the host's hooks, plugins or extensions are)."
+      "verifiedAt": "sbx 0.51.0, its built-in agent (docs.docker.com/reference/cli/sbx/run, read 4 Nov 2026); created on the box with derm's kit and its hook run in the VM by hand, 17 Nov 2026 (sbx 0.51.0; no model call, the agent itself not run)",
+      "note": "The kit starts kiro chat --trust-all-tools (sbx-kits-contrib 1de3c1e kiro/spec.yaml). None of the host's hooks, plugins or extensions are in the VM; derm adds its own kit with the gate (packaging/sbx-kit/hooks, DERM_SBX_KIT=off turns it off), registered in the agent's own config there."
     },
     "mistral-vibe": {
       "name": "docker.io/sbx/vibe-kit:latest",

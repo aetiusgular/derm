@@ -205,14 +205,15 @@ mod unix {
         if cfg!(target_os = "macos") {
             return;
         }
+        // E1-10: the socket's folder comes from the home folder alone on
+        // Linux, so the variable a project could aim into itself is HOME
+        // now (until then this loop set `XDG_RUNTIME_DIR`, which is no
+        // longer read).
         for runtime in [
             t.project.join("run").display().to_string(),
             "relative/run".to_string(),
         ] {
-            let env = Env::of(&[
-                ("XDG_RUNTIME_DIR", &runtime),
-                ("DERM_CHAT_TOKEN", CHAT_TOKEN),
-            ]);
+            let env = Env::of(&[("HOME", &runtime), ("DERM_CHAT_TOKEN", CHAT_TOKEN)]);
             let e = exchange(
                 &[json!({"op": "event", "event": {"id": "x"}})],
                 &opts(&env, &t.project),
@@ -258,6 +259,7 @@ mod unix {
             tool: "bash".into(),
             summary: "bash: ls".into(),
             timeout_seconds: 1,
+            boundary_only: false,
         };
         assert_eq!(
             approve(&r, &env, &t.project),
@@ -292,6 +294,59 @@ mod unix {
             matches!(approve(&r, &env, &t.project), ApproveOutcome::Unreachable(w) if w.contains("timed out"))
         );
         assert!(t0.elapsed() < Duration::from_secs(10));
+    }
+
+    /// E1-16 (the box, 17 Nov 2026): the TypeScript client turned the
+    /// boundary's yes into no, so E1-14's allow never happened on that
+    /// route. This holds the same rule for this client against a daemon
+    /// that answers as the real one does: the boundary's yes counts for a
+    /// request that asked the boundary alone, and for no other.
+    #[test]
+    fn e1_16_the_boundarys_yes_counts_only_for_a_boundary_only_request() {
+        let t = tree();
+        let d = FakeDaemon::start(Approve::Boundary, None);
+        let env = Env(d.env(true).into_iter().collect());
+        let ask = |boundary_only: bool| ApproveRequest {
+            id: "ap".into(),
+            chat: "c".into(),
+            harness: "codex".into(),
+            tool: "bash".into(),
+            summary: "bash: ls *.py".into(),
+            timeout_seconds: 1,
+            boundary_only,
+        };
+        assert_eq!(
+            approve(&ask(true), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: true,
+                by: By::Boundary
+            }
+        );
+        assert_eq!(
+            approve(&ask(false), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: false,
+                by: By::None
+            }
+        );
+        // A yes by the boundary to a request that did not ask for one.
+        d.set_approve(Approve::BoundaryUnasked);
+        assert_eq!(
+            approve(&ask(false), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: false,
+                by: By::Boundary
+            }
+        );
+        // And an approver's yes is not the boundary's.
+        d.set_approve(Approve::Yes);
+        assert_eq!(
+            approve(&ask(true), &env, &t.project),
+            ApproveOutcome::Answer {
+                yes: false,
+                by: By::Approver
+            }
+        );
     }
 
     #[test]
@@ -516,7 +571,7 @@ mod unix {
             ],
         );
         // Where this OS's default socket is for that environment (macOS:
-        // under HOME's Library; elsewhere: under XDG_RUNTIME_DIR).
+        // under HOME's Library; elsewhere, since E1-10: under HOME's .derm).
         let default = socket_path(&env.with("DERM_DAEMON_SOCKET", ""));
         std::fs::create_dir_all(default.parent().unwrap()).unwrap();
         std::fs::write(&default, "").unwrap();

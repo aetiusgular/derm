@@ -1,12 +1,26 @@
 #!/usr/bin/env node
-// Copies the shared hook core from packages/derm-claude-plugin/src/core/ (the
-// canonical copy) into every package in `targets` below. Each harness copies a
-// plugin's own folder into its cache and nothing outside it, so each plugin
-// carries the core itself. A test in each plugin checks the copies are
-// byte-identical (src/core.vendored.test.ts).
+// Copies files of the shared hook core from packages/derm-claude-plugin/src/core/
+// (the canonical copy) into the packages in `targets` below. Each harness
+// copies a plugin's own folder into its cache and nothing outside it, so a
+// plugin carries what it uses of the core itself. A test in each plugin runs
+// this with --check.
 //
 //   node packages/derm-claude-plugin/scripts/sync-core.mjs          copy
 //   node packages/derm-claude-plugin/scripts/sync-core.mjs --check  exit 1 on any difference
+//
+// Who carries what (19 Nov 2026). Every gate decides in Rust: `derm hook` for
+// the command hooks, `derm gate serve` for the plugins. So a plugin carries
+// only the small files its own process still uses:
+// - owner.ts: who may own derm's files, for the serve client's check of the
+//   derm it starts (Kilo, OpenClaw, OpenCode, Cline, Amp).
+// - redact.ts: Cline's and Amp's guard in front of redaction, and Amp's
+//   dialog text and its redaction with no co-process.
+// - text.ts: Cline's approval responder's folder test.
+// The whole core stays in one more place: derm-gemini-extension, whose policy
+// printer (bin/derm-gemini-policy.mjs) reads the policy with the TypeScript
+// matcher's loader and has no Rust form yet. The copies that left: Codex's
+// and Hermes's at the wave 5b close; the compat and native hook packages',
+// with the packages, and the matcher in the five plugins, on 19 Nov 2026.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -14,42 +28,42 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const source = path.join(here, "..", "src", "core");
-// derm-gemini-extension and derm-kilo-plugin added by integration w1 for wave 2 lane I;
-// derm-hermes-plugin and derm-openclaw-plugin by integration w2 (lane I's request 3);
-// the four wave 4 packages by integration w2's scaffold (section 8, step 6).
-// The wave 5b close (11 Nov) removed derm-codex-plugin and derm-hermes-plugin:
-// their hooks run `derm hook` in Rust and no file of theirs reads the core.
-// The rest keep a copy until their last reader moves (the close's status doc,
-// switch-over: Amp's TypeScript gate, the shims' owner checks, Gemini's policy
-// writer, the compat and native packages' contract checks).
-const targets = [
-  "derm-opencode-plugin",
-  "derm-gemini-extension",
-  "derm-kilo-plugin",
-  "derm-openclaw-plugin",
-  "derm-hooks-claude-compat",
-  "derm-hooks-native",
-  "derm-amp-plugin",
-  "derm-cline",
-].map((p) => path.join(here, "..", "..", p, "src", "core"));
 const check = process.argv.includes("--check");
 
 // Tests stay with the canonical copy. Subfolders the core holds whole are
-// listed here: `installs/` is wave 5 lane X's seam (the wave 5 base), copied
-// like the core's own files.
+// listed here: `installs/` is wave 5 lane X's seam (the wave 5 base).
 const SUBFOLDERS = ["installs"];
 const tsIn = (dir) => (existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".ts")) : []);
-const files = [
+const all = [
   ...tsIn(source),
   ...SUBFOLDERS.flatMap((d) => tsIn(path.join(source, d)).map((f) => path.join(d, f))),
 ]
   .filter((f) => !f.endsWith(".test.ts"))
   .sort();
+
+/** Package name to the core files it carries; `all` is the whole core. */
+const targets = {
+  "derm-gemini-extension": all,
+  "derm-opencode-plugin": ["owner.ts"],
+  "derm-kilo-plugin": ["owner.ts"],
+  "derm-openclaw-plugin": ["owner.ts"],
+  "derm-amp-plugin": ["owner.ts", "redact.ts"],
+  "derm-cline": ["owner.ts", "redact.ts", "text.ts"],
+};
+
 let differences = 0;
-for (const target of targets) {
+let copies = 0;
+for (const [pkg, files] of Object.entries(targets)) {
+  const target = path.join(here, "..", "..", pkg, "src", "core");
+  for (const f of files) {
+    if (!all.includes(f)) {
+      console.error(`${pkg}: ${f} is not a file of the core`);
+      process.exit(1);
+    }
+  }
   if (!check) {
     mkdirSync(target, { recursive: true });
-    for (const d of SUBFOLDERS) mkdirSync(path.join(target, d), { recursive: true });
+    for (const d of SUBFOLDERS) if (files.some((f) => f.startsWith(d + path.sep))) mkdirSync(path.join(target, d), { recursive: true });
   }
   const present = [...tsIn(target), ...SUBFOLDERS.flatMap((d) => tsIn(path.join(target, d)).map((f) => path.join(d, f)))];
   for (const extra of present.filter((f) => !files.includes(f))) {
@@ -58,6 +72,7 @@ for (const target of targets) {
     else rmSync(path.join(target, extra));
   }
   for (const f of files) {
+    copies++;
     const want = readFileSync(path.join(source, f));
     const dest = path.join(target, f);
     const have = existsSync(dest) ? readFileSync(dest) : null;
@@ -69,7 +84,7 @@ for (const target of targets) {
 }
 if (check) {
   if (differences) process.exit(1);
-  console.log(`core copies match (${files.length} files x ${targets.length} plugins)`);
+  console.log(`core copies match (${copies} files in ${Object.keys(targets).length} packages)`);
 } else {
-  console.log(`synced ${files.length} core files into ${targets.length} plugins (${differences} written or removed)`);
+  console.log(`synced ${copies} core files into ${Object.keys(targets).length} packages (${differences} written or removed)`);
 }

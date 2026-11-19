@@ -10,7 +10,12 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-export type ApproveBehaviour = "yes" | "no" | "none" | "timeout" | "hang" | "close" | "refuse";
+/**
+ * "boundary" answers as the real daemon does for a chat whose run.start said
+ * `asks: "allow"` (E1-14): yes by `boundary` to a request with `boundaryOnly`,
+ * and no approver for any other.
+ */
+export type ApproveBehaviour = "yes" | "no" | "none" | "timeout" | "hang" | "close" | "refuse" | "boundary" | "boundary-unasked";
 
 export type FakeDaemon = {
   dir: string;
@@ -101,6 +106,9 @@ export async function startFakeDaemon(opts: { approve?: ApproveBehaviour; root?:
           else if (behaviour === "no") send({ ok: true, id, answer: "no", by: "approver" });
           else if (behaviour === "none") send({ ok: true, id, answer: "no", by: "none" });
           else if (behaviour === "timeout") send({ ok: true, id, answer: "no", by: "timeout" });
+          else if (behaviour === "boundary") send(req?.boundaryOnly === true ? { ok: true, id, answer: "yes", by: "boundary" } : { ok: true, id, answer: "no", by: "none" });
+          // A yes by `boundary` to a request that did not ask for one.
+          else if (behaviour === "boundary-unasked") send({ ok: true, id, answer: "yes", by: "boundary" });
           else if (behaviour === "close") s.destroy();
           else if (behaviour === "refuse") send({ ok: false, error: "refused" });
           // "hang": never answer.

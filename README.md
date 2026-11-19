@@ -55,9 +55,9 @@ Read these before relying on derm. Each is tracked in the status docs under `pla
 | `crates/derm-cli` | `derm connect`, `derm run`, `derm watch`, `derm status`, `derm cu`, `derm acp` and `derm doctor` (the last two wave 4's). The preset table is one file per agent in `src/connect/presets/` |
 | `crates/derm-audit-linux` | The Linux OS feed from auditd (`derm-audit-feed`) |
 | `packages/derm-pi` | The Pi package (also oh-my-pi's): gate, emitter, memory extension |
-| `packages/derm-claude-plugin`, `derm-codex-plugin`, `derm-opencode-plugin` | Claude Code, Codex and OpenCode adapters; the canonical hook core is `derm-claude-plugin/src/core/` |
+| `packages/derm-claude-plugin`, `derm-codex-plugin`, `derm-opencode-plugin` | Claude Code, Codex and OpenCode adapters. Every gate decides in Rust (`derm hook`, `derm gate serve`). `derm-claude-plugin/src/core/` is the canonical copy of what is left of the TypeScript hook core: the small files the plugins still carry, and the matcher, which only derm-gemini-extension's policy printer reads |
 | `packages/derm-gemini-extension`, `derm-hermes-plugin`, `derm-openclaw-plugin`, `derm-kilo-plugin` | Gemini CLI, Hermes Agent, OpenClaw and Kilo Code adapters (wave 2) |
-| `packages/derm-hooks-claude-compat`, `derm-hooks-native`, `derm-amp-plugin`, `derm-cline` | Wave 4's adapters: Claude-format command hooks for eight agents, own-dialect hooks for six, Amp's plugin, Cline's plugin and its approval-file responder. Each holds a synced copy of the hook core in `src/core/` |
+| `packages/derm-amp-plugin`, `derm-cline` | Wave 4's plugins: Amp's, and Cline's with its approval-file responder. (The command hooks wave 4 wrote for fourteen agents, `derm-hooks-claude-compat` and `derm-hooks-native`, were replaced by `derm hook <agent>` in wave 5b and deleted on 19 Nov 2026.) |
 | `library/` | Schema, validator, exports, catalog, takedowns (`library/takedown/`, logged in `library/TAKEDOWNS.md`); the registry mirror (`library/mirror/`), publish (`library/publish/`), trust records (`library/trust/`), the static browser (`library/site/`) |
 | `contracts/` | What the parts agree on, with fixtures; `hook-dialects.md` for wave 4's agents |
 | `tests/cli-contract/` | Checks against the real harness CLIs with fake model servers |
@@ -82,20 +82,20 @@ How derm attaches to each agent in Orca's list. Tier G: derm registers a gate th
 | Hermes Agent | G | Python plugin `pre_tool_call` | Built, wave 2 (`packages/derm-hermes-plugin`). Unit tests only; Hermes itself not run (box test w2 4.3) |
 | oh-my-pi | G | `derm-pi`, installed with `omp install` | Built, wave 2. Contract checks pass against omp 18.13.3 in the cloud (lane I) |
 | Kilo Code | G | the OpenCode plugin with Kilo's paths | Built, wave 2 (`packages/derm-kilo-plugin`). Contract checks pass against Kilo 7.8.18 in the cloud |
-| OpenClaude | G, fails open | PreToolUse in `~/.openclaude/settings.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against OpenClaude 0.34.0 in the cloud (5 pass, 1 info: a killed gate lets the call run); full access not run as root |
-| Qwen Code | G, fails open | PreToolUse in `~/.qwen/settings.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Qwen Code 0.26.6 (7 pass, 1 info) |
-| Droid | G, fails open | PreToolUse in `~/.factory/settings.json`, beside Orca's entry (`packages/derm-hooks-claude-compat`); a `~/.factory/hooks.json` turns it off | Built, wave 4 (lane L). Contract checks pass against Droid 1.3.0 in airgap mode with a local model (5 pass, 2 info) |
-| Command Code | G | PreToolUse with `failClosed` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Fixtures only (needs an account): unverified at 1.88.2 |
-| Kimi Code | G, fails open | `[[hooks]]` in `~/.kimi-code/config.toml` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Kimi Code 2.4.1 (5 pass, 2 info: an unknown key drops every hook); `derm connect kimi --gate` prints, does not write |
-| Auggie | G, fails open | PreToolUse in `~/.augment/settings.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Fixtures only (needs an account): unverified at 0.36.0 |
-| GitHub Copilot CLI | G, open on timeout | `~/.copilot/hooks/derm.json` (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Copilot CLI 1.0.105 offline (6 pass) |
-| Grok Build | G | `~/.grok/hooks/derm.json` with `failClosed`, compat imports off (`packages/derm-hooks-claude-compat`) | Built, wave 4 (lane L). Contract checks pass against Grok 1.0.71 (7 pass); on 1.0.70 a killed gate lets the call run |
-| Cursor CLI | G | `~/.cursor/hooks.json`: preToolUse and beforeMCPExecution, `failClosed` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Fixtures from Cursor's docs; unverified until the Mac test w4 (the CLI is on Tony's Mac). An ask on a built-in tool goes to the approver or is denied |
-| Antigravity CLI | G, fail mode unknown | a named hook in `~/.gemini/config/hooks.json` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Fixtures from its docs only; not installed, not run (Tony's call) |
-| goose | G | a plugin folder's PreToolUse with `on_failure: "block"` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Contract checks pass against goose 1.57.0 (8 pass) |
-| Mistral Vibe | G | `pre_tool` in `~/.vibe/hooks.toml` with `strict` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Contract checks pass against Mistral Vibe 3.0.4 (6 pass) |
-| Charm Crush | G, fails open | PreToolUse in `~/.config/crush/crush.json` (`packages/derm-hooks-native`); sub-agents fire no hook | Built, wave 4 (lane N). Contract checks pass against Crush 0.99.0 (7 pass, 1 info: a killed gate lets the call run) |
-| Kiro CLI | G | `~/.kiro/hooks/derm.json` (`packages/derm-hooks-native`) | Built, wave 4 (lane N). Fixtures from its docs only; not installed, not run (Tony's call) |
+| OpenClaude | G, fails open | PreToolUse in `~/.openclaude/settings.json` | Built, wave 4 (lane L). Contract checks pass against OpenClaude 0.34.0 in the cloud (5 pass, 1 info: a killed gate lets the call run); full access not run as root |
+| Qwen Code | G, fails open | PreToolUse in `~/.qwen/settings.json` | Built, wave 4 (lane L). Contract checks pass against Qwen Code 0.26.6 (7 pass, 1 info) |
+| Droid | G, fails open | PreToolUse in `~/.factory/settings.json`, beside Orca's entry; a `~/.factory/hooks.json` turns it off | Built, wave 4 (lane L). Contract checks pass against Droid 1.3.0 in airgap mode with a local model (5 pass, 2 info) |
+| Command Code | G | PreToolUse with `failClosed` | Built, wave 4 (lane L). Fixtures only (needs an account): unverified at 1.88.2 |
+| Kimi Code | G, fails open | `[[hooks]]` in `~/.kimi-code/config.toml` | Built, wave 4 (lane L). Contract checks pass against Kimi Code 2.4.1 (5 pass, 2 info: an unknown key drops every hook); `derm connect kimi --gate` prints, does not write |
+| Auggie | G, fails open | PreToolUse in `~/.augment/settings.json` | Built, wave 4 (lane L). Fixtures only (needs an account): unverified at 0.36.0 |
+| GitHub Copilot CLI | G, open on timeout | `~/.copilot/hooks/derm.json` | Built, wave 4 (lane L). Contract checks pass against Copilot CLI 1.0.105 offline (6 pass) |
+| Grok Build | G | `~/.grok/hooks/derm.json` with `failClosed`, compat imports off | Built, wave 4 (lane L). Contract checks pass against Grok 1.0.71 (7 pass); on 1.0.70 a killed gate lets the call run |
+| Cursor CLI | G | `~/.cursor/hooks.json`: preToolUse and beforeMCPExecution, `failClosed` | Built, wave 4 (lane N). Fixtures from Cursor's docs; unverified until the Mac test w4 (the CLI is on Tony's Mac). An ask on a built-in tool goes to the approver or is denied |
+| Antigravity CLI | G, fail mode unknown | a named hook in `~/.gemini/config/hooks.json` | Built, wave 4 (lane N). Fixtures from its docs only; not installed, not run (Tony's call) |
+| goose | G | a plugin folder's PreToolUse with `on_failure: "block"` | Built, wave 4 (lane N). Contract checks pass against goose 1.57.0 (8 pass) |
+| Mistral Vibe | G | `pre_tool` in `~/.vibe/hooks.toml` with `strict` | Built, wave 4 (lane N). Contract checks pass against Mistral Vibe 3.0.4 (6 pass) |
+| Charm Crush | G, fails open | PreToolUse in `~/.config/crush/crush.json`; sub-agents fire no hook | Built, wave 4 (lane N). Contract checks pass against Crush 0.99.0 (7 pass, 1 info: a killed gate lets the call run) |
+| Kiro CLI | G | `~/.kiro/hooks/derm.json` | Built, wave 4 (lane N). Fixtures from its docs only; not installed, not run (Tony's call) |
 | Amp | G, fail mode unknown | a Bun plugin folder `~/.config/amp/plugins/derm/` (`packages/derm-amp-plugin`, `tool.call`) | Built, wave 4 (lane P). Unit tests against its type definitions; needs an account, not run: unverified |
 | Cline CLI | G, fails open | an SDK plugin `~/.cline/plugins/derm/` (`packages/derm-cline`, `beforeTool`) | Built, wave 4 (lane P). Contract checks pass against Cline 3.0.74 (13 pass, 1 info: the approval files never reach a responder in a prompt run) |
 | Continue | A | `derm connect continue` prints the MCP entry for `~/.continue/config.yaml` | Connect row verified at 1.5.47 (lane Q); no rule writer: its `permissions.yaml` is ignored under `--auto` and `--readonly` |
@@ -112,14 +112,14 @@ Built on `integration/w5`, run in the cloud only (`plans/parallel/tk_integration
 | Agent id | Tap | Intent source | Boundaries |
 |---|---|---|---|
 | `claude-code` | `ANTHROPIC_BASE_URL`, verified at 2.1.311 | tap | sbx `claude` (full-access words: `--dangerously-skip-permissions`; derm's gate in the VM through derm's kit), srt, none |
-| `codex` | Codex provider flags, verified at 0.163.0 | tap | sbx `codex` (full-access words: `--dangerously-bypass-approvals-and-sandbox`; no derm gate in the VM), srt, none |
+| `codex` | Codex provider flags, verified at 0.163.0 | tap | sbx `codex` (full-access words: `--dangerously-bypass-approvals-and-sandbox`; derm's gate in the VM through derm's kit, which carries a Linux derm), srt, none |
 | `gemini` | `GOOGLE_GEMINI_BASE_URL`, verified at 0.66.0 | tap | sbx `gemini` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
-| `pi` | none: untapped | hooks | sbx `docker.io/sbx/pi-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
-| `cursor` | none: untapped | hooks | sbx `cursor` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `pi` | none: untapped | hooks | sbx `docker.io/sbx/pi-kit:latest` (full-access words: none; derm's gate and emitter in the VM through derm's kit, a v2 mixin), srt, none |
+| `cursor` | none: untapped | hooks | sbx `cursor` (full-access words: `--yolo`; derm's gate in the VM through derm's kit), srt, none |
 | `amp` | none: untapped | hooks | sbx `docker.io/sbx/amp-kit:latest` (full-access words: `--dangerously-allow-all`; no derm gate in the VM), srt, none |
 | `auggie` | none: untapped | hooks | srt, none (no sbx form) |
-| `droid` | none: untapped | hooks | sbx `droid` (full-access words: none; no derm gate in the VM), srt, none |
-| `kiro` | none: untapped | hooks | sbx `kiro` (full-access words: `--trust-all-tools`; no derm gate in the VM), srt, none |
+| `droid` | none: untapped | hooks | sbx `droid` (full-access words: none; derm's gate in the VM through derm's kit), srt, none |
+| `kiro` | none: untapped | hooks | sbx `kiro` (full-access words: `--trust-all-tools`; derm's gate in the VM through derm's kit), srt, none |
 | `rovo-dev` | none: untapped | none (outside shape) | srt, none (no sbx form) |
 | `codebuff` | none: untapped | none (outside shape) | srt, none (no sbx form) |
 | `opencode` | no tap row: untapped | hooks | sbx `opencode` (full-access words: none; no derm gate in the VM), srt, none |
@@ -127,7 +127,7 @@ Built on `integration/w5`, run in the cloud only (`plans/parallel/tk_integration
 | `openclaw` | no tap row: untapped | hooks | sbx `docker.io/sbx/openclaw-kit:latest` (full-access words: none; no derm gate in the VM), srt, none |
 | `goose` | no tap row: untapped | hooks | srt, none (no sbx form) |
 | `qwen-code` | no tap row: untapped | hooks | srt, none (no sbx form) |
-| `copilot-cli` | no tap row: untapped | hooks | sbx `copilot` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
+| `copilot-cli` | no tap row: untapped | hooks | sbx `copilot` (full-access words: `--yolo`; derm's gate in the VM through derm's kit), srt, none |
 | `crush` | no tap row: untapped | hooks | sbx `docker.io/sbx/crush-kit:latest` (full-access words: `--yolo`; no derm gate in the VM), srt, none |
 | `zed` | no tap row: untapped | hooks | srt, none (no sbx form) |
 | `kilo` | no tap row: untapped | hooks | srt, none (no sbx form) |

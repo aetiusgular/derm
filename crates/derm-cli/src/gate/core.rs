@@ -185,6 +185,31 @@ fn full_access(call: &GateCall, env: &Env) -> bool {
         .unwrap_or_else(|| env.raw("DERM_FULL_ACCESS") == Some("1"))
 }
 
+/// What a full-access ask that its boundary answers is allowed with.
+pub const BOUNDARY_NOTE: &str =
+    "no one can answer in this chat and it runs inside its boundary, so derm allows what it would ask and records it";
+
+/// E1-14: `derm run` set `DERM_ASKS=boundary` for this chat. Only a hint
+/// that the daemon is to be asked: `run.start` (the daemon scope's) decides
+/// there, so a value an agent or a project's settings put in the
+/// environment allows nothing. Only the agents whose ask path was read to
+/// end in `resolve_ask` for every ask: Claude Code and Codex, and the four
+/// derm's command-hook sbx kit covers (`hook/claude_format/compat.rs` and
+/// `hook/native/mod.rs`, read 17 Nov 2026). `run/plan.rs` holds the same
+/// list.
+pub const BOUNDARY_ASKERS: &[&str] = &[
+    "claude-code",
+    "codex",
+    "copilot-cli",
+    "droid",
+    "cursor",
+    "kiro",
+];
+
+fn boundary_asks(call: &GateCall, env: &Env) -> bool {
+    env.raw("DERM_ASKS") == Some("boundary") && BOUNDARY_ASKERS.contains(&call.harness.as_str())
+}
+
 /// `decideCall`: the policy's answer for one call, with full access applied.
 pub fn decide_call(loaded: &LoadedPolicy, call: &GateCall, env: &Env) -> GateAnswer {
     // Wave 6's seam (lane 6D, `gate/taint/`): taint may raise an answer,
@@ -200,7 +225,9 @@ pub fn decide_call(loaded: &LoadedPolicy, call: &GateCall, env: &Env) -> GateAns
 /// `denyAskInFullAccess`). An adapter that turns an answer into an ask
 /// after [`decide_call`] applies it again (review W4-S3).
 pub fn deny_ask_in_full_access(mut answer: GateAnswer, call: &GateCall, env: &Env) -> GateAnswer {
-    if full_access(call, env) && answer.action == Action::Ask {
+    // E1-14: where `derm run` said the chat's boundary answers its asks,
+    // the ask stays an ask for `resolve_ask`, which puts it to the daemon.
+    if full_access(call, env) && answer.action == Action::Ask && !boundary_asks(call, env) {
         answer.action = Action::Deny;
         answer.reason = format!("{}; {FULL_ACCESS_NOTE}", answer.reason);
         answer.updated_input = None;
@@ -429,13 +456,35 @@ pub fn resolve_ask(
     env: &Env,
     approve: &dyn Fn(&ApproveRequest) -> ApproveOutcome,
 ) -> AskResolution {
-    if full_access(call, env) {
-        return AskResolution::Deny(format!("{}; {FULL_ACCESS_NOTE}", answer.reason));
-    }
     let id = match &call.tool_use_id {
         Some(t) => format!("ap-{}-{t}", call.harness),
         None => format!("ap-{}-{}", call.harness, uuid::Uuid::new_v4()),
     };
+    if full_access(call, env) {
+        let deny = AskResolution::Deny(format!("{}; {FULL_ACCESS_NOTE}", answer.reason));
+        if !boundary_asks(call, env) {
+            return deny;
+        }
+        // E1-14: one question, answered at once by the daemon from the
+        // chat's own `run.start`. Anything but the boundary's yes is the
+        // deny full access always gave, never the agent's own prompt.
+        let request = ApproveRequest {
+            id,
+            chat: call.chat.clone().unwrap_or_default(),
+            harness: call.harness.clone(),
+            tool: answer.normalized_tool.clone(),
+            summary: approval_summary(answer, &call.tool_input),
+            timeout_seconds: 5,
+            boundary_only: true,
+        };
+        return match approve(&request) {
+            ApproveOutcome::Answer {
+                yes: true,
+                by: By::Boundary,
+            } => AskResolution::Allow(format!("{}; {BOUNDARY_NOTE}", answer.reason)),
+            _ => deny,
+        };
+    }
     let request = ApproveRequest {
         id,
         chat: call.chat.clone().unwrap_or_default(),
@@ -443,6 +492,7 @@ pub fn resolve_ask(
         tool: answer.normalized_tool.clone(),
         summary: approval_summary(answer, &call.tool_input),
         timeout_seconds: u64::from(answer.ask_timeout_seconds),
+        boundary_only: false,
     };
     match approve(&request) {
         ApproveOutcome::Unreachable(why) => {

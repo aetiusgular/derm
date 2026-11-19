@@ -39,17 +39,31 @@ describe("the plugin entry", () => {
     expect(out.names).toEqual(["tool.call", "tool.result"]);
     expect(out.seen).toEqual([]);
   });
-  it("uses Amp's shell helper and workspace root when it has them", async () => {
-    const handlers = new Map<string, (e: unknown, c: unknown) => Promise<unknown>>();
-    const shellCommandFromToolCall = vi.fn(() => ({ command: "export ANTHROPIC_BASE_URL=http://x" }));
-    plugin({
-      on: (name, h) => handlers.set(name, h as never),
-      helpers: { shellCommandFromToolCall, filePathFromURI: () => "/nonexistent-derm-workspace" },
-      system: { workspaceRoot: { toString: () => "file:///nonexistent-derm-workspace" } },
-    });
-    const out = await handlers.get("tool.call")?.({ toolUseID: "t1", tool: "Bash", input: { cmd: "export ANTHROPIC_BASE_URL=http://x" }, thread: { id: "T-1" } }, { ui: { confirm: async () => true } });
-    expect(shellCommandFromToolCall).toHaveBeenCalledOnce();
-    expect(out).toMatchObject({ action: "reject-and-continue", message: "derm: reject list: anthropic_base_url" });
+  it("uses Amp's shell helper and workspace root when it has them, and refuses with no derm to run", async () => {
+    const was = process.env.DERM_BIN;
+    try {
+      process.env.DERM_BIN = "/nonexistent/derm";
+      const handlers = new Map<string, (e: unknown, c: unknown) => Promise<unknown>>();
+      const shellCommandFromToolCall = vi.fn(() => ({ command: "export ANTHROPIC_BASE_URL=http://x" }));
+      plugin({
+        on: (name, h) => handlers.set(name, h as never),
+        helpers: { shellCommandFromToolCall, filePathFromURI: () => "/nonexistent-derm-workspace" },
+        system: { workspaceRoot: { toString: () => "file:///nonexistent-derm-workspace" } },
+      });
+      const out = await handlers.get("tool.call")?.({ toolUseID: "t1", tool: "Bash", input: { cmd: "export ANTHROPIC_BASE_URL=http://x" }, thread: { id: "T-1" } }, { ui: { confirm: async () => true } });
+      expect(shellCommandFromToolCall).toHaveBeenCalledOnce();
+      // The decision is `derm gate serve`'s. Whatever it is here (a derm
+      // found on this machine denies by the reject list; with none the
+      // co-process is not running), this call is never allowed, and never
+      // answered with `error` (case 79).
+      expect(out).toMatchObject({ action: "reject-and-continue" });
+      if (!installCandidates(process.platform, homedir()).some((p) => existsSync(p))) {
+        expect(out).toMatchObject({ message: expect.stringMatching(/co-process is not running/) });
+      }
+    } finally {
+      if (was === undefined) delete process.env.DERM_BIN;
+      else process.env.DERM_BIN = was;
+    }
   });
   it("exports a short static description, as Amp asks", () => {
     expect(description.length).toBeLessThanOrEqual(300);
@@ -72,36 +86,5 @@ describe("the plugin folder is copied whole (Amp loads only what resolves inside
   });
   it("ships no test helpers", () => {
     for (const file of shipped()) expect(readFileSync(file, "utf8")).not.toMatch(/fakeDaemon|vitest/);
-  });
-});
-
-describe("the gate-serve switch (fix pass 6, note BE section 3.3)", () => {
-  it("is off by default: the TypeScript gate decides", async () => {
-    const was = { s: process.env.DERM_AMP_GATE_SERVE, b: process.env.DERM_BIN };
-    try {
-      delete process.env.DERM_AMP_GATE_SERVE;
-      process.env.DERM_BIN = "/nonexistent/derm";
-      const handlers = new Map<string, (e: unknown, c: unknown) => Promise<unknown>>();
-      plugin({ on: (name, h) => handlers.set(name, h as never), helpers: {}, system: { workspaceRoot: null } });
-      const out = await handlers.get("tool.call")?.({ toolUseID: "t1", tool: "Bash", input: { cmd: "export ANTHROPIC_BASE_URL=http://x" }, thread: { id: "T-1" } }, { ui: { confirm: async () => true } });
-      expect(out).toMatchObject({ message: "derm: reject list: anthropic_base_url" });
-      // On, the co-process decides, and with no derm to run every call is refused.
-      process.env.DERM_AMP_GATE_SERVE = "1";
-      const on = new Map<string, (e: unknown, c: unknown) => Promise<unknown>>();
-      plugin({ on: (name, h) => on.set(name, h as never), helpers: {}, system: { workspaceRoot: null } });
-      expect([...on.keys()]).toEqual(["tool.call", "tool.result"]);
-      // Where an installed derm is there to be found (a machine with derm
-      // under /usr/local/bin, say), the co-process runs it; the refusal is
-      // checked only where nothing can be.
-      if (!installCandidates(process.platform, homedir()).some((p) => existsSync(p))) {
-        const refused = await on.get("tool.call")?.({ toolUseID: "t2", tool: "read", input: { path: "a" }, thread: { id: "T-1" } }, { ui: { confirm: async () => true } });
-        expect(refused).toMatchObject({ action: "reject-and-continue", message: expect.stringMatching(/co-process is not running/) });
-      }
-    } finally {
-      if (was.s === undefined) delete process.env.DERM_AMP_GATE_SERVE;
-      else process.env.DERM_AMP_GATE_SERVE = was.s;
-      if (was.b === undefined) delete process.env.DERM_BIN;
-      else process.env.DERM_BIN = was.b;
-    }
   });
 });

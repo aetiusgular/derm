@@ -35,7 +35,7 @@
 // and T-3, applied at the phase 3 merge, `2dcc6a2`).
 #[cfg_attr(not(test), allow(dead_code))]
 mod io_uring;
-mod kit;
+pub(crate) mod kit;
 pub(crate) mod probe;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod sbx;
@@ -226,18 +226,26 @@ pub(crate) fn choose_with(argv: &[String], probe: &mut dyn Probe) -> Result<Choi
 
     let mut reasons = Vec::new();
     if probe.gate(h, s.cwd) {
-        // srt first (O1, interim): under srt the agent keeps derm's gate;
-        // under sbx it runs in the VM without it until derm's kit passes the
-        // box test. sbx is not probed when srt will do, so a signed-in sbx is
-        // not started for nothing.
+        // srt first (O1, interim; Tony kept the order on 17 Nov 2026): under
+        // srt the agent keeps the gate registered on this machine. Under sbx
+        // an agent with derm's kit gets a gate in the VM, where it has sudo;
+        // one without a kit runs there with none. The lines say which. sbx
+        // is not probed when srt will do, so a signed-in sbx is not started
+        // for nothing.
+        let kit = kit::has_kit(h.id);
         match probe.srt(h, s.cwd) {
             Ok(()) => {
                 probe.say(&format!(
                     "derm run: no --boundary given; {} runs under srt, which keeps derm's gate (it is registered here and blocks when it fails). \
-                     sbx is tried second for it: in the VM it would run without derm's gate. --boundary sbx still picks sbx",
-                    name_of(h)
+                     sbx is tried second for it: {}. --boundary sbx still picks sbx",
+                    name_of(h),
+                    if kit {
+                        "in the VM derm's kit carries a gate of its own, which the agent could remove there"
+                    } else {
+                        "in the VM it would run without derm's gate"
+                    }
                 ));
-                reasons.push(passed_over_sbx(h));
+                reasons.push(passed_over_sbx(h, kit));
                 return Ok(chosen(argv, &s, "srt", reasons, "default", None));
             }
             Err(r) => reasons.push(r),
@@ -245,8 +253,13 @@ pub(crate) fn choose_with(argv: &[String], probe: &mut dyn Probe) -> Result<Choi
         match probe.sbx(h) {
             Ok(()) => {
                 probe.say(&format!(
-                    "derm run: no --boundary given; {} runs under sbx, without derm's gate in the VM (srt: {})",
+                    "derm run: no --boundary given; {} runs under sbx, {} (srt: {})",
                     name_of(h),
+                    if kit {
+                        "with derm's gate in the VM through derm's kit where the line about the VM's gate below says it was added"
+                    } else {
+                        "without derm's gate in the VM"
+                    },
                     reasons[0].why
                 ));
                 return Ok(chosen(argv, &s, "sbx", reasons, "default", None));
@@ -337,11 +350,16 @@ pub(crate) fn choose_with(argv: &[String], probe: &mut dyn Probe) -> Result<Choi
 /// The record's reason for not trying sbx first for a gated agent. sbx was
 /// not probed, so nothing is said about whether it would have run, and no
 /// install line is given: nothing is missing.
-fn passed_over_sbx(h: &harness::Harness) -> Reason {
+fn passed_over_sbx(h: &harness::Harness, kit: bool) -> Reason {
+    let under_sbx = if kit {
+        "under sbx the gate is derm's kit's, in a VM where the agent has sudo"
+    } else {
+        "sbx runs the agent in its VM without it (derm has no sbx kit for it)"
+    };
     Reason {
         boundary: "sbx",
         why: format!(
-            "not tried first: derm's gate for {} is registered here and blocks when it fails; srt keeps it, and sbx runs the agent in its VM without it until derm's kit passes the box test",
+            "not tried first: derm's gate for {} is registered here and blocks when it fails; srt keeps it, and {under_sbx}",
             name_of(h)
         ),
         install: None,

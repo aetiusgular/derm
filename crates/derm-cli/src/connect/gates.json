@@ -1,5 +1,5 @@
 {
-  "$comment": "Where `derm connect <agent> --gate` registers derm's gate, one object per agent (wave 4 lane Q, T2.8). Transcribed from the packages that own each gate: lane L's packages/derm-hooks-claude-compat/src/registration.ts (branch wip/L-hooks-claude at 12d2c86), lane N's packages/derm-hooks-native/registration/<agent>/ and its README table (lane/N-hooks-native at 85592cf), and docs/install/agents.md (main at 824ae83) for the agents whose gate installs through their own command. Lane Q keeps this table in its own folder so lanes L, N and P never share a file with it; integration w4 may move each object into its agent's preset row. Placeholders: {command} is the agent's `command` with {node} and {hook_file} filled; {hook_dir} is the package folder given with --hook; {hook_url} is file:// plus that folder; {version} is derm's own version. A string is a placeholder only when it is the whole value, except in `command` and `commands`. `marker` finds derm's own entry, so a second --gate replaces it and never adds a second gate. Step kinds: json-array-entry, json-member, toml-array-entry, toml-set, owned-file, plugin-folder, json-permission (OpenCode's and Kilo's `permission` keys, set only where that narrows), commands (print only). `mergeChain` lists the global files an agent deep-merges, in its order: derm writes the last one that exists (else `path`) and reads the others first. Wave 5b lane 5bF: a command-hook row's `command` is `{derm} hook <agent> <event>`, {derm} being this derm's own real path, a plain path to a file only you or root can write in a folder of the same kind, so no --hook folder and no node (contracts/hook-dialects.md 9.1; rules case 227). `markers` lists what finds derm's own entry: the first is in what derm writes now, the rest in what an older derm wrote, so a second --gate replaces a wave 4 node entry. Step kind text-file writes one file of plain text derm owns alone (Hermes's derm-path), only into a folder that already exists when `folderMustExist`.",
+  "$comment": "Where `derm connect <agent> --gate` registers derm's gate, one object per agent (wave 4 lane Q, T2.8). Transcribed from the packages that own each gate: lane L's packages/derm-hooks-claude-compat/src/registration.ts (branch wip/L-hooks-claude at 12d2c86), lane N's packages/derm-hooks-native/registration/<agent>/ and its README table (lane/N-hooks-native at 85592cf), and docs/install/agents.md (main at 824ae83) for the agents whose gate installs through their own command. Lane Q keeps this table in its own folder so lanes L, N and P never share a file with it; integration w4 may move each object into its agent's preset row. Placeholders: {command} is the agent's `command` with {node} and {hook_file} filled; {hook_dir} is the package folder given with --hook; {hook_url} is file:// plus that folder; {version} is derm's own version. A string is a placeholder only when it is the whole value, except in `command` and `commands`. `marker` finds derm's own entry, so a second --gate replaces it and never adds a second gate. Step kinds: json-array-entry, json-member, toml-array-entry, toml-set, owned-file, plugin-folder, json-permission (OpenCode's and Kilo's `permission` keys, set only where that narrows), commands (print only). `mergeChain` lists the global files an agent deep-merges, in its order: derm writes the last one that exists (else `path`) and reads the others first. Wave 5b lane 5bF: a command-hook row's `command` is `{derm} hook <agent> <event>`, {derm} being this derm's own real path, a plain path to a file only you or root can write in a folder of the same kind, so no --hook folder and no node (contracts/hook-dialects.md 9.1; rules case 227). `markers` lists what finds derm's own entry: the first is in what derm writes now, the rest in what an older derm wrote, so a second --gate replaces a wave 4 node entry. A command-hook row's `package` is `derm` since 19 Nov 2026, when the wave 4 hook packages it named were deleted (its `source` keeps where the row was transcribed from). Step kind text-file writes one file of plain text derm owns alone (Hermes's derm-path), only into a folder that already exists when `folderMustExist`.",
   "version": 1,
   "agents": [
     {
@@ -354,7 +354,7 @@
     {
       "agent": "openclaude",
       "name": "OpenClaude",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook openclaude pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook openclaude ", "derm-hook.mjs"],
@@ -375,7 +375,7 @@
     {
       "agent": "qwen-code",
       "name": "Qwen Code",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook qwen-code pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook qwen-code ", "derm-hook.mjs"],
@@ -396,7 +396,7 @@
     {
       "agent": "droid",
       "name": "Droid",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook droid pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook droid ", "derm-hook.mjs"],
@@ -422,7 +422,7 @@
     {
       "agent": "command-code",
       "name": "Command Code",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook command-code pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook command-code ", "derm-hook.mjs"],
@@ -442,7 +442,7 @@
     {
       "agent": "kimi",
       "name": "Kimi Code",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook kimi pre",
       "markers": ["/derm hook kimi ", "derm-hook.mjs"],
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
@@ -462,7 +462,7 @@
     {
       "agent": "auggie",
       "name": "Auggie",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook auggie pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook auggie ", "derm-hook.mjs"],
@@ -482,7 +482,7 @@
     {
       "agent": "copilot-cli",
       "name": "Copilot CLI",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook copilot-cli pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook copilot-cli ", "derm-hook.mjs"],
@@ -501,7 +501,7 @@
     {
       "agent": "grok",
       "name": "Grok Build",
-      "package": "@aetiusgular/derm-hooks-claude-compat",
+      "package": "derm",
       "command": "{derm} hook grok pre",
       "source": "packages/derm-hooks-claude-compat/src/registration.ts at wip/L-hooks-claude 12d2c86; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook grok ", "derm-hook.mjs"],
@@ -536,7 +536,7 @@
       "agent": "cursor",
       "os": "windows",
       "name": "Cursor CLI",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "& '{derm}' hook cursor pre; if ($null -eq $LASTEXITCODE) { [Console]::Error.WriteLine('derm: derm.exe did not start'); exit 2 }; exit $LASTEXITCODE",
       "source": "fix pass 9 (Tony's go of 15 Nov 2026, note BG section 1): Cursor runs a hook on Windows through PowerShell and pipes the JSON into it (cursor.com/docs/hooks: \"On Windows, the desktop app runs hook commands through PowerShell and pipes the JSON into the command\"); that sentence is about the desktop app; cursor-agent, the CLI this row is for, composes `$OutputEncoding = [System.Text.Encoding]::UTF8; Get-Content -LiteralPath <payload> -Raw | & { $input | <command> }` (read from the installed agent CLI 2026.09.28, RepoQL/RepoQL#17; logged in forum.cursor.com/t/168129 and t/170945). Run on the box under that exact wrapper with Windows PowerShell 5.1 (fix pass 9): stdin starts with a BOM (efbbbf), derm allows and denies, and exit 2 comes out of the script block. So derm.exe is called as on Codex's Windows row: by its absolute path in single quotes with the call operator, a reason and exit 2 when it does not start, else derm's exit code. failClosed: a crash, timeout, non-zero exit or no output blocks (cursor.com/docs/hooks). Not run against a real Cursor (it needs an account, call 8).",
       "markers": [
@@ -595,7 +595,7 @@
     {
       "agent": "cursor",
       "name": "Cursor CLI",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "{derm} hook cursor pre",
       "source": "packages/derm-hooks-native/registration/cursor/hooks.json and README.md at lane/N-hooks-native 85592cf; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook cursor ", "derm-hook.mjs"],
@@ -624,7 +624,7 @@
     {
       "agent": "antigravity",
       "name": "Antigravity CLI",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "{derm} hook antigravity pre",
       "source": "packages/derm-hooks-native/registration/antigravity/hooks.json and README.md at lane/N-hooks-native 85592cf; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook antigravity ", "derm-hook.mjs"],
@@ -644,7 +644,7 @@
     {
       "agent": "goose",
       "name": "goose",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "{derm} hook goose pre",
       "source": "packages/derm-hooks-native/registration/goose/derm/ at lane/N-hooks-native 85592cf; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook goose ", "derm-hook.mjs"],
@@ -666,7 +666,7 @@
     {
       "agent": "mistral-vibe",
       "name": "Mistral Vibe",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "{derm} hook mistral-vibe pre",
       "source": "packages/derm-hooks-native/registration/mistral-vibe/hooks.toml at lane/N-hooks-native 85592cf; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook mistral-vibe ", "derm-hook.mjs"],
@@ -686,7 +686,7 @@
     {
       "agent": "crush",
       "name": "Crush",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "{derm} hook crush pre",
       "source": "packages/derm-hooks-native/registration/crush/crush.json at lane/N-hooks-native 85592cf; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook crush ", "derm-hook.mjs"],
@@ -707,7 +707,7 @@
     {
       "agent": "kiro",
       "name": "Kiro CLI",
-      "package": "@aetiusgular/derm-hooks-native",
+      "package": "derm",
       "command": "{derm} hook kiro pre",
       "source": "packages/derm-hooks-native/registration/kiro/derm.json at lane/N-hooks-native 85592cf; command from wave 5b lane 5bF (contracts/hook-dialects.md 9.1)",
       "markers": ["/derm hook kiro ", "derm-hook.mjs"],

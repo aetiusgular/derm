@@ -38,7 +38,8 @@ if (missing.length) {
 const USER = "dermv-srt";
 const UID = 1601;
 const HOME = `/home/${USER}`;
-const RUNTIME = `/run/user/${UID}`;
+// E1-10: the daemon's folder is under the home folder on Linux (~/.derm/run/derm), no longer $XDG_RUNTIME_DIR/derm.
+const RUNTIME = `${HOME}/.derm/run`;
 const LIB = "/usr/local/lib/dermv-srt";
 const results = [];
 const check = (name, ok, detail) => {
@@ -87,7 +88,7 @@ try {
   mkdirSync(`${HOME}/proj`, { recursive: true });
   sh("chown", ["-R", `${USER}:${USER}`, `${HOME}/.derm`, `${HOME}/proj`]);
   mkdirSync(RUNTIME, { recursive: true, mode: 0o700 });
-  sh("chown", [`${USER}:${USER}`, RUNTIME]);
+  sh("chown", ["-R", `${USER}:${USER}`, `${HOME}/.derm`]);
   chmodSync(RUNTIME, 0o700);
   daemon = spawn("runuser", ["-u", USER, "--", ...env, `${LIB}/bin/derm-daemon`, "--foreground"], { stdio: "ignore" });
   for (let i = 0; i < 100 && !existsSync(`${RUNTIME}/derm/daemon.token`); i++) await new Promise((r) => setTimeout(r, 100));

@@ -71,6 +71,7 @@ fn flag_rank(f: &Value) -> u8 {
         "newHost" => 3,
         "leftRunning" => 4,
         "noGateRecord" => 5,
+        "telemetrySilent" => 5,
         _ => 6,
     }
 }
@@ -863,6 +864,14 @@ pub struct Daemon {
     /// Stretches of the audit log the Linux feed said it could not read
     /// (`feed.gap`, BW5R4-1), newest last, at most `FEED_GAPS_MAX`.
     feed_gaps: Mutex<VecDeque<(Option<i64>, i64, String)>>,
+    /// The sensitive paths the Linux feed last said the loaded audit rules
+    /// do not cover (`feed.unwatched`, E1-3), and when that list was first
+    /// posted. None when the last list was empty or none came.
+    os_unwatched: Mutex<Option<(i64, Vec<String>, bool)>>,
+    /// Lists that have ended: from, to, paths (the review's E1R-13: a chat
+    /// that ran while a path was not watched must still read so after the
+    /// rules were installed again). Newest last, at most `FEED_GAPS_MAX`.
+    os_unwatched_past: Mutex<VecDeque<(i64, i64, Vec<String>)>>,
     pub counters: Counters,
 }
 
@@ -875,6 +884,8 @@ const CHAT_CONTEXTS_BACK_MS: i64 = 8 * 24 * 3_600_000;
 
 /// How many `feed.gap` stretches the daemon keeps for its reports.
 const FEED_GAPS_MAX: usize = 64;
+/// How many `feed.unwatched` paths it keeps (the feed's list has 24 today).
+const UNWATCHED_MAX: usize = 64;
 
 /// The client name `derm-audit-feed run` gives its tail connection
 /// (`derm-audit-linux/src/bin/derm-audit-feed.rs`). The feed holds that
@@ -1155,6 +1166,8 @@ impl Daemon {
             run_watchers: Mutex::new(Vec::new()),
             os_feed: Mutex::new(OsFeed::default()),
             feed_gaps: Mutex::new(VecDeque::new()),
+            os_unwatched: Mutex::new(None),
+            os_unwatched_past: Mutex::new(VecDeque::new()),
             counters: Counters::default(),
         });
         if let Ok(mut c) = cell.lock() {
@@ -1452,6 +1465,55 @@ impl Daemon {
                 gaps.pop_front();
             }
         }
+    }
+
+    /// E1-3: the feed's list of sensitive paths whose reads the loaded audit
+    /// rules do not record. The newest list stands; the same list again
+    /// keeps its first time; an empty one ends it. At most
+    /// `UNWATCHED_MAX` paths of 512 characters are kept.
+    fn note_unwatched(&self, e: &Event) {
+        let paths: Vec<String> = e
+            .detail
+            .get("paths")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .take(UNWATCHED_MAX)
+                    .map(|p| p.chars().take(512).collect())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let none_seen = e.detail.get("noneSeen").and_then(Value::as_bool) == Some(true);
+        let Ok(mut cur) = self.os_unwatched.lock() else {
+            return;
+        };
+        if cur.as_ref().map(|(_, p, _)| p) == Some(&paths) {
+            return;
+        }
+        // The list that stood until now is kept with its end.
+        if let Some((from, old, _)) = cur.take() {
+            if let Ok(mut past) = self.os_unwatched_past.lock() {
+                past.push_back((from, e.at, old));
+                while past.len() > FEED_GAPS_MAX {
+                    past.pop_front();
+                }
+            }
+        }
+        if !paths.is_empty() {
+            *cur = Some((e.at, paths, none_seen));
+        }
+    }
+
+    /// The ended `feed.unwatched` lists that overlap `[a, b]`, as report rows.
+    fn unwatched_past_in(&self, a: i64, b: i64) -> Vec<Value> {
+        let Ok(past) = self.os_unwatched_past.lock() else {
+            return Vec::new();
+        };
+        past.iter()
+            .filter(|(from, to, _)| *from <= b && *to >= a)
+            .map(|(from, to, paths)| json!({"fromMs": from, "toMs": to, "paths": paths}))
+            .collect()
     }
 
     /// The `feed.gap` stretches that overlap `[a, b]`, as report rows. A
@@ -1924,6 +1986,11 @@ impl Daemon {
                 if event.source == Source::Auditd && event.kind == "feed.gap" {
                     self.note_feed_gap(&event);
                 }
+                // E1-3: the sensitive paths the loaded audit rules do not
+                // cover, from the same scope.
+                if event.source == Source::Auditd && event.kind == "feed.unwatched" {
+                    self.note_unwatched(&event);
+                }
                 if event.source == Source::Run && event.kind == "run.start" {
                     self.set_chat_from_run(&event);
                     if let (Some(pid), Ok(mut runs)) = (event.pid, self.runs.lock()) {
@@ -2183,6 +2250,18 @@ impl Daemon {
             harness: event.harness.clone(),
             folders,
             derm_exe,
+            // E1-11, review 6-1 and 6-6: the client derm started for an sbx
+            // chat, by its real path, and the home its state is under.
+            sbx_exe: (event.detail.get("boundary").and_then(Value::as_str) == Some("sbx"))
+                .then(|| event.detail.get("sbxExe").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_string),
+            home: event
+                .detail
+                .get("home")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            asks_allow: event.detail.get("asks").and_then(Value::as_str) == Some("allow"),
         }) else {
             return;
         };
@@ -2469,6 +2548,25 @@ impl Daemon {
             // read, in the window, and for a chat, during its run (to its
             // stop and the join's keep).
             "osFeedGaps": Some(self.feed_gaps_in(since, until)).filter(|g| !g.is_empty()),
+            // E1-3: sensitive paths that exist and whose reads the loaded
+            // audit rules do not record, as the feed last found; for a chat
+            // and for the window alike, since it is the state now.
+            "osUnwatched": self
+                .os_unwatched
+                .lock()
+                .ok()
+                .and_then(|u| u.clone())
+                .map(|(at, paths, none)| json!({"paths": paths, "sinceMs": at, "noneSeen": none})),
+            // E1R-13: the lists that have ended, for the window, or for a
+            // chat those that overlap its run.
+            "osUnwatchedPast": Some(match run {
+                Some((start, stop)) => self.unwatched_past_in(
+                    start,
+                    stop.map_or(i64::MAX, |s| s.saturating_add(crate::join::STOPPED_KEEP_MS)),
+                ),
+                None => self.unwatched_past_in(since, until),
+            })
+            .filter(|p| !p.is_empty()),
             "chatOsFeedGaps": run
                 .map(|(start, stop)| {
                     let end = stop.map_or(i64::MAX, |s| {
@@ -2508,7 +2606,23 @@ impl Daemon {
         self.counters.approvals.fetch_add(1, Ordering::Relaxed);
         let record_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
         self.approval_event(&record_id, &request, None, None, Value::Null);
-        let (answer, by, approver) = self.wait_for_answer(&request, gone);
+        // A full-access chat's gate asks only whether its boundary answers
+        // for it. `run.start` said so or it did not; no approver is shown
+        // the request, and nothing here waits.
+        let (answer, by, approver) = if request.boundary_only {
+            let allowed = self
+                .chats
+                .lock()
+                .ok()
+                .is_some_and(|c| c.get(&request.chat).is_some_and(|x| x.asks_allow));
+            if allowed {
+                (Answer::Yes, AnsweredBy::Boundary, Value::Null)
+            } else {
+                (Answer::No, AnsweredBy::None, Value::Null)
+            }
+        } else {
+            self.wait_for_answer(&request, gone)
+        };
         self.approval_event(&record_id, &request, Some(answer), Some(by), approver);
         self.record_approval(ApprovalRecord {
             id: record_id,
@@ -3297,6 +3411,146 @@ mod tests {
         let second = Daemon::new(TOKEN, log2, &data, false).unwrap();
         let g = report(&second, "chat-g");
         assert_eq!(g["flags"], 0, "after a restart: {g}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// E1-14: a full-access chat's gate asks whether its boundary answers
+    /// its asks. Only a `run.start` from the daemon scope that says `asks:
+    /// "allow"` makes the answer yes; no approver is waited for either way.
+    #[test]
+    fn e1_14_the_boundary_answers_only_where_run_start_said_so() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let d = Daemon::new(TOKEN, log, &data, false).unwrap();
+        for (chat, asks) in [("chat-a", json!("allow")), ("chat-b", Value::Null)] {
+            let start = ev_of(
+                chat,
+                Source::Run,
+                "run.start",
+                None,
+                json!({"boundary": "sbx", "argv": ["sbx"], "cwd": "/home/t/proj", "asks": asks}),
+            );
+            assert!(d.op_event(&Who::Daemon, start).ok);
+        }
+        let ask = |chat: &str, boundary_only: bool| {
+            let who = Who::Chat {
+                chat: chat.into(),
+                harness: "codex".into(),
+            };
+            let t0 = std::time::Instant::now();
+            let r = d.op_approve(
+                &who,
+                ApprovalRequest {
+                    id: format!("ap-{chat}-{boundary_only}"),
+                    chat: "ignored".into(),
+                    harness: "ignored".into(),
+                    tool: "bash".into(),
+                    summary: "bash: ls *.py".into(),
+                    timeout_seconds: 60,
+                    boundary_only,
+                },
+            );
+            assert!(t0.elapsed() < std::time::Duration::from_secs(3), "no wait");
+            (r.answer, r.by)
+        };
+        assert_eq!(
+            ask("chat-a", true),
+            (Some(Answer::Yes), Some(AnsweredBy::Boundary))
+        );
+        // A chat whose run.start did not say so, and a chat with none.
+        for chat in ["chat-b", "chat-none"] {
+            assert_eq!(
+                ask(chat, true),
+                (Some(Answer::No), Some(AnsweredBy::None)),
+                "{chat}"
+            );
+        }
+        // The chat's own request is under its own name, whatever it wrote.
+        let who = Who::Chat {
+            chat: "chat-b".into(),
+            harness: "codex".into(),
+        };
+        let r = d.op_approve(
+            &who,
+            ApprovalRequest {
+                id: "ap-forged".into(),
+                chat: "chat-a".into(),
+                harness: "codex".into(),
+                tool: "bash".into(),
+                summary: "x".into(),
+                timeout_seconds: 60,
+                boundary_only: true,
+            },
+        );
+        assert_eq!(r.answer, Some(Answer::No));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Eval pass 1, E1-11: a `run.start` that names sbx as the boundary makes
+    /// the registered process's own state expected (sbx's client, which derm
+    /// started); the same write in a chat with another boundary flags.
+    #[test]
+    fn e1_11_run_starts_sbx_boundary_reaches_the_check() {
+        let root = std::env::temp_dir().join(format!(
+            "tkd-unit-{}-{}",
+            std::process::id(),
+            &derm_core::token::mint().unwrap()[..12]
+        ));
+        let data = root.join("data");
+        let log: &'static ActivityLog =
+            Box::leak(Box::new(ActivityLog::start(data.join("activity"))));
+        let d = Daemon::new(TOKEN, log, &data, false).unwrap();
+        let now = now_ms();
+        for (n, (chat, boundary)) in [("chat-s", "sbx"), ("chat-n", "none")]
+            .into_iter()
+            .enumerate()
+        {
+            let mut start = ev_of(
+                chat,
+                Source::Run,
+                "run.start",
+                None,
+                json!({"boundary": boundary, "argv": ["sbx"], "cwd": "/home/t/proj", "sbxExe": "/usr/bin/sbx", "home": "/home/t"}),
+            );
+            start.at = now - 60_000;
+            assert!(d.op_event(&Who::Daemon, start).ok);
+            let mut write = ev_of(
+                chat,
+                Source::Auditd,
+                "write",
+                Some(77),
+                json!({
+                    "path": "/home/t/.config/sandboxes/sandboxes/settings.json.lock",
+                    "exe": "/usr/bin/sbx",
+                    "tier": "root",
+                }),
+            );
+            write.id = format!("auditd-3-{n}");
+            write.at = now - 50_000;
+            assert!(d.op_event(&Who::Daemon, write).ok);
+        }
+        let report = |chat: &str, flags: u64| {
+            let mut held = Value::Null;
+            for _ in 0..100 {
+                held = d.report(Some(chat), 0, i64::MAX);
+                if held["events"] == 2 && held["flags"] == flags {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            held
+        };
+        let s = report("chat-s", 0);
+        assert_eq!(s["events"], 2, "{s}");
+        assert_eq!(s["flags"], 0, "{s}");
+        let n = report("chat-n", 1);
+        assert_eq!(n["flags"], 1, "another boundary, no hide: {n}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -28,6 +28,7 @@ use derm_audit_linux::feed::Feed;
 use derm_audit_linux::resume::{self, Pos};
 use derm_audit_linux::rules::{plain_path, render, RulesInput};
 use derm_audit_linux::tree::Root;
+use derm_audit_linux::watchcheck::WatchCheck;
 use derm_core::event::{Event, Source};
 
 const DEFAULT_LOG: &str = "/var/log/audit/audit.log";
@@ -211,6 +212,8 @@ enum Msg {
     /// log can be read (BW5R4-1).
     Caught,
     Idle,
+    /// A second with no message: the loop's own clock, never sent.
+    Tick,
     Daemon(Event),
     Gone(String),
 }
@@ -250,6 +253,54 @@ fn gap_event(from_ms: Option<i64>, to_ms: i64, reason: &str, now: i64) -> Event 
         detail: serde_json::json!({"fromMs": from_ms, "toMs": to_ms, "reason": reason}),
         pid: None,
         approval_id: None,
+    }
+}
+
+/// E1-3: the sensitive paths that exist and whose reads the loaded audit
+/// rules do not record (`watchcheck.rs`); an empty list ends an earlier one.
+fn unwatched_event(paths: &[String], none_seen: bool, now: i64) -> Event {
+    let summary = if none_seen {
+        "derm-audit-feed saw no audit record of its own opens: auditd is stopped, the derm rules are not loaded, or they name another user".to_string()
+    } else if paths.is_empty() {
+        "the audit rules record reads of every sensitive path that exists".to_string()
+    } else {
+        format!(
+            "the audit rules loaded now do not record reads of {} sensitive path(s) that exist; run derm-audit-feed rules and install what it prints",
+            paths.len()
+        )
+    };
+    Event {
+        id: format!("auditd-unwatched-{now}"),
+        at: now,
+        chat_id: String::new(),
+        harness: String::new(),
+        source: Source::Auditd,
+        kind: "feed.unwatched".into(),
+        summary,
+        detail: serde_json::json!({"paths": paths, "noneSeen": none_seen, "checkedMs": now}),
+        pid: None,
+        approval_id: None,
+    }
+}
+
+/// Opens `path` read-only and closes it: the open is what the audit rules
+/// record, whether or not it succeeds (`watchcheck.rs`). `O_NONBLOCK` so a
+/// FIFO put at the path cannot hold the feed.
+#[cfg(unix)]
+fn probe_open(path: &str) {
+    let Ok(c) = std::ffi::CString::new(path) else {
+        return;
+    };
+    // SAFETY: `c` is a NUL-terminated string that outlives the call.
+    let fd = unsafe {
+        libc::open(
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOCTTY,
+        )
+    };
+    if fd >= 0 {
+        // SAFETY: `fd` was just returned by open and is closed once.
+        unsafe { libc::close(fd) };
     }
 }
 
@@ -463,16 +514,41 @@ fn cmd_run(args: &[String]) -> u8 {
         log.display(),
         socket.display()
     );
-    for msg in rx {
+    // E1-3: whether the loaded rules record reads of the sensitive paths
+    // that exist now; asked once the log is being read, and again when one
+    // appears.
+    let sens = derm_audit_linux::rules::sensitive_paths(&home, runtime_dir.as_deref());
+    let mut check = WatchCheck::new(std::process::id());
+    let mut caught = false;
+    let mut quiet = false;
+    let mut last_due = Instant::now();
+    loop {
+        let msg = match rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(m) => m,
+            Err(mpsc::RecvTimeoutError::Timeout) => Msg::Tick,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         let idle = matches!(msg, Msg::Idle);
         let events = match msg {
             Msg::Line(l, dev, ino, start, end) => {
+                quiet = false;
                 let events = feed.push_line(&l);
-                let key = derm_audit_linux::record::parse_line(&l).map(|r| r.event_key());
+                let rec = derm_audit_linux::record::parse_line(&l);
+                if let Some(r) = &rec {
+                    check.on_record(r);
+                }
+                let key = rec.map(|r| r.event_key());
                 places.note(dev, ino, start, end, key, feed.last_line_own());
                 events
             }
+            Msg::Tick => {
+                // A second with no line: the follower polls every 100 ms,
+                // so the log has been read to its end.
+                quiet = true;
+                Vec::new()
+            }
             Msg::Idle => {
+                quiet = true;
                 // A quiet log: let go of stopped chats it has passed
                 // (BW5R4-2), not only once a minute.
                 let out = feed.flush();
@@ -519,6 +595,7 @@ fn cmd_run(args: &[String]) -> u8 {
                         }
                     });
                 }
+                caught = true;
                 Vec::new()
             }
             Msg::Gone(why) => {
@@ -559,6 +636,41 @@ fn cmd_run(args: &[String]) -> u8 {
         if last_prune.elapsed() > Duration::from_secs(60) {
             feed.prune(&alive);
             last_prune = Instant::now();
+        }
+        if caught {
+            if let Some(settled) = check.settle(now_ms(), quiet) {
+                let list = settled.unwatched;
+                if check.changed(&list) {
+                    if settled.none_seen {
+                        eprintln!("derm-audit-feed: no audit record of its own opens was seen: auditd is stopped, the derm rules are not loaded, or they name another user than this one; reads of sensitive paths are not recorded");
+                    } else {
+                        for p in &list {
+                            eprintln!("derm-audit-feed: the audit rules loaded now do not record reads of {p}; run `derm-audit-feed rules` and install what it prints");
+                        }
+                    }
+                    if !post_or_stop(
+                        &mut poster,
+                        &socket,
+                        &token,
+                        &unwatched_event(&list, settled.none_seen, now_ms()),
+                    ) {
+                        return 1;
+                    }
+                }
+            }
+            if last_due.elapsed() >= Duration::from_secs(1) {
+                last_due = Instant::now();
+                let exists = |p: &str| Path::new(p).exists();
+                if check.due(now_ms(), &exists) {
+                    let (there, missing): (Vec<String>, Vec<String>) =
+                        sens.iter().map(|(_, p)| p.clone()).partition(|p| exists(p));
+                    let now = now_ms();
+                    for p in &there {
+                        probe_open(p);
+                    }
+                    check.begin(now, there, missing);
+                }
+            }
         }
     }
     0
@@ -775,7 +887,7 @@ mod tests {
         loop {
             match rx.recv_timeout(Duration::from_secs(5)).expect("a line") {
                 Msg::Line(l, _dev, ino, _start, end) => return (l, ino, end),
-                Msg::Idle => continue,
+                Msg::Idle | Msg::Tick => continue,
                 _ => panic!("not a line"),
             }
         }

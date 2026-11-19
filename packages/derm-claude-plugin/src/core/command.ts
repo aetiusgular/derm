@@ -50,7 +50,7 @@ export function commandProblem(value: unknown): string | undefined {
 // Lane X's wrapper list (installs/parse.ts): words that run the rest of the
 // line as a command. Their own flags are not parsed; the command starts at
 // the first later word that names a rule's head, a wrapper or a shell.
-const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel", "setsid", "flock", "unshare", "run0"]);
+const WRAPPERS = new Set(["sudo", "doas", "env", "command", "exec", "builtin", "nohup", "time", "stdbuf", "chronic", "unbuffer", "nice", "ionice", "chrt", "taskset", "timeout", "xargs", "corepack", "busybox", "parallel", "setsid", "flock", "unshare", "run0", "watch", "strace", "ltrace"]);
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "csh", "tcsh", "rbash", "yash"]);
 const ASSIGNMENT = /^[a-z_][a-z0-9_]*=/;
 const MAX_DEPTH = 4;
@@ -112,7 +112,10 @@ function isHead(word: string, heads: ReadonlySet<string>): boolean {
 function read(input: string[], heads: ReadonlySet<string>, depth: number, out: string[][]): void {
   let words = input;
   for (let guard = 0; guard < 16; guard++) {
-    while (words.length && ASSIGNMENT.test(words[0] as string)) words = words.slice(1);
+    // Assignments, and the reserved words a simple command may start with
+    // before its program (`then rm`, `do git push`): the review of eval pass
+    // 1's fixes, E1R-3 (derm-core's `read`).
+    while (words.length && (ASSIGNMENT.test(words[0] as string) || RESERVED.has(words[0] as string))) words = words.slice(1);
     if (!words.length) return;
     const head = commandBase(words[0] as string);
     const rest = words.slice(1);
@@ -131,6 +134,19 @@ function read(input: string[], heads: ReadonlySet<string>, depth: number, out: s
     }
     if (head === "eval") {
       walk(rest.join(" "), heads, depth + 1, out);
+      return;
+    }
+    // `su [user] -c <string>`: the string is a shell's (E1R-8).
+    if (head === "su") {
+      for (let i = 0; i < rest.length; i++) {
+        const w = rest[i] as string;
+        if (w.startsWith("--command=")) walk(w.slice("--command=".length), heads, depth + 1, out);
+        else if (w === "-c" || w === "--command" || w === "--session-command") {
+          const v = rest[i + 1];
+          if (v !== undefined) walk(v, heads, depth + 1, out);
+          i++;
+        }
+      }
       return;
     }
     // GNU parallel runs its command words and its `:::` arguments through a
@@ -252,6 +268,54 @@ const orFeed = (a: Feed, b: Feed): Feed => ({
   hereDoc: a.hereDoc || b.hereDoc,
   process: a.process || b.process,
 });
+
+// --- Step 7b's two exceptions (E1-5, eval pass 1) ----------------------------
+
+/**
+ * Programs that hand no argument to a shell, so text inside quotes stays
+ * text. `curl` is not here (it expands braces in a URL itself), nor `find`,
+ * `xargs`, `ssh`, `watch` or any wrapper.
+ */
+const TEXT_PROGRAMS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "rg", "jq"]);
+/** git subcommands that take a message or a revision and run no command string. */
+const TEXT_GIT = new Set(["commit", "log", "show", "diff", "tag"]);
+const AFTER_TILDE = new Set(["^", ".", " ", "\t", "\n", "'", '"', ")", ";", "&", "|"]);
+
+/**
+ * Whether a step 7b token that the folded text holds is plain text there, so
+ * it need not ask (derm-core's `token_is_text`, which holds the sources).
+ * `plain` says the input was ASCII before the fold. `{` and `}`: every one
+ * inside closed quotes, and every simple command a text program or a text git
+ * subcommand named plainly. `~`: every one after a letter or digit and before
+ * a digit, `^`, `.`, a space, a quote, `)`, `;`, `&`, `|` or the end.
+ */
+export function tokenIsText(folded: string, token: string, plain: boolean): boolean {
+  if (!plain) return false;
+  const chars = Array.from(folded);
+  if (token === "~") {
+    return chars.every((c, i) => {
+      if (c !== "~") return true;
+      const before = i > 0 && /^[a-z0-9]$/.test(chars[i - 1]!);
+      const next = chars[i + 1];
+      const after = next === undefined || /^[0-9]$/.test(next) || AFTER_TILDE.has(next);
+      return before && after;
+    });
+  }
+  if (token !== "{" && token !== "}") return false;
+  // A quote inside a `#` comment would open one for the scan below only
+  // (E1R-1), so no brace is text when the line holds a `#`.
+  if (folded.includes("#")) return false;
+  let quote: string | undefined;
+  for (const c of chars) {
+    if (quote !== undefined) {
+      if (c === quote) quote = undefined;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "{" || c === "}") return false;
+  }
+  if (quote !== undefined) return false;
+  const cmds = commands(folded);
+  return cmds.length > 0 && cmds.every((w) => TEXT_PROGRAMS.has(w[0]!) || (w[0] === "git" && w[1] !== undefined && TEXT_GIT.has(w[1])));
+}
 
 // Words that open a compound command whose inner commands share the input it
 // was given (`curl x | if true; then sh; fi`), the words that close one, and

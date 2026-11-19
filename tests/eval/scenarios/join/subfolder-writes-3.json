@@ -1,0 +1,45 @@
+{
+  "suite": "join",
+  "id": "subfolder-writes-3",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d3-0 && echo x > d3-0/in3-0.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d3-1 && echo x > d3-1/in3-1.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d3-2 && echo x > d3-2/in3-2.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "d3-0/in3-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "d3-1/in3-1.txt"
+    },
+    {
+      "what": "write",
+      "path": "d3-2/in3-2.txt"
+    }
+  ]
+}

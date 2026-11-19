@@ -1,0 +1,47 @@
+{
+  "suite": "join",
+  "id": "two-children-outlive-their-calls",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "( sleep 1.5; echo one > child-one.txt ) & true"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "( sleep 0.5; echo two > child-two.txt ) & true"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "echo three > third.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "child-one.txt",
+      "after": 1500
+    },
+    {
+      "what": "write",
+      "path": "child-two.txt",
+      "after": 500
+    },
+    {
+      "what": "write",
+      "path": "third.txt"
+    }
+  ]
+}

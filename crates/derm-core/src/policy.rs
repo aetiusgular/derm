@@ -1342,7 +1342,15 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         normalized_tool: normalized.clone(),
         reason,
     };
-    let folded = fold_text(&decode_escapes(&call.input_text));
+    let decoded = decode_escapes(&call.input_text);
+    // E1-5: whether the fold could have changed a character's kind.
+    // A `\uXXXX` in the input was decoded: for a file tool that is the key
+    // a config file will hold, but in a shell command the backslash is the
+    // shell's, and the decoded text is not what runs (eval pass 1's review,
+    // E1R-2: `echo \u0027; rm -rf /; echo \u0027` read as one quoted word).
+    let escaped = decoded != call.input_text;
+    let plain = decoded.is_ascii() && !escaped;
+    let folded = fold_text(&decoded);
     if let Some(key) = reject_hit(&folded) {
         return decide(Action::Deny, format!("reject list: {key}"));
     }
@@ -1465,6 +1473,8 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         let d = allow_steps(
             &normalized,
             &folded,
+            plain,
+            escaped,
             crate::command::command_reason(&words_of(rule)),
         );
         if d.action == Action::Allow {
@@ -1547,12 +1557,18 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
             return decide(Action::Ask, "description changed".to_string());
         }
     }
-    allow_steps(&normalized, &folded, rule_reason(winner))
+    allow_steps(&normalized, &folded, plain, escaped, rule_reason(winner))
 }
 
 /// Step 7 for an allow that stands so far: control files, shell text the
 /// matcher cannot read, an install of section 6, PowerShell's plain words.
-fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
+fn allow_steps(
+    normalized: &str,
+    folded: &str,
+    plain: bool,
+    escaped: bool,
+    reason: String,
+) -> Decision {
     let decide = |action: Action, reason: String| Decision {
         action,
         normalized_tool: normalized.to_string(),
@@ -1576,7 +1592,20 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
     // On the folded, escape-decoded text: stricter than the raw input
     // (`＄HOME` asks), the side that fails safe (rules section 9, item 7).
     if SHELL_TOOLS.contains(&normalized) {
-        if let Some(t) = UNREADABLE_SHELL_TOKENS.iter().find(|t| folded.contains(*t)) {
+        // E1R-2: an escape the matcher decoded held a backslash the shell
+        // reads its own way.
+        if escaped {
+            return decide(
+                Action::Ask,
+                "shell text the matcher cannot read: `\\`".to_string(),
+            );
+        }
+        // E1-5: a quoted brace in a text program's argument and a tilde
+        // after a revision's name are text (`command::token_is_text`).
+        if let Some(t) = UNREADABLE_SHELL_TOKENS
+            .iter()
+            .find(|t| folded.contains(*t) && !crate::command::token_is_text(folded, t, plain))
+        {
             // The token named, a glob called one (Mac test w1, M9; the hook
             // core's and derm-pi's text).
             let glob = matches!(*t, "*" | "?" | "[");
@@ -1623,6 +1652,11 @@ fn allow_steps(normalized: &str, folded: &str, reason: String) -> Decision {
     if SHELL_TOOLS.contains(&normalized) {
         if let Some(program) = crate::command::stdin_program(folded) {
             return decide(Action::Ask, format!("program read from input: `{program}`"));
+        }
+        // Step 7e (E1-1): a command that changes the root, a system or home
+        // folder, a disk or a parent folder, or signals every process.
+        if let Some(why) = crate::destructive::destructive(folded) {
+            return decide(Action::Ask, why);
         }
     }
     decide(Action::Allow, reason)

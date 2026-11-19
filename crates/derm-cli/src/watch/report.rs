@@ -277,6 +277,58 @@ pub fn render(r: &Value) -> String {
             ));
         }
     }
+    // E1-3: sensitive paths that exist and that the loaded audit rules do
+    // not cover, as the feed found by opening them.
+    if let Some(u) = r.get("osUnwatched").filter(|u| u.is_object()) {
+        let paths: Vec<String> = u
+            .get("paths")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|p| clean(p, 200))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !paths.is_empty() {
+            let since = u
+                .get("sinceMs")
+                .and_then(Value::as_i64)
+                .map(date_time)
+                .unwrap_or_else(|| "an unknown time".to_string());
+            if u.get("noneSeen").and_then(Value::as_bool) == Some(true) {
+                // E1R-14: not one rule missing per path.
+                out.push_str(&format!(
+                    "OS FEED NOT WATCHING: derm-audit-feed saw no audit record of its own opens since {since} or earlier, so reads of sensitive paths are not recorded: auditd is stopped, the derm rules are not loaded (`sudo augenrules --load`), or they name another user than the feed's\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "OS FEED NOT WATCHING: reads of {} are not recorded since {since} or earlier: the audit rules loaded now do not cover them (made after the rules were installed, or the rules are not loaded); run `derm-audit-feed rules`, install what it prints as root and run `augenrules --load`\n",
+                    paths.join(", ")
+                ));
+            }
+        }
+    }
+    // E1R-13: paths that were not watched for a stretch that has ended.
+    if let Some(past) = r.get("osUnwatchedPast").and_then(Value::as_array) {
+        for g in past {
+            let paths: Vec<String> = g
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(|p| clean(p, 200))
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "OS FEED WAS NOT WATCHING: reads of {} were not recorded {} or earlier; a chat that ran then may have read them unseen\n",
+                paths.join(", "),
+                gap_span(g)
+            ));
+        }
+    }
     if let Some(n) = r
         .get("chatOsAfter")
         .and_then(Value::as_u64)
@@ -425,6 +477,7 @@ fn reason(r: &str) -> String {
         "appNotGranted" => "app not granted".into(),
         "recordingOff" => "recording off".into(),
         "noGateRecord" => "no gate record".into(),
+        "telemetrySilent" => "telemetry silent".into(),
         other => clean(other, 20),
     }
 }
@@ -705,6 +758,46 @@ mod tests {
         }
         let t = tally(Some(&Value::Object(m))).unwrap();
         assert!(t.ends_with("4 more"), "{t}");
+    }
+
+    /// E1-3: sensitive paths the loaded audit rules do not cover are named,
+    /// with what to run, for a chat and for the window.
+    #[test]
+    fn e1_3_paths_the_audit_rules_do_not_cover_are_named() {
+        let r = json!({"events": 1, "osUnwatched": {"paths": ["/home/t/.aws", "/home/t/.kube"], "sinceMs": 1792204000000i64}});
+        let out = render(&r);
+        assert!(
+            out.contains("OS FEED NOT WATCHING: reads of /home/t/.aws, /home/t/.kube are not recorded since "),
+            "{out}"
+        );
+        assert!(out.contains("derm-audit-feed rules"), "{out}");
+        assert!(out.contains("augenrules --load"), "{out}");
+        let quiet = render(&json!({"events": 1, "osUnwatched": null}));
+        assert!(!quiet.contains("NOT WATCHING"), "{quiet}");
+        // E1R-14: none of the feed's own opens was seen.
+        let none = render(
+            &json!({"events": 1, "osUnwatched": {"paths": ["/home/t/.ssh", "/etc/shadow"], "sinceMs": 1792204000000i64, "noneSeen": true}}),
+        );
+        assert!(
+            none.contains("saw no audit record of its own opens"),
+            "{none}"
+        );
+        assert!(!none.contains("install what it prints"), "{none}");
+        // E1R-13: a stretch that has ended is still named.
+        let past = render(
+            &json!({"events": 1, "osUnwatchedPast": [{"fromMs": 1792204000000i64, "toMs": 1792204040000i64, "paths": ["/home/t/.aws"]}]}),
+        );
+        assert!(
+            past.contains(
+                "OS FEED WAS NOT WATCHING: reads of /home/t/.aws were not recorded from "
+            ),
+            "{past}"
+        );
+        // A path is the feed's text: control bytes do not reach the terminal.
+        let odd = render(
+            &json!({"events": 1, "osUnwatched": {"paths": ["/home/t/.a\u{1b}[2Jws"], "sinceMs": 1}}),
+        );
+        assert!(!odd.contains('\u{1b}'), "{odd:?}");
     }
 
     /// BW5R4-1: a stretch of the audit log the Linux feed could not read is

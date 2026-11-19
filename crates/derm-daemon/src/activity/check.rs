@@ -54,6 +54,22 @@ pub struct ChatContext {
     /// BW6R3-2: the gate's own state in a sandbox's tmpfs is read by it.
     #[serde(default)]
     pub derm_exe: Option<String>,
+    /// The sbx client `derm run` started for a chat whose boundary is an
+    /// sbx VM, by its real path (`run.start`'s `sbxExe`, which only the
+    /// daemon scope posts). That process is sbx's own client on the host,
+    /// never the agent (eval pass 1, E1-11). A name alone is not enough:
+    /// any program called `sbx` would get the rule's cover (review 6-1).
+    #[serde(default)]
+    pub sbx_exe: Option<String>,
+    /// The home folder of the user who ran `derm run` (`run.start`'s
+    /// `home`), which is where that client keeps its state (review 6-6).
+    #[serde(default)]
+    pub home: Option<String>,
+    /// `run.start`'s `asks: "allow"`: the chat runs unattended in full
+    /// access inside a boundary, and `derm run` (the daemon scope) said an
+    /// ask is to be allowed and recorded there, not denied.
+    #[serde(default)]
+    pub asks_allow: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -69,6 +85,10 @@ pub enum FlagReason {
     /// A call the tap saw come back, in a chat whose gate was expected, that
     /// no gate record names (Tony's R7 call, option 1; the P4-R7 pattern).
     NoGateRecord,
+    /// An sbx chat whose telemetry export was on, whose agent was seen to
+    /// work, and from which no telemetry record arrived (the review of
+    /// E1-12, 6-4).
+    TelemetrySilent,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -776,6 +796,86 @@ impl<'a> Tree<'a> {
 pub const RULE_HARNESS_READ: &str = "harnessRead";
 pub const RULE_CREDENTIAL_OWNER: &str = "credentialOwner";
 pub const RULE_SHELL_INIT: &str = "shellInit";
+/// E1-11: sbx's own client on the host, keeping its own state and reaching
+/// Docker's services, in a chat whose boundary is sbx.
+pub const RULE_SBX_CLIENT: &str = "sbxClient";
+
+/// Where sbx's client keeps its own state, under the home folder: its
+/// settings, locks, analytics queue and feature-flag cache. Read from the
+/// box's feed (sbx 0.51.0, Linux: every write of its client in a real chat,
+/// `tests/fixtures/e1_sbx_client.md`) and from the folders sbx 0.53.0 made on
+/// the Mac (listed, not seen written in a chat).
+const SBX_STATE: &[&str] = &[
+    ".config/sandboxes/",
+    ".config/com.docker.sandboxes/",
+    ".local/share/sandboxes/",
+    ".cache/sandboxes/",
+    ".sbx/",
+    "Library/Application Support/com.docker.sandboxes/",
+    "Library/Caches/com.docker.sandboxes/",
+];
+
+/// A path in sbx's own state. `?.posixage.lock` is its lock file as the
+/// Linux feed names it when the kernel gave the name with no folder (the
+/// only files of that name on the box are under
+/// `~/.config/com.docker.sandboxes`).
+fn sbx_state(path: &str, home: &str) -> bool {
+    if path == "?.posixage.lock" {
+        return true;
+    }
+    if path.split('/').any(|p| p == "..") {
+        return false;
+    }
+    path.strip_prefix(home)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|rest| SBX_STATE.iter().any(|dir| rest.starts_with(dir)))
+}
+
+/// The ports sbx's client was seen to connect to: 443 for Docker's
+/// services and 65535 for its address probes (the fixture; review 6-5).
+const SBX_CLIENT_PORTS: &[i64] = &[443, 65535];
+
+/// E1-11: in an sbx chat the process derm registered is sbx's client, which
+/// derm started itself by its real path. The agent runs in the VM and the
+/// host's feed never sees it. The client's writes to its own state under
+/// the user's home and its own connections (Docker Hub, its feature flags,
+/// its analytics) are sbx's, not the chat's: expected, counted, and kept
+/// behind the toggle. Anything else the client does still flags, and so
+/// does every child it starts. Only what the client was seen to do is
+/// covered: opens for writing, creates, renames and unlinks. A link or a
+/// copy into its state would make a second name for another file, and is
+/// flagged (review 6-2).
+fn sbx_client_rule(
+    event: &ActivityEvent,
+    tier: Tier,
+    reason: FlagReason,
+    chat: Option<&ChatContext>,
+) -> bool {
+    let Some(chat) = chat else { return false };
+    let (Some(client), Some(home)) = (chat.sbx_exe.as_deref(), chat.home.as_deref()) else {
+        return false;
+    };
+    if tier != Tier::Root || str_field(event, "exe") != Some(client) {
+        return false;
+    }
+    match reason {
+        FlagReason::NewHost => {
+            event.kind == "net.connect"
+                && int_field(event, "port").is_some_and(|p| SBX_CLIENT_PORTS.contains(&p))
+        }
+        FlagReason::WriteOutsideFolders => {
+            if !matches!(
+                event.kind.as_str(),
+                "write" | "create" | "rename" | "unlink"
+            ) {
+                return false;
+            }
+            let paths = written_paths(event);
+            !paths.is_empty() && paths.iter().all(|p| sbx_state(p, home))
+        }
+        _ => false,
+    }
+}
 
 fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -1537,15 +1637,19 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
                 .pid
                 .is_some_and(|pid| tree.forked_by_root(&event.chat_id, pid, event.at));
             let during_turn = in_turn(&turns, &event.chat_id, event.at);
-            if let Some(rule) = expected_rule(
-                event,
-                tier,
-                reason,
-                harness,
-                folders,
-                forked_by_root,
-                during_turn,
-            ) {
+            let sbx_client = sbx_client_rule(event, tier, reason, chat).then_some(RULE_SBX_CLIENT);
+            let rule = sbx_client.or_else(|| {
+                expected_rule(
+                    event,
+                    tier,
+                    reason,
+                    harness,
+                    folders,
+                    forked_by_root,
+                    during_turn,
+                )
+            });
+            if let Some(rule) = rule {
                 *suppressed.entry(rule.to_string()).or_default() += 1;
                 hidden.push(Candidate {
                     event,
@@ -1584,6 +1688,7 @@ pub fn run_full(input: &CheckInput) -> CheckOutput {
 
     found.extend(left_running(input, &windows, &tree));
     found.extend(no_gate_record(input));
+    found.extend(telemetry_silent(input));
     let flags = dedupe(input.events, found);
     let mut expected = dedupe(input.events, hidden);
     expected.truncate(MAX_EXPECTED_ROWS);
@@ -1664,6 +1769,94 @@ fn no_gate_record<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
             alone: true,
         });
     }
+    out
+}
+
+/// How long after an sbx chat starts its telemetry may still be on its way
+/// before a chat that is still running is judged: Claude Code exports its
+/// logs every few seconds, and the first model call can take a minute.
+pub const TELEMETRY_GRACE_MS: i64 = 120_000;
+
+/// The review of E1-12, 6-4: an sbx chat whose `run.start` says the harness's
+/// own telemetry export was applied, whose agent was seen to work (a gate
+/// record from the VM, or a call in sbx's policy log to a host that is not
+/// this machine), and that has no `otel` record at all, once it has stopped
+/// or `TELEMETRY_GRACE_MS` has passed. The agent has sudo in the VM and can
+/// cut the route to the daemon's port; the harness then keeps running and
+/// the record would read as a quiet chat. `run.start` is the daemon scope's,
+/// and a chat token cannot remove a record, so the absence is the VM's
+/// doing or a broken export, never a forged quiet. Only sbx chats: on the
+/// host the export shares the daemon's loopback with the gate.
+fn telemetry_silent<'e>(input: &CheckInput<'e>) -> Vec<Candidate<'e>> {
+    let mut starts: HashMap<&str, &ActivityEvent> = HashMap::new();
+    for e in input.events {
+        if e.source == ActivitySource::Run
+            && e.kind == "run.start"
+            && str_field(e, "boundary") == Some("sbx")
+            && str_field(e, "otelExport")
+                .is_some_and(|x| x.starts_with("claude-code") || x.starts_with("codex"))
+        {
+            starts.entry(e.chat_id.as_str()).or_insert(e);
+        }
+    }
+    if starts.is_empty() {
+        return Vec::new();
+    }
+    let mut worked: HashSet<&str> = HashSet::new();
+    let mut heard: HashSet<&str> = HashSet::new();
+    let mut stopped: HashSet<&str> = HashSet::new();
+    for e in input.events {
+        let chat = e.chat_id.as_str();
+        let Some(start) = starts.get(chat) else {
+            continue;
+        };
+        if e.at < start.at {
+            continue;
+        }
+        match e.source {
+            ActivitySource::Otel => {
+                heard.insert(chat);
+            }
+            ActivitySource::Adapter => {
+                worked.insert(chat);
+            }
+            ActivitySource::Run if e.kind == "run.stop" => {
+                stopped.insert(chat);
+            }
+            ActivitySource::Run if e.kind == "net.connect" => {
+                // `event_host` reads no `run` record; the policy log's host is
+                // the record's own field.
+                let local = str_field(e, "host").is_none_or(|h| {
+                    let name = h.rsplit_once(':').map_or(h, |(n, _)| n);
+                    name.eq_ignore_ascii_case("localhost")
+                        || name == "127.0.0.1"
+                        || name.to_ascii_lowercase().ends_with(".docker.internal")
+                });
+                if !local {
+                    worked.insert(chat);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<Candidate> = starts
+        .into_iter()
+        .filter(|(chat, start)| {
+            worked.contains(chat)
+                && !heard.contains(chat)
+                && (stopped.contains(chat) || input.now_ms - start.at > TELEMETRY_GRACE_MS)
+        })
+        .map(|(chat, start)| Candidate {
+            event: start,
+            reason: FlagReason::TelemetrySilent,
+            summary: "the agent worked in the sbx VM and none of its own telemetry reached the daemon: the route to the daemon's port was cut in the VM, or the export did not start".into(),
+            tier: None,
+            subject: chat.to_string(),
+            grouped_path: None,
+            alone: true,
+        })
+        .collect();
+    out.sort_by(|a, b| a.subject.cmp(&b.subject));
     out
 }
 
@@ -1784,6 +1977,7 @@ pub fn reason_key(reason: FlagReason) -> &'static str {
         FlagReason::NewHost => "newHost",
         FlagReason::RecordingOff => "recordingOff",
         FlagReason::NoGateRecord => "noGateRecord",
+        FlagReason::TelemetrySilent => "telemetrySilent",
     }
 }
 
@@ -1869,6 +2063,9 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec!["/Users/t/code/app".into(), "/Users/t/code/my lib".into()],
                 derm_exe: None,
+                sbx_exe: None,
+                home: None,
+                asks_allow: false,
             },
         )])
     }
@@ -2182,6 +2379,262 @@ mod tests {
         })
     }
 
+    /// The review of E1-12, 6-4: nothing told a quiet sbx chat from one
+    /// whose telemetry was cut inside the VM.
+    #[test]
+    fn review_6_4_an_sbx_chat_that_worked_and_sent_no_telemetry_is_flagged() {
+        let at = 1_794_720_000_000;
+        let ev_in = |chat: &str, id: &str, t: i64, source, kind: &str, detail: Value| {
+            let mut e = ev(id, t, source, kind, detail, None);
+            e.chat_id = chat.into();
+            e.harness = "claude-code".into();
+            e
+        };
+        let start = |chat: &str, boundary: &str, export: &str| {
+            ev_in(
+                chat,
+                &format!("s-{chat}"),
+                at,
+                ActivitySource::Run,
+                "run.start",
+                json!({"boundary": boundary, "otelExport": export}),
+            )
+        };
+        let applied = "claude-code, token in OTEL_EXPORTER_OTLP_HEADERS";
+        let model = |chat: &str, host: &str| {
+            ev_in(
+                chat,
+                &format!("n-{chat}-{host}"),
+                at + 5_000,
+                ActivitySource::Run,
+                "net.connect",
+                json!({"host": host}),
+            )
+        };
+        let gate = |chat: &str| {
+            ev_in(
+                chat,
+                &format!("g-{chat}"),
+                at + 6_000,
+                ActivitySource::Adapter,
+                "approval",
+                json!({"decision": "allow"}),
+            )
+        };
+        let otel = |chat: &str| {
+            ev_in(
+                chat,
+                &format!("o-{chat}"),
+                at + 7_000,
+                ActivitySource::Otel,
+                "model.request",
+                json!({}),
+            )
+        };
+        let stop = |chat: &str| {
+            ev_in(
+                chat,
+                &format!("x-{chat}"),
+                at + 9_000,
+                ActivitySource::Run,
+                "run.stop",
+                json!({}),
+            )
+        };
+        let silent = |events: &[ActivityEvent], now: i64| -> Vec<String> {
+            let chats = HashMap::new();
+            let hosts: HashSet<String> = ["api.anthropic.com:443".to_string()].into();
+            run_full(&CheckInput {
+                events,
+                approvals: &[],
+                chats: &chats,
+                known_hosts: &hosts,
+                now_ms: now,
+                data_dir: None,
+            })
+            .flags
+            .into_iter()
+            .filter(|f| f.reason == FlagReason::TelemetrySilent)
+            .map(|f| f.chat_id)
+            .collect()
+        };
+        let soon = at + 10_000;
+        let late = at + TELEMETRY_GRACE_MS + 1;
+        let events = [
+            // Worked (the policy log names the model's host), stopped, silent.
+            start("cut", "sbx", applied),
+            model("cut", "api.anthropic.com:443"),
+            stop("cut"),
+            // Worked (a gate record), still running.
+            start("running", "sbx", applied),
+            gate("running"),
+            // Heard from.
+            start("ok", "sbx", applied),
+            model("ok", "api.anthropic.com:443"),
+            otel("ok"),
+            stop("ok"),
+            // The export was not applied: nothing was promised.
+            start("stood", "sbx", "stood down: the user already exports OTel"),
+            gate("stood"),
+            stop("stood"),
+            // Never worked: only the daemon's own port and Docker's names.
+            start("idle", "sbx", applied),
+            model("idle", "localhost:38483"),
+            model("idle", "mcp-gateway.docker.internal:80"),
+            stop("idle"),
+            // Not an sbx chat.
+            start(
+                "host",
+                "none",
+                "claude-code, token through otelHeadersHelper",
+            ),
+            gate("host"),
+            stop("host"),
+        ];
+        assert_eq!(silent(&events, soon), ["cut"]);
+        // A running chat is judged once the grace has passed.
+        assert_eq!(silent(&events, late), ["cut", "running"]);
+    }
+
+    fn sbx_client_records() -> Vec<ActivityEvent> {
+        include_str!("../../tests/fixtures/e1_sbx_client.jsonl")
+            .lines()
+            .map(|l| {
+                let v: Value = serde_json::from_str(l).unwrap();
+                serde_json::from_value(v["event"].clone()).unwrap()
+            })
+            .collect()
+    }
+
+    fn sbx_chat(sbx: bool) -> HashMap<String, ChatContext> {
+        sbx_chat_of(sbx.then_some("/usr/bin/sbx"), Some("/home/opone"))
+    }
+
+    fn sbx_chat_of(exe: Option<&str>, home: Option<&str>) -> HashMap<String, ChatContext> {
+        HashMap::from([(
+            "e1sbx-turn1".to_string(),
+            ChatContext {
+                chat_id: "e1sbx-turn1".into(),
+                harness: "claude-code".into(),
+                folders: vec!["/home/opone/w6box/e1/sbxturn/proj".into()],
+                derm_exe: Some("/home/opone/.local/bin/derm".into()),
+                sbx_exe: exe.map(str::to_string),
+                home: home.map(str::to_string),
+                asks_allow: false,
+            },
+        )])
+    }
+
+    /// Eval pass 1, E1-11 (the box, 16 Nov 2026, sbx 0.51.0, one real Claude
+    /// Code turn in an sbx VM): the host's feed sees sbx's client, which derm
+    /// started, and nothing in the VM. Its lock files, its analytics queue,
+    /// its feature-flag cache and its connections to Docker's services read
+    /// as 27 flags on a chat whose agent wrote two files in its own folder.
+    /// They are the client's, expected and counted.
+    #[test]
+    fn e1_11_sbx_clients_own_state_and_hosts_are_expected_in_an_sbx_chat() {
+        let recs = sbx_client_records();
+        assert_eq!(recs.len(), 15);
+        let out = check_with(&recs, &sbx_chat(true));
+        assert!(out.flags.is_empty(), "{:?}", out.flags);
+        // Thirteen by this rule; the two in `~/.cache` never flagged (a
+        // cache folder is noise for any program).
+        assert_eq!(out.suppressed.get(RULE_SBX_CLIENT), Some(&13));
+        assert!(!out.expected.is_empty());
+        let cache = recs
+            .iter()
+            .filter(|e| str_field(e, "path").is_some_and(|p| p.contains("/.cache/")))
+            .count();
+        assert_eq!(cache, 2);
+    }
+
+    /// The rule rests on the chat's boundary, the registered process and the
+    /// place written: the same records flag in a chat with another boundary,
+    /// from a child of the client, from a program of another name, and for a
+    /// write outside sbx's own state.
+    #[test]
+    fn e1_11_nothing_else_is_hidden_by_the_sbx_client_rule() {
+        let recs = sbx_client_records();
+        // Another boundary: every record flags as before (15 records, one
+        // row per file or host after the dedupe).
+        let plain = check_with(&recs, &sbx_chat(false));
+        assert!(plain.flags.len() >= 10, "{:?}", plain.flags.len());
+        assert_eq!(plain.suppressed.get(RULE_SBX_CLIENT), None);
+        let with = |f: &dyn Fn(&mut ActivityEvent)| {
+            let mut e = recs[0].clone();
+            f(&mut e);
+            check_with(&[e], &sbx_chat(true))
+        };
+        // The recorded write alone is expected.
+        assert!(with(&|_| {}).flags.is_empty());
+        // A child of the client.
+        let child = with(&|e| e.detail["tier"] = json!("child"));
+        assert_eq!(child.flags.len(), 1, "{:?}", child.flags);
+        // A program that is not sbx, or is named by no absolute path.
+        // Review 6-1: nor one that is only called sbx, wherever it sits.
+        for exe in [
+            "/usr/bin/bash",
+            "/tmp/x/sbxx",
+            "sbx",
+            "/tmp/x/sbx",
+            "/home/opone/w6box/e1/sbxturn/proj/sbx",
+            "/home/opone/w6box/e1/sbxturn/proj/node_modules/.bin/sbx",
+        ] {
+            let other = with(&|e| e.detail["exe"] = json!(exe));
+            assert_eq!(other.flags.len(), 1, "{exe}: {:?}", other.flags);
+        }
+        // A write outside sbx's own state, and one that climbs out of it.
+        for path in [
+            "/home/opone/.bashrc",
+            "/home/opone/.ssh/authorized_keys",
+            "/home/opone/.config/sandboxes/../../.bashrc",
+            "/home/opone/.config/sandboxes-other/x",
+            "/etc/cron.d/x",
+            "?.bashrc",
+        ] {
+            let out = with(&|e| e.detail["path"] = json!(path));
+            assert_eq!(out.flags.len(), 1, "{path}: {:?}", out.flags);
+        }
+        // A rename out of its state is judged by both names.
+        let mut mv = recs.iter().find(|e| e.kind == "rename").cloned().unwrap();
+        mv.detail["dest"] = json!("/home/opone/.profile");
+        assert_eq!(check_with(&[mv], &sbx_chat(true)).flags.len(), 1);
+        // Review 6-2: a link or a copy of another file into its state is a
+        // second name for that file, and flags.
+        for kind in ["link", "copyfile", "clone"] {
+            let mut ln = recs[0].clone();
+            ln.kind = kind.into();
+            ln.detail["path"] = json!("/home/opone/.ssh/id_ed25519");
+            ln.detail["dest"] = json!("/home/opone/.sbx/k");
+            assert_eq!(check_with(&[ln], &sbx_chat(true)).flags.len(), 1, "{kind}");
+        }
+        // Review 6-5: a connection to a port the client was never seen on.
+        let mut ssh = recs
+            .iter()
+            .find(|e| e.kind == "net.connect")
+            .cloned()
+            .unwrap();
+        ssh.detail["port"] = json!(22);
+        ssh.detail["host"] = json!("203.0.113.9:22");
+        ssh.detail["addr"] = json!("203.0.113.9");
+        assert_eq!(check_with(&[ssh], &sbx_chat(true)).flags.len(), 1);
+        // Review 6-6: another user's home is not this client's state.
+        let other = with(&|e| e.detail["path"] = json!("/home/other/.sbx/evil"));
+        assert_eq!(other.flags.len(), 1, "{:?}", other.flags);
+        // No client path or no home in the record: nothing is hidden.
+        for chats in [
+            sbx_chat_of(None, Some("/home/opone")),
+            sbx_chat_of(Some("/usr/bin/sbx"), None),
+        ] {
+            assert_eq!(check_with(&recs[..1], &chats).flags.len(), 1);
+        }
+        // A sensitive open by the client is not covered.
+        let mut open = recs[0].clone();
+        open.kind = "open".into();
+        open.detail["path"] = json!("/home/opone/.ssh/id_ed25519");
+        assert_eq!(check_with(&[open], &sbx_chat(true)).flags.len(), 1);
+    }
+
     /// Box test w6 retest 3, BW6R3-1: bubblewrap 0.11.1 opens each bind it
     /// made with `O_PATH` to find it in the mount table (`bind-mount.c:397-408`
     /// at v0.11.1), and derm's rule on `~/.derm/run` records the one of an srt
@@ -2249,6 +2702,9 @@ mod tests {
                 harness: "claude-code".into(),
                 folders: vec!["/home/opone/w6box/rt3/a5cp".into()],
                 derm_exe: Some("/home/opone/.local/bin/derm".into()),
+                sbx_exe: None,
+                home: None,
+                asks_allow: false,
             },
         )]);
         let out = check_with(&writes, &own);
@@ -2287,6 +2743,9 @@ mod tests {
                     harness: "claude-code".into(),
                     folders: vec!["/home/opone/w6box/rt4/a5cp".into()],
                     derm_exe: exe.map(str::to_string),
+                    sbx_exe: None,
+                    home: None,
+                    asks_allow: false,
                 },
             )])
         };
@@ -2351,6 +2810,9 @@ mod tests {
                     harness: "claude-code".into(),
                     folders: vec![folder.into()],
                     derm_exe: Some(exe.into()),
+                    sbx_exe: None,
+                    home: None,
+                    asks_allow: false,
                 },
             )])
         };
@@ -2553,6 +3015,9 @@ mod tests {
                 harness: "claude".into(),
                 folders: vec![r"\\?\C:\derm-win-w5\proj-w5b12".into()],
                 derm_exe: None,
+                sbx_exe: None,
+                home: None,
+                asks_allow: false,
             },
         )]);
         let events = [

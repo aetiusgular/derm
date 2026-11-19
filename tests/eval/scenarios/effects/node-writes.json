@@ -1,0 +1,24 @@
+{
+  "suite": "effects",
+  "id": "node-writes",
+  "source": {
+    "name": "derm"
+  },
+  "split": "dev",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "call": "npm run build",
+        "payload": "node -e \"require('fs').writeFileSync('node-wrote.txt','x')\""
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "node-wrote.txt"
+    }
+  ]
+}

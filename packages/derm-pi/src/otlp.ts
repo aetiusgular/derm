@@ -16,6 +16,8 @@
 // background, one batch per second, and a failed POST is counted and dropped.
 // Only a loopback endpoint is accepted; redirects are refused.
 
+import { SBX_HOST } from "./vm.ts";
+
 export type AttrValue = string | number | boolean;
 
 export interface OtlpRecord {
@@ -69,9 +71,11 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
 /**
  * The URL to POST to, or a reason it is refused. Loopback only
- * (contracts/events.md section 2); no credentials, query or fragment.
+ * (contracts/events.md section 2); no credentials, query or fragment. `vm`
+ * true (src/vm.ts, vmLogs: derm's sbx VM, where the daemon is on the host)
+ * also takes http://host.docker.internal, and nothing wider.
  */
-export function logsUrl(endpoint: string | undefined): { url: string } | { refused: string } {
+export function logsUrl(endpoint: string | undefined, vm = false): { url: string } | { refused: string } {
   if (endpoint === undefined || endpoint === "") return { refused: "no endpoint" };
   let u: URL;
   try {
@@ -80,7 +84,8 @@ export function logsUrl(endpoint: string | undefined): { url: string } | { refus
     return { refused: "endpoint is not a URL" };
   }
   if (u.protocol !== "http:" && u.protocol !== "https:") return { refused: "endpoint is not http" };
-  if (!LOOPBACK_HOSTS.has(u.hostname)) return { refused: "endpoint is not loopback" };
+  const vmHost = vm && u.protocol === "http:" && u.hostname === SBX_HOST;
+  if (!LOOPBACK_HOSTS.has(u.hostname) && !vmHost) return { refused: "endpoint is not loopback" };
   if (u.username !== "" || u.password !== "") return { refused: "endpoint carries credentials" };
   if (u.search !== "" || u.hash !== "") return { refused: "endpoint carries a query" };
   const path = u.pathname.replace(/\/+$/, "");

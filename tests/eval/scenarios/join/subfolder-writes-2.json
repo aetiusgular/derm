@@ -1,0 +1,34 @@
+{
+  "suite": "join",
+  "id": "subfolder-writes-2",
+  "source": {
+    "name": "derm"
+  },
+  "split": "heldout",
+  "steps": [
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d2-0 && echo x > d2-0/in2-0.txt"
+      },
+      "expect": "allow"
+    },
+    {
+      "kind": "shell",
+      "input": {
+        "command": "mkdir -p d2-1 && echo x > d2-1/in2-1.txt"
+      },
+      "expect": "allow"
+    }
+  ],
+  "effects": [
+    {
+      "what": "write",
+      "path": "d2-0/in2-0.txt"
+    },
+    {
+      "what": "write",
+      "path": "d2-1/in2-1.txt"
+    }
+  ]
+}
