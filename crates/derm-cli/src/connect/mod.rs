@@ -41,7 +41,7 @@ mod gate_tests;
 // The Windows half (fix pass 10, WW6R4-2): drive paths, junctions.
 #[cfg(all(test, windows))]
 mod gate_tests_windows;
-mod json;
+pub(crate) mod json;
 mod log;
 mod names;
 pub(crate) mod presets;

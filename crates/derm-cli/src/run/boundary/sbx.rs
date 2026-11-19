@@ -403,6 +403,15 @@ fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks
     )
 }
 
+/// The line after the start line when the kit is the form whose gate is
+/// derm itself (`DERM_SBX_KIT=rust`).
+fn rust_form_line() -> String {
+    format!(
+        "derm run: the gate in the VM is derm itself ({0}=rust): the kit carries a Linux derm and no Node, and the hook runs `derm hook` by its absolute path. Unset {0} for derm's kit that carries Node.",
+        super::kit::SWITCH
+    )
+}
+
 pub(crate) fn start_with(
     sbx: &str,
     plan: &mut Plan,
@@ -427,16 +436,21 @@ pub(crate) fn start_with(
     let exported = export_is_on(&plan.env_set);
     let set = |name: &str| plan.env_set.iter().any(|(k, v)| k == name && !v.is_empty());
     match &kit {
-        super::kit::Kit::Built(_) => eprintln!(
-            "{}",
-            with_kit_line(
-                harness,
-                &st.workload,
-                exported,
-                set("DERM_FULL_ACCESS"),
-                set("DERM_ASKS")
-            )
-        ),
+        super::kit::Kit::Built(_) => {
+            eprintln!(
+                "{}",
+                with_kit_line(
+                    harness,
+                    &st.workload,
+                    exported,
+                    set("DERM_FULL_ACCESS"),
+                    set("DERM_ASKS")
+                )
+            );
+            if super::kit::rust_form(harness, inputs.switch) {
+                eprintln!("{}", rust_form_line());
+            }
+        }
         super::kit::Kit::Without(why) => eprintln!(
             "derm run: inside the sbx VM {} runs without derm's gate ({why}): your host's hooks, plugins and extensions are not in the VM. \
              The VM is the boundary; sbx's policy log records the VM's network calls. The host's OS feed does not see inside the VM: \

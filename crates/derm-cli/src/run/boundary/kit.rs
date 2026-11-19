@@ -28,6 +28,13 @@
 //! first six are v3 workloads in sbx 0.51.0. Each form composed with its
 //! workload on the box.
 //!
+//! A second form of the Claude Code kit and of the four command-hook kits
+//! (19 Nov 2026, `plans/parallel/tk_kit_rust.md`), built when
+//! [`SWITCH`] is `rust`: the gate is the Rust `derm hook`, as in Codex's
+//! kit, so the kit carries a Linux derm for the VM and no Node, and derm
+//! registers the hook itself (`derm kit register`, `crate::vmkit`). The
+//! Node form stays the default until the box and the Mac have run this one.
+//!
 //! What the kit holds against: a model's mistakes inside the VM, the gap
 //! sbx's own docs leave (the read-write mount, allowed hosts). What it does
 //! not: an agent that sets out to remove it, since the agent has
@@ -65,6 +72,28 @@ const HOOKS_DOCKERFILE: &str =
 const HOOKS_INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/hooks/install.sh");
 #[cfg_attr(not(unix), allow(dead_code))]
 const REGISTER_AGENT: &str = include_str!("../../../../../packaging/sbx-kit/register-agent.mjs");
+
+/// The Claude Code kit with derm as the gate (`packaging/sbx-kit/claude-rs/`):
+/// its descriptor, Dockerfile and install script. The context file is the
+/// Node form's.
+#[cfg_attr(not(unix), allow(dead_code))]
+const RS_DESCRIPTOR: &str =
+    include_str!("../../../../../packaging/sbx-kit/claude-rs/derm-gate-claude.yaml");
+#[cfg_attr(not(unix), allow(dead_code))]
+const RS_DOCKERFILE: &str =
+    include_str!("../../../../../packaging/sbx-kit/claude-rs/derm-gate-claude.dockerfile");
+#[cfg_attr(not(unix), allow(dead_code))]
+const RS_INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/claude-rs/install.sh");
+
+/// The command-hook kit with derm as the gate (`packaging/sbx-kit/hooks-rs/`).
+#[cfg_attr(not(unix), allow(dead_code))]
+const RS_HOOKS_DESCRIPTOR: &str =
+    include_str!("../../../../../packaging/sbx-kit/hooks-rs/derm-gate-hooks.yaml");
+#[cfg_attr(not(unix), allow(dead_code))]
+const RS_HOOKS_DOCKERFILE: &str =
+    include_str!("../../../../../packaging/sbx-kit/hooks-rs/derm-gate-hooks.dockerfile");
+#[cfg_attr(not(unix), allow(dead_code))]
+const RS_HOOKS_INSTALL: &str = include_str!("../../../../../packaging/sbx-kit/hooks-rs/install.sh");
 
 /// Codex's kit (`packaging/sbx-kit/codex/`): the descriptor, its Dockerfile,
 /// root's install script, the agent's setup script, and the trust entries
@@ -187,6 +216,10 @@ enum Pack {
     Hooks(&'static [(&'static str, &'static str)]),
     /// A derm for the VM and derm's Codex plugin.
     Codex,
+    /// Claude Code with derm itself as the gate: a derm for the VM.
+    ClaudeRust,
+    /// A command-hook agent with derm itself as the gate: a derm for the VM.
+    HooksRust,
     /// derm's Pi package, in a v2 mixin.
     Pi,
 }
@@ -257,6 +290,39 @@ pub(crate) fn spec(harness: &str) -> Option<Spec> {
         ),
         _ => return None,
     })
+}
+
+/// Whether [`SWITCH`]'s value asks for the kits whose gate is derm itself.
+pub(crate) fn rust_gate(switch: Option<&str>) -> bool {
+    switch.is_some_and(|v| v.eq_ignore_ascii_case("rust"))
+}
+
+/// derm's kit for this harness id under this value of [`SWITCH`]: with
+/// `rust`, Claude Code and the four command-hook agents get the form whose
+/// gate is `derm hook`; Codex's is that already, and Pi's gate is its
+/// extension, which Pi loads as JavaScript, so both are as [`spec`] has them.
+pub(crate) fn spec_for(harness: &str, switch: Option<&str>) -> Option<Spec> {
+    let s = spec(harness)?;
+    if !rust_gate(switch) {
+        return Some(s);
+    }
+    Some(Spec {
+        pack: match s.pack {
+            Pack::Claude => Pack::ClaudeRust,
+            Pack::Hooks(_) => Pack::HooksRust,
+            p => p,
+        },
+        ..s
+    })
+}
+
+/// Whether the kit built for this harness under this switch has derm itself
+/// as its gate because the switch asked for it (the start line says so).
+pub(crate) fn rust_form(harness: &str, switch: Option<&str>) -> bool {
+    matches!(
+        spec_for(harness, switch).map(|s| s.pack),
+        Some(Pack::ClaudeRust | Pack::HooksRust)
+    )
 }
 
 /// derm's Claude Code hook as it runs: the launcher, the hook and every
@@ -331,6 +397,8 @@ pub(crate) const PLUGIN: &[(&str, &str)] = &[
 /// the way back to phase 3's behaviour if the kit's create fails on an
 /// image derm has not seen (its Node cannot run the hook, say). The start
 /// line says the gate is not in the VM, as it did before the kit.
+/// `DERM_SBX_KIT=rust` builds the kit whose gate is derm itself
+/// ([`spec_for`]).
 pub(crate) const SWITCH: &str = "DERM_SBX_KIT";
 
 /// Policy files bigger than this are not copied (`derm_core::policy`'s cap).
@@ -421,17 +489,29 @@ pub(crate) fn prepare(
         };
         // Codex's gate is derm itself, so its kit needs a derm the VM can
         // run. With none there is no kit, and the chat runs as it did
-        // before Codex had one.
-        let derm = match spec(harness).map(|s| s.pack) {
+        // before Codex had one. The same holds for the kits `rust` asks
+        // for: derm does not fall back to the Node form without a word,
+        // since the person asked for this one; the reason names the way
+        // back.
+        let pack = spec_for(harness, switch).map(|s| s.pack);
+        let derm = match pack {
             Some(Pack::Codex) => match vm_derm() {
                 Ok(p) => Some(p),
                 Err(why) => return Ok(Kit::Without(why)),
+            },
+            Some(Pack::ClaudeRust | Pack::HooksRust) => match vm_derm() {
+                Ok(p) => Some(p),
+                Err(why) => {
+                    return Ok(Kit::Without(format!(
+                        "{SWITCH}=rust is set and {why}; unset {SWITCH} for derm's kit that carries Node"
+                    )))
+                }
             },
             _ => None,
         };
         let dir = private_dir(parent).map_err(|e| format!("derm's sbx kit: {e}"))?;
         let prepared = Prepared { dir };
-        write_kit(prepared.path(), harness, &text, derm.as_deref())
+        write_kit(prepared.path(), harness, switch, &text, derm.as_deref())
             .map_err(|e| format!("derm's sbx kit: {e}"))?;
         Ok(Kit::Built(prepared))
     }
@@ -488,8 +568,15 @@ fn private_dir(parent: &Path) -> std::io::Result<PathBuf> {
 /// The kit's layout (SPEC-v3 3.1): the descriptor and its Dockerfile at the
 /// top, the context the descriptor names beside them, and under `derm-kit/`
 /// what the Dockerfile copies into `/opt/derm-kit-src` in the VM.
-fn write_kit(dir: &Path, harness: &str, policy: &str, derm: Option<&Path>) -> std::io::Result<()> {
-    let spec = spec(harness).ok_or_else(|| std::io::Error::other("no kit for this harness"))?;
+fn write_kit(
+    dir: &Path,
+    harness: &str,
+    switch: Option<&str>,
+    policy: &str,
+    derm: Option<&Path>,
+) -> std::io::Result<()> {
+    let spec = spec_for(harness, switch)
+        .ok_or_else(|| std::io::Error::other("no kit for this harness"))?;
     // A v2 kit's payload is files/home/, which sbx copies into the agent's
     // home; a v3 kit's is whatever its Dockerfile copies.
     let stage = match spec.pack {
@@ -548,6 +635,27 @@ fn write_kit(dir: &Path, harness: &str, policy: &str, derm: Option<&Path>) -> st
             write(&stage.join("derm"), "")?;
             std::fs::write(stage.join("derm"), std::fs::read(derm)?)?;
         }
+        Pack::ClaudeRust => {
+            let derm = derm.ok_or_else(|| std::io::Error::other("no derm for the VM"))?;
+            write(&dir.join("derm-gate-claude.yaml"), RS_DESCRIPTOR)?;
+            write(&dir.join("derm-gate-claude.dockerfile"), RS_DOCKERFILE)?;
+            write(&dir.join("derm-context.md"), CONTEXT)?;
+            write(&stage.join("install.sh"), RS_INSTALL)?;
+            write(&stage.join("derm"), "")?;
+            std::fs::write(stage.join("derm"), std::fs::read(derm)?)?;
+        }
+        Pack::HooksRust => {
+            let derm = derm.ok_or_else(|| std::io::Error::other("no derm for the VM"))?;
+            let descriptor = RS_HOOKS_DESCRIPTOR
+                .replace("@WORKLOAD@", spec.workload)
+                .replace("@AGENT@", harness)
+                .replace("@NAME@", spec.name);
+            write(&dir.join("derm-gate-hooks.yaml"), &descriptor)?;
+            write(&dir.join("derm-gate-hooks.dockerfile"), RS_HOOKS_DOCKERFILE)?;
+            write(&stage.join("install.sh"), RS_HOOKS_INSTALL)?;
+            write(&stage.join("derm"), "")?;
+            std::fs::write(stage.join("derm"), std::fs::read(derm)?)?;
+        }
     }
     Ok(())
 }
@@ -573,12 +681,7 @@ fn vm_derm() -> Result<PathBuf, String> {
     if cfg!(target_os = "linux") {
         let exe = std::env::current_exe()
             .and_then(std::fs::canonicalize)
-            .map_err(|e| {
-                format!(
-                    "derm cannot read its own path for the Codex kit ({})",
-                    e.kind()
-                )
-            })?;
+            .map_err(|e| format!("derm cannot read its own path for the kit ({})", e.kind()))?;
         return checked_vm_derm(&exe);
     }
     let name = format!("derm-linux-{}", std::env::consts::ARCH);
@@ -604,7 +707,7 @@ fn checked_vm_derm(path: &Path) -> Result<PathBuf, String> {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "no Linux derm for the VM at {shown} (derm's Codex kit carries one; on a host that is not Linux, put a Linux build of derm for this machine's architecture there)"
+                "no Linux derm for the VM at {shown} (a kit whose gate is derm itself carries one; on a host that is not Linux, put a Linux build of derm for this machine's architecture there)"
             ))
         }
         Err(e) => return Err(format!("the derm for the VM at {shown} cannot be read ({})", e.kind())),

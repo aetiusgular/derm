@@ -743,3 +743,285 @@ fn the_pi_kit_carries_the_packages_whole_import_closure_and_its_parts_agree() {
     assert!(!s.contains("--local"));
     assert!(has_kit("pi"));
 }
+
+/// 19 Nov 2026, the second form of the Claude Code kit (`DERM_SBX_KIT=rust`):
+/// the gate is derm itself, so the kit carries a derm for the VM, the
+/// policy and the install script, and no Node, hook package or registrar.
+#[test]
+fn with_the_rust_switch_claude_code_gets_a_kit_whose_gate_is_derm_itself() {
+    let d = tmp("claude-rust");
+    let policy = policy_at(&d, POLICY, 0o600);
+    let derm = vm_derm_at(&d, 0o755);
+    for switch in ["rust", "RUST", "Rust"] {
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = Some(Ok(derm.clone())));
+        let kit = prepare("claude-code", Some(&policy), &d, Some(switch)).unwrap();
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+        let Kit::Built(p) = kit else {
+            panic!("no kit: {kit:?}")
+        };
+        let root = p.path().to_path_buf();
+        let files = files_under(&root);
+        let want: BTreeSet<String> = [
+            "derm-gate-claude.yaml",
+            "derm-gate-claude.dockerfile",
+            "derm-context.md",
+            "derm-kit/install.sh",
+            "derm-kit/policy.json",
+            "derm-kit/derm",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(files, want, "{switch}");
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap();
+        assert_eq!(read("derm-gate-claude.yaml"), RS_DESCRIPTOR);
+        assert_eq!(read("derm-gate-claude.dockerfile"), RS_DOCKERFILE);
+        assert_eq!(read("derm-kit/install.sh"), RS_INSTALL);
+        assert_eq!(read("derm-context.md"), CONTEXT);
+        assert_eq!(read("derm-kit/policy.json"), POLICY);
+        assert_eq!(
+            std::fs::read(root.join("derm-kit/derm")).unwrap(),
+            std::fs::read(&derm).unwrap()
+        );
+        use std::os::unix::fs::PermissionsExt;
+        for f in &files {
+            let m = std::fs::metadata(root.join(f))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(m & 0o077, 0, "{f} is {m:o}");
+        }
+        drop(p);
+        assert!(!root.exists());
+    }
+    assert!(rust_form("claude-code", Some("rust")));
+    assert!(!rust_form("claude-code", None));
+    assert!(!rust_form("claude-code", Some("off")));
+    // Codex's gate is derm already and Pi's is its extension: the switch
+    // changes neither kit.
+    assert!(!rust_form("codex", Some("rust")) && !rust_form("pi", Some("rust")));
+    assert!(!rust_form("opencode", Some("rust")));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Without the switch nothing changes: Claude Code's kit is the one with
+/// Node and the hook package, whether or not a derm for the VM is at hand.
+#[test]
+fn without_the_rust_switch_the_kits_are_the_node_ones() {
+    let d = tmp("claude-default");
+    let policy = policy_at(&d, POLICY, 0o600);
+    let derm = vm_derm_at(&d, 0o755);
+    for switch in [None, Some(""), Some("node"), Some("rusty")] {
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = Some(Ok(derm.clone())));
+        let kit = prepare("claude-code", Some(&policy), &d, switch).unwrap();
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+        let Kit::Built(p) = kit else {
+            panic!("no kit: {kit:?}")
+        };
+        let files = files_under(p.path());
+        assert!(files.contains("derm-kit/register-hooks.mjs"), "{switch:?}");
+        assert!(files.contains("derm-kit/plugin/src/hook.ts"), "{switch:?}");
+        assert!(!files.contains("derm-kit/derm"), "{switch:?}");
+        assert_eq!(
+            std::fs::read_to_string(p.path().join("derm-gate-claude.yaml")).unwrap(),
+            DESCRIPTOR
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The four command-hook agents under the switch: the generic kit with the
+/// agent's workload, id and name filled in, a derm for the VM, and none of
+/// the hook packages.
+#[test]
+fn with_the_rust_switch_a_command_hook_agent_gets_derm_and_no_hook_package() {
+    for (harness, workload, name) in [
+        ("copilot-cli", "copilot", "Copilot CLI"),
+        ("droid", "droid", "Droid"),
+        ("cursor", "cursor", "Cursor"),
+        ("kiro", "kiro", "Kiro"),
+    ] {
+        let d = tmp(&format!("rust-{harness}"));
+        let policy = policy_at(&d, POLICY, 0o600);
+        let derm = vm_derm_at(&d, 0o755);
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = Some(Ok(derm.clone())));
+        let kit = prepare(harness, Some(&policy), &d, Some("rust")).unwrap();
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+        let Kit::Built(p) = kit else {
+            panic!("no kit for {harness}: {kit:?}")
+        };
+        let root = p.path().to_path_buf();
+        let want: BTreeSet<String> = [
+            "derm-gate-hooks.yaml",
+            "derm-gate-hooks.dockerfile",
+            "derm-kit/install.sh",
+            "derm-kit/policy.json",
+            "derm-kit/derm",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(files_under(&root), want, "{harness}");
+        let yaml = std::fs::read_to_string(root.join("derm-gate-hooks.yaml")).unwrap();
+        for word in ["@WORKLOAD@", "@AGENT@", "@NAME@"] {
+            assert!(!yaml.contains(word), "{harness}: {word} is left: {yaml}");
+        }
+        assert!(
+            yaml.contains(&format!("requires: [\"{workload}\"]")),
+            "{yaml}"
+        );
+        assert!(yaml.contains(&format!(
+            "provides: [\"io.github.aetiusgular/derm-gate-{workload}\"]"
+        )));
+        assert!(yaml.contains(&format!("displayName: derm gate for {name}\n")));
+        assert!(yaml.contains(&format!(
+            "command: \"sh /opt/derm-kit-src/install.sh {harness}\"\n          user: \"0\""
+        )));
+        assert!(yaml.contains(&format!(
+            "command: \"/usr/local/bin/derm kit register {harness} --home /home/agent\"\n          user: agent"
+        )));
+        assert_eq!(
+            std::fs::read(root.join("derm-kit/derm")).unwrap(),
+            std::fs::read(&derm).unwrap()
+        );
+        assert!(rust_form(harness, Some("rust")) && !rust_form(harness, None));
+        // The workload and the place the start line names are the Node kit's.
+        let (a, b) = (
+            spec(harness).unwrap(),
+            spec_for(harness, Some("rust")).unwrap(),
+        );
+        assert_eq!(
+            (a.workload, a.name, a.registered),
+            (b.workload, b.name, b.registered)
+        );
+        drop(p);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// The switch asks for a kit that needs a derm the VM can run. With none
+/// there is no kit; derm does not put the Node kit on without a word, and
+/// the reason names the way back. Nothing is built.
+#[test]
+fn the_rust_switch_with_no_derm_for_the_vm_gives_no_kit_and_says_how_to_get_the_other() {
+    let d = tmp("rust-none");
+    let policy = policy_at(&d, POLICY, 0o600);
+    for harness in ["claude-code", "droid", "cursor", "kiro", "copilot-cli"] {
+        TEST_VM_DERM.with(|t| {
+            *t.borrow_mut() = Some(Err(
+                "no Linux derm for the VM at /x/derm-linux-aarch64".into()
+            ))
+        });
+        let kit = prepare(harness, Some(&policy), &d, Some("rust")).unwrap();
+        TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+        match kit {
+            Kit::Without(why) => {
+                assert!(why.contains("DERM_SBX_KIT=rust is set"), "{why}");
+                assert!(why.contains("no Linux derm for the VM"), "{why}");
+                assert!(why.contains("unset DERM_SBX_KIT"), "{why}");
+            }
+            Kit::Built(_) => panic!("a kit was built for {harness}"),
+        }
+    }
+    let left = std::fs::read_dir(&d)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("derm-sbx-kit-"))
+        .count();
+    assert_eq!(left, 0);
+    // `off` still wins over everything.
+    match prepare("claude-code", Some(&policy), &d, Some("off")).unwrap() {
+        Kit::Without(why) => assert!(why.contains("DERM_SBX_KIT=off"), "{why}"),
+        Kit::Built(_) => panic!("a kit was built"),
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The two new kits' parts agree with each other, with the spec's grammar
+/// as the other kits use it, and with what derm reads in the VM.
+#[test]
+fn the_rust_kits_are_v3_mixins_whose_parts_agree() {
+    for (yaml, dockerfile, install) in [
+        (RS_DESCRIPTOR, RS_DOCKERFILE, RS_INSTALL),
+        (RS_HOOKS_DESCRIPTOR, RS_HOOKS_DOCKERFILE, RS_HOOKS_INSTALL),
+    ] {
+        assert!(yaml.starts_with("# syntax=docker/sandbox-kit:3\n"));
+        assert!(yaml.contains("\nschemaVersion: \"3\"\n"));
+        assert!(yaml.contains("\nkind: mixin\n"));
+        assert!(yaml.contains("type: com.docker.sandbox/lifecycle@1"));
+        // No Node anywhere: the overlay is what derm run staged, nothing else.
+        let recipe: Vec<&str> = dockerfile
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .collect();
+        assert_eq!(
+            recipe,
+            ["FROM scratch", "COPY derm-kit/ /opt/derm-kit-src/"]
+        );
+        assert!(!install.contains("node"), "the install script names Node");
+        assert!(install.starts_with("#!/bin/sh\n"));
+        assert!(install.contains("set -eu"));
+        assert!(install.contains("src=/opt/derm-kit-src"));
+        assert!(install.contains("dest=/opt/derm-kit"));
+        assert!(install.contains("bin=/usr/local/bin/derm"));
+        // The derm it carries is run once before anything is installed, and
+        // one already in the image is never replaced.
+        let ran = install.find("\"$src/derm\" --version").unwrap();
+        let refused = install.find("if [ -e \"$bin\" ]; then fail").unwrap();
+        let installed = install
+            .find("install -o root -g root -m 0755 \"$src/derm\" \"$bin\"")
+            .unwrap();
+        assert!(ran < refused && refused < installed);
+        // W5C-S2: the marker at the path derm's VM route and `derm kit
+        // register` read, root's alone, written after the folder is reset.
+        let reset = install.find("rm -rf \"$dest\"").unwrap();
+        let marker = install.find("> \"$dest/sbx-vm\"").unwrap();
+        assert!(reset < marker && installed < marker);
+        assert!(install.contains("chown -R root:root \"$dest\""));
+        assert!(install.contains("chmod 0644 \"$dest/sbx-vm\""));
+        assert_eq!(crate::gate::daemon::VM_MARKER, "/opt/derm-kit/sbx-vm");
+        assert!(install.contains("$home/.derm/policy.json"));
+        assert!(install.contains("chown agent:agent \"$home/.derm\" \"$home/.derm/policy.json\""));
+        // FP11-S6, FP11R-5: the staging folder goes on every exit.
+        assert!(install.contains("trap 'rm -rf \"$src\"' EXIT"));
+        for sig in ["HUP", "INT", "TERM"] {
+            assert!(install.contains(&format!("' {sig}\n")), "a trap for {sig}");
+        }
+    }
+    // Claude Code: the same workload, argument and context as the Node kit,
+    // one install command as root, and the hooks registered by derm after
+    // the marker is there (`derm kit register` writes only where it holds).
+    assert!(RS_DESCRIPTOR.contains("requires: [\"claude\"]"));
+    assert!(RS_DESCRIPTOR.contains("env: DERM_FULL_ACCESS"));
+    assert!(RS_DESCRIPTOR.contains("enum: [\"1\"]"));
+    assert!(RS_DESCRIPTOR.contains("contentFile: ./derm-context.md"));
+    assert!(RS_DESCRIPTOR
+        .contains("command: \"sh /opt/derm-kit-src/install.sh\"\n          user: \"0\""));
+    let provides = |y: &str| {
+        y.lines()
+            .find(|l| l.starts_with("provides:"))
+            .map(str::to_string)
+    };
+    assert_eq!(provides(RS_DESCRIPTOR), provides(DESCRIPTOR));
+    assert_eq!(provides(RS_HOOKS_DESCRIPTOR), provides(HOOKS_DESCRIPTOR));
+    let marker = RS_INSTALL.find("> \"$dest/sbx-vm\"").unwrap();
+    let registered = RS_INSTALL
+        .find("\"$bin\" kit register claude-code")
+        .unwrap();
+    assert!(marker < registered);
+    assert!(RS_INSTALL.contains(&format!("settings={}", crate::vmkit::MANAGED)));
+    assert!(RS_INSTALL.contains("chown root:root /etc/claude-code \"$settings\""));
+    assert!(RS_INSTALL.contains("chmod 0644 \"$settings\""));
+    // The four agents: root's half takes the agent's id and registers
+    // nothing; the agent's own user registers, by derm's absolute path.
+    assert!(RS_HOOKS_INSTALL.contains("copilot-cli | droid | cursor | kiro) ;;"));
+    assert!(!RS_HOOKS_INSTALL.contains("kit register \""));
+    assert!(RS_HOOKS_DESCRIPTOR.contains(
+        "command: \"/usr/local/bin/derm kit register @AGENT@ --home /home/agent\"\n          user: agent"
+    ));
+    for agent in crate::vmkit::HOME_AGENTS {
+        assert!(RS_HOOKS_INSTALL.contains(agent), "{agent}");
+        assert!(has_kit(agent));
+    }
+}

