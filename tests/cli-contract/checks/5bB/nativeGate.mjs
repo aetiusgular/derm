@@ -24,13 +24,14 @@
 //       --cli mistral-vibe=<path> --cli hermes=<path> --only native-...
 
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { ranText } from "../../lib/ran.mjs";
+import { rmTree } from "../../lib/rmTree.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, "..", "..", "..", "..");
@@ -82,7 +83,7 @@ async function turn(bin, { agent, policy, command, approve = "none", setup, tool
   } finally {
     await fake.close();
     await daemon.close();
-    rmSync(root, { recursive: true, force: true });
+    rmTree(root);
   }
 }
 

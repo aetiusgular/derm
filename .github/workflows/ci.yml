@@ -126,6 +126,10 @@ jobs:
       # The Standard tier checks' own reading of a host that kills Claude
       # Code's sandboxed commands (box test w6 retest, BW6R-2).
       - run: node tests/cli-contract/lib/standardHost.selftest.mjs
+      # A check's scratch folder goes even when an agent left read-only
+      # folders in it (Mistral Vibe; box test, 19 Nov 2026). The runner is
+      # not root, which is the case this shows.
+      - run: node tests/cli-contract/lib/rmTree.selftest.mjs
       # tests/cli-contract needs the real Claude Code and Codex CLIs; it runs
       # when they are installed (integration installs them under /tmp/cli).
       - name: cli contract

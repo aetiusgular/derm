@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runsDir } from "./lib/codexDriver.mjs";
+import { rmTree } from "./lib/rmTree.mjs";
 import { codexChecks } from "./checks/codex.mjs";
 import { claudeChecks } from "./checks/claude.mjs";
 import { editAdapterChecks } from "./checks/editAdapter.mjs";
@@ -76,12 +77,20 @@ function parseArgs(argv) {
   return out;
 }
 
+// A CLI's version, with an empty HOME of its own. Not /nonexistent: Copilot
+// CLI 1.0.108 makes folders under HOME before it prints its version and exits
+// 1 when it cannot, so for anyone but root its checks were all skipped
+// ("not given or not found"; box test, 19 Nov 2026).
 function version(bin) {
+  mkdirSync(runsDir(), { recursive: true });
+  const home = mkdtempSync(path.join(runsDir(), "version-"));
   try {
     const PATH = [path.dirname(process.execPath), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].join(":");
-    return execFileSync(bin, ["--version"], { env: { PATH, HOME: "/nonexistent" }, encoding: "utf8", timeout: 20000 }).trim();
+    return execFileSync(bin, ["--version"], { env: { PATH, HOME: home }, encoding: "utf8", timeout: 20000 }).trim();
   } catch {
     return null;
+  } finally {
+    rmTree(home);
   }
 }
 

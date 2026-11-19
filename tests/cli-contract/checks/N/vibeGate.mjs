@@ -9,13 +9,14 @@
 //   node tests/cli-contract/run.mjs --cli mistral-vibe=/path/to/vibe --only vibe-derm-deny,...
 
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startFakeChat, toolResults } from "../../lib/fakeChat.mjs";
 import { startFakeDaemon } from "../../../../packages/derm-claude-plugin/src/testing/fakeDaemon.ts";
 import { dermBin } from "../../lib/dermBin.mjs";
+import { rmTree } from "../../lib/rmTree.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The gate is derm itself: `<derm> hook <agent> pre`, by the absolute path of
@@ -99,7 +100,7 @@ async function vibeTurn(bin, { policy, script, approve = "none", gateCommand, fl
   } finally {
     await fake.close();
     await daemon.close();
-    rmSync(root, { recursive: true, force: true });
+    rmTree(root);
   }
 }
 
