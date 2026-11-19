@@ -326,14 +326,30 @@ pub(crate) mod tests {
         }
     }
 
+    /// A new folder for one test. The counter keeps two calls in the same
+    /// millisecond apart, since tests in other files reuse names.
     pub fn scratch(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let d = std::env::temp_dir().join(format!(
-            "derm-connect-{name}-{}-{}",
+            "derm-connect-{name}-{}-{}-{}",
             std::process::id(),
-            now_ms()
+            now_ms(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Box test, 19 Nov 2026: `writes_after_yes_keeps_the_mode_and_backs_up`
+    /// failed now and then because `connect/tests.rs` also calls
+    /// `scratch("write")`; in the same millisecond both got one folder and
+    /// the file count was off. Every call must get its own folder.
+    #[test]
+    fn scratch_gives_each_call_its_own_folder() {
+        let all: Vec<PathBuf> = (0..200).map(|_| scratch("same")).collect();
+        let distinct: std::collections::HashSet<&PathBuf> = all.iter().collect();
+        assert_eq!(distinct.len(), all.len());
     }
 
     #[test]
