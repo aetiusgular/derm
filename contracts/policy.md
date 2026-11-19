@@ -142,7 +142,7 @@ Written by the wave 5 base from `plans/toolkit_universal_plan.md` lane X and not
 
 ## 7. Command rules (wave 5, lane W; decided at integration w5's phase 3 merge, 4 Nov 2026; built by lane W, 5 Nov 2026)
 
-Lane W's policy presets need rules that name a CLI command, not only a tool (`plans/toolkit_universal_plan.md` lane W: `gh pr create` asks, `git push --force` asks or denies, case 135). Decided at the phase 3 merge; built by lane W as patch W-1 (`tests/cli-contract/checks/W/requests/`), in all three matchers (`command.ts` in the hook core and derm-pi, `crates/derm-core/src/command.rs`).
+Lane W's policy presets need rules that name a CLI command, not only a tool (`plans/toolkit_universal_plan.md` lane W: `gh pr create` asks, `git push --force` asks or denies, case 135). Decided at the phase 3 merge; built by lane W as patch W-1 (applied as commit `1dff932`), in all three matchers (`command.ts` in the hook core and derm-pi, `crates/derm-core/src/command.rs`).
 
 **The field.** A rule may carry `command`: an array of 1 to 8 words. The first is a command name, `^[a-z0-9][a-z0-9._:=+-]{0,63}$` (lowercase, as the matcher folds). A later word is either such a word or a flag, `^--?[a-z0-9][a-z0-9._:=+-]{0,61}$` (lane W's addition: the plan's `git push --force` needs one). `tool` must then be `bash` (a shell tool of step 7b's list maps to it, case 135), and the rule has no `descriptionSha256`. A rule with `command` and any other tool, or with a pin, fails the schema and every matcher. A flag as the first word is refused by the three matchers; the schema cannot say "the first item only" under the strict tuple rule its tests run with. `fixtures/policy/invalid.json` holds each refused shape.
 
