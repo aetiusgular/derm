@@ -3,7 +3,10 @@ name: release
 # The Linux artifacts of a derm release (plans/parallel_build_tk.md, section
 # 7b, release step 4). A push to a release/ branch builds and checks them and
 # keeps them as a workflow artifact; a v* tag also attests them and opens a
-# draft GitHub release. Publishing the draft is Tony's. The macOS zip is built,
+# draft GitHub release. Two builds: x86_64 (the binaries, the tarball and the
+# .deb) and aarch64 (derm alone: the gate derm's sbx kit carries into the
+# Linux VM on an Apple silicon Mac, which derm's Homebrew formula installs
+# beside derm; 19 Nov 2026, plans/parallel/tk_kit_default.md). Publishing the draft is Tony's. The macOS zip is built,
 # signed and notarized on the Mac (the certificate stays there) and added to
 # the draft by hand, with its line in SHA256SUMS.
 #
@@ -103,9 +106,96 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  # derm for a Linux arm64 VM. An Apple silicon Mac's sbx VM is Linux arm64,
+  # and the kit's gate there is derm itself (crates/derm-cli/src/run/
+  # boundary/kit.rs, vm_derm), so a Mac needs this build beside its own derm:
+  # packaging/homebrew/derm.rb.in installs it as libexec/kit/
+  # derm-linux-aarch64. Built on GitHub's arm64 Linux runner, natively, the
+  # same way as the x86_64 build; only derm, since the daemon and the audit
+  # feed stay on the host.
+  linux-arm64-vm:
+    runs-on: ubuntu-24.04-arm
+    env:
+      TARGET: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: rustup target add "$TARGET"
+      # ring builds C and assembly, and for a musl target its build script
+      # asks for <arch>-linux-musl-gcc, which Ubuntu's musl-tools provides.
+      # Seen on 19 Nov 2026: on a machine without it the x86_64 musl build
+      # stops in ring's build script ("failed to find tool
+      # x86_64-linux-musl-gcc"), and in a clean ubuntu:24.04 with musl-tools
+      # it builds with nothing else set. Installed here only when the
+      # runner's image lacks it.
+      - name: musl-gcc for ring
+        shell: bash
+        run: |
+          command -v aarch64-linux-musl-gcc >/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends musl-tools
+          }
+          aarch64-linux-musl-gcc --version | head -n 1
+      - name: version
+        shell: bash
+        # As the linux job has it: a tag must name the workspace version.
+        run: |
+          crate=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "derm-cli") | .version')
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            v="${GITHUB_REF_NAME#v}"
+            [ "$v" = "$crate" ] || { echo "::error::tag $GITHUB_REF_NAME does not match the workspace version $crate (Cargo.toml)"; exit 1; }
+          else
+            v="$crate~${GITHUB_SHA::12}"
+          fi
+          case "$v" in *[!0-9A-Za-z.+~-]*|"") echo "::error::bad version $v"; exit 1;; esac
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "CRATE_VERSION=$crate" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked --target "$TARGET" -p derm-cli
+      - name: derm prints the release version, is static, and is an arm64 binary
+        shell: bash
+        run: |
+          f="target/$TARGET/release/derm"
+          got=$("$f" --version)
+          want="derm $CRATE_VERSION"
+          if [ "$GITHUB_REF_TYPE" != tag ]; then want="$want (${GITHUB_SHA::7})"; fi
+          [ "$got" = "$want" ] || { echo "::error::derm --version printed '$got', want '$want'"; exit 1; }
+          if readelf -d "$f" | grep -q NEEDED; then echo "::error::derm links a shared library"; readelf -d "$f"; exit 1; fi
+          readelf -h "$f" | grep -q 'Machine: *AArch64' || { echo "::error::derm is not an AArch64 binary"; readelf -h "$f"; exit 1; }
+      # The gate is what this build is for: its tests, on this target.
+      - name: cargo test on musl (derm-core, derm-cli)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --target "$TARGET" -p derm-core -p derm-cli 2>&1 | tee test.log || {
+            grep -E -A4 "^test .* FAILED|panicked at" test.log | head -60 | sed 's/^/::error::/'
+            exit 1
+          }
+      - name: assemble
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          name="derm-$VERSION-$TARGET"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage"
+          install -m 0755 "target/$TARGET/release/derm" "$stage/"
+          install -m 0644 LICENSE NOTICE README.md "$stage/"
+          tar -C "$RUNNER_TEMP" --owner=0 --group=0 --numeric-owner -czf "dist/$name.tar.gz" "$name"
+          # One top folder holding derm (0755) and the three texts, nothing else.
+          want="$name/ $name/LICENSE $name/NOTICE $name/README.md $name/derm"
+          got=$(tar -tzf "dist/$name.tar.gz" | LC_ALL=C sort | tr '\n' ' ' | sed 's/ $//')
+          [ "$got" = "$want" ] || { echo "::error::the tarball holds '$got', want '$want'"; exit 1; }
+          tar -tvzf "dist/$name.tar.gz" | grep -q "^-rwxr-xr-x .* $name/derm$" || { echo "::error::derm is not 0755 in the tarball"; exit 1; }
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS.arm64)
+          cat dist/SHA256SUMS.arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: linux-arm64-vm
+          path: dist/
+          if-no-files-found: error
+
   draft:
     if: github.ref_type == 'tag'
-    needs: linux
+    needs: [linux, linux-arm64-vm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -121,6 +211,18 @@ jobs:
         with:
           name: linux
           path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: linux-arm64-vm
+          path: dist-arm64
+      - name: one SHA256SUMS for both builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv dist-arm64/*.tar.gz dist/
+          cat dist-arm64/SHA256SUMS.arm64 >> dist/SHA256SUMS
+          (cd dist && sha256sum -c SHA256SUMS)
+          cat dist/SHA256SUMS
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: dist/SHA256SUMS

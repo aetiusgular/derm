@@ -5,11 +5,12 @@
 //     1. `derm run claude-code --boundary sbx` with a fake sbx: derm builds
 //        the kit and passes it to `sbx create` with --kit; the fake keeps a
 //        copy (derm removes its own right after the create).
-//     2. The kit's derm-kit/ and a Node are laid into /opt/derm-kit-src, as
-//        its v3 Dockerfile copies them (fix pass 11, MW5-7), and its install
-//        hook runs as root, as sbx runs it (lifecycle@1):
-//        `sh /opt/derm-kit-src/install.sh`. sbx's own build of the overlay
-//        and the image's Node are what the Mac run showed (fix pass 11).
+//     2. The kit's derm-kit/ is laid into /opt/derm-kit-src, as its v3
+//        Dockerfile copies it (fix pass 11, MW5-7), and its install hook
+//        runs as root, as sbx runs it (lifecycle@1):
+//        `sh /opt/derm-kit-src/install.sh`. The kit carries the derm under
+//        test as the gate (19 Nov 2026; before that a Node and derm's
+//        TypeScript hook), which the install puts at /usr/local/bin/derm.
 //     3. The real Claude Code starts as the `agent` user, in the claude
 //        kit's full access (`--dangerously-skip-permissions`, its
 //        entrypoint) with DERM_FULL_ACCESS=1 (the kit's environment),
@@ -21,7 +22,7 @@
 //     runs.
 //
 // It needs root, makes a user named `agent`, and writes /etc/claude-code,
-// /opt/derm-kit and /home/agent, so it runs only when DERM_KIT_ROOT_TEST=1
+// /opt/derm-kit, /usr/local/bin/derm and /home/agent, so it runs only when DERM_KIT_ROOT_TEST=1
 // is set, as root, in a throwaway machine (a cloud workspace, a container).
 // It puts back an /etc/claude-code it found, removes what it made, and
 // removes the user only if it made it. Never on your Mac or the box.
@@ -138,7 +139,8 @@ export const checks = [
       const base = existsSync("/var/tmp") ? "/var/tmp" : "/tmp";
       const root = mkdtempSync(path.join(base, "derm-kit-root-"));
       chmodSync(root, 0o755);
-      const made = { user: false, etc: null, opt: false };
+      if (existsSync("/usr/local/bin/derm")) return { status: "skip", finding: "/usr/local/bin/derm is already there; the kit's install will not replace it" };
+      const made = { user: false, etc: null, opt: false, bin: false };
       const findings = [];
       let fake;
       let s;
@@ -164,13 +166,11 @@ export const checks = [
           renameSync("/etc/claude-code", made.etc);
         }
         made.opt = !existsSync("/opt/derm-kit");
-        // As the v3 Dockerfile's overlay: derm-kit/ and a Node, root's.
+        // As the v3 Dockerfile's overlay: derm-kit/, root's. No Node: the
+        // install and the gate must not need one.
         cpSync(path.join(k.out, "derm-kit"), "/opt/derm-kit-src", { recursive: true });
-        cpSync(process.execPath, "/opt/derm-kit-src/node");
-        chmodSync("/opt/derm-kit-src/node", 0o755);
-        // The hook's own PATH has no Node in the claude image: the install
-        // must not need one there.
-        const PATH = ["/usr/bin", "/bin"].join(":");
+        made.bin = true;
+        const PATH = ["/usr/sbin", "/usr/bin", "/sbin", "/bin"].join(":");
         const inst = sh("/bin/sh", ["/opt/derm-kit-src/install.sh"], { env: { PATH, LANG: "C" }, timeout: 60000 });
         if (inst.code !== 0) return { status: "fail", finding: `install.sh exit ${inst.code}: ${inst.err.slice(-400)}` };
         const managed = JSON.parse(readFileSync("/etc/claude-code/managed-settings.json", "utf8"));
@@ -179,15 +179,14 @@ export const checks = [
         const st = statSync("/home/agent/.derm/policy.json");
         const agentUid = Number(sh("/usr/bin/id", ["-u", AGENT]).out.trim());
         if (st.uid !== agentUid || (st.mode & 0o022) !== 0) findings.push("the policy in the VM is not the agent's own, or is writable by others");
-        if (statSync("/opt/derm-kit/src/hook.ts").uid !== 0) findings.push("the gate's code is not root's");
-        // W5C-S2: the marker the hook's VM route needs, root's alone, and the
-        // installed hook's own check holds on it.
+        const gate = statSync("/usr/local/bin/derm");
+        if (gate.uid !== 0 || (gate.mode & 0o022) !== 0) findings.push("the gate (/usr/local/bin/derm) is not root's alone");
+        // W5C-S2: the marker derm's VM route needs, root's alone. `derm kit
+        // register` wrote the managed settings only because it held.
         const marker = statSync("/opt/derm-kit/sbx-vm");
         if (marker.uid !== 0 || (marker.mode & 0o022) !== 0) findings.push("the VM marker is not root's alone");
-        const held = sh(process.execPath, ["--input-type=module", "-e", 'const m = await import("/opt/derm-kit/src/core/daemon.ts"); process.exit(m.vmMarker() === undefined ? 0 : 1);']);
-        if (held.code !== 0) findings.push(`the installed hook does not take the VM marker: ${held.err.slice(-200)}`);
         if (existsSync("/opt/derm-kit-src")) findings.push("the install left its staging folder");
-        if (managed.hooks?.PreToolUse?.[0]?.hooks?.[0]?.command !== "/opt/derm-kit/node") findings.push("the hooks do not run the kit's own Node");
+        if (pre?.command !== "/usr/local/bin/derm" || JSON.stringify(pre?.args) !== JSON.stringify(["hook", "claude-code", "pre"])) findings.push("the hooks do not run derm by its absolute path");
 
         // 3. The real Claude Code, as the agent user, in full access.
         const wrapper = path.join(root, "claude-as-agent");
@@ -233,7 +232,7 @@ export const checks = [
         if (findings.length > 0) return { status: "fail", finding: `${findings.join("; ")}; stderr ${JSON.stringify(s.stderr.slice(-300))}` };
         return {
           status: "pass",
-          finding: `derm built the kit; its install registered the gate (root's /opt/derm-kit, managed settings, the agent's own policy); Claude Code ${(version ?? "").match(/\d+\.\d+\.\d+/)?.[0] ?? "?"} as ${AGENT} in full access: Bash denied by derm's rule, an asked Write denied, an allowed Read ran`,
+          finding: `derm built the kit; its install registered the gate (root's /usr/local/bin/derm, managed settings, the agent's own policy); Claude Code ${(version ?? "").match(/\d+\.\d+\.\d+/)?.[0] ?? "?"} as ${AGENT} in full access: Bash denied by derm's rule, an asked Write denied, an allowed Read ran`,
         };
       } catch (e) {
         return { status: "fail", finding: `${e.message}; ${findings.join("; ")}` };
@@ -246,6 +245,7 @@ export const checks = [
         // The VM marker never stays on this machine, whoever made the folder
         // (re-review W5R-7): with it, a hook here would take the VM route.
         else rmSync("/opt/derm-kit/sbx-vm", { force: true });
+        if (made.bin) rmSync("/usr/local/bin/derm", { force: true });
         rmSync("/home/agent/.derm", { recursive: true, force: true });
         rmSync("/opt/derm-kit-src", { recursive: true, force: true });
         if (made.user) sh("/usr/sbin/userdel", ["-r", AGENT]);

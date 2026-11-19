@@ -4,7 +4,8 @@
 //   node packaging/homebrew/render.mjs <version> <SHA256SUMS> [out]
 //
 // <version> is the tag without its "v" (0.1.0). The SHA256SUMS must hold the
-// macOS zip and the Linux musl tarball of that version; anything missing, a
+// macOS zip and the two Linux musl tarballs of that version (x86_64, and
+// aarch64 with derm alone, the gate for an Apple silicon Mac's sbx VM); anything missing, a
 // malformed line or a version with characters a URL or Ruby string should not
 // carry is refused. Writes to [out] or prints.
 import { readFileSync, writeFileSync } from "node:fs";
@@ -33,6 +34,7 @@ export function render(version, sumsText, template = readFileSync(join(here, "de
   const want = {
     MACOS_SHA256: `derm-${version}-macos.zip`,
     LINUX_SHA256: `derm-${version}-x86_64-unknown-linux-musl.tar.gz`,
+    LINUX_ARM64_SHA256: `derm-${version}-aarch64-unknown-linux-musl.tar.gz`,
   };
   let out = template.replaceAll("@VERSION@", version);
   for (const [key, file] of Object.entries(want)) {

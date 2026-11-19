@@ -403,15 +403,6 @@ fn with_kit_line(harness: &str, workload: &str, exported: bool, full: bool, asks
     )
 }
 
-/// The line after the start line when the kit is the form whose gate is
-/// derm itself (`DERM_SBX_KIT=rust`).
-fn rust_form_line() -> String {
-    format!(
-        "derm run: the gate in the VM is derm itself ({0}=rust): the kit carries a Linux derm and no Node, and the hook runs `derm hook` by its absolute path. Unset {0} for derm's kit that carries Node.",
-        super::kit::SWITCH
-    )
-}
-
 pub(crate) fn start_with(
     sbx: &str,
     plan: &mut Plan,
@@ -447,9 +438,6 @@ pub(crate) fn start_with(
                     set("DERM_ASKS")
                 )
             );
-            if super::kit::rust_form(harness, inputs.switch) {
-                eprintln!("{}", rust_form_line());
-            }
         }
         super::kit::Kit::Without(why) => eprintln!(
             "derm run: inside the sbx VM {} runs without derm's gate ({why}): your host's hooks, plugins and extensions are not in the VM. \
@@ -1361,7 +1349,15 @@ mod tests {
             parent: &parent,
             switch: None,
         };
-        let sandbox = start_with(&sbx, &mut p, false, &inputs).unwrap();
+        // The kit carries a derm for the VM; a stand-in, so the test does
+        // not turn on what the host has (a Mac has none of its own).
+        let vm_derm = d.join("derm-for-the-vm");
+        std::fs::write(&vm_derm, b"\x7fELF stand-in").unwrap();
+        std::fs::set_permissions(&vm_derm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::super::kit::TEST_VM_DERM.with(|t| *t.borrow_mut() = Some(Ok(vm_derm.clone())));
+        let started = start_with(&sbx, &mut p, false, &inputs);
+        super::super::kit::TEST_VM_DERM.with(|t| *t.borrow_mut() = None);
+        let sandbox = started.unwrap();
         let calls = std::fs::read_to_string(d.join("calls")).unwrap();
         let create = calls.lines().next().unwrap();
         let words: Vec<&str> = create.split(' ').collect();
@@ -1378,10 +1374,9 @@ mod tests {
         assert!(seen.contains("./derm-gate-claude.yaml"), "{seen}");
         assert!(seen.contains("./derm-gate-claude.dockerfile"), "{seen}");
         assert!(!seen.contains("./spec.yaml"), "{seen}");
-        assert!(
-            seen.contains("./derm-kit/plugin/bin/derm-hook.mjs"),
-            "{seen}"
-        );
+        assert!(seen.contains("./derm-kit/derm"), "{seen}");
+        assert!(seen.contains("./derm-kit/install.sh"), "{seen}");
+        assert!(!seen.contains("./derm-kit/plugin/"), "{seen}");
         assert!(seen.trim_end().ends_with(r#"{"version":1}"#), "{seen}");
         assert!(!p.args.iter().any(|a| a == "--kit"), "{:?}", p.args);
         assert_eq!(

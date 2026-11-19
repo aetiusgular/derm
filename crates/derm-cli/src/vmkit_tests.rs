@@ -1,7 +1,7 @@
 //! `derm kit register`: what it writes for each agent, and where it refuses.
-//! The expected entries are the ones the Node registrars write in the Node
-//! kit (`packaging/sbx-kit/register-hooks.mjs`, `register-agent.mjs`), with
-//! `derm hook <agent> <event>` where they name Node and the hook file.
+//! The expected entries are the ones the Node registrars of the kits
+//! before 19 Nov 2026 wrote (`register-hooks.mjs`, `register-agent.mjs`),
+//! with `derm hook <agent> <event>` where they named Node and the hook file.
 
 use super::*;
 use std::collections::HashMap;

@@ -3,12 +3,13 @@
 //! `plans/parallel/tk_kit_rust.md`).
 //!
 //! derm's sbx kits for Claude Code, Copilot CLI, Droid, Cursor and Kiro
-//! carry a Node and derm's TypeScript hook, and register that hook with a
-//! Node script (`packaging/sbx-kit/register-hooks.mjs`,
-//! `register-agent.mjs`). With `DERM_SBX_KIT=rust` the kit carries a Linux
-//! derm instead, as Codex's kit does, and its install script runs this
-//! command to write the registration: `derm hook <agent> <event>` by derm's
-//! own absolute path.
+//! carry a Linux derm for the VM, as Codex's kit does, and their install
+//! steps run this command to write the registration: `derm hook <agent>
+//! <event>` by derm's own absolute path. (Until 19 Nov 2026 those kits
+//! carried a Node and derm's TypeScript hook, registered by two Node
+//! scripts, `register-hooks.mjs` and `register-agent.mjs`; this command
+//! writes what they wrote, with derm where they named Node and the hook
+//! file.)
 //!
 //! One source for each entry:
 //! - Claude Code: [`crate::run::claude_gate::hooks`], the entries `derm run
@@ -67,7 +68,7 @@ pub(crate) struct Planned {
 /// Every other key and every other hook is kept; a second run changes
 /// nothing. Refused when the file is not a JSON object, its `hooks` is not
 /// an object or an event's value is not a list, rather than replace what
-/// another kit wrote (`register-hooks.mjs`, `merge`). Object keys come out
+/// another kit wrote. Object keys come out
 /// sorted: serde_json's map is ordered by key in this build.
 pub(crate) fn plan_claude(derm: &str, file: &Path, have: Option<&str>) -> Result<Planned, String> {
     let shown = file.display();

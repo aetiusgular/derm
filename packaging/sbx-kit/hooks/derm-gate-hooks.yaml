@@ -1,28 +1,28 @@
 # syntax=docker/sandbox-kit:3
 #
-# derm's gate inside a Docker Sandboxes VM, for an agent that takes a
-# command hook: a v3 mixin. `derm run --boundary sbx <agent>` writes a copy
-# of this file for the chat with its three placeholder words filled in
-# (crates/derm-cli/src/run/boundary/kit.rs), beside the Dockerfile and
-# derm-kit/ with the person's policy and the hook package, and passes the
-# folder to `sbx create` with --kit. The folder is written by derm and
-# removed after the create; nothing is published.
+# derm's gate inside a Docker Sandboxes VM for an agent that takes a
+# command hook: a v3 mixin whose gate is derm itself. `derm run --boundary
+# sbx <agent>` builds it for Copilot CLI, Droid, Cursor and Kiro. derm
+# fills in three words: the agent's sbx workload, derm's id for the agent,
+# and its name. (Until 19 Nov 2026 this kit carried a Node and derm's
+# TypeScript hook packages.)
 #
-# Why v3: sbx 0.51.0 ships copilot, droid, cursor and kiro as v3 kits. A v3
-# mixin that requires each composed with it on the box (17 Nov 2026, a
-# probe mixin, no model call).
+# The overlay holds a Linux derm for the VM and no Node, as
+# derm's Codex kit does (packaging/sbx-kit/codex/), and the agent's own
+# config runs `derm hook <agent> pre` by derm's absolute path. Two install
+# commands, in order, as the Codex kit has: root's, then the agent's own
+# user's (`user: agent`, as these workloads' own steps name it), which
+# writes the agent's config with `derm kit register`, from the agent's row
+# of crates/derm-cli/src/connect/gates.json: the entry `derm connect
+# <agent> --gate` writes on a host.
 #
-# Grammar: docker/sandbox-kit-spec docs/spec/SPEC-v3.md at 6838e3e (schema
-# "3"; strict decoding refuses any unknown field). The shape is derm's
-# Claude Code kit's (packaging/sbx-kit/claude), without the full-access
-# argument: derm run passes DERM_FULL_ACCESS by name where the agent's kit
-# starts it with its approvals off, and not otherwise.
+# Grammar: docker/sandbox-kit-spec docs/spec/SPEC-v3.md at 6838e3e.
 schemaVersion: "3"
 kind: mixin
 displayName: derm gate for @NAME@
 description: >-
   Runs derm's policy gate as @NAME@'s pre-tool hook inside the sandbox, with
-  a copy of the person's derm policy and its own Node.
+  a copy of the person's derm policy and a derm for the VM.
 sourceUrl: https://github.com/aetiusgular/derm
 licenses: [MIT]
 version: "0.1.0"
@@ -34,10 +34,15 @@ capabilities:
   - type: com.docker.sandbox/lifecycle@1
     config:
       install:
-        # As root: it puts the gate's code and its Node in /opt/derm-kit,
-        # registers the hook in the agent's own config under /home/agent,
-        # and puts the policy where the hook reads it. A failure stops the
-        # create, with the reason (rules case 151).
+        # As root: checks the derm it carries runs here, puts it in
+        # /usr/local/bin, writes the VM marker and puts the policy where
+        # the gate reads it. A failure stops the create, with the reason
+        # (rules case 151).
         - command: "sh /opt/derm-kit-src/install.sh @AGENT@"
           user: "0"
-          description: Install derm's gate for @NAME@ (code and Node in /opt/derm-kit, the hook in the agent's config, policy in ~/.derm)
+          description: Install derm for @NAME@'s gate (derm in /usr/local/bin, policy in ~/.derm)
+        # As the agent's user, whose config it is: the hook, in the
+        # agent's own config under its home.
+        - command: "/usr/local/bin/derm kit register @AGENT@ --home /home/agent"
+          user: agent
+          description: Register derm's gate in @NAME@'s own config
