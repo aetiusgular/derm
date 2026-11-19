@@ -9,14 +9,16 @@ nearly full; this file holds the lane's full record.
 
 ## Files here
 
-- `rust.mjs`: reruns lane L's, lane F's (`dermClaude.mjs`, `dermCodex.mjs`)
-  and lane I's Gemini checks with derm's TypeScript hook replaced by the
-  Rust one, staged at load (relative imports made absolute, the one line
-  that names the hook changed, the three plugins copied with their
-  `hooks/hooks.json` running `"<derm>" hook <agent> <event>`). Ids get
-  `-rust`. `run.mjs` loads only one-letter lane folders, so this file runs
-  itself with `run.mjs`'s CLI flags and `DERM_BIN`.
 - `grokMarks.mjs`: two checks against the real Grok (BCR-7, below).
+  `run.mjs` loads this folder (integration request 1, done).
+
+`rust.mjs` was removed on 19 Nov 2026. It reran lane L's, lane F's and lane
+I's checks with the TypeScript hook line rewritten to `derm hook`. Since
+`b63db34` those checks run `derm hook` themselves (lane L's `_lib.mjs`
+`hookCommand`, lane N's files, the plugins' `hooks/derm-gate.sh`) and the
+TypeScript hook is gone, so its staging found nothing to rewrite and threw
+at import, which stopped every contract check. The `-rust` ids in the
+tables below are from before that day.
 
 ## What ran (10 Nov 2026, cloud, Linux, as root)
 
