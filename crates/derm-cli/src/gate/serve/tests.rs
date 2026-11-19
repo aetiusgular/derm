@@ -764,6 +764,34 @@ fn redact_runs_the_hook_redactor() {
     assert_eq!(r.replies[1]["value"]["n"], 1);
 }
 
+/// derm-pi's `user_bash` (a command the person types with `!`) is checked
+/// against the reject list only, by the gate's own list (19 Nov 2026: Pi's
+/// TypeScript copy of the list is gone). It reads no policy and decides no
+/// rule: `ls` passes even under a policy that denies `bash`.
+#[test]
+fn reject_answers_the_reject_list_for_text_the_person_typed() {
+    let se = session(
+        r#"{"version":1,"rules":[{"tool":"bash","action":"deny"}]}"#,
+        &[],
+    );
+    let lines = [
+        hello("pi"),
+        json!({"id": 1, "op": "reject", "text": "git -c core.hooksPath=/tmp/h commit"}),
+        json!({"id": 2, "op": "reject", "text": "export CHATGPT_BASE_URL=x"}),
+        json!({"id": 3, "op": "reject", "text": "ls -la $HOME"}),
+        json!({"id": 4, "op": "reject", "text": "export ANTHROPIC\\u005fBASE_URL=x"}),
+        json!({"id": 5, "op": "reject"}),
+    ];
+    let r = run_lines(&se, "pi", &lines, no_approver());
+    assert_eq!(r.replies[1]["key"], "core.hookspath");
+    assert_eq!(r.replies[2]["key"], "chatgpt_base_url");
+    assert_eq!(r.replies[3]["ok"], true);
+    assert!(r.replies[3]["key"].is_null());
+    assert_eq!(r.replies[4]["key"], "anthropic_base_url");
+    assert_eq!(r.replies[5]["ok"], false);
+    assert!(r.posted.is_empty(), "a reject check posts nothing");
+}
+
 #[test]
 fn the_agent_comes_from_argv_and_must_be_an_in_process_plugins() {
     let a = |v: &[&str]| parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());

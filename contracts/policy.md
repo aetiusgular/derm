@@ -1,5 +1,7 @@
 # Contract: the policy file and the matcher
 
+**One matcher since 19 Nov 2026: Rust's, `crates/derm-core/src/policy.rs`.** Every gate decides through it (`derm hook`, `derm gate serve`, `derm acp`, `derm connect`). The two TypeScript matchers this contract names below, the hook core's (`packages/derm-claude-plugin/src/core/`) and derm-pi's (`packages/derm-pi/src/policy.ts`), were deleted that day; where a section says "the three matchers" or names one of them, read it as the record of how the rule was built and held in parity until then. Their last state is at `f75328d`. The fixtures here are the Rust matcher's tests now.
+
 Written by tk session 0, 27 Oct 2026; settled by integration w1 the same day. Implemented three times: in Rust by lane B (`crates/derm-core/src/policy.rs`, used by `derm connect` and, from wave 4, `derm acp`), in TypeScript by lane F (`packages/derm-claude-plugin/src/core/`, the canonical hook core, copied byte for byte into every hook plugin), and in TypeScript by lane A (`packages/derm-pi`). The hook core is the reference; integration w1 brought the other two to it. All three are tested against `contracts/fixtures/policy/`. A change to this file is a request for integration.
 
 Schema: `contracts/policy.schema.json`. Fixtures: `fixtures/policy/policy.json` (20 rules since wave 5 lane W), `fixtures/policy/cases.json` (247 cases with the expected action and reason prefix; 22 to 33 pin what integration w1 settled, 34 to 45 what its security pass changed, 85 to 106 section 7's command rules, 120 to 152 integration w6's close: step 7d's secret, run-later and metadata lists and its program read from input, 153 to 172 the close's security review, W6C-S2 and S3, 173 to 194 its re-review, W6C-R1, R2, R3 and R5, 195 to 225 after the close and its two reviews, 226 to 240 its fix pass, WW6-1 and WW6-9, 241 to 247 its fix pass 2, WW6R-1), `fixtures/policy/invalid.json` (policies every matcher refuses), and `fixtures/policy/fold.json` (the fold of every non-ASCII code point whose fold holds ASCII, 3,391 cases, generated from the hook core by `crates/derm-core/gen/gen-fold-tables.mjs`).
@@ -50,7 +52,7 @@ Anything else is a built-in tool by its bare lowercased name: `bash`, `read`, `w
 
 Known gaps: a server name that itself contains `_` is ambiguous in steps 3 and 4 (Gemini's parser splits at the first underscore too: note AP section 4). Library entries and `derm connect` use server names without `_`. The forms note AQ section 6 lists as unhandled (Auggie's `<tool>_<server>`, Cursor's `MCP:<tool>`, dispatcher and code tools, Kiro's `@s/t`, Vibe's `mcp_s.t`) wait for the per-agent forms of waves 2 and 4.
 
-Source: `normalizeToolName` and `narrowingNames` in the hook core (`packages/derm-claude-plugin/src/core/policy.ts`), `normalize_tool_name_for` and `narrowing_names` in `crates/derm-core/src/policy.rs`, `normalizeToolName` and `narrowingNames` in `packages/derm-pi/src/policy.ts`; fixture cases 1 to 12, 22 to 25 and 46 to 51.
+Source: `normalize_tool_name_for` and `narrowing_names` in `crates/derm-core/src/policy.rs` (the hook core's and derm-pi's TypeScript `normalizeToolName` and `narrowingNames` until 19 Nov 2026); fixture cases 1 to 12, 22 to 25 and 46 to 51.
 
 ## 3. The reject list
 

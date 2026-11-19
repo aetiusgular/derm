@@ -189,9 +189,25 @@ pub struct Opts<'a> {
     pub agent: &'a str,
     pub clear: bool,
     pub write: bool,
+    /// Gemini only: print the whole policy as its user tier, write nothing.
+    pub print: bool,
 }
 
 pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
+    if o.print {
+        if o.agent != "gemini" {
+            return Err(format!(
+                "--print is Gemini's only (its user tier, printed whole); for {} use --rules",
+                o.agent
+            ));
+        }
+        let (policy, problem) = derm_core::policy::load(&names::policy_path(&ctx.home, ctx.env));
+        ctx.out.push_str(&gemini_toml_full(
+            &policy,
+            problem.map(|p| p.to_string()).as_deref(),
+        ));
+        return Ok(0);
+    }
     if o.agent == "gemini" {
         return run_gemini(o, ctx);
     }
@@ -384,8 +400,9 @@ pub fn run(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
 }
 
 /// The first line of every file derm writes for Gemini, and of the one
-/// derm-gemini-extension's `bin/derm-gemini-policy.mjs` prints for the same
-/// path (lane I): how derm knows the file is its own.
+/// `derm connect gemini --rules --print` prints for the same path (lane I's
+/// extension printed it until 19 Nov 2026): how derm knows the file is its
+/// own.
 pub const GEMINI_MARKER: &str = "# derm policy for Gemini CLI";
 
 /// Gemini CLI 0.66.0 (google-gemini/gemini-cli v0.66.0, 9704132): every
@@ -401,9 +418,9 @@ pub const GEMINI_MARKER: &str = "# derm policy for Gemini CLI";
 /// held: a run with `--policy <path>`, which replaces the user folder
 /// (`policy/config.ts:119-122`), and an admin-tier allow.
 ///
-/// Deny rules only, as for the JSON agents; the priority is lane I's
-/// `priorityOf` (`packages/derm-gemini-extension/src/policyToml.ts`), so a
-/// rule derm writes here ranks as the extension's printout would rank it.
+/// Deny rules only, as for the JSON agents; the priority is
+/// [`priority_of`], so a rule derm writes here ranks as the printout
+/// ([`gemini_toml_full`]) ranks it.
 pub fn gemini_toml(policy: &derm_core::policy::PolicyFile) -> (String, Vec<String>) {
     let mut out = vec![
         GEMINI_MARKER.to_string() + ", user tier. Written by `derm connect gemini --rules`",
@@ -938,4 +955,181 @@ fn run_codex(o: &Opts, ctx: &mut Ctx) -> Result<u8, String> {
         ));
     }
     Ok(0)
+}
+
+/// derm's precedence (harness, then specificity, then severity) as a Gemini
+/// priority: the extension printer's `priorityOf`.
+fn priority_of(rule: &derm_core::policy::Rule, action: derm_core::policy::Action) -> u32 {
+    use derm_core::policy::Action;
+    let spec = if rule.tool == "*" {
+        0
+    } else if rule.tool.ends_with("/*") {
+        1
+    } else {
+        2
+    };
+    let severity = match action {
+        Action::Allow => 0,
+        Action::Ask => 1,
+        Action::Deny => 2,
+    };
+    let harness = if rule.harness.as_deref().is_some_and(|h| !h.is_empty()) {
+        300
+    } else {
+        0
+    };
+    1 + harness + spec * 100 + severity * 10
+}
+
+/// The whole policy as Gemini CLI's user tier, for `--rules --print`:
+/// allow, ask and deny, ending with derm's "ask when no rule matches". It is
+/// derm-gemini-extension's printer (`src/policyToml.ts` at `f75328d`, deleted
+/// 19 Nov 2026) in Rust, line for line; `fixtures/gemini-print.json` holds
+/// that printer's output for six policies. Printed, never written: an allow
+/// here widens what Gemini allows on its own, so the person reads it and
+/// saves it. `--write` writes the deny rules only ([`gemini_toml`]).
+///
+/// What stays with the hook, each named in a comment: command rules, chat
+/// rules, other harnesses' rules, a `bash` allow (derm's `bash` narrows the
+/// shell, never widens it), and a description pin (Gemini cannot check it,
+/// so the allow asks). A `bash` deny outranks every rule (950) and a `bash`
+/// ask every allow and ask (522), unless a deny in the policy reaches
+/// `run_shell_command`, which that ask must not outrank (review W4-S6).
+pub fn gemini_toml_full(policy: &derm_core::policy::PolicyFile, problem: Option<&str>) -> String {
+    use derm_core::policy::{Action, Rule};
+    const HARNESS: &str = "gemini";
+    let word = |a: Action| match a {
+        Action::Allow => "allow",
+        Action::Ask => "ask",
+        Action::Deny => "deny",
+    };
+    let decision = |a: Action| match a {
+        Action::Allow => "allow",
+        Action::Ask => "ask_user",
+        Action::Deny => "deny",
+    };
+    let mut lines: Vec<String> = vec![
+        format!("{GEMINI_MARKER}, user tier. Printed from your derm policy by"),
+        "# `derm connect gemini --rules --print`; save it as ~/.gemini/policies/derm.toml.".into(),
+        "# Regenerate after every change to ~/.derm/policy.json. The derm hook still runs".into(),
+        "# first and also applies the reject list, the control files and the shell check.".into(),
+        String::new(),
+    ];
+    if let Some(p) = problem {
+        lines.push(format!("# The derm policy did not load cleanly: {p}"));
+        lines.push(String::new());
+    }
+    let applies = |r: &Rule| r.chat.is_none() && r.harness.as_deref().is_none_or(|h| h == HARNESS);
+    let deny_reaches_shell = policy.rules.iter().any(|r| {
+        applies(r)
+            && r.command.is_none()
+            && r.action == Action::Deny
+            && (r.tool == "run_shell_command" || r.tool == "*")
+    });
+    let mut catch_all = false;
+    for rule in &policy.rules {
+        if let Some(words) = &rule.command {
+            lines.push(format!(
+                "# skipped: bash {} {} (a command rule; the derm hook applies it)",
+                words.join(" "),
+                word(rule.action)
+            ));
+            lines.push(String::new());
+            continue;
+        }
+        if rule.chat.is_some() {
+            lines.push(format!(
+                "# skipped: {} {} for one chat (Gemini rules have no chat)",
+                rule.tool,
+                word(rule.action)
+            ));
+            lines.push(String::new());
+            continue;
+        }
+        if let Some(h) = rule.harness.as_deref().filter(|h| *h != HARNESS) {
+            lines.push(format!(
+                "# skipped: {} {} for harness {h}",
+                rule.tool,
+                word(rule.action)
+            ));
+            lines.push(String::new());
+            continue;
+        }
+        let action = if rule.action == Action::Allow && rule.description_sha256.is_some() {
+            Action::Ask
+        } else {
+            rule.action
+        };
+        if rule.tool == "bash" && action == Action::Allow {
+            lines.push("# skipped: bash allow (derm's bash names Gemini's run_shell_command only to deny or ask; name run_shell_command to allow it)".into());
+            lines.push(String::new());
+            continue;
+        }
+        let mut out = vec!["[[rule]]".to_string()];
+        if rule.tool == "*" {
+            out.push("toolName = \"*\"".into());
+            catch_all = true;
+        } else if rule.tool.contains('/') {
+            // As the printer's `split("/")`: the first two parts.
+            let mut parts = rule.tool.split('/');
+            let server = parts.next().unwrap_or_default();
+            let tool = parts.next().unwrap_or_default();
+            let raw = policy
+                .servers
+                .iter()
+                .find(|s| lower_name(s) == server)
+                .map_or(server, String::as_str);
+            out.push(format!("mcpName = {}", json::quote(raw)));
+            out.push(format!("toolName = {}", json::quote(tool)));
+        } else {
+            let name = if rule.tool == "bash" {
+                "run_shell_command"
+            } else {
+                rule.tool.as_str()
+            };
+            out.push(format!("toolName = {}", json::quote(name)));
+        }
+        let mut priority = priority_of(rule, action);
+        if rule.tool == "bash" && action == Action::Deny {
+            priority = 950;
+        } else if rule.tool == "bash" && !deny_reaches_shell {
+            priority = 522;
+        } else if rule.tool == "bash" {
+            lines.push("# bash ask: kept at its own rank, because a deny in your policy reaches run_shell_command and must outrank it; a run_shell_command allow above it is not asked about here (the hook still asks)".into());
+        }
+        out.push(format!("decision = \"{}\"", decision(action)));
+        out.push(format!("priority = {priority}"));
+        if action == Action::Deny {
+            let harness = rule
+                .harness
+                .as_deref()
+                .filter(|h| !h.is_empty())
+                .map_or(String::new(), |h| format!(" harness={h}"));
+            out.push(format!(
+                "denyMessage = {}",
+                json::quote(&format!("derm: rule {}{harness}", rule.tool))
+            ));
+        }
+        if action != rule.action {
+            lines.push(format!(
+                "# {}: allow with a description pin; Gemini cannot check the pin, so it asks",
+                rule.tool
+            ));
+        }
+        lines.extend(out);
+        lines.push(String::new());
+    }
+    if !catch_all {
+        for l in [
+            "# derm asks when no rule matches; so does this, at the lowest priority.",
+            "[[rule]]",
+            "toolName = \"*\"",
+            "decision = \"ask_user\"",
+            "priority = 0",
+            "",
+        ] {
+            lines.push(l.into());
+        }
+    }
+    format!("{}\n", lines.join("\n").trim_end())
 }

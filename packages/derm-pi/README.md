@@ -130,10 +130,9 @@ An index reaches the model only as you approved it. derm keeps the SHA-256 of ea
 - A `bash: allow` rule lets the agent do what you can do, including editing the policy file through a command the matcher can read. Keep `bash` on `ask` unless the chat runs under a sandbox (`derm run --boundary sbx`).
 - An extension loaded after this one can change a call's input after the gate decided (Pi `types.d.ts`: "No re-validation is performed after mutation"), and any extension can post on Pi's event bus. Load only extensions you trust; they run with your rights.
 - The redactor is best-effort: a secret in a shape it does not know, split across lines, or encoded, passes through.
-- `user_bash` is checked against the reject list only, since you typed it.
+- `user_bash` is checked against the reject list only, since you typed it: derm's own list, through `derm gate serve` (`reject`). With no co-process the command is refused, as a tool call is.
 
 ## Checks
 
-- `npx vitest run packages/derm-pi` from the repository root: the matcher against `contracts/fixtures/policy`, the gate and emitter against a fake Pi, the redactor.
+- `npx vitest run packages/derm-pi` from the repository root: the gate and emitter against a fake Pi and a derm build, the redactor. (The matcher and its fixtures are Rust's since 19 Nov 2026.)
 - `node packages/derm-pi/live/pi-live.mjs --pi "$(command -v pi)"`: the package inside a real Pi, against a fake model and a fake receiver, in a temp HOME. 14 checks.
-- `node packages/derm-pi/scripts/gen-confusables.mjs <confusables.txt>` regenerates `src/confusables.ts` from Unicode 17.0.0's file and refuses any other.

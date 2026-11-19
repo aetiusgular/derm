@@ -11,7 +11,7 @@
 // a cloud workspace or a container. Never on the box or the Mac: there the
 // box test w5 runs install.sh by hand, on Tony's yes.
 //
-//   sudo node tests/integration/w5/V/agent-user.mjs --bin <dir with derm and derm-daemon> [--core <hook core>] [--json]
+//   sudo node tests/integration/w5/V/agent-user.mjs --bin <dir with derm and derm-daemon> [--json]
 //
 // Needs the lane V request patches applied (V-1 passes the chat's context to
 // run/user/, V-3 makes the gate trust its owner's files); without them the
@@ -30,8 +30,6 @@ const opt = (name, dflt) => {
 };
 const JSON_OUT = args.includes("--json");
 const BIN = resolve(opt("--bin", join(ROOT, "target", "release")));
-// The hook core the gate inside runs (V-3's checks live there).
-const CORE = resolve(opt("--core", join(ROOT, "packages/derm-claude-plugin/src/core")));
 
 if (process.platform !== "linux" || process.getuid() !== 0) {
   console.error("agent-user.mjs: needs root on Linux, on a throwaway machine (it makes and removes users)");
@@ -51,7 +49,7 @@ const OWNER_HOME = `/home/${OWNER}`;
 const AGENT_HOME = `/var/lib/${AGENT}`;
 // E1-10: the daemon's folder is under the home folder on Linux (~/.derm/run/derm), no longer $XDG_RUNTIME_DIR/derm.
 const RUNTIME = `${OWNER_HOME}/.derm/run`;
-const LIB = "/usr/local/lib/dermv"; // root's: derm, the daemon, the hook core
+const LIB = "/usr/local/lib/dermv"; // root's: derm, the daemon, the agent's stand-in gate
 const PROJECT = "/srv/dermv-project";
 const results = [];
 const check = (name, ok, detail) => {
@@ -65,7 +63,7 @@ const asOwner = (a, o = {}) =>
 const asAgent = (a) => sh("runuser", ["-u", AGENT, "--", ...a]);
 
 // The agents' user's `pi`: records who it is and what it can reach, then
-// runs the gate's own client from the hook core, as a hook would.
+// runs the gate's client checks (HOOK), as a gate would.
 const AGENT_PI = `#!/bin/sh
 out="$PWD/report.json"
 try() { "$@" >/dev/null 2>&1 && echo readable || echo denied; }
@@ -83,15 +81,47 @@ printf '{"uid":%s,"home":"%s","which":"%s","daemonToken":"%s","runtime":"%s","ow
   "$(id -u)" "$HOME" "$(command -v pi)" "$tok" "$rt" "$oh" "$s1" "$s2" "$(id -nG)" "$clean" "\${hook:-null}" > "$out"
 `;
 
-// The gate's client, from the hook core (V-3's checks run for real).
+// The gate's view from inside the chat. Until 19 Nov 2026 this imported the
+// TypeScript hook core's daemon client and policy loader; both are gone (the
+// gate is derm itself), so the policy is read by derm's own checked load
+// (\`derm gate serve\`'s hello: \`policy.loaded\`, \`policy.problem\`), and the
+// daemon is spoken to here directly: one connection, a hello with the chat's
+// token, then each request, one reply line each (contracts/daemon-protocol.md).
 const HOOK = `
 import net from "node:net";
-import { exchange } from "${LIB}/core/daemon.ts";
-import { loadPolicy } from "${LIB}/core/policy.ts";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 const out = {};
-const loaded = loadPolicy(process.env.DERM_POLICY);
-out.policyProblem = loaded.problem ?? null;
-out.rules = loaded.policy.rules.length;
+const serve = spawnSync("${LIB}/bin/derm", ["gate", "serve", "--agent", "pi"], { input: JSON.stringify({ id: 0, op: "hello", agent: "pi", protocol: 1 }) + "\\n", encoding: "utf8", timeout: 10000 });
+const hello = JSON.parse((serve.stdout || "{}").split("\\n")[0] || "{}");
+out.policyProblem = hello.policy ? hello.policy.problem : "no hello: " + (serve.stderr || "").slice(0, 200);
+out.policyLoaded = hello.policy ? hello.policy.loaded === true : false;
+const token = (process.env.DERM_CHAT_TOKEN || (process.env.DERM_CHAT_TOKEN_FILE ? readFileSync(process.env.DERM_CHAT_TOKEN_FILE, "utf8") : "")).trim();
+const exchange = (requests, opts) => new Promise((done) => {
+  if (!token) return done({ error: "no chat token" });
+  const replies = [];
+  let buf = "";
+  let settled = false;
+  const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); s.destroy(); done(r); } };
+  const timer = setTimeout(() => finish({ error: "timed out" }), opts.replyTimeoutMs);
+  const s = net.createConnection({ path: process.env.DERM_DAEMON_SOCKET });
+  s.on("error", (e) => finish({ error: "daemon unreachable (" + (e.code || "error") + ")" }));
+  s.on("close", () => finish(replies.length > requests.length ? { replies: replies.slice(1) } : { error: "daemon closed the connection" }));
+  s.on("connect", () => { for (const l of [{ op: "hello", token, client: opts.client }, ...requests]) s.write(JSON.stringify(l) + "\\n"); });
+  s.on("data", (d) => {
+    buf += d;
+    let nl;
+    while ((nl = buf.indexOf("\\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line === "") continue;
+      const r = JSON.parse(line);
+      if (replies.length === 0 && r.ok !== true) return finish({ error: "daemon refused hello: " + (r.error || "no reason") });
+      replies.push(r);
+      if (replies.length === requests.length + 1) return finish({ replies: replies.slice(1) });
+    }
+  });
+});
 const ev = { id: "dermv-e2e-1", at: 0, chatId: "", harness: "pi", source: "adapter", kind: "tool.decision", summary: "bash ask", detail: {} };
 const r1 = await exchange([{ op: "event", event: ev }], { client: "dermv", replyTimeoutMs: 3000, cwd: process.cwd() });
 out.event = r1.replies ? r1.replies[0] : r1;
@@ -142,12 +172,11 @@ try {
   check("install.sh sets up the agents' user", inst.status === 0, inst.status === 0 ? "" : inst.stderr.trim().slice(0, 300));
   const agentUid = Number(sh("id", ["-u", AGENT]).stdout.trim());
 
-  // derm and the hook core where both users can run and read them; the
+  // derm and the stand-in gate where both users can run and read them; the
   // stand-in harness in the agents' user's own folder, as its own install.
   mkdirSync(`${LIB}/bin`, { recursive: true, mode: 0o755 });
   cpSync(join(BIN, "derm"), `${LIB}/bin/derm`);
   cpSync(join(BIN, "derm-daemon"), `${LIB}/bin/derm-daemon`);
-  cpSync(CORE, `${LIB}/core`, { recursive: true });
   writeFileSync(`${LIB}/hook.mjs`, HOOK);
   sh("chmod", ["-R", "a+rX", LIB]);
   // The owner's own `pi` (derm run resolves it first) and the agent's.
@@ -188,7 +217,7 @@ try {
   check("the agent is in no group but its own", report.groups === AGENT, report.groups);
   check("no chat token or bridge path in any argv the agent can see", report.argvClean === true, String(report.argvClean));
   const hook = report.hook ?? {};
-  check("the gate reads the owner's policy copy (V-3)", hook.policyProblem === null && hook.rules === 1, JSON.stringify(hook.policyProblem));
+  check("the gate reads the owner's policy copy (V-3)", hook.policyProblem === null && hook.policyLoaded === true, JSON.stringify(hook.policyProblem));
   check("the gate's event reaches the daemon through the bridge", hook.event?.ok === true, JSON.stringify(hook.event));
   check("an ask with no approver is no at once", hook.approve?.answer === "no" && hook.approve?.by === "none", JSON.stringify(hook.approve));
   check("the chat's token cannot become an approver", typeof hook.approver?.error === "string" && hook.approver.error.includes("daemon scope"), JSON.stringify(hook.approver));

@@ -7,8 +7,10 @@
 //   docs/extensions.md:375, agent-session.js:325-345).
 // - `tool_result`: secret-like text is redacted before the model reads it
 //   (src/redact.ts). `DERM_REDACT=0` turns it off.
-// - `user_bash` (`!` and `!!` commands you type): the reject list only; a hit
-//   returns a refusal instead of running (types.d.ts:1100-1108; runner.js:51-75).
+// - `user_bash` (`!` and `!!` commands you type): the reject list only, the
+//   gate's own (`reject`, contracts/gate-serve.md 2.6); a hit returns a
+//   refusal instead of running (types.d.ts:1100-1108; runner.js:51-75), and
+//   so does a co-process that cannot answer.
 //
 // Corner case 46: the factory only registers handlers. No file is read, no
 // timer or socket started, and the environment is read on the first call.
@@ -33,8 +35,10 @@
 // input is rewritten in place, as the other plugins do (Pi: "tool_call (can
 // block or mutate input)", docs/extensions.md:364, 419 at 1.5.2). What stays
 // TypeScript here is Pi's glue: the memory index rule (Pi runs the memory
-// extension), the card, the freeze, the reject list for commands you type,
-// and the result redaction (src/redact.ts).
+// extension), the card, the freeze and the result redaction (src/redact.ts).
+// Pi's TypeScript copy of the matcher, which last held the reject list for
+// commands you type, was deleted on 19 Nov 2026: the co-process checks those
+// too.
 
 import { realpathSync } from "node:fs";
 import path from "node:path";
@@ -43,7 +47,7 @@ import { deepFreeze, freezeEnabled } from "../src/freeze.ts";
 import { harnessId } from "../src/harness.ts";
 import { inputTextFor } from "../src/input-text.ts";
 import { ownedByTrusted } from "../src/owner.ts";
-import { approve, decide, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "../src/serve/client.ts";
+import { approve, decide, rejected, ServeUnavailable, sharedServe, unavailable, type Call, type GateServe } from "../src/serve/client.ts";
 import {
   DECISION_CHANNEL,
   type DecisionNotice,
@@ -57,7 +61,6 @@ import {
   type UserBashEvent,
   type UserBashResult,
 } from "../src/pi-api.ts";
-import { rejectKey, unquote } from "../src/policy.ts";
 import { redactDeep, redactText } from "../src/redact.ts";
 
 /** The harness this gate answers for: `pi`, or `oh-my-pi` when Bun runs it (src/harness.ts). */
@@ -155,7 +158,7 @@ const READ_ONLY = new Set(["read", "grep", "find", "ls", "memory_search"]);
  */
 export function memoryIndexText(normalized: string, inputText: string): string | undefined {
   if (normalized === "write" || normalized === "edit" || READ_ONLY.has(normalized)) return undefined;
-  const text = unquote(inputText.replace(/\\/g, "/")).toLowerCase().replace(/\/+/g, "/").replace(/\/(\.\/)+/g, "/");
+  const text = inputText.replace(/\\/g, "/").replace(/["']/g, "").toLowerCase().replace(/\/+/g, "/").replace(/\/(\.\/)+/g, "/");
   return MEMORY_INDEXES.find((i) => text.includes(i));
 }
 
@@ -315,17 +318,25 @@ export function createGate(options: GateOptions = {}) {
       return structuredContent === undefined ? { content } : { content, structuredContent };
     });
 
-    pi.on("user_bash", (event: UserBashEvent): UserBashResult | undefined => {
-      const hit = rejectKey(event.command);
-      if (hit === undefined) return undefined;
-      return {
-        result: {
-          output: `derm refused this command (reject list: ${hit}). Run it in a terminal outside Pi if you mean it.\n`,
-          exitCode: 1,
-          cancelled: false,
-          truncated: false,
-        },
-      };
+    const refuse = (why: string): UserBashResult => ({
+      result: {
+        output: `derm refused this command (${why}). Run it in a terminal outside Pi if you mean it.\n`,
+        exitCode: 1,
+        cancelled: false,
+        truncated: false,
+      },
+    });
+
+    pi.on("user_bash", async (event: UserBashEvent, ctx: PiContext): Promise<UserBashResult | undefined> => {
+      let hit: string | undefined;
+      try {
+        const folder = typeof event.cwd === "string" && event.cwd !== "" ? event.cwd : (cwdOf(ctx) ?? process.cwd());
+        hit = await rejected(serveFor(environment(), folder, harness), event.command);
+      } catch (e) {
+        // Fails closed, as a tool call does (case 228): nothing is checked here.
+        return refuse(`derm's gate could not check it: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return hit === undefined ? undefined : refuse(`reject list: ${hit}`);
     });
   };
 }

@@ -5,7 +5,7 @@ import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGate, memoryIndexPath, memoryIndexText } from "../extensions/gate.ts";
 import { DECISION_CHANNEL, type DecisionNotice, type ToolCallResult, type UserBashResult } from "../src/pi-api.ts";
-import { sha256Hex } from "../src/policy.ts";
+import { createHash } from "node:crypto";
 import { GateServe } from "../src/serve/client.ts";
 import { FakeRpcClient, fakePi, type Answer } from "./fake-pi.ts";
 import { removeRoot, stopServe } from "./serve/real.ts";
@@ -16,6 +16,7 @@ import { setMode } from "./modes.ts";
 // or target/release), with a real policy file in a temp home. The policy
 // file's checks are the Rust loader's (`gate::policy::load_for_hook`, the
 // rule every gate shares, case 226), and its wording is derm-core's.
+const sha256Hex = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const DERM = process.env.DERM_TEST_NO_BUILD ? undefined : [process.env.DERM_BIN, join(ROOT, "target/debug/derm"), join(ROOT, "target/release/derm"), join(ROOT, "target/debug/derm.exe"), join(ROOT, "target/release/derm.exe")].find((p) => p !== undefined && existsSync(p));
 const describeDerm = describe.runIf(DERM !== undefined);
@@ -46,7 +47,7 @@ afterEach(async () => {
   for (const r of roots.splice(0)) removeRoot(r);
 });
 
-function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?: string | null; mode?: number; uid?: number; env?: Record<string, string>; tools?: { name: string; description?: string }[]; policyInProject?: boolean } = {}) {
+function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?: string | null; mode?: number; uid?: number; env?: Record<string, string>; tools?: { name: string; description?: string }[]; policyInProject?: boolean; locateProblem?: string } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "derm-pi-gate-")));
   roots.push(root);
   const home = join(root, "home");
@@ -83,7 +84,7 @@ function setup(opts: { answer?: (r: unknown) => Answer; hasUI?: boolean; policy?
     serve: () => {
       starts++;
       if (serve === undefined) {
-        serve = new GateServe({ agent: "pi", env, cwd: () => project, trusted: (u) => u === UID, locate: () => ({ path: DERM as string }) });
+        serve = new GateServe({ agent: "pi", env, cwd: () => project, trusted: (u) => u === UID, locate: () => (opts.locateProblem !== undefined ? { problem: opts.locateProblem } : { path: DERM as string }) });
         serves.push(serve);
       }
       return serve;
@@ -432,9 +433,12 @@ describe("tool_result redaction", () => {
   });
 });
 
-describe("user_bash (commands you type)", () => {
+// Since 19 Nov 2026 the reject list for commands you type is the gate's own
+// (`reject`, contracts/gate-serve.md 2.6): Pi's TypeScript copy is gone, so
+// these run against a derm build, and a co-process that cannot answer refuses.
+describeDerm("user_bash (commands you type)", () => {
   const bash = (s: ReturnType<typeof setup>, command: string) =>
-    s.pi.emit("user_bash", { type: "user_bash", command, excludeFromContext: false, cwd: "/w" }) as Promise<UserBashResult | undefined>;
+    s.pi.emit("user_bash", { type: "user_bash", command, excludeFromContext: false, cwd: s.project }) as Promise<UserBashResult | undefined>;
 
   it("passes an ordinary command through", async () => {
     const s = setup();
@@ -450,9 +454,18 @@ describe("user_bash (commands you type)", () => {
     expect(typeof r?.result.truncated).toBe("boolean");
   });
 
-  it("starts no co-process and reads no policy", async () => {
-    const s = setup();
-    await bash(s, "export CHATGPT_BASE_URL=x");
-    expect(s.starts()).toBe(0);
+  it("checks the reject list only: a policy that denies bash does not refuse your own command", async () => {
+    const s = setup({ policy: policyText({ rules: [{ tool: "bash", action: "deny" }] }) });
+    expect(await bash(s, "ls")).toBeUndefined();
+    expect((await bash(s, "export CHATGPT_BASE_URL=x"))?.result.output).toContain("reject list: chatgpt_base_url");
+    expect(s.starts()).toBeGreaterThan(0);
+  });
+
+  it("refuses when derm's gate cannot answer, and says why", async () => {
+    const s = setup({ locateProblem: "no derm this hook can trust" });
+    const r = await bash(s, "ls");
+    expect(r?.result.exitCode).toBe(1);
+    expect(r?.result.output).toContain("derm's gate could not check it");
+    expect(r?.result.output).toContain("no derm this hook can trust");
   });
 });

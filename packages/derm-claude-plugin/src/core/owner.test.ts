@@ -3,13 +3,10 @@
 // itself (rules cases 53 and 125).
 
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { chatToken, socketLooksOwned } from "./daemon.ts";
 import { _setOwnersForTest, ownersFor, readAnchor } from "./owner.ts";
-import { loadPolicy } from "./policy.ts";
 
 const me = typeof process.getuid === "function" ? process.getuid() : 0;
 // On Windows Node gives every file a made-up mode that others may write
@@ -85,46 +82,6 @@ describe("readAnchor", () => {
   });
 });
 
-describe.skipIf(typeof process.getuid !== "function")("the gate's checks under an agents' user", () => {
-  it("refuses the agent's own policy, socket and token file, and takes the person's", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "derm-owner-gate-"));
-    chmodSync(dir, 0o711);
-    const policy = path.join(dir, "policy.json");
-    writeFileSync(policy, JSON.stringify({ version: 1, rules: [] }), { mode: 0o644 });
-    chmodSync(policy, 0o644);
-    const token = path.join(dir, "chat.token");
-    writeFileSync(token, `${"a".repeat(64)}\n`, { mode: 0o644 });
-    chmodSync(token, 0o644);
-    const sock = path.join(dir, "daemon.sock");
-    const server = net.createServer();
-    await new Promise<void>((r) => server.listen(sock, r));
-    const env = { DERM_CHAT_TOKEN_FILE: token };
-    const elsewhere = mkdtempSync(path.join(tmpdir(), "derm-owner-cwd-"));
-
-    // This test's uid as the person, a made-up uid as the agent: the files
-    // are the person's, so they are trusted, the 0644 token included.
-    _setOwnersForTest({ uids: [me], agent: true });
-    expect(loadPolicy(policy).problem).toBeUndefined();
-    expect(socketLooksOwned(sock)).toBeUndefined();
-    expect(chatToken(env, elsewhere)).toBe("a".repeat(64));
-
-    // The same files seen by an agents' user whose owner is someone else:
-    // they are the agent's own, so every one is refused.
-    _setOwnersForTest({ uids: [me + 1], agent: true });
-    expect(loadPolicy(policy).problem).toBe("policy file owned by another user");
-    expect(socketLooksOwned(sock)).toBe("socket owned by another user");
-    expect(chatToken(env, elsewhere)).toBeUndefined();
-
-    // A broken root file trusts no one.
-    _setOwnersForTest({ uids: [], agent: false, problem: "broken" });
-    expect(loadPolicy(policy).problem).toBe("policy file owned by another user");
-
-    // As the person (not an agent), a 0644 token is still too loose.
-    _setOwnersForTest({ uids: [me], agent: false });
-    expect(chatToken(env, elsewhere)).toBeUndefined();
-
-    server.close();
-    rmSync(dir, { recursive: true, force: true });
-    rmSync(elsewhere, { recursive: true, force: true });
-  });
-});
+// "the gate's checks under an agents' user" ran the TypeScript gate's policy,
+// socket and token checks; that gate was deleted on 19 Nov 2026 and derm's
+// Rust gate holds them (crates/derm-core/src/owner.rs and its callers).

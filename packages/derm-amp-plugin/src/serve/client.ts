@@ -663,6 +663,16 @@ export async function redact(s: GateServe, value: unknown): Promise<{ value: unk
   return { value: r.value, count: typeof r.count === "number" ? r.count : 0 };
 }
 
+/**
+ * `reject`: the gate's reject list over a command the person typed (derm-pi's
+ * `user_bash`); the first key it hits, or undefined. Throws ServeUnavailable.
+ */
+export async function rejected(s: GateServe, text: string): Promise<string | undefined> {
+  const r = await s.request("reject", { text });
+  if (r.ok !== true) throw new ServeUnavailable(`derm gate serve refused reject: ${String(r.error ?? "no reason")}`);
+  return typeof r.key === "string" ? r.key : undefined;
+}
+
 /** Why calls are denied while the co-process is down, for a block reason. */
 export function unavailable(e: unknown): string {
   const why = e instanceof Error ? e.message : String(e);

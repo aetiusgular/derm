@@ -4,7 +4,7 @@ The derm policy gate for Gemini CLI (T2.4, wave 2 lane I). Written against Gemin
 
 ## What it does
 
-- **BeforeTool** (`hooks/hooks.json`, hook `derm-gate`) checks every built-in and MCP tool call against `~/.derm/policy.json` (or `$DERM_POLICY`): `hooks/derm-gate.sh` runs `derm hook gemini before` from derm's install folders, so the gate is derm itself. `src/core/` (a copy of `packages/derm-claude-plugin/src/core/`; do not edit it here) is read only by the policy printer below.
+- **BeforeTool** (`hooks/hooks.json`, hook `derm-gate`) checks every built-in and MCP tool call against `~/.derm/policy.json` (or `$DERM_POLICY`): `hooks/derm-gate.sh` runs `derm hook gemini before` from derm's install folders, so the gate is derm itself. The extension holds no TypeScript of its own since 19 Nov 2026.
   - **deny** stops the call: Gemini sends `derm: <reason>` to the model as the tool's error. Works under `--yolo`.
   - **ask** goes to the derm daemon's approver first (`derm watch --approve`). With no approver, or no daemon, Gemini shows its own prompt. A headless run (`gemini -p`) does not pass that prompt: the call does not run. An approver's no, or a timeout, is a deny.
   - **allow** prints nothing. A Gemini hook cannot approve a call, only deny or ask; Gemini's own policy then decides. Under `--yolo` that is a run.
@@ -12,7 +12,7 @@ The derm policy gate for Gemini CLI (T2.4, wave 2 lane I). Written against Gemin
   - A call whose input names Gemini's control files (`.gemini/`, `/etc/gemini-cli/`, the macOS managed folder) asks, the way the core asks about derm's and other harnesses' files. `~/.gemini/settings.json` can switch every hook off (`hooksConfig.enabled: false`) or this one by name (`hooksConfig.disabled: ["derm-gate"]`).
 - **AfterTool** (`derm-record`) records the call in the derm daemon (a hash and a size, no content) and, when the result holds a secret-like value, replaces what the model reads with the redacted text.
 - **`policies/derm.toml`**, Gemini's extension tier: denies writes into `.derm/` and `.gemini/` and shell commands naming them, without the hook. Gemini ignores `allow` in an extension's policies.
-- **`bin/derm-gemini-policy.mjs`** prints your derm policy as Gemini policy rules for the user tier. Save the output as `~/.gemini/policies/derm.toml` yourself; it writes nothing.
+- **`derm connect gemini --rules --print`** prints your derm policy as Gemini policy rules for the user tier: allow, ask and deny, ending with derm's ask when no rule matches. Save the output as `~/.gemini/policies/derm.toml` yourself; it writes nothing. Until 19 Nov 2026 the extension's `bin/derm-gemini-policy.mjs` printed it, in TypeScript; the Rust printout is the same, line for line (`crates/derm-cli/src/connect/fixtures/gemini-print.json`). `derm connect gemini --rules --write` writes the same file with the deny rules only.
 
 ## Gemini fails open
 
@@ -31,10 +31,10 @@ gemini extensions install /abs/path/derm/packages/derm-gemini-extension --consen
 Gemini asks whether to trust the source folder first; answer y. It copies the folder to `~/.gemini/extensions/derm`; run `gemini extensions update derm` after a change. Then:
 
 ```
-node ~/.gemini/extensions/derm/bin/derm-gemini-policy.mjs > ~/.gemini/policies/derm.toml
+derm connect gemini --rules --print > ~/.gemini/policies/derm.toml
 ```
 
-Node 22.18 or later, for type stripping. The extension has no dependencies, makes no network call and reads nothing until the first tool call.
+The extension has no dependencies and no code of its own: its hooks run derm, which reads nothing until the first tool call.
 
 ## Tool names
 

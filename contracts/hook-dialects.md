@@ -8,7 +8,7 @@ Marks: **V** read in a primary source at the version named (docs, source at a ta
 
 Common to all sixteen, from section 7a and the corner cases:
 
-1. **One decision, the core's.** The dialect turns the agent's input into the core's `{tool, input, harness, chat}` (`packages/derm-claude-plugin/src/core/gate.ts`, synced into each package), calls it, and turns `allow`, `ask` and `deny` into the agent's reply. The agent's tool name goes through the matcher with the agent's id, so its name form is preset data (`toolNameForm` in its preset file), not dialect code.
+1. **One decision, the core's.** The dialect turns the agent's input into the core's `{tool, input, harness, chat}` (`crates/derm-cli/src/gate/core.rs`, `decide_call`; the TypeScript hook core's `gate.ts` until 19 Nov 2026), calls it, and turns `allow`, `ask` and `deny` into the agent's reply. The agent's tool name goes through the matcher with the agent's id, so its name form is preset data (`toolNameForm` in its preset file), not dialect code.
 2. **Allow only where a rule says allow** (case 72). An agent where a hook's allow skips its own prompt gets an explicit allow only for a rule's `allow`; with no rule, the dialect gives the agent's "no decision" only where that does not run the call under the agent's own auto-approve mode, else the daemon approver or deny.
 3. **Ask** (cases 71, 63): the agent's own prompt where it can show one (column "Own ask"), else the daemon approver's answer within the hook's timeout, else deny. Never "no decision".
 4. **Deny one call, never the run** (case 79): each agent's per-call form; the run-ending forms are listed per agent and never used.

@@ -7,7 +7,25 @@
 // of its input, one per line, unescaped: a JSON string would add backslashes
 // (which the shell check reads as unreadable) and hide line breaks.
 
-import { SHELL_TOOLS } from "./policy.ts";
+/**
+ * The shell tools whose `command` is read as it is (contracts/policy.md,
+ * section 4, step 7, plus Pi's `powershell`), by the name `derm gate serve`
+ * normalized the call to. Moved here from src/policy.ts, Pi's copy of the
+ * matcher, when that copy was deleted (19 Nov 2026).
+ */
+export const SHELL_TOOLS: ReadonlySet<string> = new Set([
+  "bash",
+  "shell",
+  "exec_command",
+  "local_shell",
+  "run_shell_command",
+  "user_bash",
+  "terminal",
+  "powershell",
+  "monitor",
+  "shell_command",
+  "run_commands",
+]);
 
 const MAX_DEPTH = 64;
 
