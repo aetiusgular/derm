@@ -13,6 +13,13 @@
 
 set -euo pipefail
 
+# --account <slug>: one agent account per subscription (accounts build, lane
+# L2; README.md, "Agent accounts"). The --owner form below is wave 5's single
+# agents' user, which derm run --boundary none still reads until lane L1 lands.
+for arg in "$@"; do
+	if [ "$arg" = --account ]; then exec "$(dirname "${BASH_SOURCE[0]}")/uninstall-account.sh" "$@"; fi
+done
+
 AGENT="derm-agent"
 OWNER="${SUDO_USER:-}"
 DRY=0

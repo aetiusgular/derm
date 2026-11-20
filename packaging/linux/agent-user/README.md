@@ -1,4 +1,121 @@
-# The agents' user (Linux)
+# Agent accounts and the agents' user (Linux)
+
+Two forms live here. `install.sh --account` (below, the accounts build) makes
+one agent account per subscription, as many chats on each as you want, with a
+firewall table that lets the accounts reach loopback only. `install.sh
+--owner` (further down) is wave 5's single agents' user, which `derm run
+--boundary none` reads until lane L1 moves it to the accounts.
+
+## Agent accounts, one per subscription
+
+```
+sudo packaging/linux/agent-user/install.sh --account max1 --subscription "Claude Max, personal" --dry-run
+sudo packaging/linux/agent-user/install.sh --account max1 --subscription "Claude Max, personal"
+```
+
+`<slug>` is 1 to 21 of `a-z`, `0-9` and `-`: the account is
+`derm-agent-<slug>`, and useradd takes 32 characters. The subscription label is
+what you call it, shown back and never parsed; control and format characters
+(newlines, bidi overrides) are refused. `--owner` defaults to the person who
+ran `sudo`.
+
+| Step | What changes | Undo |
+|---|---|---|
+| 1 | `/usr/local/lib/derm/agents.py` (root's, 0644): the helper the unit and the check run, copied from `accounts.py` and checked by hash | removed with the last account |
+| 2 | The group `derm-agents` (system group, no members listed). An existing group with members is refused | `groupdel`, with the last account |
+| 3 | The user `derm-agent-<slug>`: system user, primary group `derm-agents` and no other group, home `/var/lib/derm/agents/<slug>` (0700), password locked | `userdel --remove` (`--keep-home` keeps it) |
+| 4 | `/etc/derm/agents.json` (root's, 0644): `{"version": 1, "group": "derm-agents", "accounts": [{"name", "uid", "subscription", "home"}]}`, exactly the contract in `plans/parallel_build_accounts.md` section 2. A file there that is not a regular file of root's, is group or world writable, or does not parse is refused, and nothing is written over it | the entry removed; the file goes with the last account |
+| 5 | `/etc/derm/agents.nft` and the table `inet derm_agents`, loaded (below) | written again without the account; `nft delete table inet derm_agents` with the last |
+| 6 | `/etc/systemd/system/derm-agents-nft.service`, enabled: loads the table at boot and again after `nftables.service` restarts or reloads, whose `/etc/nftables.conf` starts with `flush ruleset` on Ubuntu and Debian | `systemctl disable`, removed with the last account |
+| 7 | `/etc/sudoers.d/derm-agent-<slug>`: `<you> ALL=(derm-agent-<slug>) NOPASSWD:SETENV: ALL`, checked with `visudo -c`. Last, so nothing runs as the account before its table is in place | `rm` |
+
+`uninstall.sh --account <slug>` does every undo, in the reverse order: the
+sudoers rule first, then the account's processes, its entry, the table, the
+user, and the group with the last account. It removes only a user install.sh
+made (its comment is `derm agent <slug>`), and runs on a half-installed
+account too.
+
+### The table
+
+```
+table inet derm_agents {
+	set uids { type uid; elements = { <each account's uid> } }
+	chain output {
+		type filter hook output priority filter; policy accept;
+		meta skgid <derm-agents> jump agents
+		meta skuid @uids jump agents
+	}
+	chain agents {
+		meta l4proto { tcp, udp } th dport 53 counter reject with icmpx admin-prohibited
+		oif "lo" ip daddr 127.0.0.0/8 accept
+		oif "lo" ip6 daddr ::1 accept
+		counter reject with icmpx admin-prohibited
+	}
+}
+```
+
+- By group and by uid: `meta skgid` is the socket file's fsgid (Linux 6.18
+  `net/netfilter/nft_meta.c:152-154`), which a set-group-id program changes. A
+  set-group-id program took a group-only rule's account out (run); the uid set
+  holds it, and the group holds a set-user-id one.
+- Loopback addresses only. Your machine's own LAN address goes through `lo`
+  too and is refused.
+- DNS is refused on loopback as well (the resolver stub on 127.0.0.53):
+  derm-egress resolves names.
+- Reject, not drop: a dropped TCP SYN is resent until `connect()` times out;
+  the reject fails it at once with `EHOSTUNREACH`, and a datagram gets `EPERM`
+  (both run). Your other tables do not change this: an `accept` in another
+  table's output chain still meets this one (run).
+
+### The check
+
+```
+python3 -I /usr/local/lib/derm/agents.py check [--json]          # as anyone
+sudo -n -u derm-agent-<slug> python3 -I /usr/local/lib/derm/agents.py check --probe
+```
+
+`nft list` needs `CAP_NET_ADMIN` (nfnetlink refuses every message without
+it, Linux 6.18 `net/netfilter/nfnetlink.c:661`; nft 1.0.9 as a plain user:
+"Operation not permitted"), so the check reads what root wrote instead:
+`agents.json` (trusted as above), the group and each account (primary group,
+no other group, home), `agents.nft` against the table rendered again from
+`agents.json` byte for byte, the unit, and `/run/derm/agents-nft.loaded`, a
+marker root writes on each load with the boot id and the table's hash. The
+marker says the table was loaded this boot; it does not see a flush by hand.
+`--probe`, run as an agent account, asks the kernel: a datagram to 192.0.2.1
+must get `EPERM`, a TCP connect there `EHOSTUNREACH` at once, a datagram to
+127.0.0.53:53 `EPERM`, and a datagram to its own socket on 127.0.0.1 must
+arrive. Exit 0 when all pass, 1 otherwise; each failure names its fix.
+
+### Not covered
+
+- Other services on loopback stay reachable: whatever listens on 127.0.0.1
+  (a local proxy, a database, Docker's API if bound there) is the agents' to
+  reach, as derm's own ports are.
+- Name lookups that do not use port 53: glibc's `nss-resolve` asks
+  systemd-resolved over its Unix socket (`/run/systemd/resolve/io.systemd.Resolve`),
+  which no firewall sees, and resolved then queries upstream (nss-resolve(8);
+  not run here, the workspace has no resolved). Unix sockets and
+  D-Bus to local services are lane L1's (Landlock) to narrow.
+- A program both set-user-id and set-group-id to another user and group leaves
+  both matches (none on Ubuntu 24.04's base image: `find / -perm -6000` found
+  none here).
+- A flush by hand (`nft flush ruleset`) is not seen by the unit or the
+  marker; only `--probe` shows it.
+- Without systemd as PID 1 the unit is installed but nothing loads the table
+  at boot; install.sh says so.
+- IPv6 was not run here (the cloud workspace's kernel has no `AF_INET6`).
+
+### Tests
+
+`accounts.test.ts` (vitest, Linux, no root): names, labels, the contract's
+reader, the rendered table, the unit, the dry runs. `tests/root-e2e.sh` (root,
+throwaway machines only: `sudo DERM_L2_ROOT_TEST=1 tests/root-e2e.sh`): real
+users, the loaded table, real sockets for an agent account, its owner,
+another user and root, set-id programs, another table's accept, every file
+tampered with, two accounts, and every undo, ending with nothing left.
+
+## The single agents' user (wave 5, `--owner`)
 
 A second local account that runs one person's coding agents, so an agent
 cannot read the person's daemon token, answer its own asks, use `sudo`,
