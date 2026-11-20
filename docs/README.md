@@ -4,6 +4,7 @@ derm is a skin for AI agents: a gate, a boundary and an audit around any coding 
 
 - Install: [Linux](install/linux.md), [macOS](install/macos.md), [Windows (status: not installable yet)](install/windows.md), [the agent adapters](install/agents.md), [`derm setup`: policy presets, settings, shims](install/setup.md).
 - The commands: [`derm connect`](verbs/connect.md), [`derm run`](verbs/run.md), [`derm watch` and `derm status`](verbs/watch.md), [`derm cu`](verbs/cu.md), [`derm-daemon`](verbs/daemon.md), [the library's commands](verbs/library.md). `derm acp` and `derm doctor` print "not implemented": they come with the coverage wave.
+- [Permissions](permissions.md): the eight things derm checks, with and without a sandbox.
 - [Privacy](privacy.md): what talks to the network, and what does not.
 - [Benchmarks](benchmarks.md): Qwen3.8 27B with deferred tools against direct, through Pi and Claude Code, with the raw data.
 - [Release notes](release-notes.md).

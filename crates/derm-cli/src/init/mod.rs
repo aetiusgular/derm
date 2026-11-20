@@ -19,8 +19,12 @@
 //! `derm run <agent> --tier standard` instead); change `tier.default` (Tony's
 //! call 4 of 12 Nov keeps `whole` until E1); write over a policy you have;
 //! run its writes inside a `derm run` chat (an agent must not set its own
-//! policy, case 147; the presets deny `derm setup`, and `derm init` is a
-//! request for the same deny).
+//! policy, case 147; the presets deny `derm setup` and `derm init`).
+//!
+//! What a person gets from it, in `docs/permissions.md` terms: the gate half
+//! of the eight permissions, with no sandbox. A program the agent starts can
+//! still do what the gate never saw; `derm setup` and `derm run --boundary
+//! srt` add the sandbox half.
 
 #[cfg(test)]
 mod tests;

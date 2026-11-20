@@ -6,6 +6,14 @@
 //! list's text folding, confusables included), the reject token tables,
 //! `evaluate` (the matcher, contract section 4) and `load` (the file, read
 //! only when called; a bad file is the default policy with a reason).
+//!
+//! Permissions (`docs/permissions.md`): the lists below are the gate's half
+//! of four of derm's eight permissions. `SECRET_PATHS` is "secrets";
+//! `RUNS_LATER_PATHS` is "files that run later"; `CONTROL_PATHS` is "derm
+//! itself" and the harnesses' own hook files; `METADATA_ADDRESSES` is the
+//! gate's only part of "network". Under srt the sandbox holds the same
+//! permissions a second time (`derm-cli`'s `run/plan.rs`). Each list asks,
+//! never denies, today.
 
 use serde::{Deserialize, Serialize};
 
@@ -596,8 +604,13 @@ pub fn cell_status(text: &str) -> Option<CellStatus> {
 
 /// Files that control derm or a harness's hooks (contract, section 4, step
 /// 7a): an `allow` whose folded input names one is `Ask`, so an allowed tool
-/// cannot quietly rewrite the policy or switch a gate off. The same list as
-/// the hook core's `CONTROL_PATHS` and derm-pi's (integration w1).
+/// cannot quietly rewrite the policy or switch a gate off. Once mirrored by
+/// the hook core's `CONTROL_PATHS` and derm-pi's (integration w1); since
+/// `bb30281` removed the TypeScript matchers, this is the only copy.
+///
+/// Permission: derm itself, plus the harnesses' own hook and settings files
+/// (`docs/permissions.md`). The default preset also denies `derm setup`,
+/// `derm init` and the other commands that change derm (case 147).
 pub const CONTROL_PATHS: &[&str] = &[
     ".derm/",
     "derm/daemon.",
@@ -738,8 +751,11 @@ pub const CONTROL_PATHS: &[&str] = &[
 /// one is `Ask` (Tony's call of 12 Nov on R-E0-7: ask, not deny), for every
 /// tool, so a file tool and a shell read it alike. From OpenMoat 0.19.0's
 /// `secrets-paths` (`policies/default-v1.yaml:17-75`) and its key-file names
-/// (`:1336-1338`). Matched by `names_entry`. The hook core's `SECRET_PATHS`
-/// and derm-pi's are the same list.
+/// (`:1336-1338`). Matched by `names_entry`. The only copy since `bb30281`
+/// removed the hook core's and derm-pi's `SECRET_PATHS`.
+///
+/// Permission: secrets (`docs/permissions.md`). Under srt these paths are
+/// also unreadable (`denyRead` in `derm-cli`'s `run/plan.rs`).
 pub const SECRET_PATHS: &[&str] = &[
     ".ssh/",
     ".aws/",
@@ -792,7 +808,10 @@ pub const SECRET_PATHS: &[&str] = &[
 /// files, and every shell's start-up files with curl's and wget's. From
 /// OpenMoat 0.19.0's `runs-later` (`policies/default-v1.yaml:1152-1230`) and
 /// `shell-rc` (`:645-658`). A leading `*` matches a suffix (`*.run.xml`).
-/// Matched by `names_entry`; the hook core's and derm-pi's `RUNS_LATER_PATHS`.
+/// Matched by `names_entry`. The only copy since `bb30281` removed the hook
+/// core's and derm-pi's `RUNS_LATER_PATHS`.
+///
+/// Permission: files that run later (`docs/permissions.md`).
 pub const RUNS_LATER_PATHS: &[&str] = &[
     ".github/workflows/",
     ".github/agents/",
@@ -862,6 +881,9 @@ pub const RUNS_LATER_PATHS: &[&str] = &[
 /// machine's cloud credentials (step 7a; R-E0-5). From OpenMoat 0.19.0's
 /// `cloud-metadata` (`policies/default-v1.yaml:659-664`). Matched by
 /// `names_entry`, so `10.169.254.1` is not `169.254.`.
+///
+/// Permission: network (`docs/permissions.md`). This list is the gate's only
+/// network check; the hosts a chat reaches are the sandbox's allow list.
 pub const METADATA_ADDRESSES: &[&str] = &[
     // srt 0.0.82's cloud metadata list (`resolved-address-guard.js:37-47`)
     // and 169.254.169.254 in its decimal, hex and octal forms (W6C-S3).
@@ -895,7 +917,8 @@ const ENV_TEMPLATES: &[&str] = &[".example", ".sample", ".template", ".dist"];
 /// the end) also matches its bare name (`tar czf k.tgz ~/.ssh`). A leading
 /// `*` drops the left check (`my.code-workspace`). `.env` followed by a
 /// template's suffix is not the file. The hook core's and derm-pi's
-/// `namesEntry`; the policy fixtures hold the three equal.
+/// `namesEntry` were its TypeScript copies until `bb30281` removed them; the
+/// policy fixtures now check this one.
 pub fn names_entry(text: &str, entry: &str) -> bool {
     let (suffix, entry) = match entry.strip_prefix('*') {
         Some(e) => (true, e),
@@ -1636,7 +1659,8 @@ fn allow_steps(
     // run later and cloud metadata addresses for every tool; then a shell or
     // interpreter that reads its program from its input (a pipe, a
     // here-string, a process substitution or xargs), so the line does not
-    // show what runs.
+    // show what runs. In `docs/permissions.md` terms: secrets, files that run
+    // later, network, and running downloaded code, in that order.
     for (list, what) in [
         (SECRET_PATHS, "a secret path"),
         (RUNS_LATER_PATHS, "a file that runs later"),

@@ -1040,6 +1040,9 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
             }
             allowed.sort();
             allowed.dedup();
+            // Permissions "secrets" and "derm itself" under srt
+            // (`docs/permissions.md`): these are unreadable to every program
+            // in the sandbox, not only to the calls the gate sees.
             let mut deny_read: Vec<String> = [
                 ".ssh",
                 ".gnupg",
@@ -1174,6 +1177,8 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                     }
                 }
             }
+            // Permissions "project folder" and "other folders" under srt
+            // (`docs/permissions.md`): writes outside these roots are refused.
             let mut allow_write = vec![i.cwd.clone()];
             allow_write.extend(state_dirs.iter().cloned());
             allow_write.push(srt_temp_root(i.macos).into());
@@ -1278,6 +1283,8 @@ pub fn build(i: &Inputs) -> Result<Plan, String> {
                 .into_iter()
                 .map(|p| json!({"path": p, "literal": true}))
                 .collect();
+            // Permission "network" under srt (`docs/permissions.md`): every
+            // host not in `allowed` is refused by srt's proxy.
             let mut network = json!({
                 "allowedDomains": allowed,
                 "deniedDomains": [],

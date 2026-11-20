@@ -9,12 +9,37 @@ derm is a skin for AI agents: a gate, a boundary and an audit around any coding 
 
 No telemetry, no account. What derm records stays on your machine ([privacy](docs/privacy.md)).
 
+## Quick start
+
+```sh
+brew install aetiusgular/tap/derm   # macOS; Linux and Windows: docs/install/
+derm init                           # finds your agents, connects derm's gate, writes the default policy
+```
+
+Then use your agent as you always do. derm checks each tool call first. For a sandbox around the agent as well, run `derm setup` once and start the agent with `derm run claude-code --boundary srt` ([setup](docs/install/setup.md)).
+
+What derm stops by default, grouped the way macOS groups app access ([permissions](docs/permissions.md)):
+
+| Permission | Default |
+|---|---|
+| Project folder | allowed; pushes, deploys and installs ask |
+| Other folders | file reads allowed; under the sandbox, writes refused |
+| Secrets (`~/.ssh`, `~/.aws`, `.env`) | ask; unreadable under the sandbox |
+| Files that run later (git hooks, CI, shell start-up files) | ask |
+| Network | under the sandbox, only the model's host and the hosts you add |
+| Running downloaded code (`curl ... \| sh`, new packages) | ask |
+| Computer use | off |
+| derm itself | ask, and the commands that change derm are denied |
+
+Without the sandbox derm sees each tool call, not every program the agent starts. The sandbox is what makes these hold for everything.
+
 Status: released on GitHub ([releases](https://github.com/aetiusgular/derm/releases)): Linux x86_64 as a static tarball and a `.deb`, macOS as a signed, notarized zip, and on macOS through Homebrew (`brew install aetiusgular/tap/derm`). The gates install from this repository: Claude Code and Codex take it as a plugin marketplace by name, the others from a folder of the release's source ([the agents](docs/install/agents.md)); none is on npm yet. Tested in a Linux cloud workspace, on a Linux box (Pi in the TUI and in Orca, OpenCode, the systemd user unit) and on a Mac (the Claude Code and Codex plugins, the released zip and the Homebrew install). Built in parallel lanes; each crate and package says which lane owns it (`scripts/lane-ownership.json`).
 
 ## Docs
 
 - Install: [Linux](docs/install/linux.md), [macOS](docs/install/macos.md), [the agents](docs/install/agents.md)
 - Commands: [`derm connect`](docs/verbs/connect.md), [`derm run`](docs/verbs/run.md), [`derm watch` and `derm status`](docs/verbs/watch.md), [`derm cu`](docs/verbs/cu.md), [`derm-daemon`](docs/verbs/daemon.md), [the library](docs/verbs/library.md)
+- [Permissions](docs/permissions.md): the eight things derm checks, with and without a sandbox
 - [Privacy](docs/privacy.md): what reaches the network, what was measured and what was read
 - [Benchmarks](docs/benchmarks.md): deferred tools on a local 27B model
 - [Release notes](docs/release-notes.md); [`docs/llms.txt`](docs/llms.txt) for agents

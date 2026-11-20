@@ -10,6 +10,7 @@ The daemon makes no outbound connection. The gate fails closed where the agent l
 - [Install on Linux](https://github.com/aetiusgular/derm/blob/main/docs/install/linux.md): the static binaries and the .deb
 - [Install on macOS](https://github.com/aetiusgular/derm/blob/main/docs/install/macos.md): the signed and notarized binaries
 - [The agent adapters](https://github.com/aetiusgular/derm/blob/main/docs/install/agents.md): one install line per agent
+- [Permissions](https://github.com/aetiusgular/derm/blob/main/docs/permissions.md): the eight things derm checks, with and without a sandbox
 - [Privacy](https://github.com/aetiusgular/derm/blob/main/docs/privacy.md): what reaches the network, with its switch
 
 ## Commands

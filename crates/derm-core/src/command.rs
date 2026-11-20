@@ -908,6 +908,9 @@ fn reads_its_input(program: &str, args: &[String]) -> bool {
 /// the same depth as the command rules (E0's R-E0-1; OpenMoat 0.19.0's
 /// `pipe-to-shell` and `opaque-code`'s `<shell> @stdin`, read in
 /// `src/shell/tests/stdin.rs`).
+///
+/// Permission: running downloaded code (`docs/permissions.md`), with the
+/// package-install check in `installs/`.
 pub fn stdin_program(folded: &str) -> Option<String> {
     let plain = folded.replace('\\', "");
     for text in [folded, plain.as_str()] {
