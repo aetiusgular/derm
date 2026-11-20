@@ -395,7 +395,8 @@ fn add_prints_the_installer_line_and_runs_nothing_without_a_yes() {
     assert_eq!(sudo_log(&st), "");
 }
 
-#[cfg(unix)]
+// Reads the registry, which only Linux reads (one reader, run/user/accounts.rs).
+#[cfg(target_os = "linux")]
 #[test]
 fn add_is_refused_inside_a_chat_and_for_a_bad_slug_label_or_a_taken_slug() {
     let st = setup("add-refuse", false);
@@ -591,7 +592,8 @@ fn installer_writes_the_package_into_a_new_folder() {
 
 // ---- status ----
 
-#[cfg(unix)]
+// Reads the registry, which only Linux reads (one reader, run/user/accounts.rs).
+#[cfg(target_os = "linux")]
 #[test]
 fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() {
     let st = setup("status", false);
@@ -627,7 +629,8 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     assert!(!r.out.contains("individual usage"), "{}", r.out);
 }
 
-#[cfg(unix)]
+// Reads the registry, which only Linux reads (one reader, run/user/accounts.rs).
+#[cfg(target_os = "linux")]
 #[test]
 fn status_says_unknown_when_sudo_cannot_run_as_the_account() {
     let st = setup("status-nopw", true);
