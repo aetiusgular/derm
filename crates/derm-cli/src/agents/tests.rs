@@ -132,6 +132,8 @@ const REGISTRY: &str = r#"{"version":1,"group":"derm-agents","accounts":[
 
 struct Setup {
     d: Dir,
+    /// Read by the Linux tests (the registry is Linux's alone).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     home: PathBuf,
     sudo: PathBuf,
 }
