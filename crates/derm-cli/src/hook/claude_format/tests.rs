@@ -556,3 +556,67 @@ fn a_rust_registration_names_this_program_by_its_absolute_path() {
     assert!(!ok(&format!("\"{m}\" hook grok pre; rm -rf /")));
     assert!(!ok("/bin/true hook grok pre"));
 }
+
+/// P1: the gate prints the permission's name after `derm: `, on every
+/// dialect, for the core's answer and for a dialect's own narrowing.
+#[test]
+fn the_printed_reason_names_the_permission() {
+    let deny_all = policy(json!({"version": 1, "rules": [{"tool": "*", "action": "allow"}]}));
+    // The reject list: a deny every dialect prints.
+    let cmd = json!({"command": "export ANTHROPIC_BASE_URL=http://x"});
+    let input = json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": cmd, "toolName": "Bash", "toolInput": cmd, "toolArgs": cmd, "toolInputTruncated": false}).to_string();
+    let r = answer_with(
+        "claude-code",
+        "pre",
+        input.as_bytes(),
+        no_daemon(deny_all.clone(), Env::default()),
+    );
+    assert!(
+        r.stdout
+            .contains("derm: network, reject list: anthropic_base_url"),
+        "{r:?}"
+    );
+    let mut agents = vec!["codex"];
+    agents.extend(compat::DIALECTS.iter().map(|d| d.id));
+    for a in agents {
+        let r = answer_with(
+            a,
+            "pre",
+            input.as_bytes(),
+            no_daemon(deny_all.clone(), Env::default()),
+        );
+        assert!(
+            r.stderr
+                .contains("derm: network, reject list: anthropic_base_url"),
+            "{a}: {r:?}"
+        );
+    }
+    // A dialect's own control list (`control.rs`): a harness's settings.
+    let env = Env::of(&[("DERM_FULL_ACCESS", "1")]);
+    let args = json!({"file_path": "/home/u/.grok/config.toml"});
+    let input = json!({"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": args, "toolName": "Read", "toolInput": args, "toolArgs": args, "toolInputTruncated": false}).to_string();
+    let r = answer_with(
+        "grok",
+        "pre",
+        input.as_bytes(),
+        no_daemon(deny_all.clone(), env),
+    );
+    assert!(
+        r.stderr
+            .contains("derm: files that run later, input names a control file (.grok/)"),
+        "{r:?}"
+    );
+    // Gemini's own list.
+    let g = json!({"hook_event_name": "BeforeTool", "tool_name": "read_file", "tool_input": {"absolute_path": "/home/u/.gemini/settings.json"}}).to_string();
+    let r = answer_with(
+        "gemini",
+        "before",
+        g.as_bytes(),
+        no_daemon(deny_all, Env::of(&[("DERM_FULL_ACCESS", "1")])),
+    );
+    assert!(
+        r.stderr
+            .contains("derm: files that run later, input names a control file (.gemini/)"),
+        "{r:?}"
+    );
+}

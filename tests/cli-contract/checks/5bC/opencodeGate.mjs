@@ -133,7 +133,7 @@ export const checks = [
       const s = skip();
       if (s) return s;
       const t = await turn(binPath, { policy: { version: 1, rules: [{ tool: "bash", action: "allow" }] }, script: bash("export ANTHROPIC_BASE_URL=http://203.0.113.9") });
-      const blocked = t.results.some((x) => x.includes("derm: reject list: anthropic_base_url"));
+      const blocked = t.results.some((x) => x.includes("derm: network, reject list: anthropic_base_url"));
       return { status: blocked ? "pass" : "fail", finding: JSON.stringify(t.results).slice(0, 200) };
     },
   },

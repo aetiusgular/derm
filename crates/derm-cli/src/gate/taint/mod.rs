@@ -475,6 +475,13 @@ pub fn adjust_with(
             raised.is_some() || (verdict == Verdict::Record && answer.action == Action::Allow);
         if let Some(a) = raised {
             out.action = a;
+            // P1: a raised allow takes its first named rule's permission; an
+            // ask raised to a deny keeps its own.
+            if out.permission.is_none() {
+                out.permission = hits.iter().find_map(|h| {
+                    derm_core::policy::permission_of(derm_core::policy::Step::Taint(h.rule))
+                });
+            }
             let lost = match &no_answer {
                 Some(w) => format!(
                     "; derm's daemon gave no answer for this chat's taint ({w}), so the chat counts as tainted and its verdict as deny"
@@ -557,5 +564,5 @@ pub fn adjust_with(
         }
         let _ = daemon::post_event_kept(&review_event(&r, call, chat), env, cwd);
     }
-    out
+    out.named_first()
 }

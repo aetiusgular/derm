@@ -74,7 +74,10 @@ pub fn handle_pre(input: &Map<String, Value>, deps: &Deps) -> Reply {
     let is_mcp = tool.starts_with("mcp__");
     if action == Action::Allow && answer.updated_input.is_some() && !is_mcp {
         action = Action::Deny;
-        reason = "secret-like value in input of a tool derm cannot rewrite on Codex".into();
+        reason = crate::gate::core::reason_of(
+            derm_core::policy::Step::SecretLikeValue,
+            "secret-like value in input of a tool derm cannot rewrite on Codex",
+        );
     }
     let chat_s = chat.unwrap_or_default();
     let lost = deps.post_decision(

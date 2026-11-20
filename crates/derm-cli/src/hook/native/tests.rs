@@ -795,8 +795,16 @@ fn the_native_agents_and_hermess_control_files_ask_through_the_core() {
             };
             let a = crate::gate::core::decide_call(&allow, &call, &env);
             assert_eq!(a.action, Action::Ask, "{harness} {entry}: {}", a.reason);
+            // P1: a harness's own file is a file that runs later.
+            assert_eq!(
+                a.permission,
+                Some(derm_core::policy::Permission::FilesThatRunLater),
+                "{harness} {entry}: {}",
+                a.reason
+            );
             assert!(
-                a.reason.starts_with("input names a control file ("),
+                a.reason
+                    .starts_with("files that run later, input names a control file ("),
                 "{harness} {entry}: {}",
                 a.reason
             );

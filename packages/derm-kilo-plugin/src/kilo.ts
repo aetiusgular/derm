@@ -102,7 +102,7 @@ export async function before(input: BeforeInput, output: BeforeOutput, deps: Dep
     }
     if (action === "allow" && answer.updatedInput !== undefined && !replaceInPlace(output.args, answer.updatedInput)) {
       action = "deny";
-      reason = "secret-like value in input that derm cannot rewrite";
+      reason = "secrets, secret-like value in input that derm cannot rewrite";
     }
     if (!inPlace) await record(s, call, answer, action, { reason });
     if (action === "deny") throw new DermBlocked(reason);

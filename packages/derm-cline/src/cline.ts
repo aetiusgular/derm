@@ -196,7 +196,7 @@ export async function decide(call: GateCall, rawTool: string, deps: Pick<Deps, "
     answer.updatedInput = undefined;
     if (answer.action === "allow") {
       answer.action = "ask";
-      answer.reason = "secret-like value in input";
+      answer.reason = "secrets, secret-like value in input";
     }
   }
   if (answer.action === "ask" && deps.env.DERM_FULL_ACCESS === "1") {

@@ -195,6 +195,8 @@ pub fn adjust(mut answer: GateAnswer, call: &GateCall) -> GateAnswer {
             "stops derm's {name}, which keeps this chat's record and taint (a best-effort check); {}",
             answer.reason
         );
+        // P1: only an allow gets here, which carries no permission.
+        answer.permission = derm_core::policy::permission_of(derm_core::policy::Step::StopsDerm);
         answer.updated_input = None;
     }
     answer
@@ -383,6 +385,7 @@ mod tests {
             updated_input: None,
             redacted: 0,
             ask_timeout_seconds: 60,
+            permission: None,
         };
         let call = |cmd: &str| GateCall {
             harness: "claude-code".into(),

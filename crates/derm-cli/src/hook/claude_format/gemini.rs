@@ -204,7 +204,10 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
         super::control::narrow(answer.action, super::control::gemini_control_path(&text))
     {
         answer.action = a;
-        answer.reason = format!("input names a control file ({control})");
+        answer.name_reason(
+            derm_core::policy::permission_of(derm_core::policy::Step::ControlPath(control)),
+            format!("input names a control file ({control})"),
+        );
     }
     let (mut action, mut reason, mut gemini_asks) = (answer.action, answer.reason.clone(), false);
     if action == Action::Ask {
@@ -258,7 +261,10 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
     }
     if let Some(updated) = &answer.updated_input {
         if !updated.is_object() {
-            return block("secret-like value in input that derm cannot rewrite on Gemini");
+            return block(&crate::gate::core::reason_of(
+                derm_core::policy::Step::SecretLikeValue,
+                "secret-like value in input that derm cannot rewrite on Gemini",
+            ));
         }
         return Reply {
             stdout: super::json_line(&json!({

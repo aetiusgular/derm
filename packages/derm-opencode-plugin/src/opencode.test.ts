@@ -70,7 +70,7 @@ describe.runIf(DERM !== undefined)("tool.execute.before (needs a derm build)", (
   });
   it("throws to block a denied call, and on the reject list", async () => {
     await expect(before(call("webfetch"), { args: { url: "https://x" } }, deps())).rejects.toBeInstanceOf(DermBlocked);
-    await expect(before(call("bash"), { args: { command: "export CHATGPT_BASE_URL=http://x" } }, deps())).rejects.toThrow("derm: reject list: chatgpt_base_url");
+    await expect(before(call("bash"), { args: { command: "export CHATGPT_BASE_URL=http://x" } }, deps())).rejects.toThrow("derm: network, reject list: chatgpt_base_url");
   });
   it("an ask is the approver's yes, else a throw (contract section 5)", async () => {
     daemon.setApprove("yes");

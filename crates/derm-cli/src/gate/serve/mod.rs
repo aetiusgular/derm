@@ -405,6 +405,9 @@ fn answer_of(r: &Value) -> Result<GateAnswer, String> {
         .and_then(Value::as_u64)
         .unwrap_or(u64::from(gate::HOOK_ASK_CAP_SECONDS))
         .min(u64::from(gate::HOOK_ASK_CAP_SECONDS)) as u32;
+    // P1: the plugin hands back the reason the decide reply gave it, whose
+    // name, if any, leads it; its own narrowings name theirs the same way.
+    let permission = derm_core::policy::Permission::of_reason(&reason);
     Ok(GateAnswer {
         action,
         normalized_tool,
@@ -412,6 +415,7 @@ fn answer_of(r: &Value) -> Result<GateAnswer, String> {
         updated_input: None,
         redacted,
         ask_timeout_seconds,
+        permission,
     })
 }
 

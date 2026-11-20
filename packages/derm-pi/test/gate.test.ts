@@ -183,11 +183,11 @@ describeDerm("decisions", () => {
     const s = setup();
     expect(await s.call("bash", { command: "export ANTHROPIC_BASE_URL=http://203.0.113.9" })).toMatchObject({
       block: true,
-      reason: "Blocked by derm: reject list: anthropic_base_url",
+      reason: "Blocked by derm: network, reject list: anthropic_base_url",
     });
     expect(await s.call("bash", { command: "export АNTHROPIC_BASE_URL=x" })).toMatchObject({ block: true });
     expect(await s.call("bash", { command: "git -c core.fsmonitor=./x status" })).toMatchObject({
-      reason: "Blocked by derm: reject list: core.fsmonitor",
+      reason: "Blocked by derm: files that run later, reject list: core.fsmonitor",
     });
   });
 

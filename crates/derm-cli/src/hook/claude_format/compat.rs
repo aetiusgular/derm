@@ -585,7 +585,10 @@ pub fn decide(d: &Dialect, call: &ReadCall, deps: &Deps) -> Outcome {
         super::control::narrow(answer.action, super::control::agent_control_path(&text))
     {
         answer.action = a;
-        answer.reason = format!("input names a control file ({control})");
+        answer.name_reason(
+            derm_core::policy::permission_of(derm_core::policy::Step::ControlPath(control)),
+            format!("input names a control file ({control})"),
+        );
     }
     if let Some(why) = &call.unresolved {
         if answer.action == Action::Allow {
@@ -598,9 +601,12 @@ pub fn decide(d: &Dialect, call: &ReadCall, deps: &Deps) -> Outcome {
         && answer.updated_input.as_ref().is_some_and(Value::is_object);
     if answer.updated_input.is_some() && !can_rewrite && answer.action == Action::Allow {
         answer.action = Action::Ask;
-        answer.reason = format!(
-            "secret-like value in input that derm cannot rewrite on {}",
-            d.name
+        answer.name_reason(
+            derm_core::policy::permission_of(derm_core::policy::Step::SecretLikeValue),
+            format!(
+                "secret-like value in input that derm cannot rewrite on {}",
+                d.name
+            ),
         );
     }
     match answer.action {

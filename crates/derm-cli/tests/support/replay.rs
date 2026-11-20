@@ -32,6 +32,12 @@ fn repo() -> PathBuf {
 }
 
 /// "derm: rule bash deny; x" -> "derm: rule bash"; "no rule (x)" -> "no rule".
+/// A permission's name after `derm: ` (permissions plan step P1, which came
+/// after these recordings: the TypeScript hooks named none) is passed over,
+/// so the two words compared are the recorded reason's own:
+/// "derm: network, reject list: x" -> "derm: reject list:". The names are
+/// held by `hook::claude_format::tests::the_printed_reason_names_the_permission`
+/// and derm-core's fixture tests.
 pub fn reason_head(s: &str) -> String {
     let t = s.trim();
     let (prefix, rest) = match t.strip_prefix("derm: ") {
@@ -40,6 +46,10 @@ pub fn reason_head(s: &str) -> String {
             Some(r) => ("derm asks: ", r),
             None => ("", t),
         },
+    };
+    let rest = match derm_core::policy::Permission::of_reason(rest) {
+        Some(p) => &rest[p.prefix().len()..],
+        None => rest,
     };
     let words: Vec<String> = rest
         .split(|c: char| c.is_whitespace() || c == ';' || c == '(')
@@ -493,5 +503,15 @@ mod tests {
         assert_eq!(reason_head("derm: rule bash deny; x"), "derm: rule bash");
         assert_eq!(reason_head("derm: rule bash"), "derm: rule bash");
         assert_eq!(reason_head("no rule (no policy file)"), "no rule");
+        assert_eq!(
+            reason_head("derm: network, reject list: anthropic_base_url"),
+            "derm: reject list:"
+        );
+        assert_eq!(
+            reason_head("derm asks: secrets, secret-like value in input"),
+            "derm asks: secret-like value"
+        );
+        // Only one of the eight names is passed over.
+        assert_eq!(reason_head("derm: secret, x y"), "derm: secret, x");
     }
 }

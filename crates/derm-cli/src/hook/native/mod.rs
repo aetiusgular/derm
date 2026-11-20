@@ -306,7 +306,10 @@ pub fn decide(d: &Dialect, input: &Input, read: &ReadCall, io: &dyn Io) -> Resul
         answer.updated_input = None;
         if answer.action == Action::Allow {
             answer.action = Action::Ask;
-            answer.reason = "secret-like value in input".into();
+            answer.name_reason(
+                derm_core::policy::permission_of(derm_core::policy::Step::SecretLikeValue),
+                "secret-like value in input".into(),
+            );
         }
     }
     if answer.action == Action::Allow {
@@ -321,9 +324,12 @@ pub fn decide(d: &Dialect, input: &Input, read: &ReadCall, io: &dyn Io) -> Resul
     // request 3). An input the core cannot read as text still fails here.
     input_text_for(&answer.normalized_tool, &read.tool_input)?;
     let cannot_rewrite = || {
-        format!(
-            "secret-like value in input that derm cannot rewrite on {}",
-            d.name
+        crate::gate::core::reason_of(
+            derm_core::policy::Step::SecretLikeValue,
+            &format!(
+                "secret-like value in input that derm cannot rewrite on {}",
+                d.name
+            ),
         )
     };
     if answer.action == Action::Allow && answer.updated_input.is_some() && !d.can_rewrite {
