@@ -78,6 +78,8 @@ pub(crate) struct Context<'a> {
     /// The policy file the gate would read.
     pub policy: &'a str,
     /// `derm run --account <slug>` (the accounts build, request L1-2).
+    /// Agent accounts are Linux only for now.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub account: Option<&'a str>,
 }
 

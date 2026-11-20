@@ -173,11 +173,6 @@ fn me() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-#[cfg(all(test, not(unix)))]
-fn me() -> u32 {
-    0
-}
-
 #[cfg(unix)]
 fn terminal() -> bool {
     // SAFETY: isatty reads only the descriptor number.

@@ -10,7 +10,9 @@ pub const AGENTS: &str = "/etc/derm/agents.json";
 /// block (`skgid`) matches.
 pub const GROUP: &str = "derm-agents";
 
-/// An account's name is `PREFIX` and its slug.
+/// An account's name is `PREFIX` and its slug. Read by the Linux reader
+/// only until macOS and Windows accounts are built (plan steps B and C).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const PREFIX: &str = "derm-";
 
 /// The longest slug: Windows takes a local account name of at most 20
