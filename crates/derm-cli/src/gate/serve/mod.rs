@@ -412,6 +412,7 @@ fn answer_of(r: &Value) -> Result<GateAnswer, String> {
         updated_input: None,
         redacted,
         ask_timeout_seconds,
+        permission: None,
     })
 }
 

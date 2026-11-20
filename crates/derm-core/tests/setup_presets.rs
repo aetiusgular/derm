@@ -3,7 +3,7 @@
 //! command rules (request W-1, `contracts/policy.md` section 7), against
 //! `tests/cli-contract/checks/W/preset-cases.json`.
 
-use derm_core::policy::{evaluate, parse, Action, Call};
+use derm_core::policy::{evaluate, parse, Action, Call, Permission};
 use serde_json::Value;
 
 const PRESETS: &[(&str, &str)] = &[
@@ -36,12 +36,61 @@ fn every_preset_parses_and_answers_its_cases() {
             let want: Action = serde_json::from_value(c["expect"]["action"].clone()).unwrap();
             let prefix = c["expect"]["reasonPrefix"].as_str().unwrap();
             assert_eq!(d.action, want, "case {} ({name}): {}", c["id"], d.reason);
+            // P1: the reason past its permission's name is what the case
+            // was written against.
+            let rest = match d.permission {
+                Some(p) => d.reason.strip_prefix(&p.prefix()).unwrap_or(&d.reason),
+                None => &d.reason,
+            };
             assert!(
-                d.reason.starts_with(prefix),
+                rest.starts_with(prefix),
                 "case {} ({name}): {:?} does not start with {prefix:?}",
                 c["id"],
                 d.reason
             );
         }
+    }
+}
+
+/// P1 against the default preset: its `derm` command rules are derm itself,
+/// a secret is secrets, an install is running downloaded code, a hook file
+/// is a file that runs later, and its other command rules carry none.
+#[test]
+fn the_default_presets_answers_carry_their_permissions() {
+    let cases: Value = serde_json::from_str(CASES).unwrap();
+    let doc: Value = serde_json::from_str(PRESETS[0].1).unwrap();
+    let policy = parse(&doc["policy"].to_string()).unwrap();
+    let want: &[(u64, Option<Permission>, &str)] = &[
+        (
+            5,
+            Some(Permission::DermItself),
+            "derm itself, rule bash derm setup",
+        ),
+        (
+            35,
+            Some(Permission::Secrets),
+            "secrets, input names a secret path",
+        ),
+        (
+            8,
+            Some(Permission::RunningDownloadedCode),
+            "running downloaded code, package install",
+        ),
+        (3, None, "rule bash git push"),
+        (4, None, "rule bash docker run --privileged"),
+        (12, None, "no rule"),
+        (37, None, "command changes the filesystem root"),
+    ];
+    for (id, permission, start) in want {
+        let c = cases["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == *id && c["preset"] == "workspace-write")
+            .unwrap_or_else(|| panic!("case {id}"));
+        let call: Call = serde_json::from_value(c["call"].clone()).unwrap();
+        let d = evaluate(&policy, &call);
+        assert_eq!(d.permission, *permission, "case {id}: {}", d.reason);
+        assert!(d.reason.starts_with(start), "case {id}: {}", d.reason);
     }
 }

@@ -383,6 +383,7 @@ mod tests {
             updated_input: None,
             redacted: 0,
             ask_timeout_seconds: 60,
+            permission: None,
         };
         let call = |cmd: &str| GateCall {
             harness: "claude-code".into(),

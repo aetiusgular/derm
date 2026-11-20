@@ -6,7 +6,7 @@
 //! matcher is `derm_core::policy::evaluate`; the redactor
 //! `derm_core::redact::hook`; the daemon client [`super::daemon`].
 
-use derm_core::policy::{self, Action, PolicyFile, SHELL_TOOLS};
+use derm_core::policy::{self, Action, Permission, PolicyFile, SHELL_TOOLS};
 use derm_core::redact::hook::{has_token_shape, redact_text, redact_value};
 use serde_json::{Map, Value};
 
@@ -60,6 +60,39 @@ pub struct GateAnswer {
     pub updated_input: Option<Value>,
     pub redacted: usize,
     pub ask_timeout_seconds: u32,
+    /// Which of derm's eight permissions the answer belongs to
+    /// (`derm_core::policy::Permission`), or `None`. When set, `reason`
+    /// starts with its name and a comma ([`GateAnswer::name_reason`]).
+    pub permission: Option<Permission>,
+}
+
+impl GateAnswer {
+    /// Sets the answer's reason to `why`, of `permission`'s when it has one
+    /// (`secrets, why`). A dialect that narrows the core's answer with its
+    /// own check sets its reason here, so the name comes first there too.
+    pub fn name_reason(&mut self, permission: Option<Permission>, why: String) {
+        self.permission = permission;
+        self.reason = match permission {
+            Some(p) => p.reason(&why),
+            None => why,
+        };
+    }
+
+    /// The answer with its permission's name first: an adjuster that put
+    /// its own words before a named reason (taint's `taint: ...; <reason>`)
+    /// has the name moved to the front, once, and nothing else changed.
+    pub fn named_first(mut self) -> Self {
+        if let Some(p) = self.permission {
+            let prefix = p.prefix();
+            if !self.reason.starts_with(&prefix) {
+                if let Some(i) = self.reason.find(&prefix) {
+                    self.reason.replace_range(i..i + prefix.len(), "");
+                }
+                self.reason = format!("{prefix}{}", self.reason);
+            }
+        }
+        self
+    }
 }
 
 /// A policy as a dialect holds it: the file and why it is empty, if it is.
@@ -249,6 +282,7 @@ fn decide_call_inner(loaded: &LoadedPolicy, call: &GateCall) -> GateAnswer {
                 updated_input: None,
                 redacted: 0,
                 ask_timeout_seconds,
+                permission: None,
             }
         }
     };
@@ -277,6 +311,7 @@ fn decide_call_inner(loaded: &LoadedPolicy, call: &GateCall) -> GateAnswer {
         updated_input: None,
         redacted: 0,
         ask_timeout_seconds,
+        permission: d.permission,
     };
     if answer.action == Action::Deny {
         return answer;

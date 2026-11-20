@@ -84,6 +84,7 @@ fn allow(tool: &str) -> GateAnswer {
         updated_input: None,
         redacted: 0,
         ask_timeout_seconds: 60,
+        permission: None,
     }
 }
 
@@ -208,35 +209,48 @@ fn after_a_fetch_a_protected_write_an_install_a_push_and_a_new_host_are_asked_ab
         "the fetch itself is the source: {}",
         f.reason
     );
-    for (n, tool, input, rule) in [
+    // P1: each rule's permission leads the reason (the table in
+    // `derm_core::policy::permission_of`).
+    use derm_core::policy::Permission;
+    for (n, tool, input, rule, permission) in [
         (
             2,
             "write",
             json!({"file_path": h.work().join(".husky/pre-commit"), "content": "x"}),
             "protected-write",
+            Permission::FilesThatRunLater,
         ),
         (
             3,
             "bash",
             json!({"command": "npm install left-pad"}),
             "install",
+            Permission::RunningDownloadedCode,
         ),
         (
             4,
             "bash",
             json!({"command": "git push origin main"}),
             "push",
+            Permission::ProjectFolder,
         ),
         (
             5,
             "bash",
             json!({"command": "curl -s https://new.test/x"}),
             "new-host",
+            Permission::Network,
         ),
     ] {
         let a = step(&h, tool, input, n, Action::Allow);
         assert_eq!(a.action, Action::Ask, "{rule}: {}", a.reason);
-        assert!(a.reason.starts_with("taint: "), "{rule}: {}", a.reason);
+        assert_eq!(a.permission, Some(permission), "{rule}: {}", a.reason);
+        assert!(
+            a.reason
+                .starts_with(&format!("{}taint: ", permission.prefix())),
+            "{rule}: {}",
+            a.reason
+        );
     }
     let ok = step(
         &h,

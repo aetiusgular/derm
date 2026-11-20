@@ -605,7 +605,9 @@ fn a_redacted_input_is_rewritten_for_a_tool_that_sends_it_out_and_asks_for_one_t
     );
     let a = decide_call(&p, &write, &no_env());
     assert_eq!(a.action, Action::Ask);
-    assert_eq!(a.reason, "secret-like value in input");
+    // P1: the redactor's ask is the secrets permission's.
+    assert_eq!(a.reason, "secrets, secret-like value in input");
+    assert_eq!(a.permission, Some(Permission::Secrets));
 }
 
 #[test]
@@ -636,6 +638,7 @@ fn the_approval_summary_is_redacted_and_cut_at_160() {
         updated_input: None,
         redacted: 0,
         ask_timeout_seconds: 1,
+        permission: None,
     };
     let s = approval_summary(&a, &json!({"command": "curl --password=hunter2   x"}));
     assert_eq!(
@@ -706,4 +709,90 @@ fn the_gate_serve_fixture_is_what_the_core_answers() {
         checked += 1;
     }
     assert_eq!(checked, 4);
+}
+
+/// P1: the matcher's permission reaches the gate's answer, its name leads
+/// the reason, and full access only adds its note after it.
+#[test]
+fn the_gates_answer_carries_the_matchers_permission() {
+    let p = policy(json!({"version": 1, "rules": [{"tool": "read", "action": "allow"}]}));
+    let c = call(
+        "claude-code",
+        "Read",
+        json!({"file_path": "/home/u/.aws/credentials"}),
+    );
+    let a = decide_call(&p, &c, &no_env());
+    assert_eq!(
+        (a.action, a.permission),
+        (Action::Ask, Some(Permission::Secrets))
+    );
+    assert_eq!(a.reason, "secrets, input names a secret path (.aws/)");
+    let full = GateCall {
+        full_access: Some(true),
+        ..c
+    };
+    let a = decide_call(&p, &full, &no_env());
+    assert_eq!(
+        (a.action, a.permission),
+        (Action::Deny, Some(Permission::Secrets))
+    );
+    assert_eq!(
+        a.reason,
+        format!("secrets, input names a secret path (.aws/); {FULL_ACCESS_NOTE}")
+    );
+    // An allow carries none.
+    let a = decide_call(
+        &p,
+        &call("claude-code", "Read", json!({"file_path": "src/main.rs"})),
+        &no_env(),
+    );
+    assert_eq!((a.action, a.permission), (Action::Allow, None));
+}
+
+/// P1: a shell call that stops derm's daemon is derm itself's.
+#[test]
+fn stopping_derms_daemon_is_derm_itself() {
+    let a = decide_call(
+        &allow_bash(),
+        &call(
+            "claude-code",
+            "Bash",
+            json!({"command": "pkill derm-daemon"}),
+        ),
+        &no_env(),
+    );
+    assert_eq!(
+        (a.action, a.permission),
+        (Action::Ask, Some(Permission::DermItself))
+    );
+    assert!(
+        a.reason
+            .starts_with("derm itself, stops derm's derm-daemon"),
+        "{}",
+        a.reason
+    );
+}
+
+/// P1: an adjuster's words before a named reason move behind the name, once.
+#[test]
+fn the_name_is_moved_to_the_front_once() {
+    let mut a = GateAnswer {
+        action: Action::Deny,
+        normalized_tool: "read".into(),
+        reason: "taint: after x; secrets, input names a secret path (.ssh/)".into(),
+        updated_input: None,
+        redacted: 0,
+        ask_timeout_seconds: 1,
+        permission: Some(Permission::Secrets),
+    };
+    a = a.named_first();
+    assert_eq!(
+        a.reason,
+        "secrets, taint: after x; input names a secret path (.ssh/)"
+    );
+    assert_eq!(a.clone().named_first().reason, a.reason, "idempotent");
+    a.name_reason(None, "no rule".into());
+    assert_eq!((a.reason.as_str(), a.permission), ("no rule", None));
+    a.name_reason(Some(Permission::Network), "x".into());
+    assert_eq!(a.reason, "network, x");
 }
