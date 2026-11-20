@@ -132,10 +132,58 @@ fn spec_all() -> Spec {
     }
 }
 
-fn spawn_role(test: &str, role: &str, spec: Option<&Spec>, env: &[(&str, String)]) -> Child {
+/// The test binary, where the roles' uid can run it: itself, or as root a
+/// hard link (a copy across file systems) in a fresh folder under the
+/// system's temporary folder, since a 0700 home keeps `nobody` from the
+/// build folder. Removed on drop.
+struct Exe {
+    path: std::path::PathBuf,
+    dir: Option<std::path::PathBuf>,
+}
+
+impl Exe {
+    fn new() -> Exe {
+        use std::os::unix::fs::PermissionsExt;
+        let me = std::env::current_exe().unwrap();
+        if role_uid().is_none() {
+            return Exe {
+                path: me,
+                dir: None,
+            };
+        }
+        let dir = std::path::Path::new("/tmp")
+            .join(format!("derm-llcheck-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("derm-test");
+        if std::fs::hard_link(&me, &path).is_err() {
+            std::fs::copy(&me, &path).unwrap();
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Exe {
+            path,
+            dir: Some(dir),
+        }
+    }
+}
+
+impl Drop for Exe {
+    fn drop(&mut self) {
+        if let Some(d) = &self.dir {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+}
+
+fn spawn_role(
+    exe: &Exe,
+    test: &str,
+    role: &str,
+    spec: Option<&Spec>,
+    env: &[(&str, String)],
+) -> Child {
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe().unwrap();
-    let mut c = Command::new(exe);
+    let mut c = Command::new(&exe.path);
     if let Some(u) = role_uid() {
         c.uid(u).gid(u);
     }
@@ -178,11 +226,12 @@ fn line_of(child: &mut Child) -> String {
     }
 }
 
-fn one(ll_a: bool, ll_b: bool) -> Value {
+fn one(exe: &Exe, ll_a: bool, ll_b: bool) -> Value {
     const T: &str = "llcheck_two_chats_as_one_uid_reach_nothing_of_each_other";
     let sock = format!("derm-llcheck-{}", uuid::Uuid::new_v4().simple());
     let spec = spec_all();
     let mut b = spawn_role(
+        exe,
         T,
         "b",
         ll_b.then_some(&spec),
@@ -190,6 +239,7 @@ fn one(ll_a: bool, ll_b: bool) -> Value {
     );
     assert_eq!(line_of(&mut b), "up");
     let mut a = spawn_role(
+        exe,
         T,
         "a",
         ll_a.then_some(&spec),
@@ -230,6 +280,7 @@ fn llcheck_two_chats_as_one_uid_reach_nothing_of_each_other() {
     // ptrace attach and process_vm_readv also pass Yama; B allows any
     // tracer, which Yama 2 and 3 ignore.
     let attach_ok = yama() <= 1;
+    let exe = Exe::new();
     let rows = [
         ("none/none", false, false),
         ("ll/ll", true, true),
@@ -237,7 +288,7 @@ fn llcheck_two_chats_as_one_uid_reach_nothing_of_each_other() {
         ("none/ll", false, true),
     ];
     for (name, ll_a, ll_b) in rows {
-        let got = one(ll_a, ll_b);
+        let got = one(&exe, ll_a, ll_b);
         let a_in_domain = ll_a;
         // A in a domain reaches B only when B is in a sub-domain of A's,
         // which none of these rows has; A outside any domain reaches all.
@@ -291,10 +342,17 @@ fn a_chats_domain_reaches_its_own_folders_and_no_other_chats() {
         eprintln!("not run: this kernel has no Landlock");
         return;
     }
-    // Outside /tmp, which every chat's domain may write.
-    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target")
-        .join(format!("llcheck-fs-{}", uuid::Uuid::new_v4().simple()));
+    // Outside /tmp, which every chat's domain may write; as root under
+    // /run (no domain grants it), which `nobody` can pass through where a
+    // 0700 home stops it.
+    let name = format!("llcheck-fs-{}", uuid::Uuid::new_v4().simple());
+    let base = if role_uid().is_some() {
+        std::path::Path::new("/run").join(name)
+    } else {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(name)
+    };
     for d in ["bridge-a", "bridge-b", "chat-a", "chat-b", "home", "person"] {
         std::fs::create_dir_all(base.join(d)).unwrap();
     }
@@ -325,10 +383,11 @@ fn a_chats_domain_reaches_its_own_folders_and_no_other_chats() {
     // The test binary stands in for the harness, so its folder is the
     // harness's install.
     let mut spec = spec;
-    let exe = std::env::current_exe().unwrap();
+    let exe = Exe::new();
     spec.exec
-        .push(exe.parent().unwrap().to_string_lossy().into_owned());
+        .push(exe.path.parent().unwrap().to_string_lossy().into_owned());
     let mut c = spawn_role(
+        &exe,
         T,
         "fs",
         Some(&spec),
