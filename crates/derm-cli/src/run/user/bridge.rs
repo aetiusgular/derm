@@ -58,6 +58,7 @@ pub struct Bridge {
 }
 
 impl Bridge {
+    #[cfg(any(test, target_os = "linux"))]
     pub fn dir(&self) -> &Path {
         &self.dir
     }

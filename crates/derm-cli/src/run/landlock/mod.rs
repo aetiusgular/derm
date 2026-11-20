@@ -21,13 +21,15 @@
 //! argv: `/proc/<pid>/cmdline` stays readable across domains (note CB
 //! section 6, reading 3). It holds paths only, and is removed before the
 //! harness starts.
+//!
+//! Linux only: `run/user/mod.rs` declares this module for Linux, where
+//! agent accounts exist.
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(target_os = "linux")]
 mod sys;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests;
 
 /// The variable that carries a [`Spec`] from `derm run` to [`enter_main`].
@@ -141,21 +143,13 @@ pub(crate) fn chat_spec(p: &ChatPaths) -> Spec {
 /// The kernel's Landlock ABI, or 0 when it has none (not built, not in the
 /// LSM list, or not Linux).
 pub(crate) fn abi() -> i64 {
-    #[cfg(target_os = "linux")]
-    {
-        sys::abi()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        0
-    }
+    sys::abi()
 }
 
 /// Puts this thread (and every process it later starts) in a new domain
 /// built from `spec`, with no_new_privs set. Best effort per ABI, as the
 /// kernel docs' compatibility example does, except where the spec requires
 /// what the kernel lacks: then it refuses and changes nothing.
-#[cfg(target_os = "linux")]
 pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::fs::OpenOptionsExt;
@@ -264,7 +258,6 @@ pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
     Ok(Applied { abi, fs, scoped })
 }
 
-#[cfg(target_os = "linux")]
 fn set_no_new_privs() -> Result<(), String> {
     // SAFETY: prctl with integer arguments.
     let r = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
@@ -310,7 +303,6 @@ pub(crate) fn enter_main(args: &[String]) -> u8 {
     enter(&spec, argv)
 }
 
-#[cfg(target_os = "linux")]
 fn enter(spec: &Spec, argv: &[String]) -> u8 {
     use std::os::unix::process::CommandExt;
     if let Err(why) = apply(spec) {
@@ -323,13 +315,4 @@ fn enter(spec: &Spec, argv: &[String]) -> u8 {
         .exec();
     eprintln!("derm {SUBCOMMAND}: {}: {err}", argv[0]);
     127
-}
-
-#[cfg(not(target_os = "linux"))]
-fn enter(_spec: &Spec, argv: &[String]) -> u8 {
-    eprintln!(
-        "derm {SUBCOMMAND}: Landlock is Linux only; not starting {}",
-        argv[0]
-    );
-    126
 }

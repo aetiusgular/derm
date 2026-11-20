@@ -218,6 +218,7 @@ pub struct Account {
 
 /// `getpwnam_r(3)`.
 /// The account with `uid`, from the password database.
+#[cfg(target_os = "linux")]
 pub fn account_by_uid(uid: u32) -> Option<Account> {
     let mut buf = vec![0u8; 16 * 1024];
     // SAFETY: as in `account`.

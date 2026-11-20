@@ -46,17 +46,18 @@ use serde_json::Value;
 
 use super::plan::Plan;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub(crate) mod accounts;
 #[cfg(unix)]
 pub(crate) mod anchor;
 #[cfg(unix)]
 pub(crate) mod bridge;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod chat;
 /// The chat's Landlock domain (accounts lane L1). Declared here, not in
 /// `run/mod.rs`, which no lane owns; integration may move the line
 /// (`plans/parallel/acct_L1.md`, request L1-1).
+#[cfg(target_os = "linux")]
 #[path = "../landlock/mod.rs"]
 pub(crate) mod landlock;
 
@@ -108,12 +109,15 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
     // The accounts build: one account per subscription, one Landlock domain
     // per chat (`chat.rs`). `/etc/derm/agents.json` replaces lane V's file
     // when it names any account, or when the run names one.
-    let (found, warn) = accounts::load_default();
-    if let Some(w) = warn {
-        eprintln!("derm run: {w}");
-    }
-    if !found.is_empty() || accounts::requested().is_some() {
-        return chat::wrap(launch, ctx, &found, &mut chat::RealPerson::new());
+    #[cfg(target_os = "linux")]
+    {
+        let (found, warn) = accounts::load_default();
+        if let Some(w) = warn {
+            eprintln!("derm run: {w}");
+        }
+        if !found.is_empty() || accounts::requested().is_some() {
+            return chat::wrap(launch, ctx, &found, &mut chat::RealPerson::new());
+        }
     }
     let me = euid();
     let entry = match anchor::for_owner(me) {
