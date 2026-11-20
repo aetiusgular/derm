@@ -79,10 +79,36 @@ pub struct Plan {
 
 /// Whether a chat with this tier and boundary is brokered (section 8.1).
 pub fn brokered(tier: &str, boundary: &str) -> bool {
-    boundary != "sbx" && (tier == "standard" || boundary == "srt")
+    brokered_for(tier, boundary, None)
 }
 
+/// [`brokered`], and a chat run as an agent account with no other boundary
+/// (the accounts build, lane L4; note CB 2.1 and 4.1, reading 2): the
+/// account's group reaches nothing but loopback (lane L2's nftables table),
+/// so the chat's API keys go out only through derm-egress, as under the
+/// Standard tier. Never under sbx (case 218).
+pub fn brokered_for(tier: &str, boundary: &str, account: Option<&str>) -> bool {
+    boundary != "sbx"
+        && (tier == "standard" || boundary == "srt" || (boundary == "none" && account.is_some()))
+}
+
+/// What a broker may not carry in an agent account's chat: a Claude
+/// subscription token (`claude setup-token`'s, which Claude Code reads from
+/// this variable: https://code.claude.com/docs/en/team). Anthropic's terms
+/// say a developer "may not collect, store, or intermediate Claude.ai
+/// credentials or session tokens" (note CB 4.1, reading 1); the account
+/// signs in itself with `derm agents login claude-code`.
+pub const SUBSCRIPTION_VARIABLES: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN"];
+
 pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
+    plan_for(i, None)
+}
+
+/// [`plan`] for a chat run as the agent account `account`
+/// (`derm-agent-<slug>`), when it is one. Called by `run/broker.rs` once it
+/// passes the chat's account (lane L4's request to integration).
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn plan_for(i: &Input<'_>, account: Option<&str>) -> Result<Plan, String> {
     let mut p = Plan::default();
     if i.secrets.is_empty() {
         return Ok(p);
@@ -104,7 +130,19 @@ pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
         ));
         return Ok(p);
     }
-    if !brokered(i.tier, i.boundary) {
+    if let Some(a) = account.filter(|_| i.boundary != "sbx") {
+        if let Some((e, _)) = i
+            .secrets
+            .iter()
+            .find(|(e, _)| SUBSCRIPTION_VARIABLES.contains(&secrets::variable(e).as_str()))
+        {
+            return Err(format!(
+                "secret {} would put a Claude subscription token in {a}'s chat, which derm does not carry (Anthropic's terms, note CB 4.1); sign the account in with `derm agents login claude-code` instead",
+                e.id
+            ));
+        }
+    }
+    if !brokered_for(i.tier, i.boundary, account) {
         p.remove = env_vars;
         p.line = Some(format!(
             "secrets {}: not brokered in this chat (only under --tier standard or --boundary srt); their variables are left out",
@@ -165,9 +203,13 @@ pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
         .map(|(e, _)| secrets::variable(e))
         .collect();
     p.line = Some(format!(
-        "secrets {} brokered by derm-egress at {url} ({}); placeholders in {}; this chat trusts derm's CA sha256 {} through {}",
+        "secrets {} brokered by derm-egress at {url} ({}{}); placeholders in {}; this chat trusts derm's CA sha256 {} through {}",
         ids.join(", "),
         if i.boundary == "srt" { "srt's parentProxy" } else { "the harness's HTTPS_PROXY" },
+        match account.filter(|_| i.boundary == "none") {
+            Some(a) => format!(", as {a}, whose own network is loopback only"),
+            None => String::new(),
+        },
         vars.join(", "),
         i.fingerprint.get(..16).unwrap_or(i.fingerprint),
         trust.iter().take(6).map(|(k, _)| *k).collect::<Vec<_>>().join(", "),

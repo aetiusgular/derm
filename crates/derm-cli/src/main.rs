@@ -9,6 +9,9 @@
 //! integration.
 
 mod acp;
+// The accounts build, lane L4 (`agents/`; plans/parallel_build_accounts.md),
+// a request for integration: the lane needs the module declared to build it.
+mod agents;
 // Wave 6 (the wave 6 base): `audit/` lane 6E, `init/` lane 6B, `secret/`
 // lane 6C.
 mod audit;
@@ -91,6 +94,7 @@ fn dispatch(args: &[String]) -> u8 {
         Some("init") => init::main(&args[1..]),
         Some("audit") => audit::main(&args[1..]),
         Some("secret") => secret::main(&args[1..]),
+        Some("agents") => agents::main(&args[1..]),
         Some("--version") => {
             // ` (<commit>)` on any build but the release's own tag
             // (`build.rs`; BW6-9, MW6-1, WW6-10).
@@ -102,7 +106,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|agents|--version> ...");
             2
         }
     }
@@ -136,7 +140,7 @@ mod tests {
         // integration w2). `watch::status` has its own tests on fixtures.
         for cmd in [
             "connect", "run", "watch", "cu", "acp", "doctor", "setup", "hook", "gate", "enter",
-            "kit", "init", "audit", "secret",
+            "kit", "init", "audit", "secret", "agents",
         ] {
             assert_eq!(dispatch(&s(&[cmd])), 2, "{cmd}");
         }
