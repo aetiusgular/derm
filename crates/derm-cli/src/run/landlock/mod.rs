@@ -152,15 +152,129 @@ pub(crate) fn abi() -> i64 {
 }
 
 /// Puts this thread (and every process it later starts) in a new domain
-/// built from `spec`, with no_new_privs set. Stub: restricts nothing yet.
+/// built from `spec`, with no_new_privs set. Best effort per ABI, as the
+/// kernel docs' compatibility example does, except where the spec requires
+/// what the kernel lacks: then it refuses and changes nothing.
 #[cfg(target_os = "linux")]
 pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
-    let _ = spec;
-    Ok(Applied {
-        abi: abi(),
-        fs: 0,
-        scoped: false,
-    })
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let abi = abi();
+    if abi < 1 {
+        if spec.require_landlock {
+            return Err("this kernel has no Landlock (not built, or not in the lsm= list)".into());
+        }
+        set_no_new_privs()?;
+        return Ok(Applied {
+            abi,
+            fs: 0,
+            scoped: false,
+        });
+    }
+    let scoped = abi >= SCOPES_ABI;
+    if spec.require_scopes && !scoped {
+        return Err(format!(
+            "Landlock ABI {abi} has no signal or abstract-socket scope (ABI {SCOPES_ABI}, Linux 6.12)"
+        ));
+    }
+    let fs = sys::fs_rights(abi);
+    let attr = sys::RulesetAttr {
+        handled_access_fs: fs,
+        handled_access_net: 0,
+        scoped: if scoped {
+            sys::SCOPE_ABSTRACT_UNIX_SOCKET | sys::SCOPE_SIGNAL
+        } else {
+            0
+        },
+    };
+    // SAFETY: `attr` lives across the call; the size is the part of it the
+    // kernel at this ABI reads.
+    let rs = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            &attr as *const sys::RulesetAttr,
+            sys::attr_size(abi),
+            0u32,
+        )
+    };
+    if rs < 0 {
+        return Err(format!(
+            "landlock_create_ruleset: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: the kernel returned a new descriptor that nothing else owns.
+    let ruleset = unsafe { OwnedFd::from_raw_fd(rs as i32) };
+    let read = sys::FS_READ_FILE | sys::FS_READ_DIR;
+    let groups: [(&[String], u64); 3] = [
+        (&spec.read, read),
+        (&spec.exec, read | sys::FS_EXECUTE),
+        (&spec.write, fs),
+    ];
+    for (paths, rights) in groups {
+        for p in paths {
+            if !p.starts_with('/') {
+                return Err(format!("{p:?} is not an absolute path"));
+            }
+            // A path that is not there gets no rule, so it stays refused.
+            let Ok(f) = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+                .open(p)
+            else {
+                continue;
+            };
+            let is_dir = f.metadata().map(|m| m.is_dir()).unwrap_or(false);
+            let allowed = rights & fs & if is_dir { u64::MAX } else { sys::FS_FILE };
+            if allowed == 0 {
+                continue;
+            }
+            let rule = sys::PathBeneathAttr {
+                allowed_access: allowed,
+                parent_fd: f.as_raw_fd(),
+            };
+            // SAFETY: `rule` and both descriptors live across the call.
+            let r = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_add_rule,
+                    ruleset.as_raw_fd(),
+                    sys::RULE_PATH_BENEATH,
+                    &rule as *const sys::PathBeneathAttr,
+                    0u32,
+                )
+            };
+            if r != 0 {
+                return Err(format!(
+                    "landlock_add_rule {p}: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+        }
+    }
+    set_no_new_privs()?;
+    // SAFETY: a ruleset descriptor and no flags.
+    let r = unsafe { libc::syscall(libc::SYS_landlock_restrict_self, ruleset.as_raw_fd(), 0u32) };
+    if r != 0 {
+        return Err(format!(
+            "landlock_restrict_self: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(Applied { abi, fs, scoped })
+}
+
+#[cfg(target_os = "linux")]
+fn set_no_new_privs() -> Result<(), String> {
+    // SAFETY: prctl with integer arguments.
+    let r = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if r != 0 {
+        return Err(format!(
+            "PR_SET_NO_NEW_PRIVS: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
 }
 
 /// `derm landlock -- <program> <args>`: run as the account by `sudo`;

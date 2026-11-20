@@ -133,8 +133,12 @@ fn spec_all() -> Spec {
 }
 
 fn spawn_role(test: &str, role: &str, spec: Option<&Spec>, env: &[(&str, String)]) -> Child {
+    use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe().unwrap();
     let mut c = Command::new(exe);
+    if let Some(u) = role_uid() {
+        c.uid(u).gid(u);
+    }
     c.args([
         "--exact",
         &test_name(test),
@@ -196,6 +200,15 @@ fn one(ll_a: bool, ll_b: bool) -> Value {
     let _ = b.kill();
     let _ = b.wait();
     got
+}
+
+/// As uid 0 a domain does not stop a read of a sibling's
+/// `/proc/<pid>/environ` (run with note CB's own C program on Linux 6.18,
+/// ABI 7: reached as root, refused as a plain user; the kernel's reason is
+/// not read). Agent accounts are never uid 0 (`anchor::refusal`), so a run
+/// as root puts both roles in `nobody`, one plain uid, as the note did.
+fn role_uid() -> Option<u32> {
+    (derm_core::platform::effective_user() == 0).then_some(65534)
 }
 
 fn yama() -> u32 {
@@ -293,6 +306,13 @@ fn a_chats_domain_reaches_its_own_folders_and_no_other_chats() {
     ] {
         std::fs::write(base.join(f), b"t").unwrap();
     }
+    if let Some(u) = role_uid() {
+        for d in [
+            "", "bridge-a", "bridge-b", "chat-a", "chat-b", "home", "person",
+        ] {
+            std::os::unix::fs::chown(base.join(d), Some(u), Some(u)).unwrap();
+        }
+    }
     let base = std::fs::canonicalize(&base).unwrap();
     let s = |p: &str| base.join(p).to_string_lossy().into_owned();
     let spec = chat_spec(&ChatPaths {
@@ -302,6 +322,12 @@ fn a_chats_domain_reaches_its_own_folders_and_no_other_chats() {
         path: "/usr/local/bin:/usr/bin:/bin",
         require_scopes: false,
     });
+    // The test binary stands in for the harness, so its folder is the
+    // harness's install.
+    let mut spec = spec;
+    let exe = std::env::current_exe().unwrap();
+    spec.exec
+        .push(exe.parent().unwrap().to_string_lossy().into_owned());
     let mut c = spawn_role(
         T,
         "fs",
@@ -328,4 +354,45 @@ fn the_helper_refuses_a_missing_or_bad_spec_and_a_usage_error() {
     assert_eq!(enter_main(&[]), 2);
     assert_eq!(enter_main(&["--".into()]), 2);
     assert_eq!(enter_main(&["/bin/true".into()]), 2);
+}
+
+#[test]
+fn the_rights_and_the_attribute_follow_the_abi() {
+    assert_eq!(sys::fs_rights(1), (1 << 13) - 1);
+    assert_eq!(sys::fs_rights(2), (1 << 14) - 1);
+    assert_eq!(sys::fs_rights(4), (1 << 15) - 1);
+    assert_eq!(sys::fs_rights(5), (1 << 16) - 1);
+    assert_eq!(sys::fs_rights(7), (1 << 16) - 1);
+    assert_eq!(
+        [1, 3, 4, 5, 6, 7].map(sys::attr_size),
+        [8, 8, 16, 16, 24, 24]
+    );
+}
+
+#[test]
+fn a_chats_spec_holds_no_root_and_no_other_chat() {
+    let s = chat_spec(&ChatPaths {
+        folders: &["/srv/agents/p".into()],
+        account_home: "/var/lib/derm/agents/max",
+        bridge: Some("/run/derm-agent/1000/c-1-abc"),
+        path: "/var/lib/derm/agents/max/.local/bin:/usr/bin:relative",
+        require_scopes: true,
+    });
+    for v in [&s.read, &s.exec, &s.write] {
+        assert!(!v.iter().any(|p| p == "/"), "{v:?}");
+        assert!(
+            !v.iter()
+                .any(|p| p == "/run/derm-agent" || p.starts_with("/home")),
+            "{v:?}"
+        );
+    }
+    assert!(s.read.contains(&"/run/derm-agent/1000/c-1-abc".to_string()));
+    assert!(!s.write.iter().any(|p| p.starts_with("/run/derm-agent")));
+    assert!(s.write.contains(&"/srv/agents/p".to_string()));
+    assert!(s.write.contains(&"/var/lib/derm/agents/max".to_string()));
+    assert!(s
+        .exec
+        .contains(&"/var/lib/derm/agents/max/.local/bin".to_string()));
+    assert!(!s.exec.iter().any(|p| p == "relative"));
+    assert!(s.require_landlock && s.require_scopes);
 }
