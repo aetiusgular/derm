@@ -47,9 +47,13 @@ use serde_json::Value;
 use super::plan::Plan;
 
 #[cfg(unix)]
+pub(crate) mod accounts;
+#[cfg(unix)]
 pub(crate) mod anchor;
 #[cfg(unix)]
 pub(crate) mod bridge;
+#[cfg(unix)]
+mod chat;
 /// The chat's Landlock domain (accounts lane L1). Declared here, not in
 /// `run/mod.rs`, which no lane owns; integration may move the line
 /// (`plans/parallel/acct_L1.md`, request L1-1).
@@ -75,11 +79,11 @@ pub(crate) struct Context<'a> {
 
 /// Where `sudo` and `env` must be: root's, never found on `PATH` (case 37).
 #[cfg(unix)]
-const SUDO: &str = "/usr/bin/sudo";
+pub(super) const SUDO: &str = "/usr/bin/sudo";
 #[cfg(unix)]
-const ENV: &str = "/usr/bin/env";
+pub(super) const ENV: &str = "/usr/bin/env";
 #[cfg(unix)]
-const SH: &str = "/bin/sh";
+pub(super) const SH: &str = "/bin/sh";
 /// The person may say a chat runs as them anyway (`DERM_RUN_AS=you`); the
 /// chat is then unbounded as them, and the daemon's person check applies.
 #[cfg(unix)]
@@ -87,7 +91,7 @@ const RUN_AS_VAR: &str = "DERM_RUN_AS";
 
 /// The open bridge, kept until `finish` (or the process's exit).
 #[cfg(unix)]
-static BRIDGE: Mutex<Option<bridge::Bridge>> = Mutex::new(None);
+pub(super) static BRIDGE: Mutex<Option<bridge::Bridge>> = Mutex::new(None);
 
 /// Starts the harness as the agents' user when one is set up (module text).
 #[cfg(unix)]
@@ -100,6 +104,16 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
     if run_as_you() {
         eprintln!("derm run: {RUN_AS_VAR}=you: the harness runs as you with no boundary; an agent can read daemon.token, so a yes for it needs your password (S2)");
         return Ok(None);
+    }
+    // The accounts build: one account per subscription, one Landlock domain
+    // per chat (`chat.rs`). `/etc/derm/agents.json` replaces lane V's file
+    // when it names any account, or when the run names one.
+    let (found, warn) = accounts::load_default();
+    if let Some(w) = warn {
+        eprintln!("derm run: {w}");
+    }
+    if !found.is_empty() || accounts::requested().is_some() {
+        return chat::wrap(launch, ctx, &found, &mut chat::RealPerson::new());
     }
     let me = euid();
     let entry = match anchor::for_owner(me) {
@@ -221,7 +235,7 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
 
 /// The variables that point the gate inside at the bridge.
 #[cfg(unix)]
-fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, String)> {
+pub(super) fn bridge_env(b: &bridge::Bridge, env: &[(String, String)]) -> Vec<(String, String)> {
     let path = |p: &Path| p.to_string_lossy().into_owned();
     let mut set = vec![
         ("DERM_DAEMON_SOCKET".to_string(), path(b.socket())),
@@ -245,7 +259,7 @@ pub(crate) fn finish() {
 }
 
 #[cfg(unix)]
-extern "C" fn finish_at_exit() {
+pub(super) extern "C" fn finish_at_exit() {
     finish();
 }
 
@@ -255,7 +269,7 @@ fn run_as_you() -> bool {
 }
 
 #[cfg(unix)]
-fn euid() -> u32 {
+pub(super) fn euid() -> u32 {
     derm_core::platform::effective_user()
 }
 
@@ -263,7 +277,7 @@ fn euid() -> u32 {
 /// folders of root's no one else can write; `setid`: it must be set-user-id
 /// (sudo). Returns the resolved path.
 #[cfg(unix)]
-fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
+pub(super) fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
     use std::os::unix::fs::MetadataExt;
     let real = std::fs::canonicalize(path).map_err(|e| format!("{path}: {e}"))?;
     let m = std::fs::metadata(&real).map_err(|e| format!("{}: {e}", real.display()))?;
@@ -288,7 +302,7 @@ fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
 /// `XDG_*`, `SUDO_*` or the loader's: those describe the person, are set for
 /// the agents' user, or change what a program loads.
 #[cfg(unix)]
-fn keep(name: &str) -> bool {
+pub(super) fn keep(name: &str) -> bool {
     const NEVER: &[&str] = &[
         "HOME",
         "PATH",
@@ -311,7 +325,7 @@ fn keep(name: &str) -> bool {
 
 /// The terminal's variables, kept when derm run has them.
 #[cfg(unix)]
-const TERMINAL: &[&str] = &[
+pub(super) const TERMINAL: &[&str] = &[
     "TERM",
     "COLORTERM",
     "LANG",
@@ -363,14 +377,14 @@ fn rewrite(
 /// One check run as the agents' user, through the route the harness will
 /// take. The script is fixed; every path goes in as an argument.
 #[cfg(unix)]
-struct Probe<'a> {
-    sudo: &'a str,
-    sh: &'a str,
-    user: &'a str,
-    path: &'a str,
-    program: &'a str,
-    hidden: &'a [String],
-    writable: &'a [String],
+pub(super) struct Probe<'a> {
+    pub sudo: &'a str,
+    pub sh: &'a str,
+    pub user: &'a str,
+    pub path: &'a str,
+    pub program: &'a str,
+    pub hidden: &'a [String],
+    pub writable: &'a [String],
 }
 
 /// Prints `<kind>\t<path>\0` per finding, then `done\t-\0`. `reach`: a path
@@ -397,7 +411,7 @@ out done -
 
 #[derive(Debug, Default, PartialEq)]
 #[cfg(unix)]
-struct Found {
+pub(super) struct Found {
     reach: Vec<String>,
     nowrite: Vec<String>,
     prog_missing: bool,
@@ -424,7 +438,7 @@ impl Probe<'_> {
         a
     }
 
-    fn run(&self) -> Result<Found, String> {
+    pub(super) fn run(&self) -> Result<Found, String> {
         let out = Command::new(self.sudo)
             .args(self.argv())
             .current_dir("/")
@@ -470,7 +484,7 @@ fn parse(out: &[u8]) -> Option<Found> {
 
 #[cfg(unix)]
 impl Found {
-    fn refusal(&self, user: &str, program: &str) -> Option<String> {
+    pub(super) fn refusal(&self, user: &str, program: &str) -> Option<String> {
         if !self.reach.is_empty() {
             return Some(format!(
                 "{user} can reach {}: it could read the daemon's token or your logins. Make your home 0750 or tighter (chmod o-rx ~), and check the folders above",

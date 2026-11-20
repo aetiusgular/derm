@@ -281,6 +281,8 @@ fn set_no_new_privs() -> Result<(), String> {
 /// reads the spec, restricts itself, execs the program with the spec
 /// variable removed. Exit codes: 126 when the domain cannot be made, 127
 /// when the program cannot be started, 2 for a usage error.
+// No caller until `main.rs` dispatches `derm landlock` (request L1-3).
+#[allow(dead_code)]
 pub(crate) fn enter_main(args: &[String]) -> u8 {
     let argv = match args.first().map(String::as_str) {
         Some("--") if args.len() > 1 => &args[1..],
