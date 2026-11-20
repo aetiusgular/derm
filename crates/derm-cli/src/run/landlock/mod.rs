@@ -159,7 +159,6 @@ pub(crate) fn abi() -> i64 {
 /// what the kernel lacks: then it refuses and changes nothing.
 pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::fs::OpenOptionsExt;
 
     let abi = abi();
     if abi < 1 {
@@ -219,11 +218,7 @@ pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
                 return Err(format!("{p:?} is not an absolute path"));
             }
             // A path that is not there gets no rule, so it stays refused.
-            let Ok(f) = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-                .open(p)
-            else {
+            let Some(f) = rule_fd(p)? else {
                 continue;
             };
             let is_dir = f.metadata().map(|m| m.is_dir()).unwrap_or(false);
@@ -263,6 +258,77 @@ pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
         ));
     }
     Ok(Applied { abi, fs, scoped })
+}
+
+/// The descriptor a rule for `p` is made from, or `None` when `p` is not
+/// there (no rule, so it stays refused).
+///
+/// Review AI-2 (accounts integration, reproduced by the reviewer): a rule
+/// opened with links followed covers the link's target, so a chat that
+/// replaces a folder of the account's (`~/.local/bin`, a chat folder) with a
+/// link to `/run/derm-agent/<uid>` widened the next chat's domain to every
+/// chat's bridge and `chat.token`. Every part of `p` that is a link must be
+/// root's (merged /usr's `/bin -> usr/bin`; a chat cannot make one), and the
+/// real path is then opened with `openat2(RESOLVE_NO_SYMLINKS)`, so a link
+/// put there after the check fails the open instead of being followed
+/// (openat2(2): Linux 5.6, before Landlock's 5.13; libc 0.2.189's
+/// `SYS_openat2`, 437 on x86_64 and aarch64, and `RESOLVE_NO_SYMLINKS`
+/// 0x04, read).
+pub(crate) fn rule_fd(p: &str) -> Result<Option<std::fs::File>, String> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
+    let path = Path::new(p);
+    let mut at = PathBuf::new();
+    for c in path.components() {
+        at.push(c);
+        match std::fs::symlink_metadata(&at) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("{}: {e}", at.display())),
+            Ok(m) if m.file_type().is_symlink() && m.uid() != 0 => {
+                return Err(format!(
+                    "{} is a link that root does not own (uid {}); a chat may have put it there, so its target gets no rule. Remove it, or give the real path",
+                    at.display(),
+                    m.uid()
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
+    let real = match std::fs::canonicalize(path) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{p}: {e}")),
+    };
+    let c = std::ffi::CString::new(real.as_os_str().as_encoded_bytes())
+        .map_err(|_| format!("{p}: a NUL in the path"))?;
+    // SAFETY: `open_how` is plain integers (libc marks it non-exhaustive),
+    // and zero is the kernel's "nothing asked" for each field.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
+    how.resolve = libc::RESOLVE_NO_SYMLINKS;
+    // SAFETY: `c` and `how` live across the call; the size is `how`'s.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            c.as_ptr(),
+            &how as *const libc::open_how,
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        let e = std::io::Error::last_os_error();
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(format!(
+            "{} (for {p}): {e}; a link may have been put there since it was checked",
+            real.display()
+        ));
+    }
+    // SAFETY: the kernel returned a new descriptor that nothing else owns.
+    Ok(Some(unsafe { std::fs::File::from_raw_fd(fd as i32) }))
 }
 
 fn set_no_new_privs() -> Result<(), String> {

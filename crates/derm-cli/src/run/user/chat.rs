@@ -355,7 +355,7 @@ const ROOT_COPIES: &[&str] = &["/usr/local/bin/derm", "/usr/bin/derm"];
 /// derm's own binary, from a place only root can change and every user can
 /// run: this one, or a root copy with the same bytes (the helper's spec
 /// format is this build's).
-fn helper_binary() -> Result<String, String> {
+pub(crate) fn helper_binary() -> Result<String, String> {
     let me = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("derm's own path: {e}"))?;

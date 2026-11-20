@@ -53,7 +53,7 @@ pub(crate) mod anchor;
 #[cfg(unix)]
 pub(crate) mod bridge;
 #[cfg(target_os = "linux")]
-mod chat;
+pub(crate) mod chat;
 /// The chat's Landlock domain (accounts lane L1). Declared here, not in
 /// `run/mod.rs`, which no lane owns; integration may move the line
 /// (`plans/parallel/acct_L1.md`, request L1-1).
@@ -114,19 +114,38 @@ pub(crate) fn chat_account(
     if boundary != "none" || run_as_you() {
         return Ok(None);
     }
-    let (found, warn) = accounts::load_default();
-    if let Some(w) = warn {
-        eprintln!("derm run: {w}");
-    }
-    if found.is_empty() && flag.is_none() {
-        return Ok(None);
-    }
+    let (found, refused) = accounts::load_default();
     let settings = Path::new(home).join(".derm").join("settings.json");
     let (default, warn) = accounts::default_from(&settings);
     if let Some(w) = warn {
         eprintln!("derm run: {w}");
     }
-    accounts::choose(&found, flag, default.as_deref())
+    decide_account(&found, refused.as_deref(), flag, default.as_deref())
+}
+
+/// [`chat_account`]'s decision. Review AI-6: a refused accounts file (a
+/// link, a mode others can write, a newer version, a field this derm does
+/// not know) counted as "no accounts", and the chat then ran as the person
+/// with only a warning, even with `agents.default` set. A file that is there
+/// and refused now stops the start, as a broken policy file does (case
+/// 148), and so does a default that names an account where none exist.
+#[cfg(target_os = "linux")]
+pub(crate) fn decide_account(
+    found: &[accounts::Account],
+    refused: Option<&str>,
+    flag: Option<&str>,
+    default: Option<&str>,
+) -> Result<Option<accounts::Account>, (u8, String)> {
+    if let Some(why) = refused {
+        return Err((
+            1,
+            format!("{why}; not starting the harness (a chat does not run as you because the agent accounts file is unreadable)"),
+        ));
+    }
+    if found.is_empty() && flag.is_none() && default.is_none() {
+        return Ok(None);
+    }
+    accounts::choose(found, flag, default)
         .map(|a| a.cloned())
         .map_err(|e| (1, format!("{e}; not starting the harness")))
 }
@@ -150,7 +169,8 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
     {
         let (found, warn) = accounts::load_default();
         if let Some(w) = warn {
-            eprintln!("derm run: {w}");
+            // Review AI-6: never fall back to running as the person.
+            return Err((1, format!("{w}; not starting the harness")));
         }
         if !found.is_empty() || ctx.account.is_some() {
             return chat::wrap(launch, ctx, &found, &mut chat::RealPerson::new());
@@ -776,6 +796,37 @@ mod tests {
             "a probe that did not finish is not a pass"
         );
         assert_eq!(parse(b"oops\t/x\0done\t-\0"), None);
+    }
+
+    /// Review AI-6: a refused accounts file stops the start; a default with
+    /// no accounts stops it; no file and no default runs as before.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ai_6_a_refused_accounts_file_or_a_lone_default_stops_the_start() {
+        let max = accounts::Account {
+            name: "derm-max".into(),
+            uid: 1201,
+            subscription: "x".into(),
+            home: "/var/lib/derm/agents/max".into(),
+        };
+        let e = decide_account(
+            &[],
+            Some("/etc/derm/agents.json is a link"),
+            None,
+            Some("max"),
+        )
+        .unwrap_err();
+        assert!(e.1.contains("not starting"), "{e:?}");
+        assert!(decide_account(&[], Some("refused"), None, None).is_err());
+        assert!(decide_account(&[], None, None, Some("max")).is_err());
+        assert_eq!(decide_account(&[], None, None, None), Ok(None));
+        assert_eq!(
+            decide_account(std::slice::from_ref(&max), None, None, Some("max"))
+                .unwrap()
+                .unwrap()
+                .name,
+            "derm-max"
+        );
     }
 
     #[test]

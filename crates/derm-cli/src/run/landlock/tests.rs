@@ -483,3 +483,93 @@ fn a_chats_spec_holds_no_root_and_no_other_chat() {
         "every chat's helper checks the account's table"
     );
 }
+
+/// Review AI-2 (accounts integration): a rule path is opened with every
+/// link followed, so a chat that replaces a folder of the account's (its
+/// `~/.local/bin`, a chat folder) with a link widens the next chat's domain
+/// to the link's target: another chat's bridge and its `chat.token`. A link
+/// the account or anyone but root owns is refused, and the start with it;
+/// root's own links (merged /usr: `/bin -> usr/bin`) are followed.
+#[test]
+fn ai_2_a_rule_path_through_a_link_not_roots_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!("derm-ai2-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(base.join("target")).unwrap();
+    std::fs::write(base.join("target/secret.txt"), "x").unwrap();
+    std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = base.join("bin");
+    std::os::unix::fs::symlink(base.join("target"), &link).unwrap();
+    // As root here: the link stands for one a chat made, so not root's.
+    let l = std::ffi::CString::new(link.to_string_lossy().as_bytes()).unwrap();
+    if unsafe { libc::geteuid() } == 0 {
+        assert_eq!(unsafe { libc::lchown(l.as_ptr(), 65534, 65534) }, 0);
+    }
+    let e = rule_fd(&link.to_string_lossy()).unwrap_err();
+    assert!(e.contains("link"), "{e}");
+    // A link below the rule's own path is the domain's business, not a widening:
+    // only links on the path itself count. A folder with no link opens.
+    assert!(rule_fd(&base.join("target").to_string_lossy())
+        .unwrap()
+        .is_some());
+    // Not there: no rule, no error.
+    assert!(rule_fd(&base.join("none").to_string_lossy())
+        .unwrap()
+        .is_none());
+    // Root's links on the system's own paths are followed (where /bin is one).
+    if std::fs::symlink_metadata("/bin").is_ok_and(|m| m.file_type().is_symlink()) {
+        assert!(rule_fd("/bin").unwrap().is_some());
+    }
+    // A link in a folder above the path, not only the last part.
+    let deep = base.join("bin").join("secret.txt");
+    assert!(rule_fd(&deep.to_string_lossy()).is_err());
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// Review AI-1 (accounts integration, open, high; Tony's call): every chat
+/// may write the account home, and the next chat runs its harness from
+/// `<home>/.local/bin` and reads its config there, so one chat can plant
+/// code that runs inside the next chat's domain and hands it that chat's
+/// token. Red until the home is split into read-only installs and config
+/// and per-chat writable state (plans/toolkit_agent_accounts_plan.md,
+/// revision 4, call 7).
+#[test]
+#[ignore = "AI-1 open: needs the account home's split, Tony's call"]
+fn ai_1_no_folder_a_chat_runs_from_is_one_every_chat_may_write() {
+    let s = chat_spec(&ChatPaths {
+        folders: &["/srv/agents/p".into()],
+        account_home: "/var/lib/derm/agents/max",
+        bridge: None,
+        path: "/var/lib/derm/agents/max/.local/bin:/usr/bin",
+        require_scopes: true,
+    });
+    for e in &s.exec {
+        for w in &s.write {
+            assert!(
+                !e.starts_with(w.as_str()),
+                "{e} runs code from {w}, which every chat writes"
+            );
+        }
+    }
+}
+
+/// Review AI-4 (accounts integration, open, medium): `/dev/pts` is fully
+/// open in every chat's domain, and sudo's `use_pty` gives each chat a pty
+/// owned by the account, so a sibling can open another chat's terminal,
+/// write to it and race its input (reproduced by the reviewer). Red until a
+/// chat's terminal is its own (a devpts per chat, or Landlock's later
+/// rights).
+#[test]
+#[ignore = "AI-4 open: a chat's pty is not its own yet"]
+fn ai_4_a_chat_cannot_open_another_chats_terminal_by_path() {
+    let s = chat_spec(&ChatPaths {
+        folders: &[],
+        account_home: "/var/lib/derm/agents/max",
+        bridge: None,
+        path: "/usr/bin",
+        require_scopes: true,
+    });
+    assert!(
+        !s.write.iter().any(|w| w == "/dev/pts"),
+        "every chat may open every /dev/pts/<n>"
+    );
+}

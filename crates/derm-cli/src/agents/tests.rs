@@ -68,7 +68,7 @@ fn fake_sudo(d: &Path, home: &Path, fail: bool) -> PathBuf {
 {fail}
 while [ $# -gt 0 ]; do
   case "$1" in
-    -n|-H|-i) shift ;;
+    -n|-H|-i|--preserve-env=*) shift ;;
     -u) shift 2 ;;
     --) shift; break ;;
     *) break ;;
@@ -97,6 +97,25 @@ fn put(p: &Path, text: &str) {
         .unwrap()
         .success();
     assert!(ok);
+}
+
+/// `derm landlock`'s stand-in: records its words and whether the spec came
+/// through, drops the spec as the real one does, and runs what follows `--`.
+#[cfg(unix)]
+fn fake_helper(d: &Path) -> PathBuf {
+    let log = d.join("helper.log");
+    script(
+        d,
+        "derm-helper",
+        &format!(
+            r#"printf '%s|spec=%s\n' "$*" "${{DERM_LANDLOCK_SPEC:+yes}}" >> '{log}'
+unset DERM_LANDLOCK_SPEC
+[ "$1" = landlock ] && [ "$2" = -- ] || exit 2
+shift 2
+exec "$@""#,
+            log = log.display()
+        ),
+    )
 }
 
 struct Yes(bool, usize);
@@ -161,6 +180,8 @@ fn go_with(
         registry_owner: me(),
         sudo: st.sudo.clone(),
         sh: PathBuf::from("/bin/sh"),
+        helper: Ok(fake_helper(&st.d.0)),
+        login_path_first: Some(st.d.0.join("bin").to_string_lossy().into_owned()),
         path_env: format!("{}:/usr/bin:/bin", st.d.0.join("bin").display()),
         check_tools: false,
         package,
@@ -554,6 +575,8 @@ fn installer_writes_the_package_into_a_new_folder() {
         settings: PathBuf::from("/nonexistent"),
         registry_owner: 0,
         sudo: PathBuf::from("/nonexistent"),
+        helper: Err("no helper here".into()),
+        login_path_first: None,
         sh: PathBuf::from("/bin/sh"),
         path_env: String::new(),
         check_tools: true,
@@ -751,11 +774,23 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
         std::fs::read_to_string(seen.with_extension("args")).unwrap(),
         "auth login\n"
     );
+    // Review AI-3: no login shell, and the sign-in starts through derm
+    // landlock with its domain's spec in the environment only.
     let log = sudo_log(&st);
     assert!(
-        log.starts_with("-u derm-max -i -- /usr/bin/env HTTPS_PROXY=http://127.0.0.1:"),
+        log.starts_with("-u derm-max -H --preserve-env=DERM_LANDLOCK_SPEC -- "),
         "{log}"
     );
+    assert!(!log.split_whitespace().any(|w| w == "-i"), "{log}");
+    let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
+    assert!(
+        helper.starts_with("landlock -- /usr/bin/env PATH=")
+            && helper
+                .contains(":/var/lib/derm/agents/max/.local/bin:/usr/local/bin:/usr/bin:/bin "),
+        "{helper}"
+    );
+    assert!(helper.trim_end().ends_with("|spec=yes"), "{helper}");
+    assert!(!helper.contains("{\""), "the spec is not on argv: {helper}");
     // Only derm's fixed variables reach sudo; none of the person's keys.
     let env = std::fs::read_to_string(seen.with_extension("env")).unwrap();
     for k in env.lines() {

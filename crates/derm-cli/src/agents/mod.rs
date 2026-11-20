@@ -103,6 +103,9 @@ chmod 0700 "$d"/*.sh || out 96
 "$i" "$d/install.sh" "$@"
 out $?"#;
 
+/// `run/landlock/mod.rs` `SPEC_VAR`, named here for every system.
+pub(crate) const LANDLOCK_SPEC_VAR: &str = "DERM_LANDLOCK_SPEC";
+
 /// The presence check `status` runs as the account: stat(2) through `test`,
 /// never an open. 0 present, 3 absent; anything else (sudo's own 1 among
 /// them) is unknown.
@@ -119,6 +122,13 @@ pub(crate) struct Ctx<'a> {
     pub registry_owner: u32,
     pub sudo: PathBuf,
     pub sh: PathBuf,
+    /// derm itself from a place only root can change (`run/user/chat.rs`
+    /// `helper_binary`): a sign-in runs through `derm landlock` in a domain of
+    /// its own (review AI-3). `Err` names the install line.
+    pub helper: Result<PathBuf, String>,
+    /// Tests only: a folder put before the account's own PATH for the
+    /// sign-in (their harness stand-ins). `None` outside tests.
+    pub login_path_first: Option<String>,
     /// The `PATH` derm hands `sudo` (sudo then sets its own).
     pub path_env: String,
     /// Whether `sudo` and `sh` must be root-owned programs only root can
@@ -152,6 +162,8 @@ pub fn main(args: &[String]) -> u8 {
         registry_owner: 0,
         sudo: PathBuf::from("/usr/bin/sudo"),
         sh: PathBuf::from("/bin/sh"),
+        helper: helper(),
+        login_path_first: None,
         path_env: "/usr/bin:/bin".into(),
         check_tools: true,
         package: PACKAGE,
@@ -165,6 +177,44 @@ pub fn main(args: &[String]) -> u8 {
         err: &mut err,
     };
     run(&mut ctx, args)
+}
+
+#[cfg(target_os = "linux")]
+fn helper() -> Result<PathBuf, String> {
+    crate::run::user::chat::helper_binary().map(PathBuf::from)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn helper() -> Result<PathBuf, String> {
+    Err("agent accounts are Linux only for now".into())
+}
+
+/// The sign-in's Landlock domain (review AI-3): the account's home and its
+/// installs, the system read-only, no chat's folder and no bridge, so the
+/// sign-in and anything the account's files make it run cannot reach a
+/// running chat's `/proc/<pid>/environ`, trace it or signal it (sibling
+/// domains, `run/landlock/mod.rs`), and the account's firewall table is
+/// checked first as for a chat.
+#[cfg(target_os = "linux")]
+fn login_spec(a: &Account) -> String {
+    use crate::run::user::landlock;
+    let path = format!(
+        "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+        a.home.trim_end_matches('/')
+    );
+    let spec = landlock::chat_spec(&landlock::ChatPaths {
+        folders: &[],
+        account_home: &a.home,
+        bridge: None,
+        path: &path,
+        require_scopes: landlock::abi() >= landlock::SCOPES_ABI,
+    });
+    serde_json::to_string(&spec).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn login_spec(_: &Account) -> String {
+    String::new()
 }
 
 #[cfg(all(test, unix))]
@@ -793,8 +843,33 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         h.hosts.join(", ")
     );
     let url = t.url();
+    // Review AI-3: no `sudo -i` (a login shell reads the account's
+    // `.profile`, which any chat on the account can write), and the sign-in
+    // in its own Landlock domain, through root's copy of derm. sudo's `-H`
+    // sets HOME from the password database (sudo(8)); the account's PATH is
+    // named here, not taken from its files.
+    let helper = match ctx.helper.clone() {
+        Ok(p) => p,
+        Err(e) => return fail(ctx, 1, &e),
+    };
+    let mut path = format!(
+        "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
+        a.home.trim_end_matches('/')
+    );
+    if let Some(first) = &ctx.login_path_first {
+        path = format!("{first}:{path}");
+    }
     let st = sudo(ctx)
-        .args(["-u", &a.name, "-i", "--", "/usr/bin/env"])
+        .env(crate::agents::LANDLOCK_SPEC_VAR, login_spec(&a))
+        .args(["-u", &a.name, "-H"])
+        .arg(format!(
+            "--preserve-env={}",
+            crate::agents::LANDLOCK_SPEC_VAR
+        ))
+        .arg("--")
+        .arg(&helper)
+        .args(["landlock", "--", "/usr/bin/env"])
+        .arg(format!("PATH={path}"))
         .arg(format!("HTTPS_PROXY={url}"))
         .arg(format!("https_proxy={url}"))
         .args(["NO_PROXY=", "no_proxy="])
