@@ -1,0 +1,36 @@
+# derm: agent accounts reach loopback only (packaging/linux/agent-user).
+# Installed by install.sh --account as /etc/systemd/system/derm-agents-nft.service;
+# removed by uninstall.sh with the last account.
+#
+# Ordered and tied to nftables.service: Ubuntu's and Debian's
+# /etc/nftables.conf starts with `flush ruleset`, which nftables.service runs
+# at start and at reload, and its stop runs `nft flush ruleset` (nftables
+# 1.0.9-1ubuntu0.1, read). PartOf= carries its stops and restarts here and
+# ReloadPropagatedFrom= its reloads (systemd.unit(5), systemd 255), so the
+# table comes back after each. A flush by hand is not seen: the check's
+# probe is what shows it.
+[Unit]
+Description=derm: agent accounts reach loopback only
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+After=nftables.service
+Conflicts=shutdown.target
+PartOf=nftables.service
+ReloadPropagatedFrom=nftables.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=null
+ProtectSystem=full
+ProtectHome=true
+ExecStart=/usr/sbin/nft -f /etc/derm/agents.nft
+ExecStartPost=/usr/bin/python3 -I /usr/local/lib/derm/agents.py marker
+ExecReload=/usr/sbin/nft -f /etc/derm/agents.nft
+ExecReload=/usr/bin/python3 -I /usr/local/lib/derm/agents.py marker
+ExecStop=-/usr/sbin/nft delete table inet derm_agents
+ExecStopPost=-/bin/rm -f /run/derm/agents-nft.loaded
+
+[Install]
+WantedBy=sysinit.target
