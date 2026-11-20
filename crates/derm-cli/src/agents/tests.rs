@@ -87,7 +87,7 @@ exec "$@""#,
 /// another test's thread holds a copy of this process's descriptors until
 /// it execs, and its close would reach an inotify watch set up after the
 /// write (CI's Linux job saw an IN_CLOSE_WRITE so, on f388f2e).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn put(p: &Path, text: &str) {
     let ok = Command::new("/bin/sh")
         .args(["-c", "printf '%s' \"$2\" > \"$1\"", "sh"])
