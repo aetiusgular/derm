@@ -50,6 +50,11 @@ use super::plan::Plan;
 pub(crate) mod anchor;
 #[cfg(unix)]
 pub(crate) mod bridge;
+/// The chat's Landlock domain (accounts lane L1). Declared here, not in
+/// `run/mod.rs`, which no lane owns; integration may move the line
+/// (`plans/parallel/acct_L1.md`, request L1-1).
+#[path = "../landlock/mod.rs"]
+pub(crate) mod landlock;
 
 /// What `wrap_with` needs from `run_io` (lane V's request V-1).
 #[cfg_attr(not(unix), allow(dead_code))]
