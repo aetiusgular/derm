@@ -231,6 +231,7 @@ pub fn handle_before(input: &Map<String, Value>, deps: &Deps) -> Reply {
             tool: &answer.normalized_tool,
             decision: super::action_str(shown),
             policy_action: answer.action,
+            permission: answer.permission,
             reason: &reason,
             redacted: answer.redacted,
             join: Some(("callKey", &key)),

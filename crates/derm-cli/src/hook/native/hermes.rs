@@ -158,6 +158,9 @@ fn pre(input: &Input, io: &dyn Io) -> Result<Reply, String> {
     detail.insert("decision".into(), action_word(decision).into());
     detail.insert("policyAction".into(), action_word(answer.action).into());
     detail.insert("reason".into(), reason.clone().into());
+    if let Some(p) = answer.permission {
+        detail.insert("permission".into(), p.id().into());
+    }
     detail.insert("redacted".into(), answer.redacted.into());
     if let Some(id) = &id {
         detail.insert("toolUseId".into(), id.clone().into());

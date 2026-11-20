@@ -378,6 +378,8 @@ fn answer_json(id: &Value, a: &GateAnswer) -> Value {
         "action": action_word(a.action),
         "normalizedTool": a.normalized_tool,
         "reason": a.reason,
+        // Lane L3's request 3: the permission's kebab id, or null.
+        "permission": a.permission.map(|p| p.id()),
         "updatedInput": a.updated_input.clone().unwrap_or(Value::Null),
         "redacted": a.redacted,
         "askTimeoutSeconds": a.ask_timeout_seconds,
@@ -565,6 +567,10 @@ fn approval_event(
         .and_then(|e| e.reason.clone())
         .unwrap_or_else(|| answer.reason.clone());
     detail.insert("reason".into(), json!(reason));
+    // Lane L3's request 2: the kebab id, absent when the answer names none.
+    if let Some(p) = answer.permission {
+        detail.insert("permission".into(), json!(p.id()));
+    }
     detail.insert("redacted".into(), json!(answer.redacted));
     if let Some(via) = extra.and_then(|e| e.via.clone()) {
         detail.insert("via".into(), json!(via));

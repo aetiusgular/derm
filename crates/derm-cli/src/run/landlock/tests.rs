@@ -383,6 +383,10 @@ fn a_chats_domain_reaches_its_own_folders_and_no_other_chats() {
     // The test binary stands in for the harness, so its folder is the
     // harness's install.
     let mut spec = spec;
+    // No derm firewall table holds the test's uid here; the network check
+    // has its own tests (`netcheck.rs`, and the one below).
+    assert!(spec.check_network);
+    spec.check_network = false;
     let exe = Exe::new();
     spec.exec
         .push(exe.path.parent().unwrap().to_string_lossy().into_owned());
@@ -413,6 +417,26 @@ fn the_helper_refuses_a_missing_or_bad_spec_and_a_usage_error() {
     assert_eq!(enter_main(&[]), 2);
     assert_eq!(enter_main(&["--".into()]), 2);
     assert_eq!(enter_main(&["/bin/true".into()]), 2);
+}
+
+/// L2's request: a chat's helper checks the account's firewall table before
+/// it makes the domain, and starts nothing when the table does not refuse
+/// (here no table holds this uid). Nothing is applied to this test's thread:
+/// the check comes first.
+#[test]
+fn the_helper_starts_nothing_when_the_accounts_table_does_not_refuse() {
+    // On a machine whose table holds this uid the check would pass and the
+    // helper would exec in this test's process: not here.
+    if netcheck::check().is_ok() {
+        return;
+    }
+    let spec = Spec {
+        version: 1,
+        write: vec!["/".into()],
+        check_network: true,
+        ..Spec::default()
+    };
+    assert_eq!(enter(&spec, &["/bin/true".into()]), 126);
 }
 
 #[test]
@@ -454,4 +478,8 @@ fn a_chats_spec_holds_no_root_and_no_other_chat() {
         .contains(&"/var/lib/derm/agents/max/.local/bin".to_string()));
     assert!(!s.exec.iter().any(|p| p == "relative"));
     assert!(s.require_landlock && s.require_scopes);
+    assert!(
+        s.check_network,
+        "every chat's helper checks the account's table"
+    );
 }

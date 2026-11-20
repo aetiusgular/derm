@@ -121,6 +121,8 @@ pub fn parse_settings(text: &str) -> Result<CheckSettings, String> {
                 // Wave 6 (the wave 6 base): lane 6A's and 6D's keys.
                 | "tier"
                 | "taint"
+                // The accounts build: `agents.default` (derm run's).
+                | "agents"
         ) {
             return Err(format!("has a key the schema does not name ({k})"));
         }

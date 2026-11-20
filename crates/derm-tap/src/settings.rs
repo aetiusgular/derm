@@ -116,9 +116,16 @@ pub fn parse(text: &str) -> Result<Settings, String> {
                 // them stays valid for the keys this crate reads.
                 | "tier"
                 | "taint"
+                // The accounts build: `agents.default`, read by `derm run`
+                // and `derm agents` (`run/user/accounts.rs`); its shape is
+                // checked here so every reader of the file agrees.
+                | "agents"
         ) {
             return Err(format!("has a key the schema does not name ({k})"));
         }
+    }
+    if let Some(a) = obj.get("agents") {
+        agents_ok(a)?;
     }
     let mut s = Settings::default();
     if let Some(tap) = obj.get("tap") {
@@ -159,6 +166,30 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         }
     }
     Ok(s)
+}
+
+/// `agents` (`contracts/settings.schema.json`): only `default`, a slug of
+/// 1 to 15 of `a-z`, `0-9` and `-`, or null. The reserved slugs are the
+/// account reader's to refuse (`run/user/slug.rs`); a default naming one
+/// then names no account.
+fn agents_ok(a: &Value) -> Result<(), String> {
+    let a = a.as_object().ok_or("has agents that is not an object")?;
+    for (k, v) in a {
+        let fine = k == "default"
+            && match v {
+                Value::Null => true,
+                Value::String(s) => {
+                    (1..=15).contains(&s.len())
+                        && s.bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                }
+                _ => false,
+            };
+        if !fine {
+            return Err(format!("has agents.{k} the schema does not allow"));
+        }
+    }
+    Ok(())
 }
 
 /// `tap.upstreams` (`contracts/settings.schema.json`): at most
@@ -261,6 +292,31 @@ mod tests {
         )
         .unwrap();
         assert!(!s.tap_on);
+    }
+
+    /// The accounts build (requests L1-4 and R1): `agents.default`, read by
+    /// `derm run` and `derm agents` (`run/user/accounts.rs`), is named, so a
+    /// file that sets it keeps the tap's own keys; and its shape is the
+    /// schema's, so every reader of the file agrees on it.
+    #[test]
+    fn the_agents_key_leaves_the_taps_keys_read_and_is_checked() {
+        for ok in [
+            r#"{"version":1,"tap":{"on":false},"agents":{"default":"max"}}"#,
+            r#"{"version":1,"tap":{"on":false},"agents":{"default":null}}"#,
+            r#"{"version":1,"tap":{"on":false},"agents":{}}"#,
+        ] {
+            assert!(!parse(ok).unwrap().tap_on, "{ok}");
+        }
+        for bad in [
+            r#"{"version":1,"agents":{"default":"MAX"}}"#,
+            r#"{"version":1,"agents":{"default":"abcdefghijklmnop"}}"#,
+            r#"{"version":1,"agents":{"default":"../x"}}"#,
+            r#"{"version":1,"agents":{"default":1}}"#,
+            r#"{"version":1,"agents":{"other":"max"}}"#,
+            r#"{"version":1,"agents":"max"}"#,
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
     }
 
     /// Lane S's request 6 (case 113): the confirmed upstreams, as the schema

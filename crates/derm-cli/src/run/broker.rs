@@ -62,8 +62,12 @@ pub struct Chat<'a> {
     pub boundary: &'a str,
     pub home: &'a Path,
     pub dry_run: bool,
-    /// Where the trust folder goes (the system's temporary folder).
+    /// Where the trust folder goes (the system's temporary folder; `/tmp`
+    /// for an agent account's chat, which its Landlock domain reads).
     pub temp: &'a Path,
+    /// The agent account the chat runs as (`derm-<slug>`), when it is one
+    /// (the accounts build, lane L4's request R4).
+    pub account: Option<&'a str>,
 }
 
 /// Sets up the chat's broker and applies the chain to `p`. `env` reads `derm
@@ -83,7 +87,7 @@ pub fn wire(
         return Ok(Broker::none());
     }
     let ids: Vec<String> = file.secrets.iter().map(|e| e.id.clone()).collect();
-    let brokered = chain::brokered(c.tier, c.boundary);
+    let brokered = chain::brokered_for(c.tier, c.boundary, c.account);
     let ca_dir = ca::dir_for(c.home);
     if !brokered || c.dry_run {
         // No value is read: the plan needs only the entries and a placeholder.
@@ -100,16 +104,19 @@ pub fn wire(
         let ca_file = trust.join("derm-ca.pem").to_string_lossy().into_owned();
         let bundle_file = trust.join("derm-bundle.pem").to_string_lossy().into_owned();
         let url = "http://127.0.0.1:<port at the start>";
-        let plan = chain::plan(&chain::Input {
-            harness: c.harness,
-            tier: c.tier,
-            boundary: c.boundary,
-            secrets: &with_ph,
-            egress_url: brokered.then_some(url),
-            ca_file: &ca_file,
-            bundle_file: &bundle_file,
-            fingerprint: &fingerprint,
-        })?;
+        let plan = chain::plan_for(
+            &chain::Input {
+                harness: c.harness,
+                tier: c.tier,
+                boundary: c.boundary,
+                secrets: &with_ph,
+                egress_url: brokered.then_some(url),
+                ca_file: &ca_file,
+                bundle_file: &bundle_file,
+                fingerprint: &fingerprint,
+            },
+            c.account,
+        )?;
         apply(p, &plan)?;
         return Ok(Broker {
             egress: None,
@@ -128,6 +135,11 @@ pub fn wire(
             "derm's CA expires within a day; run `derm secret ca create --replace` from a terminal"
                 .into(),
         );
+    }
+    // A Claude subscription token in an agent account's chat is refused
+    // before any value is read (note CB 4.1; `chain::plan_for` says so too).
+    if let Some(why) = chain::subscription_refusal(&file.secrets, c.boundary, c.account) {
+        return Err(why);
     }
     let values = secrets::for_chat(&file, env)?;
     // A name no one can make first (review W6C-S9), removed again on any
@@ -159,16 +171,19 @@ pub fn wire(
     config.policy = policy_for(&file.secrets);
     let egress = Egress::start(config)?;
     let url = egress.url();
-    let plan = chain::plan(&chain::Input {
-        harness: c.harness,
-        tier: c.tier,
-        boundary: c.boundary,
-        secrets: &with_ph,
-        egress_url: Some(&url),
-        ca_file: &ca_file,
-        bundle_file: &bundle_file,
-        fingerprint: &fingerprint,
-    })?;
+    let plan = chain::plan_for(
+        &chain::Input {
+            harness: c.harness,
+            tier: c.tier,
+            boundary: c.boundary,
+            secrets: &with_ph,
+            egress_url: Some(&url),
+            ca_file: &ca_file,
+            bundle_file: &bundle_file,
+            fingerprint: &fingerprint,
+        },
+        c.account,
+    )?;
     apply(p, &plan)?;
     guard.0 = None;
     Ok(Broker {

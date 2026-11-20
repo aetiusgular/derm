@@ -427,6 +427,9 @@ pub fn handle_pre(d: &Dialect, input: &Input, io: &dyn Io) -> Result<Reply, Stri
     );
     detail.insert("policyAction".into(), action_word(out.answer.action).into());
     detail.insert("reason".into(), out.reason.clone().into());
+    if let Some(p) = out.answer.permission {
+        detail.insert("permission".into(), p.id().into());
+    }
     detail.insert("redacted".into(), out.answer.redacted.into());
     if let Some(id) = &read.call_id {
         detail.insert("toolUseId".into(), id.clone().into());

@@ -95,6 +95,11 @@ fn dispatch(args: &[String]) -> u8 {
         Some("audit") => audit::main(&args[1..]),
         Some("secret") => secret::main(&args[1..]),
         Some("agents") => agents::main(&args[1..]),
+        // The accounts build (lane L1's request L1-3): run by derm run, as
+        // an agent account through sudo, from root's copy of derm; it makes
+        // the chat's Landlock domain and execs the harness.
+        #[cfg(target_os = "linux")]
+        Some("landlock") => run::landlock_main(&args[1..]),
         Some("--version") => {
             // ` (<commit>)` on any build but the release's own tag
             // (`build.rs`; BW6-9, MW6-1, WW6-10).
@@ -106,7 +111,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|agents|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|agents|landlock|--version> ...");
             2
         }
     }
@@ -144,5 +149,9 @@ mod tests {
         ] {
             assert_eq!(dispatch(&s(&[cmd])), 2, "{cmd}");
         }
+        // Linux only: `derm landlock` with no `--` and program is a usage
+        // error too, and starts nothing.
+        #[cfg(target_os = "linux")]
+        assert_eq!(dispatch(&s(&["landlock"])), 2);
     }
 }

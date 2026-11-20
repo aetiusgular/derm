@@ -4,7 +4,14 @@ Two forms live here. `install.sh --account` (below, the accounts build) makes
 one agent account per subscription, as many chats on each as you want, with a
 firewall table that lets the accounts reach loopback only. `install.sh
 --owner` (further down) is wave 5's single agents' user, which `derm run
---boundary none` reads until lane L1 moves it to the accounts.
+--boundary none` still reads on a machine with no `/etc/derm/agents.json`.
+With that file, every `--boundary none` chat runs as one of its accounts
+(`derm run --account <slug>`, else `agents.default` in
+`~/.derm/settings.json`), in its own Landlock domain, after the account's
+own helper has checked, as the account, that this table still refuses its
+network. The helper is derm itself from a root-owned place:
+`sudo install -m 0755 "$(command -v derm)" /usr/local/bin/derm`, again after
+every derm upgrade.
 
 ## Agent accounts, one per subscription
 
@@ -13,8 +20,10 @@ sudo packaging/linux/agent-user/install.sh --account max1 --subscription "Claude
 sudo packaging/linux/agent-user/install.sh --account max1 --subscription "Claude Max, personal"
 ```
 
-`<slug>` is 1 to 21 of `a-z`, `0-9` and `-`: the account is
-`derm-agent-<slug>`, and useradd takes 32 characters. The subscription label is
+`<slug>` is 1 to 15 of `a-z`, `0-9` and `-`: the account is
+`derm-<slug>`, the same form on every system (Windows takes 20 characters for
+an account name). `agent`, `agents` and `agent-*` are reserved: `derm-agent`
+is wave 5's agents' user below, `derm-agents` the accounts' group. The subscription label is
 what you call it, shown back and never parsed; control and format characters
 (newlines, bidi overrides) are refused. `--owner` defaults to the person who
 ran `sudo`.
@@ -23,11 +32,12 @@ ran `sudo`.
 |---|---|---|
 | 1 | `/usr/local/lib/derm/agents.py` (root's, 0644): the helper the unit and the check run, copied from `accounts.py` and checked by hash | removed with the last account |
 | 2 | The group `derm-agents` (system group, no members listed). An existing group with members is refused | `groupdel`, with the last account |
-| 3 | The user `derm-agent-<slug>`: system user, primary group `derm-agents` and no other group, home `/var/lib/derm/agents/<slug>` (0700), password locked | `userdel --remove` (`--keep-home` keeps it) |
+| 3 | The user `derm-<slug>`: system user, primary group `derm-agents` and no other group, home `/var/lib/derm/agents/<slug>` (0700), password locked | `userdel --remove` (`--keep-home` keeps it) |
 | 4 | `/etc/derm/agents.json` (root's, 0644): `{"version": 1, "group": "derm-agents", "accounts": [{"name", "uid", "subscription", "home"}]}`, exactly the contract in `plans/parallel_build_accounts.md` section 2. A file there that is not a regular file of root's, is group or world writable, or does not parse is refused, and nothing is written over it | the entry removed; the file goes with the last account |
 | 5 | `/etc/derm/agents.nft` and the table `inet derm_agents`, loaded (below) | written again without the account; `nft delete table inet derm_agents` with the last |
 | 6 | `/etc/systemd/system/derm-agents-nft.service`, enabled: loads the table at boot and again after `nftables.service` restarts or reloads, whose `/etc/nftables.conf` starts with `flush ruleset` on Ubuntu and Debian | `systemctl disable`, removed with the last account |
-| 7 | `/etc/sudoers.d/derm-agent-<slug>`: `<you> ALL=(derm-agent-<slug>) NOPASSWD:SETENV: ALL`, checked with `visudo -c`. Last, so nothing runs as the account before its table is in place | `rm` |
+| 7 | `/etc/tmpfiles.d/derm-accounts-<you>.conf`: `/run/derm-agent` (root, 0755) and `/run/derm-agent/<your uid>` (yours, 0711), the base of each chat's bridge to the daemon, remade at boot (lane L1's request L1-5) | `rm`, with the last account; the empty folder goes at the next boot |
+| 8 | `/etc/sudoers.d/derm-<slug>`: `<you> ALL=(derm-<slug>) NOPASSWD:SETENV: ALL`, checked with `visudo -c`. Last, so nothing runs as the account before its table is in place | `rm` |
 
 `uninstall.sh --account <slug>` does every undo, in the reverse order: the
 sudoers rule first, then the account's processes, its entry, the table, the
@@ -71,7 +81,7 @@ table inet derm_agents {
 
 ```
 python3 -I /usr/local/lib/derm/agents.py check [--json]          # as anyone
-sudo -n -u derm-agent-<slug> python3 -I /usr/local/lib/derm/agents.py check --probe
+sudo -n -u derm-<slug> python3 -I /usr/local/lib/derm/agents.py check --probe
 ```
 
 `nft list` needs `CAP_NET_ADMIN` (nfnetlink refuses every message without

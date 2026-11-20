@@ -27,6 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod netcheck;
 mod sys;
 
 #[cfg(test)]
@@ -56,6 +57,11 @@ pub(crate) struct Spec {
     /// Refuse to start when the kernel has no signal and abstract-socket
     /// scopes (ABI 6). `derm run` clears it only on the person's yes.
     pub require_scopes: bool,
+    /// Check, as the account and before the domain, that lane L2's table
+    /// still refuses the account's own network (`netcheck.rs`; L2's request
+    /// to L1, applied by integration). Every chat's spec sets it.
+    #[serde(default)]
+    pub check_network: bool,
 }
 
 /// What [`apply`] put in place.
@@ -137,6 +143,7 @@ pub(crate) fn chat_spec(p: &ChatPaths) -> Spec {
         write,
         require_landlock: true,
         require_scopes: p.require_scopes,
+        check_network: true,
     }
 }
 
@@ -274,8 +281,6 @@ fn set_no_new_privs() -> Result<(), String> {
 /// reads the spec, restricts itself, execs the program with the spec
 /// variable removed. Exit codes: 126 when the domain cannot be made, 127
 /// when the program cannot be started, 2 for a usage error.
-// No caller until `main.rs` dispatches `derm landlock` (request L1-3).
-#[allow(dead_code)]
 pub(crate) fn enter_main(args: &[String]) -> u8 {
     let argv = match args.first().map(String::as_str) {
         Some("--") if args.len() > 1 => &args[1..],
@@ -303,8 +308,14 @@ pub(crate) fn enter_main(args: &[String]) -> u8 {
     enter(&spec, argv)
 }
 
-fn enter(spec: &Spec, argv: &[String]) -> u8 {
+pub(crate) fn enter(spec: &Spec, argv: &[String]) -> u8 {
     use std::os::unix::process::CommandExt;
+    if spec.check_network {
+        if let Err(why) = netcheck::check() {
+            eprintln!("derm {SUBCOMMAND}: {why}; not starting {}", argv[0]);
+            return 126;
+        }
+    }
     if let Err(why) = apply(spec) {
         eprintln!("derm {SUBCOMMAND}: {why}; not starting {}", argv[0]);
         return 126;

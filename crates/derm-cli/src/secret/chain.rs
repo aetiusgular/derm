@@ -100,14 +100,32 @@ pub fn brokered_for(tier: &str, boundary: &str, account: Option<&str>) -> bool {
 /// signs in itself with `derm agents login claude-code`.
 pub const SUBSCRIPTION_VARIABLES: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN"];
 
+/// Why an agent account's chat may not carry these secrets: one of them is
+/// a Claude subscription token. `None` for a chat as the person, and under
+/// sbx (which brokers nothing).
+pub fn subscription_refusal(
+    entries: &[Entry],
+    boundary: &str,
+    account: Option<&str>,
+) -> Option<String> {
+    let a = account.filter(|_| boundary != "sbx")?;
+    let e = entries
+        .iter()
+        .find(|e| SUBSCRIPTION_VARIABLES.contains(&secrets::variable(e).as_str()))?;
+    Some(format!(
+        "secret {} would put a Claude subscription token in {a}'s chat, which derm does not carry (Anthropic's terms, note CB 4.1); sign the account in with `derm agents login claude-code` instead",
+        e.id
+    ))
+}
+
+#[cfg(test)]
 pub fn plan(i: &Input<'_>) -> Result<Plan, String> {
     plan_for(i, None)
 }
 
-/// [`plan`] for a chat run as the agent account `account`
-/// (`derm-agent-<slug>`), when it is one. Called by `run/broker.rs` once it
-/// passes the chat's account (lane L4's request to integration).
-#[cfg_attr(not(test), allow(dead_code))]
+/// [`plan`] for a chat run as the agent account `account` (`derm-<slug>`),
+/// when it is one. `run/broker.rs` passes the chat's account (lane L4's
+/// request R4, applied by integration).
 pub fn plan_for(i: &Input<'_>, account: Option<&str>) -> Result<Plan, String> {
     let mut p = Plan::default();
     if i.secrets.is_empty() {
@@ -130,17 +148,9 @@ pub fn plan_for(i: &Input<'_>, account: Option<&str>) -> Result<Plan, String> {
         ));
         return Ok(p);
     }
-    if let Some(a) = account.filter(|_| i.boundary != "sbx") {
-        if let Some((e, _)) = i
-            .secrets
-            .iter()
-            .find(|(e, _)| SUBSCRIPTION_VARIABLES.contains(&secrets::variable(e).as_str()))
-        {
-            return Err(format!(
-                "secret {} would put a Claude subscription token in {a}'s chat, which derm does not carry (Anthropic's terms, note CB 4.1); sign the account in with `derm agents login claude-code` instead",
-                e.id
-            ));
-        }
+    let entries: Vec<Entry> = i.secrets.iter().map(|(e, _)| e.clone()).collect();
+    if let Some(why) = subscription_refusal(&entries, i.boundary, account) {
+        return Err(why);
     }
     if !brokered_for(i.tier, i.boundary, account) {
         p.remove = env_vars;

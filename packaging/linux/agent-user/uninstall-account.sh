@@ -49,15 +49,15 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -x "$PY" ] || die "$PY is not installed"
-# The same rule as install.sh, but a slug of up to 24 is accepted here so a
-# file another derm wrote can still be undone.
-[[ "$SLUG" =~ ^[a-z0-9-]{1,24}$ ]] || die "--account must be a slug (a-z, 0-9 and -)"
+if [ -f "$HELPER" ]; then A=("$PY" -I "$HELPER"); else A=("$PY" -I "$HERE/accounts.py"); fi
+# The same rule as install.sh: 1 to 15 of a-z, 0-9 and -, and never a slug
+# that would name wave 5's derm-agent user or the group (accounts.py).
+"${A[@]}" valid-slug "$SLUG" || die "--account '$SLUG' refused"
 if [ "$DRY" = 0 ] && [ "$(id -u)" != 0 ]; then die "run as root (or with --dry-run)"; fi
 
-ACCOUNT="derm-agent-$SLUG"
+ACCOUNT="derm-$SLUG"
 COMMENT="derm agent $SLUG"
-SUDOERS="/etc/sudoers.d/derm-agent-$SLUG"
-if [ -f "$HELPER" ]; then A=("$PY" -I "$HELPER"); else A=("$PY" -I "$HERE/accounts.py"); fi
+SUDOERS="/etc/sudoers.d/derm-$SLUG"
 
 echo "This removes the agent account $ACCOUNT$([ "$KEEP" = 1 ] && echo ", keeping its home") (derm)."
 [ "$DRY" = 1 ] && echo "(dry run: nothing changes)"
@@ -121,6 +121,12 @@ else
 		fi
 	fi
 	run rm -f "$RULES" "$UNIT" "$MARKER" "$HELPER"
+	# The bridges' base (install-account.sh step 7). /run/derm-agent/<uid>
+	# is left: it is empty between chats, gone at the next boot, and wave 5's
+	# --owner form may use the same folder.
+	for f in /etc/tmpfiles.d/derm-accounts-*.conf; do
+		[ -e "$f" ] && run rm -f "$f"
+	done
 	if [ -d /run/systemd/system ]; then run systemctl daemon-reload; fi
 	if [ "$DRY" = 0 ]; then
 		rmdir /usr/local/lib/derm /run/derm /etc/derm 2>/dev/null || true

@@ -12,16 +12,11 @@
 //! choose or add one.
 
 use std::path::Path;
-use std::sync::Mutex;
 
 use serde::Deserialize;
 use serde_json::Value;
 
-/// Where root keeps the file.
-pub const AGENTS: &str = "/etc/derm/agents.json";
-/// The group every agent account is in, and the only group the outbound
-/// block (`skgid`) matches.
-pub const GROUP: &str = "derm-agents";
+pub use super::slug::{AGENTS, GROUP};
 /// The fix a refused or missing file names.
 const FIX: &str = "re-run the installer (sudo packaging/linux/agent-user/install.sh --account <slug> --subscription <label>), or derm agents add <slug>";
 /// `subscription` is shown back, never parsed; it is cut to this.
@@ -39,7 +34,7 @@ struct File {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Account {
-    /// `derm-agent-<slug>`.
+    /// `derm-<slug>`.
     pub name: String,
     pub uid: u32,
     /// The label the person chose for the subscription it signs in to.
@@ -49,9 +44,9 @@ pub struct Account {
 }
 
 impl Account {
-    /// The part after `derm-agent-`.
+    /// The part after `derm-`.
     pub fn slug(&self) -> &str {
-        self.name.strip_prefix("derm-agent-").unwrap_or(&self.name)
+        self.name.strip_prefix(PREFIX).unwrap_or(&self.name)
     }
 
     /// The account's `PATH`: its own installs first, then the system's.
@@ -63,12 +58,7 @@ impl Account {
     }
 }
 
-/// `[a-z0-9-]{1,24}`.
-pub fn plain_slug(s: &str) -> bool {
-    (1..=24).contains(&s.len())
-        && s.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
+pub use super::slug::{plain_slug, PREFIX, SLUG_MAX};
 
 /// The accounts on this machine, and why the file was not used when it is
 /// there and refused.
@@ -100,79 +90,52 @@ fn read(file: &Path, from: &Path, trusted: u32) -> Result<Vec<Account>, String> 
         return Err(format!("{} is not a regular file", file.display()));
     }
     let text = super::anchor::read_nofollow(file)?;
-    let f: File = serde_json::from_str(&text)
-        .map_err(|e| format!("{} is not the expected JSON ({e})", file.display()))?;
+    parse(&text).map_err(|why| format!("{}: {why}", file.display()))
+}
+
+/// The file's text, whole or not at all (section 2's contract). The one
+/// parser: `derm agents` reads through it too (request L1-8).
+pub fn parse(text: &str) -> Result<Vec<Account>, String> {
+    let f: File =
+        serde_json::from_str(text).map_err(|e| format!("is not the expected JSON ({e})"))?;
     if f.version != 1 {
-        return Err(format!(
-            "{}: version {} is not 1",
-            file.display(),
-            f.version
-        ));
+        return Err(format!("version {} is not 1", f.version));
     }
     if f.group != GROUP {
-        return Err(format!(
-            "{}: group {:?} is not {GROUP:?}",
-            file.display(),
-            f.group
-        ));
+        return Err(format!("group {:?} is not {GROUP:?}", f.group));
     }
     let mut seen_uid = std::collections::BTreeSet::new();
     let mut seen_name = std::collections::BTreeSet::new();
     for a in &f.accounts {
-        let slug = a.name.strip_prefix("derm-agent-").unwrap_or("");
+        let slug = a.name.strip_prefix(PREFIX).unwrap_or("");
         if !plain_slug(slug) {
             return Err(format!(
-                "{}: {:?} is not derm-agent-<slug> with a slug of a-z, 0-9 and -, 1 to 24 long",
-                file.display(),
+                "{:?} is not derm-<slug> with a slug of a-z, 0-9 and -, 1 to {SLUG_MAX} long and not reserved",
                 a.name
             ));
         }
         if a.uid == 0 {
-            return Err(format!("{}: {} has uid 0", file.display(), a.name));
+            return Err(format!("{} has uid 0", a.name));
         }
         if a.home != format!("/var/lib/derm/agents/{slug}") {
             return Err(format!(
-                "{}: {}'s home {:?} is not /var/lib/derm/agents/{slug}",
-                file.display(),
-                a.name,
-                a.home
+                "{}'s home {:?} is not /var/lib/derm/agents/{slug}",
+                a.name, a.home
             ));
         }
         if a.subscription.chars().count() > MAX_LABEL
             || a.subscription.chars().any(char::is_control)
         {
             return Err(format!(
-                "{}: {}'s subscription label is longer than {MAX_LABEL} or holds control characters",
-                file.display(),
+                "{}'s subscription label is longer than {MAX_LABEL} or holds control characters",
                 a.name
             ));
         }
         if !seen_uid.insert(a.uid) || !seen_name.insert(a.name.clone()) {
-            return Err(format!(
-                "{}: {} or uid {} is named twice",
-                file.display(),
-                a.name,
-                a.uid
-            ));
+            return Err(format!("{} or uid {} is named twice", a.name, a.uid));
         }
     }
     Ok(f.accounts)
-}
-
-/// The account `derm run --account` named, set by the argument parser
-/// (request L1-2: `run/args.rs` parses the flag and calls this).
-static REQUESTED: Mutex<Option<String>> = Mutex::new(None);
-
-/// Records `--account <slug>` for this run.
-#[allow(dead_code)] // called from run/args.rs once request L1-2 is applied
-pub(crate) fn request(slug: &str) {
-    if let Ok(mut r) = REQUESTED.lock() {
-        *r = Some(slug.to_string());
-    }
-}
-
-pub(crate) fn requested() -> Option<String> {
-    REQUESTED.lock().ok().and_then(|r| r.clone())
 }
 
 /// The chat's account: the flag, else the default, else none (and then a
@@ -260,6 +223,10 @@ pub fn default_from(settings: &Path) -> (Option<String>, Option<String>) {
 
 /// `agents` holds only `default`, a slug or null.
 pub fn parse_default(text: &str) -> Result<Option<String>, String> {
+    // The whole file against the schema first, as every other reader of it
+    // does (`derm_tap::settings::parse`), so a file the tap ignores names no
+    // default either.
+    derm_tap::settings::parse(text)?;
     let v: Value = serde_json::from_str(text).map_err(|_| "is not JSON".to_string())?;
     let Some(a) = v.get("agents") else {
         return Ok(None);
@@ -283,7 +250,7 @@ mod tests {
 
     fn account(slug: &str, uid: u32) -> Account {
         Account {
-            name: format!("derm-agent-{slug}"),
+            name: format!("derm-{slug}"),
             uid,
             subscription: format!("{slug} plan"),
             home: format!("/var/lib/derm/agents/{slug}"),
@@ -311,8 +278,8 @@ mod tests {
     }
 
     const GOOD: &str = r#"{"version":1,"group":"derm-agents","accounts":[
-        {"name":"derm-agent-max","uid":1201,"subscription":"Claude Max","home":"/var/lib/derm/agents/max"},
-        {"name":"derm-agent-gpt","uid":1202,"subscription":"ChatGPT Plus","home":"/var/lib/derm/agents/gpt"}]}"#;
+        {"name":"derm-max","uid":1201,"subscription":"Claude Max","home":"/var/lib/derm/agents/max"},
+        {"name":"derm-gpt","uid":1202,"subscription":"ChatGPT Plus","home":"/var/lib/derm/agents/gpt"}]}"#;
 
     fn me() -> u32 {
         derm_core::platform::effective_user()
@@ -344,8 +311,23 @@ mod tests {
             (&GOOD.replace("\"version\":1", "\"version\":2"), 0o644),
             (&GOOD.replace("derm-agents", "wheel"), 0o644),
             (&GOOD.replace("\"uid\":1201", "\"uid\":0"), 0o644),
-            (&GOOD.replace("derm-agent-max", "derm-agent-MAX"), 0o644),
-            (&GOOD.replace("derm-agent-max", "max"), 0o644),
+            (&GOOD.replace("derm-max", "derm-MAX"), 0o644),
+            (&GOOD.replace("derm-max", "max"), 0o644),
+            // The lanes' first form, and a slug over 15 or reserved.
+            (&GOOD.replace("derm-max", "derm-agent-max"), 0o644),
+            (
+                &GOOD.replace("derm-max", "derm-abcdefghijklmnop").replace(
+                    "/var/lib/derm/agents/max",
+                    "/var/lib/derm/agents/abcdefghijklmnop",
+                ),
+                0o644,
+            ),
+            (
+                &GOOD
+                    .replace("derm-max", "derm-agents")
+                    .replace("/var/lib/derm/agents/max", "/var/lib/derm/agents/agents"),
+                0o644,
+            ),
             (
                 &GOOD.replace("/var/lib/derm/agents/max", "/home/max"),
                 0o644,
@@ -440,10 +422,21 @@ mod tests {
 
     #[test]
     fn slugs() {
-        for ok in ["max", "a", "pro-2", &"x".repeat(24)] {
+        for ok in ["max", "a", "pro-2", &"x".repeat(15), "agentx", "my-agent"] {
             assert!(plain_slug(ok), "{ok}");
         }
-        for no in ["", "Max", "a_b", "a.b", "../a", &"x".repeat(25), "a b"] {
+        for no in [
+            "",
+            "Max",
+            "a_b",
+            "a.b",
+            "../a",
+            &"x".repeat(16),
+            "a b",
+            "agent",
+            "agents",
+            "agent-tonyg",
+        ] {
             assert!(!plain_slug(no), "{no}");
         }
     }

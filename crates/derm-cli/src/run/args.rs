@@ -90,6 +90,9 @@ pub struct Args {
     pub tier: Option<Tier>,
     /// `--taint`; `None` means the setting's default (`taint.verdict`).
     pub taint: Option<TaintVerdict>,
+    /// `--account <slug>`: the agent account this chat runs as (the accounts
+    /// build, request L1-2); `None` means `agents.default`.
+    pub account: Option<String>,
     pub rest: Vec<String>,
     /// The program from `-- <program> ...` (case 80), when no harness id was
     /// given. `None` means the harness's own command.
@@ -99,7 +102,7 @@ pub struct Args {
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--no-tap] [--asks allow] [--tier standard|whole] [--taint ask|deny|record] [--dry-run] [-- harness args...]
+[--no-tap] [--asks allow] [--tier standard|whole] [--taint ask|deny|record] [--account SLUG] [--dry-run] [-- harness args...]
        derm run --boundary sbx|srt|none [options] -- <program> [args...]";
 
 /// A program named after `--` (case 80): an absolute path, or a bare name
@@ -316,6 +319,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         dry_run: false,
         tier: None,
         taint: None,
+        account: None,
         rest: Vec::new(),
         program: None,
     };
@@ -387,6 +391,18 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                     other => return Err(format!("--taint is ask, deny or record, not {other:?}")),
                 })
             }
+            "--account" => {
+                let v = take("--account")?;
+                if !super::user::slug::plain_slug(&v) {
+                    return Err(format!(
+                        "--account {v:?}: a slug is 1 to {} of a-z, 0-9 and -, and not agent, agents or agent-*",
+                        super::user::slug::SLUG_MAX
+                    ));
+                }
+                if out.account.replace(v).is_some() {
+                    return Err("--account given twice".into());
+                }
+            }
             other => {
                 return Err(format!(
                     "unknown option {other:?}; harness arguments go after --\n{USAGE}"
@@ -426,6 +442,17 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     }
     if out.kit.is_some() && out.boundary != Boundary::Sbx {
         return Err("--kit needs --boundary sbx".into());
+    }
+    // An agent account is the chat's whole boundary on Linux (the accounts
+    // build); under srt or sbx it would be a second one nobody asked for.
+    if out.account.is_some() && out.boundary != Boundary::None {
+        return Err("--account runs the chat as an agent account; it needs --boundary none".into());
+    }
+    if out.account.is_some() && !cfg!(target_os = "linux") {
+        return Err(
+            "--account: agent accounts are Linux only for now (plans/toolkit_agent_accounts_plan.md, steps B and C)"
+                .into(),
+        );
     }
     Ok(out)
 }
@@ -671,6 +698,64 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(c.taint, None);
+    }
+
+    /// The accounts build, request L1-2: `--account` names a slug, once,
+    /// with no boundary, on Linux.
+    #[test]
+    fn the_account_flag_is_a_slug_with_no_boundary() {
+        let r = parse(&s(&[
+            "claude-code",
+            "--boundary",
+            "none",
+            "--account",
+            "max",
+        ]));
+        if cfg!(target_os = "linux") {
+            assert_eq!(r.unwrap().account.as_deref(), Some("max"));
+        } else {
+            assert!(r.unwrap_err().contains("Linux only"));
+        }
+        assert_eq!(
+            parse(&s(&["claude-code", "--boundary", "none"]))
+                .unwrap()
+                .account,
+            None
+        );
+        for bad in [
+            "MAX",
+            "../x",
+            "abcdefghijklmnop",
+            "agent",
+            "agents",
+            "agent-x",
+            "",
+        ] {
+            assert!(
+                parse(&s(&["claude-code", "--boundary", "none", "--account", bad])).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse(&s(&[
+            "claude-code",
+            "--boundary",
+            "srt",
+            "--account",
+            "max"
+        ]))
+        .unwrap_err()
+        .contains("needs --boundary none"));
+        assert!(parse(&s(&[
+            "claude-code",
+            "--boundary",
+            "none",
+            "--account",
+            "a",
+            "--account",
+            "b"
+        ]))
+        .is_err());
+        assert!(parse(&s(&["claude-code", "--boundary", "none", "--account"])).is_err());
     }
 
     #[test]

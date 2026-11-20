@@ -108,8 +108,8 @@ impl Confirm for Yes {
 }
 
 const REGISTRY: &str = r#"{"version":1,"group":"derm-agents","accounts":[
-  {"name":"derm-agent-max","uid":61001,"subscription":"Claude Max (work)","home":"/var/lib/derm/agents/max"},
-  {"name":"derm-agent-plus","uid":61002,"subscription":"ChatGPT Plus","home":"/var/lib/derm/agents/plus"}]}"#;
+  {"name":"derm-max","uid":61001,"subscription":"Claude Max (work)","home":"/var/lib/derm/agents/max"},
+  {"name":"derm-plus","uid":61002,"subscription":"ChatGPT Plus","home":"/var/lib/derm/agents/plus"}]}"#;
 
 struct Setup {
     d: Dir,
@@ -156,9 +156,9 @@ fn go_with(
     let env = |_: &str| None;
     let mut ctx = Ctx {
         registry: st.d.0.join("agents.json"),
+        registry_root: st.d.0.clone(),
         settings: st.d.0.join("settings.json"),
         registry_owner: me(),
-        me: me(),
         sudo: st.sudo.clone(),
         sh: PathBuf::from("/bin/sh"),
         path_env: format!("{}:/usr/bin:/bin", st.d.0.join("bin").display()),
@@ -190,6 +190,7 @@ fn sudo_log(st: &Setup) -> String {
 
 // ---- the registry (section 2's contract) ----
 
+#[cfg(target_os = "linux")]
 #[test]
 fn the_registry_parses_whole_or_not_at_all() {
     let a = registry::parse(REGISTRY).unwrap();
@@ -202,46 +203,60 @@ fn the_registry_parses_whole_or_not_at_all() {
         r#"{"version":1,"group":"derm-agents"}"#,
         // One bad entry refuses the whole file.
         r#"{"version":1,"group":"derm-agents","accounts":[
-          {"name":"derm-agent-ok","uid":61001,"subscription":"x","home":"/h"},
+          {"name":"derm-ok","uid":61001,"subscription":"x","home":"/var/lib/derm/agents/ok"},
           {"name":"root","uid":0,"subscription":"x","home":"/root"}]}"#,
-        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-agent-UP","uid":5,"subscription":"x","home":"/h"}]}"#,
-        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-agent-a","uid":0,"subscription":"x","home":"/h"}]}"#,
-        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-agent-a","uid":5,"subscription":"x","home":"h"}]}"#,
-        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-agent-a","uid":5,"subscription":"x","home":"/a/../b"}]}"#,
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-UP","uid":5,"subscription":"x","home":"/var/lib/derm/agents/UP"}]}"#,
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-a","uid":0,"subscription":"x","home":"/var/lib/derm/agents/a"}]}"#,
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-a","uid":5,"subscription":"x","home":"h"}]}"#,
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-a","uid":5,"subscription":"x","home":"/a/../b"}]}"#,
         r#"{"version":1,"group":"derm-agents","accounts":[
-          {"name":"derm-agent-a","uid":5,"subscription":"x","home":"/h"},
-          {"name":"derm-agent-b","uid":5,"subscription":"y","home":"/i"}]}"#,
+          {"name":"derm-a","uid":5,"subscription":"x","home":"/var/lib/derm/agents/a"},
+          {"name":"derm-b","uid":5,"subscription":"y","home":"/var/lib/derm/agents/b"}]}"#,
+        // The lanes' first form, a slug over 15, and a reserved slug.
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-agent-a","uid":5,"subscription":"x","home":"/var/lib/derm/agents/agent-a"}]}"#,
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-abcdefghijklmnop","uid":5,"subscription":"x","home":"/var/lib/derm/agents/abcdefghijklmnop"}]}"#,
+        r#"{"version":1,"group":"derm-agents","accounts":[{"name":"derm-agents","uid":5,"subscription":"x","home":"/var/lib/derm/agents/agents"}]}"#,
         "not json",
     ] {
         assert!(registry::parse(bad).is_err(), "{bad}");
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_registry_others_can_write_or_that_is_a_link_or_not_roots_is_not_used() {
     use std::os::unix::fs::PermissionsExt;
     let st = setup("reg", false);
     let reg = st.d.0.join("agents.json");
-    assert_eq!(registry::load(&reg, me()).unwrap().len(), 2);
+    let root = &st.d.0;
+    assert_eq!(registry::load(&reg, root, me()).unwrap().len(), 2);
     // Not the owner the reader requires (root, outside tests).
-    let e = registry::load(&reg, me().wrapping_add(1)).unwrap_err();
+    let e = registry::load(&reg, root, me().wrapping_add(1)).unwrap_err();
     assert!(
-        e.contains("not root-owned") && e.contains("derm agents add"),
+        e.contains("not owned by uid") && e.contains("derm agents add"),
         "{e}"
     );
     for mode in [0o664, 0o646] {
         std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(mode)).unwrap();
-        assert!(registry::load(&reg, me()).is_err(), "{mode:o}");
+        assert!(registry::load(&reg, root, me()).is_err(), "{mode:o}");
     }
     std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(0o644)).unwrap();
     let link = st.d.0.join("link.json");
     std::os::unix::fs::symlink(&reg, &link).unwrap();
-    assert!(registry::load(&link, me())
+    assert!(registry::load(&link, root, me())
         .unwrap_err()
-        .contains("not a regular file"));
+        .contains("is a link"));
+    // A folder above it that others can write (L1's rule, now the only one).
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(registry::load(&reg, root, me())
+        .unwrap_err()
+        .contains("can be written by group or others"));
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
     // No file: no accounts, no complaint.
-    assert_eq!(registry::load(&st.d.0.join("none.json"), me()), Ok(vec![]));
+    assert_eq!(
+        registry::load(&st.d.0.join("none.json"), root, me()),
+        Ok(vec![])
+    );
     // `list` acts as if there were none and names the fix.
     std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(0o666)).unwrap();
     let r = go(&st, &["list"], |_| {});
@@ -254,7 +269,7 @@ fn a_registry_others_can_write_or_that_is_a_link_or_not_roots_is_not_used() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn the_chats_account_is_the_flag_then_agents_default_then_a_refusal() {
     use std::os::unix::fs::PermissionsExt;
@@ -281,22 +296,32 @@ fn the_chats_account_is_the_flag_then_agents_default_then_a_refusal() {
     )
     .unwrap();
     std::fs::set_permissions(&set, std::fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(registry::default_slug(&set, me()), Ok(Some("plus".into())));
+    assert_eq!(registry::default_slug(&set), Ok(Some("plus".into())));
     let r = go(&st, &["list"], |_| {});
-    assert!(r.out.contains("derm-agent-plus (default)"), "{}", r.out);
+    assert!(r.out.contains("derm-plus (default)"), "{}", r.out);
     std::fs::set_permissions(&set, std::fs::Permissions::from_mode(0o620)).unwrap();
-    assert!(registry::default_slug(&set, me()).is_err());
+    assert!(registry::default_slug(&set).is_err());
     std::fs::set_permissions(&set, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::fs::write(&set, r#"{"agents":{"default":"../x"}}"#).unwrap();
-    assert!(registry::default_slug(&set, me()).is_err());
+    assert!(registry::default_slug(&set).is_err());
 }
 
 #[test]
 fn slugs_and_labels() {
-    for ok in ["a", "max-2", "abcdefghijklmnopqrstuvwx"] {
+    for ok in ["a", "max-2", "abcdefghijklmno", "agentx"] {
         assert!(registry::slug_ok(ok), "{ok}");
     }
-    for bad in ["", "A", "a_b", "a.b", "abcdefghijklmnopqrstuvwxy", "é"] {
+    for bad in [
+        "",
+        "A",
+        "a_b",
+        "a.b",
+        "abcdefghijklmnop",
+        "é",
+        "agent",
+        "agents",
+        "agent-x",
+    ] {
         assert!(!registry::slug_ok(bad), "{bad}");
     }
     assert!(registry::label_ok("Claude Max (work) — Tony's"));
@@ -385,8 +410,14 @@ fn add_is_refused_inside_a_chat_and_for_a_bad_slug_label_or_a_taken_slug() {
         &["add", "work"],
         &["add", "--subscription", "x"],
         &["add", "a", "b", "--subscription", "x"],
-        // useradd's 32 characters (lane L2): derm-agent- and 22 more.
-        &["add", "abcdefghijklmnopqrstuv", "--subscription", "x"],
+        // 16: one more than Windows' 20 characters leave after derm-, the
+        // same slug on every system (section 2 as integration narrowed it).
+        &["add", "abcdefghijklmnop", "--subscription", "x"],
+        // Reserved: wave 5's derm-agent, the group derm-agents, and
+        // derm-agent-<x>, wave 5's sudoers file for a person x.
+        &["add", "agent", "--subscription", "x"],
+        &["add", "agents", "--subscription", "x"],
+        &["add", "agent-tonyg", "--subscription", "x"],
     ] {
         assert_eq!(go(&st, args, |_| {}).code, 2, "{args:?}");
     }
@@ -420,7 +451,7 @@ fn after_a_yes_add_runs_the_installer_package_it_showed_through_sudo() {
     );
     // The stand-in adds no account, so derm says so.
     assert_eq!(r.code, 1, "{} {}", r.out, r.err);
-    assert!(r.out.contains("does not hold derm-agent-work"), "{}", r.out);
+    assert!(r.out.contains("does not hold derm-work"), "{}", r.out);
     assert_eq!(r.asked, 1);
     assert_eq!(
         std::fs::read_to_string(&got).unwrap(),
@@ -518,9 +549,9 @@ fn installer_writes_the_package_into_a_new_folder() {
     let env = |_: &str| None;
     let mut ctx = Ctx {
         registry: PathBuf::from("/nonexistent"),
+        registry_root: PathBuf::from("/"),
         settings: PathBuf::from("/nonexistent"),
         registry_owner: 0,
-        me: 0,
         sudo: PathBuf::from("/nonexistent"),
         sh: PathBuf::from("/bin/sh"),
         path_env: String::new(),
@@ -574,7 +605,7 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(
         r.out.contains(
-            r#"derm-agent-max ("Claude Max (work)"): claude-code signed in, codex not signed in"#
+            r#"derm-max ("Claude Max (work)"): claude-code signed in, codex not signed in"#
         ),
         "{}",
         r.out
@@ -587,15 +618,12 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     );
     // Asked as the account, non-interactively, by stat(2) only.
     let log = sudo_log(&st);
-    assert!(
-        log.contains("-n -H -u derm-agent-max -- /bin/sh -c"),
-        "{log}"
-    );
+    assert!(log.contains("-n -H -u derm-max -- /bin/sh -c"), "{log}");
     assert!(!log.contains("cat ") && !log.contains("<"), "{log}");
     // Every account when none is named; the warning only with a Claude sign-in.
     std::fs::remove_file(st.home.join(".claude/.credentials.json")).unwrap();
     let r = go(&st, &["status"], |_| {});
-    assert!(r.out.contains("derm-agent-max") && r.out.contains("derm-agent-plus"));
+    assert!(r.out.contains("derm-max") && r.out.contains("derm-plus"));
     assert!(!r.out.contains("individual usage"), "{}", r.out);
 }
 
@@ -722,7 +750,7 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
     );
     let log = sudo_log(&st);
     assert!(
-        log.starts_with("-u derm-agent-max -i -- /usr/bin/env HTTPS_PROXY=http://127.0.0.1:"),
+        log.starts_with("-u derm-max -i -- /usr/bin/env HTTPS_PROXY=http://127.0.0.1:"),
         "{log}"
     );
     // Only derm's fixed variables reach sudo; none of the person's keys.
@@ -750,8 +778,7 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
         );
     }
     assert!(
-        r.out
-            .contains("derm-agent-max has claude-code's sign-in file"),
+        r.out.contains("derm-max has claude-code's sign-in file"),
         "{}",
         r.out
     );
@@ -1062,14 +1089,10 @@ mod chain_for_accounts {
 
     #[test]
     fn an_agent_accounts_chat_is_brokered_and_no_other_unbounded_chat_is() {
-        assert!(chain::brokered_for("whole", "none", Some("derm-agent-max")));
+        assert!(chain::brokered_for("whole", "none", Some("derm-max")));
         assert!(!chain::brokered_for("whole", "none", None));
-        assert!(!chain::brokered_for("whole", "sbx", Some("derm-agent-max")));
-        assert!(!chain::brokered_for(
-            "standard",
-            "sbx",
-            Some("derm-agent-max")
-        ));
+        assert!(!chain::brokered_for("whole", "sbx", Some("derm-max")));
+        assert!(!chain::brokered_for("standard", "sbx", Some("derm-max")));
         assert_eq!(
             chain::brokered("whole", "none"),
             chain::brokered_for("whole", "none", None)
@@ -1083,7 +1106,7 @@ mod chain_for_accounts {
             entry("gh", From::Env("GH_TOKEN".into())),
             "dermsecret_gh_0123456789abcdef".to_string(),
         )];
-        let p = chain::plan_for(&input("whole", "none", &sec), Some("derm-agent-max")).unwrap();
+        let p = chain::plan_for(&input("whole", "none", &sec), Some("derm-max")).unwrap();
         assert!(p.brokered);
         let get = |k: &str| p.env.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
         assert_eq!(get("GH_TOKEN"), Some("dermsecret_gh_0123456789abcdef"));
@@ -1093,7 +1116,7 @@ mod chain_for_accounts {
         assert!(p.srt_network.is_none());
         let line = p.line.unwrap();
         assert!(
-            line.contains("as derm-agent-max, whose own network is loopback only"),
+            line.contains("as derm-max, whose own network is loopback only"),
             "{line}"
         );
         // The same chat with no account is not brokered, as before.
@@ -1108,11 +1131,11 @@ mod chain_for_accounts {
             entry("claude", From::Env("CLAUDE_CODE_OAUTH_TOKEN".into())),
             "dermsecret_claude_0123456789abcdef".to_string(),
         )];
-        let e = chain::plan_for(&input("whole", "none", &sec), Some("derm-agent-max")).unwrap_err();
+        let e = chain::plan_for(&input("whole", "none", &sec), Some("derm-max")).unwrap_err();
         assert!(e.contains("derm agents login claude-code"), "{e}");
         // Under sbx nothing is brokered at all (case 218), as before.
         assert!(
-            !chain::plan_for(&input("whole", "sbx", &sec), Some("derm-agent-max"))
+            !chain::plan_for(&input("whole", "sbx", &sec), Some("derm-max"))
                 .unwrap()
                 .brokered
         );

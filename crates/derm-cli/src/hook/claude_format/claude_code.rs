@@ -96,6 +96,7 @@ pub fn handle_pre(input: &Map<String, Value>, deps: &Deps) -> Reply {
             tool: &answer.normalized_tool,
             decision,
             policy_action: answer.action,
+            permission: answer.permission,
             reason: &reason,
             redacted: answer.redacted,
             join: call.tool_use_id.as_deref().map(|t| ("toolUseId", t)),

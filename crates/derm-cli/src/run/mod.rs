@@ -38,9 +38,9 @@ mod preflight;
 // `run/` is integration's in wave 5.
 pub(crate) mod boundary; // lane T (pub(crate) for lane W's `derm setup sandbox`, request T-8)
 mod tap; // lane S
-mod user; // lane V
-          // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
-          // part 3): the Standard tier, lane 6A's. The stub changes nothing.
+pub(crate) mod user; // lane V; the accounts build reads root's file from here (one reader, L1-8)
+                     // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
+                     // part 3): the Standard tier, lane 6A's. The stub changes nothing.
 mod broker;
 pub(crate) mod claude_gate; // fix pass 6, note BE section 1.5 (e); pub(crate) for `derm kit register`
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
@@ -197,6 +197,13 @@ pub(crate) struct Pipes {
 /// `derm acp`'s part: given the pipes, it starts its threads and returns
 /// them; `derm run` joins them after the harness exits.
 pub(crate) type StdioFilter<'a> = &'a dyn Fn(Pipes) -> Vec<std::thread::JoinHandle<()>>;
+
+/// `derm landlock -- <program> <args>` (the accounts build, request L1-3):
+/// the helper `derm run` starts as the chat's agent account.
+#[cfg(target_os = "linux")]
+pub(crate) fn landlock_main(args: &[String]) -> u8 {
+    user::landlock::enter_main(args)
+}
 
 pub fn main(argv: &[String]) -> u8 {
     match run(argv, &RunEnv::real()) {
@@ -1950,6 +1957,23 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         });
         sink
     });
+    // The agent account, decided once (the accounts build; lane L4's R4):
+    // the broker brokers an account's chat and puts its trust files in
+    // /tmp, which the chat's Landlock domain reads; the launch below runs it.
+    #[cfg(target_os = "linux")]
+    let account = user::chat_account(a.boundary.name(), a.account.as_deref(), &home)?;
+    #[cfg(target_os = "linux")]
+    let (account_name, account_slug) = (
+        account.as_ref().map(|x| x.name.clone()),
+        account.as_ref().map(|x| x.slug().to_string()),
+    );
+    #[cfg(not(target_os = "linux"))]
+    let (account_name, account_slug): (Option<String>, Option<String>) = (None, None);
+    let broker_temp = if account_name.is_some() {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
     let mut chat_broker = broker::wire(
         &broker::Chat {
             chat: &chat,
@@ -1958,7 +1982,8 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             boundary: a.boundary.name(),
             home: Path::new(&home),
             dry_run: a.dry_run,
-            temp: &std::env::temp_dir(),
+            temp: &broker_temp,
+            account: account_name.as_deref(),
         },
         &mut p,
         &|k| std::env::var(k).ok(),
@@ -2187,6 +2212,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             daemon_socket: daemon_socket_text.as_deref(),
             token: token.as_deref(),
             policy: &policy_path,
+            account: account_slug.as_deref(),
         },
     )?;
     // Who it runs as, once lane V's seam has decided (box test w5, BW5-16:

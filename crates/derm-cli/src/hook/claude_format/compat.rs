@@ -662,6 +662,7 @@ pub fn handle_pre(d: &Dialect, input: &Map<String, Value>, deps: &Deps) -> Reply
             tool: &out.answer.normalized_tool,
             decision,
             policy_action: out.answer.action,
+            permission: out.answer.permission,
             reason: &out.reason,
             redacted: out.answer.redacted,
             join: Some(match &read.call_id {

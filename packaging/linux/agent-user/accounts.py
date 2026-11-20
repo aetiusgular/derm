@@ -36,15 +36,19 @@ UNIT = "/etc/systemd/system/derm-agents-nft.service"
 MARKER = "/run/derm/agents-nft.loaded"
 HELPER = "/usr/local/lib/derm/agents.py"
 GROUP = "derm-agents"
-PREFIX = "derm-agent-"
+PREFIX = "derm-"
 HOMES = "/var/lib/derm/agents"
 TABLE = "derm_agents"
-# The contract allows 24 (plans/parallel_build_accounts.md section 2), but
-# useradd refuses a login name over 32 characters (shadow 4.13 on Ubuntu
-# 24.04, run: 33 characters gave "invalid user name"), and "derm-agent-" is
-# 11 of them. Readers may accept 24; the installer makes nothing over 21.
-SLUG_RE = re.compile(r"[a-z0-9-]{1,24}")
-SLUG_MAX = 21
+# One form on every system (plans/parallel_build_accounts.md section 2, as
+# integration narrowed it from acct_W section 7 and Tony's call of 20 Nov,
+# acct_W 12.1): Windows takes a local account name of at most 20 characters
+# (USER_INFO_1), so derm-<slug> leaves 15. useradd's own limit is 32
+# (shadow 4.13, run by lane L2).
+SLUG_MAX = 15
+# derm-agent is wave 5's agents' user (install.sh --owner) and derm-agents
+# the group every account is in; a slug starting agent- would give
+# derm-agent-<x>, the name of wave 5's sudoers file for a person x.
+RESERVED = ("agent", "agents")
 LABEL_MAX = 120
 # TEST-NET-1 and the documentation prefix (RFC 5737, RFC 3849): nothing
 # answers there, so a probe that is let through reaches no one.
@@ -60,10 +64,12 @@ class Refused(Exception):
 
 
 def slug_problem(slug):
-    if not SLUG_RE.fullmatch(slug or ""):
-        return "a slug is 1 to 24 of a-z, 0-9 and -"
+    if not re.fullmatch(r"[a-z0-9-]+", slug or ""):
+        return "a slug is 1 to 15 of a-z, 0-9 and -"
     if len(slug) > SLUG_MAX:
-        return f"a slug is at most {SLUG_MAX} characters here: useradd takes 32 and {PREFIX!r} is 11"
+        return f"a slug is at most {SLUG_MAX} characters: Windows takes 20 characters for an account name and {PREFIX!r} is 5, and the slug is the same on every system"
+    if slug in RESERVED or slug.startswith("agent-"):
+        return f"the slug {slug!r} is reserved: derm-agent is wave 5's agents' user and derm-agents the accounts' group"
     return None
 
 
@@ -134,7 +140,7 @@ def anchor_shape_problem(data):
         if not isinstance(a, dict) or set(a) != {"name", "uid", "subscription", "home"}:
             return "an account is not exactly name, uid, subscription and home"
         name = a["name"]
-        if not isinstance(name, str) or not name.startswith(PREFIX) or not SLUG_RE.fullmatch(name[len(PREFIX):]):
+        if not isinstance(name, str) or not name.startswith(PREFIX) or slug_problem(name[len(PREFIX):]):
             return f"account name {name!r} is not {PREFIX}<slug>"
         slug = name[len(PREFIX):]
         if not isinstance(a["uid"], int) or isinstance(a["uid"], bool) or a["uid"] <= 0:
@@ -388,7 +394,7 @@ def check_probe(rep, data):
     me = os.getuid()
     names = {a["uid"]: a["name"] for a in (data or {}).get("accounts", [])}
     if me not in names:
-        rep.fail("probe", f"uid {me} is not an agent account", "run it as one: sudo -n -u derm-agent-<slug> python3 -I " + HELPER + " check --probe")
+        rep.fail("probe", f"uid {me} is not an agent account", "run it as one: sudo -n -u derm-<slug> python3 -I " + HELPER + " check --probe")
         return
     # Loopback: a UDP socket of our own on 127.0.0.1 takes the datagram.
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

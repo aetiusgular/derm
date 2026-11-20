@@ -32,7 +32,7 @@ function shape(data: unknown): string | null {
 }
 
 const account = (slug: string, uid: number, extra: Record<string, unknown> = {}) => ({
-  name: `derm-agent-${slug}`,
+  name: `derm-${slug}`,
   uid,
   subscription: "Claude Max",
   home: `/var/lib/derm/agents/${slug}`,
@@ -40,12 +40,19 @@ const account = (slug: string, uid: number, extra: Record<string, unknown> = {})
 });
 
 describe.skipIf(process.platform !== "linux")("agent accounts (Linux)", () => {
-  it("takes slugs of a-z, 0-9 and - up to the 21 useradd leaves", () => {
-    for (const ok of ["a", "max-1", "0", "-", "abcdefghijklmnopqrstu"]) expect(py("valid-slug", ok).status, ok).toBe(0);
-    for (const bad of ["", "A", "x_y", "../a", "a b", "a.b", "abcdefghijklmnopqrstuv", "é"]) {
+  it("takes slugs of a-z, 0-9 and - up to 15, the same on every system", () => {
+    for (const ok of ["a", "max-1", "0", "-", "abcdefghijklmno", "agentx", "my-agent"]) expect(py("valid-slug", ok).status, ok).toBe(0);
+    for (const bad of ["", "A", "x_y", "../a", "a b", "a.b", "abcdefghijklmnop", "é"]) {
       expect(py("valid-slug", bad).status, bad).toBe(1);
     }
-    expect(py("valid-slug", "abcdefghijklmnopqrstuv").stderr).toContain("useradd takes 32");
+    expect(py("valid-slug", "abcdefghijklmnop").stderr).toContain("20 characters");
+    // derm-agent is wave 5's agents' user, derm-agents the group; a slug
+    // starting agent- would make derm-agent-<x>, wave 5's sudoers file name.
+    for (const reserved of ["agent", "agents", "agent-tonyg"]) {
+      const r = py("valid-slug", reserved);
+      expect(r.status, reserved).toBe(1);
+      expect(r.stderr).toContain("reserved");
+    }
   });
 
   it("takes a label shown as typed and refuses one that would not be", () => {
@@ -63,7 +70,7 @@ describe.skipIf(process.platform !== "linux")("agent accounts (Linux)", () => {
     expect(shape({ ...good, group: "docker" })).toContain("group");
     expect(shape({ ...good, accounts: [account("a", 996, { shell: "/bin/sh" })] })).toContain("exactly name, uid");
     expect(shape({ ...good, accounts: [{ ...account("a", 996), home: "/home/a" }] })).toContain("home");
-    expect(shape({ ...good, accounts: [{ ...account("a", 996), name: "root" }] })).toContain("derm-agent-");
+    expect(shape({ ...good, accounts: [{ ...account("a", 996), name: "root" }] })).toContain("derm-");
     expect(shape({ ...good, accounts: [account("a", 0)] })).toContain("uid");
     expect(shape({ ...good, accounts: [account("a", 996), account("b", 996)] })).toContain("twice");
     expect(shape({ ...good, accounts: [account("a", 996, { subscription: "a‮b" })] })).toContain("label");
@@ -135,13 +142,13 @@ describe.skipIf(process.platform !== "linux")("agent accounts (Linux)", () => {
       encoding: "utf8",
     });
     expect(r.status, r.stderr).toBe(0);
-    for (const step of ["1. /usr/local/lib/derm/agents.py", "2. the group derm-agents", "3. the user derm-agent-max1", "4. /etc/derm/agents.json", "5. /etc/derm/agents.nft", "6. /etc/systemd/system/derm-agents-nft.service", "7. /etc/sudoers.d/derm-agent-max1"]) {
+    for (const step of ["1. /usr/local/lib/derm/agents.py", "2. the group derm-agents", "3. the user derm-max1", "4. /etc/derm/agents.json", "5. /etc/derm/agents.nft", "6. /etc/systemd/system/derm-agents-nft.service", "7. /etc/tmpfiles.d/derm-accounts-", "8. /etc/sudoers.d/derm-max1"]) {
       expect(r.stdout).toContain(step);
     }
-    expect(r.stdout).toContain(`${owner} ALL=(derm-agent-max1) NOPASSWD:SETENV: ALL`);
+    expect(r.stdout).toContain(`${owner} ALL=(derm-max1) NOPASSWD:SETENV: ALL`);
     const u = spawnSync(join(dir, "uninstall.sh"), ["--account", "max1", "--dry-run"], { encoding: "utf8" });
     expect(u.status, u.stderr).toBe(0);
-    expect(u.stdout).toContain("the user derm-agent-max1");
+    expect(u.stdout).toContain("the user derm-max1");
   });
 
   it("refuses bad input before it asks or changes anything", () => {

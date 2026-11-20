@@ -27,8 +27,10 @@ The first line is `hello`:
 
 ```
 {"id":1,"op":"decide","call":{"tool":"bash","input":{"command":"ls"},"chat":"c-1","toolUseId":"t1","fullAccess":false,"description":null}}
-{"id":1,"ok":true,"action":"allow","normalizedTool":"bash","reason":"rule bash allow","updatedInput":null,"redacted":0,"askTimeoutSeconds":60}
+{"id":1,"ok":true,"action":"allow","normalizedTool":"bash","reason":"rule bash allow","permission":null,"updatedInput":null,"redacted":0,"askTimeoutSeconds":60}
 ```
+
+`permission` (the accounts build, lane L3's request 3): the kebab id of the permission an ask or deny names (`docs/permissions.md`, "The name in each answer"; `derm_core::policy::Permission::id`), or null; the reason starts with the same name. A plugin reads it from here, never from the reason text.
 
 `call` is `gate::core::GateCall` (`tool` as the agent gave it, `input` the tool's input, `chat`, `toolUseId`, `fullAccess` where the plugin knows it, else `DERM_FULL_ACCESS`); `description` is the tool's description where the host shows one (Pi), for the description pin (case 96). The reply is `gate::core::decide_call`'s `GateAnswer`, one decide path with `derm hook` and `derm acp` (case 229). The co-process posts the decision's `approval` record itself (contracts/events.md section 4, `gate::daemon::post_event`, the id from `decision_id`), and the `install.call` records for an install (`gate::core::install_events`); the plugin posts neither. A plugin that keeps its own records sends `"record": false` (derm-pi: its records are the decision notices its emitter sends the daemon); then the co-process posts nothing to the daemon, and when no daemon takes the chat (a `hello` with its token fails) it keeps the light tier's record of the outcome itself, in `~/.derm/local/<chat>.jsonl`, and a record it cannot keep turns the answer into a deny, as for every gate (case 249; box test w6, BW6-3). `approve` with `"record": false` does the same for its outcome, and for `harness` keeps the ask before the host's own prompt shows.
 

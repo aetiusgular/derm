@@ -28,6 +28,9 @@ struct Expect {
     action: Action,
     normalized_tool: String,
     reason_prefix: String,
+    /// The permission's kebab id, or absent (lane L3's request 6).
+    #[serde(default)]
+    permission: Option<String>,
 }
 
 fn load() -> (PolicyFile, Vec<Case>) {
@@ -176,7 +179,14 @@ fn every_case_carries_its_permission_and_keeps_its_decision() {
             Some(p) => d.reason.starts_with(&p.prefix()),
             None => Permission::of_reason(&d.reason).is_none(),
         };
-        if d.action != case.expect.action || d.permission != want || !prefixed {
+        // The fixture says it (lane L3's request 6), and the contract's
+        // reason forms say the same (`expected`): two sources, one answer.
+        let listed = case.expect.permission.as_deref();
+        if d.action != case.expect.action
+            || d.permission != want
+            || d.permission.map(|p| p.id()) != listed
+            || !prefixed
+        {
             misses.push(format!(
                 "case {}: got {:?} {:?} {:?}, want {:?} {want:?}",
                 case.id, d.action, d.permission, d.reason, case.expect.action

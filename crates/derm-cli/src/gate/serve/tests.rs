@@ -1194,3 +1194,56 @@ fn approvals_check_refuses_a_link_and_a_file() {
         .unwrap()
         .contains("not a folder"));
 }
+
+/// Lane L3's request 3 (contracts/gate-serve.md section 2.1): the decide
+/// reply carries the answer's permission, so a plugin need not parse the
+/// reason; an allow carries none.
+#[test]
+fn the_decide_reply_names_its_permission() {
+    let policy = json!({"version": 1, "rules": [{"tool": "bash", "action": "allow"}]});
+    let se = session(&policy.to_string(), &[]);
+    let r = run_lines(
+        &se,
+        "pi",
+        &[
+            hello("pi"),
+            decide(1, "bash", json!({"command": "cat .aws/credentials"})),
+            decide(2, "bash", json!({"command": "ls"})),
+            json!({"id": 3, "op": "approve",
+                "call": {"tool": "bash", "input": {"command": "cat .aws/credentials"}, "chat": "c-1", "toolUseId": "t1"},
+                "answer": {"action": "ask", "normalizedTool": "bash", "reason": "secrets, input names a secret path (.aws/)", "redacted": 0, "askTimeoutSeconds": 1},
+                "canAsk": false}),
+        ],
+        no_approver(),
+    );
+    assert_eq!(r.replies[1]["permission"], "secrets", "{:?}", r.replies[1]);
+    assert!(r.replies[1]["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("secrets, "));
+    assert_eq!(r.replies[2]["action"], "allow");
+    assert_eq!(
+        r.replies[2]["permission"],
+        Value::Null,
+        "{:?}",
+        r.replies[2]
+    );
+    // Lane L3's request 2: the approval record carries it too, and an
+    // allow's record has no such key.
+    let ask = r
+        .posted
+        .iter()
+        .find(|e| e.kind == "approval" && e.detail["policyAction"] == "ask")
+        .expect("the ask's record");
+    assert_eq!(ask.detail["permission"], "secrets", "{:?}", ask.detail);
+    let allow = r
+        .posted
+        .iter()
+        .find(|e| e.kind == "approval" && e.detail["policyAction"] == "allow")
+        .expect("the allow's record");
+    assert!(
+        allow.detail.get("permission").is_none(),
+        "{:?}",
+        allow.detail
+    );
+}

@@ -6,15 +6,16 @@
 #   sudo packaging/linux/agent-user/install.sh --account <slug> --subscription <label> \
 #        [--owner <you>] [--dry-run] [--yes]
 #
-# <slug>: 1 to 21 of a-z, 0-9 and - (the account is derm-agent-<slug>, and
-# useradd takes 32 characters). <label>: what you call the subscription, shown
-# back and never parsed ("Claude Max, personal").
+# <slug>: 1 to 15 of a-z, 0-9 and - (the account is derm-<slug>, the same
+# form on every system: Windows takes 20 characters); agent, agents and
+# agent-* are reserved. <label>: what you call the subscription, shown back
+# and never parsed ("Claude Max, personal").
 #
 # Each step is printed before it runs, with its undo:
 #   1. /usr/local/lib/derm/agents.py (root's, 0644): the helper the unit and
 #      derm's check run, copied from here and checked by hash.
 #   2. the group derm-agents (system group, no members listed).
-#   3. the user derm-agent-<slug>: system user, primary group derm-agents and
+#   3. the user derm-<slug>: system user, primary group derm-agents and
 #      no other group, home /var/lib/derm/agents/<slug> (0700), password
 #      locked, shell /bin/bash.
 #   4. /etc/derm/agents.json (root's, 0644): the account, exactly as the
@@ -25,7 +26,9 @@
 #      too: derm-egress resolves names.
 #   6. derm-agents-nft.service, enabled, so the table comes back at boot and
 #      after nftables.service flushes the ruleset.
-#   7. /etc/sudoers.d/derm-agent-<slug>: <you> may start programs as the
+#   7. /etc/tmpfiles.d/derm-accounts-<you>.conf: /run/derm-agent/<your uid>
+#      (0711, yours), the base of each chat's bridge, remade at boot.
+#   8. /etc/sudoers.d/derm-<slug>: <you> may start programs as the
 #      account without a password (derm run, derm agents login). Last, so
 #      nothing runs as the account before its table is in place.
 
@@ -80,14 +83,16 @@ done
 [[ "$OWNER" =~ $NAME_RE ]] || die "--owner must be a plain login name (got '$OWNER'); run with sudo or pass --owner"
 if [ "$DRY" = 0 ] && [ "$(id -u)" != 0 ]; then die "run as root (or with --dry-run)"; fi
 
-ACCOUNT="derm-agent-$SLUG"
+ACCOUNT="derm-$SLUG"
 HOME_DIR="$HOMES/$SLUG"
 COMMENT="derm agent $SLUG"
-SUDOERS="/etc/sudoers.d/derm-agent-$SLUG"
+SUDOERS="/etc/sudoers.d/derm-$SLUG"
 OWNER_UID="$(getent passwd "$OWNER" | cut -d: -f3)" || true
 [ -n "$OWNER_UID" ] || die "no user $OWNER"
+OWNER_GROUP="$(id -gn "$OWNER")"
+TMPFILES="/etc/tmpfiles.d/derm-accounts-$OWNER.conf"
 [ "$OWNER_UID" -ge 1000 ] || die "$OWNER has uid $OWNER_UID: the owner must be a person's account"
-case "$OWNER" in derm-agent*) die "the owner cannot be an agent account" ;; esac
+case "$OWNER" in derm-*) die "the owner cannot be an agent account" ;; esac
 
 # What exists already. An existing group is used only with no members listed;
 # an existing user only if this script made it, in this group.
@@ -119,9 +124,16 @@ if [ "$DRY" = 0 ] && [ "$YES" = 0 ]; then
 	read -r -p "Go ahead? [y/N] " answer
 	[ "$answer" = y ] || [ "$answer" = Y ] || die "stopped; nothing changed"
 fi
+# derm agents add runs this from a root-owned copy it removes when this ends
+# (lane L4's request R2), so an undo that names $HERE would name a folder
+# that is gone: name derm's own way to write the package out again instead.
+case "$HERE" in
+	/var/lib/derm-agents-install.*) UNDO_CMD="derm agents installer derm-agents-install && sudo derm-agents-install/uninstall.sh --account $SLUG" ;;
+	*) UNDO_CMD="sudo $HERE/uninstall.sh --account $SLUG" ;;
+esac
 DONE=0
 if [ "$DRY" = 0 ]; then
-	trap '[ "$DONE" = 1 ] || echo "install.sh: stopped before the end; undo what it did: sudo $HERE/uninstall.sh --account $SLUG" >&2' EXIT
+	trap '[ "$DONE" = 1 ] || echo "install.sh: stopped before the end; undo what it did: $UNDO_CMD" >&2' EXIT
 fi
 
 say "1. $HELPER (undo: rm, with the last account)"
@@ -194,7 +206,25 @@ else
 	echo "   boot. After a reboot run: sudo $NFT -f $RULES"
 fi
 
-say "7. $SUDOERS (undo: rm)"
+say "7. $TMPFILES (undo: rm, with the last account)"
+# The base of each chat's bridge (derm run, run/user/bridge.rs BASE_ROOT),
+# remade at boot: lane L1's request L1-5. The same folders as wave 5's
+# install.sh --owner makes, in a file of this form's own.
+tmpfiles="d /run/derm-agent 0755 root root -
+d /run/derm-agent/$OWNER_UID 0711 $OWNER $OWNER_GROUP -"
+echo "$tmpfiles" | sed 's/^/   /'
+if [ "$DRY" = 0 ]; then
+	printf '# derm: per-chat bridges for %s (agent accounts). Undo: uninstall.sh --account <the last slug>\n%s\n' "$OWNER" "$tmpfiles" >"$TMPFILES"
+	chmod 0644 "$TMPFILES"
+	if command -v systemd-tmpfiles >/dev/null; then
+		systemd-tmpfiles --create "$TMPFILES"
+	else
+		install -d -o root -g root -m 0755 /run/derm-agent
+		install -d -o "$OWNER" -g "$OWNER_GROUP" -m 0711 "/run/derm-agent/$OWNER_UID"
+	fi
+fi
+
+say "8. $SUDOERS (undo: rm)"
 rule="$OWNER ALL=($ACCOUNT) NOPASSWD:SETENV: ALL"
 echo "   $rule"
 if [ "$DRY" = 0 ]; then
@@ -210,6 +240,6 @@ say "done"
 cat <<EOF
 Check, as anyone:          $PY -I $HELPER check
 Check the kernel, as it:   sudo -n -u $ACCOUNT $PY -I $HELPER check --probe
-Sign it in to a harness:   derm agents login (lane L4); until then: sudo -u $ACCOUNT -i, then the harness's own login
-Undo:                      sudo $HERE/uninstall.sh --account $SLUG
+Sign it in to a harness:   derm agents login <harness> --account $SLUG
+Undo:                      $UNDO_CMD
 EOF

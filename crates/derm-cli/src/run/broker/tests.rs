@@ -56,6 +56,7 @@ fn chat<'a>(h: &'a Path, t: &'a Path, tier: &'a str, boundary: &'a str, dry: boo
         home: h,
         dry_run: dry,
         temp: t,
+        account: None,
     }
 }
 
@@ -195,6 +196,49 @@ fn a_dry_run_reads_no_value_and_starts_nothing() {
         .file_name()
         .to_string_lossy()
         .starts_with("derm-trust-")));
+}
+
+/// Lane L4's request R4: a chat run as an agent account with no other
+/// boundary is brokered (its own network is loopback only), and a Claude
+/// subscription token is refused there (note CB 4.1). A dry run, so no
+/// value is read and nothing starts.
+#[test]
+fn an_agent_account_chat_is_brokered_and_refuses_a_subscription_token() {
+    let (h, t, v) = home("acct");
+    secrets_file(
+        &h,
+        vec![entry("gh", From::File(v.to_string_lossy().into_owned()))],
+    );
+    let mut c = chat(&h, &t, "whole", "none", true);
+    c.account = Some("derm-max");
+    let mut p = Plan::default();
+    let b = wire(&c, &mut p, &no_env, None).unwrap();
+    assert!(b.record.is_none(), "brokered: {:?}", b.record);
+    assert!(p.env_set.iter().any(|(k, _)| k == "HTTPS_PROXY"));
+    assert!(
+        p.notes.iter().any(|n| n.contains("derm-max")),
+        "{:?}",
+        p.notes
+    );
+    // The same chat as the person is not brokered (case 218's rule).
+    let mut q = Plan::default();
+    let b = wire(&chat(&h, &t, "whole", "none", true), &mut q, &no_env, None).unwrap();
+    assert_eq!(b.record.unwrap()["brokered"], false);
+    // A subscription token is refused in the account's chat, and only there.
+    secrets_file(
+        &h,
+        vec![entry("claude", From::Env("CLAUDE_CODE_OAUTH_TOKEN".into()))],
+    );
+    let mut p = Plan::default();
+    let Err(e) = wire(&c, &mut p, &no_env, None) else {
+        panic!("a subscription token was carried in an account's chat");
+    };
+    assert!(
+        e.contains("subscription token") && e.contains("derm agents login"),
+        "{e}"
+    );
+    let mut p = Plan::default();
+    assert!(wire(&chat(&h, &t, "whole", "none", true), &mut p, &no_env, None).is_ok());
 }
 
 #[test]

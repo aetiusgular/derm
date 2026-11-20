@@ -80,11 +80,6 @@ pub const PACKAGE: &[(&str, &str)] = &[
     ),
 ];
 
-/// The longest slug the installer makes: useradd takes 32 characters and
-/// `derm-agent-` is 11 (lane L2, `install-account.sh:9`; run there). Readers
-/// keep the contract's 24.
-pub const ADD_SLUG_MAX: usize = 21;
-
 /// The script `add` runs as root: copy the package into a fresh root-owned
 /// folder under `$2`, check every file's sha256 there against the list derm
 /// read (`$3`), run `install.sh` with the interpreter its first line names
@@ -116,10 +111,12 @@ const PRESENT: &str = r#"if [ -f "$HOME/$1" ]; then exit 0; fi; exit 3"#;
 /// Where this command reads, what it runs, and what it may ask.
 pub(crate) struct Ctx<'a> {
     pub registry: PathBuf,
+    /// The folder the registry's trust starts at: `/` outside tests (every
+    /// folder from there to the file root's and writable by no one else).
+    pub registry_root: PathBuf,
     pub settings: PathBuf,
     /// The owner `/etc/derm/agents.json` must have: root.
     pub registry_owner: u32,
-    pub me: u32,
     pub sudo: PathBuf,
     pub sh: PathBuf,
     /// The `PATH` derm hands `sudo` (sudo then sets its own).
@@ -150,9 +147,9 @@ pub fn main(args: &[String]) -> u8 {
     let env = |k: &str| std::env::var(k).ok();
     let mut ctx = Ctx {
         registry: PathBuf::from(registry::PATH),
+        registry_root: PathBuf::from("/"),
         settings: Path::new(&home).join(".derm").join("settings.json"),
         registry_owner: 0,
-        me: me(),
         sudo: PathBuf::from("/usr/bin/sudo"),
         sh: PathBuf::from("/bin/sh"),
         path_env: "/usr/bin:/bin".into(),
@@ -170,13 +167,13 @@ pub fn main(args: &[String]) -> u8 {
     run(&mut ctx, args)
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn me() -> u32 {
     // SAFETY: geteuid takes no arguments and cannot fail.
     unsafe { libc::geteuid() }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
 fn me() -> u32 {
     0
 }
@@ -262,7 +259,7 @@ fn fail(ctx: &mut Ctx<'_>, code: u8, why: &str) -> u8 {
 
 /// The accounts, or none with the reason said once.
 fn accounts(ctx: &mut Ctx<'_>) -> Vec<Account> {
-    match registry::load(&ctx.registry, ctx.registry_owner) {
+    match registry::load(&ctx.registry, &ctx.registry_root, ctx.registry_owner) {
         Ok(a) => a,
         Err(why) => {
             let _ = writeln!(
@@ -275,7 +272,7 @@ fn accounts(ctx: &mut Ctx<'_>) -> Vec<Account> {
 }
 
 fn default_slug(ctx: &mut Ctx<'_>) -> Option<String> {
-    match registry::default_slug(&ctx.settings, ctx.me) {
+    match registry::default_slug(&ctx.settings) {
         Ok(s) => s,
         Err(why) => {
             let _ = writeln!(ctx.err, "derm agents: {why}");
@@ -378,11 +375,11 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         let _ = writeln!(ctx.err, "{USAGE}");
         return 2;
     };
-    if !registry::slug_ok(slug) || slug.len() > ADD_SLUG_MAX {
+    if !registry::slug_ok(slug) {
         return fail(
             ctx,
             2,
-            &format!("a slug is 1 to {ADD_SLUG_MAX} of a-z, 0-9 and - (useradd takes 32 characters, and derm-agent- is 11)"),
+            &format!("a slug is 1 to {} of a-z, 0-9 and -, the same on every system (Windows takes 20 characters for an account name, and derm- is 5); agent, agents and agent-* are reserved", registry::SLUG_MAX),
         );
     }
     if !registry::label_ok(&label) {
@@ -403,7 +400,7 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         return fail(
             ctx,
             1,
-            &format!("derm-agent-{slug} is set up already (`derm agents list`)"),
+            &format!("derm-{slug} is set up already (`derm agents list`)"),
         );
     }
     let (interp, sums) = match package_check(ctx.package) {
@@ -413,7 +410,7 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     let hash = sha256_hex(sums.as_bytes());
     let _ = writeln!(
         ctx.out,
-        "derm-agent-{slug} for the subscription \"{}\": the installer, as root, makes the account in group {}, its home, its entry in {}, the firewall table that keeps the account to loopback, and your sudoers rule to start it",
+        "derm-{slug} for the subscription \"{}\": the installer, as root, makes the account in group {}, its home, its entry in {}, the firewall table that keeps the account to loopback, and your sudoers rule to start it",
         registry::shown(&label),
         registry::GROUP,
         registry::PATH
@@ -489,10 +486,10 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
             ctx.out,
             "{}",
             if held {
-                format!("derm-agent-{slug} is set up; sign a harness in with `derm agents login <harness> --account {slug}`")
+                format!("derm-{slug} is set up; sign a harness in with `derm agents login <harness> --account {slug}`")
             } else {
                 format!(
-                    "the installer finished but {} does not hold derm-agent-{slug}",
+                    "the installer finished but {} does not hold derm-{slug}",
                     registry::PATH
                 )
             }

@@ -60,6 +60,7 @@ mod chat;
 #[cfg(target_os = "linux")]
 #[path = "../landlock/mod.rs"]
 pub(crate) mod landlock;
+pub(crate) mod slug;
 
 /// What `wrap_with` needs from `run_io` (lane V's request V-1).
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -76,6 +77,8 @@ pub(crate) struct Context<'a> {
     pub token: Option<&'a str>,
     /// The policy file the gate would read.
     pub policy: &'a str,
+    /// `derm run --account <slug>` (the accounts build, request L1-2).
+    pub account: Option<&'a str>,
 }
 
 /// Where `sudo` and `env` must be: root's, never found on `PATH` (case 37).
@@ -93,6 +96,38 @@ const RUN_AS_VAR: &str = "DERM_RUN_AS";
 /// The open bridge, kept until `finish` (or the process's exit).
 #[cfg(unix)]
 pub(super) static BRIDGE: Mutex<Option<bridge::Bridge>> = Mutex::new(None);
+
+/// The agent account a chat will run as, decided once before the broker
+/// and the launch (lane L4's request R4: the broker needs it, and the
+/// trust files must be where the account can read them): `--account`, else
+/// `agents.default`, else none when the machine has no accounts, else a
+/// refusal. `None` under a boundary, with `DERM_RUN_AS=you`, and off Linux.
+/// `wrap_with` takes the result as its `account` and decides the same way.
+#[cfg(target_os = "linux")]
+pub(crate) fn chat_account(
+    boundary: &str,
+    flag: Option<&str>,
+    home: &str,
+) -> Result<Option<accounts::Account>, (u8, String)> {
+    if boundary != "none" || run_as_you() {
+        return Ok(None);
+    }
+    let (found, warn) = accounts::load_default();
+    if let Some(w) = warn {
+        eprintln!("derm run: {w}");
+    }
+    if found.is_empty() && flag.is_none() {
+        return Ok(None);
+    }
+    let settings = Path::new(home).join(".derm").join("settings.json");
+    let (default, warn) = accounts::default_from(&settings);
+    if let Some(w) = warn {
+        eprintln!("derm run: {w}");
+    }
+    accounts::choose(&found, flag, default.as_deref())
+        .map(|a| a.cloned())
+        .map_err(|e| (1, format!("{e}; not starting the harness")))
+}
 
 /// Starts the harness as the agents' user when one is set up (module text).
 #[cfg(unix)]
@@ -115,7 +150,7 @@ pub(crate) fn wrap_with(launch: &mut Plan, ctx: &Context) -> Result<Option<Value
         if let Some(w) = warn {
             eprintln!("derm run: {w}");
         }
-        if !found.is_empty() || accounts::requested().is_some() {
+        if !found.is_empty() || ctx.account.is_some() {
             return chat::wrap(launch, ctx, &found, &mut chat::RealPerson::new());
         }
     }
@@ -756,6 +791,7 @@ mod tests {
                 daemon_socket: None,
                 token: None,
                 policy: "/home/tony/.derm/policy.json",
+                account: None,
             };
             assert_eq!(wrap_with(&mut p, &ctx), Ok(None));
         }

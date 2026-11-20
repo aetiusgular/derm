@@ -281,6 +281,8 @@ pub struct Decision<'a> {
     pub tool: &'a str,
     pub decision: &'a str,
     pub policy_action: Action,
+    /// The permission the policy's answer names (lane L3's request 2).
+    pub permission: Option<derm_core::policy::Permission>,
     pub reason: &'a str,
     pub redacted: usize,
     /// `toolUseId` or `callKey`, with its value.
@@ -297,6 +299,9 @@ impl Decision<'_> {
             Value::from(action_str(self.policy_action)),
         );
         detail.insert("reason".into(), Value::from(self.reason));
+        if let Some(p) = self.permission {
+            detail.insert("permission".into(), Value::from(p.id()));
+        }
         detail.insert("redacted".into(), Value::from(self.redacted));
         if let Some((k, v)) = self.join {
             detail.insert(k.into(), Value::from(v));

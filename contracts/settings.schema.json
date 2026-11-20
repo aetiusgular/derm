@@ -69,6 +69,12 @@
       "properties": { "default": { "enum": ["standard", "whole"], "default": "whole" } },
       "additionalProperties": false
     },
+    "agents": {
+      "description": "The accounts build (plans/parallel_build_accounts.md section 2). `default`: the agent account a `derm run --boundary none` chat runs as when no `--account` is given, on a machine with agent accounts (`/etc/derm/agents.json`). A slug, the same on every system; `agent`, `agents` and `agent-*` are reserved and name no account. derm run and derm agents read it (`crates/derm-cli/src/run/user/accounts.rs`).",
+      "type": "object",
+      "properties": { "default": { "type": ["string", "null"], "pattern": "^[a-z0-9-]{1,15}$" } },
+      "additionalProperties": false
+    },
     "taint": {
       "description": "Wave 6 lane 6D (the wave 6 base; contracts/policy.md section 9). `verdict`: what a call taint catches gets, for a chat whose start named none (`derm run --taint` chooses per chat, Tony's call of 12 Nov: all three verdicts, picked per task). `ask` (review) is the default until E1 measures the false positives (case 220); `deny` refuses; `record` marks and asks nothing. Taint never lowers an answer.",
       "type": "object",

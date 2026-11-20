@@ -124,7 +124,7 @@ pub(crate) fn wrap(
     if let Some(w) = warn {
         eprintln!("derm run: {w}");
     }
-    let flag = accounts::requested();
+    let flag = ctx.account.map(str::to_string);
     let acct = match accounts::choose(found, flag.as_deref(), default.as_deref()) {
         Ok(Some(a)) => a.clone(),
         Ok(None) => return Ok(None),
@@ -537,14 +537,14 @@ mod tests {
                 sudo: "/usr/bin/sudo",
                 env_tool: "/usr/bin/env",
                 helper: "/usr/local/bin/derm",
-                user: "derm-agent-max",
+                user: "derm-max",
                 path: "/var/lib/derm/agents/max/.local/bin:/usr/local/bin:/usr/bin:/bin",
                 program: "claude",
             },
             &set,
         );
         assert_eq!(p.program, "/usr/bin/sudo");
-        assert_eq!(&p.args[..3], &["-n", "-u", "derm-agent-max"]);
+        assert_eq!(&p.args[..3], &["-n", "-u", "derm-max"]);
         let kept = p.args[3].strip_prefix("--preserve-env=").unwrap();
         for n in [
             "DERM_CHAT_TOKEN",
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn an_account_that_is_not_a_user_here_is_refused_by_name() {
         let a = Account {
-            name: "derm-agent-nosuchacct".into(),
+            name: "derm-nosuchacct".into(),
             uid: 4_000_001,
             subscription: "x".into(),
             home: "/var/lib/derm/agents/nosuchacct".into(),
