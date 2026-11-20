@@ -91,7 +91,7 @@ describe("beforeTool (the SDK plugin)", () => {
   });
   itDerm("skips a denied call with the reason, never stop (case 79)", async () => {
     expect(await beforeTool(ctx("fetch_web_content", { url: "https://x" }), deps())).toEqual({ skip: true, reason: "derm: rule fetch_web_content deny" });
-    expect(await beforeTool(ctx("run_commands", { commands: ["git -c core.fsmonitor=./x status"] }), deps())).toEqual({ skip: true, reason: "derm: reject list: core.fsmonitor" });
+    expect(await beforeTool(ctx("run_commands", { commands: ["git -c core.fsmonitor=./x status"] }), deps())).toEqual({ skip: true, reason: "derm: files that run later, reject list: core.fsmonitor" });
     const out = await beforeTool(ctx("run_commands", { commands: ["ls"] }), deps());
     expect(out).toBeUndefined();
   });
@@ -122,7 +122,7 @@ describe("beforeTool (the SDK plugin)", () => {
   });
   itDerm("judges the input Cline will run (an earlier hook's rewrite), not the model's", async () => {
     const c: BeforeToolContext = { snapshot: {}, toolCall: { toolCallId: "c1", toolName: "run_commands", input: { commands: ["ls"] } }, input: { commands: ["export ANTHROPIC_BASE_URL=http://x"] } };
-    expect(await beforeTool(c, deps())).toEqual({ skip: true, reason: "derm: reject list: anthropic_base_url" });
+    expect(await beforeTool(c, deps())).toEqual({ skip: true, reason: "derm: network, reject list: anthropic_base_url" });
   });
   itDerm("fails closed inside the hook: bad input and a broken policy load skip the call", async () => {
     expect(await beforeTool({} as BeforeToolContext, deps())).toEqual({ skip: true, reason: "derm: tool call has no tool name" });
@@ -166,7 +166,7 @@ describe("shell as bash (cases 30, 82)", () => {
     }
   });
   itDerm("checks an argv entry as one command line, so the git checks see it (review P-S3)", async () => {
-    expect(await beforeTool(ctx("run_commands", { command: "git", args: ["-c", "core.fsmonitor=x", "init", "g"] }), deps())).toEqual({ skip: true, reason: "derm: reject list: core.fsmonitor" });
+    expect(await beforeTool(ctx("run_commands", { command: "git", args: ["-c", "core.fsmonitor=x", "init", "g"] }), deps())).toEqual({ skip: true, reason: "derm: files that run later, reject list: core.fsmonitor" });
     expect(await beforeTool(ctx("run_commands", { commands: [{ command: "git", args: ["-c", "core.hooksPath=/tmp/h", "status"] }] }), deps())).toMatchObject({ skip: true });
   });
   itDerm("case 30's tokens ask under an allow rule, through Cline's shell name", async () => {
@@ -187,7 +187,7 @@ describe("shell as bash (cases 30, 82)", () => {
 describe("answerRequest (the approval file)", () => {
   itDerm("an allow rule approves; a deny rule and the reject list do not", async () => {
     expect(await answerRequest({ toolName: "run_commands", input: { commands: ["ls"] }, toolCallId: "t1" }, deps())).toEqual({ approved: true });
-    expect(await answerRequest({ toolName: "run_commands", input: { commands: ["export ANTHROPIC_BASE_URL=x"] } }, deps())).toEqual({ approved: false, reason: "derm: reject list: anthropic_base_url" });
+    expect(await answerRequest({ toolName: "run_commands", input: { commands: ["export ANTHROPIC_BASE_URL=x"] } }, deps())).toEqual({ approved: false, reason: "derm: network, reject list: anthropic_base_url" });
   });
   itDerm("an ask is the approver's yes, else a deny (Cline's prompt is not reachable from the file)", async () => {
     daemon.setApprove("yes");

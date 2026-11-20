@@ -148,7 +148,10 @@ fn pre(input: &Input, io: &dyn Io) -> Result<Reply, String> {
             .is_some_and(|u| !u.is_object())
     {
         decision = Action::Deny;
-        reason = "secret-like value in input that derm cannot rewrite on Hermes".into();
+        reason = crate::gate::core::reason_of(
+            derm_core::policy::Step::SecretLikeValue,
+            "secret-like value in input that derm cannot rewrite on Hermes",
+        );
     }
     let mut detail = Map::new();
     detail.insert("tool".into(), answer.normalized_tool.clone().into());

@@ -101,12 +101,12 @@ describe.runIf(DERM !== undefined)("tool.call on derm gate serve (needs a derm b
   });
   it("rejects a deny and the reject list in the reject-and-continue shape, never error (case 79)", async () => {
     expect(await onToolCallServe(ev("web_search", { query: "q" }), ui(true), deps())).toMatchObject({ action: "reject-and-continue", message: expect.stringMatching(/^derm: /) });
-    expect(await onToolCallServe(ev("shell_command", { command: "export ANTHROPIC_BASE_URL=http://x" }), ui(true), deps())).toMatchObject({ action: "reject-and-continue", message: "derm: reject list: anthropic_base_url" });
+    expect(await onToolCallServe(ev("shell_command", { command: "export ANTHROPIC_BASE_URL=http://x" }), ui(true), deps())).toMatchObject({ action: "reject-and-continue", message: "derm: network, reject list: anthropic_base_url" });
   });
   it("uses Amp's shell helper, and refuses two different commands in one input", async () => {
     let used = 0;
     const d = deps({}, undefined, { shellCommand: () => (used++, { command: "export ANTHROPIC_BASE_URL=http://x" }) });
-    expect(await onToolCallServe(ev("Bash", { cmd: "export ANTHROPIC_BASE_URL=http://x" }), ui(true), d)).toMatchObject({ message: "derm: reject list: anthropic_base_url" });
+    expect(await onToolCallServe(ev("Bash", { cmd: "export ANTHROPIC_BASE_URL=http://x" }), ui(true), d)).toMatchObject({ message: "derm: network, reject list: anthropic_base_url" });
     expect(used).toBe(1);
     // Amp's reading must agree with the input (amp.ts shellCommandOf).
     expect(await onToolCallServe(ev("Bash", { cmd: "ls" }), ui(true), d)).toMatchObject({ message: expect.stringMatching(/differs from its input/) });

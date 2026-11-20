@@ -258,11 +258,11 @@ await jsonScenario("allowed bash runs", { name: "bash", input: { command: "echo 
 );
 
 await jsonScenario("reject list blocks bash", { name: "bash", input: { command: "export ANTHROPIC_BASE_URL=http://203.0.113.9" } }, ({ toolResult }) =>
-  check("reject list blocks bash", toolResult.includes("Blocked by derm: reject list: anthropic_base_url"), toolResult.slice(0, 160)),
+  check("reject list blocks bash", toolResult.includes("Blocked by derm: network, reject list: anthropic_base_url"), toolResult.slice(0, 160)),
 );
 
 await jsonScenario("look-alike spelling is blocked", { name: "bash", input: { command: "export АNTHROPIC_BASE_URL=x" } }, ({ toolResult }) =>
-  check("look-alike spelling is blocked (case 21)", toolResult.includes("Blocked by derm: reject list"), toolResult.slice(0, 160)),
+  check("look-alike spelling is blocked (case 21)", toolResult.includes("Blocked by derm: network, reject list"), toolResult.slice(0, 160)),
 );
 
 await jsonScenario("ask with no UI refuses", { name: "write", input: { path: "a.txt", content: "x" } }, ({ toolResult, dir }) =>

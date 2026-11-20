@@ -95,6 +95,16 @@ impl GateAnswer {
     }
 }
 
+/// `why` as a reason of `step`'s permission, from the one table
+/// (`derm_core::policy::permission_of`): for a dialect that writes a reason
+/// of its own outside a [`GateAnswer`].
+pub fn reason_of(step: policy::Step<'_>, why: &str) -> String {
+    match policy::permission_of(step) {
+        Some(p) => p.reason(why),
+        None => why.to_string(),
+    }
+}
+
 /// A policy as a dialect holds it: the file and why it is empty, if it is.
 #[derive(Clone, Debug, Default)]
 pub struct LoadedPolicy {
@@ -251,7 +261,8 @@ pub fn decide_call(loaded: &LoadedPolicy, call: &GateCall, env: &Env) -> GateAns
     // asks, before taint reads the answer.
     let answer = super::daemon_stop::adjust(decide_call_inner(loaded, call), call);
     let answer = super::taint::adjust(answer, call, env);
-    deny_ask_in_full_access(answer, call, env)
+    // P1: whatever an adjuster put first, the permission's name leads.
+    deny_ask_in_full_access(answer.named_first(), call, env)
 }
 
 /// Under full access an ask becomes a deny (case 83;
@@ -326,7 +337,10 @@ fn decide_call_inner(loaded: &LoadedPolicy, call: &GateCall) -> GateAnswer {
     if writes_or_runs {
         if answer.action == Action::Allow {
             answer.action = Action::Ask;
-            answer.reason = "secret-like value in input".into();
+            answer.name_reason(
+                policy::permission_of(policy::Step::SecretLikeValue),
+                "secret-like value in input".into(),
+            );
         }
         return answer;
     }

@@ -67,7 +67,7 @@ export async function onToolCallServe(event: ToolCallEvent, ctx: HandlerContext 
       updatedInput = undefined;
       if (action === "allow") {
         action = "ask";
-        reason = "secret-like value in input";
+        reason = "secrets, secret-like value in input";
       }
     }
     const asked = { ...answer, action, reason, updatedInput };
@@ -83,7 +83,7 @@ export async function onToolCallServe(event: ToolCallEvent, ctx: HandlerContext 
     else if (updatedInput === undefined) result = { action: "allow" };
     else if (isPlainObject(updatedInput)) result = { action: "modify", input: updatedInput };
     else {
-      resolved = { action: "deny", reason: "secret-like value in input that derm cannot rewrite" };
+      resolved = { action: "deny", reason: "secrets, secret-like value in input that derm cannot rewrite" };
       result = reject(resolved.reason);
     }
     // Queued, not waited for (`wait: false`): what Amp does with a slow

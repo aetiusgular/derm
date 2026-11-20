@@ -222,8 +222,8 @@ export function createGate(options: GateOptions = {}) {
         if (index !== undefined) d = { ...d, action: "ask", reason: `${index} is the memory index: memory_propose writes it`, updatedInput: undefined };
         if (d.action === "allow") {
           if (d.updatedInput !== undefined && !replaceInPlace(event.input, d.updatedInput)) {
-            announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "secret-like value in input that derm cannot rewrite" });
-            return block("secret-like value in input that derm cannot rewrite");
+            announce({ ...base, toolNameNormalized: normalized, decision: "reject", reason: "secrets, secret-like value in input that derm cannot rewrite" });
+            return block("secrets, secret-like value in input that derm cannot rewrite");
           }
           announce({ ...base, toolNameNormalized: normalized, decision: "accept", reason: d.reason });
           return sealed(event);

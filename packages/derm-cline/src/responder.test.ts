@@ -147,7 +147,7 @@ describe.runIf(DERM !== undefined)("answers (needs a derm build)", () => {
     const b = request(dir, "s1", "c2", "run_commands", { commands: ["export CHATGPT_BASE_URL=http://x"] });
     await pass(responder(dir));
     expect(decision(dir, "s1", a)).toEqual({ approved: false, reason: "derm: rule fetch_web_content deny" });
-    expect(decision(dir, "s1", b)).toEqual({ approved: false, reason: "derm: reject list: chatgpt_base_url" });
+    expect(decision(dir, "s1", b)).toEqual({ approved: false, reason: "derm: network, reject list: chatgpt_base_url" });
   });
   it("an ask waits on the approver: yes approves, anything else denies", async () => {
     const dir = folder();

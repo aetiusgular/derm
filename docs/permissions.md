@@ -39,11 +39,25 @@ Destructive commands (`rm -rf ~`, `dd` to a disk, `kill -9 -1`) ask in every set
 
 The matcher's steps are in [`contracts/policy.md`](../contracts/policy.md), section 4.
 
+## The name in each answer
+
+An ask or a deny that one of the eight covers starts with its name, so the agent's prompt reads `derm: secrets, input names a secret path (.aws/)` or `derm: derm itself, rule bash derm setup deny`. The name is one of eight fixed words; nothing from the call's input goes into it. An answer no permission covers has no name: a rule you wrote yourself, no rule at all, a changed tool description, shell text the matcher cannot read (except `~`, which is other folders), and destructive commands. One table in `crates/derm-core/src/policy.rs` (`permission_of`) decides which step gets which name.
+
+| Name | Asks and denies that carry it |
+|---|---|
+| project folder | a `git push` after the chat was tainted |
+| other folders | a shell command that names `~` |
+| secrets | a secret path; a secret-like value in a command or a write |
+| files that run later | a harness's or git's own hook and settings files; git config that names a program; a file that runs later; a protected write after taint |
+| network | `ANTHROPIC_BASE_URL` or `CHATGPT_BASE_URL`; a cloud metadata address; a new host after taint |
+| running downloaded code | a program read from a pipe; a package install |
+| computer use | none yet: it is off unless you turn it on |
+| derm itself | derm's own files and program; the preset's `derm` command rules; a command that stops derm's daemon |
+
 ## Planned
 
 Not built yet:
 
-- **Named permissions in every answer.** Each ask and deny will say which of the eight it is, so a prompt reads "derm: secrets, `~/.aws/credentials`" instead of a rule's text.
 - **`derm permissions`**: one list of what each agent and project may do, with when each grant was last used, like the Privacy page in System Settings. `derm permissions revoke` takes one back.
 - **`derm allow <permission>`**: grants for this chat, this project or always. Secrets, computer use and derm itself can be granted only from your own terminal, with your login password, never from a prompt inside a chat. That is what stops an agent from approving itself.
 - **Grants that expire** when they go unused.

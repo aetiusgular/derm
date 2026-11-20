@@ -151,7 +151,7 @@ async function checkGate({ codexPath }) {
   });
   const out = (s, id) => s.outputs?.[id] ?? "";
   const checks = {
-    denyReasonReachesModel: out(seen.deny, "d1").includes("derm: reject list: core.fsmonitor"),
+    denyReasonReachesModel: out(seen.deny, "d1").includes("derm: files that run later, reject list: core.fsmonitor"),
     askReachedDaemon: (seen.askYes.approvals ?? []).some((a) => a.harness === "codex" && a.tool === "bash"),
     approvedCommandRan: out(seen.askYes, "y1").includes("approved-run"),
     // Codex's block message repeats the command, so check that it was blocked, not that the text is absent.

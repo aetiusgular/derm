@@ -101,7 +101,7 @@ export async function beforeToolCall(event: BeforeEvent, ctx: BeforeCtx, deps: D
     }
     if (action !== "deny" && answer.updatedInput !== undefined && !isPlainObject(answer.updatedInput)) {
       action = "deny";
-      reason = "secret-like value in input that derm cannot rewrite on OpenClaw";
+      reason = "secrets, secret-like value in input that derm cannot rewrite on OpenClaw";
     }
     await record(s, call, answer, action === "approval" ? "ask" : action, { reason });
     if (action === "deny") return block(reason);

@@ -70,7 +70,7 @@ describe.runIf(DERM !== undefined)("before_tool_call (needs a derm build)", () =
 
   it("a deny is a final block with derm's reason", async () => {
     expect(await beforeToolCall({ toolName: "web_fetch", params: { url: "https://x" } }, ctx, deps())).toEqual({ block: true, blockReason: "derm: rule web_fetch deny" });
-    expect(await beforeToolCall({ toolName: "exec", params: { command: "git -c core.fsmonitor=x status" } }, ctx, deps())).toEqual({ block: true, blockReason: "derm: reject list: core.fsmonitor" });
+    expect(await beforeToolCall({ toolName: "exec", params: { command: "git -c core.fsmonitor=x status" } }, ctx, deps())).toEqual({ block: true, blockReason: "derm: files that run later, reject list: core.fsmonitor" });
   });
 
   it("a shell exec is gated as bash and gets the shell-text check (case 82); Code Mode's exec keeps its name", async () => {

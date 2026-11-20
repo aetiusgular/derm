@@ -299,8 +299,40 @@ pub const DERM_CONTROL_PATHS: &[&str] = &[
 /// Computer use has no step here: it is off unless set, and no call reaches
 /// the matcher for it.
 pub fn permission_of(step: Step<'_>) -> Option<Permission> {
-    let _ = step;
-    None
+    use Permission::*;
+    match step {
+        Step::Reject("anthropic_base_url" | "chatgpt_base_url") => Some(Network),
+        Step::Reject("settings.local.json") => Some(FilesThatRunLater),
+        Step::Reject(key) if GIT_CONFIG_KEYS.contains(&key) => Some(FilesThatRunLater),
+        Step::CommandRule(words) => {
+            (words.first().map(String::as_str) == Some("derm")).then_some(DermItself)
+        }
+        Step::ControlPath(entry) if DERM_CONTROL_PATHS.contains(&entry) => Some(DermItself),
+        Step::ControlPath(_) => Some(FilesThatRunLater),
+        Step::ShellToken("~") => Some(OtherFolders),
+        Step::Install | Step::ProgramFromInput => Some(RunningDownloadedCode),
+        Step::SecretPath | Step::SecretLikeValue => Some(Secrets),
+        Step::RunsLaterPath => Some(FilesThatRunLater),
+        Step::MetadataAddress => Some(Network),
+        Step::StopsDerm => Some(DermItself),
+        Step::Taint("protected-write") => Some(FilesThatRunLater),
+        Step::Taint("install") => Some(RunningDownloadedCode),
+        Step::Taint("push") => Some(ProjectFolder),
+        Step::Taint("new-host" | "named-in-result") => Some(Network),
+        Step::Reject(_)
+        | Step::Narrowing
+        | Step::ToolRule
+        | Step::NoRule
+        | Step::AmbiguousServer
+        | Step::DescriptionChanged
+        | Step::ShellEscape
+        | Step::ShellToken(_)
+        | Step::PowerShellText
+        | Step::Destructive
+        | Step::InputTooDeep
+        | Step::Taint(_)
+        | Step::Unkept => None,
+    }
 }
 
 /// Step 1 of the contract's section 2: trim, ASCII-lowercase, every
@@ -1558,12 +1590,8 @@ fn safe_label(text: &str) -> String {
 /// `Ask` times out to `Deny` in the caller.
 pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     let normalized = normalize_tool_name_for(&call.tool, &policy.servers, &call.harness);
-    let decide = |action: Action, reason: String| Decision {
-        action,
-        normalized_tool: normalized.clone(),
-        reason,
-        permission: None,
-    };
+    let decide =
+        |action: Action, step: Step<'_>, why: String| decision(&normalized, action, step, why);
     let decoded = decode_escapes(&call.input_text);
     // E1-5: whether the fold could have changed a character's kind.
     // A `\uXXXX` in the input was decoded: for a file tool that is the key
@@ -1574,7 +1602,11 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     let plain = decoded.is_ascii() && !escaped;
     let folded = fold_text(&decoded);
     if let Some(key) = reject_hit(&folded) {
-        return decide(Action::Deny, format!("reject list: {key}"));
+        return decide(
+            Action::Deny,
+            Step::Reject(key),
+            format!("reject list: {key}"),
+        );
     }
     let harness = call.harness.trim().to_ascii_lowercase();
     let applies = |rule: &Rule| {
@@ -1605,6 +1637,7 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
     if let Some(r) = narrowing.iter().find(|r| r.action == Action::Deny) {
         return decide(
             Action::Deny,
+            Step::Narrowing,
             format!("rule {} (also names {normalized})", r.tool),
         );
     }
@@ -1645,7 +1678,12 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         .iter()
         .find(|r| r.action == Action::Deny && met(r))
     {
-        return decide(Action::Deny, crate::command::command_reason(&words_of(r)));
+        let words = words_of(r);
+        return decide(
+            Action::Deny,
+            Step::CommandRule(&words),
+            crate::command::command_reason(&words),
+        );
     }
     let command_ask = narrowers
         .iter()
@@ -1729,7 +1767,10 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         matches.push((rank, rule));
     }
     let Some(top) = matches.iter().map(|(rank, _)| *rank).max() else {
-        return widen(decide(Action::Ask, "no rule".to_string()), None);
+        return widen(
+            decide(Action::Ask, Step::NoRule, "no rule".to_string()),
+            None,
+        );
     };
     let winners: Vec<&Rule> = matches
         .iter()
@@ -1741,26 +1782,39 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
         .copied()
         .max_by_key(|rule| restrictiveness(rule.action))
     else {
-        return widen(decide(Action::Ask, "no rule".to_string()), None);
+        return widen(
+            decide(Action::Ask, Step::NoRule, "no rule".to_string()),
+            None,
+        );
     };
     if winner.action == Action::Ask && winner.tool == "bash" {
-        return widen(decide(Action::Ask, rule_reason(winner)), Some(top));
+        return widen(
+            decide(Action::Ask, Step::ToolRule, rule_reason(winner)),
+            Some(top),
+        );
     }
     if winner.action != Action::Allow {
-        return decide(winner.action, rule_reason(winner));
+        return decide(winner.action, Step::ToolRule, rule_reason(winner));
     }
     if let Some(r) = command_ask {
-        return decide(Action::Ask, crate::command::command_reason(&words_of(r)));
+        let words = words_of(r);
+        return decide(
+            Action::Ask,
+            Step::CommandRule(&words),
+            crate::command::command_reason(&words),
+        );
     }
     if let Some(r) = narrow_ask {
         return decide(
             Action::Ask,
+            Step::Narrowing,
             format!("rule {} (also names {normalized})", r.tool),
         );
     }
     if ambiguous {
         return decide(
             Action::Ask,
+            Step::AmbiguousServer,
             "ambiguous server name: list the server in the policy's servers".to_string(),
         );
     }
@@ -1776,7 +1830,11 @@ pub fn evaluate(policy: &PolicyFile, call: &Call) -> Decision {
             .as_deref()
             .is_some_and(|hash| pins.iter().all(|pin| pin.eq_ignore_ascii_case(hash)));
         if !all_hold {
-            return decide(Action::Ask, "description changed".to_string());
+            return decide(
+                Action::Ask,
+                Step::DescriptionChanged,
+                "description changed".to_string(),
+            );
         }
     }
     allow_steps(&normalized, &folded, plain, escaped, rule_reason(winner))
@@ -1791,12 +1849,8 @@ fn allow_steps(
     escaped: bool,
     reason: String,
 ) -> Decision {
-    let decide = |action: Action, reason: String| Decision {
-        action,
-        normalized_tool: normalized.to_string(),
-        reason,
-        permission: None,
-    };
+    let decide =
+        |action: Action, step: Step<'_>, why: String| decision(normalized, action, step, why);
     // Control files before shell text (contract, section 4, step 7).
     let unquoted = unquote(folded);
     let texts = with_collapsed_slashes(&with_win32_trimmed(&with_native_separators(&[
@@ -1809,6 +1863,7 @@ fn allow_steps(
     {
         return decide(
             Action::Ask,
+            Step::ControlPath(control),
             format!("input names a control file ({control})"),
         );
     }
@@ -1820,6 +1875,7 @@ fn allow_steps(
         if escaped {
             return decide(
                 Action::Ask,
+                Step::ShellEscape,
                 "shell text the matcher cannot read: `\\`".to_string(),
             );
         }
@@ -1834,6 +1890,7 @@ fn allow_steps(
             let glob = matches!(*t, "*" | "?" | "[");
             return decide(
                 Action::Ask,
+                Step::ShellToken(t),
                 format!(
                     "shell text the matcher cannot read: `{t}`{}",
                     if glob { " (a glob)" } else { "" }
@@ -1843,14 +1900,14 @@ fn allow_steps(
         // Package installs (contract section 6; wave 5 lane X's seam). An
         // install's ask or deny names its packages, so it comes first.
         if let Some(install) = crate::installs::check(normalized, folded) {
-            return decide(install.action, install.reason);
+            return decide(install.action, Step::Install, install.reason);
         }
         // PowerShell (lane Z's request 3, step 7c): plain words only, or ask,
         // after an install the lockfile vouches for (`check` keeps the allow
         // by answering `None`).
         if POWERSHELL_TOOLS.contains(&normalized) {
             if let Some(c) = powershell_unplain(folded) {
-                return decide(Action::Ask, powershell_reason(c));
+                return decide(Action::Ask, Step::PowerShellText, powershell_reason(c));
             }
         }
     }
@@ -1861,29 +1918,57 @@ fn allow_steps(
     // here-string, a process substitution or xargs), so the line does not
     // show what runs. In `docs/permissions.md` terms: secrets, files that run
     // later, network, and running downloaded code, in that order.
-    for (list, what) in [
-        (SECRET_PATHS, "a secret path"),
-        (RUNS_LATER_PATHS, "a file that runs later"),
-        (METADATA_ADDRESSES, "a cloud metadata address"),
+    for (list, what, step) in [
+        (SECRET_PATHS, "a secret path", Step::SecretPath),
+        (
+            RUNS_LATER_PATHS,
+            "a file that runs later",
+            Step::RunsLaterPath,
+        ),
+        (
+            METADATA_ADDRESSES,
+            "a cloud metadata address",
+            Step::MetadataAddress,
+        ),
     ] {
         if let Some(entry) = list
             .iter()
             .find(|e| texts.iter().any(|t| names_entry(t, e)))
         {
-            return decide(Action::Ask, format!("input names {what} ({entry})"));
+            return decide(Action::Ask, step, format!("input names {what} ({entry})"));
         }
     }
     if SHELL_TOOLS.contains(&normalized) {
         if let Some(program) = crate::command::stdin_program(folded) {
-            return decide(Action::Ask, format!("program read from input: `{program}`"));
+            return decide(
+                Action::Ask,
+                Step::ProgramFromInput,
+                format!("program read from input: `{program}`"),
+            );
         }
         // Step 7e (E1-1): a command that changes the root, a system or home
         // folder, a disk or a parent folder, or signals every process.
         if let Some(why) = crate::destructive::destructive(folded) {
-            return decide(Action::Ask, why);
+            return decide(Action::Ask, Step::Destructive, why);
         }
     }
-    decide(Action::Allow, reason)
+    decide(Action::Allow, Step::ToolRule, reason)
+}
+
+/// One answer: an ask or a deny carries its step's permission
+/// ([`permission_of`]), with the name first in the reason; an allow carries
+/// none.
+fn decision(normalized: &str, action: Action, step: Step<'_>, why: String) -> Decision {
+    let permission = permission_of(step).filter(|_| action != Action::Allow);
+    Decision {
+        action,
+        normalized_tool: normalized.to_string(),
+        reason: match permission {
+            Some(p) => p.reason(&why),
+            None => why,
+        },
+        permission,
+    }
 }
 
 /// Why a policy file was not used. The default policy (no rules, every call
@@ -2171,14 +2256,17 @@ mod tests {
             &call("Bash", "pi", "git -c protocol.ext.allow=always fetch"),
         );
         assert_eq!(d.action, Action::Deny);
-        assert_eq!(d.reason, "reject list: protocol.");
+        assert_eq!(d.reason, "files that run later, reject list: protocol.");
         let d = evaluate(&p, &call("Bash", "pi", "cat docs/protocol.md"));
         assert_eq!(d.action, Action::Allow);
         let d = evaluate(
             &p,
             &call("Bash", "pi", "git \u{200B}-c core.hooksPath=/tmp/h commit"),
         );
-        assert_eq!(d.reason, "reject list: core.hookspath");
+        assert_eq!(
+            d.reason,
+            "files that run later, reject list: core.hookspath"
+        );
     }
 
     /// W5B-S1 (wave 5b close's security review, reproduced): since wave 5b
@@ -2201,7 +2289,8 @@ mod tests {
             let d = evaluate(&p, &call(tool, "pi", text));
             assert_eq!(d.action, Action::Ask, "{tool} {text}: {}", d.reason);
             assert!(
-                d.reason.starts_with("input names a control file"),
+                d.reason
+                    .starts_with("derm itself, input names a control file"),
                 "{text}: {}",
                 d.reason
             );
@@ -2225,7 +2314,12 @@ mod tests {
         ] {
             let d = evaluate(&p, &call("mcp__exa__search", "pi", text));
             assert_eq!(d.action, Action::Deny, "{text:?}");
-            assert!(d.reason.starts_with("reject list: "), "{text:?}");
+            // P1: the endpoint keys are network's; the sandbox and approval
+            // switches carry no name.
+            let rest = d
+                .permission
+                .map_or(d.reason.as_str(), |p| &d.reason[p.prefix().len()..]);
+            assert!(rest.starts_with("reject list: "), "{text:?}");
             assert!(!d.reason.contains('='), "the reason never holds the input");
         }
     }
@@ -2286,9 +2380,14 @@ mod tests {
         ] {
             let d = evaluate(&p, &call("bash", "claude-code", text));
             assert_eq!(d.action, Action::Ask, "{text:?}");
+            // P1: a `~` is other folders'; every other token names none.
+            let rest = match d.permission {
+                Some(Permission::OtherFolders) => &d.reason["other folders, ".len()..],
+                Some(p) => panic!("{text:?}: {p:?}"),
+                None => d.reason.as_str(),
+            };
             assert!(
-                d.reason
-                    .starts_with("shell text the matcher cannot read: `"),
+                rest.starts_with("shell text the matcher cannot read: `"),
                 "{}",
                 d.reason
             );
@@ -2300,7 +2399,7 @@ mod tests {
             &call("bash", "claude-code", "cat /home/u/.ssh/id_ed25519"),
         );
         assert_eq!(d.action, Action::Ask);
-        assert_eq!(d.reason, "input names a secret path (.ssh/)");
+        assert_eq!(d.reason, "secrets, input names a secret path (.ssh/)");
         // The reason names the token, and calls a glob one (Mac test w1, M9);
         // the same text as the hook core and derm-pi.
         assert_eq!(
