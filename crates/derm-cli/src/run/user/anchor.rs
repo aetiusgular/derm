@@ -191,7 +191,7 @@ pub fn trusted_path(file: &Path, from: &Path, trusted: u32) -> Result<(), String
     Ok(())
 }
 
-fn read_nofollow(file: &Path) -> Result<String, String> {
+pub fn read_nofollow(file: &Path) -> Result<String, String> {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
@@ -217,6 +217,25 @@ pub struct Account {
 }
 
 /// `getpwnam_r(3)`.
+/// The account with `uid`, from the password database.
+#[cfg(target_os = "linux")]
+pub fn account_by_uid(uid: u32) -> Option<Account> {
+    let mut buf = vec![0u8; 16 * 1024];
+    // SAFETY: as in `account`.
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut out: *mut libc::passwd = std::ptr::null_mut();
+    let rc =
+        unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr().cast(), buf.len(), &mut out) };
+    if rc != 0 || out.is_null() {
+        return None;
+    }
+    // SAFETY: getpwuid_r succeeded, so pw_name points into buf.
+    let name = unsafe { CStr::from_ptr(pw.pw_name) }
+        .to_string_lossy()
+        .into_owned();
+    account(&name).filter(|a| a.uid == uid)
+}
+
 pub fn account(name: &str) -> Option<Account> {
     let c = CString::new(name).ok()?;
     let mut buf = vec![0u8; 16 * 1024];
@@ -275,7 +294,7 @@ pub fn groups(_account: &Account) -> Option<Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
-fn group_name(gid: libc::gid_t) -> String {
+pub fn group_name(gid: libc::gid_t) -> String {
     let mut buf = vec![0u8; 16 * 1024];
     // SAFETY: as in `account`: a zeroed out-parameter and a buffer that
     // outlives the pointers stored in it.
