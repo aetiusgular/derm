@@ -444,6 +444,7 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
 /// folder.
 fn private_dir() -> Result<PathBuf, String> {
     let d = std::env::temp_dir().join(format!("derm-agents-{}", uuid::Uuid::new_v4().simple()));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {

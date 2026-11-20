@@ -83,6 +83,22 @@ exec "$@""#,
     )
 }
 
+/// A file written from a child process, for the same reason: a fork of
+/// another test's thread holds a copy of this process's descriptors until
+/// it execs, and its close would reach an inotify watch set up after the
+/// write (CI's Linux job saw an IN_CLOSE_WRITE so, on f388f2e).
+#[cfg(unix)]
+fn put(p: &Path, text: &str) {
+    let ok = Command::new("/bin/sh")
+        .args(["-c", "printf '%s' \"$2\" > \"$1\"", "sh"])
+        .arg(p)
+        .arg(text)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+}
+
 struct Yes(bool, usize);
 impl Confirm for Yes {
     fn confirm(&mut self, _q: &str) -> Result<bool, String> {
@@ -595,8 +611,8 @@ fn status_opens_no_login_file() {
     let x = st.home.join(".codex");
     std::fs::create_dir_all(&c).unwrap();
     std::fs::create_dir_all(&x).unwrap();
-    std::fs::write(c.join(".credentials.json"), "{\"made-up\":1}").unwrap();
-    std::fs::write(x.join("auth.json"), "{\"made-up\":1}").unwrap();
+    put(&c.join(".credentials.json"), "{\"made-up\":1}");
+    put(&x.join("auth.json"), "{\"made-up\":1}");
     let (wc, wx) = (Watch::on(&c), Watch::on(&x));
     let r = go(&st, &["status", "--account", "max"], |_| {});
     assert!(
