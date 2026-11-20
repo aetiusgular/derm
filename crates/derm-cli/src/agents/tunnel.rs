@@ -13,6 +13,14 @@
 //! The harness takes the tunnel through `HTTPS_PROXY`: Claude Code 2.1.322
 //! sent `CONNECT platform.claude.com:443` to it, and Codex 0.167.2 `CONNECT
 //! auth.openai.com:443` (run, `plans/parallel/acct_L4.md`, Research).
+//!
+//! Where the person's own `https_proxy` (else `HTTPS_PROXY`) names an
+//! `http://` proxy, the tunnel goes on through it with a CONNECT of its own,
+//! as the harness would have run as the person; `no_proxy` (else `NO_PROXY`)
+//! matches as curl matches it: a name is the host itself or a domain that
+//! contains it, and `*` is every host
+//! (https://curl.se/libcurl/c/CURLOPT_NOPROXY.html). A proxy URL with a user
+//! name or password is refused: derm carries no credential of the person's.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -25,23 +33,115 @@ pub struct Tunnel {
     pub port: u16,
     /// Hosts asked for and refused, `host:port`, once each.
     refused: Arc<Mutex<Vec<String>>>,
+    /// Admitted hosts the tunnel could not reach, with why, once each.
+    failed: Arc<Mutex<Vec<String>>>,
+}
+
+/// The person's own HTTP proxy, and the hosts that skip it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Upstream {
+    /// `host:port`.
+    pub addr: String,
+    pub no_proxy: Vec<String>,
+}
+
+impl Upstream {
+    /// Whether `host` goes direct (curl's rule, module text).
+    pub fn skips(&self, host: &str) -> bool {
+        self.no_proxy.iter().any(|e| {
+            let e = e.trim_start_matches('.');
+            e == "*" || host == e || host.ends_with(&format!(".{e}"))
+        })
+    }
+}
+
+/// The upstream from the person's environment, or none, or why the proxy
+/// it names is not used.
+pub fn upstream_from(env: &dyn Fn(&str) -> Option<String>) -> Result<Option<Upstream>, String> {
+    let Some(url) = ["https_proxy", "HTTPS_PROXY"]
+        .iter()
+        .find_map(|k| env(k).filter(|v| !v.is_empty()))
+    else {
+        return Ok(None);
+    };
+    let rest = url.strip_prefix("http://").unwrap_or(&url);
+    if rest.contains("://") {
+        return Err(format!(
+            "the proxy {url} is not an http:// proxy; the tunnel goes direct"
+        ));
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err("the proxy in https_proxy names a user or password, which derm does not carry; the tunnel goes direct".into());
+    }
+    let addr = if authority
+        .rsplit_once(':')
+        .is_some_and(|(_, p)| p.parse::<u16>().is_ok())
+    {
+        authority.to_string()
+    } else {
+        format!("{authority}:80")
+    };
+    if addr.starts_with(':') {
+        return Err(format!(
+            "the proxy {url} names no host; the tunnel goes direct"
+        ));
+    }
+    let no_proxy = ["no_proxy", "NO_PROXY"]
+        .iter()
+        .find_map(|k| env(k))
+        .unwrap_or_default()
+        .split(',')
+        .map(|e| {
+            let e = e.trim().to_ascii_lowercase();
+            match e.rsplit_once(':') {
+                Some((h, p)) if p.parse::<u16>().is_ok() && !h.contains(':') => h.to_string(),
+                _ => e,
+            }
+        })
+        .filter(|e| !e.is_empty())
+        .collect();
+    Ok(Some(Upstream { addr, no_proxy }))
 }
 
 impl Tunnel {
     /// Listens on `127.0.0.1:0` and serves until the process ends.
-    pub fn start(allow: &[&str]) -> std::io::Result<Tunnel> {
+    pub fn start(allow: &[&str], upstream: Option<Upstream>) -> std::io::Result<Tunnel> {
         let l = TcpListener::bind(("127.0.0.1", 0))?;
         let port = l.local_addr()?.port();
         let allow: Arc<Vec<String>> = Arc::new(allow.iter().map(|h| format!("{h}:443")).collect());
         let refused = Arc::new(Mutex::new(Vec::new()));
-        let r = refused.clone();
+        let failed = Arc::new(Mutex::new(Vec::new()));
+        let (r, f) = (refused.clone(), failed.clone());
+        let up = Arc::new(upstream);
         std::thread::spawn(move || {
             for c in l.incoming().flatten() {
-                let (allow, r) = (allow.clone(), r.clone());
-                std::thread::spawn(move || serve(c, &allow, &r, &dial_public));
+                let (allow, r, f, up) = (allow.clone(), r.clone(), f.clone(), up.clone());
+                std::thread::spawn(move || {
+                    let dial = |t: &str| {
+                        let host = t.rsplit_once(':').map_or(t, |(h, _)| h);
+                        let got = match up.as_ref() {
+                            Some(u) if !u.skips(host) => dial_via(&u.addr, t),
+                            _ => dial_public(t),
+                        };
+                        if let Err(why) = &got {
+                            note(&f, why.clone());
+                        }
+                        got
+                    };
+                    serve(c, &allow, &r, &dial)
+                });
             }
         });
-        Ok(Tunnel { port, refused })
+        Ok(Tunnel {
+            port,
+            refused,
+            failed,
+        })
+    }
+
+    pub fn failed(&self) -> Vec<String> {
+        self.failed.lock().map(|v| v.clone()).unwrap_or_default()
     }
 
     pub fn url(&self) -> String {
@@ -107,6 +207,57 @@ pub fn non_public(ip: IpAddr) -> bool {
     }
 }
 
+fn note(list: &Mutex<Vec<String>>, what: String) {
+    if let Ok(mut v) = list.lock() {
+        if !v.contains(&what) && v.len() < 64 {
+            v.push(what);
+        }
+    }
+}
+
+/// Through the person's proxy: one CONNECT, and only a 200 with nothing
+/// after its head opens the stream. The proxy is the person's own choice, so
+/// a loopback proxy is dialed; the target's own address is the proxy's to
+/// resolve.
+pub fn dial_via(proxy: &str, target: &str) -> Result<TcpStream, String> {
+    let addrs: Vec<SocketAddr> = proxy
+        .to_socket_addrs()
+        .map_err(|e| format!("{target}: the proxy {proxy}: {e}"))?
+        .collect();
+    let mut s = addrs
+        .iter()
+        .find_map(|a| TcpStream::connect_timeout(a, Duration::from_secs(10)).ok())
+        .ok_or_else(|| format!("{target}: the proxy {proxy} did not answer"))?;
+    let _ = s.set_read_timeout(Some(Duration::from_secs(20)));
+    s.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .map_err(|e| format!("{target}: the proxy {proxy}: {e}"))?;
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= HEAD_MAX {
+            return Err(format!(
+                "{target}: the proxy {proxy} sent no end to its answer"
+            ));
+        }
+        match s.read(&mut b) {
+            Ok(1) => head.push(b[0]),
+            _ => {
+                return Err(format!(
+                    "{target}: the proxy {proxy} closed before answering"
+                ))
+            }
+        }
+    }
+    let line = String::from_utf8_lossy(&head);
+    let line = line.split("\r\n").next().unwrap_or("");
+    let code = line.split(' ').nth(1).unwrap_or("");
+    if !(line.starts_with("HTTP/1.") && code == "200") {
+        return Err(format!("{target}: the proxy {proxy} answered \"{line}\""));
+    }
+    let _ = s.set_read_timeout(None);
+    Ok(s)
+}
+
 fn dial_public(target: &str) -> Result<TcpStream, String> {
     let addrs: Vec<SocketAddr> = target
         .to_socket_addrs()
@@ -152,11 +303,7 @@ pub fn serve(
     let head = String::from_utf8_lossy(&buf[..end]).into_owned();
     let Some(t) = target(&head).filter(|t| allow.iter().any(|a| a == t)) else {
         let asked = target(&head).unwrap_or_else(|| "a request that is not CONNECT".into());
-        if let Ok(mut r) = refused.lock() {
-            if !r.contains(&asked) && r.len() < 64 {
-                r.push(asked);
-            }
-        }
+        note(refused, asked);
         let _ = c
             .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;

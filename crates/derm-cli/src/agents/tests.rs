@@ -140,19 +140,20 @@ struct Ran {
 
 #[cfg(unix)]
 fn go(st: &Setup, args: &[&str], f: impl FnOnce(&mut Ctx<'_>)) -> Ran {
-    go_with(st, args, INSTALLER, true, f)
+    go_with(st, args, PACKAGE, true, f)
 }
 
 #[cfg(unix)]
 fn go_with(
     st: &Setup,
     args: &[&str],
-    installer: &str,
+    package: &[(&str, &str)],
     yes: bool,
     f: impl FnOnce(&mut Ctx<'_>),
 ) -> Ran {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let mut y = Yes(yes, 0);
+    let env = |_: &str| None;
     let mut ctx = Ctx {
         registry: st.d.0.join("agents.json"),
         settings: st.d.0.join("settings.json"),
@@ -162,11 +163,13 @@ fn go_with(
         sh: PathBuf::from("/bin/sh"),
         path_env: format!("{}:/usr/bin:/bin", st.d.0.join("bin").display()),
         check_tools: false,
-        installer,
+        package,
+        root_tmp: st.d.0.clone(),
         linux: true,
         terminal: true,
         in_chat: None,
         confirm: &mut y,
+        env: &env,
         out: &mut out,
         err: &mut err,
     };
@@ -304,7 +307,7 @@ fn slugs_and_labels() {
         "a\nb",
         "a\u{1b}[31m",
         "a\u{202e}b",
-        &"x".repeat(65),
+        &"x".repeat(121),
     ] {
         assert!(!registry::label_ok(bad), "{bad:?}");
     }
@@ -330,14 +333,22 @@ fn add_prints_the_installer_line_and_runs_nothing_without_a_yes() {
     );
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(
-        r.out.contains(r#"derm agents installer > install.sh && sudo /bin/bash install.sh --account work --subscription 'Claude Max '\''work'\'''"#),
+        r.out.contains(r#"derm agents installer derm-agents-install && sudo derm-agents-install/install.sh --account work --subscription 'Claude Max '\''work'\'''"#),
         "{}",
         r.out
     );
-    assert!(r.out.contains(&format!(
-        "installer sha256 {}",
-        sha256_hex(INSTALLER.as_bytes())
-    )));
+    let (_, sums) = package_check(PACKAGE).unwrap();
+    assert!(
+        r.out.contains(&format!(
+            "6 files, sha256 of their list {}",
+            sha256_hex(sums.as_bytes())
+        )),
+        "{}",
+        r.out
+    );
+    assert!(r
+        .out
+        .contains("sudo derm-agents-install/uninstall.sh --account work"));
     assert_eq!(r.asked, 0);
     assert_eq!(sudo_log(&st), "", "--print runs nothing");
     // No terminal: printed, not run, not asked.
@@ -350,7 +361,7 @@ fn add_prints_the_installer_line_and_runs_nothing_without_a_yes() {
     let r = go_with(
         &st,
         &["add", "work", "--subscription", "x"],
-        INSTALLER,
+        PACKAGE,
         false,
         |_| {},
     );
@@ -374,6 +385,8 @@ fn add_is_refused_inside_a_chat_and_for_a_bad_slug_label_or_a_taken_slug() {
         &["add", "work"],
         &["add", "--subscription", "x"],
         &["add", "a", "b", "--subscription", "x"],
+        // useradd's 32 characters (lane L2): derm-agent- and 22 more.
+        &["add", "abcdefghijklmnopqrstuv", "--subscription", "x"],
     ] {
         assert_eq!(go(&st, args, |_| {}).code, 2, "{args:?}");
     }
@@ -383,22 +396,29 @@ fn add_is_refused_inside_a_chat_and_for_a_bad_slug_label_or_a_taken_slug() {
     assert_eq!(sudo_log(&st), "");
 }
 
-/// The installer runs from a root-owned copy whose hash is checked there
-/// (case 37), with the contract's arguments, after one yes.
+/// The installer package runs from a root-owned copy whose hashes are
+/// checked there (case 37), whole: `install.sh` reaches a file beside it, as
+/// lane L2's passes control to `install-account.sh`.
 #[cfg(target_os = "linux")]
 #[test]
-fn after_a_yes_add_runs_the_installer_it_showed_through_sudo() {
+fn after_a_yes_add_runs_the_installer_package_it_showed_through_sudo() {
     let st = setup("add-run", false);
     let got = st.d.0.join("installer-args");
-    let fake = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", got.display());
+    let install =
+        "#!/bin/bash\nexec \"$(dirname \"${BASH_SOURCE[0]}\")/install-account.sh\" \"$@\"\n";
+    let account = format!("#!/bin/bash\nprintf '%s\\n' \"$@\" > '{}'\n", got.display());
+    let pkg = [
+        ("install.sh", install),
+        ("install-account.sh", account.as_str()),
+    ];
     let r = go_with(
         &st,
         &["add", "work", "--subscription", "Claude Max (work)"],
-        &fake,
+        &pkg,
         true,
         |_| {},
     );
-    // The fake installer adds no account, so derm says so.
+    // The stand-in adds no account, so derm says so.
     assert_eq!(r.code, 1, "{} {}", r.out, r.err);
     assert!(r.out.contains("does not hold derm-agent-work"), "{}", r.out);
     assert_eq!(r.asked, 1);
@@ -408,13 +428,42 @@ fn after_a_yes_add_runs_the_installer_it_showed_through_sudo() {
     );
     let log = sudo_log(&st);
     assert!(log.starts_with("-- /bin/sh -c set -u"), "{log}");
-    assert!(log.contains(&sha256_hex(fake.as_bytes())), "{log}");
-    // The person's copy is gone.
-    assert!(!std::fs::read_dir(std::env::temp_dir())
-        .unwrap()
-        .flatten()
-        .any(|e| e.path().join("install.sh").exists()
-            && std::fs::read_to_string(e.path().join("install.sh")).is_ok_and(|t| t == fake)));
+    assert!(
+        log.contains(&format!(
+            "{}  install-account.sh",
+            sha256_hex(account.as_bytes())
+        )),
+        "{log}"
+    );
+    // Root's copy is gone.
+    assert!(!std::fs::read_dir(&st.d.0).unwrap().flatten().any(|e| e
+        .file_name()
+        .to_string_lossy()
+        .starts_with("derm-agents-install.")));
+}
+
+#[test]
+fn the_built_in_package_is_lane_l2s_whole_installer() {
+    let (interp, sums) = package_check(PACKAGE).unwrap();
+    assert_eq!(interp, "/bin/bash");
+    for n in [
+        "install.sh",
+        "install-account.sh",
+        "uninstall.sh",
+        "uninstall-account.sh",
+        "accounts.py",
+        "derm-agents-nft.service",
+    ] {
+        assert!(sums.lines().any(|l| l.ends_with(&format!("  {n}"))), "{n}");
+    }
+    // install.sh hands --account to the file beside it.
+    assert!(PACKAGE[0].1.contains("install-account.sh"));
+    assert!(
+        package_check(&[("x.sh", "#!/bin/sh\n")]).is_err(),
+        "no install.sh"
+    );
+    assert!(package_check(&[("install.sh", "#!/bin/sh\n"), ("../x", "")]).is_err());
+    assert!(package_check(&[("install.sh", "#!/bin/sh\n"), (".x", "")]).is_err());
 }
 
 /// A copy changed between derm's read and root's run is not run.
@@ -422,23 +471,24 @@ fn after_a_yes_add_runs_the_installer_it_showed_through_sudo() {
 #[test]
 fn an_installer_changed_before_roots_copy_is_not_run() {
     let st = setup("add-swap", false);
-    // This sudo appends to the person's copy (its argv's 6th word after
-    // `--`) before running: what an agent racing the write would do.
+    // This sudo appends to the person's copy of install.sh (in the folder
+    // that is its 5th word after `--`) before running: what an agent racing
+    // the write would do.
     let home = st.home.clone();
     let sudo = script(
         &st.d.0,
         "sudo-swap",
         &format!(
-            "shift\nprintf 'echo planted > {p}\\n' >> \"$5\"\nHOME='{h}' exec \"$@\"",
+            "shift\nprintf 'echo planted > {p}\\n' >> \"$5/install.sh\"\nHOME='{h}' exec \"$@\"",
             p = st.d.0.join("planted").display(),
             h = home.display()
         ),
     );
-    let fake = "#!/bin/sh\nexit 0\n";
+    let fake = [("install.sh", "#!/bin/sh\nexit 0\n")];
     let r = go_with(
         &st,
         &["add", "work", "--subscription", "x"],
-        fake,
+        &fake,
         true,
         |c| c.sudo = sudo.clone(),
     );
@@ -452,7 +502,7 @@ fn an_installer_changed_before_roots_copy_is_not_run() {
 
 #[test]
 fn the_installers_interpreter_is_named_by_absolute_path() {
-    assert_eq!(interpreter(INSTALLER), Ok("/bin/bash"));
+    assert_eq!(interpreter(PACKAGE[0].1), Ok("/bin/bash"));
     assert_eq!(interpreter("#!/bin/sh\n"), Ok("/bin/sh"));
     assert_eq!(interpreter("#!/usr/bin/env bash\n"), Ok("/bin/bash"));
     assert!(interpreter("#!/tmp/x\n").is_err());
@@ -460,9 +510,12 @@ fn the_installers_interpreter_is_named_by_absolute_path() {
 }
 
 #[test]
-fn installer_prints_the_built_in_installer() {
+fn installer_writes_the_package_into_a_new_folder() {
+    let d = dir("pkg");
+    let to = d.0.join("derm-agents-install");
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let mut y = Yes(false, 0);
+    let env = |_: &str| None;
     let mut ctx = Ctx {
         registry: PathBuf::from("/nonexistent"),
         settings: PathBuf::from("/nonexistent"),
@@ -472,19 +525,36 @@ fn installer_prints_the_built_in_installer() {
         sh: PathBuf::from("/bin/sh"),
         path_env: String::new(),
         check_tools: true,
-        installer: INSTALLER,
+        package: PACKAGE,
+        root_tmp: PathBuf::from("/nonexistent"),
         linux: false,
         terminal: false,
         in_chat: None,
         confirm: &mut y,
+        env: &env,
         out: &mut out,
         err: &mut err,
     };
-    assert_eq!(run(&mut ctx, &s(&["installer"])), 0);
+    let to_s = to.to_string_lossy().into_owned();
+    assert_eq!(run(&mut ctx, &s(&["installer", &to_s])), 0);
+    assert_eq!(
+        run(&mut ctx, &s(&["installer", &to_s])),
+        1,
+        "never into a folder that is there"
+    );
+    assert_eq!(run(&mut ctx, &s(&["installer"])), 2);
     assert_eq!(run(&mut ctx, &s(&["list"])), 2, "Linux only");
     assert_eq!(run(&mut ctx, &s(&[])), 2);
     drop(ctx);
-    assert_eq!(out, INSTALLER.as_bytes());
+    for (n, t) in PACKAGE {
+        assert_eq!(std::fs::read_to_string(to.join(n)).unwrap(), *t, "{n}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = std::fs::metadata(to.join(n)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(m, if n.ends_with(".sh") { 0o755 } else { 0o644 }, "{n}");
+        }
+    }
     assert!(String::from_utf8(err).unwrap().contains("Linux only"));
 }
 
@@ -826,6 +896,139 @@ fn the_tunnel_admits_only_the_sign_in_hosts_and_passes_bytes_unread() {
     });
     echo.join().unwrap();
     assert_eq!(*refused.lock().unwrap(), ["statsig.anthropic.com:443"]);
+}
+
+/// The person's own proxy, read as curl reads it.
+#[test]
+fn the_tunnel_takes_the_persons_http_proxy_and_its_no_proxy() {
+    let env = |vars: &'static [(&'static str, &'static str)]| {
+        move |k: &str| {
+            vars.iter()
+                .find(|(a, _)| *a == k)
+                .map(|(_, v)| v.to_string())
+        }
+    };
+    assert_eq!(tunnel::upstream_from(&env(&[])), Ok(None));
+    let u = tunnel::upstream_from(&env(&[
+        ("HTTPS_PROXY", "http://proxy.corp:3128/"),
+        ("NO_PROXY", "localhost, .internal.corp,openai.com:443"),
+    ]))
+    .unwrap()
+    .unwrap();
+    assert_eq!(u.addr, "proxy.corp:3128");
+    assert!(
+        u.skips("auth.openai.com") && u.skips("a.internal.corp") && !u.skips("platform.claude.com")
+    );
+    assert!(
+        !u.skips("notopenai.com"),
+        "a domain, not a suffix of letters"
+    );
+    // The lowercase variable wins; a port-less proxy is port 80.
+    let u = tunnel::upstream_from(&env(&[
+        ("https_proxy", "proxy:8080"),
+        ("HTTPS_PROXY", "http://x:1"),
+    ]))
+    .unwrap()
+    .unwrap();
+    assert_eq!(u.addr, "proxy:8080");
+    assert_eq!(
+        tunnel::upstream_from(&env(&[("https_proxy", "http://proxy")]))
+            .unwrap()
+            .unwrap()
+            .addr,
+        "proxy:80"
+    );
+    assert!(
+        tunnel::upstream_from(&env(&[("https_proxy", "http://*"), ("no_proxy", "*")]))
+            .unwrap()
+            .unwrap()
+            .skips("anything")
+    );
+    for bad in [
+        "http://user:pw@proxy:3128",
+        "socks5://proxy:1080",
+        "https://proxy:443",
+        "http://:3128",
+    ] {
+        let vars: &'static [(&'static str, &'static str)] =
+            Box::leak(vec![("https_proxy", bad)].into_boxed_slice());
+        assert!(tunnel::upstream_from(&env(vars)).is_err(), "{bad}");
+    }
+}
+
+/// Through the person's proxy: its 200 opens the stream; any other answer is
+/// a 502 to the harness and named afterwards.
+#[test]
+fn the_tunnel_goes_on_through_the_persons_proxy_and_names_its_refusal() {
+    use std::io::Read;
+    use std::net::{TcpListener, TcpStream};
+    // A stand-in proxy: 200 for platform.claude.com, 403 for the rest, the
+    // way this workspace's egress proxy answers (run, 20 Nov 2026).
+    let px = TcpListener::bind("127.0.0.1:0").unwrap();
+    let px_addr = px.local_addr().unwrap().to_string();
+    let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let h2 = heads.clone();
+    std::thread::spawn(move || {
+        for c in px.incoming().flatten() {
+            let h2 = h2.clone();
+            std::thread::spawn(move || {
+                let mut c = c;
+                let mut b = vec![0u8; 512];
+                let n = c.read(&mut b).unwrap();
+                let head = String::from_utf8_lossy(&b[..n]).to_string();
+                h2.lock()
+                    .unwrap()
+                    .push(head.lines().next().unwrap_or("").to_string());
+                if head.starts_with("CONNECT platform.claude.com:443 ") {
+                    c.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+                    let mut x = [0u8; 3];
+                    c.read_exact(&mut x).unwrap();
+                    c.write_all(&x).unwrap();
+                } else {
+                    c.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                        .unwrap();
+                }
+            });
+        }
+    });
+    let up = tunnel::Upstream {
+        addr: px_addr.clone(),
+        no_proxy: vec![],
+    };
+    let t = tunnel::Tunnel::start(&["platform.claude.com", "auth.openai.com"], Some(up)).unwrap();
+    let connect = |target: &str| {
+        let mut c = TcpStream::connect(("127.0.0.1", t.port)).unwrap();
+        c.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+            .unwrap();
+        c
+    };
+    let mut c = connect("platform.claude.com:443");
+    let mut head = [0u8; 39];
+    c.read_exact(&mut head).unwrap();
+    assert_eq!(&head, b"HTTP/1.1 200 Connection established\r\n\r\n");
+    c.write_all(b"abc").unwrap();
+    let mut back = [0u8; 3];
+    c.read_exact(&mut back).unwrap();
+    assert_eq!(&back, b"abc");
+    let mut c = connect("auth.openai.com:443");
+    let mut r = String::new();
+    c.read_to_string(&mut r).unwrap();
+    assert!(r.starts_with("HTTP/1.1 502"), "{r}");
+    assert_eq!(
+        t.failed(),
+        [format!(
+            "auth.openai.com:443: the proxy {px_addr} answered \"HTTP/1.1 403 Forbidden\""
+        )]
+    );
+    let seen = heads.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        [
+            "CONNECT platform.claude.com:443 HTTP/1.1",
+            "CONNECT auth.openai.com:443 HTTP/1.1"
+        ]
+    );
+    assert!(t.refused().is_empty());
 }
 
 // ---- the broker in an agent account's chat (secret/chain.rs) ----

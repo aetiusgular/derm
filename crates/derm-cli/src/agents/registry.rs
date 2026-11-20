@@ -35,15 +35,20 @@ pub fn slug_ok(s: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// A label the person types: 1 to 64 characters, none a control or format
+/// The installer's own limit (lane L2, `accounts.py` `valid-label`).
+pub const LABEL_MAX: usize = 120;
+
+/// A label the person types: 1 to 120 characters, none a control or format
 /// character, so it prints back as typed and goes on an argument list whole.
+/// The installer refuses more (every Cf, Zl, Zp, Cs, Co and Cn character);
+/// this is the part derm can tell without a Unicode table.
 pub fn label_ok(s: &str) -> bool {
     let n = s.chars().count();
-    (1..=64).contains(&n)
+    (1..=LABEL_MAX).contains(&n)
         && s.trim() == s
         && !s.chars().any(|c| {
             c.is_control()
-                || matches!(c as u32, 0x200b..=0x200f | 0x202a..=0x202e | 0x2066..=0x2069 | 0xfeff)
+                || matches!(c as u32, 0xad | 0x600..=0x605 | 0x180e | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x2069 | 0xfeff | 0xfff9..=0xfffb | 0xe0001..=0xe007f)
         })
 }
 

@@ -7,13 +7,13 @@
 //! derm agents list
 //! derm agents login <harness> [--account <slug>]
 //! derm agents status [--account <slug>]
-//! derm agents installer
+//! derm agents installer <folder>
 //! ```
 //!
 //! - `add` prints the installer line and runs it under `sudo` only after a
-//!   yes on the terminal. The installer is the one built into this derm
-//!   (`installer` prints it); derm checks its hash again as root, from a
-//!   root-owned copy, before it runs (case 37).
+//!   yes on the terminal. The installer is lane L2's package, built into this
+//!   derm (`installer <folder>` writes it out); derm checks every file's hash
+//!   again as root, in a root-owned copy, before it runs (case 37).
 //! - `login` runs the harness's own sign-in as the account (`harness.rs`):
 //!   the unmodified binary through the vendor's own flow, which Anthropic's
 //!   terms allow (note CB 4.1, readings 1 and 3). derm reads, copies and
@@ -45,30 +45,68 @@ pub const USAGE: &str = "usage: derm agents <add|list|login|status|installer> ..
   derm agents list
   derm agents login <claude-code|codex> [--account <slug>]
   derm agents status [--account <slug>]
-  derm agents installer";
+  derm agents installer <folder>";
 
-/// The installer this derm runs (lane L2's; plans/parallel_build_accounts.md
-/// section 3).
-pub const INSTALLER: &str = include_str!("../../../../packaging/linux/agent-user/install.sh");
+/// The installer this derm runs: lane L2's package
+/// (`packaging/linux/agent-user/`, plans/parallel_build_accounts.md section
+/// 3), every file `install.sh --account` reaches. `install.sh` passes control
+/// to `install-account.sh` beside it, which runs `accounts.py` and installs
+/// `derm-agents-nft.service` from its own folder (`install-account.sh:36,
+/// 77-186`), so the package goes whole, never `install.sh` alone.
+pub const PACKAGE: &[(&str, &str)] = &[
+    (
+        "install.sh",
+        include_str!("../../../../packaging/linux/agent-user/install.sh"),
+    ),
+    (
+        "install-account.sh",
+        include_str!("../../../../packaging/linux/agent-user/install-account.sh"),
+    ),
+    (
+        "uninstall.sh",
+        include_str!("../../../../packaging/linux/agent-user/uninstall.sh"),
+    ),
+    (
+        "uninstall-account.sh",
+        include_str!("../../../../packaging/linux/agent-user/uninstall-account.sh"),
+    ),
+    (
+        "accounts.py",
+        include_str!("../../../../packaging/linux/agent-user/accounts.py"),
+    ),
+    (
+        "derm-agents-nft.service",
+        include_str!("../../../../packaging/linux/agent-user/derm-agents-nft.service"),
+    ),
+];
 
-/// The script `add` runs as root: copy the installer into a fresh root-owned
-/// folder, check its hash there, run it, remove the copy. Fixed text; every
-/// value is an argument (`$1` the person's copy, `$2` its sha256, `$3` the
-/// interpreter, the rest the installer's own arguments).
+/// The longest slug the installer makes: useradd takes 32 characters and
+/// `derm-agent-` is 11 (lane L2, `install-account.sh:9`; run there). Readers
+/// keep the contract's 24.
+pub const ADD_SLUG_MAX: usize = 21;
+
+/// The script `add` runs as root: copy the package into a fresh root-owned
+/// folder under `$2`, check every file's sha256 there against the list derm
+/// read (`$3`), run `install.sh` with the interpreter its first line names
+/// (`$4`), remove the copy. Fixed text; every value is an argument (`$1` the
+/// person's copy, the rest the installer's own arguments). A file name in the
+/// list is one plain word (no `/`, no leading `.`).
 const ROOT_STEP: &str = r#"set -u
-t=$1; h=$2; i=$3; shift 3
-d=$(mktemp -d) || exit 96
-cp -- "$t" "$d/install.sh" || { rm -rf -- "$d"; exit 96; }
-s=$(sha256sum -- "$d/install.sh") || { rm -rf -- "$d"; exit 96; }
-if [ "${s%% *}" != "$h" ]; then
-  rm -rf -- "$d"
+src=$1; parent=$2; sums=$3; i=$4; shift 4
+d=$(mktemp -d "$parent/derm-agents-install.XXXXXX") || exit 96
+out() { rm -rf -- "$d"; exit "$1"; }
+printf '%s' "$sums" > "$d/SHA256SUMS" || out 96
+while read -r h n; do
+  case "$n" in ''|*/*|.*) out 96 ;; esac
+  cp -- "$src/$n" "$d/$n" || out 96
+done < "$d/SHA256SUMS"
+if ! (cd "$d" && sha256sum -c --strict --quiet SHA256SUMS); then
   echo "derm agents: the installer changed after derm read it; nothing ran" >&2
-  exit 97
+  out 97
 fi
+chmod 0700 "$d"/*.sh || out 96
 "$i" "$d/install.sh" "$@"
-rc=$?
-rm -rf -- "$d"
-exit $rc"#;
+out $?"#;
 
 /// The presence check `status` runs as the account: stat(2) through `test`,
 /// never an open. 0 present, 3 absent; anything else (sudo's own 1 among
@@ -89,11 +127,17 @@ pub(crate) struct Ctx<'a> {
     /// Whether `sudo` and `sh` must be root-owned programs only root can
     /// change (always, outside tests).
     pub check_tools: bool,
-    pub installer: &'a str,
+    /// The installer package, by file name.
+    pub package: &'a [(&'a str, &'a str)],
+    /// The root-owned folder root's copy of the package goes in.
+    pub root_tmp: PathBuf,
     pub linux: bool,
     pub terminal: bool,
     pub in_chat: Option<String>,
     pub confirm: &'a mut dyn Confirm,
+    /// The person's environment, for the proxy their own network needs
+    /// (`tunnel::upstream_from`).
+    pub env: &'a dyn Fn(&str) -> Option<String>,
     pub out: &'a mut dyn Write,
     pub err: &'a mut dyn Write,
 }
@@ -103,6 +147,7 @@ pub fn main(args: &[String]) -> u8 {
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
     let mut tty = Tty;
+    let env = |k: &str| std::env::var(k).ok();
     let mut ctx = Ctx {
         registry: PathBuf::from(registry::PATH),
         settings: Path::new(&home).join(".derm").join("settings.json"),
@@ -112,11 +157,13 @@ pub fn main(args: &[String]) -> u8 {
         sh: PathBuf::from("/bin/sh"),
         path_env: "/usr/bin:/bin".into(),
         check_tools: true,
-        installer: INSTALLER,
+        package: PACKAGE,
+        root_tmp: PathBuf::from("/var/lib"),
         linux: cfg!(target_os = "linux"),
         terminal: terminal(),
         in_chat: inside_a_chat(),
         confirm: &mut tty,
+        env: &env,
         out: &mut out,
         err: &mut err,
     };
@@ -166,8 +213,7 @@ fn inside_a_chat() -> Option<String> {
 pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     let verb = args.first().map(String::as_str);
     if verb == Some("installer") {
-        let _ = ctx.out.write_all(ctx.installer.as_bytes());
-        return 0;
+        return write_package(ctx, &args[1..]);
     }
     if !matches!(verb, Some("add" | "list" | "login" | "status")) {
         let _ = writeln!(ctx.err, "{USAGE}");
@@ -332,14 +378,18 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         let _ = writeln!(ctx.err, "{USAGE}");
         return 2;
     };
-    if !registry::slug_ok(slug) {
-        return fail(ctx, 2, "a slug is 1 to 24 of a-z, 0-9 and -");
+    if !registry::slug_ok(slug) || slug.len() > ADD_SLUG_MAX {
+        return fail(
+            ctx,
+            2,
+            &format!("a slug is 1 to {ADD_SLUG_MAX} of a-z, 0-9 and - (useradd takes 32 characters, and derm-agent- is 11)"),
+        );
     }
     if !registry::label_ok(&label) {
         return fail(
             ctx,
             2,
-            "a subscription label is 1 to 64 characters with no control characters and no space at either end",
+            &format!("a subscription label is 1 to {} characters with no control or format characters and no space at either end", registry::LABEL_MAX),
         );
     }
     if let Some(why) = ctx.in_chat.clone() {
@@ -356,25 +406,34 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
             &format!("derm-agent-{slug} is set up already (`derm agents list`)"),
         );
     }
-    let interp = match interpreter(ctx.installer) {
-        Ok(i) => i,
+    let (interp, sums) = match package_check(ctx.package) {
+        Ok(x) => x,
         Err(e) => return fail(ctx, 1, &e),
     };
-    let hash = sha256_hex(ctx.installer.as_bytes());
-    let line = format!(
-        "derm agents installer > install.sh && sudo {interp} install.sh --account {} --subscription {}",
+    let hash = sha256_hex(sums.as_bytes());
+    let _ = writeln!(
+        ctx.out,
+        "derm-agent-{slug} for the subscription \"{}\": the installer, as root, makes the account in group {}, its home, its entry in {}, the firewall table that keeps the account to loopback, and your sudoers rule to start it",
+        registry::shown(&label),
+        registry::GROUP,
+        registry::PATH
+    );
+    let _ = writeln!(
+        ctx.out,
+        "  derm agents installer derm-agents-install && sudo derm-agents-install/install.sh --account {} --subscription {}",
         quote(slug),
         quote(&label)
     );
     let _ = writeln!(
         ctx.out,
-        "derm-agent-{slug} for the subscription \"{}\": the installer, as root, makes the account in group {}, its home, its entry in {}, and the firewall table that keeps the group to loopback",
-        registry::shown(&label),
-        registry::GROUP,
-        registry::PATH
+        "  installer: {} files, sha256 of their list {hash}",
+        ctx.package.len()
     );
-    let _ = writeln!(ctx.out, "  {line}");
-    let _ = writeln!(ctx.out, "  installer sha256 {hash}");
+    let _ = writeln!(
+        ctx.out,
+        "  undo: derm agents installer derm-agents-install && sudo derm-agents-install/uninstall.sh --account {}",
+        quote(slug)
+    );
     if print_only {
         return 0;
     }
@@ -397,8 +456,10 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         Ok(d) => d,
         Err(e) => return fail(ctx, 1, &e),
     };
-    let file = dir.join("install.sh");
-    let wrote = write_new(&file, ctx.installer.as_bytes());
+    let wrote = ctx
+        .package
+        .iter()
+        .try_for_each(|(n, t)| write_new(&dir.join(n), t.as_bytes()));
     let code = match wrote {
         Err(e) => fail(ctx, 1, &e),
         Ok(()) => {
@@ -408,8 +469,9 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
                 .arg("-c")
                 .arg(ROOT_STEP)
                 .arg("derm-agents-install")
-                .arg(&file)
-                .arg(&hash)
+                .arg(&dir)
+                .arg(&ctx.root_tmp)
+                .arg(&sums)
                 .arg(interp)
                 .args(["--account", slug, "--subscription", &label])
                 .status();
@@ -438,6 +500,69 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         return if held { 0 } else { 1 };
     }
     code
+}
+
+/// The package's interpreter and its `sha256sum` list (`<hash>  <name>`, one
+/// line each). Refuses a package with no `install.sh` or a name that is not
+/// one plain word.
+fn package_check(pkg: &[(&str, &str)]) -> Result<(&'static str, String), String> {
+    let install = pkg
+        .iter()
+        .find(|(n, _)| *n == "install.sh")
+        .ok_or("the installer package has no install.sh")?;
+    let interp = interpreter(install.1)?;
+    let mut sums = String::new();
+    for (n, t) in pkg {
+        if n.is_empty()
+            || n.starts_with('.')
+            || !n
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        {
+            return Err(format!("the installer package names a file {n:?}"));
+        }
+        sums.push_str(&format!("{}  {n}\n", sha256_hex(t.as_bytes())));
+    }
+    Ok((interp, sums))
+}
+
+/// `installer <folder>`: the package into a new folder, scripts 0755, the
+/// rest 0644, so the person can read it, run it by hand, or undo with it.
+fn write_package(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
+    let [dir] = args else {
+        let _ = writeln!(ctx.err, "{USAGE}");
+        return 2;
+    };
+    let dir = PathBuf::from(dir);
+    if let Err(e) = std::fs::create_dir(&dir) {
+        return fail(
+            ctx,
+            1,
+            &format!(
+                "{}: {e} (give a folder that does not exist yet)",
+                dir.display()
+            ),
+        );
+    }
+    for (n, t) in ctx.package {
+        let p = dir.join(n);
+        if let Err(e) = write_new(&p, t.as_bytes()) {
+            return fail(ctx, 1, &e);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if n.ends_with(".sh") { 0o755 } else { 0o644 };
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode));
+        }
+    }
+    let _ = writeln!(
+        ctx.out,
+        "wrote {} files into {}",
+        ctx.package.len(),
+        dir.display()
+    );
+    0
 }
 
 /// A new folder only this user can enter, under the system's temporary
@@ -648,7 +773,21 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     if let Err(e) = tools(ctx) {
         return fail(ctx, 1, &e);
     }
-    let t = match tunnel::Tunnel::start(h.hosts) {
+    let upstream = match tunnel::upstream_from(ctx.env) {
+        Ok(u) => u,
+        Err(why) => {
+            let _ = writeln!(ctx.err, "derm agents: {why}");
+            None
+        }
+    };
+    if let Some(u) = &upstream {
+        let _ = writeln!(
+            ctx.out,
+            "the tunnel goes on through your proxy at {} (https_proxy)",
+            u.addr
+        );
+    }
+    let t = match tunnel::Tunnel::start(h.hosts, upstream) {
         Ok(t) => t,
         Err(e) => return fail(ctx, 1, &format!("the sign-in's tunnel did not open: {e}")),
     };
@@ -677,6 +816,9 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     let refused = t.refused();
     if !refused.is_empty() {
         let _ = writeln!(ctx.out, "the tunnel refused: {}", refused.join(", "));
+    }
+    for why in t.failed() {
+        let _ = writeln!(ctx.out, "the tunnel could not reach {why}");
     }
     let _ = match present(ctx, &a, h.file) {
         Presence::Yes => writeln!(
