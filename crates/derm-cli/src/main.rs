@@ -31,6 +31,9 @@ mod platform;
 #[allow(dead_code)] // step P stubs; the lane drops this when it wires them
 mod project;
 mod run;
+// Step P's red tests that call derm-cli's own functions (the base; no lane's).
+#[cfg(all(test, target_os = "linux"))]
+mod contracts_acctp;
 mod secret;
 #[cfg(unix)]
 mod setup;
