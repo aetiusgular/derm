@@ -219,8 +219,10 @@ fn set_flags(fd: RawFd, cloexec: bool, nonblock: bool) -> io::Result<()> {
 }
 
 /// A new pty: its master and slave, both close-on-exec. POSIX's
-/// `posix_openpt`, `grantpt` and `unlockpt` rather than `openpty`, which
-/// glibc kept in libutil before 2.34.
+/// `posix_openpt`, `grantpt` and `unlockpt` (libc 0.2.189
+/// `src/unix/mod.rs:2112-2118`, every Unix) rather than `openpty`, which
+/// the libc crate declares with no library to link (`unix/linux_like/
+/// mod.rs:2184`), so where it lives in libutil the link would fail.
 pub(super) fn open_pty() -> io::Result<(OwnedFd, OwnedFd)> {
     #[cfg(target_os = "linux")]
     let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC;
@@ -241,10 +243,10 @@ pub(super) fn open_pty() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok((master, slave))
 }
 
-/// Linux: the slave by `TIOCGPTPEER` (since 4.13), which needs no path
+/// Linux: the slave by `TIOCGPTPEER`, which needs no path
 /// under `/dev/pts` (v7.0 `drivers/tty/pty.c` `ptm_open_peer`: "a race free
-/// way for userspace to open the slave end of a pty"); by its name when the
-/// kernel refuses it.
+/// way for userspace to open the slave end of a pty"); by its name
+/// (`ptsname_r`) when the kernel refuses the ioctl.
 #[cfg(target_os = "linux")]
 fn open_slave(master: &OwnedFd) -> io::Result<OwnedFd> {
     let flags = libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC;
