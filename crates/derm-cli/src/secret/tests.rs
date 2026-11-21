@@ -457,3 +457,152 @@ fn mw6_6_a_github_secret_names_what_gh_needs_and_codex_standard_says_no_network(
         .unwrap();
     assert!(!line.contains("GH_CONFIG_DIR"), "{line}");
 }
+
+// ---- step P (lane PB): the proxy credential and project bindings, I-4 ----
+
+/// I-4: the URL derm-egress hands a chat carries its proxy credential; the
+/// harness gets it in both spellings of each name, one value (undici reads
+/// `https_proxy` first, Codex and Claude Code `HTTPS_PROXY`), srt gets it as
+/// its parent, and the start line shows neither the password nor the user
+/// part (case 85).
+#[test]
+fn the_chats_proxy_credential_reaches_both_spellings_and_never_the_start_line() {
+    let url = "http://derm:00112233445566778899aabbccddeeff@127.0.0.1:41000";
+    let sec = vec![(
+        entry("gh", From::File("/x".into())),
+        "dermsecret_gh_0123456789abcdef".to_string(),
+    )];
+    for (tier, boundary, account) in [
+        ("standard", "none", None),
+        ("whole", "none", Some("derm-max")),
+    ] {
+        let p = chain::plan_for(
+            &Input {
+                egress_url: Some(url),
+                ..input(tier, boundary, &sec)
+            },
+            account,
+        )
+        .unwrap();
+        for k in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {
+            assert_eq!(get(&p, k), Some(url), "{k} ({tier}, {boundary})");
+        }
+        let line = p.line.unwrap();
+        assert!(
+            !line.contains("00112233445566778899aabbccddeeff") && !line.contains("derm:"),
+            "{line}"
+        );
+        assert!(
+            line.contains("http://<credential>@127.0.0.1:41000"),
+            "{line}"
+        );
+    }
+    let p = chain::plan(&Input {
+        egress_url: Some(url),
+        ..input("whole", "srt", &sec)
+    })
+    .unwrap();
+    let parent = &p.srt_network.as_ref().unwrap()["parentProxy"];
+    assert_eq!(parent["https"], url);
+    assert_eq!(parent["http"], url);
+    assert!(!p.line.unwrap().contains("00112233445566778899aabbccddeeff"));
+}
+
+/// I-4: `--project` on add, `bind` and `unbind` say which project's chats a
+/// secret is for, in `secret-projects.json` beside `secrets.json`; `list`
+/// shows it; `remove` forgets it; a folder names its real path's id.
+#[test]
+fn a_secret_is_bound_to_projects_by_id_or_folder_and_list_shows_it() {
+    let h = home("bind");
+    let work = h.0.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let real = std::fs::canonicalize(&work).unwrap();
+    let id = derm_core::project::ProjectId::of_real_path(real.to_str().unwrap());
+    let other = "0123456789abcdef";
+    let w = work.to_str().unwrap();
+    let (c, out, err) = go(
+        &h.0,
+        true,
+        None,
+        &[
+            "add",
+            "gh",
+            "--host",
+            "api.github.com",
+            "--env",
+            "GH_TOKEN",
+            "--project",
+            w,
+        ],
+    );
+    assert_eq!(c, 0, "{err}");
+    assert!(
+        out.contains(&format!("for chats of project {} only", id.as_str())),
+        "{out}"
+    );
+    let (_, list, _) = go(&h.0, false, None, &["list"]);
+    assert!(
+        list.contains(&format!("[project {}]", id.as_str())),
+        "{list}"
+    );
+    let (c, out, err) = go(&h.0, true, None, &["bind", "gh", "--project", other]);
+    assert_eq!(c, 0, "{err}");
+    assert!(out.contains(other) && out.contains(id.as_str()), "{out}");
+    let b = derm_egress::bind::load(&derm_egress::bind::path_for(&h.0)).unwrap();
+    assert_eq!(b.of("gh"), [id.as_str(), other]);
+    let (c, _, _) = go(
+        &h.0,
+        true,
+        None,
+        &["unbind", "gh", "--project", id.as_str()],
+    );
+    assert_eq!(c, 0);
+    let b = derm_egress::bind::load(&derm_egress::bind::path_for(&h.0)).unwrap();
+    assert_eq!(b.of("gh"), [other]);
+    let (c, out, _) = go(&h.0, true, None, &["unbind", "gh"]);
+    assert_eq!(c, 0);
+    assert!(out.contains("for chats in no project"), "{out}");
+    let (_, list, _) = go(&h.0, false, None, &["list"]);
+    assert!(list.contains("[no project]"), "{list}");
+    // Refusals: no such secret, a value that is neither an id nor a
+    // folder, no --project, and the writing verbs' own rules (case 147).
+    let (c, _, err) = go(&h.0, true, None, &["bind", "nope", "--project", other]);
+    assert_eq!(c, 2);
+    assert!(err.contains("no secret nope"), "{err}");
+    let (c, _, err) = go(
+        &h.0,
+        true,
+        None,
+        &["bind", "gh", "--project", "/no/such/folder"],
+    );
+    assert_eq!(c, 2);
+    assert!(err.contains("not a project id"), "{err}");
+    assert_eq!(go(&h.0, true, None, &["bind", "gh"]).0, 2);
+    assert_eq!(
+        go(&h.0, false, None, &["bind", "gh", "--project", other]).0,
+        2
+    );
+    assert_eq!(go(&h.0, true, Some("x"), &["unbind", "gh"]).0, 2);
+    // remove forgets the binding with the secret.
+    go(&h.0, true, None, &["bind", "gh", "--project", other]);
+    assert_eq!(go(&h.0, true, None, &["remove", "gh"]).0, 0);
+    let b = derm_egress::bind::load(&derm_egress::bind::path_for(&h.0)).unwrap();
+    assert!(b.of("gh").is_empty());
+}
+
+/// I-4: the start line names each secret a chat's project left out and how
+/// to bind it.
+#[test]
+fn the_start_line_names_the_secrets_a_project_left_out() {
+    let mut b = derm_egress::bind::Bindings::default();
+    b.bind("gh", "6853732bf2a99f2b").unwrap();
+    assert!(chain::left_out_line(&b, &[], "6853732bf2a99f2b").is_none());
+    let l = chain::left_out_line(&b, &["npm".into()], "6853732bf2a99f2b").unwrap();
+    assert!(
+        l.contains("npm is bound to no project")
+            && l.contains("derm secret bind npm --project 6853732bf2a99f2b"),
+        "{l}"
+    );
+    let l = chain::left_out_line(&b, &["gh".into()], "").unwrap();
+    assert!(l.contains("gh is bound to project 6853732bf2a99f2b"), "{l}");
+}

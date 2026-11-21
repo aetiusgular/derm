@@ -15,12 +15,17 @@
 //! - [`ca`]: the local CA the person creates from a terminal, and the leaves
 //!   it signs per host;
 //! - [`http`]: the HTTP/1.1 the proxy reads and writes;
-//! - [`proxy`]: the server, one per chat, with its records.
+//! - [`proxy`]: the server, one per chat, with its records;
+//! - [`bind`]: which project's chats each secret is for (I-4);
+//! - [`auth`]: the chat's proxy credential, without which the server answers
+//!   407 (plan step P10's I-4).
 //!
 //! Under sbx it brokers nothing (case 218, C6): sbx's own proxy owns provider
 //! credentials there. Subscription sign-ins are out of scope (cases 181, 186,
 //! 190). The chain to it per tier is `derm-cli`'s (`secret/chain.rs`).
 
+pub mod auth;
+pub mod bind;
 pub mod ca;
 pub mod http;
 pub mod place;
