@@ -60,11 +60,9 @@ pub(crate) mod chat;
 #[cfg(target_os = "linux")]
 #[path = "../landlock/mod.rs"]
 pub(crate) mod landlock;
-/// Step P (the base, 20 Nov 2026): a chat inside its project, lane PA's
-/// (`contracts/projects.md` section 2). Called by the red tests until the
-/// lane wires it into the chat route.
+/// Step P (lane PA): a chat inside its project (`contracts/projects.md`
+/// section 2), the chat route's folders, variables and gateway entry.
 #[cfg(target_os = "linux")]
-#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
 pub(crate) mod project;
 pub(crate) mod slug;
 
@@ -401,6 +399,45 @@ pub(super) const TERMINAL: &[&str] = &[
     "NO_COLOR",
 ];
 
+/// Step P10's I-6 (lane PA): a locale value the person's environment holds
+/// passes to the account only when it is a plain locale name; any other is
+/// replaced with `C.UTF-8`. sudo 1.9.15p5 lists `LC_*` and `LANG` among the
+/// variables it checks for safety (`sudo -V`), yet passes
+/// `--preserve-env=LC_ALL` with `LC_ALL=/tmp/evil` and `LC_CTYPE=%x`
+/// unchanged (run in the cloud, 21 Nov); glibc loads a locale from a path in
+/// such a value for a program that is not set-id (setlocale(3), I).
+#[cfg(unix)]
+pub(super) fn locale_fixes(read: &dyn Fn(&str) -> Option<String>) -> Vec<(String, String)> {
+    TERMINAL
+        .iter()
+        .filter(|n| matches!(**n, "LANG" | "LC_ALL" | "LC_CTYPE"))
+        .filter_map(|n| read(n).map(|v| (n, v)))
+        .filter(|(_, v)| !plain_locale(v))
+        .map(|(n, _)| (n.to_string(), "C.UTF-8".to_string()))
+        .collect()
+}
+
+/// `[A-Za-z_]+(\.[A-Za-z0-9-]+)?(@[A-Za-z0-9]+)?`, at most 64 bytes (note CC
+/// section 6, I-6): `C`, `POSIX`, `en_US.UTF-8`, `de_DE@euro`.
+#[cfg(unix)]
+pub(super) fn plain_locale(v: &str) -> bool {
+    if v.is_empty() || v.len() > 64 {
+        return false;
+    }
+    let (rest, modifier) = match v.split_once('@') {
+        Some((r, m)) => (r, Some(m)),
+        None => (v, None),
+    };
+    let (lang, codeset) = match rest.split_once('.') {
+        Some((l, c)) => (l, Some(c)),
+        None => (rest, None),
+    };
+    let word = |s: &str, ok: &dyn Fn(u8) -> bool| !s.is_empty() && s.bytes().all(ok);
+    word(lang, &|b| b.is_ascii_alphabetic() || b == b'_')
+        && codeset.is_none_or(|c| word(c, &|b| b.is_ascii_alphanumeric() || b == b'-'))
+        && modifier.is_none_or(|m| word(m, &|b| b.is_ascii_alphanumeric()))
+}
+
 #[cfg(unix)]
 fn rewrite(
     launch: &mut Plan,
@@ -410,7 +447,8 @@ fn rewrite(
     program: &str,
     set: &[(String, String)],
 ) {
-    for (k, v) in set {
+    let fixes = locale_fixes(&|k| std::env::var(k).ok());
+    for (k, v) in set.iter().chain(fixes.iter()) {
         launch.env_set.retain(|(n, _)| n != k);
         launch.env_set.push((k.clone(), v.clone()));
     }
@@ -768,6 +806,42 @@ mod tests {
         ] {
             assert!(!keep(no), "{no}");
         }
+    }
+
+    #[test]
+    fn i_6_only_plain_locale_names_reach_the_account() {
+        for ok in [
+            "C",
+            "POSIX",
+            "C.UTF-8",
+            "en_US.UTF-8",
+            "de_DE@euro",
+            "sr_RS.UTF-8@latin",
+        ] {
+            assert!(plain_locale(ok), "{ok}");
+        }
+        for no in [
+            "",
+            "/tmp/evil",
+            "%x",
+            "../x",
+            "en_US.UTF-8/",
+            "a b",
+            "en_US.\u{202e}",
+            "x.y.z",
+            "a@b@c",
+        ] {
+            assert!(!plain_locale(no), "{no:?}");
+        }
+        let env = |k: &str| match k {
+            "LANG" => Some("en_US.UTF-8".to_string()),
+            "LC_ALL" => Some("/tmp/evil".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            locale_fixes(&env),
+            vec![("LC_ALL".to_string(), "C.UTF-8".to_string())]
+        );
     }
 
     #[test]

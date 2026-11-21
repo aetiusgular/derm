@@ -28,6 +28,8 @@
 use serde::{Deserialize, Serialize};
 
 pub(crate) mod netcheck;
+pub(crate) mod reprobe;
+pub(crate) mod setup;
 mod sys;
 
 #[cfg(test)]
@@ -62,6 +64,16 @@ pub(crate) struct Spec {
     /// to L1, applied by integration). Every chat's spec sets it.
     #[serde(default)]
     pub check_network: bool,
+    /// Step P (lane PA): the project folders, sign-in links and gateway
+    /// entries the helper makes as the account before the domain
+    /// (`setup.rs`; contracts/projects.md section 2.2).
+    #[serde(default)]
+    pub setup: Option<setup::Setup>,
+    /// Step P10's I-1 (lane PA): the network check again every this many
+    /// seconds while the chat runs, from a process outside the chat's
+    /// domain; 0 checks only at the start (`reprobe.rs`).
+    #[serde(default)]
+    pub reprobe_secs: u64,
 }
 
 /// What [`apply`] put in place.
@@ -99,7 +111,8 @@ const SYSTEM_EXEC: &[&str] = &[
 const SYSTEM_READ: &[&str] = &["/etc", "/proc", "/sys", "/run/systemd/resolve"];
 /// Every right: temporary folders and the devices a terminal program opens.
 /// `/tmp`, `/var/tmp`, `/dev/shm` and `/dev/pts` are shared by every chat of
-/// the account (one uid): the status doc names it.
+/// the account (one uid): the status doc names it. A project chat keeps
+/// `/dev/pts` only when its harness makes terminals ([`makes_ptys`]).
 const SYSTEM_WRITE: &[&str] = &[
     "/tmp",
     "/var/tmp",
@@ -113,6 +126,82 @@ const SYSTEM_WRITE: &[&str] = &[
     "/dev/ptmx",
     "/dev/pts",
 ];
+
+/// The pty devices' folder. Out of a domain, a new pty's slave cannot be
+/// opened, by path or by `TIOCGPTPEER` (run on Linux 6.18, ABI 7: both
+/// EACCES), while a terminal the chat was handed as an open descriptor keeps
+/// working (P5's stopgap, plan 4a; note CC section 4).
+pub(crate) const PTS: &str = "/dev/pts";
+
+/// Whether `harness` makes terminals for its tools, so its chat keeps
+/// `/dev/pts` (P5's stopgap). Read at the pins: Pi 1.4.0's and 1.6.0's bash
+/// tool spawns with pipes (`dist/core/tools/bash.js:63-68`) and the package
+/// carries no pty library; Claude Code 2.1.322's Bash tool runs with pipes
+/// (`-p`, run, note CD premise 25) and only its background sessions make a
+/// pty (`new Bun.Terminal`, binary read), which outlive the chat outside
+/// `derm run` and so are refused in an account chat (the lane's reading);
+/// Codex 0.167.2 opens a pty for a command that asks for one
+/// (`utils/pty` with `portable-pty`, `unified_exec/mod.rs:187`). Every
+/// harness not read keeps it.
+pub(crate) fn makes_ptys(harness: &str) -> bool {
+    !matches!(harness, "pi" | "claude-code")
+}
+
+/// What a project chat's domain is built from (lane PA; contracts/
+/// projects.md section 2.2's "Domain right" column).
+pub(crate) struct ProjectPaths<'a> {
+    /// The chat's folders: its working folder and every `--folder`.
+    pub folders: &'a [String],
+    /// The project's home, temp and runtime folders, and the chat's own
+    /// harness's sign-in store folder.
+    pub writable: &'a [String],
+    pub bridge: Option<&'a str>,
+    /// The chat's `PATH` (no home entry).
+    pub path: &'a str,
+    /// Keep `/dev/pts` in the domain.
+    pub pts: bool,
+    pub require_scopes: bool,
+}
+
+/// The spec for one project chat: the system read-only, its own folders,
+/// its project's folders and the temporary folders writable, `/dev/pts`
+/// only when its harness makes terminals, its own bridge read-only. Not the
+/// account home, so no chat writes what another project's chat runs (AI-1
+/// across projects).
+pub(crate) fn project_spec(p: &ProjectPaths) -> Spec {
+    let owned = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut exec = owned(SYSTEM_EXEC);
+    exec.extend(
+        p.path
+            .split(':')
+            .filter(|d| d.starts_with('/'))
+            .map(str::to_string),
+    );
+    let mut read = owned(SYSTEM_READ);
+    read.extend(p.bridge.map(str::to_string));
+    let mut write: Vec<String> = SYSTEM_WRITE
+        .iter()
+        .filter(|w| p.pts || **w != PTS)
+        .map(|s| s.to_string())
+        .collect();
+    write.extend(p.writable.iter().cloned());
+    write.extend(p.folders.iter().cloned());
+    for v in [&mut exec, &mut read, &mut write] {
+        v.sort();
+        v.dedup();
+    }
+    Spec {
+        version: 1,
+        read,
+        exec,
+        write,
+        require_landlock: true,
+        require_scopes: p.require_scopes,
+        check_network: true,
+        setup: None,
+        reprobe_secs: 0,
+    }
+}
 
 /// The spec for one chat: the system read-only, its own folders, the account
 /// home and the temporary folders writable, its own bridge read-only, and
@@ -144,6 +233,8 @@ pub(crate) fn chat_spec(p: &ChatPaths) -> Spec {
         require_landlock: true,
         require_scopes: p.require_scopes,
         check_network: true,
+        setup: None,
+        reprobe_secs: 0,
     }
 }
 
@@ -382,12 +473,33 @@ pub(crate) fn enter(spec: &Spec, argv: &[String]) -> u8 {
             return 126;
         }
     }
+    // As the account, before the domain: the project's folders, the
+    // sign-in links and the gateway entries (lane PA, step P2).
+    let mut extra: Vec<(String, String)> = Vec::new();
+    if let Some(s) = &spec.setup {
+        match setup::make(s) {
+            Ok(env) => extra = env,
+            Err(why) => {
+                eprintln!("derm {SUBCOMMAND}: {why}; not starting {}", argv[0]);
+                return 126;
+            }
+        }
+    }
+    // The watchdog forks before the domain, so it stays outside it: the
+    // chat can neither signal nor trace it (scopes, ABI 6).
+    if spec.check_network && spec.reprobe_secs > 0 {
+        if let Err(why) = reprobe::start(std::time::Duration::from_secs(spec.reprobe_secs)) {
+            eprintln!("derm {SUBCOMMAND}: {why}; not starting {}", argv[0]);
+            return 126;
+        }
+    }
     if let Err(why) = apply(spec) {
         eprintln!("derm {SUBCOMMAND}: {why}; not starting {}", argv[0]);
         return 126;
     }
     let err = std::process::Command::new(&argv[0])
         .args(&argv[1..])
+        .envs(extra)
         .env_remove(SPEC_VAR)
         .exec();
     eprintln!("derm {SUBCOMMAND}: {}: {err}", argv[0]);
