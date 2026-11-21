@@ -24,6 +24,10 @@
 //! - `approvals.check`: whether Cline's approval folder, named in the
 //!   co-process's own environment, may be used (`approvals.rs`; note BF
 //!   section 4.4).
+//! - `approve` and `record` go on the co-process's own copy of the decision
+//!   (`decisions.rs`; review AI-7, lane PF): the permission, the tool and the
+//!   timeout are what `decide` answered, never what the plugin hands back,
+//!   and a call it never decided is refused.
 //!
 //! Failure is the plugin's to turn into a deny (case 228): a line that is
 //! not JSON or is over 1 MiB, a first line that is not a matching `hello`,
@@ -32,6 +36,7 @@
 //! comes from its own environment) and writes nothing but that record.
 
 mod approvals;
+mod decisions;
 mod memory;
 
 use std::io::{BufRead, Read, Write};
@@ -107,6 +112,12 @@ pub fn main(args: &[String]) -> u8 {
         post_later: &post_later,
         approve: &approve,
         daemon_up: &daemon_up,
+        decisions: Default::default(),
+        // The decide reply names its decision once the contract and its
+        // fixture carry the field (lane PF's request 1): until then the
+        // plugins find theirs by the call, which their clients send back
+        // whole (`decisions.rs`).
+        send_decision_id: false,
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -172,6 +183,11 @@ pub(crate) struct Ctx<'a> {
     /// Whether a daemon takes this chat now (a hello with its chat token),
     /// for a plugin that keeps its own records ([`keep_light`]).
     pub daemon_up: &'a dyn Fn() -> bool,
+    /// Every decision this co-process made, which `approve` and `record`
+    /// go on (review AI-7).
+    pub decisions: std::cell::RefCell<decisions::Decisions>,
+    /// Whether the decide reply carries `decisionId` (lane PF's request 1).
+    pub send_decision_id: bool,
 }
 
 /// One line of input, as read.
@@ -386,10 +402,11 @@ fn answer_json(id: &Value, a: &GateAnswer) -> Value {
     })
 }
 
-/// The decide reply a plugin sends back with `approve` or `record`. The
-/// tool and reason are the plugin's (its glue may have narrowed the policy's
-/// answer, as Pi's memory index does); the ask's timeout is capped as the
-/// core caps it.
+/// The decide reply a plugin sends back with `approve` or `record`, as the
+/// plugin hands it back: its glue may have narrowed the policy's answer, as
+/// Pi's memory index does. Nothing here is trusted on its own: [`bound`]
+/// puts it against the co-process's own decision, and only the action and,
+/// for a narrowing, the reason survive.
 fn answer_of(r: &Value) -> Result<GateAnswer, String> {
     let a = match r.get("answer") {
         Some(a @ Value::Object(_)) => a,
@@ -407,9 +424,8 @@ fn answer_of(r: &Value) -> Result<GateAnswer, String> {
         .and_then(Value::as_u64)
         .unwrap_or(u64::from(gate::HOOK_ASK_CAP_SECONDS))
         .min(u64::from(gate::HOOK_ASK_CAP_SECONDS)) as u32;
-    // P1: the plugin hands back the reason the decide reply gave it, whose
-    // name, if any, leads it; its own narrowings name theirs the same way.
-    let permission = derm_core::policy::Permission::of_reason(&reason);
+    // AI-7: never a permission from the reason text; [`bound`] sets the
+    // decision's own.
     Ok(GateAnswer {
         action,
         normalized_tool,
@@ -417,8 +433,33 @@ fn answer_of(r: &Value) -> Result<GateAnswer, String> {
         updated_input: None,
         redacted,
         ask_timeout_seconds,
-        permission,
+        permission: None,
     })
+}
+
+/// The answer an `approve` or `record` goes on: the plugin's answer put
+/// against the decision this co-process made for the same call, found by
+/// the `decisionId` the decide reply gave (when the plugin sends it back,
+/// it must name a decision for this call) or else by the call itself
+/// (`decisions::own_answer`). A call it never decided, or an answer that
+/// allows more than its decision, is refused (review AI-7).
+fn bound(ctx: &Ctx, r: &Value, call: &GateCall) -> Result<GateAnswer, String> {
+    let theirs = answer_of(r)?;
+    let id = match r["answer"].get("decisionId") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.chars().count() <= MAX_ID_CHARS => Some(s.clone()),
+        Some(_) => return Err("answer.decisionId must be the id the decide reply gave".into()),
+    };
+    let key = decisions::CallKey::of(call);
+    let kept = ctx.decisions.borrow();
+    let Some(own) = kept.find(id.as_deref(), &key) else {
+        return Err(match id {
+            Some(_) => "answer.decisionId names no decision derm gate serve made for this call",
+            None => "derm gate serve made no decision for this call (decide it first)",
+        }
+        .into());
+    };
+    decisions::own_answer(own, &theirs)
 }
 
 /// `"wait": false`: the record is queued and the reply does not wait for the
@@ -451,6 +492,9 @@ fn op_decide(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         .map(str::to_string);
     let (policy, problem) = super::policy::load_for_hook(&ctx.env, &ctx.cwd);
     let policy = with_description(policy, description.as_deref());
+    // The call as the plugin named it, before oh-my-pi's names are read:
+    // `approve` and `record` name it the same way.
+    let key = decisions::CallKey::of(&call);
     let mut call = call;
     if call.harness == "oh-my-pi" {
         call.tool = omp_tool_name(&call.tool, &policy.servers);
@@ -467,7 +511,12 @@ fn op_decide(ctx: &Ctx, id: &Value, r: &Value) -> Value {
             (answer.action, answer.reason, answer.updated_input) = (Action::Deny, why, None);
         }
     }
-    answer_json(id, &answer)
+    let decision = ctx.decisions.borrow_mut().keep(key, &answer);
+    let mut reply = answer_json(id, &answer);
+    if ctx.send_decision_id {
+        reply["decisionId"] = json!(decision);
+    }
+    reply
 }
 
 /// oh-my-pi names an MCP tool `mcp__<server>_<tool>`, after lowercasing the
@@ -667,7 +716,7 @@ fn op_approve(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         Ok(c) => c,
         Err(e) => return refuse(id, &e),
     };
-    let answer = match answer_of(r) {
+    let answer = match bound(ctx, r, &call) {
         Ok(a) if a.action == Action::Ask => a,
         Ok(_) => return refuse(id, "approve is for an answer that asks"),
         Err(e) => return refuse(id, &e),
@@ -722,7 +771,7 @@ fn op_record(ctx: &Ctx, id: &Value, r: &Value) -> Value {
         Ok(c) => c,
         Err(e) => return refuse(id, &e),
     };
-    let answer = match answer_of(r) {
+    let answer = match bound(ctx, r, &call) {
         Ok(a) => a,
         Err(e) => return refuse(id, &e),
     };
