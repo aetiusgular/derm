@@ -1,5 +1,5 @@
 {
-  "$comment": "Folder-level ownership for plans/parallel_build_tk.md, sections 2, 6 and 7. A path is owned by the lane whose `owns` prefix matches it and whose `except` list does not. `shared` names files with per-lane sections marked `# [lane-X]`. `noLane` paths no lane edits during a wave. Written by tk session 0; only integration edits it. Integration w1 extended it for wave 2: lane I gains derm-kilo-plugin, derm-pi except memory.ts, and tests/cli-contract/checks/I/; derm-daemon's Cargo.toml is shared with lane K. Integration w2: lane K also owns derm-pi's memory test and live check (its request 2); its edit to packages/derm-pi/test/load.test.ts was accepted at merge. Integration w2 scaffolded wave 4 (section 7a): lanes L, N, P own their packages (the synced src/core/ excepted) and their agents' preset files by name, which `except` takes out of lane Q's crates/derm-cli/src/connect/; lane R owns acp/, doctor/, run/ and watch/; derm-cli's Cargo.toml has # [lane-Q] and # [lane-R] sections. The wave 5 base (4 Nov 2026, plans/parallel_build_tk.md section 7c) added lanes Y, V, S, T, U, X, W and Z over the seams it cut (run/boundary, run/user and run/tap; the daemon's approver/, join/, content/, installs/; the install hook's three installs/ folders, the canonical one inside the synced core; the preset rows' wave5/ sibling tables; cu/, setup/ and the platform/windows/ folders; the derm-tap and derm-audit-windows crates), the `except` entries that take those folders out of the wave 1 to 4 lanes that owned them, sections for wave 5's lanes in the three shared manifests (derm-core's is new), and one change to the script: a path a lane owns by name is not refused for lying under a `noLane` folder, so lanes S and X own contracts/fixtures/tap/ and installs/ (and only those in contracts/). In wave 5, run/ outside its three folders, watch/, the matcher core outside installs/ and every noLane path are integration's. The wave 5b base (10 Nov 2026, plans/toolkit_wave5b_plan.md section 2.0, part 3) added lanes 5bA to 5bF over the seams it cut: crates/derm-cli/src/hook/claude_format/ and native/, gate/serve/, enter/, run/boundary/windows_srt/, the derm-sysmon crate and the daemon's platform/windows/sysmon_feed/; crates/derm-cli/src/gate/ outside serve/ and hook/mod.rs are integration's. Each package lane keeps the synced src/core/ excepted, as wave 4 did. Lane names with digits are taken as written (`5bA`), and their markers are `# [lane-5bA]`. The wave 6 base (12 Nov 2026, plans/toolkit_wave6_plan.md section 2.0, part 3) added lanes 6A to 6F over the seams it cut: run/standard/ and connect/sandbox/ with presets/wave6/sandbox.json (6A); gate/locallog/ and init/ (6B); audit/ (6E); tests/eval/ and docs/evidence/ (6F); the derm-egress crate, derm-tap's src/broker/ and secret/ (6C); gate/taint/, the daemon's taint/ and derm-tap's src/results/ (6D); the `except` entries that take those folders out of lanes B, C, D, Q, R, S, F and W; sections for 6A to 6E in derm-cli's manifest, 6D in derm-daemon's, and 6C and 6D in derm-tap's, which becomes shared. The base's red tests (crates/derm-cli/tests/contracts_w6.rs, crates/derm-egress/tests/contract.rs) and the chain v2 reference (crates/derm-core/src/audit_chain.rs) are no lane's. Markers for these lanes are `# [lane-6A]`. The accounts integration (20 Nov 2026, plans/parallel_build_accounts.md section 3; lane L1's request L1-6) added lanes acct-L1 to acct-L4 after the build, named as written: L1 run/user/ and run/landlock/, L2 packaging/linux/agent-user/, L3 derm-core's policy.rs and command.rs and derm-cli's hook/ (the dialects rewrite the core's reason), L4 agents/ and secret/chain.rs. They overlap the earlier waves' lanes, which are closed; gate/'s reason text, which L3 also touched, stays integration's.",
+  "$comment": "Folder-level ownership for plans/parallel_build_tk.md, sections 2, 6 and 7. A path is owned by the lane whose `owns` prefix matches it and whose `except` list does not. `shared` names files with per-lane sections marked `# [lane-X]`. `noLane` paths no lane edits during a wave. Written by tk session 0; only integration edits it. Integration w1 extended it for wave 2: lane I gains derm-kilo-plugin, derm-pi except memory.ts, and tests/cli-contract/checks/I/; derm-daemon's Cargo.toml is shared with lane K. Integration w2: lane K also owns derm-pi's memory test and live check (its request 2); its edit to packages/derm-pi/test/load.test.ts was accepted at merge. Integration w2 scaffolded wave 4 (section 7a): lanes L, N, P own their packages (the synced src/core/ excepted) and their agents' preset files by name, which `except` takes out of lane Q's crates/derm-cli/src/connect/; lane R owns acp/, doctor/, run/ and watch/; derm-cli's Cargo.toml has # [lane-Q] and # [lane-R] sections. The wave 5 base (4 Nov 2026, plans/parallel_build_tk.md section 7c) added lanes Y, V, S, T, U, X, W and Z over the seams it cut (run/boundary, run/user and run/tap; the daemon's approver/, join/, content/, installs/; the install hook's three installs/ folders, the canonical one inside the synced core; the preset rows' wave5/ sibling tables; cu/, setup/ and the platform/windows/ folders; the derm-tap and derm-audit-windows crates), the `except` entries that take those folders out of the wave 1 to 4 lanes that owned them, sections for wave 5's lanes in the three shared manifests (derm-core's is new), and one change to the script: a path a lane owns by name is not refused for lying under a `noLane` folder, so lanes S and X own contracts/fixtures/tap/ and installs/ (and only those in contracts/). In wave 5, run/ outside its three folders, watch/, the matcher core outside installs/ and every noLane path are integration's. The wave 5b base (10 Nov 2026, plans/toolkit_wave5b_plan.md section 2.0, part 3) added lanes 5bA to 5bF over the seams it cut: crates/derm-cli/src/hook/claude_format/ and native/, gate/serve/, enter/, run/boundary/windows_srt/, the derm-sysmon crate and the daemon's platform/windows/sysmon_feed/; crates/derm-cli/src/gate/ outside serve/ and hook/mod.rs are integration's. Each package lane keeps the synced src/core/ excepted, as wave 4 did. Lane names with digits are taken as written (`5bA`), and their markers are `# [lane-5bA]`. The wave 6 base (12 Nov 2026, plans/toolkit_wave6_plan.md section 2.0, part 3) added lanes 6A to 6F over the seams it cut: run/standard/ and connect/sandbox/ with presets/wave6/sandbox.json (6A); gate/locallog/ and init/ (6B); audit/ (6E); tests/eval/ and docs/evidence/ (6F); the derm-egress crate, derm-tap's src/broker/ and secret/ (6C); gate/taint/, the daemon's taint/ and derm-tap's src/results/ (6D); the `except` entries that take those folders out of lanes B, C, D, Q, R, S, F and W; sections for 6A to 6E in derm-cli's manifest, 6D in derm-daemon's, and 6C and 6D in derm-tap's, which becomes shared. The base's red tests (crates/derm-cli/tests/contracts_w6.rs, crates/derm-egress/tests/contract.rs) and the chain v2 reference (crates/derm-core/src/audit_chain.rs) are no lane's. Markers for these lanes are `# [lane-6A]`. The accounts integration (20 Nov 2026, plans/parallel_build_accounts.md section 3; lane L1's request L1-6) added lanes acct-L1 to acct-L4 after the build, named as written: L1 run/user/ and run/landlock/, L2 packaging/linux/agent-user/, L3 derm-core's policy.rs and command.rs and derm-cli's hook/ (the dialects rewrite the core's reason), L4 agents/ and secret/chain.rs. They overlap the earlier waves' lanes, which are closed; gate/'s reason text, which L3 also touched, stays integration's. Step P's base (20 Nov 2026, plans/parallel_build_accounts.md section 8.3 item 8 and 8.4) added lanes acctP-PA to acctP-PG, named as written, over the seams it cut: PA the new derm-cli project/ (and run/user/, run/landlock/, run/args.rs, as 8.4 gives), PB agents/ (signin.rs among it), secret/ and derm-egress, PC the daemon's installs/ (installs/project.rs among it), derm-audit-linux and watch/, PD run/pty/ and the core's project/screen.rs, PE the daemon's project/ and approver/, run/standard/ and run/claude_gate.rs, PF gate/serve/ and packaging/linux/agent-user/, PG run/user/, run/landlock/ and run/mount/ (phase 4, after P integration, so PA's and PG's overlap is never live at once). The core's project/mod.rs, the daemon's protocol.rs and daemon.rs (whose step P calls the base wired), and the four contracts_acctp.rs files (the red tests) are no lane's. They overlap the closed waves' lanes (B, D, 6A, 6C, acct-L1, acct-L4), which is fine: those lanes are closed.",
   "lanes": {
     "A": {
       "wave": 1,
@@ -497,6 +497,73 @@
         "crates/derm-cli/src/secret/chain.rs"
       ],
       "except": []
+    },
+    "acctP-PA": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-cli/src/project/",
+        "crates/derm-cli/src/run/user/",
+        "crates/derm-cli/src/run/landlock/",
+        "crates/derm-cli/src/run/args.rs"
+      ],
+      "except": []
+    },
+    "acctP-PB": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-cli/src/agents/",
+        "crates/derm-cli/src/secret/",
+        "crates/derm-egress/"
+      ],
+      "except": [
+        "crates/derm-egress/tests/contract.rs"
+      ]
+    },
+    "acctP-PC": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-daemon/src/installs/",
+        "crates/derm-audit-linux/",
+        "crates/derm-cli/src/watch/"
+      ],
+      "except": [
+        "crates/derm-audit-linux/tests/contracts_acctp.rs"
+      ]
+    },
+    "acctP-PD": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-cli/src/run/pty/",
+        "crates/derm-core/src/project/screen.rs"
+      ],
+      "except": []
+    },
+    "acctP-PE": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-daemon/src/project/",
+        "crates/derm-daemon/src/approver/",
+        "crates/derm-cli/src/run/standard/",
+        "crates/derm-cli/src/run/claude_gate.rs"
+      ],
+      "except": []
+    },
+    "acctP-PF": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-cli/src/gate/serve/",
+        "packaging/linux/agent-user/"
+      ],
+      "except": []
+    },
+    "acctP-PG": {
+      "wave": "accounts-P",
+      "owns": [
+        "crates/derm-cli/src/run/user/",
+        "crates/derm-cli/src/run/landlock/",
+        "crates/derm-cli/src/run/mount/"
+      ],
+      "except": []
     }
   },
   "shared": {
@@ -564,6 +631,13 @@
     "crates/derm-cli/tests/contracts_w5b.rs",
     "crates/derm-cli/tests/support/",
     "crates/derm-cli/tests/contracts_w6.rs",
-    "crates/derm-core/src/audit_chain.rs"
+    "crates/derm-core/src/audit_chain.rs",
+    "crates/derm-core/src/project/mod.rs",
+    "crates/derm-cli/src/contracts_acctp.rs",
+    "crates/derm-cli/tests/contracts_acctp.rs",
+    "crates/derm-daemon/tests/contracts_acctp.rs",
+    "crates/derm-audit-linux/tests/contracts_acctp.rs",
+    "crates/derm-daemon/src/protocol.rs",
+    "crates/derm-daemon/src/daemon.rs"
   ]
 }
