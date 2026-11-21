@@ -66,6 +66,11 @@ libc.workspace = true
 # (base64 of UTF-16LE) in the gate's shell reading; the workspace's exact pin,
 # already in derm-daemon and derm-egress.
 base64.workspace = true
+# Step P lane PD's request PD-1 (plans/parallel/acctP_PD.md, Research): the
+# terminal reader's parser (`run/pty/`, contracts/project-tools.md 3.1).
+# MIT, MSRV 1.85; pulls in vte 0.15.0, arrayvec 0.7.8 and unicode-width
+# 0.2.3 (MIT OR Apache-2.0), with itoa and memchr already in Cargo.lock.
+vt100 = "=0.18.1"
 # [lane-C]
 # Format-preserving TOML edits for Codex's config.toml: comments and key
 # order survive a write. Reason and pin in the lane C status doc.
