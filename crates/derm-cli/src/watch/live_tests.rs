@@ -548,3 +548,63 @@ fn a_yes_for_a_chat_that_runs_as_you_is_refused_with_no_password_where_no_check_
     let _ = harness.kill();
     let _ = harness.wait();
 }
+
+/// Step P (lane PC), end to end against the real daemon: an agent account
+/// chat's `run.start` and the Linux feed's records give the daemon's
+/// `project.control` and `net.unix`, which `derm watch report` counts by
+/// kind and, from the tail's backlog, per chat, outside connects apart.
+#[cfg(unix)]
+#[test]
+fn pc_the_report_names_an_account_chats_project_flags_per_chat() {
+    let l = live("pc");
+    let chat = "derm-chat-p";
+    let home = "/var/lib/derm/agents/max/projects/aaaaaaaaaaaaaaaa/home";
+    let mut start = ev("pc-start", chat, "run", "run.start", "start");
+    start["harness"] = json!("codex");
+    start["detail"] = json!({
+        "cwd": "/home/u/work", "harnessExe": "/usr/local/bin/codex",
+        "agentUser": {"user": "derm-max", "uid": 996, "account": "max",
+            "landlock": {"abi": 7, "scoped": true}},
+        "project": {"id": "aaaaaaaaaaaaaaaa", "folder": "/home/u/work"},
+    });
+    assert_eq!(post(&l, start)["ok"], true);
+    for (id, kind, detail) in [
+        (
+            "auditd-1-1",
+            "create",
+            json!({"path": format!("{home}/.codex/config.toml"), "exe": "/usr/bin/bash", "uid": 996}),
+        ),
+        (
+            "auditd-1-2",
+            "unix.connect",
+            json!({"path": "/run/dbus/system_bus_socket", "exe": "/usr/bin/busctl", "uid": 996}),
+        ),
+        (
+            "auditd-1-3",
+            "unix.connect",
+            json!({"path": format!("{home}/../run/cc-socks/1.sock"), "exe": "/usr/local/bin/codex", "uid": 996}),
+        ),
+    ] {
+        let mut e = ev(id, chat, "auditd", kind, kind);
+        e["detail"] = detail;
+        assert_eq!(post(&l, e)["ok"], true);
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let now = super::text::now_ms();
+    let r = report::fetch(&l.socket, Some(chat), now - 60_000, now + 1_000).unwrap();
+    assert_eq!(r["byKind"]["project.control"], 1, "{r}");
+    assert_eq!(r["byKind"]["net.unix"], 2, "{r}");
+    let pf = report::project_flags(&l.socket, Some(chat), now - 60_000, now + 1_000).unwrap();
+    assert_eq!(
+        pf["chats"][chat],
+        json!({"control": 1, "signinRead": 0, "netUnix": 2, "netUnixOutside": 1}),
+        "{pf}"
+    );
+    let mut r = r;
+    r["projectFlags"] = pf;
+    let text = report::render(&r);
+    assert!(
+        text.contains("chat derm-chat-p: 1 run-later writes in its project home, 1 Unix-socket connects OUTSIDE its project and bridge"),
+        "{text}"
+    );
+}
