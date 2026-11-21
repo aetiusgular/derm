@@ -39,7 +39,11 @@ fn fixture_at(root: &std::path::Path) -> Fixture {
     )
     .unwrap();
     attach(&daemon);
-    let socket = root.join(format!("run-{}/daemon.sock", uuid::Uuid::new_v4().simple()));
+    // Short: a Unix socket path is at most 104 bytes on macOS (case 111).
+    let socket = root.join(format!(
+        "r{}/d.sock",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    ));
     let listener = crate::socket::bind(&socket).unwrap();
     let serving = daemon.clone();
     std::thread::spawn(move || crate::socket::serve(listener, serving));
@@ -51,7 +55,10 @@ fn fixture_at(root: &std::path::Path) -> Fixture {
 }
 
 fn fixture() -> Fixture {
-    let root = std::env::temp_dir().join(format!("derm-pe-{}", uuid::Uuid::new_v4().simple()));
+    let root = std::env::temp_dir().join(format!(
+        "dpe-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
     std::fs::create_dir_all(&root).unwrap();
     fixture_at(&root)
 }
@@ -309,7 +316,10 @@ fn a_screen_is_read_by_its_own_project_only_and_cleaned_again() {
 
 #[test]
 fn the_map_comes_back_after_a_restart_from_chats_json() {
-    let root = std::env::temp_dir().join(format!("derm-pe-{}", uuid::Uuid::new_v4().simple()));
+    let root = std::env::temp_dir().join(format!(
+        "dpe-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
     std::fs::create_dir_all(&root).unwrap();
     let token = {
         let f = fixture_at(&root);

@@ -25,7 +25,11 @@ impl Drop for Stand {
 }
 
 fn stand(answer: fn(&Value) -> Value) -> Stand {
-    let dir = std::env::temp_dir().join(format!("pe-mcp-{}", uuid::Uuid::new_v4().simple()));
+    // Short: a Unix socket path is at most 104 bytes on macOS (case 111).
+    let dir = std::env::temp_dir().join(format!(
+        "pm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let socket = dir.join("daemon.sock");
     let listener = UnixListener::bind(&socket).unwrap();

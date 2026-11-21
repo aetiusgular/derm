@@ -183,6 +183,23 @@ fn the_map_comes_back_from_chats_json_and_a_restored_chat_waits_for_a_sign_of_li
 }
 
 #[test]
+fn a_restored_chats_own_record_makes_it_a_target_again_and_a_stopped_one_stays_stopped() {
+    let s = State::default();
+    s.restore(&json!({"version": 1, "chats": [
+        {"chat": "c-a1", "project": A}, {"chat": "c-a2", "project": A}
+    ]}));
+    assert!(err(&s.msg_send(chat("c-a1"), "c-a2", "x", None)).contains("no running chat"));
+    s.stamp(&mut event("c-a2", ""));
+    assert_eq!(
+        ok(&s.msg_send(chat("c-a1"), "c-a2", "x", None))["delivered"],
+        json!(["c-a2"])
+    );
+    s.forget_chat("c-a2");
+    s.stamp(&mut event("c-a2", ""));
+    assert!(err(&s.msg_send(chat("c-a1"), "c-a2", "x", None)).contains("no running chat"));
+}
+
+#[test]
 fn a_restore_of_another_shape_adds_nothing() {
     let s = State::default();
     for bad in [

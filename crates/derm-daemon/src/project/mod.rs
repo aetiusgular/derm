@@ -393,9 +393,15 @@ impl State {
     /// Sets `event.project` to the project of its chat, whatever the client
     /// sent, and counts an event whose client value was another project
     /// (events.md 7.1). An event with no `project` (every client older than
-    /// step P) is not counted. A `run.start` is noted first.
+    /// step P) is not counted. A `run.start` is noted first; a chat's own
+    /// telemetry or adapter record is a sign of life for a chat restored
+    /// from `chats.json` (its token came back).
     pub fn stamp(&self, event: &mut Event) {
         self.note_run_start(event);
+        if matches!(event.source, Source::Adapter | Source::Otel) {
+            let harness = event.harness.clone();
+            self.lock().seen(&event.chat_id, &harness);
+        }
         let ours = self.project_of(&event.chat_id);
         if !event.project.is_empty() && event.project != ours {
             self.overwritten.fetch_add(1, Ordering::Relaxed);
