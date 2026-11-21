@@ -624,10 +624,14 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     let st = setup("status", false);
     std::fs::create_dir_all(st.home.join(".claude")).unwrap();
     std::fs::write(st.home.join(".claude/.credentials.json"), "{}").unwrap();
-    // What `codex login status` leaves with no sign-in (run, Codex 0.167.2).
+    // What `codex login status` leaves with no sign-in (run, Codex 0.167.2),
+    // in the account's store (step P3), and an old sign-in in the account's
+    // home, which no project's chat reads any more.
+    std::fs::create_dir_all(st.home.join("signin/codex")).unwrap();
+    std::fs::write(st.home.join("signin/codex/auth.json.lock"), "").unwrap();
+    std::fs::write(st.home.join("signin/codex/auth.lock"), "").unwrap();
     std::fs::create_dir_all(st.home.join(".codex")).unwrap();
-    std::fs::write(st.home.join(".codex/auth.json.lock"), "").unwrap();
-    std::fs::write(st.home.join(".codex/auth.lock"), "").unwrap();
+    std::fs::write(st.home.join(".codex/auth.json"), "").unwrap();
     let r = go(&st, &["status", "--account", "max"], |_| {});
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(
@@ -638,6 +642,7 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
         r.out
     );
     assert!(r.out.contains("derm opened none of them"));
+    assert!(r.out.contains("~/signin/codex/auth.json"), "{}", r.out);
     assert!(
         r.out.contains("assume ordinary, individual usage"),
         "{}",
@@ -734,7 +739,7 @@ impl Drop for Watch {
 fn status_opens_no_login_file() {
     let st = setup("status-noopen", false);
     let c = st.home.join(".claude");
-    let x = st.home.join(".codex");
+    let x = st.home.join("signin/codex");
     std::fs::create_dir_all(&c).unwrap();
     std::fs::create_dir_all(&x).unwrap();
     put(&c.join(".credentials.json"), "{\"made-up\":1}");
@@ -763,7 +768,7 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
         &st.d.0,
         "claude",
         &format!(
-            "printf '%s\\n' \"$*\" > '{s}.args'\nenv | cut -d= -f1 | sort > '{s}.env'\nmkdir -p \"$HOME/.claude\"\nprintf made-up > \"$HOME/.claude/.credentials.json\"",
+            "printf '%s\\n' \"$*\" > '{s}.args'\nenv | cut -d= -f1 | sort > '{s}.env'\nprintf '%s %s\\n' \"$HTTPS_PROXY\" \"$https_proxy\" > '{s}.proxy'\nmkdir -p \"$HOME/.claude\"\nprintf made-up > \"$HOME/.claude/.credentials.json\"",
             s = seen.display()
         ),
     );
@@ -780,9 +785,27 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
     // landlock with its domain's spec in the environment only.
     let log = sudo_log(&st);
     assert!(
-        log.starts_with("-u derm-max -H --preserve-env=DERM_LANDLOCK_SPEC -- "),
+        log.starts_with(
+            "-u derm-max -H --preserve-env=DERM_LANDLOCK_SPEC,HTTPS_PROXY,https_proxy -- "
+        ),
         "{log}"
     );
+    // I-3: the tunnel's URL, with this sign-in's credential, reaches the
+    // harness in both spellings through the environment, never on argv.
+    let proxy = std::fs::read_to_string(seen.with_extension("proxy")).unwrap();
+    let (upper, lower) = proxy.trim_end().split_once(' ').unwrap();
+    assert_eq!(upper, lower);
+    assert!(
+        upper.starts_with("http://derm:") && upper.contains("@127.0.0.1:"),
+        "{upper}"
+    );
+    let helper_log = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
+    for argv in [&log, &helper_log] {
+        assert!(
+            !argv.contains("derm:") && !argv.contains("_PROXY=http"),
+            "{argv}"
+        );
+    }
     assert!(!log.split_whitespace().any(|w| w == "-i"), "{log}");
     let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
     assert!(
@@ -852,6 +875,20 @@ fn login_needs_a_terminal_an_account_and_a_known_harness_and_is_refused_in_a_cha
 #[test]
 fn codex_signs_in_with_its_device_flow() {
     let st = setup("login-codex", false);
+    // Step P3: the sign-in goes into the account's store, which the
+    // installer makes; without it nothing runs.
+    let r = go(&st, &["login", "codex", "--account", "plus"], |_| {});
+    assert_eq!(r.code, 1);
+    assert!(
+        r.err.contains("sign-in store") && r.err.contains("missing"),
+        "{}",
+        r.err
+    );
+    assert!(
+        !sudo_log(&st).contains("landlock"),
+        "the sign-in did not start"
+    );
+    std::fs::create_dir_all(st.home.join("signin/codex")).unwrap();
     let seen = st.d.0.join("seen.args");
     script(
         &st.d.0,
@@ -865,8 +902,22 @@ fn codex_signs_in_with_its_device_flow() {
         std::fs::read_to_string(&seen).unwrap(),
         "login --device-auth\n"
     );
-    assert!(r.out.contains("has no codex sign-in file"), "{}", r.out);
+    assert!(
+        r.out
+            .contains("has no codex sign-in file (~/signin/codex/auth.json)"),
+        "{}",
+        r.out
+    );
     assert!(!r.out.contains("individual usage"));
+    // Codex writes `$CODEX_HOME/auth.json` (note CD 2.2): its home is the
+    // store, a path on `env`'s argv, not a secret.
+    let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
+    assert!(
+        helper.contains(
+            " CODEX_HOME=/var/lib/derm/agents/plus/signin/codex codex login --device-auth"
+        ),
+        "{helper}"
+    );
 }
 
 // ---- the tunnel ----
@@ -931,13 +982,15 @@ fn the_tunnel_admits_only_the_sign_in_hosts_and_passes_bytes_unread() {
     });
     let allow = vec!["platform.claude.com:443".to_string()];
     let refused = std::sync::Mutex::new(Vec::new());
+    let cred = derm_egress::auth::ProxyCredential::mint().unwrap();
+    let pa = format!("Proxy-Authorization: {}\r\n", cred.header_value());
     let front = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = front.local_addr().unwrap();
     std::thread::scope(|sc| {
         sc.spawn(|| {
             for _ in 0..2 {
                 let (c, _) = front.accept().unwrap();
-                tunnel::serve(c, &allow, &refused, &|t: &str| {
+                tunnel::serve(c, &allow, &refused, Some(&cred), &|t: &str| {
                     assert_eq!(t, "platform.claude.com:443");
                     TcpStream::connect(up_addr).map_err(|e| e.to_string())
                 });
@@ -945,7 +998,12 @@ fn the_tunnel_admits_only_the_sign_in_hosts_and_passes_bytes_unread() {
         });
         let mut c = TcpStream::connect(addr).unwrap();
         // The first bytes of the TLS handshake may come with the head.
-        c.write_all(b"CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n\r\n\x16\x03\x01").unwrap();
+        c.write_all(
+            format!("CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n{pa}\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+        c.write_all(b"\x16\x03\x01").unwrap();
         let mut head = [0u8; 39];
         c.read_exact(&mut head).unwrap();
         assert_eq!(&head, b"HTTP/1.1 200 Connection established\r\n\r\n");
@@ -955,7 +1013,7 @@ fn the_tunnel_admits_only_the_sign_in_hosts_and_passes_bytes_unread() {
         assert_eq!(&back, b"\x01\x00\x01\x03\x16");
         drop(c);
         let mut c = TcpStream::connect(addr).unwrap();
-        c.write_all(b"CONNECT statsig.anthropic.com:443 HTTP/1.1\r\n\r\n")
+        c.write_all(format!("CONNECT statsig.anthropic.com:443 HTTP/1.1\r\n{pa}\r\n").as_bytes())
             .unwrap();
         let mut r = String::new();
         c.read_to_string(&mut r).unwrap();
@@ -1043,6 +1101,10 @@ fn the_tunnel_goes_on_through_the_persons_proxy_and_names_its_refusal() {
                 let mut b = vec![0u8; 512];
                 let n = c.read(&mut b).unwrap();
                 let head = String::from_utf8_lossy(&b[..n]).to_string();
+                assert!(
+                    !head.to_ascii_lowercase().contains("proxy-authorization"),
+                    "the sign-in's credential went on to the person's proxy: {head}"
+                );
                 h2.lock()
                     .unwrap()
                     .push(head.lines().next().unwrap_or("").to_string());
@@ -1063,10 +1125,16 @@ fn the_tunnel_goes_on_through_the_persons_proxy_and_names_its_refusal() {
         no_proxy: vec![],
     };
     let t = tunnel::Tunnel::start(&["platform.claude.com", "auth.openai.com"], Some(up)).unwrap();
+    let pa = t.authorization();
     let connect = |target: &str| {
         let mut c = TcpStream::connect(("127.0.0.1", t.port)).unwrap();
-        c.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
-            .unwrap();
+        c.write_all(
+            format!(
+                "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: {pa}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
         c
     };
     let mut c = connect("platform.claude.com:443");
@@ -1180,4 +1248,50 @@ mod chain_for_accounts {
                 .brokered
         );
     }
+}
+
+/// I-3 (plan step P10; note CC section 6): while a sign-in runs, its tunnel
+/// takes only the client it handed its credential to. Any other local
+/// client (another account, a chat, the person's own program) gets 407
+/// before its target is read, nothing is dialled, and the refusal is named
+/// once. The URL the sign-in gets carries the credential; the shown one
+/// does not.
+#[test]
+fn the_sign_in_tunnel_takes_only_the_client_holding_its_credential() {
+    use std::io::Read;
+    use std::net::TcpStream;
+    let t = tunnel::Tunnel::start(&["platform.claude.com"], None).unwrap();
+    let other = derm_egress::auth::ProxyCredential::mint().unwrap();
+    for extra in [
+        String::new(),
+        format!("Proxy-Authorization: {}\r\n", other.header_value()),
+        format!(
+            "Proxy-Authorization: {}\r\nProxy-Authorization: {}\r\n",
+            t.authorization(),
+            t.authorization()
+        ),
+        format!("Authorization: {}\r\n", t.authorization()),
+    ] {
+        let mut c = TcpStream::connect(("127.0.0.1", t.port)).unwrap();
+        c.write_all(
+            format!("CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n{extra}\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+        let mut r = String::new();
+        c.read_to_string(&mut r).unwrap();
+        assert!(r.starts_with("HTTP/1.1 407 "), "{extra:?}: {r}");
+        assert!(r.contains("Proxy-Authenticate: Basic"), "{r}");
+    }
+    assert_eq!(t.refused(), [tunnel::NO_CREDENTIAL]);
+    assert!(t.failed().is_empty(), "nothing was dialled");
+    let url = t.url();
+    assert!(
+        url.starts_with("http://derm:") && url.ends_with(&format!("@127.0.0.1:{}", t.port)),
+        "{url}"
+    );
+    assert_eq!(
+        t.shown_url(),
+        format!("http://<credential>@127.0.0.1:{}", t.port)
+    );
 }

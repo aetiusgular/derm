@@ -21,16 +21,31 @@
 //! contains it, and `*` is every host
 //! (https://curl.se/libcurl/c/CURLOPT_NOPROXY.html). A proxy URL with a user
 //! name or password is refused: derm carries no credential of the person's.
+//!
+//! The tunnel takes only the sign-in it was opened for (plan step P10's I-3;
+//! `research-notes/CC_project_scoped_agents.md` section 6): a credential is
+//! minted per sign-in (`derm_egress::auth`), handed to the harness in its
+//! proxy URL's user part through the environment only, and a client whose
+//! CONNECT carries no `Proxy-Authorization` with it gets 407, before the
+//! target is read. Another account, a chat, or the person's own programs on
+//! loopback can no longer use the tunnel while it is open. Claude Code
+//! 2.1.322 and Codex 0.167.2 send it unasked on CONNECT (the sources in
+//! `derm-egress/src/auth.rs`); the header never goes on, since the tunnel
+//! writes its own CONNECT upstream and passes only what follows the head.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use derm_egress::auth::{self, ProxyCredential};
+
 const HEAD_MAX: usize = 8 * 1024;
 
 pub struct Tunnel {
     pub port: u16,
+    /// This sign-in's proxy credential (I-3).
+    credential: ProxyCredential,
     /// Hosts asked for and refused, `host:port`, once each.
     refused: Arc<Mutex<Vec<String>>>,
     /// Admitted hosts the tunnel could not reach, with why, once each.
@@ -107,6 +122,7 @@ pub fn upstream_from(env: &dyn Fn(&str) -> Option<String>) -> Result<Option<Upst
 impl Tunnel {
     /// Listens on `127.0.0.1:0` and serves until the process ends.
     pub fn start(allow: &[&str], upstream: Option<Upstream>) -> std::io::Result<Tunnel> {
+        let credential = ProxyCredential::mint().map_err(std::io::Error::other)?;
         let l = TcpListener::bind(("127.0.0.1", 0))?;
         let port = l.local_addr()?.port();
         let allow: Arc<Vec<String>> = Arc::new(allow.iter().map(|h| format!("{h}:443")).collect());
@@ -114,9 +130,11 @@ impl Tunnel {
         let failed = Arc::new(Mutex::new(Vec::new()));
         let (r, f) = (refused.clone(), failed.clone());
         let up = Arc::new(upstream);
+        let cred = credential.clone();
         std::thread::spawn(move || {
             for c in l.incoming().flatten() {
                 let (allow, r, f, up) = (allow.clone(), r.clone(), f.clone(), up.clone());
+                let cred = cred.clone();
                 std::thread::spawn(move || {
                     let dial = |t: &str| {
                         let host = t.rsplit_once(':').map_or(t, |(h, _)| h);
@@ -129,12 +147,13 @@ impl Tunnel {
                         }
                         got
                     };
-                    serve(c, &allow, &r, &dial)
+                    serve(c, &allow, &r, Some(&cred), &dial)
                 });
             }
         });
         Ok(Tunnel {
             port,
+            credential,
             refused,
             failed,
         })
@@ -144,8 +163,22 @@ impl Tunnel {
         self.failed.lock().map(|v| v.clone()).unwrap_or_default()
     }
 
+    /// The proxy URL the sign-in is given, with its credential: a secret,
+    /// for the sign-in's environment only (case 85). Shown as
+    /// [`Tunnel::shown_url`].
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        self.credential
+            .url(std::net::SocketAddr::from(([127, 0, 0, 1], self.port)))
+    }
+
+    pub fn shown_url(&self) -> String {
+        auth::shown(&self.url())
+    }
+
+    /// The `Proxy-Authorization` value the sign-in sends (tests).
+    #[cfg(test)]
+    pub fn authorization(&self) -> String {
+        self.credential.header_value()
     }
 
     pub fn refused(&self) -> Vec<String> {
@@ -278,11 +311,16 @@ fn dial_public(target: &str) -> Result<TcpStream, String> {
     Err(format!("{target}: {last}"))
 }
 
-/// One client: read the head, admit or refuse, then copy both ways.
+/// What the refusal list says of a client without the sign-in's credential.
+pub const NO_CREDENTIAL: &str = "a client without this sign-in's proxy credential";
+
+/// One client: read the head, check the credential (when there is one),
+/// admit or refuse, then copy both ways.
 pub fn serve(
     mut c: TcpStream,
     allow: &[String],
     refused: &Mutex<Vec<String>>,
+    credential: Option<&ProxyCredential>,
     dial: &dyn Fn(&str) -> Result<TcpStream, String>,
 ) {
     let _ = c.set_read_timeout(Some(Duration::from_secs(10)));
@@ -301,6 +339,13 @@ pub fn serve(
         }
     };
     let head = String::from_utf8_lossy(&buf[..end]).into_owned();
+    if let Some(cred) = credential {
+        if !cred.admits_head(&head) {
+            note(refused, NO_CREDENTIAL.into());
+            let _ = c.write_all(auth::REFUSAL);
+            return;
+        }
+    }
     let Some(t) = target(&head).filter(|t| allow.iter().any(|a| a == t)) else {
         let asked = target(&head).unwrap_or_else(|| "a request that is not CONNECT".into());
         note(refused, asked);

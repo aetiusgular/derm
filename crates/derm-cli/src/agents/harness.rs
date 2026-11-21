@@ -34,8 +34,10 @@ pub struct SignIn {
     pub id: &'static str,
     /// The program and its sign-in words, run as the account.
     pub argv: &'static [&'static str],
-    /// The file the sign-in leaves, from the account's home. Its presence is
-    /// all derm ever learns of it.
+    /// The file the sign-in leaves, from the account's home, for a harness
+    /// whose sign-in is not in the account's store (`signin.rs`; Codex's and,
+    /// with its switch on, Claude Code's are, at `signin/<id>/`). Its
+    /// presence is all derm ever learns of it.
     pub file: &'static str,
     /// What the sign-in itself dials, on 443: all the login's tunnel admits.
     pub hosts: &'static [&'static str],
