@@ -354,9 +354,9 @@ mod session_tests {
         p.typed(b"\x03");
         let (st, _, _) = h.join().unwrap();
         assert!(st.success());
-        let seen = p.seen();
-        assert!(seen.contains("done1"), "{seen:?}");
-        assert!(!seen.contains("GOT2"), "{seen:?}");
+        // The person's side is read on another thread: wait for the end.
+        p.wait_for("done1");
+        assert!(!p.seen().contains("GOT2"), "{:?}", p.seen());
     }
 
     #[test]
@@ -368,7 +368,8 @@ mod session_tests {
         kill_self(libc::SIGINT);
         let (st, _, _) = h.join().unwrap();
         assert!(st.success());
-        assert!(p.seen().contains("done1"), "{:?}", p.seen());
+        p.wait_for("done1");
+        assert!(!p.seen().contains("GOT2"), "{:?}", p.seen());
 
         let p = Person::new();
         let h = run(
@@ -380,7 +381,7 @@ mod session_tests {
         kill_self(libc::SIGTERM);
         let (st, _, _) = h.join().unwrap();
         assert_eq!(st.code(), Some(7));
-        assert!(p.seen().contains("TERMED"), "{:?}", p.seen());
+        p.wait_for("TERMED");
 
         let p = Person::new();
         let h = run(
@@ -392,7 +393,7 @@ mod session_tests {
         kill_self(libc::SIGHUP);
         let (st, _, _) = h.join().unwrap();
         assert_eq!(st.code(), Some(8));
-        assert!(p.seen().contains("HUNG"), "{:?}", p.seen());
+        p.wait_for("HUNG");
     }
 
     #[test]
@@ -415,7 +416,7 @@ mod session_tests {
         p.typed(b"\r");
         let (st, mut s, _) = h.join().unwrap();
         assert!(st.success());
-        assert!(p.seen().contains("40 100"), "{:?}", p.seen());
+        p.wait_for("40 100");
         assert_eq!(s.reader().size(), (40, 100));
     }
 
