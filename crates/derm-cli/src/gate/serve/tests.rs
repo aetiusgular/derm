@@ -1373,11 +1373,11 @@ fn ai_7_a_call_the_co_process_never_decided_is_neither_approved_nor_recorded() {
 fn ai_7_a_decision_is_found_only_for_the_call_it_was_made_for() {
     let se = session(FIXTURE_POLICY, &[]);
     let base = json!({"id": 1, "op": "approve", "call": {"tool": "write", "input": {"path": "a"}, "chat": "c-1", "toolUseId": "t9"}, "answer": ask_answer(), "canAsk": false});
-    // Decided for one call; approved for one that differs in one part.
-    let changes: [(&str, Value); 5] = [
+    // Decided for one call; approved for one that differs in a part the
+    // decision reads.
+    let changes: [(&str, Value); 4] = [
         ("input", json!({"path": "b"})),
         ("chat", json!("c-2")),
-        ("toolUseId", json!("t8")),
         ("tool", json!("Write")),
         ("fullAccess", json!(false)),
     ];
@@ -1396,9 +1396,25 @@ fn ai_7_a_decision_is_found_only_for_the_call_it_was_made_for() {
     // The same call in another co-process: not this one's decision.
     let r = run_lines(&se, "pi", &[hello("pi"), base.clone()], yes());
     assert_eq!(r.replies[1]["ok"], false, "{}", r.replies[1]);
-    // The same call here: approved.
-    let r = run_lines(&se, "pi", &[hello("pi"), decided_first(&base), base], yes());
+    // The same call here: approved, under its id or another (the id only
+    // names records; no step of the decision reads it).
+    let r = run_lines(
+        &se,
+        "pi",
+        &[hello("pi"), decided_first(&base), base.clone()],
+        yes(),
+    );
     assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    let mut relabelled = base.clone();
+    relabelled["call"]["toolUseId"] = json!("t8");
+    let r = run_lines(
+        &se,
+        "pi",
+        &[hello("pi"), decided_first(&base), relabelled],
+        yes(),
+    );
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    assert_eq!(r.asked[0].id, "ap-pi-t8");
 }
 
 #[test]

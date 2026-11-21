@@ -26,10 +26,16 @@ use super::super::core::{GateAnswer, GateCall};
 /// it is refused, which the plugin turns into a deny (case 228).
 pub(crate) const KEEP: usize = 4096;
 
-/// What a call is, for finding its decision again: the harness, the tool as
-/// the agent named it, the chat, the call's id, full access, and the input,
-/// hashed whole. The tool's description is left out: it is not in the core's
-/// call (`GateCall`), and a plugin sends the same one with both requests.
+/// What a call is, for finding its decision again: what `decide` reads to
+/// decide it, the harness, the tool as the agent named it, the chat, full
+/// access, and the input, hashed whole. The call's id (`toolUseId`) is left
+/// out: no step of `gate::core::decide_call` reads it but to name records
+/// (taint's mark ids, `gate/taint/mod.rs:307-310, 517`), so two calls that
+/// differ only there get one answer, and a plugin may name either (derm-pi's
+/// client test approves a decided ask without its id,
+/// `packages/derm-pi/test/serve/client.test.ts:435`). The tool's description
+/// is left out too: it is not in the core's call (`GateCall`), and a plugin
+/// sends the same one with both requests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CallKey([u8; 32]);
 
@@ -41,7 +47,6 @@ impl CallKey {
             call.harness,
             call.tool,
             call.chat,
-            call.tool_use_id,
             call.full_access,
             call.tool_input,
         ]);
