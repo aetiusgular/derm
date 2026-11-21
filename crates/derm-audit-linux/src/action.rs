@@ -87,6 +87,13 @@ pub enum What {
         addr: String,
         port: u16,
     },
+    /// A `connect` to a Unix socket (step P8's first part, lane PC):
+    /// `path` is the socket's absolute path, `@<name>` for an abstract
+    /// socket ([`unix_sockaddr`]), or `?<name>` for a relative path the
+    /// record gives no absolute working folder for.
+    UnixConnect {
+        path: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,8 +103,9 @@ pub enum Family {
 }
 
 /// Reads one event. `None` when it is not a syscall the feed keeps, or it
-/// failed for a reason other than a denial (a PATH search's ENOENT, an
-/// AF_UNIX connect, a socketcall that is not connect).
+/// failed for a reason other than a denial (a PATH search's ENOENT, a
+/// socketcall that is not connect). Since step P an AF_UNIX connect is kept
+/// as [`What::UnixConnect`] (lane PC; it was dropped before).
 pub fn read(event: &AuditEvent) -> Option<Action> {
     let sys = event.first("SYSCALL")?;
     let arch = sys.get("arch")?;
@@ -219,8 +227,14 @@ pub fn read(event: &AuditEvent) -> Option<Action> {
                 return None;
             }
             let saddr = event.first("SOCKADDR")?.get("saddr")?;
-            let (family, addr, port) = sockaddr(saddr)?;
-            What::Connect { family, addr, port }
+            if let Some((family, addr, port)) = sockaddr(saddr) {
+                What::Connect { family, addr, port }
+            } else {
+                let addr = unix_addr(saddr)?;
+                What::UnixConnect {
+                    path: unix_path(addr, cwd.as_deref()),
+                }
+            }
         }
     };
     let mut action = base(what);
@@ -284,12 +298,86 @@ pub fn sockaddr(hex: &str) -> Option<(Family, String, u16)> {
     }
 }
 
-/// Step P (the base, 20 Nov 2026; lane PC's; `contracts/events.md` 7.2,
-/// `net.unix`): an AF_UNIX `saddr` (`sa_family` 1, then `sun_path`) as the
-/// socket's path, or `@<name>` for an abstract socket (a first byte of 0).
-/// Not built (lane PC): `None`, as `sockaddr` drops every AF_UNIX address.
-pub fn unix_sockaddr(_hex: &str) -> Option<String> {
-    None
+/// `sizeof(struct sockaddr_un)`: `sun_family` (2) and `sun_path[108]`
+/// (`include/uapi/linux/un.h` at Linux v7.0).
+const SOCKADDR_UN_LEN: usize = 110;
+
+/// Step P8's first part (lane PC; `contracts/events.md` 7.2, `net.unix`):
+/// an AF_UNIX `saddr` as the socket's path, or `@<name>` for an abstract
+/// socket. `None` for any other family, or an address the kernel refuses.
+///
+/// Read the way Linux v7.0 reads it (V, `net/unix/af_unix.c`):
+/// `unix_validate_addr` (lines 335-345) refuses a length of 2 or less or
+/// over `sizeof(struct sockaddr_un)`, and a family that is not AF_UNIX; a
+/// first `sun_path` byte that is not 0 names a path, which ends at the
+/// first NUL (`unix_mkname_bsd`, 347-370, terminates at the length and
+/// takes `strlen`), so bytes a program passed after it (glibc's nscd
+/// lookup passes 110 bytes with stack bytes after the NUL, seen in
+/// `tests/fixtures/scenario1.enriched.audit`, auditd 3.1.2) are not the
+/// path; a first byte of 0 names an abstract socket whose name is every
+/// byte after it up to the length, NULs included (`unix_find_other`,
+/// 1270-1282), shown as `/proc/net/unix` shows it, `@` and then each NUL
+/// as `@` (`unix_seq_show`, 3557-3568). The audit record holds exactly the
+/// length the program passed (`move_addr_to_kernel` in `net/socket.c`
+/// 248-257, `__audit_sockaddr` and `audit_log_n_hex` in `kernel/auditsc.c`
+/// 2648-2663, 1739-1747 and `kernel/audit.c` 2074-2101). Bytes that are not
+/// UTF-8 become U+FFFD, as every other path the feed reads.
+///
+/// A relative path that starts with `@` is given as `./@...`, so it is
+/// never read as an abstract name.
+pub fn unix_sockaddr(hex: &str) -> Option<String> {
+    Some(match unix_addr(hex)? {
+        UnixAddr::Path(p) if p.starts_with('@') => format!("./{p}"),
+        UnixAddr::Path(p) => p,
+        UnixAddr::Abstract(name) => format!("@{name}"),
+    })
+}
+
+/// An AF_UNIX address, read as [`unix_sockaddr`] says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UnixAddr {
+    Path(String),
+    /// The name after the first NUL, each further NUL as `@`.
+    Abstract(String),
+}
+
+fn unix_addr(hex: &str) -> Option<UnixAddr> {
+    let b = decode_hex(hex)?;
+    if b.len() <= 2 || b.len() > SOCKADDR_UN_LEN {
+        return None;
+    }
+    if u16::from_le_bytes([b[0], b[1]]) != 1 {
+        return None;
+    }
+    let sun = &b[2..];
+    if sun[0] != 0 {
+        let end = sun.iter().position(|c| *c == 0).unwrap_or(sun.len());
+        return Some(UnixAddr::Path(
+            String::from_utf8_lossy(&sun[..end]).into_owned(),
+        ));
+    }
+    let name: Vec<u8> = sun[1..]
+        .iter()
+        .map(|c| if *c == 0 { b'@' } else { *c })
+        .collect();
+    Some(UnixAddr::Abstract(
+        String::from_utf8_lossy(&name).into_owned(),
+    ))
+}
+
+/// A Unix socket's path as a connect names it: an abstract name (`@...`)
+/// and an absolute path stand; a relative path is the caller's working
+/// folder's (connect(2) takes no dirfd), else `?<name>`, which no folder
+/// contains.
+fn unix_path(addr: UnixAddr, cwd: Option<&str>) -> String {
+    match addr {
+        UnixAddr::Abstract(name) => format!("@{name}"),
+        UnixAddr::Path(p) if p.starts_with('/') => p,
+        UnixAddr::Path(p) => match cwd.filter(|c| c.starts_with('/')) {
+            Some(cwd) => join(cwd, &p),
+            None => format!("?{p}"),
+        },
+    }
 }
 
 /// The PATH items of one event, resolved to absolute paths where the record
@@ -508,8 +596,66 @@ mod tests {
         // Synthetic (the workspace has no IPv6): AF_INET6 = 10, port 9, ::1.
         let v6 = "0A000009000000000000000000000000000000000000000100000000";
         assert_eq!(sockaddr(v6), Some((Family::Inet6, "::1".into(), 9)));
-        assert_eq!(sockaddr("01002F746D70"), None, "AF_UNIX is not kept");
+        // `sockaddr` reads AF_INET and AF_INET6 only; AF_UNIX is
+        // `unix_sockaddr`'s since step P (lane PC).
+        assert_eq!(
+            sockaddr("01002F746D70"),
+            None,
+            "AF_UNIX is not an inet address"
+        );
         assert_eq!(sockaddr("02"), None);
+    }
+
+    /// Step P8 (lane PC): AF_UNIX addresses as the kernel reads them. The
+    /// first three are the `saddr` values Linux 6.18.44 logged for real
+    /// connects in lane PC's cloud workspace (21 Nov 2026, read from the
+    /// audit netlink socket; `tests/fixtures/unix_connect_6_18.raw.audit`);
+    /// the nscd one is auditd 3.1.2's record in `scenario1.enriched.audit`
+    /// (glibc passed 110 bytes, stack bytes after the NUL; auditd's own
+    /// reading of it is `path=/var/run/nscd/socket`).
+    #[test]
+    fn pc_unix_addresses_as_the_kernel_reads_them() {
+        assert_eq!(
+            unix_sockaddr("01002F746D702F64736B00").as_deref(),
+            Some("/tmp/dsk")
+        );
+        assert_eq!(unix_sockaddr("01000064616273").as_deref(), Some("@dabs"));
+        let padded = format!("01002F746D702F64736B{}", "00".repeat(100));
+        assert_eq!(padded.len(), 220);
+        assert_eq!(unix_sockaddr(&padded).as_deref(), Some("/tmp/dsk"));
+        let nscd = "01002F7661722F72756E2F6E7363642F736F636B657400000800000000000000703F222C685500000000000000000000E0911E61FE7F000013000000000000001300000000000000E0542D2C68550000C0921E61FE7F00005807303F68550000B0911E61FE7F0000099944F5B67F";
+        assert_eq!(nscd.len(), 220);
+        assert_eq!(unix_sockaddr(nscd).as_deref(), Some("/var/run/nscd/socket"));
+        // No NUL at all within the length: the path is the whole of it.
+        assert_eq!(unix_sockaddr("0100616263").as_deref(), Some("abc"));
+        // An abstract name keeps a later NUL, shown as `@`; an empty one is `@`.
+        assert_eq!(unix_sockaddr("010000610062").as_deref(), Some("@a@b"));
+        assert_eq!(unix_sockaddr("010000").as_deref(), Some("@"));
+        // A relative path that starts with `@` is not an abstract name.
+        assert_eq!(unix_sockaddr("0100407800").as_deref(), Some("./@x"));
+        // What the kernel refuses (unix_validate_addr): length 2 or less,
+        // over 110, another family.
+        assert_eq!(unix_sockaddr("0100"), None);
+        assert_eq!(unix_sockaddr(&format!("01002F{}", "61".repeat(108))), None);
+        assert_eq!(
+            unix_sockaddr(&format!("01002F{}", "61".repeat(107))).map(|p| p.len()),
+            Some(108)
+        );
+        assert_eq!(unix_sockaddr("0200005000000000"), None);
+        assert_eq!(unix_sockaddr("0A00"), None);
+        assert_eq!(unix_sockaddr("zz"), None);
+    }
+
+    #[test]
+    fn pc_a_relative_socket_path_is_the_working_folders() {
+        let rel = unix_addr("01007300").unwrap();
+        assert_eq!(unix_path(rel.clone(), Some("/w/p")), "/w/p/s");
+        assert_eq!(unix_path(rel.clone(), None), "?s");
+        assert_eq!(unix_path(rel, Some("relative")), "?s");
+        let at = unix_addr("0100407800").unwrap();
+        assert_eq!(unix_path(at, Some("/w")), "/w/@x");
+        let abs = unix_addr("010000616263").unwrap();
+        assert_eq!(unix_path(abs, Some("/w")), "@abc");
     }
 
     #[test]
