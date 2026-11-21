@@ -142,13 +142,86 @@ describe.skipIf(process.platform !== "linux")("agent accounts (Linux)", () => {
       encoding: "utf8",
     });
     expect(r.status, r.stderr).toBe(0);
-    for (const step of ["1. /usr/local/lib/derm/agents.py", "2. the group derm-agents", "3. the user derm-max1", "4. /etc/derm/agents.json", "5. /etc/derm/agents.nft", "6. /etc/systemd/system/derm-agents-nft.service", "7. /etc/tmpfiles.d/derm-accounts-", "8. /etc/sudoers.d/derm-max1"]) {
+    for (const step of [
+      "1. /usr/local/libexec/derm/agent-user, the undo, where only root writes",
+      "2. /usr/local/lib/derm/agents.py",
+      "3. the group derm-agents",
+      "4. the user derm-max1",
+      "5. /var/lib/derm/agents/max1/signin and /var/lib/derm/agents/max1/projects",
+      "6. /etc/derm/agents.json",
+      "7. /etc/derm/agents.nft",
+      "8. /etc/systemd/system/derm-agents-nft.service",
+      "9. /etc/tmpfiles.d/derm-accounts-",
+      "10. TIOCSTI off: /etc/sysctl.d/90-derm-agents.conf",
+      "11. /etc/sudoers.d/derm-max1",
+    ]) {
       expect(r.stdout).toContain(step);
     }
     expect(r.stdout).toContain(`${owner} ALL=(derm-max1) NOPASSWD:SETENV: ALL`);
+    // Review AI-8: the undo line names root's copy, never this folder.
+    expect(r.stdout).toMatch(/^Undo: +sudo \/usr\/local\/libexec\/derm\/agent-user\/uninstall\.sh --account max1$/m);
+    expect(r.stdout).not.toContain(`${dir}uninstall.sh`);
     const u = spawnSync(join(dir, "uninstall.sh"), ["--account", "max1", "--dry-run"], { encoding: "utf8" });
     expect(u.status, u.stderr).toBe(0);
     expect(u.stdout).toContain("the user derm-max1");
+    expect(u.stdout).toContain("7. with the last account: TIOCSTI as before, the helper, and this undo's copy");
+  });
+
+  it("makes the same sign-in folders derm's own layout names (contracts/projects.md 2.2)", () => {
+    const rust = readFileSync(join(dir, "../../../crates/derm-core/src/project/mod.rs"), "utf8");
+    const m = /pub const SIGNIN_HARNESSES: &\[&str\] = &\[([^\]]*)\];/.exec(rust);
+    expect(m).not.toBeNull();
+    const want = [...m![1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+    const text = readFileSync(helper, "utf8");
+    const got = /^SIGNIN_HARNESSES = \(([^)]*)\)$/m.exec(text);
+    expect(got).not.toBeNull();
+    expect([...got![1].matchAll(/"([^"]+)"/g)].map((x) => x[1])).toEqual(want);
+    expect(text).toMatch(/^SIGNIN = "signin"$/m);
+    expect(text).toMatch(/^PROJECTS = "projects"$/m);
+    expect(rust).toContain('pub const SIGNIN: &str = "signin";');
+    expect(rust).toContain('pub const PROJECTS: &str = "projects";');
+  });
+
+  it("puts nothing root runs in a folder root does not keep alone (AI-8)", () => {
+    // Every folder from / must be a real folder of root's that no one else
+    // can write: a folder of this test's own user is refused.
+    if (me.uid !== 0) {
+      const t = mkdtempSync(join(tmpdir(), "derm-trust-"));
+      const own = py("trusted-dir", t);
+      expect(own.status).toBe(1);
+      expect(own.stderr).toMatch(/not root's|writable by others/);
+    }
+    // /tmp is world writable (sticky): never a place for what root runs.
+    const tmp = py("trusted-dir", "/tmp");
+    expect(tmp.status).toBe(1);
+    expect(tmp.stderr).toContain("writable by others");
+    for (const bad of ["relative/x", "/usr/../etc", "/usr//bin", "/usr/"]) {
+      const r = py("trusted-dir", bad);
+      expect(r.status, bad).toBe(1);
+      expect(r.stderr, bad).toContain("not a plain absolute path");
+    }
+    expect(py("trusted-dir", "/usr/bin").status).toBe(0);
+    // With no install here, the undo's copy is not whole, and says why.
+    const v = py("verify-uninstaller");
+    expect(v.status).toBe(1);
+    expect(v.stderr).toContain("/etc/derm/uninstall.sha256");
+  });
+
+  it("turns TIOCSTI off at boot with one key the check compares whole", () => {
+    const text = readFileSync(helper, "utf8");
+    const conf = /^TIOCSTI_TEXT = """([\s\S]*?)"""$/m.exec(text);
+    expect(conf).not.toBeNull();
+    const settings = conf![1].split("\n").filter((l) => l !== "" && !l.startsWith("#"));
+    expect(settings).toEqual(["dev.tty.legacy_tiocsti = 0"]);
+    expect(text).toContain('TIOCSTI_CONF = "/etc/sysctl.d/90-derm-agents.conf"');
+    // Root-only steps refuse a plain user before they touch anything.
+    if (me.uid !== 0) {
+      for (const cmd of ["tiocsti-off", "tiocsti-restore", "remove-uninstaller", "layout"]) {
+        const r = cmd === "layout" ? py(cmd, "max1") : py(cmd);
+        expect(r.status, cmd).toBe(1);
+        expect(r.stderr, cmd).toContain("runs as root");
+      }
+    }
   });
 
   it("refuses bad input before it asks or changes anything", () => {
