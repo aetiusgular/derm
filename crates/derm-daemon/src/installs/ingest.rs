@@ -3,6 +3,9 @@
 //!
 //! - [`ControlFlags`](super::control::ControlFlags) reads every event, the
 //!   join's own `join.candidates` included, and gives `install.control`;
+//! - [`ProjectFlags`](super::project::ProjectFlags) reads every event and
+//!   gives step P's `project.control`, `signin.read` and `net.unix` for an
+//!   agent account's chats (lane PC);
 //! - [`LockDiffs`](super::lockdiff::LockDiffs) keeps a project's lockfile when
 //!   an adapter's `install.call` arrives and diffs it when that call's
 //!   `tool.call` arrives (same `toolUseId`, or the same `callKey` for agents
@@ -26,6 +29,7 @@ use serde_json::Value;
 
 use super::control::ControlFlags;
 use super::lockdiff::LockDiffs;
+use super::project::ProjectFlags;
 
 /// Calls with a diff in flight, across chats (the oldest go first).
 const MAX_CALLS: usize = 1_024;
@@ -67,6 +71,8 @@ fn call_of(e: &Event) -> Option<&str> {
 #[derive(Default)]
 pub struct InstallRecords {
     control: ControlFlags,
+    /// Step P (lane PC).
+    project: ProjectFlags,
     diffs: LockDiffs,
     /// (chat, call) to the managers seen and the record ids their diffs run under.
     calls: HashMap<(String, String), Vec<(Manager, String)>>,
@@ -89,6 +95,7 @@ impl InstallRecords {
         now: i64,
     ) -> Vec<Event> {
         let mut out = self.control.observe(e);
+        out.extend(self.project.observe(e));
         if e.chat_id.is_empty() {
             return out;
         }
