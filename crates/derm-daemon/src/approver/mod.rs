@@ -18,6 +18,10 @@ use std::time::Instant;
 // S2 part b: the person check before a `yes` an agent could forge (lane V).
 pub(super) mod person;
 
+// Step P (lane PE): the daemon as the project layer's host, for its asks
+// across projects, its records and a chat's socket share.
+pub(super) mod project;
+
 /// The platform's password checker, found once.
 fn person_checker() -> &'static dyn person::Checker {
     static CHECKER: std::sync::OnceLock<Box<dyn person::Checker>> = std::sync::OnceLock::new();
