@@ -142,7 +142,7 @@ pub(crate) fn wrap(
         return Err((
             1,
             format!(
-                "derm: {} is in no project; name one with: derm project add {}",
+                "{} is in no project; name one with: derm project add {}",
                 ctx.cwd, ctx.cwd
             ),
         ));

@@ -17,6 +17,8 @@
 //! and `worktree.c:114-118` for relative links). An agent-account chat in no
 //! project is refused (P-C2, `run/user/chat.rs`).
 
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
