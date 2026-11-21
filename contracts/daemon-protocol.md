@@ -29,9 +29,11 @@ UTF-8 JSON, one object per line, `\n`-terminated, at most 1 MiB per line (longer
 | `approve` | any scope | `request {id, chat, harness, tool, summary, timeoutSeconds, boundaryOnly?}` | `answer` (`yes`/`no`), `by` (`approver`, `timeout`, `none`, `boundary`) | |
 | `approver` | daemon scope, and a peer that passes the check in rule 3 | none | `ok`, or `approver refused: <why>` | `{"approve": {...}}` per request |
 | `answer` | an approver connection | `id`, `answer`, `chat` (needed only while two chats wait on one id) | `ok` | |
-| `token.mint` | daemon scope | `chat`, `harness` | `token` | |
+| `token.mint` | daemon scope | `chat`, `harness`, `project?` (step P, section 6.1) | `token` | |
 | `taint` | any scope; a chat scope names only its own chat | `chat`, `hosts?` (at most 256 names), `add?` (a state, `contracts/policy.md` section 9: `marks` at most 256, `written` at most 4,096 paths, `hosts` at most 4,096 64-hex fingerprints) | `verdict` (`ask`, `deny`, `record`), `from` (`flag`, `setting`, `default`), `state` (the chat's, after the add), `named` (which of `hosts` an untrusted result in the chat named) | |
 | `cu` | daemon scope | `action` (`status`, `stop`, `stop-all`, `revoke`), `chat` for `stop` and `revoke`, `app` (a bundle id) for `revoke` | `report` (the service's status or stop report) | |
+| `msg.send`, `msg.take`, `screen.read`, `screen.list` | chat scope | section 6.2 | `result` | |
+| `screen.put` | daemon scope | section 6.3 | `ok` | |
 
 Rules:
 
@@ -101,3 +103,34 @@ Since integration w5's continue (5 Nov; lane T's P4-R1 and P4-R2), the receiver 
 - The units are written (`crates/derm-daemon/units/`); the box test and the Mac test install them.
 - Persisting chat-token hashes across a daemon restart (lane B: a small follow-up).
 - An OTLP endpoint for a harness inside sbx: `host.docker.internal` is not loopback, so lane A's emitter refuses it and a Pi chat under sbx has the sbx policy log as its only feed in wave 1 (integration w1 decision). The sbx smoke test (4 Nov) saw `curl` from the VM get 200 on `/v1/logs` with the chat token after a per-sandbox `localhost:<port>` rule, so sbx's forward proxy delivers a `Host` the receiver accepts; the hooks' own route from a VM is section 4's derm routes. Pi's emitter still refuses the name. Since E1-12 `derm run --boundary sbx` points Claude Code in the VM at `http://host.docker.internal:<port>` (`apply_export` with `sbx`, the token in `OTEL_EXPORTER_OTLP_HEADERS`, every variable named to sbx with `-e` and copied from its environment, none an argument); Since the review of E1-12, Codex in a VM is exported too: its endpoint in `-c` words, the token in `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_LOGS_HEADERS` named to sbx, the host's `~/.codex/config.toml` not asked (run on the box, sbx 0.51.0, 16 Nov 2026: 7 `otel` records from one `codex exec` turn). sbx's launcher adds `--dangerously-bypass-approvals-and-sandbox` itself when the first forwarded word is a flag, and Codex refuses the flag twice. Under sbx the user's own `OTEL_*` variables on the host do not stand the export down, and an sbx chat that worked and sent no telemetry is flagged `telemetrySilent` (`activity/check.rs`).
+
+## 6. Step P's ops (step P's base, 20 Nov 2026)
+
+Written by "P base, go" from `research-notes/CD_project_layer_base.md` sections 5 to 7 and the check's C2 and C3. The Rust types are in `protocol.rs` (`Request::MsgSend`, `MsgTake`, `ScreenRead`, `ScreenList`, `ScreenPut`, `TokenMint`'s `project`; `Reply::result`); `daemon.rs` routes each to `crate::project::State` (lane PE's), which answers `not built` on the base. Fixture: `fixtures/project/exchange.jsonl`. Every line refuses unknown fields, as every op does. Tools and screens: `project-tools.md`.
+
+### 6.1 `token.mint`'s `project`
+
+- `project`: the chat's project id, 16 of `[0-9a-f]` (`derm_core::project::valid_id`), or `""` for a chat outside accounts; anything else is refused (`project: 16 of [0-9a-f], or empty`), on the base already. Left out by an older `derm run`, which the daemon reads as `""`. An older daemon refuses a `token.mint` that carries it (an unknown field), so `derm run` and the daemon change together; `derm run` names the daemon's version when that happens (I).
+- The daemon keeps chat to project beside the token and in `chats.json` (section 2, rule 5), and restores it after a restart from there and from `run.start`'s `detail.project` (case 211: what a report reads comes back from the log). Not built (lane PE).
+
+### 6.2 Chat scope: messages and screens
+
+| op | Fields | `result` |
+|---|---|---|
+| `msg.send` | `to` (a chat id or `"*"`), `text` (1 byte to 16 KiB), `replyTo?` (a message id) | `{id, delivered: [chat ids], asked: [chat ids]}`. The reply waits for the person's answer when a target is in another project (`project-tools.md` 2.3) |
+| `msg.take` | none | `{messages: [{id, from: {chat, harness, account, agent: true}, at, text, replyTo?}]}`, removed as returned |
+| `screen.read` | `chat`, `lines?` (1 to 2,000) | `{chat, rows, cols, text, truncated, at}`, `text` cleaned again by `derm_core::project::screen::clean` (`project-tools.md` 3.4) |
+| `screen.list` | none | `{chats: [{chat, harness, account, rows, cols, at}]}` |
+
+- Who: the daemon answers from the caller's token: its chat, harness and project. A daemon-scope connection gets `chat scope only` for these four.
+- Same project: the project the daemon holds for the caller's chat equals the target's, and neither is `""`. Otherwise an `approve` request through the approver (`tool` `derm_project/derm_message` or `derm_project/derm_terminal_read`), "this once" or "for this session" (`project-tools.md` 2.3). A chat token's bounds hold (section 2, rule 2): these lines come out of its chat's socket share.
+- Records: `project.message`, `project.read`, `project.grant` (`events.md` 7.2); text and screens are content, never in a record.
+
+### 6.3 Daemon scope: `screen.put`
+
+`{op: "screen.put", chat, rows, cols, text, scrollbackLines, at}` from `derm run` (lane PD's client; `project-tools.md` 3.2). `text` at most 512 KiB; a longer one is refused, not cut. The daemon keeps the last per chat in memory only and drops it at the chat's `run.stop`. A chat token's `screen.put` is refused (`screen.put needs daemon scope`).
+
+### 6.4 `report`
+
+`report` gains `projectOverwritten`: how many events arrived with a `project` other than the one the daemon set (`events.md` 7.1). `derm watch report` names it when it is not 0. Not built (lane PE).
+

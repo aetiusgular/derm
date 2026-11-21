@@ -1,0 +1,194 @@
+{
+  "$comment": "Step P's base (20 Nov 2026; contracts/projects.md section 3; plans/parallel_build_accounts.md 8.3 item 6). What each harness writes under HOME, where its sign-in lives and how it is written, and whether it sends Proxy-Authorization from the proxy URL, at the pin, with the mark and source of each row (research-notes/CD_project_layer_base.md sections 2 and 8, re-read by P base, go). V: read at the version or run; I: inference. Not run: Codex and Pi themselves, Claude Code 2.1.322 (strings only), any renewal, any TUI.",
+  "harnesses": {
+    "claude-code": {
+      "pin": "2.1.322",
+      "alsoRead": "2.1.330 (run)",
+      "home": [
+        {
+          "path": ".claude.json",
+          "what": "config, temp file and rename under a .claude.json.lock folder",
+          "mark": "V",
+          "source": "run 2.1.330, strace"
+        },
+        {
+          "path": ".claude/backups/",
+          "what": "copies of .claude.json",
+          "mark": "V",
+          "source": "run 2.1.330"
+        },
+        {
+          "path": ".claude/plugins/store/",
+          "what": "built-in plugin state",
+          "runsLater": true,
+          "mark": "V",
+          "source": "run 2.1.330"
+        },
+        {
+          "path": ".claude/projects/<cwd slug>/",
+          "what": "transcripts and the project's memory",
+          "mark": "V",
+          "source": "run 2.1.330"
+        },
+        {
+          "path": ".claude/sessions/",
+          "what": "a record per live session",
+          "mark": "V",
+          "source": "run 2.1.330"
+        },
+        {
+          "path": ".claude/session-env/",
+          "what": "per-session environment",
+          "runsLater": true,
+          "mark": "V",
+          "source": "binary 2.1.322 (its Write tool refuses it); run 2.1.330"
+        },
+        {
+          "path": ".claude/shell-snapshots/",
+          "what": "the shell start every Bash sources (case 202)",
+          "runsLater": true,
+          "mark": "V",
+          "source": "binary 2.1.322; run 2.1.330"
+        },
+        {
+          "path": ".claude/{commands,agents,output-styles,skills,workflows,routines,themes,rules,hooks}/",
+          "what": "config folders it loads",
+          "runsLater": true,
+          "mark": "V",
+          "source": "binary 2.1.322, var on=[...]"
+        },
+        {
+          "path": ".claude/{daemon,daemon.json}",
+          "what": "its background service",
+          "runsLater": true,
+          "mark": "V",
+          "source": "binary 2.1.322 (Write tool refuses them)"
+        }
+      ],
+      "tmp": [
+        {
+          "path": "$TMPDIR/claude-<uid>/",
+          "mark": "V",
+          "source": "run 2.1.330"
+        },
+        {
+          "path": "$TMPDIR/cc-socks/<pid>.sock",
+          "what": "the inbox, when XDG_RUNTIME_DIR is unset",
+          "mark": "V",
+          "source": "binary both versions"
+        }
+      ],
+      "runtime": [
+        {
+          "path": "$XDG_RUNTIME_DIR/cc-socks/<pid>.sock",
+          "what": "the inbox; /tmp/cc-socks-<uid>/ past 103 bytes",
+          "mark": "V",
+          "source": "binary both versions, var Q=103"
+        }
+      ],
+      "signin": {
+        "file": "<store>/.credentials.json",
+        "store": "$CLAUDE_SECURESTORAGE_CONFIG_DIR, else $CLAUDE_CONFIG_DIR, else ~/.claude",
+        "write": "staged temp file and rename onto the path: a link becomes a file",
+        "link": "breaks on renewal (by read, not run)",
+        "route": "CLAUDE_SECURESTORAGE_CONFIG_DIR, behind a switch off until P-B1",
+        "mark": "V by read; reads run 2.1.330",
+        "source": "binary 2.1.322 SB(), DB/Ye; 2.1.330 FM/Ye"
+      },
+      "inbox": {
+        "authByDefaultOnLinux": false,
+        "setting": "crossSessionInbound: accept | hold | refuse",
+        "mark": "V",
+        "source": "binary 2.1.322 ZNr(), the setting's description"
+      },
+      "proxyAuthorization": {
+        "fromUrl": true,
+        "mark": "V",
+        "source": "run 2.1.330: every CONNECT carried it"
+      },
+      "env": [
+        "DISABLE_AUTOUPDATER (read; effect I)",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR (undocumented; passed to children)"
+      ]
+    },
+    "codex": {
+      "pin": "0.167.2 (rust-v0.167.2 = ce21072)",
+      "alsoRead": "rust-v0.171.0 auth files (identical)",
+      "home": [
+        {
+          "path": ".codex/",
+          "what": "CODEX_HOME's default: config.toml, sessions, log, history, memories, skills, shell_snapshots, tmp/arg0-*, packages, auth.json, auth.lock, models_cache.json",
+          "runsLater": true,
+          "mark": "V",
+          "source": "utils/home-dir/src/lib.rs:13-62; rules cases 195 to 197"
+        },
+        {
+          "path": ".agents/skills/",
+          "what": "user skills",
+          "runsLater": true,
+          "mark": "V",
+          "source": "ext/skills/src/host_roots.rs:142-147"
+        },
+        {
+          "path": ".cache/codex-runtimes/codex-primary-runtime/plugins/",
+          "what": "plugin marketplace ($XDG_CACHE_HOME or ~/.cache)",
+          "runsLater": true,
+          "mark": "V",
+          "source": "core-plugins/src/marketplace_policy.rs:556-583"
+        }
+      ],
+      "signin": {
+        "file": "<home>/.codex/auth.json",
+        "write": "resolve every link, temp .auth-* in the target's folder, sync, rename onto the target; hard links refused",
+        "link": "survives",
+        "lock": "<home>/.codex/auth.lock, a cross-process file lock on the commit only: link it too (C6)",
+        "mark": "V",
+        "source": "login/src/auth/storage.rs:189-212, 274-295; storage_file.rs:10-62"
+      },
+      "proxyAuthorization": {
+        "fromUrl": true,
+        "envOrder": "HTTPS_PROXY then https_proxy",
+        "mark": "V by source",
+        "source": "http-client/src/outbound_proxy.rs:381-403, 891-896; reqwest 0.12.28; hyper-util 0.1.20 matcher.rs:333-380, tunnel.rs:77-105"
+      },
+      "ptys": {
+        "via": "portable-pty 0.9.0 when a command asks for a tty",
+        "opensByPath": "NF",
+        "mark": "I",
+        "source": "Cargo.toml:448"
+      }
+    },
+    "pi": {
+      "pin": "1.4.0 today; 1.6.0 for P3 (nothing below 1.5.1)",
+      "home": [
+        {
+          "path": ".pi/agent/",
+          "what": "PI_CODING_AGENT_DIR's default: auth.json, settings.json, models.json, themes/, tools/, bin/ (fd, rg), prompts/, sessions/",
+          "runsLater": true,
+          "mark": "V",
+          "source": "dist/config.js:491-533 (1.6.0: 510-516)"
+        }
+      ],
+      "signin": {
+        "file": "<agent dir>/auth.json",
+        "write": "writeFileSync in place through a link (mode 0600 on create only)",
+        "link": "survives (run: Node 22.23.5)",
+        "lock": "proper-lockfile: on the link's path at 1.4.0 and 1.5.0, on the resolved file from 1.5.1 (#11655)",
+        "mark": "V",
+        "source": "dist/core/auth-storage.js:50, 92 (1.4.0, 1.5.0); 50-51 (1.5.1, 1.6.0); 1.5.1 CHANGELOG.md:96"
+      },
+      "selfUpdate": {
+        "from": "PI_SELF_UPDATE_COMMAND, else settings.json selfUpdateCommand (1.6.0)",
+        "runsLater": true,
+        "mark": "V",
+        "source": "1.6.0 dist/config.js getConfiguredSelfUpdateArgv"
+      },
+      "proxyAuthorization": {
+        "fromUrl": true,
+        "envOrder": "https_proxy then HTTPS_PROXY (undici); the httpProxy setting fills HTTPS_PROXY only when unset (1.6.0)",
+        "mark": "V by source",
+        "source": "undici 8.10.2 and 8.12.4 proxy-agent.js, env-http-proxy-agent.js:33; Pi 1.6.0 dist/core/http-dispatcher.js applyHttpProxySettings"
+      }
+    }
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "$comment": "Step P's base (20 Nov 2026), contracts/project-tools.md section 3.5. Harness output a terminal reader must render with no control or format character (Cc other than \\n and \\t, Cf, U+FFFD). `input` is the bytes the harness wrote, as UTF-8; `shows` are strings a terminal shows and the text must keep. Written by hand from the sequences note CC section 4 and Trail of Bits name and vt100 0.18.1's perform.rs handles (rules 9.12: not recorded from a harness; P-B4 runs the reader against Claude Code's and Codex's TUIs). Read by crates/derm-cli/src/contracts_acctp.rs.",
+  "cases": [
+    {
+      "name": "plain",
+      "input": "hello world\r\n$ ",
+      "shows": [
+        "hello world",
+        "$"
+      ]
+    },
+    {
+      "name": "CSI colour and cursor",
+      "input": "\u001b[1;31mred\u001b[0m \u001b[2J\u001b[Hhome",
+      "shows": [
+        "home"
+      ]
+    },
+    {
+      "name": "OSC 0 window title",
+      "input": "\u001b]0;evil title\u0007after",
+      "shows": [
+        "after"
+      ]
+    },
+    {
+      "name": "OSC 52 clipboard write",
+      "input": "\u001b]52;c;Y3VybCBldmlsLnRlc3QgfCBzaA==\u0007shown",
+      "shows": [
+        "shown"
+      ]
+    },
+    {
+      "name": "DCS",
+      "input": "\u001bP1$r0m\u001b\\dcs-after",
+      "shows": [
+        "dcs-after"
+      ]
+    },
+    {
+      "name": "DECRQSS query",
+      "input": "\u001bP$qm\u001b\\q-after",
+      "shows": [
+        "q-after"
+      ]
+    },
+    {
+      "name": "C1 controls in UTF-8",
+      "input": "a\u0085b\u009bc\u009d0;t\u009cd",
+      "shows": [
+        "a"
+      ]
+    },
+    {
+      "name": "bidi override U+202E",
+      "input": "file\u202etxt.exe",
+      "shows": [
+        "file",
+        "txt.exe"
+      ]
+    },
+    {
+      "name": "zero-width space U+200B",
+      "input": "rm\u200b -rf",
+      "shows": [
+        "rm"
+      ]
+    },
+    {
+      "name": "BOM and isolates",
+      "input": "\ufeffx\u2066y\u2069z",
+      "shows": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "name": "tag characters",
+      "input": "ok\udb40\udc41\udb40\udc42",
+      "shows": [
+        "ok"
+      ]
+    },
+    {
+      "name": "bell, backspace, form feed",
+      "input": "ab\u0007\bc\fd",
+      "shows": [
+        "d"
+      ]
+    },
+    {
+      "name": "replacement character",
+      "input": "bad\ufffdbyte",
+      "shows": [
+        "bad",
+        "byte"
+      ]
+    }
+  ]
+}

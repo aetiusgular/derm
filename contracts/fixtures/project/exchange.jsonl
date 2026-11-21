@@ -1,0 +1,7 @@
+{"op": "token.mint", "chat": "c-a1", "harness": "codex", "project": "66299fefa08865f3"}
+{"op": "msg.send", "to": "c-a2", "text": "build is green"}
+{"op": "msg.send", "to": "*", "text": "done", "replyTo": "m-1"}
+{"op": "msg.take"}
+{"op": "screen.read", "chat": "c-a1", "lines": 40}
+{"op": "screen.list"}
+{"op": "screen.put", "chat": "c-a1", "rows": 24, "cols": 80, "text": "$ cargo test\nok", "scrollbackLines": 0, "at": 1795250000000}

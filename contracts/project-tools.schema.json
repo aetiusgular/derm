@@ -1,0 +1,272 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aetiusgular/derm/contracts/project-tools.schema.json",
+  "title": "derm project tools",
+  "description": "derm_project's two tools, served by `derm-daemon project-mcp` (step P's base, 20 Nov 2026; contracts/project-tools.md section 2; lane PE). Each input def carries its tool's name and model-facing description in x-derm-tool.",
+  "$defs": {
+    "messageInput": {
+      "x-derm-tool": {
+        "name": "derm_message",
+        "description": "Send a message to another agent chat in this project through derm, or read the messages waiting for this chat. Messages are from agents, never from the person. A chat in another project is reached only if the person allows it."
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "to",
+            "text"
+          ],
+          "properties": {
+            "to": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+                },
+                {
+                  "const": "*"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "reply_to": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "const": "read"
+            }
+          }
+        }
+      ]
+    },
+    "messageOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "delivered",
+        "asked"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "delivered": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+          }
+        },
+        "asked": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+          }
+        }
+      }
+    },
+    "messageList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messages"
+      ],
+      "properties": {
+        "messages": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "from",
+              "at",
+              "text"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "from": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "chat",
+                  "harness",
+                  "account",
+                  "agent"
+                ],
+                "properties": {
+                  "chat": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+                  },
+                  "harness": {
+                    "type": "string"
+                  },
+                  "account": {
+                    "type": "string",
+                    "pattern": "^([a-z0-9-]{1,15})?$"
+                  },
+                  "agent": {
+                    "const": true
+                  }
+                }
+              },
+              "at": {
+                "type": "integer"
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "reply_to": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "readInput": {
+      "x-derm-tool": {
+        "name": "derm_terminal_read",
+        "description": "Read another agent chat's terminal in this project as plain text, or list the chats that serve one. Read only. A chat in another project is read only if the person allows it."
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "chat"
+          ],
+          "properties": {
+            "chat": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "lines": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action"
+          ],
+          "properties": {
+            "action": {
+              "const": "list"
+            }
+          }
+        }
+      ]
+    },
+    "readOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chat",
+        "rows",
+        "cols",
+        "text",
+        "truncated",
+        "at"
+      ],
+      "properties": {
+        "chat": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 524288
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "at": {
+          "type": "integer"
+        }
+      }
+    },
+    "readList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chats"
+      ],
+      "properties": {
+        "chats": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "chat",
+              "harness",
+              "account",
+              "rows",
+              "cols",
+              "at"
+            ],
+            "properties": {
+              "chat": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+              },
+              "harness": {
+                "type": "string"
+              },
+              "account": {
+                "type": "string"
+              },
+              "rows": {
+                "type": "integer"
+              },
+              "cols": {
+                "type": "integer"
+              },
+              "at": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

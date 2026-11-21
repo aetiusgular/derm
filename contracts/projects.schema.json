@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aetiusgular/derm/contracts/projects.schema.json",
+  "title": "derm projects",
+  "description": "~/.derm/projects.json (step P's base, 20 Nov 2026; contracts/projects.md section 1): the folders the person named as projects. 0600, the person's; read whole by crates/derm-cli/src/project/ (lane PA), unknown fields refused. Each id is the first 16 hex characters of the SHA-256 of its folder's real path (derm_core::project::ProjectId::of_real_path), which the reader checks and a schema cannot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "projects"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "projects": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "folder",
+          "name",
+          "added"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{16}$"
+          },
+          "folder": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 4096,
+            "pattern": "^(/(?!\\.{1,2}(/|$))[^/\\u0000-\\u001f]+)+$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u206f\\ufeff]+$"
+          },
+          "added": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

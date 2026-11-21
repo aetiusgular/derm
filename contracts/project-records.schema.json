@@ -1,0 +1,714 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aetiusgular/derm/contracts/project-records.schema.json",
+  "title": "derm step P records",
+  "description": "Step P's records and op lines (the base, 20 Nov 2026; contracts/events.md section 7, contracts/daemon-protocol.md section 6). `record` is any one of the six new kinds; `opLine` any one of step P's client lines. Every new kind is source derm, written only by the daemon, and carries the chat's project.",
+  "$defs": {
+    "projectField": {
+      "type": "string",
+      "pattern": "^([0-9a-f]{16})?$"
+    },
+    "control": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "chatId",
+        "harness",
+        "source",
+        "kind",
+        "summary",
+        "detail",
+        "project"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "chatId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "source": {
+          "const": "derm"
+        },
+        "kind": {
+          "const": "project.control"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "marker",
+            "process"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "marker": {
+              "type": "string"
+            },
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pid",
+                "exe"
+              ],
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "exe": {
+                  "type": "string"
+                }
+              }
+            },
+            "call": {
+              "type": "string"
+            },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "trust": {
+              "const": "daemon"
+            }
+          }
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "signinRead": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "chatId",
+        "harness",
+        "source",
+        "kind",
+        "summary",
+        "detail",
+        "project"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "chatId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "source": {
+          "const": "derm"
+        },
+        "kind": {
+          "const": "signin.read"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "process"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pid",
+                "exe"
+              ],
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "exe": {
+                  "type": "string"
+                }
+              }
+            },
+            "trust": {
+              "const": "daemon"
+            }
+          }
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "netUnix": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "chatId",
+        "harness",
+        "source",
+        "kind",
+        "summary",
+        "detail",
+        "project"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "chatId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "source": {
+          "const": "derm"
+        },
+        "kind": {
+          "const": "net.unix"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "abstract",
+            "process",
+            "outside"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "abstract": {
+              "type": "boolean"
+            },
+            "process": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "pid",
+                "exe"
+              ],
+              "properties": {
+                "pid": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "exe": {
+                  "type": "string"
+                }
+              }
+            },
+            "outside": {
+              "type": "boolean"
+            },
+            "trust": {
+              "const": "daemon"
+            }
+          }
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "message": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "chatId",
+        "harness",
+        "source",
+        "kind",
+        "summary",
+        "detail",
+        "project"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "chatId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "source": {
+          "const": "derm"
+        },
+        "kind": {
+          "const": "project.message"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "from",
+            "to",
+            "bytes",
+            "sha256",
+            "asked"
+          ],
+          "properties": {
+            "from": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "to": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "asked": {
+              "type": "boolean"
+            },
+            "answer": {
+              "enum": [
+                "yes",
+                "no"
+              ]
+            },
+            "trust": {
+              "const": "daemon"
+            }
+          }
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "read": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "chatId",
+        "harness",
+        "source",
+        "kind",
+        "summary",
+        "detail",
+        "project"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "chatId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "source": {
+          "const": "derm"
+        },
+        "kind": {
+          "const": "project.read"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reader",
+            "target",
+            "bytes",
+            "sha256",
+            "asked"
+          ],
+          "properties": {
+            "reader": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "target": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "asked": {
+              "type": "boolean"
+            },
+            "answer": {
+              "enum": [
+                "yes",
+                "no"
+              ]
+            },
+            "trust": {
+              "const": "daemon"
+            }
+          }
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "grant": {
+      "type": "object",
+      "required": [
+        "id",
+        "at",
+        "chatId",
+        "harness",
+        "source",
+        "kind",
+        "summary",
+        "detail",
+        "project"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "at": {
+          "type": "integer"
+        },
+        "chatId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "source": {
+          "const": "derm"
+        },
+        "kind": {
+          "const": "project.grant"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "detail": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "from",
+            "to",
+            "chat",
+            "until"
+          ],
+          "properties": {
+            "from": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
+            "to": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{16}$"
+            },
+            "chat": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "until": {
+              "const": "session"
+            },
+            "ended": {
+              "type": "boolean"
+            },
+            "trust": {
+              "const": "daemon"
+            }
+          }
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        "pid": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "record": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/control"
+        },
+        {
+          "$ref": "#/$defs/signinRead"
+        },
+        {
+          "$ref": "#/$defs/netUnix"
+        },
+        {
+          "$ref": "#/$defs/message"
+        },
+        {
+          "$ref": "#/$defs/read"
+        },
+        {
+          "$ref": "#/$defs/grant"
+        }
+      ]
+    },
+    "opLine": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "chat",
+            "harness"
+          ],
+          "properties": {
+            "op": {
+              "const": "token.mint"
+            },
+            "chat": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "harness": {
+              "type": "string"
+            },
+            "project": {
+              "type": "string",
+              "pattern": "^([0-9a-f]{16})?$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "to",
+            "text"
+          ],
+          "properties": {
+            "op": {
+              "const": "msg.send"
+            },
+            "to": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+                },
+                {
+                  "const": "*"
+                }
+              ]
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            },
+            "replyTo": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "msg.take"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "chat"
+          ],
+          "properties": {
+            "op": {
+              "const": "screen.read"
+            },
+            "chat": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "lines": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "screen.list"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "chat",
+            "rows",
+            "cols",
+            "text",
+            "scrollbackLines",
+            "at"
+          ],
+          "properties": {
+            "op": {
+              "const": "screen.put"
+            },
+            "chat": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+            },
+            "rows": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "cols": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 524288
+            },
+            "scrollbackLines": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10000
+            },
+            "at": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/record"
+  }
+}

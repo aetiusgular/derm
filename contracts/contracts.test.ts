@@ -31,6 +31,10 @@ function validator() {
     // Wave 6 (the wave 6 base).
     "secrets.schema.json",
     "eval.schema.json",
+    // Step P (its base, 20 Nov 2026).
+    "projects.schema.json",
+    "project-tools.schema.json",
+    "project-records.schema.json",
   ]) {
     ajv.addSchema(read(p) as object);
   }
@@ -385,3 +389,66 @@ describe("wave 6 contracts", () => {
     expect(v?.({ via: "user-file", verifiedAt: "x" })).toBe(false);
   });
 });
+
+// Step P's base (20 Nov 2026): contracts/projects.md, project-tools.md,
+// events.md section 7, daemon-protocol.md section 6.
+describe("step P contracts", () => {
+  const def = (schema: string, name: string) => {
+    const v = validator().getSchema(`${base}${schema}#/$defs/${name}`);
+    if (!v) throw new Error(`no ${schema}#/$defs/${name}`);
+    return (x: unknown) => v(x) as boolean;
+  };
+
+  it("the registry fixture validates, and its ids are the folders' hashes", () => {
+    const reg = read("fixtures/project/projects.json") as { projects: { id: string; folder: string }[] };
+    expect(check("projects.schema.json", reg)).toEqual([]);
+    for (const p of reg.projects) {
+      expect(createHash("sha256").update(p.folder).digest("hex").slice(0, 16)).toBe(p.id);
+    }
+    expect(check("projects.schema.json", { ...reg, extra: 1 })).not.toEqual([]);
+    expect(check("projects.schema.json", { version: 1, projects: [{ ...reg.projects[0], id: "ABCDEF0123456789" }] })).not.toEqual([]);
+    expect(check("projects.schema.json", { version: 1, projects: [{ ...reg.projects[0], folder: "/a/../b" }] })).not.toEqual([]);
+    expect(check("projects.schema.json", { version: 1, projects: [{ ...reg.projects[0], folder: "/a/b/" }] })).not.toEqual([]);
+    expect(check("projects.schema.json", { version: 1, projects: [{ ...reg.projects[0], name: "a\u202eb" }] })).not.toEqual([]);
+  });
+
+  it("every step P record fixture validates, and a forged source or project does not", () => {
+    const recs = read("fixtures/project/records.json") as Record<string, unknown>[];
+    expect(check("project-records.schema.json", recs)).toEqual([]);
+    expect(new Set(recs.map((r) => r.kind)).size).toBe(6);
+    expect(check("project-records.schema.json", [{ ...recs[0], source: "adapter" }])).not.toEqual([]);
+    expect(check("project-records.schema.json", [{ ...recs[0], project: "" }])).not.toEqual([]);
+  });
+
+  it("every op line of the step P exchange validates", () => {
+    const op = def("project-records.schema.json", "opLine");
+    const lines = readFileSync(join(here, "fixtures/project/exchange.jsonl"), "utf8").split("\n").filter(Boolean);
+    expect(lines.length).toBe(7);
+    for (const l of lines) expect([l, op(JSON.parse(l))]).toEqual([l, true]);
+    expect(op({ op: "msg.send", to: "c-b", text: "x", from: "c-z" })).toBe(false);
+    expect(op({ op: "token.mint", chat: "c", harness: "pi", project: "x" })).toBe(false);
+  });
+
+  it("the tools' inputs and outputs take what project-tools.md says", () => {
+    const msg = def("project-tools.schema.json", "messageInput");
+    expect(msg({ to: "c-a2", text: "hi" })).toBe(true);
+    expect(msg({ to: "*", text: "hi", reply_to: "m-1" })).toBe(true);
+    expect(msg({ action: "read" })).toBe(true);
+    expect(msg({ to: "c-a2", text: "x".repeat(16385) })).toBe(false);
+    expect(msg({ to: "c-a2", text: "hi", from: "person" })).toBe(false);
+    const read2 = def("project-tools.schema.json", "readInput");
+    expect(read2({ chat: "c-a1", lines: 2000 })).toBe(true);
+    expect(read2({ chat: "c-a1", lines: 2001 })).toBe(false);
+    expect(read2({ action: "list" })).toBe(true);
+    const list = def("project-tools.schema.json", "messageList");
+    expect(list({ messages: [{ id: "m", from: { chat: "c", harness: "pi", account: "max", agent: true }, at: 1, text: "x" }] })).toBe(true);
+    expect(list({ messages: [{ id: "m", from: { chat: "c", harness: "pi", account: "max", agent: false }, at: 1, text: "x" }] })).toBe(false);
+  });
+
+  it("the screen corpus names what each case shows", () => {
+    const c = read("fixtures/project/screen-corpus.json") as { cases: { name: string; input: string; shows: string[] }[] };
+    expect(c.cases.length).toBeGreaterThanOrEqual(12);
+    for (const k of c.cases) expect([k.name, k.shows.length > 0]).toEqual([k.name, true]);
+  });
+});
+

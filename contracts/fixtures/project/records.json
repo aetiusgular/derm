@@ -1,0 +1,114 @@
+[
+  {
+    "id": "derm-pc-1",
+    "at": 1795250000000,
+    "chatId": "c-a1",
+    "harness": "codex",
+    "source": "derm",
+    "kind": "project.control",
+    "summary": "project.control",
+    "detail": {
+      "path": "/var/lib/derm/agents/max/projects/66299fefa08865f3/home/.claude/settings.json",
+      "marker": ".claude/",
+      "process": {
+        "pid": 4242,
+        "exe": "/usr/bin/bash"
+      },
+      "call": "call_1",
+      "trust": "daemon"
+    },
+    "project": "66299fefa08865f3"
+  },
+  {
+    "id": "derm-pc-2",
+    "at": 1795250000000,
+    "chatId": "c-a1",
+    "harness": "codex",
+    "source": "derm",
+    "kind": "signin.read",
+    "summary": "signin.read",
+    "detail": {
+      "path": "/var/lib/derm/agents/max/signin/codex/auth.json",
+      "process": {
+        "pid": 4243,
+        "exe": "/usr/bin/cat"
+      },
+      "trust": "daemon"
+    },
+    "project": "66299fefa08865f3"
+  },
+  {
+    "id": "derm-pc-3",
+    "at": 1795250000000,
+    "chatId": "c-a1",
+    "harness": "codex",
+    "source": "derm",
+    "kind": "net.unix",
+    "summary": "net.unix",
+    "detail": {
+      "path": "/run/dbus/system_bus_socket",
+      "abstract": false,
+      "process": {
+        "pid": 4244,
+        "exe": "/usr/bin/busctl"
+      },
+      "outside": true,
+      "trust": "daemon"
+    },
+    "project": "66299fefa08865f3"
+  },
+  {
+    "id": "derm-pe-1",
+    "at": 1795250000000,
+    "chatId": "c-a1",
+    "harness": "codex",
+    "source": "derm",
+    "kind": "project.message",
+    "summary": "project.message",
+    "detail": {
+      "from": "c-a1",
+      "to": "c-a2",
+      "bytes": 14,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "asked": false,
+      "trust": "daemon"
+    },
+    "project": "66299fefa08865f3"
+  },
+  {
+    "id": "derm-pe-2",
+    "at": 1795250000000,
+    "chatId": "c-a1",
+    "harness": "codex",
+    "source": "derm",
+    "kind": "project.read",
+    "summary": "project.read",
+    "detail": {
+      "reader": "c-a2",
+      "target": "c-a1",
+      "bytes": 200,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "asked": true,
+      "answer": "yes",
+      "trust": "daemon"
+    },
+    "project": "66299fefa08865f3"
+  },
+  {
+    "id": "derm-pe-3",
+    "at": 1795250000000,
+    "chatId": "c-a1",
+    "harness": "codex",
+    "source": "derm",
+    "kind": "project.grant",
+    "summary": "project.grant",
+    "detail": {
+      "from": "66299fefa08865f3",
+      "to": "33030342aa31362e",
+      "chat": "c-a1",
+      "until": "session",
+      "trust": "daemon"
+    },
+    "project": "66299fefa08865f3"
+  }
+]
