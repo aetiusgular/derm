@@ -332,15 +332,14 @@ mod session_tests {
             assert!(seen.contains(want), "{want} not in {seen:?}");
         }
         let after = p.termios();
-        assert_eq!(
-            (after.c_iflag, after.c_oflag, after.c_lflag, after.c_cflag),
-            (
-                before.c_iflag,
-                before.c_oflag,
-                before.c_lflag,
-                before.c_cflag
-            )
-        );
+        // PENDIN is the kernel's state, not a setting: XNU sets it whenever
+        // a tcsetattr turns ICANON back on ("retype pending input",
+        // `bsd/sys/termios.h:259`; `bsd/kern/tty.c:1358-1361` and `1391`,
+        // apple-oss-distributions/xnu `main`), as derm's restore does; CI's
+        // macOS job showed 0x20000000 there and nothing else changed.
+        let settings =
+            |t: &libc::termios| (t.c_iflag, t.c_oflag, t.c_lflag & !libc::PENDIN, t.c_cflag);
+        assert_eq!(settings(&after), settings(&before));
     }
 
     const COUNT_INTS: &str = "n=0; trap 'n=$((n+1)); echo GOT$n' INT; echo ready; i=0; \
