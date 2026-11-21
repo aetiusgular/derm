@@ -26,6 +26,9 @@ pub mod platform;
 #[rustfmt::skip]
 mod fold_tables;
 pub mod policy;
+// Step P's base (20 Nov 2026): the project layer's shared types; mod.rs is
+// no lane's, screen.rs lane PD's (contracts/projects.md).
+pub mod project;
 // The wave 5b base: one redactor and the trusted owners, for `derm hook`.
 pub mod owner;
 pub mod redact;

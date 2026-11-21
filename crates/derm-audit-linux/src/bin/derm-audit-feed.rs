@@ -243,6 +243,7 @@ fn data_dir(home: &str) -> Option<PathBuf> {
 /// progress (fp13's review, FP13R-5).
 fn gap_event(from_ms: Option<i64>, to_ms: i64, reason: &str, now: i64) -> Event {
     Event {
+        project: String::new(),
         id: format!("auditd-gap-{now}"),
         at: now,
         chat_id: String::new(),
@@ -270,6 +271,7 @@ fn unwatched_event(paths: &[String], none_seen: bool, now: i64) -> Event {
         )
     };
     Event {
+        project: String::new(),
         id: format!("auditd-unwatched-{now}"),
         at: now,
         chat_id: String::new(),

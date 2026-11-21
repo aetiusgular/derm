@@ -374,6 +374,7 @@ impl Host for DaemonHost {
             detail.get("verdict").and_then(Value::as_str).unwrap_or("")
         );
         self.0.ingest(derm_core::event::Event {
+            project: String::new(),
             id: format!("cu-{}", uuid::Uuid::new_v4().simple()),
             at: 0,
             chat_id: chat.to_string(),
@@ -830,6 +831,7 @@ mod daemon_tests {
             Request::TokenMint {
                 chat: chat.into(),
                 harness: "pi".into(),
+                project: None,
             },
             &out,
         );
@@ -853,6 +855,7 @@ mod daemon_tests {
             &Who::Daemon,
             Request::Event {
                 event: Event {
+                    project: String::new(),
                     id: "stop-1".into(),
                     at: 0,
                     chat_id: "chat-7".into(),
@@ -901,6 +904,7 @@ mod daemon_tests {
                 &Who::Daemon,
                 Request::Event {
                     event: Event {
+                        project: String::new(),
                         id: "start-chat-1".into(),
                         at: 0,
                         chat_id: "chat-1".into(),

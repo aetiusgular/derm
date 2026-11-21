@@ -133,6 +133,7 @@ fn adapter_event(st: &State, id: String, kind: &str, summary: String, detail: Va
     detail["trust"] = json!("client");
     detail["via"] = json!("acp");
     Event {
+        project: String::new(),
         id,
         at: now_ms(),
         chat_id: st.ctx.chat.clone(),

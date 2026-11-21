@@ -179,6 +179,7 @@ mod tests {
 
     fn ev(id: &str, source: Source, kind: &str, detail: Value) -> Event {
         Event {
+            project: String::new(),
             id: id.into(),
             at: 0,
             chat_id: "c1".into(),

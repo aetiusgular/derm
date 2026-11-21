@@ -7,6 +7,7 @@ fn run_event(kind: &str, chat: &str, source: Source, taint: Option<Value>) -> Ev
         detail["taint"] = t;
     }
     Event {
+        project: String::new(),
         id: format!("{chat}-{kind}"),
         at: 1,
         chat_id: chat.into(),

@@ -798,6 +798,8 @@ impl SeenOs {
 
 pub struct Daemon {
     token_hash: String,
+    /// Step P's state (lane PE's `crate::project`).
+    project: crate::project::State,
     log: &'static ActivityLog,
     log_dir: PathBuf,
     data_dir: String,
@@ -1018,6 +1020,14 @@ fn now_ms() -> i64 {
     store::now_ms()
 }
 
+/// A connection's caller, for `crate::project`'s ops.
+fn caller(who: &Who) -> crate::project::Caller<'_> {
+    match who {
+        Who::Daemon => crate::project::Caller::Daemon,
+        Who::Chat { chat, harness } => crate::project::Caller::Chat { chat, harness },
+    }
+}
+
 fn ok() -> Reply {
     Reply {
         ok: true,
@@ -1030,6 +1040,7 @@ fn ok() -> Reply {
         answer: None,
         by: None,
         report: None,
+        result: None,
     }
 }
 
@@ -1169,6 +1180,7 @@ impl Daemon {
             os_unwatched: Mutex::new(None),
             os_unwatched_past: Mutex::new(VecDeque::new()),
             counters: Counters::default(),
+            project: crate::project::State::default(),
         });
         if let Ok(mut c) = cell.lock() {
             *c = Some(Arc::downgrade(&daemon));
@@ -1207,6 +1219,10 @@ impl Daemon {
     /// Takes back what `save_state` wrote, keeping only chats that still
     /// run (BX8). Returns how many tokens came back.
     fn restore_state(&self, saved: &Value) -> usize {
+        // Step P (contracts/daemon-protocol.md 6.1): the chats' projects come
+        // back with their tokens (lane PE's).
+        self.project
+            .restore(saved.get("projects").unwrap_or(&Value::Null));
         let now = now_ms();
         let mut runs: HashMap<String, RunPid> = HashMap::new();
         let mut infos: HashMap<String, Value> = HashMap::new();
@@ -1385,6 +1401,8 @@ impl Daemon {
             "runs": runs,
             // The taint of every chat still running (fix pass 6).
             "taint": crate::taint::global().snapshot(),
+            // Step P: each chat's project (lane PE's; null until built).
+            "projects": self.project.saved(),
         })
         .to_string();
         let _ = crate::service::write_private(path, &text);
@@ -1819,8 +1837,32 @@ impl Daemon {
                     ran_as_you,
                 ));
             }
-            Request::TokenMint { chat, harness } => {
-                out.send(&self.op_mint(who, &chat, &harness));
+            Request::TokenMint {
+                chat,
+                harness,
+                project,
+            } => {
+                out.send(&self.op_mint(who, &chat, &harness, project.as_deref()));
+            }
+            // Step P (the base; lane PE fills `crate::project`).
+            Request::MsgSend { to, text, reply_to } => {
+                out.send(
+                    &self
+                        .project
+                        .msg_send(caller(who), &to, &text, reply_to.as_deref()),
+                );
+            }
+            Request::MsgTake {} => {
+                out.send(&self.project.msg_take(caller(who)));
+            }
+            Request::ScreenRead { chat, lines } => {
+                out.send(&self.project.screen_read(caller(who), &chat, lines));
+            }
+            Request::ScreenList {} => {
+                out.send(&self.project.screen_list(caller(who)));
+            }
+            Request::ScreenPut(put) => {
+                out.send(&self.project.screen_put(caller(who), &put));
             }
             Request::Taint { chat, hosts, add } => {
                 out.send(&self.op_taint(who, chat, hosts, add));
@@ -2012,6 +2054,7 @@ impl Daemon {
                 // greeted keeps its scope until it closes.
                 if event.source == Source::Run && event.kind == "run.stop" {
                     self.receiver.revoke_chat(&event.chat_id);
+                    self.project.forget_chat(&event.chat_id);
                     if let Some(tap) = &self.tap {
                         tap.forget_chat(&event.chat_id);
                     }
@@ -2025,6 +2068,9 @@ impl Daemon {
                 }
             }
         }
+        // Step P (contracts/events.md 7.1): the daemon names the event's
+        // project from its own map, over whatever the client sent.
+        self.project.stamp(&mut event);
         if store::bound_event(event.clone()).id.is_empty() {
             return error("event id is empty");
         }
@@ -2096,6 +2142,7 @@ impl Daemon {
         );
         let kept = self.ingest(event);
         self.ingest(Event {
+            project: String::new(),
             id: format!("gate-conflict-{}", uuid::Uuid::new_v4().simple()),
             at: 0,
             chat_id: chat,
@@ -2533,6 +2580,9 @@ impl Daemon {
             // R5: the window's count is a bound when a gap in it is merged.
             "osKernelDropsUpTo": window_up_to,
             "tailsDropped": self.counters.tails_dropped.load(Ordering::Relaxed),
+            // Step P (contracts/daemon-protocol.md 6.4): events whose client
+            // `project` the daemon overwrote (lane PE's count).
+            "projectOverwritten": self.project.overwritten(),
             // MW5-34: for a chat, how many of its OS events reached the
             // daemon after the join stopped waiting for a feed that was
             // behind (null when none did, or with no chat).
@@ -2674,6 +2724,7 @@ impl Daemon {
             }
         }
         self.ingest(Event {
+            project: String::new(),
             id: record_id.to_string(),
             at: 0,
             chat_id: request.chat.clone(),
@@ -2730,18 +2781,23 @@ impl Daemon {
         reply
     }
 
-    fn op_mint(&self, who: &Who, chat: &str, harness: &str) -> Reply {
+    fn op_mint(&self, who: &Who, chat: &str, harness: &str, project: Option<&str>) -> Reply {
         if *who != Who::Daemon {
             return error("token.mint needs daemon scope");
         }
         if !crate::activity::registry::valid_chat_id(chat) {
             return error("chat id: 1 to 128 of [A-Za-z0-9_.:-]");
         }
+        // Step P: 16 lowercase hex or "" (contracts/daemon-protocol.md 6.1).
+        if project.is_some_and(|p| !derm_core::project::valid_field(p)) {
+            return error("project: 16 of [0-9a-f], or empty");
+        }
         let Some(harness) = harness_env::harness_id(harness) else {
             return error("unknown harness");
         };
         match self.receiver.mint(chat, harness) {
             Some(token) => {
+                self.project.note_mint(chat, project.unwrap_or(""));
                 if let Ok(mut m) = self.minted_at.lock() {
                     let live: HashSet<String> = self
                         .receiver
@@ -3624,6 +3680,7 @@ mod tests {
 
     fn event(id: &str) -> Event {
         Event {
+            project: String::new(),
             id: id.into(),
             at: 0,
             chat_id: "chat-a".into(),
@@ -3788,6 +3845,7 @@ mod tests {
 
     fn ev_of(chat: &str, source: Source, kind: &str, pid: Option<u32>, detail: Value) -> Event {
         Event {
+            project: String::new(),
             id: format!("{kind}-{}", uuid::Uuid::new_v4().simple()),
             at: 0,
             chat_id: chat.into(),
@@ -3809,7 +3867,7 @@ mod tests {
     fn a_tap_route_is_its_chats_until_the_chat_stops() {
         let (d, root) = daemon();
         assert!(d.tap_endpoint().is_some(), "the tap started");
-        let reply = d.op_mint(&Who::Daemon, "chat-r", "claude-code");
+        let reply = d.op_mint(&Who::Daemon, "chat-r", "claude-code", None);
         let token = reply.token.expect("minted");
         let route = derm_tap::route::of_token(&token);
         assert_eq!(
@@ -3852,7 +3910,7 @@ mod tests {
         let first = start();
         let port = first.tap.as_ref().map(derm_tap::Tap::port).unwrap();
         let token = first
-            .op_mint(&Who::Daemon, "chat-k", "claude-code")
+            .op_mint(&Who::Daemon, "chat-k", "claude-code", None)
             .token
             .unwrap();
         let mut harness = std::process::Command::new("sleep")

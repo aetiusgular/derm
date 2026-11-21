@@ -186,6 +186,7 @@ fn records_before_run_start_are_replayed_when_it_arrives() {
         "nothing is placed before the root is known"
     );
     let start = Event {
+        project: String::new(),
         id: "run-1".into(),
         at: 1,
         chat_id: "chat-1".into(),
@@ -215,6 +216,7 @@ fn a_run_record_is_taken_as_it_comes_since_only_the_daemon_scope_posts_one() {
     let mut f = Feed::new(HOME, None);
     f.register(root());
     let stop = Event {
+        project: String::new(),
         id: "run-2".into(),
         at: 2,
         chat_id: "chat-1".into(),
@@ -286,6 +288,7 @@ fn bw5r4_2_lines_read_after_the_chats_stop_are_still_placed() {
     let early = parse_for_root(ENRICHED, root(), HOME);
     let mut f = Feed::new(HOME, None);
     let start = Event {
+        project: String::new(),
         id: "run-1".into(),
         at: 1_793_114_339_700,
         chat_id: "chat-1".into(),
@@ -317,6 +320,7 @@ fn bw5r4_2_lines_read_after_the_chats_stop_are_still_placed() {
 
 fn run_ev(id: &str, kind: &str, chat: &str, pid: Option<u32>, at: i64) -> Event {
     Event {
+        project: String::new(),
         id: id.into(),
         at,
         chat_id: chat.into(),

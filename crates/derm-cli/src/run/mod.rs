@@ -42,7 +42,11 @@ pub(crate) mod user; // lane V; the accounts build reads root's file from here (
                      // Wave 6's seam (the wave 6 base, `plans/toolkit_wave6_plan.md` section 2.0,
                      // part 3): the Standard tier, lane 6A's. The stub changes nothing.
 mod broker;
+// Step P's seam (the base, 20 Nov 2026): the terminal reader, lane PD's
+// (`contracts/project-tools.md` section 3). The stub changes nothing.
 pub(crate) mod claude_gate; // fix pass 6, note BE section 1.5 (e); pub(crate) for `derm kit register`
+#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
+pub(crate) mod pty;
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
 use std::io::Write;
@@ -347,6 +351,7 @@ fn event(
     pid: Option<u32>,
 ) -> Event {
     Event {
+        project: String::new(),
         id: format!("run-{chat}-{}", uuid::Uuid::new_v4().simple()),
         at: now_ms(),
         chat_id: chat.to_string(),

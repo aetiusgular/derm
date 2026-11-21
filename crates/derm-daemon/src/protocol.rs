@@ -68,9 +68,45 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         add: Option<serde_json::Value>,
     },
-    /// Mint a chat token. Needs the daemon scope.
+    /// Mint a chat token. Needs the daemon scope. `project` (step P's base;
+    /// `contracts/daemon-protocol.md` section 6.1) is the chat's project id,
+    /// 16 lowercase hex, or `""` for a chat outside accounts; absent from an
+    /// older `derm run`. An older daemon refuses it (unknown field), so
+    /// `derm run` and the daemon change together.
     #[serde(rename = "token.mint")]
-    TokenMint { chat: String, harness: String },
+    TokenMint {
+        chat: String,
+        harness: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// Step P (`contracts/daemon-protocol.md` section 6; lane PE): a message
+    /// from the caller's chat to a chat of its project, or `"*"`. Chat scope.
+    #[serde(rename = "msg.send")]
+    MsgSend {
+        to: String,
+        text: String,
+        #[serde(default, rename = "replyTo", skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+    },
+    /// Step P: the caller's chat's waiting messages, removed as they are
+    /// returned. Chat scope.
+    #[serde(rename = "msg.take")]
+    MsgTake {},
+    /// Step P: another chat's rendered screen. Chat scope.
+    #[serde(rename = "screen.read")]
+    ScreenRead {
+        chat: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lines: Option<u32>,
+    },
+    /// Step P: the chats of the caller's project that serve a screen.
+    #[serde(rename = "screen.list")]
+    ScreenList {},
+    /// Step P: `derm run`'s rendered screen for one chat (lane PD's client).
+    /// Daemon scope.
+    #[serde(rename = "screen.put")]
+    ScreenPut(ScreenPut),
     /// Computer use's controls, which went with the fork's menu bar (lane
     /// K's request 3, integration w2): its status, stop one chat or every
     /// chat, take one app back from a chat. Needs the daemon scope.
@@ -81,6 +117,20 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app: Option<String>,
     },
+}
+
+/// `screen.put`'s fields (`contracts/project-tools.md` section 3.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScreenPut {
+    pub chat: String,
+    pub rows: u16,
+    pub cols: u16,
+    /// Rendered text, at most `derm_core::project::screen::MAX_TEXT_BYTES`.
+    pub text: String,
+    pub scrollback_lines: u32,
+    /// `derm run`'s clock, milliseconds since the epoch.
+    pub at: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +235,10 @@ pub struct Reply {
     pub by: Option<AnsweredBy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<serde_json::Value>,
+    /// Step P's ops answer here (`msg.send`, `msg.take`, `screen.read`,
+    /// `screen.list`; `contracts/daemon-protocol.md` section 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +299,7 @@ mod tests {
         let r = Request::TokenMint {
             chat: "c1".into(),
             harness: "pi".into(),
+            project: None,
         };
         assert_eq!(
             serde_json::to_string(&r).unwrap(),

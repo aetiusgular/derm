@@ -37,6 +37,7 @@ fn fp13r_1_a_restarted_daemons_backlog_leaves_out_the_newest_run_start() {
         let mut w = ChainWriter::new(data.join("activity"));
         for i in 0..6_000i64 {
             let e = Event {
+                project: String::new(),
                 id: format!("busy-{i}"),
                 at: t0 + i,
                 chat_id: "chat-busy".into(),
@@ -51,6 +52,7 @@ fn fp13r_1_a_restarted_daemons_backlog_leaves_out_the_newest_run_start() {
             w.write(&Entry::Event(e), t0 + i).unwrap();
         }
         let start = Event {
+            project: String::new(),
             id: "run-new".into(),
             at: t0 + 10_000,
             chat_id: "chat-new".into(),

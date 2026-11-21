@@ -588,6 +588,7 @@ mod daemon_tier {
 
     fn run_start(t: &derm_daemon::taint::Taints, verdict: &str) {
         t.on_event(&derm_core::event::Event {
+            project: String::new(),
             id: "r".into(),
             at: 1,
             chat_id: "c-1".into(),

@@ -44,6 +44,7 @@ fn run_start_of(row: &Value) -> Option<Event> {
         return None;
     }
     Some(Event {
+        project: String::new(),
         id: format!("sysmon-running-{chat}"),
         at: row.get("since").and_then(Value::as_i64).unwrap_or(0),
         chat_id: chat,

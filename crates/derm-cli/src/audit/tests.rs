@@ -30,6 +30,7 @@ fn scratch(name: &str) -> PathBuf {
 
 fn ev(id: &str, at: i64, source: Src, kind: &str, summary: &str, detail: Value) -> Event {
     Event {
+        project: String::new(),
         id: id.into(),
         at,
         chat_id: "s-1".into(),

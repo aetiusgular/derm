@@ -221,6 +221,7 @@ impl Daemon {
             person::Verdict::Unavailable(u) => (false, Some(u.as_str())),
         };
         self.ingest(Event {
+            project: String::new(),
             id: format!("person-{}", uuid::Uuid::new_v4().simple()),
             at: 0,
             chat_id: clip(chat, 128),
@@ -331,6 +332,7 @@ impl Daemon {
             (false, why) => format!("approver refused: {}", why.unwrap_or("")),
         };
         self.ingest(Event {
+            project: String::new(),
             id: format!("approver-{}", uuid::Uuid::new_v4().simple()),
             at: 0,
             chat_id: String::new(),
@@ -377,6 +379,7 @@ mod tests {
             &Who::Daemon,
             Request::Event {
                 event: Event {
+                    project: String::new(),
                     id: format!("start-{chat}"),
                     at: 0,
                     chat_id: chat.into(),

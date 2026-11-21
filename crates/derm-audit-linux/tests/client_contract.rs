@@ -16,6 +16,7 @@ fn socket_path_is_lane_bs() {
 
 fn run_start() -> Event {
     Event {
+        project: String::new(),
         id: "run-1".into(),
         at: 0,
         chat_id: "chat-b".into(),

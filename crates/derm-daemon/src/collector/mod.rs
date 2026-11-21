@@ -431,6 +431,7 @@ mod tests {
 
     fn run_event(kind: &str, chat: &str, pid: Option<u32>, source: Source) -> Event {
         Event {
+            project: String::new(),
             id: format!("{kind}-1"),
             at: 0,
             chat_id: chat.into(),
@@ -622,6 +623,7 @@ mod tests {
         // More OS records than a tail may hold back.
         for n in 0..(crate::daemon::MAX_PENDING_LINES + 500) {
             daemon.ingest(Event {
+                project: String::new(),
                 id: format!("es-flood-{n}"),
                 at: 0,
                 chat_id: "chat-before".into(),
@@ -676,6 +678,7 @@ mod tests {
         // the newest 1,000 of a window, as `read_events` does.
         let all: Vec<Event> = (0..2_500)
             .map(|i| Event {
+                project: String::new(),
                 id: format!("es-burst-{i}"),
                 at: 1_000 + i / 4,
                 chat_id: "chat-b".into(),

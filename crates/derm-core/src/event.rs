@@ -46,6 +46,13 @@ pub struct Event {
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_id: Option<String>,
+    /// The chat's project id (`derm_core::project`), or `""` when the event
+    /// is not attributed to one. Set by the daemon on every event it stores,
+    /// over any value a client sent, as it does `chat_id`
+    /// (contracts/events.md section 7.1; Tony, 20 Nov 2026, C2). Left out of
+    /// the JSON when empty, so records outside projects are unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project: String,
 }
 
 #[cfg(test)]

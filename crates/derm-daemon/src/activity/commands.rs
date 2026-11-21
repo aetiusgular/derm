@@ -605,6 +605,7 @@ mod tests {
         let collector_events = collector::EventsReply {
             events: vec![
                 ActivityEvent {
+                    project: String::new(),
                     id: "es-1".into(),
                     at: day + 10,
                     chat_id: "c1".into(),
@@ -617,6 +618,7 @@ mod tests {
                     approval_id: None,
                 },
                 ActivityEvent {
+                    project: String::new(),
                     id: "es-2".into(),
                     at: day + 20,
                     chat_id: "c1".into(),
@@ -664,6 +666,7 @@ mod tests {
         let dir = temp("collector-once");
         let day = 20_377 * 86_400_000_i64;
         let outside = ActivityEvent {
+            project: String::new(),
             id: "es-dup".into(),
             at: day + 10,
             chat_id: "c1".into(),
@@ -722,6 +725,7 @@ mod tests {
         let dir = temp("collector-forged");
         let day = 20_377 * 86_400_000_i64;
         let real = ActivityEvent {
+            project: String::new(),
             id: "es-forged".into(),
             at: day + 10,
             chat_id: "c1".into(),
@@ -784,6 +788,7 @@ mod tests {
         let day = 20_377 * 86_400_000_i64;
         let mut writer = ChainWriter::new(dir.clone());
         let runtime = ActivityEvent {
+            project: String::new(),
             id: "rt".into(),
             at: day - 3_600_000,
             chat_id: "c1".into(),
@@ -800,6 +805,7 @@ mod tests {
             .unwrap();
         let rec = "/Users/t/Library/Application Support/io.github.aetiusgular.derm/computer-use/recordings/rt1/turn-00009/after.png";
         let write = |id: &str, pid: u32| ActivityEvent {
+            project: String::new(),
             id: id.into(),
             at: day + 10,
             chat_id: "c1".into(),
@@ -838,6 +844,7 @@ mod tests {
     fn the_webview_cannot_write_computer_use_or_collector_records() {
         // Security review U2.
         let make = |source: ActivitySource| ActivityEvent {
+            project: String::new(),
             id: "x".into(),
             at: 1,
             chat_id: "c1".into(),
@@ -964,6 +971,7 @@ mod tests {
         // did not arrive in time.
         let dir = temp("partial");
         let event = ActivityEvent {
+            project: String::new(),
             id: "es-9".into(),
             at: 10,
             chat_id: "c1".into(),

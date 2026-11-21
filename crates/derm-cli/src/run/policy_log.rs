@@ -171,6 +171,7 @@ pub fn to_event(e: &Entry, chat: &str, harness: &str, now_ms: i64) -> Event {
     let id_key = format!("{}|{}|{}", e.host, e.blocked, e.rule);
     let digest = derm_core::token::hash(&id_key);
     Event {
+        project: String::new(),
         id: format!("sbx-{chat}-{}-{}", &digest[..16], e.count),
         at: now_ms,
         chat_id: chat.to_string(),

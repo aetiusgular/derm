@@ -1500,6 +1500,7 @@ impl Join {
             detail["harnessFound"] = json!(false);
         }
         vec![Event {
+            project: String::new(),
             id: format!("join-{}", e.id),
             at: e.at,
             chat_id: e.chat_id.clone(),

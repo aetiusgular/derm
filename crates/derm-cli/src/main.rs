@@ -27,6 +27,9 @@ mod gate;
 mod hook;
 mod init;
 mod platform;
+// Step P (the base, 20 Nov 2026): `derm project`, lane PA's.
+#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
+mod project;
 mod run;
 mod secret;
 #[cfg(unix)]
@@ -95,6 +98,8 @@ fn dispatch(args: &[String]) -> u8 {
         Some("audit") => audit::main(&args[1..]),
         Some("secret") => secret::main(&args[1..]),
         Some("agents") => agents::main(&args[1..]),
+        // Step P (the base's stub): lane PA's `derm project`.
+        Some("project") => project::main(&args[1..]),
         // The accounts build (lane L1's request L1-3): run by derm run, as
         // an agent account through sudo, from root's copy of derm; it makes
         // the chat's Landlock domain and execs the harness.
@@ -111,7 +116,7 @@ fn dispatch(args: &[String]) -> u8 {
             0
         }
         _ => {
-            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|agents|landlock|--version> ...");
+            eprintln!("usage: derm <connect|run|watch|status|cu|acp|doctor|setup|hook|gate|enter|kit|init|audit|secret|agents|project|landlock|--version> ...");
             2
         }
     }

@@ -234,6 +234,7 @@ fn to_event(a: &Action, root: &Root, source: Source, record: Option<u64>) -> Eve
         }
     };
     Event {
+        project: String::new(),
         id: match record {
             Some(r) => format!("sysmon-{r}"),
             None => format!("sysmon-{}-{}", a.guid, kind),

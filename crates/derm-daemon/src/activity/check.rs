@@ -2022,6 +2022,7 @@ mod tests {
         pid: Option<u32>,
     ) -> ActivityEvent {
         ActivityEvent {
+            project: String::new(),
             id: id.into(),
             at,
             chat_id: "c1".into(),

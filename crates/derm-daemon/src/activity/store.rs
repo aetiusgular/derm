@@ -551,6 +551,7 @@ mod tests {
 
     fn event(id: &str, chat: &str, at: i64) -> ActivityEvent {
         ActivityEvent {
+            project: String::new(),
             id: id.into(),
             at,
             chat_id: chat.into(),

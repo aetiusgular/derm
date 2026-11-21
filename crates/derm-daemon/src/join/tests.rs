@@ -5,6 +5,7 @@ const ROOT: u32 = 1000;
 
 fn ev(source: Source, kind: &str, at: i64, pid: Option<u32>, detail: Value) -> Event {
     Event {
+        project: String::new(),
         id: format!("{kind}-{at}-{}", pid.unwrap_or(0)),
         at,
         chat_id: CHAT.into(),

@@ -238,6 +238,7 @@ pub fn to_activity(
         detail.insert("service".into(), Value::String(clip(service, 200)));
     }
     Some(ActivityEvent {
+        project: String::new(),
         id: format!("otel-{}", uuid::Uuid::new_v4().simple()),
         // The receive time, never the harness's own: a back-dated record
         // could otherwise sit before a real action and change what the

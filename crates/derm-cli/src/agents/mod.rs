@@ -28,6 +28,9 @@
 
 pub mod harness;
 pub mod registry;
+// Step P (the base, 20 Nov 2026): the sign-in store and its links, lane PB's.
+#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
+pub mod signin;
 pub mod tunnel;
 
 #[cfg(test)]

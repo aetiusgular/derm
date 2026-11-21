@@ -284,6 +284,14 @@ pub fn sockaddr(hex: &str) -> Option<(Family, String, u16)> {
     }
 }
 
+/// Step P (the base, 20 Nov 2026; lane PC's; `contracts/events.md` 7.2,
+/// `net.unix`): an AF_UNIX `saddr` (`sa_family` 1, then `sun_path`) as the
+/// socket's path, or `@<name>` for an abstract socket (a first byte of 0).
+/// Not built (lane PC): `None`, as `sockaddr` drops every AF_UNIX address.
+pub fn unix_sockaddr(_hex: &str) -> Option<String> {
+    None
+}
+
 /// The PATH items of one event, resolved to absolute paths where the record
 /// allows it.
 struct Paths {

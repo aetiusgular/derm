@@ -423,6 +423,7 @@ impl Shared {
     fn emit(&self, kind: &str, summary: String, detail: Value) {
         let c = &self.config;
         (c.sink)(vec![Event {
+            project: String::new(),
             id: event_id(),
             at: now_ms(),
             chat_id: c.chat.clone(),

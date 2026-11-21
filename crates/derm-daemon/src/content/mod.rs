@@ -128,6 +128,7 @@ impl Purger {
         removed
             .into_iter()
             .map(|((chat, days), r)| Event {
+                project: String::new(),
                 id: format!("content-purge-{chat}-{now_ms}-{days}"),
                 at: now_ms,
                 chat_id: chat,

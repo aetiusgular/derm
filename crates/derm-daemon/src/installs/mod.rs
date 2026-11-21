@@ -20,6 +20,8 @@ pub mod check;
 pub mod control;
 pub mod ingest;
 pub mod lockdiff;
+// Step P (the base, 20 Nov 2026): `project.control`, lane PC's.
+pub mod project;
 pub mod scripts;
 
 use std::path::Path;

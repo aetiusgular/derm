@@ -988,6 +988,7 @@ fn harness_name(harness: &str) -> String {
 /// The record of a runtime's start, with its pid.
 pub fn runtime_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent {
     ActivityEvent {
+        project: String::new(),
         id: new_id(),
         at: now_ms(),
         chat_id: chat.to_string(),
@@ -1004,6 +1005,7 @@ pub fn runtime_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent {
 /// The record of a runtime's end, with its pid (review V3).
 pub fn runtime_stop_event(chat: &str, runtime: &str, pid: u32) -> ActivityEvent {
     ActivityEvent {
+        project: String::new(),
         id: new_id(),
         at: now_ms(),
         chat_id: chat.to_string(),
@@ -1031,6 +1033,7 @@ pub fn recording_event(chat: &str, runtime: &str, reply: &Value) -> Option<Activ
         .map(|text| printable(text, 300))
         .unwrap_or_default();
     Some(ActivityEvent {
+        project: String::new(),
         id: new_id(),
         at: now_ms(),
         chat_id: chat.to_string(),
@@ -1060,6 +1063,7 @@ pub fn action_event(chat: &str, harness: &str, action: &Value) -> ActivityEvent 
         map.insert("bundleId".into(), Value::String(bundle));
     }
     ActivityEvent {
+        project: String::new(),
         id: new_id(),
         at: now_ms(),
         chat_id: chat.to_string(),

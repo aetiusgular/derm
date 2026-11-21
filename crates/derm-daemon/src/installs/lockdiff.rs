@@ -231,6 +231,7 @@ fn record(call: &str, p: &Pending, d: &Diff, now: i64) -> Event {
         parts.push(format!("{} changed", d.changed.len()));
     }
     Event {
+        project: String::new(),
         id: format!("lockdiff-{call}"),
         at: now,
         chat_id: p.chat.clone(),

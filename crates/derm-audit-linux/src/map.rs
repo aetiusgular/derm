@@ -154,6 +154,7 @@ pub fn to_event(action: &Action, placed: &Placement, reasons: &[Reason]) -> Even
         .take(MAX_SUMMARY_CHARS)
         .collect();
     Event {
+        project: String::new(),
         id: event_id(action),
         at: action.ts_ms,
         chat_id: placed.chat.clone(),

@@ -371,6 +371,7 @@ impl CallRecord {
             self.tool.clone()
         };
         Event {
+            project: String::new(),
             id: self.id(chat),
             at,
             chat_id: chat.to_string(),
@@ -442,6 +443,7 @@ impl RequestRecord {
             summary.push_str(", cut");
         }
         Event {
+            project: String::new(),
             id: self.id.clone(),
             at,
             chat_id: chat.to_string(),

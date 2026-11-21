@@ -411,6 +411,7 @@ impl ControlFlags {
                 }
             }
             out.push(Event {
+                project: String::new(),
                 id: format!("install-control-{effect}-{k}"),
                 at: e.at,
                 chat_id: e.chat_id.clone(),
@@ -451,6 +452,7 @@ mod tests {
 
     fn ev(id: &str, kind: &str, source: Source, detail: Value) -> Event {
         Event {
+            project: String::new(),
             id: id.into(),
             at: 1_793_000_009_400,
             chat_id: "chat-fixture".into(),

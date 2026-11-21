@@ -9,6 +9,7 @@ use serde_json::json;
 
 fn ev(id: &str, at: i64, source: ActivitySource, kind: &str, host: &str) -> ActivityEvent {
     ActivityEvent {
+        project: String::new(),
         id: id.into(),
         at,
         chat_id: "chat-a".into(),

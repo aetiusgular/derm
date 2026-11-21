@@ -60,6 +60,12 @@ pub(crate) mod chat;
 #[cfg(target_os = "linux")]
 #[path = "../landlock/mod.rs"]
 pub(crate) mod landlock;
+/// Step P (the base, 20 Nov 2026): a chat inside its project, lane PA's
+/// (`contracts/projects.md` section 2). Called by the red tests until the
+/// lane wires it into the chat route.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
+pub(crate) mod project;
 pub(crate) mod slug;
 
 /// What `wrap_with` needs from `run_io` (lane V's request V-1).

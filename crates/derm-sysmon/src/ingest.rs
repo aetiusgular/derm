@@ -178,6 +178,7 @@ impl Ingest {
 
     fn gap(&self, from: u64, to: u64, reason: &str, now_ms: i64) -> Event {
         Event {
+            project: String::new(),
             id: format!("sysmon-gap-{from}-{to}"),
             at: 0,
             chat_id: String::new(),
@@ -281,6 +282,7 @@ mod tests {
 
     fn run(kind: &str, at: i64) -> Event {
         Event {
+            project: String::new(),
             id: format!("run-{kind}"),
             at,
             chat_id: "c1".into(),
