@@ -27,8 +27,10 @@ The first line is `hello`:
 
 ```
 {"id":1,"op":"decide","call":{"tool":"bash","input":{"command":"ls"},"chat":"c-1","toolUseId":"t1","fullAccess":false,"description":null}}
-{"id":1,"ok":true,"action":"allow","normalizedTool":"bash","reason":"rule bash allow","permission":null,"updatedInput":null,"redacted":0,"askTimeoutSeconds":60}
+{"id":1,"ok":true,"action":"allow","normalizedTool":"bash","reason":"rule bash allow","permission":null,"updatedInput":null,"redacted":0,"askTimeoutSeconds":60,"decisionId":"d-0123456789abcdef0123456789abcdef"}
 ```
+
+`decisionId` (step P, lane PF's AI-7 and its request 1, added by P integration on 22 Nov 2026): `d-` and 32 lowercase hex from a v4 UUID, the decision the co-process keeps for this call (at most 4,096, the oldest out; `gate/serve/decisions.rs`). The plugin hands the decide reply back whole, `decisionId` with it, as `answer` in `approve` and `record`. The fixture carries `d-` and 32 zeros; a test compares every other field and checks the shape.
 
 `permission` (the accounts build, lane L3's request 3): the kebab id of the permission an ask or deny names (`docs/permissions.md`, "The name in each answer"; `derm_core::policy::Permission::id`), or null; the reason starts with the same name. A plugin reads it from here, never from the reason text.
 
@@ -40,6 +42,8 @@ The first line is `hello`:
 {"id":2,"op":"approve","call":{...},"answer":{...the decide reply...},"canAsk":true}
 {"id":2,"ok":true,"kind":"harness","reason":"rule github/* ask (no derm approver connected)"}
 ```
+
+The co-process goes on its own decision, never on the plugin's text (review AI-7): the one `answer.decisionId` names, which must be a decision for the same call (harness, tool as named, chat, full access, the input's SHA-256; not `toolUseId`), or with no id the newest decision for the call. A call it never decided, an id it does not hold, and an answer that allows more than its decision (an `allow` or `ask` for its `deny`, an `allow` for its `ask`) are `ok: false`, and the plugin denies (case 228). A narrowing keeps the plugin's reason; the tool, the timeout, the redaction count and the permission are always the decision's own. `record` follows the same rule.
 
 `gate::core::resolve_ask` through the daemon's approver: `kind` is `allow`, `deny`, or `harness` (show the host's own prompt; only when `canAsk`). The reply comes within the answer's `askTimeoutSeconds` plus 5 s. derm-pi keeps its own `ctx.ui.confirm` and its input freeze (case 88): it asks `approve` with `canAsk: true`, and on `harness` shows its prompt over the frozen input.
 

@@ -99,7 +99,25 @@ fn gate_serve_answers_the_fixture_exchange() {
             assert_eq!(got["ok"], true, "{got}");
             assert_eq!(got["protocol"], 1, "{got}");
         } else {
-            assert_eq!(&got, line);
+            // Request PF-1: a decide reply names its decision with a random
+            // id (`d-` and 32 hex); every other field is the fixture's.
+            let (mut got, mut want) = (got.clone(), line.clone());
+            if let Some(w) = want.as_object_mut().and_then(|m| m.remove("decisionId")) {
+                let id = got
+                    .as_object_mut()
+                    .and_then(|m| m.remove("decisionId"))
+                    .unwrap_or(Value::Null);
+                let id = id.as_str().unwrap_or("");
+                assert!(
+                    id.len() == 34
+                        && id.starts_with("d-")
+                        && id[2..]
+                            .bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                    "{id:?} (fixture {w})"
+                );
+            }
+            assert_eq!(got, want);
         }
     }
     drop(stdin);

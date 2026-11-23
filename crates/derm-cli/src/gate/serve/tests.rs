@@ -178,13 +178,32 @@ fn the_fixture_exchange_is_answered_line_for_line() {
         .filter(|l| l["dir"] == "out")
         .map(|l| l["line"].clone())
         .collect();
-    let r = run_lines(&se, "pi", &input, no_approver());
+    // As `main` runs it since P integration (request PF-1).
+    let mut text = String::new();
+    for l in &input {
+        text.push_str(&l.to_string());
+        text.push('\n');
+    }
+    let r = run_text_ids(&se, "pi", text.as_bytes(), no_approver(), true);
     assert_eq!(r.code, 0);
     assert_eq!(r.replies.len(), want.len());
     for (got, want) in r.replies.iter().zip(&want) {
         if want.get("error").is_some() {
             assert_eq!(got["ok"], false, "{got}");
             assert_eq!(got["id"], want["id"], "{got}");
+        } else if want.get("decisionId").is_some() {
+            // Request PF-1: every field but the random id is the fixture's.
+            let id = got["decisionId"].as_str().unwrap_or("");
+            assert!(
+                id.len() == 34
+                    && id.starts_with("d-")
+                    && id[2..].bytes().all(|b| b.is_ascii_hexdigit()),
+                "{got}"
+            );
+            let (mut g, mut w) = (got.clone(), want.clone());
+            g.as_object_mut().unwrap().remove("decisionId");
+            w.as_object_mut().unwrap().remove("decisionId");
+            assert_eq!(g, w);
         } else {
             assert_eq!(got, want);
         }

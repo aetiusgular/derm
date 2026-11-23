@@ -113,11 +113,11 @@ pub fn main(args: &[String]) -> u8 {
         approve: &approve,
         daemon_up: &daemon_up,
         decisions: Default::default(),
-        // The decide reply names its decision once the contract and its
-        // fixture carry the field (lane PF's request 1): until then the
-        // plugins find theirs by the call, which their clients send back
-        // whole (`decisions.rs`).
-        send_decision_id: false,
+        // The decide reply names its decision (lane PF's request 1, P
+        // integration): the plugins' clients hand it back with `approve`
+        // and `record` (`answerOf`), and serve goes on that decision; a
+        // client that drops it is still found by the call (`decisions.rs`).
+        send_decision_id: true,
     };
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

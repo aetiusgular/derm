@@ -435,7 +435,10 @@ describe.runIf(DERM !== undefined && unix)("against the real derm gate serve", (
     expect((await approve(s, { tool: "write", input: { path: "a" } }, ask, true)).kind).toBe("harness");
     const red = await redact(s, { out: `ghp_${"A1b2C3d4E5".repeat(4)}` });
     expect(red.count).toBe(1);
-    await record(s, { tool: "bash", input: {} }, ask, "ask", { label: "x" });
+    // Lane PF's request 4: record the call that was decided; serve refuses
+    // to record a call it never decided (AI-7).
+    expect(ask.decisionId).toMatch(/^d-[0-9a-f]{32}$/);
+    await record(s, { tool: "write", input: { path: "a" }, toolUseId: "t1" }, ask, "ask", { label: "x" });
     s.close();
   });
 

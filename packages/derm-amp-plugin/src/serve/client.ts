@@ -597,6 +597,10 @@ export type Answer = {
   updatedInput: unknown;
   redacted: number;
   askTimeoutSeconds: number;
+  /** The decision serve made for this call (`d-` and 32 hex; contract 2.1,
+   * lane PF's request 3): handed back with `approve` and `record`, so serve
+   * goes on that decision and no other. Absent from an older derm. */
+  decisionId?: string;
 };
 
 /** The call a request names (contract section 2.1, `gate::core::GateCall`). */
@@ -620,6 +624,7 @@ function answerOf(r: Reply): Answer {
     updatedInput: r.updatedInput ?? undefined,
     redacted: typeof r.redacted === "number" ? r.redacted : 0,
     askTimeoutSeconds: typeof r.askTimeoutSeconds === "number" ? r.askTimeoutSeconds : 60,
+    ...(typeof r.decisionId === "string" && /^d-[0-9a-f]{32}$/.test(r.decisionId) ? { decisionId: r.decisionId } : {}),
   };
 }
 
