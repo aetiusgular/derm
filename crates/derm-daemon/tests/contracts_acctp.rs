@@ -138,7 +138,6 @@ fn a_mint_project_and_step_ps_op_lines_are_checked_on_the_base() {
 /// `projectOverwritten`). Red on the base: the daemon keeps no
 /// chat-to-project map, so the stored project is `""`, and nothing counts.
 #[test]
-#[ignore = "lane PE: red until the chat-to-project map; the stored project is empty"]
 fn base_a_chats_event_carries_the_daemons_project_not_the_clients() {
     let f = fixture();
     let mut d = Client::hello(&f, DAEMON_TOKEN);
@@ -159,7 +158,6 @@ fn base_a_chats_event_carries_the_daemons_project_not_the_clients() {
 /// from an agent; one to a chat of another project asks the person first.
 /// Red on the base: `msg.send` and `msg.take` answer `not built`.
 #[test]
-#[ignore = "lane PE: red until P6 and P7; msg.send is not built"]
 fn pe_a_message_reaches_its_own_project_and_asks_across_projects() {
     let f = fixture();
     let mut d = Client::hello(&f, DAEMON_TOKEN);
@@ -207,7 +205,6 @@ fn pe_a_message_reaches_its_own_project_and_asks_across_projects() {
 /// `screen.put` is read by a chat of the same project, cleaned again, and
 /// refused to a chat token. Red on the base: `screen.put` is not built.
 #[test]
-#[ignore = "lane PE: red until derm_terminal_read; screen.put is not built"]
 fn pe_a_screen_is_read_by_its_own_project_only() {
     let f = fixture();
     let mut d = Client::hello(&f, DAEMON_TOKEN);
@@ -234,7 +231,6 @@ fn pe_a_screen_is_read_by_its_own_project_only() {
 /// `control_path` misses; an ordinary file is not. Red on the base:
 /// `project_control` names nothing.
 #[test]
-#[ignore = "lane PC: red until P4; project_control names nothing"]
 fn pc_a_write_to_a_project_homes_run_later_files_is_flagged() {
     use derm_daemon::installs::project::project_control;
     let home = "/var/lib/derm/agents/max/projects/aaaaaaaaaaaaaaaa/home";

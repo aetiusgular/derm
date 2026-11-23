@@ -8,6 +8,12 @@
 //! `cargo test -p derm-cli -- --ignored <name>`, and P integration drops each
 //! `ignore` once the lane is green. A case a lane finds wrong is a request.
 //!
+//! P integration (22 Nov 2026) dropped every `ignore` but Claude Code's
+//! linked sign-in (`pb_claude_code_*`), which stays until the box research
+//! records P-B1 as passing (`plans/parallel/acctP_box_research.md`; P-B1 not
+//! run when integration ran) and `agents::signin::CLAUDE_CODE_STORE` is
+//! turned on with it.
+//!
 //! The process-level ones are `tests/contracts_acctp.rs` (PF) and the
 //! daemon's and the Linux feed's `tests/contracts_acctp.rs` (PE, PC, the
 //! base's record field).
@@ -63,7 +69,6 @@ fn chat<'a>(id: &'a ProjectId, folders: &'a [String], harness: &'a str) -> Proje
 /// domain writes the whole account home (`landlock/mod.rs`'s `chat_spec`),
 /// which holds every project's folders.
 #[test]
-#[ignore = "lane PA: red until P2; both chats write the account home"]
 fn pa_two_projects_in_one_account_do_not_reach_each_other() {
     let a = ProjectId::of_real_path("/srv/work/a");
     let b = ProjectId::of_real_path("/srv/work/b");
@@ -98,7 +103,6 @@ fn pa_two_projects_in_one_account_do_not_reach_each_other() {
 /// folder a chat writes, and Codex's store is reached by its links, not a
 /// variable. Red on the base: no project variables at all.
 #[test]
-#[ignore = "lane PA: red until P2; a chat gets no project variables"]
 fn pa_a_project_chat_gets_its_own_home_tmp_and_runtime_folder() {
     let a = ProjectId::of_real_path("/srv/work/a");
     let fa = vec!["/srv/work/a".to_string()];
@@ -146,7 +150,6 @@ fn named(folder: &Path, name: &str) -> Project {
 /// relative form by git 2.48.0's source; no git 2.48 was run). Red on the
 /// base: `find` finds nothing.
 #[test]
-#[ignore = "lane PA: red until P1; find finds nothing"]
 fn pa_the_nearest_named_folder_and_a_relative_worktree_find_their_project() {
     let s = scratch("find");
     let t = &s.0;
@@ -165,9 +168,14 @@ fn pa_the_nearest_named_folder_and_a_relative_worktree_find_their_project() {
         &t.join("wt/.git"),
         "gitdir: ../work/repo/.git/worktrees/wt\n",
     );
+    // git v2.48.0 writes `relative_path(<worktree>, <gitdir>)` + `/.git`
+    // (`worktree.c:1040-1042`, `write_worktree_linking_files`) and reads it
+    // joined to `worktrees/<id>/` after stripping `/.git` and `gitdir`
+    // (`worktree.c:107-117`): five `..` from `work/repo/.git/worktrees/wt`
+    // to the folder `wt` sits in (request PA-1; four named `work/wt`).
     write(
         &t.join("work/repo/.git/worktrees/wt/gitdir"),
-        "../../../../wt/.git\n",
+        "../../../../../wt/.git\n",
     );
     write(&t.join("work/repo/.git/worktrees/wt/commondir"), "../..\n");
     // A planted `.git` that claims the same worktree folder.
@@ -198,7 +206,6 @@ fn pa_the_nearest_named_folder_and_a_relative_worktree_find_their_project() {
 /// reads whole when it is the person's and private, and is refused when
 /// others can write it. Red on the base: `load` refuses everything.
 #[test]
-#[ignore = "lane PA: red until P1; load refuses every registry"]
 fn pa_the_registry_reads_whole_and_refuses_a_file_others_can_write() {
     use std::os::unix::fs::PermissionsExt;
     let s = scratch("registry");
@@ -273,7 +280,6 @@ fn account_with_store(s: &Scratch, harness: &str) -> PathBuf {
 /// either leaves one regular file in the store and both links in place; the
 /// commit lock is one lock. Red on the base: no link is made.
 #[test]
-#[ignore = "lane PB: red until P3; derm makes no sign-in link"]
 fn pb_codex_links_survive_a_save_and_share_the_commit_lock() {
     let s = scratch("codex-links");
     let acct = account_with_store(&s, "codex");
@@ -309,7 +315,6 @@ fn pb_codex_links_survive_a_save_and_share_the_commit_lock() {
 /// (`dist/core/auth-storage.js:50-51`, #11655) is one lock. Red on the base:
 /// no link is made.
 #[test]
-#[ignore = "lane PB: red until P3; derm makes no sign-in link"]
 fn pb_pi_links_resolve_to_one_store_file() {
     let s = scratch("pi-links");
     let acct = account_with_store(&s, "pi");
@@ -335,7 +340,7 @@ fn pb_pi_links_resolve_to_one_store_file() {
 /// until P-B1 passes on the box (section 8.5), so this stays ignored after
 /// PB is green, until P integration reads `acctP_box_research.md`.
 #[test]
-#[ignore = "lane PB: red until P3 and P-B1; Claude Code's store variable is not set"]
+#[ignore = "lane PB: red until P-B1 passes on the box (not run at P integration); CLAUDE_CODE_STORE stays false"]
 fn pb_claude_code_shares_its_store_by_folder_variable_not_a_link() {
     let s = scratch("cc-store");
     let acct = account_with_store(&s, "claude-code");
@@ -386,7 +391,6 @@ fn forbidden(c: char) -> bool {
 /// no control or format character and keeps what a terminal shows. Red on
 /// the base: the reader returns the raw bytes.
 #[test]
-#[ignore = "lane PD: red until P5's reader; the text keeps control bytes"]
 fn pd_a_terminal_read_returns_no_control_bytes() {
     for case in corpus() {
         let name = case["name"].as_str().unwrap();
@@ -416,7 +420,6 @@ fn pd_a_terminal_read_returns_no_control_bytes() {
 /// same filter over text that never went through a reader. Red on the
 /// base: `clean` keeps everything.
 #[test]
-#[ignore = "lane PD: red until P5's reader; clean keeps format characters"]
 fn pd_clean_removes_control_and_format_characters_and_counts_them() {
     let c = derm_core::project::screen::clean("a\u{202e}b\u{200b}c\u{1b}[0m\u{85}\u{fffd} \n");
     assert_eq!(c.text, "abc[0m\n", "{c:?}");
@@ -434,7 +437,6 @@ fn pd_clean_removes_control_and_format_characters_and_counts_them() {
 /// default (2.1.322 `ZNr()` is true on Windows only, by read). Red on the
 /// base: derm's block does not carry the key.
 #[test]
-#[ignore = "lane PE: red until P6; derm's settings block leaves Claude Code's inbox open"]
 fn pe_a_claude_code_chat_refuses_other_sessions_messages() {
     let block = crate::run::claude_gate::block(&[], "/usr/local/bin/derm", Some("c-a"));
     assert_eq!(block["crossSessionInbound"], "refuse", "{block}");

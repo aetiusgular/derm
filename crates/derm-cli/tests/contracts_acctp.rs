@@ -36,7 +36,6 @@ fn scratch(name: &str) -> PathBuf {
 /// base: serve reads the name back from the reason (`serve/mod.rs`
 /// `answer_of`, `Permission::of_reason`).
 #[test]
-#[ignore = "lane PF: red until AI-7; gate serve records the plugin's permission"]
 fn pf_gate_serve_records_its_own_decisions_permission_on_approve() {
     use std::os::unix::fs::PermissionsExt;
     let dir = scratch("ai7");

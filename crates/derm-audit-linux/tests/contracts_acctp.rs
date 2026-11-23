@@ -13,7 +13,6 @@
 /// `plans/parallel/acctP_base.md`). Red on the base: the feed drops every
 /// AF_UNIX address (`action.rs` `sockaddr`, its test "AF_UNIX is not kept").
 #[test]
-#[ignore = "lane PC: red until P8's first part; AF_UNIX addresses are dropped"]
 fn pc_an_af_unix_connect_keeps_its_path_or_abstract_name() {
     use derm_audit_linux::action::unix_sockaddr;
     assert_eq!(
