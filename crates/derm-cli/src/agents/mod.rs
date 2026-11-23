@@ -813,6 +813,10 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
             registry::shown(&a.subscription),
             parts.join(", ")
         );
+        // Request PC R5: whether the account's own audit rules file is
+        // there (the installer's step 12). Whether auditd has loaded it is
+        // root's to read.
+        let _ = writeln!(ctx.out, "  {}", audit_rules_line(Path::new(AUDIT_RULES_DIR), a.uid));
     }
     let _ = writeln!(
         ctx.out,
@@ -829,6 +833,36 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         let _ = writeln!(ctx.out, "note: {}", harness::INDIVIDUAL_USE);
     }
     0
+}
+
+/// Where the installer puts an account's audit rules (step 12; lane PC).
+const AUDIT_RULES_DIR: &str = "/etc/audit/rules.d";
+
+/// One line on the account's audit rules file, by presence only: its name
+/// with no read of its text, and `unknown` where the folder is root's alone
+/// (Ubuntu's is 0750), naming the root check.
+pub(crate) fn audit_rules_line(dir: &Path, uid: u32) -> String {
+    let file = dir.join(format!("50-derm-{uid}.rules"));
+    match std::fs::symlink_metadata(&file) {
+        Ok(m) if m.is_file() => format!(
+            "audit rules: {} is there; loaded is root's to read (sudo auditctl -l | grep uid={uid})",
+            file.display()
+        ),
+        Ok(_) => format!("audit rules: {} is not a regular file", file.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => format!(
+            "audit rules: none ({} missing): this account's chats have no OS records; the installer's step 12 adds them where auditd is",
+            file.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => format!(
+            "audit rules: no {} here (no auditd): this account's chats have no OS records",
+            dir.display()
+        ),
+        Err(_) => format!(
+            "audit rules: unknown, {} is root's to read (sudo ls {} ; sudo auditctl -l | grep uid={uid})",
+            dir.display(),
+            file.display()
+        ),
+    }
 }
 
 fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
