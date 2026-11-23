@@ -68,12 +68,15 @@ fn run(dir: &Path, args: &[&str], stdin: &str, token: bool) -> Output {
             .env("DERM_DAEMON_SOCKET", dir.join("no-daemon.sock"));
     }
     let mut child = c.spawn().unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
+    // A hook may answer before it reads its input (a refusal on its own
+    // words, `--run-chat` with no token): the pipe is then closed, and the
+    // answer is what the test reads (P integration: seen once under the
+    // full workspace run, BrokenPipe at this write).
+    match child.stdin.take().unwrap().write_all(stdin.as_bytes()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        Err(e) => panic!("writing the hook's input: {e}"),
+    }
     child.wait_with_output().unwrap()
 }
 

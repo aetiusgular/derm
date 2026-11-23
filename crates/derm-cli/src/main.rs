@@ -28,9 +28,9 @@ mod hook;
 mod init;
 mod platform;
 // Step P (the base, 20 Nov 2026): `derm project`, lane PA's; wired into
-// `derm run` by P integration (request PA-6). Off Unix only `derm project`
-// itself reaches it, so the rest of it is unused there.
-#[cfg_attr(not(unix), allow(dead_code))]
+// `derm run` by P integration (request PA-6). Agent accounts are Linux
+// only, so off Linux parts of it are unused (CI's macOS and Windows jobs).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod project;
 mod run;
 // Step P's red tests that call derm-cli's own functions (the base; no lane's).

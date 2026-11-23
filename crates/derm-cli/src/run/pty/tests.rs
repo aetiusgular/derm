@@ -522,17 +522,32 @@ mod session_tests {
         let serving = daemon.clone();
         std::thread::spawn(move || derm_daemon::socket::serve(listener, serving));
 
+        // Since P integration the daemon is lane PE's: a screen is taken for
+        // a running chat only, so the chat is minted first, as derm run does.
+        let (mut c, _) =
+            derm_audit_linux::client::Client::connect(&socket, TOKEN, "pd test").unwrap();
+        c.mint("c-pd1", "pi").unwrap();
         let p = Person::new();
         let publisher = Publisher::start(socket.clone(), TOKEN.into(), "c-pd1".into());
         let (st, _, publisher) = run(&p, "echo hello pd", Some(publisher)).join().unwrap();
         assert!(st.success());
         let stats = publisher.unwrap().finish(Duration::from_secs(10));
         assert_eq!(stats.failed, 0, "{stats:?}");
-        assert!(stats.sent + stats.refused >= 1, "{stats:?}");
-        if stats.refused > 0 {
-            let why = stats.last_error.clone().unwrap_or_default();
-            assert!(why.contains("not built"), "{stats:?}");
-        }
+        assert_eq!(stats.refused, 0, "{stats:?}");
+        assert!(stats.sent >= 1, "{stats:?}");
+        // And a chat the daemon does not know is refused, never kept.
+        let stray = Publisher::start(socket.clone(), TOKEN.into(), "c-pd-none".into());
+        let (_, _, stray) = run(&p, "echo stray", Some(stray)).join().unwrap();
+        let stats = stray.unwrap().finish(Duration::from_secs(10));
+        assert_eq!(stats.sent, 0, "{stats:?}");
+        assert!(
+            stats
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("no running chat"),
+            "{stats:?}"
+        );
         drop(daemon);
         let _ = std::fs::remove_dir_all(&root);
     }

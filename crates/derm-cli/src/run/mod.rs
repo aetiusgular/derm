@@ -45,7 +45,9 @@ mod broker;
 // Step P's seam (the base, 20 Nov 2026): the terminal reader, lane PD's
 // (`contracts/project-tools.md` section 3). The stub changes nothing.
 pub(crate) mod claude_gate; // fix pass 6, note BE section 1.5 (e); pub(crate) for `derm kit register`
-                            // Wired into `derm run` by P integration (request PD-2).
+                            // Wired into `derm run` by P integration (request PD-2), on Unix: Windows
+                            // keeps its console path (case 142), so the reader is unused there.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) mod pty;
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
