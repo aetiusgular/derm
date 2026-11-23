@@ -167,6 +167,10 @@ pub(crate) struct Ctx<'a> {
     /// Tests only: a folder put before the account's own PATH for the
     /// sign-in (their harness stand-ins). `None` outside tests.
     pub login_path_first: Option<String>,
+    /// The harness a sign-in runs, by its absolute path: a root-owned
+    /// install on [`ACCOUNT_PATH`] outside every home (box research BR-4;
+    /// `run/user/chat.rs` `root_install`). `Err` names the install line.
+    pub harness_path: &'a dyn Fn(&str) -> Result<String, String>,
     /// The `PATH` derm hands `sudo` (sudo then sets its own).
     pub path_env: String,
     /// Whether `sudo` and `sh` must be root-owned programs only root can
@@ -202,6 +206,7 @@ pub fn main(args: &[String]) -> u8 {
         sh: PathBuf::from("/bin/sh"),
         helper: helper(),
         login_path_first: None,
+        harness_path: &harness_install,
         path_env: "/usr/bin:/bin".into(),
         check_tools: true,
         package: PACKAGE,
@@ -215,6 +220,31 @@ pub fn main(args: &[String]) -> u8 {
         err: &mut err,
     };
     run(&mut ctx, args)
+}
+
+/// The `PATH` every agent account's program gets, the sign-in's too: no
+/// folder in a home, so nothing an updater or a chat wrote there runs
+/// (box research BR-4; `run/user/project.rs` `PATH`, the same text).
+pub(crate) const ACCOUNT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
+/// What a Claude Code program run as an agent account gets so it writes no
+/// update into the account's home (box research BR-4): Claude Code 2.1.322
+/// turns its background updater off for either name (its bundle: `function
+/// vb(e){if(i.DISABLE_UPDATES)return{type:"env",...};if(e)return{type:"env",
+/// envVar:"DISABLE_AUTOUPDATER"}`, with `e` from `process.env.
+/// DISABLE_AUTOUPDATER`), and Anthropic's own sandbox runner sets the first
+/// for the Claude Code it starts (the same bundle).
+pub(crate) const CLAUDE_NO_UPDATES: &[(&str, &str)] =
+    &[("DISABLE_AUTOUPDATER", "1"), ("DISABLE_UPDATES", "1")];
+
+#[cfg(target_os = "linux")]
+fn harness_install(program: &str) -> Result<String, String> {
+    crate::run::user::chat::root_install(program, ACCOUNT_PATH).map(|(p, _)| p)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn harness_install(_: &str) -> Result<String, String> {
+    Err("agent accounts are Linux only for now".into())
 }
 
 #[cfg(target_os = "linux")]
@@ -236,15 +266,11 @@ fn helper() -> Result<PathBuf, String> {
 #[cfg(target_os = "linux")]
 fn login_spec(a: &Account) -> String {
     use crate::run::user::landlock;
-    let path = format!(
-        "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
-        a.home.trim_end_matches('/')
-    );
     let spec = landlock::chat_spec(&landlock::ChatPaths {
         folders: &[],
         account_home: &a.home,
         bridge: None,
-        path: &path,
+        path: ACCOUNT_PATH,
         require_scopes: landlock::abi() >= landlock::SCOPES_ABI,
     });
     serde_json::to_string(&spec).unwrap_or_default()
@@ -969,13 +995,25 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         Ok(p) => p,
         Err(e) => return fail(ctx, 1, &e),
     };
-    let mut path = format!(
-        "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
-        a.home.trim_end_matches('/')
-    );
+    // Box research BR-4: the harness by its absolute, root-owned path, on a
+    // `PATH` with no home folder, so a copy an updater (or anything) left in
+    // the account's home never runs; Claude Code's updater off.
+    let Some((program, words)) = h.argv.split_first() else {
+        return fail(ctx, 1, "no sign-in program");
+    };
+    let program = match (ctx.harness_path)(program) {
+        Ok(p) => p,
+        Err(e) => return fail(ctx, 1, &e),
+    };
+    let mut path = ACCOUNT_PATH.to_string();
     if let Some(first) = &ctx.login_path_first {
         path = format!("{first}:{path}");
     }
+    let no_updates: &[(&str, &str)] = if h.id == "claude-code" {
+        CLAUDE_NO_UPDATES
+    } else {
+        &[]
+    };
     // I-3: the tunnel's URL carries this sign-in's proxy credential, so it
     // goes in the environment, through sudo by name (`--preserve-env`; the
     // installer's rule carries `SETENV`, which sudoers(5) at 1.9.15p5 also
@@ -996,7 +1034,9 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         .arg(format!("PATH={path}"))
         .args(["NO_PROXY=", "no_proxy="])
         .args(store_env.iter().map(|(k, v)| format!("{k}={v}")))
-        .args(h.argv)
+        .args(no_updates.iter().map(|(k, v)| format!("{k}={v}")))
+        .arg(&program)
+        .args(words)
         .status();
     let code = match st {
         Ok(s) if s.success() => 0,

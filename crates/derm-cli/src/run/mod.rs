@@ -1958,7 +1958,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // taint (fix pass 6's review): with `--no-daemon` the light tier is
         // the store, as derm run's start line says.
         let held = token.is_some() || (a.dry_run && !a.no_daemon);
-        claude_gate::register(&mut p, derm, held.then_some(chat.as_str())).map_err(|e| (1, e))?;
+        #[cfg(target_os = "linux")]
+        let on_account = account.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let on_account = false;
+        claude_gate::register(&mut p, derm, held.then_some(chat.as_str()), on_account)
+            .map_err(|e| (1, e))?;
     }
     // Only a run that wrote a helper clears the receiver's helpers: one
     // `derm run` is one chat, so they are this run's.

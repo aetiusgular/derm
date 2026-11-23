@@ -177,7 +177,7 @@ impl Tunnel {
 
     /// The `Proxy-Authorization` value the sign-in sends (tests).
     #[cfg(test)]
-    pub fn authorization(&self) -> String {
+    pub(crate) fn authorization(&self) -> String {
         self.credential.header_value()
     }
 

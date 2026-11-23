@@ -92,6 +92,13 @@ pub struct Config {
     /// else it gets 407 and nothing else. Minted by [`Config::new`]; `None`
     /// admits any local client, as before step P.
     pub credential: Option<ProxyCredential>,
+    /// `CONNECT` targets relayed unread, by host and port: a harness's own
+    /// sign-in host (case 283), whose tokens derm may not intermediate
+    /// (note CB 4.1). No TLS is terminated there, no request is decided and
+    /// nothing is swapped; the destination is checked as every other's
+    /// (`dial`) and the connection gives one `egress.connect` with
+    /// `passThrough`. Empty by default.
+    pub pass_through: Vec<(String, u16)>,
 }
 
 impl Config {
@@ -125,6 +132,7 @@ impl Config {
             resolve: Arc::new(|h, p| (h, p).to_socket_addrs().map(Iterator::collect)),
             bind: SocketAddr::from(([127, 0, 0, 1], 0)),
             credential: Some(ProxyCredential::mint()?),
+            pass_through: Vec::new(),
         })
     }
 }
@@ -257,6 +265,8 @@ struct Tally {
     down: u64,
     blocked: Option<String>,
     placeholder_to_model: bool,
+    /// Relayed unread (`Config::pass_through`).
+    pass: bool,
 }
 
 /// A client side that reads through its buffer and writes to the socket.
@@ -496,6 +506,9 @@ impl Shared {
         if let Some(r) = &t.blocked {
             d.insert("reason".into(), json!(r));
         }
+        if t.pass {
+            d.insert("passThrough".into(), json!(true));
+        }
         if t.placeholder_to_model {
             d.insert("placeholderToModel".into(), json!(true));
         }
@@ -603,7 +616,63 @@ impl Shared {
         Ok(c)
     }
 
+    /// A sign-in host's tunnel (case 283): dialled as any other, then bytes
+    /// both ways, unread.
+    fn pass(&self, mut client: Duplex, t: &mut Tally) {
+        t.pass = true;
+        let up = match self.dial(t) {
+            Ok(u) => u,
+            Err(_) => {
+                let _ = client.w.write_all(&http::status_page(
+                    502,
+                    "Bad Gateway",
+                    "the sign-in host could not be reached",
+                ));
+                return;
+            }
+        };
+        if client
+            .w
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .is_err()
+        {
+            return;
+        }
+        let _ = client.w.set_read_timeout(Some(UPSTREAM_IDLE));
+        let _ = client.r.get_ref().set_read_timeout(Some(UPSTREAM_IDLE));
+        let (Ok(mut up_w), Ok(mut down_w)) = (up.try_clone(), client.w.try_clone()) else {
+            return;
+        };
+        // What the client sent after its head, already in the buffer.
+        let early = client.r.buffer().to_vec();
+        if up_w.write_all(&early).is_err() {
+            return;
+        }
+        client.r.consume(early.len());
+        let mut from_client = client.r;
+        let t1 = std::thread::spawn(move || {
+            let n = io::copy(&mut from_client, &mut up_w).unwrap_or(0);
+            let _ = up_w.shutdown(Shutdown::Write);
+            n
+        });
+        let mut from_up = up;
+        let down = io::copy(&mut from_up, &mut down_w).unwrap_or(0);
+        // The vendor closed: nothing more can go up, so the client's side
+        // ends too (the other copy is waiting on it).
+        let _ = down_w.shutdown(Shutdown::Both);
+        t.up = early.len() as u64 + t1.join().unwrap_or(0);
+        t.down = down;
+    }
+
     fn tunnel(&self, mut client: Duplex, t: &mut Tally) {
+        if self
+            .config
+            .pass_through
+            .iter()
+            .any(|(h, p)| normal_host(h) == t.host && *p == t.port)
+        {
+            return self.pass(client, t);
+        }
         if client
             .w
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")

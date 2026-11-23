@@ -78,10 +78,28 @@ pub(crate) fn project_env(c: &ProjectChat<'_>) -> Vec<(String, String)> {
         // named here so every harness gets one.
         ("SHELL".to_string(), posix_shell().to_string()),
     ];
-    if c.harness == "claude-code" {
-        // The name is read (binary, 2.1.322); that it stops the native
-        // installer writing into the home is I (note CD section 2.1).
-        env.push(("DISABLE_AUTOUPDATER".to_string(), "1".to_string()));
+    match c.harness {
+        // Box research BR-4: the account's Claude Code updated itself into
+        // the home it shares and the next chat ran that copy. 2.1.322 turns
+        // its background updater off for either name (its bundle's `vb`),
+        // and claude.ai's connectors off by `ENABLE_CLAUDEAI_MCP_SERVERS`
+        // (Tony, 22 Nov: `mcp-proxy.anthropic.com` stays closed for account
+        // chats). The same values go in derm's `--settings` block, whose
+        // `env` a project home's settings cannot override
+        // (`claude_gate::block_for`).
+        "claude-code" => env.extend(
+            crate::run::claude_gate::ACCOUNT_ENV
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string())),
+        ),
+        // Pi 1.6.0's `PI_OFFLINE` skips its startup version check, the
+        // package installs and updates its settings name, and the model
+        // catalog refresh (`main.js:488-491`; `core/package-manager.js:
+        // 53-58, 1129-1131`; `modes/interactive/interactive-mode.js:903`):
+        // nothing is installed into the project home at a start. Pi updates
+        // itself only by `pi update` (`package-manager-cli.js:248`).
+        "pi" => env.push(("PI_OFFLINE".to_string(), "1".to_string())),
+        _ => {}
     }
     env
 }
@@ -238,6 +256,24 @@ pub(crate) struct Gate {
 /// root-owned derm the helper runs (case 227). `pi_package` is a checked
 /// root-owned copy of derm's Pi package, when there is one.
 pub(crate) fn harness_gate(harness: &str, derm: &str, pi_package: Option<&str>) -> Gate {
+    let mut g = harness_gate_only(harness, derm, pi_package);
+    if harness == "codex" {
+        // Box research BR-4's Codex half: Codex 0.167.2 checks for a new
+        // release at start and writes `$CODEX_HOME/version.json`, the
+        // project home's (`tui/src/updates.rs:27-48`,
+        // `updates_cache.rs:20-22`), then offers to run the update; off by
+        // its own key on its command line, beside derm's hooks, so the
+        // project home's `config.toml` cannot turn it on
+        // (`config_toml.rs:533`, `core/src/config/mod.rs:4316`).
+        g.args.extend([
+            "-c".to_string(),
+            "check_for_update_on_startup=false".to_string(),
+        ]);
+    }
+    g
+}
+
+fn harness_gate_only(harness: &str, derm: &str, pi_package: Option<&str>) -> Gate {
     match harness {
         // Claude Code's gate is derm run's own `--settings` registration,
         // whatever HOME is (`run/claude_gate.rs`); `gate.expected` comes
@@ -464,6 +500,48 @@ mod tests {
         }
     }
 
+    /// Box research BR-4: the account's Claude Code ran its native updater
+    /// into the shared home and the next chat ran that copy. The harness is
+    /// named by path (`chat::root_install`); here each harness's own
+    /// updater is turned off too, read at the version in use:
+    /// Claude Code 2.1.322 (`DISABLE_AUTOUPDATER` or `DISABLE_UPDATES`,
+    /// its bundle's `vb`), Codex 0.167.2 (`check_for_update_on_startup`,
+    /// `config_toml.rs:533`, `tui/src/updates.rs:27-28`), Pi 1.6.0
+    /// (`PI_OFFLINE`, `main.js:488-491`, `core/package-manager.js:53-58`).
+    /// Claude Code's claude.ai connectors off too (Tony, 22 Nov: keep
+    /// `mcp-proxy.anthropic.com` closed for account chats).
+    #[test]
+    fn br_4_an_account_chat_turns_each_harnesss_updater_off() {
+        let id = ProjectId::of_real_path("/srv/a");
+        let f = vec!["/srv/a".to_string()];
+        let has =
+            |env: &[(String, String)], k: &str, v: &str| env.iter().any(|(a, b)| a == k && b == v);
+        let cc = project_env(&chat(&id, &f, "claude-code"));
+        for (k, v) in [
+            ("DISABLE_AUTOUPDATER", "1"),
+            ("DISABLE_UPDATES", "1"),
+            ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+        ] {
+            assert!(has(&cc, k, v), "{k}: {cc:?}");
+        }
+        let pi = project_env(&chat(&id, &f, "pi"));
+        assert!(has(&pi, "PI_OFFLINE", "1"), "{pi:?}");
+        assert!(!has(&pi, "DISABLE_UPDATES", "1"));
+        for derm in ["/usr/local/bin/derm", "/bad path/derm"] {
+            let g = harness_gate("codex", derm, None);
+            assert!(
+                g.args
+                    .windows(2)
+                    .any(|w| w[0] == "-c" && w[1] == "check_for_update_on_startup=false"),
+                "{derm}: {:?}",
+                g.args
+            );
+        }
+        assert!(harness_gate("pi", "/usr/local/bin/derm", None)
+            .args
+            .is_empty());
+    }
+
     #[test]
     fn a_project_chat_writes_its_project_and_its_harnesss_store_and_not_the_account_home() {
         let id = ProjectId::of_real_path("/srv/a");
@@ -576,7 +654,8 @@ mod tests {
         let d = "/usr/local/bin/derm";
         let c = harness_gate("codex", d, None);
         assert_eq!((c.expected, c.how), (false, "session-flags"));
-        assert_eq!(c.args.len(), 4);
+        // The hooks' two `-c` pairs and BR-4's update check off.
+        assert_eq!(c.args.len(), 6);
         let p = harness_gate("pi", d, Some(PI_PACKAGE));
         assert_eq!((p.expected, p.how), (true, "cli-package"));
         assert_eq!(p.args, vec!["-e".to_string(), PI_PACKAGE.to_string()]);

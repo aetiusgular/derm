@@ -182,6 +182,29 @@ pub fn wire(
         sink.unwrap_or_else(|| Arc::new(|_| {})),
     )?;
     config.policy = policy_for(&file.secrets);
+    // An agent account's chat (case 283; Tony's 22 Nov call): its
+    // harness's sign-in host passes through unread, and claude.ai's
+    // connector proxy is closed; a secret's own host is never passed
+    // through, so its value is still swapped there.
+    let (pass, deny) = account_egress(c.harness, c.account);
+    config.pass_through = pass
+        .into_iter()
+        .filter(|(h, _)| !file.secrets.iter().any(|e| e.hosts.iter().any(|x| x == h)))
+        .collect();
+    config.policy.deny = deny.clone();
+    let passed: Vec<String> = config
+        .pass_through
+        .iter()
+        .map(|(h, p)| format!("{h}:{p}"))
+        .collect();
+    if c.account.is_some() {
+        p.notes.push(format!(
+            "derm run: derm-egress passes {} through unread for {}'s own sign-in renewal, and closes {}",
+            if passed.is_empty() { "no host".to_string() } else { passed.join(", ") },
+            c.harness,
+            deny.join(", ")
+        ));
+    }
     let egress = Egress::start(config)?;
     let url = egress.url();
     let plan = chain::plan_for(
@@ -205,11 +228,34 @@ pub fn wire(
             "brokered": true,
             "port": egress.port(),
             "caSha256": fingerprint,
+            "passThrough": passed,
+            "closed": deny,
         })),
         egress: Some(egress),
         trust_dir: Some(trust),
     })
 }
+
+/// What derm-egress does differently for an agent account's chat: the
+/// harness's own sign-in host relayed unread (case 283), and claude.ai's
+/// connector proxy closed (Tony's 22 Nov call). Nothing for a person's chat.
+pub fn account_egress(harness: &str, account: Option<&str>) -> (Vec<(String, u16)>, Vec<String>) {
+    if account.is_none() {
+        return (Vec::new(), Vec::new());
+    }
+    let pass = super::harness::sign_in_hosts(harness)
+        .iter()
+        .filter_map(|hp| {
+            let (h, p) = hp.rsplit_once(':')?;
+            Some((h.to_string(), p.parse().ok()?))
+        })
+        .collect();
+    (pass, vec![MCP_PROXY.to_string()])
+}
+
+/// claude.ai's connector proxy (Claude Code 2.1.322's `MCP_PROXY_URL`),
+/// closed to agent accounts' chats (Tony, 22 Nov 2026).
+pub const MCP_PROXY: &str = "mcp-proxy.anthropic.com";
 
 /// derm-egress's rules for the chat: the tap's model hosts (decision 2's
 /// body-only pass) and each secret's placement (decision 2, item 2).
@@ -233,6 +279,7 @@ pub fn policy_for(entries: &[Entry]) -> Policy {
             .collect(),
         swap_body,
         swap_query,
+        deny: Vec::new(),
     }
 }
 

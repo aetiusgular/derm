@@ -307,7 +307,13 @@ fn merge(into: &mut Map<String, Value>, add: &Map<String, Value>) {
 
 /// The block derm adds last: every `--settings` JSON object Claude Code's
 /// arguments hold, in order, then derm's hooks and its plugin off.
+#[cfg(test)]
 pub fn block(words: &[String], derm: &str, chat: Option<&str>) -> Value {
+    block_for(words, derm, chat, false)
+}
+
+/// [`block`], for a chat on an agent account when `account` is true.
+pub fn block_for(words: &[String], derm: &str, chat: Option<&str>, account: bool) -> Value {
     let mut out = Map::new();
     for v in settings_values(words) {
         if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(v) {
@@ -336,16 +342,61 @@ pub fn block(words: &[String], derm: &str, chat: Option<&str>) -> Value {
     if let Value::Object(m) = mine {
         merge(&mut out, &m);
     }
+    // An agent account's chat (box research BR-4; Tony's 22 Nov call to
+    // keep `mcp-proxy.anthropic.com` closed there): Claude Code's updater
+    // and claude.ai's connectors off, in the flag source, whose `env` is
+    // applied after the user's, the project's and the local file's
+    // (2.1.322: `Uo()` filters `ci`, user to policy, and each source's `env`
+    // goes into `process.env` in that order), and whose
+    // `disableClaudeAiConnectors: true` no other source can undo (`ePe()`
+    // is true when any source says true).
+    if account {
+        let env: Map<String, Value> = ACCOUNT_ENV
+            .iter()
+            .map(|(k, v)| (k.to_string(), Value::from(*v)))
+            .collect();
+        match out.get_mut("env") {
+            Some(Value::Object(have)) => {
+                for (k, v) in env {
+                    have.insert(k, v);
+                }
+            }
+            _ => {
+                out.insert("env".into(), Value::Object(env));
+            }
+        }
+        out.insert("disableClaudeAiConnectors".into(), Value::Bool(true));
+    }
     Value::Object(out)
 }
+
+/// What an agent account's Claude Code gets in derm's block's `env` and,
+/// the same, on `env`'s argv (`run/user/project.rs` `project_env`): no
+/// background update into its home (2.1.322 `vb`: `DISABLE_UPDATES`, or a
+/// true `DISABLE_AUTOUPDATER`; Anthropic's own sandbox runner sets
+/// `DISABLE_AUTOUPDATER: "1"` and `ENABLE_CLAUDEAI_MCP_SERVERS: "false"`
+/// for the Claude Code it starts, the same bundle), and no claude.ai
+/// connectors, whose calls go to `mcp-proxy.anthropic.com` (its
+/// `MCP_PROXY_URL`; `Uyt()` reads `ENABLE_CLAUDEAI_MCP_SERVERS` with `cs`,
+/// which takes `0`, `false`, `no`, `off`).
+pub const ACCOUNT_ENV: &[(&str, &str)] = &[
+    ("DISABLE_AUTOUPDATER", "1"),
+    ("DISABLE_UPDATES", "1"),
+    ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+];
 
 /// Adds derm's block as the last `--settings` of Claude Code's arguments.
 /// Call it after every other edit of Claude Code's `--settings`: the
 /// Standard tier's and the OTel export's.
-pub fn register(plan: &mut Plan, derm: &str, chat: Option<&str>) -> Result<(), String> {
+pub fn register(
+    plan: &mut Plan,
+    derm: &str,
+    chat: Option<&str>,
+    account: bool,
+) -> Result<(), String> {
     let at = start(plan);
-    let text =
-        serde_json::to_string(&block(&plan.args[at..], derm, chat)).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string(&block_for(&plan.args[at..], derm, chat, account))
+        .map_err(|e| e.to_string())?;
     // Before a `--` of the user's, after which Claude Code reads every word
     // as the prompt (fix pass 6's review); else last.
     let end = plan.args[at..]
@@ -371,6 +422,35 @@ mod tests {
 
     fn s(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()
+    }
+
+    /// Box research BR-4 and Tony's 22 Nov call: on an agent account the
+    /// project home is the chat's to write, and Claude Code 2.1.322 applies
+    /// each settings source's `env` to its process in the order user,
+    /// project, local, flag, policy (`Uo()` is `ci.filter(...)`, `ci` that
+    /// list; `Object.assign(process.env, I)` per source), so a project
+    /// home's `~/.claude/settings.json` could turn the updater back on; in
+    /// derm's flag block they win. `disableClaudeAiConnectors` from any
+    /// source turns claude.ai's connectors off (`ePe()` is `Uo().some(...
+    /// ===!0)`), which no other file can undo; so is the variable.
+    #[test]
+    fn br_4_an_account_chats_block_turns_updates_and_claude_ai_connectors_off() {
+        let words = vec![
+            "--settings".to_string(),
+            r#"{"env":{"DISABLE_AUTOUPDATER":"0","KEEP":"x"},"disableClaudeAiConnectors":false}"#
+                .to_string(),
+        ];
+        let b = block_for(&words, "/usr/local/bin/derm", Some("c1"), true);
+        assert_eq!(b["env"]["DISABLE_AUTOUPDATER"], "1", "{b}");
+        assert_eq!(b["env"]["DISABLE_UPDATES"], "1", "{b}");
+        assert_eq!(b["env"]["ENABLE_CLAUDEAI_MCP_SERVERS"], "false", "{b}");
+        assert_eq!(b["env"]["KEEP"], "x", "the chat's own env is kept: {b}");
+        assert_eq!(b["disableClaudeAiConnectors"], true, "{b}");
+        // A person's own chat: unchanged.
+        let b = block_for(&words, "/usr/local/bin/derm", Some("c1"), false);
+        assert_eq!(b["env"]["DISABLE_AUTOUPDATER"], "0", "{b}");
+        assert!(b["env"].get("DISABLE_UPDATES").is_none(), "{b}");
+        assert_eq!(b["disableClaudeAiConnectors"], false, "{b}");
     }
 
     #[test]
@@ -466,7 +546,7 @@ mod tests {
             args: s(&["--settings", "/srt/s.json", "--", "claude", "-p", "go"]),
             ..Plan::default()
         };
-        register(&mut p, "/d/derm", Some("c1")).unwrap();
+        register(&mut p, "/d/derm", Some("c1"), false).unwrap();
         assert_eq!(p.args[p.args.len() - 2], "--settings");
         let b: Value = serde_json::from_str(p.args.last().unwrap()).unwrap();
         assert_eq!(
@@ -483,7 +563,7 @@ mod tests {
             args: s(&["-p", "go"]),
             ..Plan::default()
         };
-        register(&mut q, "/d/derm", None).unwrap();
+        register(&mut q, "/d/derm", None, false).unwrap();
         let b: Value = serde_json::from_str(q.args.last().unwrap()).unwrap();
         assert_eq!(
             b["hooks"]["PreToolUse"][0]["hooks"][0]["args"],
@@ -500,7 +580,7 @@ mod tests {
             args: s(&["-p", "--", "-x"]),
             ..Plan::default()
         };
-        register(&mut p, "/d/derm", Some("c1")).unwrap();
+        register(&mut p, "/d/derm", Some("c1"), false).unwrap();
         assert_eq!(p.args[1], "--settings");
         assert_eq!(&p.args[3..], &["--", "-x"]);
     }

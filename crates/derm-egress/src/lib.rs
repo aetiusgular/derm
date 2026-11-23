@@ -123,6 +123,8 @@ pub enum Blocked {
     EncodedBody,
     /// The host is not on the chat's allow list.
     NotAllowed,
+    /// The host is closed to this chat (`Policy::deny`).
+    Closed,
     /// The `Host` header or an absolute-form target names another host than
     /// the CONNECT host (domain fronting would route an injected secret to
     /// another backend behind the same front).
@@ -144,6 +146,7 @@ impl Blocked {
                     .into()
             }
             Blocked::NotAllowed => "the host is not on this chat's allow list".into(),
+            Blocked::Closed => "the host is closed to this chat".into(),
             Blocked::HostMismatch => {
                 "the Host header or the URL names another host than the connection".into()
             }
@@ -158,6 +161,11 @@ pub struct Policy {
     /// the wave 6 plan's card; needed with Claude Code's `httpProxyPort`,
     /// where Claude Code applies no allow list of its own, C1).
     pub allow: Option<Vec<String>>,
+    /// Hosts never reached from this chat, whatever the allow list says:
+    /// for an agent account's chat, claude.ai's connector proxy
+    /// (`mcp-proxy.anthropic.com`, Tony's call of 22 Nov 2026; box research
+    /// saw Claude Code 2.1.322 try it about 25 times a turn).
+    pub deny: Vec<String>,
     /// Hosts where a placeholder alone is forwarded unchanged and not
     /// blocked: the model providers a chat's transcript goes to, which can
     /// hold a placeholder the agent printed. The value still blocks there.
@@ -271,6 +279,9 @@ pub fn decide_with(o: &Outbound<'_>, secrets: &[Secret], policy: &Policy) -> Dec
                 });
             }
         }
+    }
+    if policy.deny.iter().any(|d| normal_host(d) == host) {
+        return block(Blocked::Closed);
     }
     if let Some(allow) = &policy.allow {
         if !allow.iter().any(|a| normal_host(a) == host) {

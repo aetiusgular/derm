@@ -175,6 +175,17 @@ fn go_with(
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let mut y = Yes(yes, 0);
     let env = |_: &str| None;
+    // The tests' stand-in for a root install: the program in the test's
+    // `root-bin` folder, by its absolute path.
+    let (root_bin, bin) = (st.d.0.join("root-bin"), st.d.0.join("bin"));
+    let stand_in = move |p: &str| -> Result<String, String> {
+        [&root_bin, &bin]
+            .iter()
+            .map(|d| d.join(p))
+            .find(|c| c.is_file())
+            .map(|c| c.to_string_lossy().into_owned())
+            .ok_or_else(|| format!("{p} is not a root install (test)"))
+    };
     let mut ctx = Ctx {
         registry: st.d.0.join("agents.json"),
         registry_root: st.d.0.clone(),
@@ -184,6 +195,7 @@ fn go_with(
         sh: PathBuf::from("/bin/sh"),
         helper: Ok(fake_helper(&st.d.0)),
         login_path_first: Some(st.d.0.join("bin").to_string_lossy().into_owned()),
+        harness_path: &stand_in,
         path_env: format!("{}:/usr/bin:/bin", st.d.0.join("bin").display()),
         check_tools: false,
         package,
@@ -579,6 +591,7 @@ fn installer_writes_the_package_into_a_new_folder() {
         sudo: PathBuf::from("/nonexistent"),
         helper: Err("no helper here".into()),
         login_path_first: None,
+        harness_path: &|_| Err("none here".into()),
         sh: PathBuf::from("/bin/sh"),
         path_env: String::new(),
         check_tools: true,
@@ -622,6 +635,11 @@ fn installer_writes_the_package_into_a_new_folder() {
 #[test]
 fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() {
     let st = setup("status", false);
+    // Claude Code's sign-in in the account's store since its switch is on
+    // (P-B1, 22 Nov 2026); one left in the account's home from before is
+    // read by no project's chat, so it is not counted.
+    std::fs::create_dir_all(st.home.join("signin/claude-code")).unwrap();
+    std::fs::write(st.home.join("signin/claude-code/.credentials.json"), "{}").unwrap();
     std::fs::create_dir_all(st.home.join(".claude")).unwrap();
     std::fs::write(st.home.join(".claude/.credentials.json"), "{}").unwrap();
     // What `codex login status` leaves with no sign-in (run, Codex 0.167.2),
@@ -644,6 +662,11 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     assert!(r.out.contains("derm opened none of them"));
     assert!(r.out.contains("~/signin/codex/auth.json"), "{}", r.out);
     assert!(
+        r.out.contains("~/signin/claude-code/.credentials.json"),
+        "{}",
+        r.out
+    );
+    assert!(
         r.out.contains("assume ordinary, individual usage"),
         "{}",
         r.out
@@ -653,7 +676,13 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     assert!(log.contains("-n -H -u derm-max -- /bin/sh -c"), "{log}");
     assert!(!log.contains("cat ") && !log.contains("<"), "{log}");
     // Every account when none is named; the warning only with a Claude sign-in.
-    std::fs::remove_file(st.home.join(".claude/.credentials.json")).unwrap();
+    std::fs::remove_file(st.home.join("signin/claude-code/.credentials.json")).unwrap();
+    let r = go(&st, &["status", "--account", "max"], |_| {});
+    assert!(
+        r.out.contains("claude-code not signed in"),
+        "the account home's old file is not the store's: {}",
+        r.out
+    );
     let r = go(&st, &["status"], |_| {});
     assert!(r.out.contains("derm-max") && r.out.contains("derm-plus"));
     assert!(!r.out.contains("individual usage"), "{}", r.out);
@@ -738,7 +767,7 @@ impl Drop for Watch {
 #[test]
 fn status_opens_no_login_file() {
     let st = setup("status-noopen", false);
-    let c = st.home.join(".claude");
+    let c = st.home.join("signin/claude-code");
     let x = st.home.join("signin/codex");
     std::fs::create_dir_all(&c).unwrap();
     std::fs::create_dir_all(&x).unwrap();
@@ -768,11 +797,12 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
         &st.d.0,
         "claude",
         &format!(
-            "printf '%s\\n' \"$*\" > '{s}.args'\nenv | cut -d= -f1 | sort > '{s}.env'\nprintf '%s %s\\n' \"$HTTPS_PROXY\" \"$https_proxy\" > '{s}.proxy'\nmkdir -p \"$HOME/.claude\"\nprintf made-up > \"$HOME/.claude/.credentials.json\"",
+            "printf '%s\\n' \"$*\" > '{s}.args'\nenv | cut -d= -f1 | sort > '{s}.env'\nprintf '%s %s\\n' \"$HTTPS_PROXY\" \"$https_proxy\" > '{s}.proxy'\n[ \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" = /var/lib/derm/agents/max/signin/claude-code ] || exit 9\nprintf made-up > \"$HOME/signin/claude-code/.credentials.json\"",
             s = seen.display()
         ),
     );
-    let c = st.home.join(".claude");
+    // Claude Code's switch is on (P-B1): the sign-in goes into the store.
+    let c = st.home.join("signin/claude-code");
     std::fs::create_dir_all(&c).unwrap();
     let w = Watch::on(&c);
     let r = go(&st, &["login", "claude-code", "--account", "max"], |_| {});
@@ -783,11 +813,13 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
     );
     // Review AI-3: no login shell, and the sign-in starts through derm
     // landlock with its domain's spec in the environment only.
+    // (After the store check, as the account, now that Claude Code signs in
+    // to the store.)
     let log = sudo_log(&st);
     assert!(
-        log.starts_with(
+        log.lines().nth(1).is_some_and(|l| l.starts_with(
             "-u derm-max -H --preserve-env=DERM_LANDLOCK_SPEC,HTTPS_PROXY,https_proxy -- "
-        ),
+        )),
         "{log}"
     );
     // I-3: the tunnel's URL, with this sign-in's credential, reaches the
@@ -808,10 +840,16 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
     }
     assert!(!log.split_whitespace().any(|w| w == "-i"), "{log}");
     let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
+    // BR-4: no folder of the account's home on the sign-in's PATH; the
+    // harness by its path; the store by variable; the updater off.
     assert!(
         helper.starts_with("landlock -- /usr/bin/env PATH=")
-            && helper
-                .contains(":/var/lib/derm/agents/max/.local/bin:/usr/local/bin:/usr/bin:/bin "),
+            && helper.contains(":/usr/local/bin:/usr/bin:/bin ")
+            && !helper.contains("/.local/bin"),
+        "{helper}"
+    );
+    assert!(
+        helper.contains(" CLAUDE_SECURESTORAGE_CONFIG_DIR=/var/lib/derm/agents/max/signin/claude-code DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 /"),
         "{helper}"
     );
     assert!(helper.trim_end().ends_with("|spec=yes"), "{helper}");
@@ -836,6 +874,9 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
                     | "COLORTERM"
                     | "LANG"
                     | "LC_ALL"
+                    | "CLAUDE_SECURESTORAGE_CONFIG_DIR"
+                    | "DISABLE_AUTOUPDATER"
+                    | "DISABLE_UPDATES"
             ),
             "{k} reached the harness"
         );
@@ -848,6 +889,68 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
     assert!(r.out.contains("individual usage"));
     // The harness opened the file once, to write it; derm never did.
     assert_eq!(w.counts(".credentials.json"), (1, 0, 0, 1));
+}
+
+/// Box research BR-4: the account's Claude Code updated itself into the
+/// account's home (`~/.local/bin/claude`, 2.1.322 to 2.1.330) and the next
+/// program run by name took that copy. The sign-in runs the root install by
+/// its absolute path, with no home folder on its `PATH` and Claude Code's
+/// updater off, and a copy in the home never runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn br_4_the_sign_in_runs_the_root_install_by_path_with_its_updater_off() {
+    // One PATH for every program an account runs (the chat's is project.rs').
+    assert_eq!(crate::agents::ACCOUNT_PATH, crate::run::user::project::PATH);
+    let st = setup("login-br4", false);
+    std::fs::create_dir_all(st.home.join("signin/claude-code")).unwrap();
+    let marker = st.d.0.join("ran");
+    // A copy the updater left in the account's home.
+    let local = st.home.join(".local/bin");
+    std::fs::create_dir_all(&local).unwrap();
+    let planted = script(
+        &st.d.0,
+        "home-claude",
+        &format!("printf home > '{}'", marker.display()),
+    );
+    std::fs::rename(&planted, local.join("claude")).unwrap();
+    // The root install (the tests' stand-in for one).
+    let root = st.d.0.join("root-bin");
+    std::fs::create_dir_all(&root).unwrap();
+    let real = script(
+        &st.d.0,
+        "root-claude",
+        &format!(
+            "printf 'root %s|%s|%s|%s\\n' \"$PATH\" \"$DISABLE_AUTOUPDATER\" \"$DISABLE_UPDATES\" \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" > '{}'",
+            marker.display()
+        ),
+    );
+    std::fs::rename(&real, root.join("claude")).unwrap();
+    let r = go(&st, &["login", "claude-code", "--account", "max"], |_| {});
+    let ran = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        ran.starts_with("root "),
+        "the root install did not run by its path (a home copy, or a name on PATH): {ran:?} ({} {})",
+        r.out,
+        r.err
+    );
+    let (path, rest) = ran["root ".len()..].trim_end().split_once('|').unwrap();
+    assert!(
+        !path
+            .split(':')
+            .any(|d| d.contains("/.local/") || d.starts_with(&*st.home.to_string_lossy())),
+        "{path}"
+    );
+    assert!(path.ends_with(":/usr/local/bin:/usr/bin:/bin"), "{path}");
+    assert_eq!(
+        rest, "1|1|/var/lib/derm/agents/max/signin/claude-code",
+        "the updater off and the store named"
+    );
+    let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
+    assert!(
+        helper.contains(&format!(" {} auth login", root.join("claude").display())),
+        "{helper}"
+    );
+    assert_eq!(r.code, 0, "{} {}", r.out, r.err);
 }
 
 #[cfg(unix)]
@@ -913,9 +1016,8 @@ fn codex_signs_in_with_its_device_flow() {
     // store, a path on `env`'s argv, not a secret.
     let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
     assert!(
-        helper.contains(
-            " CODEX_HOME=/var/lib/derm/agents/plus/signin/codex codex login --device-auth"
-        ),
+        helper.contains(" CODEX_HOME=/var/lib/derm/agents/plus/signin/codex /")
+            && helper.contains("/bin/codex login --device-auth"),
         "{helper}"
     );
 }

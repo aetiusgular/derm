@@ -236,6 +236,26 @@ pub(crate) fn wrap(
             libc::atexit(super::finish_at_exit);
         }
     }
+    // Case 283: the chat's own way to its harness's sign-in host, for a
+    // renewal; a brokered chat's derm-egress passes the same hosts through.
+    let person_env = |k: &str| std::env::var(k).ok();
+    let route = sign_in_route(&harness, &launch.env_set, &person_env).map_err(|e| (1, e))?;
+    let route_hosts = route.as_ref().map(|r| r.hosts.clone());
+    if let Some(r) = &route {
+        set.extend(r.env.iter().cloned());
+        eprintln!(
+            "derm run: {harness} renews its own sign-in through this chat's tunnel at {}, which admits only {} on 443, unread, and takes only this chat's proxy credential",
+            r.tunnel.shown_url(),
+            r.hosts
+                .iter()
+                .map(|h| h.trim_end_matches(":443"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if let Ok(mut slot) = SIGN_IN_ROUTE.lock() {
+        *slot = route.map(|r| r.tunnel);
+    }
     let pc = project::ProjectChat {
         account_home: &acct.home,
         project: &project.id,
@@ -353,6 +373,9 @@ pub(crate) fn wrap(
         },
         "harnessExe": program_real,
         "gate": {"expected": gate.expected, "how": gate.how},
+        // Case 283: the chat's own sign-in tunnel's hosts, or null (a
+        // brokered chat's derm-egress, or a harness with none).
+        "signInTunnel": route_hosts,
         // Request PC R2: the daemon reads the chat's own bridge from here.
         "bridge": bridge_dir,
     })))
@@ -396,6 +419,62 @@ pub(crate) fn pi_floor(program_real: &Path) -> Result<String, String> {
         program_real.display()
     ))
 }
+
+/// Case 283: a renewal inside an agent account's chat. The account reaches
+/// loopback only (lane L2's table), so a harness renewing its sign-in in a
+/// chat had no way to its sign-in host. A chat with no other proxy gets its
+/// own sign-in tunnel (`agents::tunnel`, the login's), which admits only the
+/// harness's sign-in hosts on 443 (`run/harness.rs` `sign_in_hosts`:
+/// `platform.claude.com` for Claude Code, `auth.openai.com` for Codex),
+/// passes TLS through unread, and takes only this chat's own proxy
+/// credential, minted per chat and handed over in the environment only. A
+/// brokered chat already has derm-egress as its proxy, which passes the same
+/// hosts through unread (`broker::account_egress`), so it gets none.
+pub(crate) struct SignInRoute {
+    pub tunnel: crate::agents::tunnel::Tunnel,
+    /// The proxy variables, the URL with its credential: a secret.
+    pub env: Vec<(String, String)>,
+    pub hosts: Vec<String>,
+}
+
+pub(crate) fn sign_in_route(
+    harness: &str,
+    env_set: &[(String, String)],
+    person_env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<SignInRoute>, String> {
+    let hosts = super::super::harness::sign_in_hosts(harness);
+    let proxied = env_set
+        .iter()
+        .any(|(k, v)| matches!(k.as_str(), "HTTPS_PROXY" | "https_proxy") && !v.is_empty());
+    if hosts.is_empty() || proxied {
+        return Ok(None);
+    }
+    let names: Vec<&str> = hosts
+        .iter()
+        .filter_map(|h| h.strip_suffix(":443"))
+        .collect();
+    // The person's own http:// proxy, as the login's tunnel follows it.
+    let upstream = crate::agents::tunnel::upstream_from(person_env).unwrap_or(None);
+    let tunnel = crate::agents::tunnel::Tunnel::start(&names, upstream)
+        .map_err(|e| format!("the chat's sign-in tunnel did not open: {e}"))?;
+    let url = tunnel.url();
+    let loopback = "localhost,127.0.0.1,::1".to_string();
+    Ok(Some(SignInRoute {
+        tunnel,
+        env: vec![
+            ("HTTPS_PROXY".into(), url.clone()),
+            ("https_proxy".into(), url),
+            ("NO_PROXY".into(), loopback.clone()),
+            ("no_proxy".into(), loopback),
+        ],
+        hosts: names.iter().map(|h| format!("{h}:443")).collect(),
+    }))
+}
+
+/// The chat's sign-in tunnel, kept for the life of `derm run` (its threads
+/// serve until the process ends).
+static SIGN_IN_ROUTE: std::sync::Mutex<Option<crate::agents::tunnel::Tunnel>> =
+    std::sync::Mutex::new(None);
 
 /// Puts derm's gate words before the harness's own (request PA-2): for
 /// Codex past a session subcommand, beside the tap's and the export's `-c`
@@ -648,6 +727,75 @@ mod tests {
             said: Vec::new(),
             asked: Vec::new(),
         }
+    }
+
+    /// Case 283 (red first): the chat's own sign-in tunnel, by credential,
+    /// to its harness's sign-in host only; never `mcp-proxy.anthropic.com`
+    /// (Tony's 22 Nov call), never for a chat that has a proxy already.
+    #[test]
+    fn case_283_an_unbrokered_account_chat_gets_its_own_sign_in_tunnel() {
+        use std::io::{Read, Write};
+        let none = |_: &str| None;
+        let r = sign_in_route("claude-code", &[], &none)
+            .unwrap()
+            .expect("a route for Claude Code");
+        assert_eq!(r.hosts, ["platform.claude.com:443"]);
+        let get = |k: &str| r.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        let url = get("HTTPS_PROXY").unwrap();
+        assert_eq!(get("https_proxy").as_deref(), Some(url.as_str()));
+        assert!(
+            url.starts_with("http://derm:") && url.contains("@127.0.0.1:"),
+            "{url}"
+        );
+        assert_eq!(get("NO_PROXY").as_deref(), Some("localhost,127.0.0.1,::1"));
+        assert_eq!(get("no_proxy").as_deref(), Some("localhost,127.0.0.1,::1"));
+        assert!(
+            get("HTTP_PROXY").is_none(),
+            "plain http (the tap) stays direct"
+        );
+        let ask = |head: String| {
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", r.tunnel.port)).unwrap();
+            c.set_read_timeout(Some(std::time::Duration::from_secs(20)))
+                .unwrap();
+            c.write_all(head.as_bytes()).unwrap();
+            let mut b = [0u8; 64];
+            let n = c.read(&mut b).unwrap_or(0);
+            String::from_utf8_lossy(&b[..n]).into_owned()
+        };
+        let auth = format!("Proxy-Authorization: {}\r\n", r.tunnel.authorization());
+        let got = ask("CONNECT platform.claude.com:443 HTTP/1.1\r\n\r\n".into());
+        assert!(got.starts_with("HTTP/1.1 407"), "no credential: {got}");
+        let got = ask(format!(
+            "CONNECT mcp-proxy.anthropic.com:443 HTTP/1.1\r\n{auth}\r\n"
+        ));
+        assert!(got.starts_with("HTTP/1.1 403"), "mcp-proxy: {got}");
+        let got = ask(format!(
+            "CONNECT api.anthropic.com:443 HTTP/1.1\r\n{auth}\r\n"
+        ));
+        assert!(
+            got.starts_with("HTTP/1.1 403"),
+            "the model host goes through the tap only: {got}"
+        );
+        let got = ask(format!(
+            "CONNECT platform.claude.com:443 HTTP/1.1\r\n{auth}\r\n"
+        ));
+        assert!(
+            got.starts_with("HTTP/1.1 200") || got.starts_with("HTTP/1.1 502"),
+            "admitted (502 where this machine cannot reach it): {got}"
+        );
+        let c = sign_in_route("codex", &[], &none).unwrap().unwrap();
+        assert_eq!(c.hosts, ["auth.openai.com:443"]);
+        // A brokered chat (derm-egress is its proxy) and a harness with no
+        // sign-in host get none.
+        let brokered = vec![(
+            "HTTPS_PROXY".to_string(),
+            "http://derm:x@127.0.0.1:1".to_string(),
+        )];
+        assert!(sign_in_route("claude-code", &brokered, &none)
+            .unwrap()
+            .is_none());
+        assert!(sign_in_route("pi", &[], &none).unwrap().is_none());
+        assert!(sign_in_route("other", &[], &none).unwrap().is_none());
     }
 
     #[test]

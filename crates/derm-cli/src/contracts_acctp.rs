@@ -9,10 +9,10 @@
 //! `ignore` once the lane is green. A case a lane finds wrong is a request.
 //!
 //! P integration (22 Nov 2026) dropped every `ignore` but Claude Code's
-//! linked sign-in (`pb_claude_code_*`), which stays until the box research
-//! records P-B1 as passing (`plans/parallel/acctP_box_research.md`; P-B1 not
-//! run when integration ran) and `agents::signin::CLAUDE_CODE_STORE` is
-//! turned on with it.
+//! linked sign-in (`pb_claude_code_*`); its fix pass dropped that one once
+//! the box research recorded P-B1 as passing by the store-folder variable
+//! (`plans/parallel/acctP_box_research.md`, 22 Nov 22:40) and turned
+//! `agents::signin::CLAUDE_CODE_STORE` on with it.
 //!
 //! The process-level ones are `tests/contracts_acctp.rs` (PF) and the
 //! daemon's and the Linux feed's `tests/contracts_acctp.rs` (PE, PC, the
@@ -336,11 +336,9 @@ fn pb_pi_links_resolve_to_one_store_file() {
 
 /// P3's Claude Code half (contracts/projects.md section 2.3): no link (a
 /// renewal renames over it, Claude Code 2.1.322 by read); the store folder
-/// by `CLAUDE_SECURESTORAGE_CONFIG_DIR`. Behind a switch that stays off
-/// until P-B1 passes on the box (section 8.5), so this stays ignored after
-/// PB is green, until P integration reads `acctP_box_research.md`.
+/// by `CLAUDE_SECURESTORAGE_CONFIG_DIR`. Behind a switch that was off until
+/// P-B1 passed on the box (section 8.5; 22 Nov 2026).
 #[test]
-#[ignore = "lane PB: red until P-B1 passes on the box (not run at P integration); CLAUDE_CODE_STORE stays false"]
 fn pb_claude_code_shares_its_store_by_folder_variable_not_a_link() {
     let s = scratch("cc-store");
     let acct = account_with_store(&s, "claude-code");

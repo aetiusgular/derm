@@ -22,11 +22,14 @@
 //!   `lib/lockfile.js:15-22, 210`), so linked homes share one lock folder
 //!   beside the target (#11655; C1).
 //! - Claude Code 2.1.322: no link (a renewal renames a staged file over the
-//!   path, by read); `CLAUDE_SECURESTORAGE_CONFIG_DIR` names the store
-//!   folder (11 uses in the 2.1.322 binary), behind [`CLAUDE_CODE_STORE`],
-//!   which stays off until P-B1 passes on the box
-//!   (`plans/parallel_build_accounts.md` 8.5). With it off a Claude Code
-//!   chat on an agent account is refused (`contracts/projects.md` 2.3).
+//!   path); `CLAUDE_SECURESTORAGE_CONFIG_DIR` names the store folder (11
+//!   uses in the 2.1.322 binary), behind [`CLAUDE_CODE_STORE`]. P-B1 ran on
+//!   the box on 22 Nov 2026 (`plans/parallel/acctP_box_research.md`): with
+//!   the variable a forced renewal in one project wrote the store's
+//!   `.credentials.json` by temp file and rename and a second project read
+//!   it with no write; with a link the renewal renamed over the link and
+//!   the store kept the stale file. So the switch is on, by the variable,
+//!   never a link.
 //!
 //! Called by lane PA's helper as the account, before the chat's domain.
 //! Nothing here opens, reads, copies or writes a sign-in file (note CB 4.1):
@@ -36,18 +39,19 @@
 
 use std::path::{Path, PathBuf};
 
-/// The switch for Claude Code's shared store. Off until `plans/parallel/
-/// acctP_box_research.md` records P-B1 as passing; P integration turns it
-/// on (`plans/parallel_build_accounts.md` 8.5). A constant, not a setting:
-/// nothing a chat or a project file can set turns it on.
-pub const CLAUDE_CODE_STORE: bool = false;
+/// The switch for Claude Code's shared store. On since P-B1 passed on the
+/// box (22 Nov 2026, Claude Code 2.1.322; `plans/parallel/
+/// acctP_box_research.md`), turned on by P integration's fix pass
+/// (`plans/parallel_build_accounts.md` 8.5). A constant, not a setting:
+/// nothing a chat or a project file can set changes it.
+pub const CLAUDE_CODE_STORE: bool = true;
 
 /// Claude Code's store folder variable (2.1.322, binary read: `function
 /// SB(){let e=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;...}`).
 pub const CLAUDE_STORE_VAR: &str = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
 
-/// Why a Claude Code chat on an agent account is refused while the switch
-/// is off.
+/// Why a Claude Code chat on an agent account is refused if the switch is
+/// turned off again.
 pub const CLAUDE_CODE_OFF: &str = "Claude Code's shared sign-in store is off until the box shows a renewal keeps it (P-B1, plans/parallel_build_accounts.md 8.5); a Claude Code chat on an agent account is refused until then (contracts/projects.md 2.3)";
 
 /// What a project home needs from the account's sign-in store.
@@ -539,11 +543,16 @@ mod tests {
         let a = account(&s, &["claude-code"]);
         let h = home(&s, "p1");
         assert!(
-            !std::hint::black_box(CLAUDE_CODE_STORE),
-            "the switch stays off until P-B1; P integration turns it on and changes this line"
+            std::hint::black_box(CLAUDE_CODE_STORE),
+            "the switch is on since P-B1 passed on the box (22 Nov 2026)"
         );
-        let e = link_project_home(&a, &h, "claude-code").unwrap_err();
+        // Off, the chat is refused with the P-B1 line.
+        let e = link_with(&a, &h, "claude-code", false).unwrap_err();
         assert!(e.contains("P-B1"), "{e}");
+        assert_eq!(
+            link_project_home(&a, &h, "claude-code").unwrap(),
+            link_with(&a, &h, "claude-code", true).unwrap()
+        );
         let got = link_with(&a, &h, "claude-code", true).unwrap();
         assert!(got.links.is_empty());
         assert_eq!(
@@ -563,7 +572,7 @@ mod tests {
             link_project_home(&a, &h, "gemini").unwrap(),
             Linked::default()
         );
-        assert!(uses_store("codex") && uses_store("pi") && !uses_store("claude-code"));
-        assert!(uses_store_with("claude-code", true));
+        assert!(uses_store("codex") && uses_store("pi") && uses_store("claude-code"));
+        assert!(!uses_store_with("claude-code", false));
     }
 }

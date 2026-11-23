@@ -107,6 +107,15 @@ struct Rig {
 }
 
 fn rig(reply: &'static [u8], admit: bool, policy: Policy) -> Rig {
+    rig_with(reply, admit, policy, Vec::new())
+}
+
+fn rig_with(
+    reply: &'static [u8],
+    admit: bool,
+    policy: Policy,
+    pass_through: Vec<(String, u16)>,
+) -> Rig {
     let up = upstream(reply);
     let ca = Arc::new(Ca::generate().unwrap());
     let events: Arc<Mutex<Vec<Event>>> = Arc::default();
@@ -139,12 +148,19 @@ fn rig(reply: &'static [u8], admit: bool, policy: Policy) -> Rig {
     let addr = up.addr;
     cfg.resolve = Arc::new(move |_, _| Ok(vec![addr]));
     if admit {
-        cfg.allow_local = ["api.github.com", "evil.test", "plain.test"]
-            .iter()
-            .flat_map(|h| [(h.to_string(), 443), (h.to_string(), 80)])
-            .collect();
+        cfg.allow_local = [
+            "api.github.com",
+            "evil.test",
+            "plain.test",
+            "platform.claude.com",
+            "mcp-proxy.anthropic.com",
+        ]
+        .iter()
+        .flat_map(|h| [(h.to_string(), 443), (h.to_string(), 80)])
+        .collect();
     }
     cfg.policy = policy;
+    cfg.pass_through = pass_through;
     let auth = format!(
         "Proxy-Authorization: {}\r\n",
         cfg.credential.as_ref().unwrap().header_value()
@@ -621,4 +637,115 @@ fn a_client_without_the_chats_proxy_credential_gets_407_and_no_record() {
         r.egress.shown_url(),
         format!("http://<credential>@127.0.0.1:{port}")
     );
+}
+
+/// Case 283: a harness's own sign-in host, in an agent account's brokered
+/// chat, goes through derm-egress unread, so the renewal's tokens stay inside
+/// the harness's TLS to the vendor (note CB 4.1): the client completes TLS
+/// with the vendor's own certificate (here the upstream's CA, which derm's
+/// CA is not), not a leaf derm signs, and the record says it passed through.
+#[test]
+fn case_283_a_sign_in_host_passes_through_unread() {
+    let r = rig_with(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        true,
+        Policy::default(),
+        vec![("platform.claude.com".into(), 443)],
+    );
+    let mut tcp = TcpStream::connect(r.egress.addr()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        tcp,
+        "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n{}\r\n",
+        r.auth
+    )
+    .unwrap();
+    let mut br = BufReader::new(tcp.try_clone().unwrap());
+    let mut line = String::new();
+    br.read_line(&mut line).unwrap();
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    loop {
+        let mut l = String::new();
+        br.read_line(&mut l).unwrap();
+        if l == "\r\n" {
+            break;
+        }
+    }
+    // Trust the vendor's CA only: a leaf from derm's CA would fail here.
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(r.up.ca.cert_der().clone()).unwrap();
+    let mut cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let conn = rustls::ClientConnection::new(
+        Arc::new(cfg),
+        ServerName::try_from("platform.claude.com".to_string()).unwrap(),
+    )
+    .unwrap();
+    let mut s = rustls::StreamOwned::new(conn, tcp);
+    let got = ask(
+        &mut s,
+        "POST /v1/oauth/token HTTP/1.1\r\nHost: platform.claude.com\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+    );
+    assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+    let e = records(&r, 1);
+    let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+    assert_eq!(c.detail["passThrough"], true, "{:?}", c.detail);
+    assert_eq!(
+        c.detail["requests"], 0,
+        "no request was read: {:?}",
+        c.detail
+    );
+    assert_eq!(c.detail["verdict"], "forwarded", "{:?}", c.detail);
+    assert!(c.detail["bytesUp"].as_u64().unwrap() > 0);
+    // The vendor saw the request, with no proxy header and nothing swapped.
+    let seen = r.up.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].0.get("proxy-authorization").is_none());
+    drop(seen);
+    no_value_in(&e);
+    // Another host is still terminated (the tunnel above needs derm's CA).
+    let mut s = tunnel(&r, "api.github.com", "api.github.com").unwrap();
+    let got = ask(
+        &mut s,
+        "GET / HTTP/1.1\r\nHost: api.github.com\r\nconnection: close\r\n\r\n",
+    );
+    assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+}
+
+/// Tony's call of 22 Nov 2026: `mcp-proxy.anthropic.com` stays closed for an
+/// agent account's chat, also through derm-egress, which runs outside the
+/// account's firewall: refused before any byte goes upstream.
+#[test]
+fn a_closed_host_gets_nothing_through_egress() {
+    let r = rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        true,
+        Policy {
+            deny: vec!["mcp-proxy.anthropic.com".into()],
+            ..Policy::default()
+        },
+    );
+    let got = tunnel(&r, "mcp-proxy.anthropic.com", "mcp-proxy.anthropic.com");
+    if let Ok(mut s) = got {
+        let out = ask(
+            &mut s,
+            "GET /v1/mcp/x HTTP/1.1\r\nHost: mcp-proxy.anthropic.com\r\nconnection: close\r\n\r\n",
+        );
+        assert!(!out.starts_with("HTTP/1.1 200"), "{out}");
+    }
+    let e = records(&r, 1);
+    let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+    assert_eq!(c.detail["verdict"], "blocked", "{:?}", c.detail);
+    assert_eq!(
+        c.detail["reason"], "the host is closed to this chat",
+        "{:?}",
+        c.detail
+    );
+    assert!(r.up.seen.lock().unwrap().is_empty());
 }
