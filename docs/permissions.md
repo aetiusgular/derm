@@ -54,6 +54,10 @@ An ask or a deny that one of the eight covers starts with its name, so the agent
 | computer use | none yet: it is off unless you turn it on |
 | derm itself | derm's own files and program; the preset's `derm` command rules; a command that stops derm's daemon |
 
+## Step P's records (agent accounts, Linux)
+
+Not permissions, and they allow or deny nothing: three flags the daemon writes for a chat on an agent account when the account's own audit rules are loaded (`docs/install/linux.md`, "An agent account's rules"): `project.control`, `signin.read` and `net.unix` (`contracts/events.md` 7.2). derm's own project tools are policy names like any MCP tool: `derm_project/derm_message` and `derm_project/derm_terminal_read`; the setup presets allow both (workspace-write), allow the read and ask for the message (read-only), or ask for both (strict), and the daemon asks the person across projects whatever the policy says.
+
 ## Planned
 
 Not built yet:

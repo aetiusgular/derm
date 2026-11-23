@@ -29,6 +29,8 @@ derm sends no telemetry and has no account. What it records stays on your machin
 | `node library/cli.ts validate` | The registry's `/v0.1/validate` | `DERM_LIBRARY_ONLINE=1` |
 | `node library/trust/cli.ts osv` and `scan` | `api.osv.dev` (package names and versions; one scanner reaches it too) | `DERM_TRUST_ONLINE=1`, `DERM_TRUST_SCAN=1` |
 
+Step P (agent accounts' projects, Linux; P integration, 22 Nov 2026) adds no host. Its traffic is on the local socket: `derm-daemon project-mcp` (`derm_message`, `derm_terminal_read`) and `derm run`'s `screen.put` talk only to the daemon's socket, or to an account chat's bridge. The sign-in tunnel and derm-egress now take a per-sign-in or per-chat credential on loopback (read, and run against curl, requests, undici and Claude Code 2.1.330 by lane PB). Read, not measured on the box.
+
 ## What derm records, and where
 
 - The activity log: tool calls, approvals, the agents' own telemetry and, with the OS feed, processes and file writes. In the daemon's data folder, 0600, one file per day, hash-chained.
@@ -38,6 +40,7 @@ derm sends no telemetry and has no account. What it records stays on your machin
 - The OS feed (Linux auditd, optional; macOS's eslogger) keeps, in derm's activity log, the shape of each command line a chat's processes ran: the program, every flag's name and the length of every other word, never the words themselves (box test w5, BW5-12), and the paths they wrote. On macOS the collector, which runs as root, also keeps its own log in `/Library/Application Support/derm/activity` (root only, 0700): there each exec keeps up to 32 of its words, up to 512 bytes each, as eslogger gave them (Mac test w5, MW5-14). The daemon takes the collector's events from it every 2 seconds and keeps only their shape.
 - `derm run`'s record keeps an agent's flags and the length of every other word, since an argument can be a prompt; with the content switch on the words go to a content file and the record says `contentKept`.
 - Every line `derm connect` prints from a file of yours goes through the redactor; a key already in your config is not echoed.
+- Step P: a `derm_message`'s text and a chat's screen live in the daemon's memory only, never in a record or on disk (records keep sizes and SHA-256 hashes); a screen goes at the chat's `run.stop`. `chats.json` keeps each running chat's project, harness, account and folder, never a token, a message, a screen or a grant.
 
 ## What derm cannot speak for
 

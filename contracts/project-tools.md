@@ -23,7 +23,7 @@ Schemas: `project-tools.schema.json` (`$defs`: `messageInput`, `messageOutput`, 
 
 ### 2.2 `derm_terminal_read`
 
-- `{chat: <chat id>, lines?: <1 to 2000; default the screen>}` returns `{chat, rows, cols, text, truncated, at}`, `text` by section 3.
+- `{chat: <chat id>, lines?: <1 to 2000; default the screen>}` returns `{chat, rows, cols, text, truncated, at}`, `text` by section 3. `lines` is the last N lines of the whole text `screen.put` carried (scrollback, then the screen's rows); with no `lines`, the screen's rows alone (lane PE's `select`; request PD-4, P integration named this one meaning). `derm run`'s own `Reader::text(lines)` (the screen plus up to N rows of scrollback) is local and is not what an agent reads.
 - `{action: "list"}` returns `{chats: [{chat, harness, account, rows, cols, at}]}`: the chats of the caller's project that serve a screen, the caller excluded.
 - Read only: nothing a tool call sends reaches the other chat's input (P-C5).
 
@@ -38,7 +38,7 @@ Schemas: `project-tools.schema.json` (`$defs`: `messageInput`, `messageOutput`, 
 
 ### 3.1 The reader
 
-`derm run` (`crates/derm-cli/src/run/pty/`, lane PD) holds the harness on its own pty, passes signals, resize and raw mode, copies the harness's output to the person's terminal unchanged, and feeds the same bytes to a terminal parser sized to the person's terminal, with a scrollback of at most 10,000 lines (`derm_core::project::screen::MAX_SCROLLBACK_LINES`). The parser has no writer: queries in the output are not answered by derm (the person's own terminal still answers them, as today). vt100 0.18.1 is the candidate (MSRV 1.85, derm's toolchain 1.97.0): it executes C0 and never stores it, and sends C1 and U+FFFD to a callback (V, `perform.rs:8-30`); it stores format characters as text (V), so section 3.3's filter runs after it. Lane PD vets it as a dependency (rules section 5, item 9).
+`derm run` (`crates/derm-cli/src/run/pty/`, lane PD) holds the harness on its own pty, passes signals, resize and raw mode, copies the harness's output to the person's terminal unchanged, and feeds the same bytes to a terminal parser sized to the person's terminal, with a scrollback of at most 10,000 lines (`derm_core::project::screen::MAX_SCROLLBACK_LINES`); lane PD's reader keeps 2,000, what one read can ask, and renders at most 500 rows by 500 columns (request PD-4). The parser has no writer: queries in the output are not answered by derm (the person's own terminal still answers them, as today). vt100 0.18.1 is the candidate (MSRV 1.85, derm's toolchain 1.97.0): it executes C0 and never stores it, and sends C1 and U+FFFD to a callback (V, `perform.rs:8-30`); it stores format characters as text (V), so section 3.3's filter runs after it. Lane PD vets it as a dependency (rules section 5, item 9).
 
 ### 3.2 `screen.put`
 
@@ -48,7 +48,7 @@ Schemas: `project-tools.schema.json` (`$defs`: `messageInput`, `messageOutput`, 
 
 - At most 512 KiB of UTF-8 per `screen.put` and per reply (`screen::MAX_TEXT_BYTES`), under the socket's 1 MiB line cap (V, `socket.rs:18`; case 185), cut from the top on a character boundary with `truncated: true`.
 - Rows joined by `\n`, trailing spaces trimmed.
-- Removed, and counted: every character of Unicode category Cc other than `\n` and `\t`; every Cf character (U+00AD, U+0600 to U+0605, U+061C, U+06DD, U+070F, U+180E, U+200B to U+200F, U+202A to U+202E, U+2060 to U+2064, U+2066 to U+206F, U+FEFF, U+FFF9 to U+FFFB, U+110BD, U+110CD, U+13430 to U+1343F, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A, U+E0001, U+E0020 to U+E007F: the whole Cf category of the Unicode version lane PD names, from the UCD, not this list); U+FFFD.
+- Removed, and counted: every character of Unicode category Cc other than `\n` and `\t`; every Cf character (U+00AD, U+0600 to U+0605, U+061C, U+06DD, U+070F, U+180E, U+200B to U+200F, U+202A to U+202E, U+2060 to U+2064, U+2066 to U+206F, U+FEFF, U+FFF9 to U+FFFB, U+110BD, U+110CD, U+13430 to U+1343F, U+1BCA0 to U+1BCA3, U+1D173 to U+1D17A, U+E0001, U+E0020 to U+E007F: the whole Cf category of the Unicode version lane PD names, from the UCD, not this list: Unicode 18.0.0, 21 ranges, 170 code points, the same as 17.0.0, which also holds U+0890, U+0891 and U+08E2 that this list misses; `screen::FORMAT`, lane PD's research); U+FFFD.
 - `derm_core::project::screen::clean` is the one filter, run by `derm run` before `screen.put` and by the daemon again before a reply leaves (3.4).
 
 ### 3.4 The daemon's second pass

@@ -175,6 +175,17 @@ pub fn why_left_out(b: &Bindings, id: &str, project: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// Request PB-3: the contract's fixture is a file this reader takes.
+    #[test]
+    fn the_contracts_fixture_parses() {
+        let b = parse(include_str!(
+            "../../../contracts/fixtures/project/secret-projects.json"
+        ))
+        .unwrap();
+        assert_eq!(b.of("linear").len(), 2);
+    }
+
     use super::*;
     use crate::secrets::{Entry, From};
 

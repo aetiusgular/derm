@@ -67,7 +67,7 @@ Variables `derm run` sets in the harness (lane D, integration w1), each removed 
 | `chatId` | `""` when not attributed |
 | `harness` | A harness id from the preset table (`crates/derm-cli/src/connect/presets/`), `other` for a program no row names, or `""` |
 | `source` | `otel`, `adapter`, `eslogger`, `auditd`, `cua`, `approval`, `run`; and since the wave 5 base `tap` and `derm`, which only the daemon writes (`events.md`, section 5) |
-| `kind` | `tool.call`, `approval`, `model.request`, `model.error`, `prompt`, `session.start`, `message`, `run.start`, `run.stop`, `net.connect`, `config.write`, or `otel.<name>` for an unknown OTel event; and for the kernel feeds (`eslogger`, `auditd`) the macOS collector's kinds, which the daemon's check reads: `exec`, `fork`, `exit`, `write`, `create`, `open`, `truncate`, `rename`, `unlink`, `link`. `fs.write` and `exec` as session 0 named them are not what the check reads (lane B, lane D) |
+| `kind` | `tool.call`, `approval`, `model.request`, `model.error`, `prompt`, `session.start`, `message`, `run.start`, `run.stop`, `net.connect`, `config.write`, or `otel.<name>` for an unknown OTel event; and for the kernel feeds (`eslogger`, `auditd`) the macOS collector's kinds, which the daemon's check reads: `exec`, `fork`, `exit`, `write`, `create`, `open`, `truncate`, `rename`, `unlink`, `link`; and the Linux feed's `unix.connect` (`{path, abstract, exe, uid}`, step P lane PC, request R1; `events.md` 7.3). `fs.write` and `exec` as session 0 named them are not what the check reads (lane B, lane D) |
 | `summary` | One line, at most 200 characters |
 | `detail` | Free JSON, at most 16 KiB, never rendered as markup |
 
@@ -111,7 +111,7 @@ Written by "P base, go" from `research-notes/CD_project_layer_base.md` sections 
 ### 6.1 `token.mint`'s `project`
 
 - `project`: the chat's project id, 16 of `[0-9a-f]` (`derm_core::project::valid_id`), or `""` for a chat outside accounts; anything else is refused (`project: 16 of [0-9a-f], or empty`), on the base already. Left out by an older `derm run`, which the daemon reads as `""`. An older daemon refuses a `token.mint` that carries it (an unknown field), so `derm run` and the daemon change together; `derm run` names the daemon's version when that happens (I).
-- The daemon keeps chat to project beside the token and in `chats.json` (section 2, rule 5), and restores it after a restart from there and from `run.start`'s `detail.project` (case 211: what a report reads comes back from the log). Not built (lane PE).
+- The daemon keeps chat to project beside the token and in `chats.json` (section 2, rule 5), and restores it after a restart from there and from the log's `run.start` and `run.stop` (case 211; 6.6). Built (lane PE; the log half by P integration). `derm run` sends it from the registry's nearest-folder and worktree rules since P integration (`run/mod.rs` `chat_project`).
 
 ### 6.2 Chat scope: messages and screens
 
@@ -132,5 +132,24 @@ Written by "P base, go" from `research-notes/CD_project_layer_base.md` sections 
 
 ### 6.4 `report`
 
-`report` gains `projectOverwritten`: how many events arrived with a `project` other than the one the daemon set (`events.md` 7.1). `derm watch report` names it when it is not 0. Not built (lane PE).
+`report` gains `projectOverwritten`: how many events arrived with a `project` other than the one the daemon set (`events.md` 7.1). `derm watch report` names it when it is not 0. Built (lane PE; named by `derm watch report` since P integration).
+
+Added by P integration (22 Nov 2026):
+
+- `projectMessagesDropped` (request PE-R6): waiting `derm_message`s dropped for room since the daemon started; named when not 0.
+- `projectFlags` (request PC R3): step P's flags per chat over the report's window, from the same read as `byKind`: `{"chats": {<chat>: {"control", "signinRead", "netUnix", "netUnixOutside"}}, "partial"}`, at most 64 chats, `partial` when the read was cut. Only the daemon's own records (source `derm`) count. `derm watch report` reads it, and falls back to the tail's backlog for an older daemon.
+
+### 6.5 The answer's scope (request PE-R3, P integration)
+
+- An `approve` push may carry `offers: ["once", "session"]`. Only the daemon sets it, for step P's two project asks (`tool` `derm_project/derm_message` or `derm_project/derm_terminal_read`); a gate's own `approve` request that names `offers` has them dropped.
+- An `answer` line may carry `scope: "once" | "session"` (default `once`; unknown fields still refused). `session` counts only for a request whose push offered it and only with `yes`; anywhere else it is `once`. The person check (S2 part b) is the same for either.
+- A session yes makes the grant `project-tools.md` 2.3 describes, recorded as `project.grant`; the approval record keeps scope `chat`.
+
+### 6.6 Restart (request PE-R4, case 211)
+
+After a restart the chat-to-project map comes back from `chats.json`, and from the log's `run.start` and `run.stop` (the newest 8,192 of the last 8 days, in log order) for any chat `chats.json` does not hold: a chat whose `run.stop` is in the log does not come back as running, and a chat from the log, like one from `chats.json`, is not a target until it shows life.
+
+### 6.7 Every stored event (request PE-R2)
+
+The daemon stamps `project` on every event it stores, whichever way it arrived (`op_event`, OTel over HTTP, the tap, the OS feeds, its own records), from its map (`events.md` 7.1).
 

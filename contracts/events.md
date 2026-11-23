@@ -156,3 +156,9 @@ Written by "P base, go" from `research-notes/CD_project_layer_base.md` section 5
 
 `derm status` and `derm watch report` (lane PC's `watch/`) name `project.control`, `signin.read` and an `outside` `net.unix` per chat, and say "DNS not blocked for agent accounts" (plan P8).
 
+### 7.3 Added by P integration (22 Nov 2026)
+
+- **The Linux feed's `unix.connect`** (request PC R1): source `auditd`, `detail` `{path, abstract: bool, exe, uid}`, `path` the socket's path or `@<name>` for an abstract one, from the audit record's `SOCKADDR` read as the kernel reads it (`derm_audit_linux::action::unix_sockaddr`; Linux v7.0 `net/unix/af_unix.c:335-370, 1270-1282`). It is the raw OS record `net.unix` (source `derm`) is made from; a chat token cannot post either. Every OS feed record's `detail` also carries `uid` since lane PC.
+- **`run.start`** carries `pty`: `true` when `derm run` holds the chat's terminal on its own pty, else the reason it does not (request PD-4); `project: {id, folder}` for every chat (7.1, `""` outside projects); for an agent account's chat `agentUser.bridge` (the chat's bridge folder, request PC R2), `agentUser.gate: {expected, how}` and `gate: {expected, route}` (request PA-2), and `harnessExe` from the account route's root-owned install (request PA-4).
+- **`run.stop`** carries `screens: {sent, refused, failed, replaced}` when a screen was published (request PD-4).
+

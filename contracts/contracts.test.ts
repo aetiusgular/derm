@@ -35,6 +35,8 @@ function validator() {
     "projects.schema.json",
     "project-tools.schema.json",
     "project-records.schema.json",
+    // P integration (22 Nov 2026, request PB-3).
+    "secret-projects.schema.json",
   ]) {
     ajv.addSchema(read(p) as object);
   }
@@ -400,6 +402,13 @@ describe("step P contracts", () => {
   };
 
   it("the registry fixture validates, and its ids are the folders' hashes", () => {
+    // Request PB-3: the secrets' projects, as derm-egress's bind.rs reads them.
+    const sp = read("fixtures/project/secret-projects.json") as { version: number; projects: Record<string, string[]> };
+    expect(check("secret-projects.schema.json", sp)).toEqual([]);
+    expect(check("secret-projects.schema.json", { ...sp, extra: 1 })).not.toEqual([]);
+    expect(check("secret-projects.schema.json", { version: 1, projects: { github: [] } })).not.toEqual([]);
+    expect(check("secret-projects.schema.json", { version: 1, projects: { github: ["ABCDEF0123456789"] } })).not.toEqual([]);
+    expect(check("secret-projects.schema.json", { version: 1, projects: { GitHub: ["6853732bf2a99f2b"] } })).not.toEqual([]);
     const reg = read("fixtures/project/projects.json") as { projects: { id: string; folder: string }[] };
     expect(check("projects.schema.json", reg)).toEqual([]);
     for (const p of reg.projects) {
