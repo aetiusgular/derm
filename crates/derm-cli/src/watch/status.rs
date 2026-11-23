@@ -460,6 +460,13 @@ pub fn daemon_state(socket: &Path) -> Value {
             "bySource": r.get("bySource"),
             "chainOk": r.get("chainOk"),
             "collectorReachable": r.get("check").and_then(|c| c.get("collectorReachable")),
+            // Step P (lane PC): the daemon's own flags on agent accounts'
+            // chats, by kind (`contracts/events.md` 7.2).
+            "projectFlags": {
+                "control": r.get("byKind").and_then(|k| k.get("project.control")),
+                "signinRead": r.get("byKind").and_then(|k| k.get("signin.read")),
+                "netUnix": r.get("byKind").and_then(|k| k.get("net.unix")),
+            },
         })),
         "chats": chats,
         // Where the list came from: the daemon's own list, or, when its
@@ -530,7 +537,17 @@ fn chat_marks(c: &Value) -> Vec<String> {
     let mut out = Vec::new();
     let boundary = s(c.get("boundary"));
     let user = s(c.get("agentUser"));
-    if !user.is_empty() {
+    if let Some(slug) = account_slug_of(user) {
+        // Step P (lane PC; plan P8): an agent account's chat. The account's
+        // nftables table drops packets, not Unix-socket connects (note CC
+        // section 5), so the resolver's sockets and other local services
+        // stay open to it; derm records them once the account's own audit
+        // rules are loaded.
+        out.push(format!("as the agent account {}", clean(user, 32)));
+        out.push(format!(
+            "DNS and other Unix-socket ways out not blocked; recorded as net.unix, sign-in reads as signin.read, once its audit rules are loaded (derm-audit-feed rules --account {slug}, installed as root)"
+        ));
+    } else if !user.is_empty() {
         out.push(format!("as the agents' user {}", clean(user, 32)));
     } else if boundary == "none" {
         out.push("runs as you".into());
@@ -588,6 +605,21 @@ fn chat_marks(c: &Value) -> Vec<String> {
         _ => {}
     }
     out
+}
+
+/// The slug of an agent account's user (`derm-<slug>`, the accounts file's
+/// form: `[a-z0-9-]{1,15}`, not `agent`, `agents` or `agent-*`), else
+/// `None` (wave 5's `derm-agent` is no account).
+fn account_slug_of(user: &str) -> Option<&str> {
+    let slug = user.strip_prefix("derm-")?;
+    let ok = (1..=15).contains(&slug.len())
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && slug != "agent"
+        && slug != "agents"
+        && !slug.starts_with("agent-");
+    ok.then_some(slug)
 }
 
 /// For a daemon without `report.running`: chats with a `run.start` in the
@@ -859,6 +891,21 @@ fn render_daemon(d: &Value) -> String {
         }
         if h.get("chainOk").and_then(Value::as_bool) == Some(false) {
             out.push_str("  CHAIN BROKEN in the last hour: run `derm watch report --since 1h`\n");
+        }
+        // Step P (lane PC; plan P4 and P8).
+        let pf = h.get("projectFlags");
+        let p = |k: &str| {
+            pf.and_then(|f| f.get(k))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        };
+        if p("control") + p("signinRead") + p("netUnix") > 0 {
+            out.push_str(&format!(
+                "  agent accounts, last hour: {} run-later writes in a project home (project.control), {} sign-in reads not by the harness (signin.read), {} Unix-socket connects (net.unix); derm watch report --since 1h names each chat\n",
+                p("control"),
+                p("signinRead"),
+                p("netUnix"),
+            ));
         }
     }
     match d.get("chats").and_then(Value::as_array) {
@@ -1162,6 +1209,46 @@ mod tests {
         assert!(line("zed").contains("no in-harness gate"));
         assert!(line("pi").contains("built (pi-extension)"));
         assert!(line("gemini").contains("unknown"), "{}", line("gemini"));
+    }
+
+    /// Step P (lane PC): an agent account's chat says what is not blocked
+    /// and how its records start; the last hour names the project flags.
+    #[test]
+    fn pc_an_agent_account_chat_and_its_project_flags_are_named() {
+        let d = json!({
+            "running": true,
+            "daemon": {"version": "0.0.0", "protocol": 1},
+            "lastHour": {"events": 9, "flags": 0, "bySource": {"auditd": 4}, "chainOk": true,
+                "collectorReachable": "unknown",
+                "projectFlags": {"control": 2, "signinRead": 1, "netUnix": 3}},
+            "chats": [
+                {"chat": "derm-c1", "harness": "codex", "boundary": "none", "since": 0,
+                 "alive": true, "agentUser": "derm-max"},
+                {"chat": "derm-c2", "harness": "pi", "boundary": "none", "since": 0,
+                 "alive": true, "agentUser": "derm-agent"},
+            ],
+            "chatsFrom": "report",
+        });
+        let text = render_daemon(&d);
+        assert!(text.contains("as the agent account derm-max"), "{text}");
+        assert!(
+            text.contains("DNS and other Unix-socket ways out not blocked"),
+            "{text}"
+        );
+        assert!(
+            text.contains("derm-audit-feed rules --account max"),
+            "{text}"
+        );
+        assert!(text.contains("as the agents' user derm-agent"), "{text}");
+        assert_eq!(text.matches("--account").count(), 1, "{text}");
+        assert!(
+            text.contains("agent accounts, last hour: 2 run-later writes in a project home (project.control), 1 sign-in reads not by the harness (signin.read), 3 Unix-socket connects (net.unix)"),
+            "{text}"
+        );
+        assert_eq!(account_slug_of("derm-agent-x"), None);
+        assert_eq!(account_slug_of("derm-Max"), None);
+        assert_eq!(account_slug_of("max"), None);
+        assert_eq!(account_slug_of("derm-max-2"), Some("max-2"));
     }
 
     #[test]

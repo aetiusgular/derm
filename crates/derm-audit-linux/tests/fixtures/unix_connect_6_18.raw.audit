@@ -1,0 +1,16 @@
+type=SYSCALL msg=audit(1795250241.052:15): arch=c000003e syscall=42 success=yes exit=0 a0=5 a1=7ffd2e0b89a0 a2=b a3=0 items=1 ppid=583 pid=585 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="python3" exe="/usr/local/bin/python3.13" key="derm_net"
+type=SOCKADDR msg=audit(1795250241.052:15): saddr=01002F746D702F64736B00
+type=CWD msg=audit(1795250241.052:15): cwd="/home/claude/probe"
+type=PATH msg=audit(1795250241.052:15): item=0 name="/tmp/dsk" inode=1138722 dev=fe:00 mode=0140755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=PROCTITLE msg=audit(1795250241.052:15): proctitle=2F7573722F6C6F63616C2F62696E2F707974686F6E33002D49002F686F6D652F636C617564652F70726F62652F636F6E6E656374732E7079
+type=EOE msg=audit(1795250241.052:15): 
+type=SYSCALL msg=audit(1795250241.052:16): arch=c000003e syscall=42 success=yes exit=0 a0=5 a1=7ffd2e0b89a0 a2=7 a3=0 items=0 ppid=583 pid=585 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="python3" exe="/usr/local/bin/python3.13" key="derm_net"
+type=SOCKADDR msg=audit(1795250241.052:16): saddr=01000064616273
+type=PROCTITLE msg=audit(1795250241.052:16): proctitle=2F7573722F6C6F63616C2F62696E2F707974686F6E33002D49002F686F6D652F636C617564652F70726F62652F636F6E6E656374732E7079
+type=EOE msg=audit(1795250241.052:16): 
+type=SYSCALL msg=audit(1795250241.052:17): arch=c000003e syscall=42 success=yes exit=0 a0=5 a1=7f0682d07920 a2=6e a3=0 items=1 ppid=583 pid=585 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="python3" exe="/usr/local/bin/python3.13" key="derm_net"
+type=SOCKADDR msg=audit(1795250241.052:17): saddr=01002F746D702F64736B00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+type=CWD msg=audit(1795250241.052:17): cwd="/home/claude/probe"
+type=PATH msg=audit(1795250241.052:17): item=0 name="/tmp/dsk" inode=1138722 dev=fe:00 mode=0140755 ouid=0 ogid=0 rdev=00:00 nametype=NORMAL cap_fp=0 cap_fi=0 cap_fe=0 cap_fver=0 cap_frootid=0
+type=PROCTITLE msg=audit(1795250241.052:17): proctitle=2F7573722F6C6F63616C2F62696E2F707974686F6E33002D49002F686F6D652F636C617564652F70726F62652F636F6E6E656374732E7079
+type=EOE msg=audit(1795250241.052:17): 

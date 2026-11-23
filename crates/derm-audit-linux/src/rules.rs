@@ -67,6 +67,120 @@ pub fn render(input: &RulesInput) -> (String, Vec<String>) {
     out.push_str(
         "## -c: keep loading past a rule that fails (a sensitive path deleted since).\n-c\n",
     );
+    syscall_rules(&mut out, uid);
+    let skipped = sensitive_rules(
+        &mut out,
+        uid,
+        sensitive_paths(input.home, input.runtime_dir),
+        input.exists,
+    );
+    (out, skipped)
+}
+
+/// Where every agent account's home is (`/etc/derm/agents.json`'s `home`,
+/// whose one reader refuses any other, `crates/derm-cli/src/run/user/
+/// accounts.rs`; `plans/parallel_build_accounts.md` section 2).
+pub const AGENTS_ROOT: &str = "/var/lib/derm/agents";
+
+/// The account's sign-in store under its home (`derm_core::project::layout::
+/// SIGNIN`, made by the installer, `contracts/projects.md` 2.2).
+pub const SIGNIN: &str = derm_core::project::layout::SIGNIN;
+
+/// An agent account's slug as the accounts file takes it: `[a-z0-9-]{1,15}`,
+/// and not `agent`, `agents` or `agent-*` (case 278).
+pub fn account_slug(slug: &str) -> bool {
+    (1..=15).contains(&slug.len())
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && slug != "agent"
+        && slug != "agents"
+        && !slug.starts_with("agent-")
+}
+
+pub struct AccountInput<'a> {
+    /// The account's uid (never 0).
+    pub uid: u32,
+    /// The account's slug: its user is `derm-<slug>`, its home
+    /// `/var/lib/derm/agents/<slug>`.
+    pub slug: &'a str,
+    /// Whether a path exists; the caller passes `Path::exists`.
+    pub exists: &'a dyn Fn(&str) -> bool,
+}
+
+/// What an agent account's rules watch for reads, in order: its sign-in
+/// store (step P4's `signin.read`, `contracts/events.md` 7.2), then the
+/// system's secret files. Not the account home's own dot-files: since step
+/// P a chat's `HOME` is a project home, and its run-later files are writes,
+/// which the syscall rules already record.
+pub fn account_paths(slug: &str) -> Vec<(Watch, String)> {
+    let mut out = vec![(Watch::Dir, format!("{AGENTS_ROOT}/{slug}/{SIGNIN}"))];
+    for d in SYSTEM_DIRS {
+        out.push((Watch::Dir, (*d).to_string()));
+    }
+    for f in SYSTEM_FILES {
+        out.push((Watch::File, (*f).to_string()));
+    }
+    out
+}
+
+/// The rules file for one agent account (step P, lane PC; note CD section 5,
+/// `signin.read` and `net.unix`): the same syscall rules as the person's,
+/// for the account's uid, so its chats' writes and connects (Unix sockets
+/// included) reach the feed, and a `derm_sens` watch on its sign-in store.
+/// Its own file, `50-derm-<uid>.rules`, beside the person's (BW5-15).
+/// Printed, never installed: installing it is root's, on the box only on
+/// Tony's yes (rules section 5, item 2).
+pub fn render_account(input: &AccountInput) -> Result<(String, Vec<String>), String> {
+    let uid = input.uid;
+    if uid == 0 {
+        return Err("refusing uid 0: an agent account is never root".into());
+    }
+    if !account_slug(input.slug) {
+        return Err(format!(
+            "{:?} is not an agent account's slug ([a-z0-9-]{{1,15}}, not agent, agents or agent-*)",
+            input.slug
+        ));
+    }
+    let slug = input.slug;
+    let mut out = String::new();
+    out.push_str(
+        "## derm: the Linux OS feed (crates/derm-audit-linux). Generated; do not edit.
+",
+    );
+    out.push_str(&format!(
+        "## The agent account derm-{slug} (uid {uid}), home {AGENTS_ROOT}/{slug}: its chats' processes,
+"
+    ));
+    out.push_str(
+        "## and reads of its sign-in store by anything but the harness (derm's signin.read).
+",
+    );
+    out.push_str(
+        "## Install (root, shown before it runs): install -m 0640 this file
+",
+    );
+    out.push_str(&format!(
+        "##   /etc/audit/rules.d/50-derm-{uid}.rules && augenrules --load
+"
+    ));
+    out.push_str("## Undo: rm /etc/audit/rules.d/50-derm-");
+    out.push_str(&format!(
+        "{uid}.rules && augenrules --load
+"
+    ));
+    out.push_str(
+        "## -c: keep loading past a rule that fails (a sensitive path deleted since).
+-c
+",
+    );
+    syscall_rules(&mut out, uid);
+    let skipped = sensitive_rules(&mut out, uid, account_paths(slug), input.exists);
+    Ok((out, skipped))
+}
+
+/// The syscall rules for `uid`: exec, fork, write, connect (both ABIs).
+fn syscall_rules(out: &mut String, uid: u32) {
     for (arch, tag) in [(ARCH_X86_64, "b64"), (ARCH_I386, "b32")] {
         let list = |kinds: &[Call]| names(arch, kinds).join(",");
         let a = format!("-a always,exit -F arch={tag}");
@@ -113,14 +227,22 @@ pub fn render(input: &RulesInput) -> (String, Vec<String>) {
             ));
         }
     }
+}
+
+/// The `derm_sens` lines for the watches that can load now; returns the
+/// paths left out because they cannot.
+fn sensitive_rules(
+    out: &mut String,
+    uid: u32,
+    watches: Vec<(Watch, String)>,
+    exists: &dyn Fn(&str) -> bool,
+) -> Vec<String> {
     let mut skipped = Vec::new();
-    for (kind, path) in sensitive_paths(input.home, input.runtime_dir) {
+    for (kind, path) in watches {
         let loads = match kind {
-            Watch::Dir => (input.exists)(&path),
+            Watch::Dir => exists(&path),
             // E1-3: a file's rule loads once its folder is there.
-            Watch::File => {
-                (input.exists)(&path) || parent(&path).is_some_and(|p| (input.exists)(p))
-            }
+            Watch::File => exists(&path) || parent(&path).is_some_and(exists),
         };
         if !loads {
             skipped.push(path);
@@ -136,7 +258,7 @@ pub fn render(input: &RulesInput) -> (String, Vec<String>) {
             ));
         }
     }
-    (out, skipped)
+    skipped
 }
 
 /// How a sensitive path is watched: a folder with everything under it, or
@@ -245,6 +367,105 @@ mod tests {
         // A missing folder has no rule that would record reads inside it.
         assert!(!text.contains("/home/u/.aws"));
         assert!(skipped.contains(&"/home/u/.aws".to_string()));
+    }
+
+    /// Step P (lane PC): an agent account's own file, with the sign-in
+    /// store watched for reads and the same syscall rules as the person's.
+    #[test]
+    fn pc_an_agent_accounts_rules_watch_its_sign_in_store() {
+        let exists = |p: &str| {
+            p == "/var/lib/derm/agents/max/signin" || p == "/etc" || p == "/etc/sudoers.d"
+        };
+        let (text, skipped) = render_account(&AccountInput {
+            uid: 996,
+            slug: "max",
+            exists: &exists,
+        })
+        .unwrap();
+        assert!(text.contains("\n-c\n"));
+        assert!(text.contains("/etc/audit/rules.d/50-derm-996.rules"));
+        assert!(text.contains("## Undo: rm /etc/audit/rules.d/50-derm-996.rules"));
+        for line in [
+            "-a always,exit -F arch=b64 -S execve,execveat -F uid=996 -k derm_exec\n",
+            "-a always,exit -F arch=b64 -S connect -F uid=996 -k derm_net\n",
+            "-a always,exit -F arch=b32 -S socketcall -F a0=3 -F uid=996 -k derm_net\n",
+            "-a always,exit -F arch=b64 -S open,openat -F dir=/var/lib/derm/agents/max/signin -F uid=996 -k derm_sens\n",
+            "-a always,exit -F arch=b32 -S open,openat -F dir=/var/lib/derm/agents/max/signin -F uid=996 -k derm_sens\n",
+            "-F path=/etc/shadow -F uid=996 -k derm_sens\n",
+        ] {
+            assert!(text.contains(line), "{line}");
+        }
+        // The writes come first, so an open for writing keys derm_write.
+        assert!(text.find("derm_write").unwrap() < text.find("derm_sens").unwrap());
+        // No person's home path, and no other uid.
+        assert!(!text.contains("/home/"));
+        assert!(!text
+            .lines()
+            .filter(|l| l.starts_with("-a"))
+            .any(|l| !l.contains("uid=996")));
+        assert!(skipped.is_empty(), "{skipped:?}");
+        // Its syscall rules are the person's, line for line, with its uid.
+        let (person, _) = render(&RulesInput {
+            uid: 996,
+            home: "/home/x",
+            runtime_dir: None,
+            exists: &|_| false,
+        });
+        let sys = |t: &str| {
+            t.lines()
+                .filter(|l| l.starts_with("-a") && !l.contains("derm_sens"))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sys(&text), sys(&person));
+        for line in text.lines().filter(|l| l.starts_with("-a")) {
+            assert!(line.rsplit("-k ").next().unwrap().len() <= 31, "{line}");
+        }
+    }
+
+    #[test]
+    fn pc_a_store_not_made_yet_is_named_and_a_bad_account_is_refused() {
+        let (text, skipped) = render_account(&AccountInput {
+            uid: 996,
+            slug: "max",
+            exists: &|p: &str| p == "/etc",
+        })
+        .unwrap();
+        assert!(!text.contains("/signin"));
+        assert_eq!(
+            skipped,
+            vec![
+                "/var/lib/derm/agents/max/signin".to_string(),
+                "/etc/sudoers.d".to_string()
+            ]
+        );
+        for slug in [
+            "",
+            "Max",
+            "../x",
+            "a b",
+            "agent",
+            "agents",
+            "agent-x",
+            "sixteen-chars-xx",
+        ] {
+            assert!(
+                render_account(&AccountInput {
+                    uid: 996,
+                    slug,
+                    exists: &|_| true
+                })
+                .is_err(),
+                "{slug:?}"
+            );
+        }
+        assert!(render_account(&AccountInput {
+            uid: 0,
+            slug: "max",
+            exists: &|_| true
+        })
+        .is_err());
+        assert!(account_slug("max-2"));
     }
 
     #[test]

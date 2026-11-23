@@ -6,7 +6,9 @@
 //! (`crates/derm-daemon/src/activity/check.rs`): `exec`, `fork`, `write`,
 //! `create`, `open`, `truncate`, `rename`, `unlink`, `link`, with `path`,
 //! `dest`, `argv`, `ppid`, `child`, `tier`, `exe`, and on Linux `dev`. Connections are
-//! `net.connect` with `host` (`check.rs` `event_host` reads `host`). The
+//! `net.connect` with `host` (`check.rs` `event_host` reads `host`); a
+//! connect to a Unix socket is `unix.connect` with `path` and `abstract`
+//! (step P8's first part, lane PC: the daemon reads it for `net.unix`). The
 //! bounds are the collector's: 32 argv items of 512 bytes, 4,096 bytes per
 //! field; the summary is at most 200 characters (the contract).
 
@@ -22,6 +24,10 @@ pub const MAX_ARGV_ITEMS: usize = 32;
 pub const MAX_ARGV_ITEM_BYTES: usize = 512;
 pub const MAX_FIELD_BYTES: usize = 4096;
 pub const MAX_SUMMARY_CHARS: usize = 200;
+/// The kind of a connect to a Unix socket (step P8, lane PC). The daemon
+/// keeps its own copy of the name (`installs::project::UNIX_CONNECT`); a
+/// test holds them equal.
+pub const UNIX_CONNECT: &str = "unix.connect";
 
 pub fn truncate_bytes(s: &str, max: usize) -> String {
     if s.len() <= max {
@@ -120,8 +126,19 @@ pub fn to_event(action: &Action, placed: &Placement, reasons: &[Reason]) -> Even
             d.insert("addr".into(), json!(addr));
             d.insert("port".into(), json!(port));
         }
+        What::UnixConnect { path } => {
+            kind = UNIX_CONNECT;
+            summary = format!("connect unix {path}");
+            put(&mut d, "path", path);
+            d.insert("abstract".into(), json!(path.starts_with('@')));
+        }
     }
     d.insert("ppid".into(), json!(action.ppid));
+    // The process's uid (step P, lane PC): the daemon tells an agent
+    // account's processes in a chat from the person's own (`derm run`) by it.
+    if let Some(uid) = action.uid {
+        d.insert("uid".into(), json!(uid));
+    }
     d.insert(
         "tier".into(),
         json!(if placed.is_root { "root" } else { "child" }),

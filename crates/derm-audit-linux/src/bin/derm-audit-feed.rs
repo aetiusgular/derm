@@ -2,6 +2,11 @@
 //!
 //! - `derm-audit-feed rules [--uid N] [--home PATH]` prints the audit rules
 //!   file for the user (default: this user). It installs nothing.
+//! - `derm-audit-feed rules --account <slug> [--uid N]` prints an agent
+//!   account's own file (step P, lane PC): the account `derm-<slug>` is
+//!   looked up in the system's user list, its home must be
+//!   `/var/lib/derm/agents/<slug>`, and `--uid`, when given, must be its uid.
+//!   It installs nothing; on the box it is installed only on Tony's yes.
 //! - `derm-audit-feed run [--log PATH] [--from-start]` tails the audit log
 //!   (default `/var/log/audit/audit.log`, readable by the `adm` group on
 //!   Ubuntu), learns chats from the daemon's `run.start` and `run.stop`
@@ -26,7 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use derm_audit_linux::client::{self, Client};
 use derm_audit_linux::feed::Feed;
 use derm_audit_linux::resume::{self, Pos};
-use derm_audit_linux::rules::{plain_path, render, RulesInput};
+use derm_audit_linux::rules::{plain_path, render, render_account, AccountInput, RulesInput};
 use derm_audit_linux::tree::Root;
 use derm_audit_linux::watchcheck::WatchCheck;
 use derm_core::event::{Event, Source};
@@ -107,14 +112,20 @@ fn runtime_dir_for_with(
 fn cmd_rules(args: &[String]) -> u8 {
     // SAFETY: getuid has no preconditions and cannot fail.
     let mut uid = unsafe { libc::getuid() };
+    let mut uid_given = None;
     let mut home = home();
+    let mut account = None;
     let mut i = 0;
     while i < args.len() {
         let r = match args[i].as_str() {
             "--uid" => value(args, &mut i, "--uid")
                 .and_then(|v| v.parse().map_err(|_| "--uid needs a number".into()))
-                .map(|v| uid = v),
+                .map(|v| {
+                    uid = v;
+                    uid_given = Some(v);
+                }),
             "--home" => value(args, &mut i, "--home").map(|v| home = Some(v.to_string())),
+            "--account" => value(args, &mut i, "--account").map(|v| account = Some(v.to_string())),
             other => Err(format!("unknown argument {other}")),
         };
         if let Err(e) = r {
@@ -122,6 +133,9 @@ fn cmd_rules(args: &[String]) -> u8 {
             return 2;
         }
         i += 1;
+    }
+    if let Some(slug) = account {
+        return cmd_rules_account(&slug, uid_given, args.iter().any(|a| a == "--home"));
     }
     let Some(home) = home else {
         eprintln!("derm-audit-feed rules: no home folder (set HOME or pass --home)");
@@ -152,6 +166,83 @@ fn cmd_rules(args: &[String]) -> u8 {
         eprintln!("derm-audit-feed rules: no rule for {s} (it does not exist; reading it later is not recorded)");
     }
     0
+}
+
+/// `rules --account <slug>`: the account's own file (step P, lane PC).
+#[cfg(unix)]
+fn cmd_rules_account(slug: &str, uid_given: Option<u32>, home_given: bool) -> u8 {
+    if home_given {
+        eprintln!("derm-audit-feed rules: --account takes no --home; an account's home is /var/lib/derm/agents/<slug>");
+        return 2;
+    }
+    if !derm_audit_linux::rules::account_slug(slug) {
+        eprintln!(
+            "derm-audit-feed rules: {slug:?} is not an agent account's slug ([a-z0-9-]{{1,15}}, not agent, agents or agent-*)"
+        );
+        return 2;
+    }
+    let name = format!("derm-{slug}");
+    let Some((uid, home)) = lookup_user(&name) else {
+        eprintln!("derm-audit-feed rules: {name} is not a user here; make it with: derm agents add {slug}");
+        return 2;
+    };
+    let want = format!("{}/{slug}", derm_audit_linux::rules::AGENTS_ROOT);
+    if home.trim_end_matches('/') != want {
+        eprintln!("derm-audit-feed rules: {name}'s home is {home:?}, not {want}; it is not one of derm's agent accounts");
+        return 2;
+    }
+    if let Some(u) = uid_given.filter(|u| *u != uid) {
+        eprintln!("derm-audit-feed rules: {name} has uid {uid}, not {u}");
+        return 2;
+    }
+    let exists = |p: &str| Path::new(p).exists();
+    match render_account(&AccountInput {
+        uid,
+        slug,
+        exists: &exists,
+    }) {
+        Ok((text, skipped)) => {
+            print!("{text}");
+            for s in skipped {
+                eprintln!("derm-audit-feed rules: no rule for {s} (it does not exist; reading it later is not recorded)");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("derm-audit-feed rules: {e}");
+            2
+        }
+    }
+}
+
+/// A user's uid and home from the system's user list (`getpwnam_r(3)`).
+#[cfg(unix)]
+fn lookup_user(name: &str) -> Option<(u32, String)> {
+    let cname = std::ffi::CString::new(name).ok()?;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: an all-zero `passwd` is a valid out value for getpwnam_r.
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    // SAFETY: every pointer is valid for the call; `buf` outlives `pwd`'s
+    // borrowed strings, which are copied before it is dropped.
+    let rc = unsafe {
+        libc::getpwnam_r(
+            cname.as_ptr(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() || pwd.pw_dir.is_null() {
+        return None;
+    }
+    // SAFETY: getpwnam_r set `pw_dir` to a NUL-terminated string in `buf`.
+    let home = unsafe { std::ffi::CStr::from_ptr(pwd.pw_dir) }
+        .to_str()
+        .ok()?
+        .to_string();
+    Some((pwd.pw_uid, home))
 }
 
 fn cmd_parse(args: &[String]) -> u8 {

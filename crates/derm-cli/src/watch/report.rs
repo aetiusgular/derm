@@ -7,7 +7,7 @@ use std::io::Write;
 
 use serde_json::{json, Value};
 
-use super::conn::Conn;
+use super::conn::{check_ok, classify, Conn, Incoming};
 use super::text::{clean, clock, count, date_time, now_ms, parse_when, short};
 use super::Args;
 
@@ -44,13 +44,21 @@ pub fn main(args: &Args) -> u8 {
             return 2;
         }
     };
-    let report = match fetch(&socket, args.value("--chat"), since, until) {
+    let mut report = match fetch(&socket, args.value("--chat"), since, until) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("derm watch report: {e}");
             return 1;
         }
     };
+    // Step P (lane PC): the report counts records by kind only, so which
+    // chat a project flag is and how many Unix connects left the project
+    // are read here from the tail's backlog, when there is any to read.
+    if PROJECT_KINDS.iter().any(|k| kind_count(&report, k) > 0) {
+        if let Some(per_chat) = project_flags(&socket, args.value("--chat"), since, until) {
+            report["projectFlags"] = per_chat;
+        }
+    }
     let out = std::io::stdout();
     let mut out = out.lock();
     let text = if args.flag("--json") {
@@ -64,6 +72,170 @@ pub fn main(args: &Args) -> u8 {
         3
     } else {
         0
+    }
+}
+
+/// Step P's kinds, all source `derm` (`contracts/events.md` 7.2; lane PC).
+pub const PROJECT_KINDS: &[&str] = &["project.control", "signin.read", "net.unix"];
+
+fn kind_count(r: &Value, kind: &str) -> u64 {
+    r.get("byKind")
+        .and_then(|k| k.get(kind))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+/// Step P's records per chat over the window, from the daemon's tail
+/// backlog (`contracts/daemon-protocol.md` section 2: the log on disk and
+/// the ring, the newest 5,000 at most): `{"chats": {<chat>: {"control",
+/// "signinRead", "netUnix", "netUnixOutside"}}, "partial"}`, `partial` when
+/// the daemon cut the backlog, so the counts are at least these. `None`
+/// when the daemon does not say how long its backlog is.
+pub fn project_flags(
+    socket: &std::path::Path,
+    chat: Option<&str>,
+    since: i64,
+    until: i64,
+) -> Option<Value> {
+    let mut conn = Conn::open(socket, "derm watch report").ok()?;
+    let mut req = json!({"op": "tail", "since": since});
+    if let Some(c) = chat {
+        req["chat"] = json!(c);
+    }
+    conn.send(&req).ok()?;
+    let reply = check_ok(conn.line().ok()?).ok()?;
+    let r = reply.get("report")?;
+    let sent = r.get("backlogSent").and_then(Value::as_u64)?;
+    let partial = r.get("backlogCut").and_then(Value::as_bool) == Some(true);
+    conn.stream_mode().ok()?;
+    let mut events = Vec::new();
+    for _ in 0..sent {
+        match conn.line() {
+            Ok(line) => {
+                if let Incoming::Event(ev) = classify(line) {
+                    events.push(ev);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Some(count_project_flags(&events, since, until, partial))
+}
+
+/// The counts `project_flags` returns, from events as the tail sends them.
+/// Only the daemon's own records (source `derm`) count: a chat token posts
+/// no `derm` record (`op_event`).
+pub fn count_project_flags(events: &[Value], since: i64, until: i64, partial: bool) -> Value {
+    let mut chats = serde_json::Map::new();
+    for ev in events {
+        let kind = ev.get("kind").and_then(Value::as_str).unwrap_or("");
+        if ev.get("source").and_then(Value::as_str) != Some("derm")
+            || !PROJECT_KINDS.contains(&kind)
+        {
+            continue;
+        }
+        let at = ev.get("at").and_then(Value::as_i64).unwrap_or(0);
+        if at < since || at > until {
+            continue;
+        }
+        let chat = ev
+            .get("chatId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if chat.is_empty() || (chats.len() >= 64 && !chats.contains_key(&chat)) {
+            continue;
+        }
+        let row = chats.entry(chat).or_insert_with(
+            || json!({"control": 0, "signinRead": 0, "netUnix": 0, "netUnixOutside": 0}),
+        );
+        let bump = |row: &mut Value, k: &str| row[k] = json!(row[k].as_u64().unwrap_or(0) + 1);
+        match kind {
+            "project.control" => bump(row, "control"),
+            "signin.read" => bump(row, "signinRead"),
+            _ => {
+                bump(row, "netUnix");
+                if ev.get("detail").and_then(|d| d.get("outside")) == Some(&Value::Bool(true)) {
+                    bump(row, "netUnixOutside");
+                }
+            }
+        }
+    }
+    json!({"chats": chats, "partial": partial})
+}
+
+/// Step P's lines (lane PC): the window's counts by kind, then per chat
+/// when `projectFlags` was read.
+fn project_lines(r: &Value, out: &mut String) {
+    let (control, signin, unix) = (
+        kind_count(r, "project.control"),
+        kind_count(r, "signin.read"),
+        kind_count(r, "net.unix"),
+    );
+    if control + signin + unix == 0 {
+        return;
+    }
+    if control > 0 {
+        out.push_str(&format!(
+            "PROJECT CONTROL WRITES: {} writes to files that run later in an agent account's project home (kind project.control)\n",
+            count(control)
+        ));
+    }
+    if signin > 0 {
+        out.push_str(&format!(
+            "SIGN-IN READS: {} opens of an agent account's sign-in files by a process that is not the chat's harness (kind signin.read)\n",
+            count(signin)
+        ));
+    }
+    if unix > 0 {
+        out.push_str(&format!(
+            "unix sockets: {} connects by agent accounts' processes (kind net.unix); DNS and other Unix-socket ways out are not blocked for agent accounts\n",
+            count(unix)
+        ));
+    }
+    let Some(pf) = r.get("projectFlags") else {
+        out.push_str("  (per chat: derm watch tail --since <window> --json, kinds project.control, signin.read, net.unix)\n");
+        return;
+    };
+    let at_least = if pf.get("partial").and_then(Value::as_bool) == Some(true) {
+        "at least "
+    } else {
+        ""
+    };
+    let Some(chats) = pf.get("chats").and_then(Value::as_object) else {
+        return;
+    };
+    let mut rows: Vec<(&String, &Value)> = chats.iter().collect();
+    rows.sort_by(|a, b| a.0.cmp(b.0));
+    for (chat, row) in rows.into_iter().take(20) {
+        let n = |k: &str| row.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let mut parts = Vec::new();
+        if n("control") > 0 {
+            parts.push(format!(
+                "{at_least}{} run-later writes in its project home",
+                count(n("control"))
+            ));
+        }
+        if n("signinRead") > 0 {
+            parts.push(format!(
+                "{at_least}{} sign-in reads not by the harness",
+                count(n("signinRead"))
+            ));
+        }
+        if n("netUnixOutside") > 0 {
+            parts.push(format!(
+                "{at_least}{} Unix-socket connects OUTSIDE its project and bridge",
+                count(n("netUnixOutside"))
+            ));
+        }
+        if parts.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            "  chat {}: {}\n",
+            clean(chat, 64),
+            parts.join(", ")
+        ));
     }
 }
 
@@ -152,6 +324,7 @@ pub fn render(r: &Value) -> String {
             count(control)
         ));
     }
+    project_lines(r, &mut out);
     let check = r.get("check").cloned().unwrap_or(Value::Null);
     // Box test w5 retest 3, BW5R3-1: the collector is the Mac's; on Linux,
     // where the daemon reports `osFeed`, its "unknown" read as if the OS
@@ -687,6 +860,73 @@ mod tests {
         // A report left with its totals only still renders.
         let t = render(&json!({"events": 5, "flags": 2, "reportCut": true}));
         assert!(t.contains("REPORT CUT TO ITS TOTALS"), "{t}");
+    }
+
+    #[test]
+    fn pc_step_p_flags_are_named_per_chat() {
+        let mut r = sample();
+        r["byKind"]["project.control"] = json!(2);
+        r["byKind"]["signin.read"] = json!(1);
+        r["byKind"]["net.unix"] = json!(5);
+        // Without the per-chat read, the counts and where to look.
+        let text = render(&r);
+        assert!(text.contains("PROJECT CONTROL WRITES: 2 writes"), "{text}");
+        assert!(text.contains("SIGN-IN READS: 1 opens"), "{text}");
+        assert!(text.contains("unix sockets: 5 connects"), "{text}");
+        assert!(
+            text.contains("DNS and other Unix-socket ways out are not blocked"),
+            "{text}"
+        );
+        assert!(text.contains("derm watch tail --since"), "{text}");
+        let ev = |chat: &str, kind: &str, at: i64, outside: bool, source: &str| {
+            json!({"chatId": chat, "kind": kind, "at": at, "source": source,
+                "detail": {"outside": outside}})
+        };
+        let events = vec![
+            ev("derm-a", "project.control", 10, false, "derm"),
+            ev("derm-a", "project.control", 11, false, "derm"),
+            ev("derm-a", "net.unix", 12, true, "derm"),
+            ev("derm-a", "net.unix", 13, false, "derm"),
+            ev("derm-b", "signin.read", 14, false, "derm"),
+            ev("derm-b", "net.unix", 15, true, "derm"),
+            // Outside the window, another source, another kind: not counted.
+            ev("derm-a", "net.unix", 99, true, "derm"),
+            ev("derm-a", "net.unix", 12, true, "adapter"),
+            ev("derm-a", "install.control", 12, false, "derm"),
+        ];
+        let pf = count_project_flags(&events, 10, 20, false);
+        assert_eq!(
+            pf["chats"]["derm-a"],
+            json!({"control": 2, "signinRead": 0, "netUnix": 2, "netUnixOutside": 1})
+        );
+        assert_eq!(
+            pf["chats"]["derm-b"],
+            json!({"control": 0, "signinRead": 1, "netUnix": 1, "netUnixOutside": 1})
+        );
+        r["projectFlags"] = pf;
+        let text = render(&r);
+        assert!(
+            text.contains("chat derm-a: 2 run-later writes in its project home, 1 Unix-socket connects OUTSIDE its project and bridge"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "chat derm-b: 1 sign-in reads not by the harness, 1 Unix-socket connects OUTSIDE"
+            ),
+            "{text}"
+        );
+        // A cut backlog says the counts are a floor.
+        r["projectFlags"]["partial"] = json!(true);
+        assert!(render(&r).contains("chat derm-a: at least 2 run-later writes"));
+        // A chat id is cleaned like every field the agent can reach.
+        let pf = count_project_flags(
+            &[ev("derm-\u{1b}[2Jx", "signin.read", 10, false, "derm")],
+            0,
+            20,
+            false,
+        );
+        r["projectFlags"] = pf;
+        assert!(!render(&r).contains('\u{1b}'));
     }
 
     #[test]
