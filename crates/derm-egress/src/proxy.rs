@@ -650,17 +650,34 @@ impl Shared {
         }
         client.r.consume(early.len());
         let mut from_client = client.r;
-        let t1 = std::thread::spawn(move || {
-            let n = io::copy(&mut from_client, &mut up_w).unwrap_or(0);
+        let sent = Arc::new(AtomicU64::new(early.len() as u64));
+        let counted = sent.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut b = [0u8; 16 * 1024];
+            loop {
+                match from_client.read(&mut b) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if up_w.write_all(&b[..n]).is_err() {
+                            break;
+                        }
+                        counted.fetch_add(n as u64, Ordering::SeqCst);
+                    }
+                }
+            }
             let _ = up_w.shutdown(Shutdown::Write);
-            n
+            let _ = done_tx.send(());
         });
         let mut from_up = up;
         let down = io::copy(&mut from_up, &mut down_w).unwrap_or(0);
         // The vendor closed: nothing more can go up, so the client's side
-        // ends too (the other copy is waiting on it).
+        // ends too. A shutdown does not wake a blocked read on every system
+        // (Windows CI), so the record does not wait long for that copy; the
+        // copy ends when the client closes or goes quiet.
         let _ = down_w.shutdown(Shutdown::Both);
-        t.up = early.len() as u64 + t1.join().unwrap_or(0);
+        let _ = done_rx.recv_timeout(Duration::from_secs(1));
+        t.up = sent.load(Ordering::SeqCst);
         t.down = down;
     }
 
