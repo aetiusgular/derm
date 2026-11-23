@@ -1804,7 +1804,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             "derm run: the model tap is off, so nothing beside the gate sees the chat's calls: a call whose gate record never reached the daemon shows nowhere".to_string()
         });
     }
-    let gate_record = Some(json!({"expected": gate_expected}));
+    let mut gate_record = Some(json!({"expected": gate_expected}));
     // The Standard tier (lane 6A's seam; `contracts/sandbox.md`): the agent's
     // own sandbox from derm's policy, as `detail.tier`. The base's stub
     // returns none.
@@ -2205,6 +2205,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let daemon_socket_text = daemon
         .as_ref()
         .map(|d| d.socket.to_string_lossy().into_owned());
+    let harness_args_at = words_at(&launch.args, &a.rest);
     let agent_user = user::wrap_with(
         &mut launch,
         &user::Context {
@@ -2218,8 +2219,23 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             token: token.as_deref(),
             policy: &policy_path,
             account: account_slug.as_deref(),
+            harness_args_at,
         },
     )?;
+    // Request PA-2: an agent account's chat runs with HOME in its project
+    // home, so whether derm's gate runs there is the account route's answer
+    // (`user::project::harness_gate`), not the person's home's.
+    if let Some(au) = &agent_user {
+        let route = au
+            .pointer("/gate/expected")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true);
+        let expected = claude_gate_by.is_some() || route;
+        gate_record = Some(json!({
+            "expected": expected,
+            "route": au.pointer("/gate/how").cloned().unwrap_or(serde_json::Value::Null),
+        }));
+    }
     // Who it runs as, once lane V's seam has decided (box test w5, BW5-16:
     // the lines before said "as you" for a chat that then ran as the
     // agents' user).

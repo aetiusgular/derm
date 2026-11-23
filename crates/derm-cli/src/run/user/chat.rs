@@ -251,7 +251,28 @@ pub(crate) fn wrap(
         landlock::SPEC_VAR.to_string(),
         serde_json::to_string(&spec).map_err(|e| (1, e.to_string()))?,
     ));
-    let assign = project::project_env(&pc);
+    // Request PA-2: derm's gate on the harness's own command line, since
+    // the project home is the chat's to write (`project::harness_gate`).
+    let pi_pkg = if harness == "pi" {
+        match project::pi_package(project::PI_PACKAGE) {
+            Ok(p) => Some(p),
+            Err(why) => {
+                if std::fs::symlink_metadata(project::PI_PACKAGE).is_ok() {
+                    eprintln!("derm run: derm's Pi package is not used: {why}");
+                }
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let gate = project::harness_gate(&harness, &helper, pi_pkg.as_deref());
+    place_gate_args(&mut launch.args, ctx.harness_args_at, &harness, &gate.args);
+    let mut assign = project::project_env(&pc);
+    assign.extend(gate.env.iter().cloned());
+    if !gate.line.is_empty() {
+        eprintln!("{}", gate.line);
+    }
     rewrite(
         launch,
         &Route {
@@ -324,7 +345,31 @@ pub(crate) fn wrap(
             "gatewayEntry": entry_rel,
         },
         "harnessExe": program_real,
+        "gate": {"expected": gate.expected, "how": gate.how},
     })))
+}
+
+/// Puts derm's gate words before the harness's own (request PA-2): for
+/// Codex past a session subcommand, beside the tap's and the export's `-c`
+/// pairs, so every `-c` derm adds is on one side of it (case 184).
+pub(crate) fn place_gate_args(
+    args: &mut Vec<String>,
+    words_at: Option<usize>,
+    harness: &str,
+    gate: &[String],
+) {
+    if gate.is_empty() {
+        return;
+    }
+    let mut at = words_at.unwrap_or(0).min(args.len());
+    if harness == "codex"
+        && args
+            .get(at)
+            .is_some_and(|w| super::super::tap::CODEX_SESSION_SUBCOMMANDS.contains(&w.as_str()))
+    {
+        at += 1;
+    }
+    args.splice(at..at, gate.iter().cloned());
 }
 
 fn layout_home(account_home: &str, id: &crate::project::ProjectId) -> String {
@@ -555,6 +600,28 @@ mod tests {
             said: Vec::new(),
             asked: Vec::new(),
         }
+    }
+
+    #[test]
+    fn pa_2_derms_gate_words_go_before_the_harnesss_own_past_codexs_subcommand() {
+        let g = vec!["-c".to_string(), "hooks={}".to_string()];
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // `codex exec <prompt>` with the export's pairs after `exec`.
+        let mut a = s(&["exec", "-c", "otel=1", "do it"]);
+        place_gate_args(&mut a, Some(0), "codex", &g);
+        assert_eq!(a, s(&["exec", "-c", "hooks={}", "-c", "otel=1", "do it"]));
+        // The TUI: first.
+        let mut a = s(&["fix it"]);
+        place_gate_args(&mut a, Some(0), "codex", &g);
+        assert_eq!(a, s(&["-c", "hooks={}", "fix it"]));
+        // Pi: before its words, no subcommand rule.
+        let mut a = s(&["--model", "x"]);
+        place_gate_args(&mut a, Some(0), "pi", &["-e".to_string(), "/p".to_string()]);
+        assert_eq!(a, s(&["-e", "/p", "--model", "x"]));
+        // Nothing to add, nothing moves.
+        let mut a = s(&["exec"]);
+        place_gate_args(&mut a, Some(0), "codex", &[]);
+        assert_eq!(a, s(&["exec"]));
     }
 
     #[test]

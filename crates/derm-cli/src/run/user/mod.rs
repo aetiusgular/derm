@@ -85,6 +85,11 @@ pub(crate) struct Context<'a> {
     /// Agent accounts are Linux only for now.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub account: Option<&'a str>,
+    /// Where the harness's own words start in the launch's arguments
+    /// (`run::words_at`), so derm's gate words go before them, past a
+    /// Codex session subcommand (request PA-2, case 184).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub harness_args_at: Option<usize>,
 }
 
 /// Where `sudo` and `env` must be: root's, never found on `PATH` (case 37).
@@ -925,6 +930,7 @@ mod tests {
                 token: None,
                 policy: "/home/tony/.derm/policy.json",
                 account: None,
+                harness_args_at: None,
             };
             assert_eq!(wrap_with(&mut p, &ctx), Ok(None));
         }
