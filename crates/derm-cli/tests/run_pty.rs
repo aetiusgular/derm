@@ -128,6 +128,10 @@ fn pd_2_on_a_terminal_the_harness_runs_on_derms_own_pty() {
     );
     // No line of derm's says it had no screen.
     assert!(!text.contains("no screen for this chat"), "{text}");
+    // derm's own line printed while it holds the terminal (raw, OPOST off)
+    // ends in \r\n (lane PD's Look out for 3): on Linux with no boundary
+    // derm says io_uring is not audited (case 128).
+    assert!(text.contains("case 128)\r\n"), "{text:?}");
 }
 
 #[test]

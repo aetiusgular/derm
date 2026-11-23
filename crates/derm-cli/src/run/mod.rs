@@ -3510,14 +3510,19 @@ mod end_to_end {
     #[test]
     fn a_chat_in_a_named_folder_mints_with_its_project_and_records_it() {
         use std::os::unix::fs::PermissionsExt;
-        let st = setup("project");
+        let mut st = setup("project");
         let cwd = st.work.to_string_lossy().into_owned();
         let real = std::fs::canonicalize(&st.work)
             .unwrap()
             .to_string_lossy()
             .into_owned();
         let id = derm_core::project::ProjectId::of_real_path(&real);
-        let home = std::path::PathBuf::from(st.env.home.clone().unwrap());
+        // The registry's reader refuses a link on the way to it (contract
+        // projects.md 1.1), and macOS's temporary folder is under /var, a
+        // link to /private/var (case 111): the home by its real path, as a
+        // real home (/Users/<you>) is.
+        let home = std::fs::canonicalize(st.env.home.clone().unwrap()).unwrap();
+        st.env.home = Some(home.to_string_lossy().into_owned());
         let derm_dir = home.join(".derm");
         std::fs::create_dir_all(&derm_dir).unwrap();
         std::fs::set_permissions(&derm_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
