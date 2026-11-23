@@ -94,3 +94,52 @@ fn the_default_presets_answers_carry_their_permissions() {
         assert!(d.reason.starts_with(start), "case {id}: {}", d.reason);
     }
 }
+
+/// Step P (lane PE's request PE-R8, the base's request): derm's own project
+/// tools in each preset, by Claude Code's name (`mcp__derm_project__<tool>`,
+/// split at the double underscore). Same-project calls are the daemon's to
+/// allow and cross-project ones ask at the daemon as well (P7); the preset
+/// says whether the gate asks first. The writing verbs of `derm project`
+/// and `derm secret bind` are denied, as `derm setup`'s are (case 147).
+#[test]
+fn step_p_presets_answer_derms_project_tools_and_deny_its_writing_verbs() {
+    let want = [
+        ("workspace-write", Action::Allow, Action::Allow),
+        ("read-only", Action::Ask, Action::Allow),
+        ("strict", Action::Ask, Action::Ask),
+    ];
+    for (name, text) in PRESETS {
+        let doc: Value = serde_json::from_str(text).unwrap();
+        let policy = parse(&doc["policy"].to_string()).unwrap();
+        let (_, message, read) = want.iter().find(|w| w.0 == *name).unwrap();
+        for (tool, action) in [
+            ("mcp__derm_project__derm_message", message),
+            ("mcp__derm_project__derm_terminal_read", read),
+        ] {
+            let call = Call {
+                tool: tool.into(),
+                harness: "claude-code".into(),
+                chat: None,
+                description: None,
+                input_text: "{}".into(),
+            };
+            let d = evaluate(&policy, &call);
+            assert_eq!(d.action, *action, "{name} {tool}: {}", d.reason);
+        }
+        for cmd in [
+            "derm project add /srv/x",
+            "derm project remove /srv/x",
+            "derm secret bind gh --project /srv/x",
+            "derm secret unbind gh",
+        ] {
+            let call = Call {
+                tool: "Bash".into(),
+                harness: "claude-code".into(),
+                chat: None,
+                description: None,
+                input_text: cmd.into(),
+            };
+            assert_eq!(evaluate(&policy, &call).action, Action::Deny, "{name}: {cmd}");
+        }
+    }
+}

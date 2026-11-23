@@ -1958,6 +1958,50 @@
           "kexec"
         ],
         "action": "ask"
+      },
+      {
+        "tool": "derm_project/derm_message",
+        "action": "allow"
+      },
+      {
+        "tool": "derm_project/derm_terminal_read",
+        "action": "allow"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "project",
+          "add"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "project",
+          "remove"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "secret",
+          "bind"
+        ],
+        "action": "deny"
+      },
+      {
+        "tool": "bash",
+        "command": [
+          "derm",
+          "secret",
+          "unbind"
+        ],
+        "action": "deny"
       }
     ]
   }
