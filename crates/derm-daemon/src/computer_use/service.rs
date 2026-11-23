@@ -326,6 +326,7 @@ impl Host for DaemonHost {
                 summary: summary.to_string(),
                 timeout_seconds: ASK_SECONDS,
                 boundary_only: false,
+                offers: Vec::new(),
             },
         };
         // `approve` answers on `out` before `handle` returns.
@@ -354,6 +355,7 @@ impl Host for DaemonHost {
                 summary: summary.to_string(),
                 timeout_seconds: ASK_SECONDS,
                 boundary_only: false,
+                offers: Vec::new(),
             },
         };
         self.0.handle(&who, request, &out);
@@ -935,6 +937,7 @@ mod daemon_tests {
                         answer: said,
                         chat: None,
                         proof: None,
+                        scope: None,
                     },
                     &approver_conn,
                 );
@@ -969,6 +972,7 @@ mod daemon_tests {
                 answer: Answer::Yes,
                 chat: Some("chat-8".into()),
                 proof: None,
+                scope: None,
             },
             &out,
         );

@@ -167,6 +167,29 @@ pub fn count_project_flags(events: &[Value], since: i64, until: i64, partial: bo
     json!({"chats": chats, "partial": partial})
 }
 
+/// Step P's tool records (lane PE; request PE-R7): messages and terminal
+/// reads between agent chats, and session grants across projects.
+fn project_tool_lines(r: &Value, out: &mut String) {
+    let (messages, reads, grants) = (
+        kind_count(r, "project.message"),
+        kind_count(r, "project.read"),
+        kind_count(r, "project.grant"),
+    );
+    if messages + reads > 0 {
+        out.push_str(&format!(
+            "agent chats: {} messages (kind project.message) and {} terminal reads (kind project.read) between chats\n",
+            count(messages),
+            count(reads)
+        ));
+    }
+    if grants > 0 {
+        out.push_str(&format!(
+            "PROJECT GRANTS: {} \"for this session\" grants and their ends, across projects (kind project.grant; derm watch tail --json lists each)\n",
+            count(grants)
+        ));
+    }
+}
+
 /// Step P's lines (lane PC): the window's counts by kind, then per chat
 /// when `projectFlags` was read.
 fn project_lines(r: &Value, out: &mut String) {
@@ -328,6 +351,7 @@ pub fn render(r: &Value) -> String {
         ));
     }
     project_lines(r, &mut out);
+    project_tool_lines(r, &mut out);
     let check = r.get("check").cloned().unwrap_or(Value::Null);
     // Box test w5 retest 3, BW5R3-1: the collector is the Mac's; on Linux,
     // where the daemon reports `osFeed`, its "unknown" read as if the OS
@@ -1000,6 +1024,11 @@ mod tests {
             t.contains("(derm_message) dropped unread for room since the daemon started: 4"),
             "{t}"
         );
+        r["byKind"]["project.grant"] = json!(2);
+        r["byKind"]["project.message"] = json!(5);
+        let t = render(&r);
+        assert!(t.contains("PROJECT GRANTS: 2"), "{t}");
+        assert!(t.contains("agent chats: 5 messages"), "{t}");
         assert!(!t.contains("tails dropped"), "{t}");
         assert!(!t.contains("OS EVENTS DROPPED"), "{t}");
     }

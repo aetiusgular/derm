@@ -456,3 +456,108 @@ fn pe_r2_an_event_ingested_outside_op_event_carries_its_chats_project() {
         assert_eq!(e["project"], A, "{e}");
     }
 }
+
+/// Request PE-R3 (plan call 20, P-C7): a project ask offers "this once" and
+/// "for this session"; a session yes is a grant for the asking chat to the
+/// other project, so its next message there is delivered with no card, and
+/// a once yes asks again. A gate's own `approve` that names `offers` has
+/// them dropped, and a `session` answer to it counts as once.
+#[test]
+fn pe_r3_a_session_yes_grants_the_chat_and_a_gate_cannot_offer_it() {
+    let f = fixture();
+    let mut d = Client::hello(&f, DAEMON_TOKEN);
+    let a = mint(&mut d, "c-a", A);
+    let b = mint(&mut d, "c-b", B);
+    let mut harness = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let r = d.ask(json!({"op": "event", "event": {
+        "id": "start-c-a", "at": 1, "chatId": "c-a", "harness": "codex", "source": "run",
+        "kind": "run.start", "summary": "", "detail": {"boundary": "srt"}, "pid": harness.id()
+    }}));
+    assert_eq!(r["ok"], true, "{r}");
+    let mut ca = Client::hello(&f, &a);
+    let mut approver = Client::hello(&f, DAEMON_TOKEN);
+    assert_eq!(approver.ask(json!({"op": "approver"}))["ok"], true);
+    // A once yes, then the next message asks again.
+    for (text, scope) in [("one", "once"), ("two", "session")] {
+        writeln!(
+            ca.w,
+            "{}",
+            json!({"op": "msg.send", "to": "c-b", "text": text})
+        )
+        .unwrap();
+        let push = approver.recv(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            push["approve"]["offers"],
+            json!(["once", "session"]),
+            "{push}"
+        );
+        let r = approver.ask(json!({"op": "answer", "id": push["approve"]["id"],
+            "answer": "yes", "chat": "c-a", "scope": scope}));
+        assert_eq!(r["ok"], true, "{r}");
+        let r = ca.recv(Duration::from_secs(5)).unwrap();
+        assert_eq!(r["result"]["delivered"], json!(["c-b"]), "{scope}: {r}");
+    }
+    // After the session yes, no card.
+    let r = ca.ask(json!({"op": "msg.send", "to": "c-b", "text": "three"}));
+    assert_eq!(
+        (
+            r["result"]["delivered"].clone(),
+            r["result"]["asked"].clone()
+        ),
+        (json!(["c-b"]), json!([])),
+        "{r}"
+    );
+    assert!(
+        approver.recv(Duration::from_millis(500)).is_none(),
+        "no card"
+    );
+    let mut cb = Client::hello(&f, &b);
+    let t = cb.ask(json!({"op": "msg.take"}));
+    assert_eq!(
+        t["result"]["messages"].as_array().map(Vec::len),
+        Some(3),
+        "{t}"
+    );
+    let grants: Vec<Value> = stored(&f, "c-a")
+        .into_iter()
+        .filter(|e| e["kind"] == "project.grant")
+        .collect();
+    assert_eq!(grants.len(), 1, "{grants:?}");
+    // A gate's ask names `offers`: the push carries none, and a session
+    // answer is once.
+    writeln!(
+        ca.w,
+        "{}",
+        json!({"op": "approve", "request": {
+            "id": "gate-1", "chat": "c-a", "harness": "codex", "tool": "bash",
+            "summary": "ls", "timeoutSeconds": 5, "offers": ["once", "session"]
+        }})
+    )
+    .unwrap();
+    let push = approver.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(push["approve"]["id"], "gate-1", "{push}");
+    assert!(push["approve"].get("offers").is_none(), "{push}");
+    approver.ask(
+        json!({"op": "answer", "id": "gate-1", "answer": "yes", "chat": "c-a",
+        "scope": "session"}),
+    );
+    let r = ca.recv(Duration::from_secs(5)).unwrap();
+    assert_eq!(r["answer"], "yes", "{r}");
+    let records: Vec<Value> = stored(&f, "c-a")
+        .into_iter()
+        .filter(|e| e["source"] == "approval" && e["detail"]["requestId"] == "gate-1")
+        .filter(|e| e["detail"]["answer"] == "yes")
+        .collect();
+    assert_eq!(records.len(), 1, "the gate's yes is recorded");
+    // The gate's session answer granted nothing across projects.
+    let grants = stored(&f, "c-a")
+        .into_iter()
+        .filter(|e| e["kind"] == "project.grant")
+        .count();
+    assert_eq!(grants, 1, "still only the project ask's grant");
+    let _ = harness.kill();
+    let _ = harness.wait();
+}

@@ -33,7 +33,9 @@ pub const USAGE: &str = "usage: derm watch --approve [--socket <path>]
        derm watch approve [--socket <path>]
 
 Answers the daemon's approval requests from this terminal: y or yes allows
-one call, anything else (Enter too) denies it. When the chat runs as you with
+one call, anything else (Enter too) denies it. A request between two of your
+projects (derm_message, derm_terminal_read) also takes s or session: yes for
+the rest of the asking chat's session, to that project only. When the chat runs as you with
 no boundary, the daemon also asks for your login password before a yes (S2
 part b); it is read with echo off and checked by the system. Ctrl-C stops;
 requests then get no from the daemon.";
@@ -180,6 +182,8 @@ pub enum Ended {
 struct Waiting {
     req: Value,
     deadline: Instant,
+    /// The scope of the yes typed for it, kept for the password (PE-R7).
+    scope: Option<&'static str>,
 }
 
 /// An answer sent and not yet replied to: its request, kept while the
@@ -187,6 +191,8 @@ struct Waiting {
 struct Sent {
     id: String,
     word: &'static str,
+    /// `"session"` for a session yes (request PE-R7), else `None` (once).
+    scope: Option<&'static str>,
     waiting: Option<Waiting>,
     with_proof: bool,
 }
@@ -277,7 +283,11 @@ pub fn serve_with(
                 // daemon after its own timer is refused.
                 let deadline = Instant::now()
                     + Duration::from_secs(secs).saturating_sub(Duration::from_secs(1));
-                queue.push_back(Waiting { req, deadline });
+                queue.push_back(Waiting {
+                    req,
+                    deadline,
+                    scope: None,
+                });
                 if let Some((w, _)) = &shown {
                     let _ = writeln!(
                         out,
@@ -292,12 +302,13 @@ pub fn serve_with(
                     continue;
                 };
                 let id = clean(&answer.id, 64);
+                let words = sent_words(&answer);
                 let open = answer
                     .waiting
                     .filter(|w| w.deadline > Instant::now() && answer.word == "yes");
                 match (check_ok(reply), open) {
                     (Ok(_), _) => {
-                        let _ = writeln!(out, "  {} sent for {id}", answer.word);
+                        let _ = writeln!(out, "  {words} sent for {id}");
                     }
                     // The daemon wants the person's password for this yes.
                     (Err(e), Some(w)) if wants_password(&e) && !answer.with_proof => {
@@ -351,11 +362,12 @@ pub fn serve_with(
                         "no",
                     )
                 } else {
-                    (
-                        json!({"op": "answer", "id": id, "chat": chat, "answer": "yes",
-                            "proof": {"password": password}}),
-                        "yes",
-                    )
+                    let mut line = json!({"op": "answer", "id": id, "chat": chat,
+                        "answer": "yes", "proof": {"password": password}});
+                    if let Some(scope) = w.scope {
+                        line["scope"] = json!(scope);
+                    }
+                    (line, "yes")
                 };
                 let mut wire = line.to_string();
                 let failed = writeln!(writer, "{wire}").is_err();
@@ -366,9 +378,11 @@ pub fn serve_with(
                 if failed {
                     return Ended::DaemonGone("the answer could not be sent".into());
                 }
+                let scope = if word == "yes" { w.scope } else { None };
                 sent.push_back(Sent {
                     id,
                     word,
+                    scope,
                     waiting: Some(w),
                     with_proof: word == "yes",
                 });
@@ -387,8 +401,11 @@ pub fn serve_with(
                     shown = Some((w, since));
                     continue;
                 }
-                let yes = is_yes(&text);
+                // A session yes only where the request offers one (PE-R7).
+                let session = offers_session(&w.req) && is_session(&text);
+                let yes = session || is_yes(&text);
                 let word = if yes { "yes" } else { "no" };
+                let scope = session.then_some("session");
                 let id = w
                     .req
                     .get("id")
@@ -397,13 +414,19 @@ pub fn serve_with(
                     .to_string();
                 // The chat too: two chats may wait on one id (S8, integration w2).
                 let chat = w.req.get("chat").and_then(Value::as_str).unwrap_or("");
-                let line = json!({"op": "answer", "id": id, "chat": chat, "answer": word});
+                let mut line = json!({"op": "answer", "id": id, "chat": chat, "answer": word});
+                if let Some(scope) = scope {
+                    line["scope"] = json!(scope);
+                }
                 if writeln!(writer, "{line}").is_err() {
                     return Ended::DaemonGone("the answer could not be sent".into());
                 }
+                let mut w = w;
+                w.scope = scope;
                 sent.push_back(Sent {
                     id,
                     word,
+                    scope,
                     waiting: yes.then_some(w),
                     with_proof: false,
                 });
@@ -454,7 +477,11 @@ fn drain_typed(
                     .clamp(1, 3600);
                 let deadline = Instant::now()
                     + Duration::from_secs(secs).saturating_sub(Duration::from_secs(1));
-                queue.push_back(Waiting { req, deadline });
+                queue.push_back(Waiting {
+                    req,
+                    deadline,
+                    scope: None,
+                });
             }
             other => keep.push(other),
         }
@@ -468,7 +495,7 @@ fn drain_typed(
             };
             let id = clean(&answer.id, 64);
             let note = match check_ok(reply) {
-                Ok(_) => format!("  {} sent for {id}", answer.word),
+                Ok(_) => format!("  {} sent for {id}", sent_words(&answer)),
                 Err(e) => format!("  not sent for {id}: {e}"),
             };
             let _ = writeln!(out, "{note}");
@@ -480,6 +507,27 @@ fn drain_typed(
 /// denies.
 pub fn is_yes(text: &str) -> bool {
     matches!(text.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// `s` or `session`, in any letter case: a yes for the rest of the asking
+/// chat's session, where the request offers it (request PE-R7).
+pub fn is_session(text: &str) -> bool {
+    matches!(text.trim().to_ascii_lowercase().as_str(), "s" | "session")
+}
+
+/// Whether the daemon's push offers a session yes (`offers`, request PE-R3;
+/// step P's project asks only).
+pub fn offers_session(req: &Value) -> bool {
+    req.get("offers")
+        .and_then(Value::as_array)
+        .is_some_and(|o| o.iter().any(|x| x == "session"))
+}
+
+fn sent_words(answer: &Sent) -> String {
+    match answer.scope {
+        Some(scope) => format!("{} ({scope})", answer.word),
+        None => answer.word.to_string(),
+    }
 }
 
 fn label(req: &Value) -> String {
@@ -507,7 +555,14 @@ fn prompt(out: &mut impl Write, w: &Waiting, more: usize) {
     let _ = writeln!(out, "  tool     {}", clean(s("tool"), 200));
     let _ = writeln!(out, "  request  {}", clean(s("summary"), 500));
     let _ = writeln!(out, "  id       {}", clean(s("id"), 128));
-    let _ = write!(out, "Allow this one call? [y/N] ");
+    if offers_session(&w.req) {
+        let _ = write!(
+            out,
+            "Allow? y: this once, s: for this session (this chat, to that project), [N]: "
+        );
+    } else {
+        let _ = write!(out, "Allow this one call? [y/N] ");
+    }
     let _ = out.flush();
 }
 
@@ -680,6 +735,43 @@ mod tests {
             vec![json!({"op": "answer", "id": "ap-1", "chat": "derm-c1", "answer": "yes"})]
         );
         assert!(out.contains("Allow this one call? [y/N]"), "{out}");
+    }
+
+    fn project_req(id: &str, secs: u64) -> In {
+        In::Daemon(Incoming::Approve(json!({
+            "id": id, "chat": "derm-c1", "harness": "codex", "tool": "derm_project/derm_message",
+            "summary": "a message from project A to B", "timeoutSeconds": secs,
+            "offers": ["once", "session"]
+        })))
+    }
+
+    /// Request PE-R7: a project ask's card offers "for this session", and
+    /// `s` answers yes with scope session; `y` stays once.
+    #[test]
+    fn pe_r7_a_project_ask_takes_s_for_this_session_and_y_for_once() {
+        let (a, out) = run(vec![project_req("ap-s", 30), typed("s\n", SETTLE * 2)], 1);
+        assert_eq!(
+            a,
+            vec![
+                json!({"op": "answer", "id": "ap-s", "chat": "derm-c1", "answer": "yes",
+                "scope": "session"})
+            ]
+        );
+        assert!(out.contains("s: for this session"), "{out}");
+        let (a, _) = run(vec![project_req("ap-y", 30), typed("y\n", SETTLE * 2)], 1);
+        assert_eq!(
+            a,
+            vec![json!({"op": "answer", "id": "ap-y", "chat": "derm-c1", "answer": "yes"})]
+        );
+    }
+
+    /// A gate's ask offers no session: `s` there is a no, as any other word.
+    #[test]
+    fn pe_r7_s_on_a_card_that_offers_no_session_is_a_no() {
+        let (a, out) = run(vec![req("ap-g", 30), typed("s\n", SETTLE * 2)], 1);
+        assert_eq!(a[0]["answer"], "no", "{a:?}");
+        assert!(a[0].get("scope").is_none(), "{a:?}");
+        assert!(!out.contains("for this session"), "{out}");
     }
 
     #[test]

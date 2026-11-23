@@ -501,6 +501,7 @@ impl State {
             summary: clip(&summary, 500),
             timeout_seconds: ASK_SECONDS,
             boundary_only: false,
+            offers: Vec::new(),
         })
     }
 

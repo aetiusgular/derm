@@ -42,10 +42,35 @@ impl Daemon {
         request: &ApprovalRequest,
         gone: &dyn Fn() -> bool,
     ) -> (Answer, AnsweredBy, Value) {
-        let (tx, rx) = mpsc::sync_channel::<(Answer, Value)>(1);
+        let (answer, _, by, approver) = self.wait_for_answer_scoped(request, gone);
+        (answer, by, approver)
+    }
+
+    /// `wait_for_answer`, with how far a yes reaches (request PE-R3): a
+    /// scope the request did not offer is `once`, as is every `no`.
+    pub(super) fn wait_for_answer_scoped(
+        &self,
+        request: &ApprovalRequest,
+        gone: &dyn Fn() -> bool,
+    ) -> (Answer, AnswerScope, AnsweredBy, Value) {
+        let (answer, scope, by, approver) = self.wait_for_answer_inner(request, gone);
+        let scope = if answer == Answer::Yes && request.offers.contains(&scope) {
+            scope
+        } else {
+            AnswerScope::Once
+        };
+        (answer, scope, by, approver)
+    }
+
+    fn wait_for_answer_inner(
+        &self,
+        request: &ApprovalRequest,
+        gone: &dyn Fn() -> bool,
+    ) -> (Answer, AnswerScope, AnsweredBy, Value) {
+        let (tx, rx) = mpsc::sync_channel::<(Answer, AnswerScope, Value)>(1);
         {
             let Ok(mut pending) = self.pending.lock() else {
-                return (Answer::No, AnsweredBy::None, Value::Null);
+                return (Answer::No, AnswerScope::Once, AnsweredBy::None, Value::Null);
             };
             let key = (request.chat.clone(), request.id.clone());
             let this_chat = pending.values().filter(|p| p.chat == request.chat).count();
@@ -53,7 +78,7 @@ impl Daemon {
                 || pending.len() >= MAX_PENDING_APPROVALS
                 || this_chat >= MAX_PENDING_PER_CHAT
             {
-                return (Answer::No, AnsweredBy::None, Value::Null);
+                return (Answer::No, AnswerScope::Once, AnsweredBy::None, Value::Null);
             }
             pending.insert(
                 key,
@@ -70,7 +95,7 @@ impl Daemon {
             reached = approvers.len();
         }
         let outcome = if reached == 0 {
-            (Answer::No, AnsweredBy::None, Value::Null)
+            (Answer::No, AnswerScope::Once, AnsweredBy::None, Value::Null)
         } else {
             // In slices, so an asker that hung up (an HTTP ask, W5C-S3) stops
             // the wait: `no`, by no one, as when no approver was there.
@@ -78,16 +103,28 @@ impl Daemon {
             loop {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
-                    break (Answer::No, AnsweredBy::Timeout, Value::Null);
+                    break (
+                        Answer::No,
+                        AnswerScope::Once,
+                        AnsweredBy::Timeout,
+                        Value::Null,
+                    );
                 }
                 match rx.recv_timeout(left.min(crate::otel_receiver::GONE_CHECK)) {
-                    Ok((answer, approver)) => break (answer, AnsweredBy::Approver, approver),
+                    Ok((answer, scope, approver)) => {
+                        break (answer, scope, AnsweredBy::Approver, approver)
+                    }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        break (Answer::No, AnsweredBy::Timeout, Value::Null)
+                        break (
+                            Answer::No,
+                            AnswerScope::Once,
+                            AnsweredBy::Timeout,
+                            Value::Null,
+                        )
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if gone() {
-                            break (Answer::No, AnsweredBy::None, Value::Null);
+                            break (Answer::No, AnswerScope::Once, AnsweredBy::None, Value::Null);
                         }
                     }
                 }
@@ -105,6 +142,7 @@ impl Daemon {
         id: &str,
         chat: Option<&str>,
         answer: Answer,
+        scope: AnswerScope,
     ) -> Reply {
         let approver = self
             .approvers
@@ -128,7 +166,7 @@ impl Daemon {
             // The channel holds one answer: the first wins, the rest fail
             // to send and are told nothing more.
             (Some((_, p)), None) => {
-                let _ = p.answer.try_send((answer, who));
+                let _ = p.answer.try_send((answer, scope, who));
                 ok()
             }
             (Some(_), Some(_)) => error("two chats wait on this id: name the chat"),
@@ -153,6 +191,30 @@ impl Daemon {
         password: Option<&mut Vec<u8>>,
         ran_as_you: bool,
     ) -> Reply {
+        self.op_answer_proved_scoped(
+            conn,
+            id,
+            chat,
+            answer,
+            AnswerScope::Once,
+            password,
+            ran_as_you,
+        )
+    }
+
+    /// `op_answer_proved` with how far a yes reaches (request PE-R3). The
+    /// person check is the same for either scope.
+    #[allow(clippy::too_many_arguments)]
+    pub fn op_answer_proved_scoped(
+        &self,
+        conn: u64,
+        id: &str,
+        chat: Option<&str>,
+        answer: Answer,
+        scope: AnswerScope,
+        password: Option<&mut Vec<u8>>,
+        ran_as_you: bool,
+    ) -> Reply {
         if answer == Answer::Yes {
             // The chat the yes is for: named, or the one chat waiting on `id`.
             let target = match chat {
@@ -169,7 +231,7 @@ impl Daemon {
                 if let Some(p) = password {
                     person::wipe(p);
                 }
-                return self.op_answer(conn, id, chat, answer);
+                return self.op_answer(conn, id, chat, answer, scope);
             };
             let why = {
                 let runs = self.run_info.lock().map(|r| r.clone()).unwrap_or_default();
@@ -213,7 +275,7 @@ impl Daemon {
         } else if let Some(p) = password {
             person::wipe(p);
         }
-        self.op_answer(conn, id, chat, answer)
+        self.op_answer(conn, id, chat, answer, scope)
     }
 
     /// Records a person check: the chat, the request, why it was needed and

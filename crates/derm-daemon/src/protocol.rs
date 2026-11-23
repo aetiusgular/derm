@@ -51,6 +51,12 @@ pub enum Request {
         answer: Answer,
         #[serde(default)]
         chat: Option<String>,
+        /// How far a `yes` reaches (request PE-R3,
+        /// `contracts/daemon-protocol.md` 6.2): `once` (the default) or
+        /// `session`, which counts only for a request whose push offered it
+        /// (`offers`); anywhere else it is `once`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<AnswerScope>,
         /// The person's proof, sent only after the daemon refused a `yes`
         /// for want of it (S2 part b, wave 5 lane V). Never logged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +170,18 @@ pub enum Answer {
     No,
 }
 
+/// How far an approver's `yes` reaches (request PE-R3). Only step P's two
+/// project tools offer `session` (`ApprovalRequest::offers`): a grant for
+/// the ordered pair of projects and the asking chat, until that chat's
+/// `run.stop`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnswerScope {
+    #[default]
+    Once,
+    Session,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalRequest {
@@ -180,6 +198,12 @@ pub struct ApprovalRequest {
     /// The daemon answers at once and no approver is shown the request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub boundary_only: bool,
+    /// The answers the approver may give beyond `no` (request PE-R3): left
+    /// out, only `once`; `["once", "session"]` for step P's project asks.
+    /// Set by the daemon only: a gate's `approve` that names it has it
+    /// cleared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offers: Vec<AnswerScope>,
 }
 
 fn default_timeout() -> u32 {

@@ -30,8 +30,8 @@ use crate::activity::store::{self, ActivityLog, Entry};
 use crate::activity::types::{ApprovalRecord, ApprovalScope, ApprovalSubject};
 use crate::otel_receiver::{self, harness_env, Receiver, Settings};
 use crate::protocol::{
-    Answer, AnsweredBy, ApprovalRequest, CuAction, DaemonInfo, Push, Reply, Request, Scope,
-    PROTOCOL_VERSION,
+    Answer, AnswerScope, AnsweredBy, ApprovalRequest, CuAction, DaemonInfo, Push, Reply, Request,
+    Scope, PROTOCOL_VERSION,
 };
 
 // The approver (wave 5 lane V's folder; moved unchanged by the wave 5 base).
@@ -687,8 +687,9 @@ struct TailSub {
 }
 
 struct Pending {
-    /// The answer and who gave it (the approver's peer record, S2).
-    answer: SyncSender<(Answer, Value)>,
+    /// The answer, how far a yes reaches (request PE-R3), and who gave it
+    /// (the approver's peer record, S2).
+    answer: SyncSender<(Answer, AnswerScope, Value)>,
     chat: String,
 }
 
@@ -1832,16 +1833,18 @@ impl Daemon {
                 answer,
                 chat,
                 proof,
+                scope,
             } => {
                 // S2 part b (lane V): a yes an agent could forge needs the
                 // person's password; the bytes are wiped once checked.
                 let mut password = proof.map(|p| p.password.into_bytes());
                 let ran_as_you = self.ran_as_you.load(Ordering::SeqCst);
-                out.send(&self.op_answer_proved(
+                out.send(&self.op_answer_proved_scoped(
                     out.conn,
                     &id,
                     chat.as_deref(),
                     answer,
+                    scope.unwrap_or_default(),
                     password.as_mut(),
                     ran_as_you,
                 ));
@@ -2684,6 +2687,9 @@ impl Daemon {
         if request.id.is_empty() {
             return error("approval id is empty");
         }
+        // Only the daemon offers more than "this once" (request PE-R3): a
+        // gate's request that names `offers` has them dropped.
+        request.offers.clear();
         self.counters.approvals.fetch_add(1, Ordering::Relaxed);
         let record_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
         self.approval_event(&record_id, &request, None, None, Value::Null);
@@ -3541,6 +3547,7 @@ mod tests {
                     summary: "bash: ls *.py".into(),
                     timeout_seconds: 60,
                     boundary_only,
+                    offers: Vec::new(),
                 },
             );
             assert!(t0.elapsed() < std::time::Duration::from_secs(3), "no wait");
@@ -3573,6 +3580,7 @@ mod tests {
                 summary: "x".into(),
                 timeout_seconds: 60,
                 boundary_only: true,
+                offers: Vec::new(),
             },
         );
         assert_eq!(r.answer, Some(Answer::No));

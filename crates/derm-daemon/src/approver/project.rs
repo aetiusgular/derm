@@ -25,9 +25,9 @@ impl Host for Daemon {
     /// As `op_approve` does for a gate's ask: the request and its outcome
     /// are recorded (`approval-<uuid>`, case 35's last copy per id), and the
     /// answer is the approver's, `no` by `none` with none connected (case
-    /// 63), `no` by `timeout` past the request's time. The protocol's answer
-    /// is yes or no, so a yes is "this once" until the answer carries a
-    /// scope (request PE-R3).
+    /// 63), `no` by `timeout` past the request's time. The card offers "this
+    /// once" and "for this session" (request PE-R3); a session yes is
+    /// recorded with scope `chat`, the asking chat's.
     fn ask(&self, mut request: ApprovalRequest) -> Asked {
         request.timeout_seconds = request
             .timeout_seconds
@@ -35,7 +35,9 @@ impl Host for Daemon {
         self.counters.approvals.fetch_add(1, Ordering::Relaxed);
         let record_id = format!("approval-{}", uuid::Uuid::new_v4().simple());
         self.approval_event(&record_id, &request, None, None, Value::Null);
-        let (answer, by, approver) = self.wait_for_answer(&request, &|| false);
+        // Request PE-R3: the card offers "this once" and "for this session".
+        request.offers = vec![AnswerScope::Once, AnswerScope::Session];
+        let (answer, scope, by, approver) = self.wait_for_answer_scoped(&request, &|| false);
         self.approval_event(&record_id, &request, Some(answer), Some(by), approver);
         self.record_approval(ApprovalRecord {
             id: record_id,
@@ -43,15 +45,19 @@ impl Host for Daemon {
             harness: request.harness.clone(),
             subject: ApprovalSubject::Tool,
             target: request.tool.clone(),
-            scope: ApprovalScope::Once,
+            scope: if scope == AnswerScope::Session {
+                ApprovalScope::Chat
+            } else {
+                ApprovalScope::Once
+            },
             granted: answer == Answer::Yes,
             granted_at: now_ms(),
             ended_at: None,
         });
-        if answer == Answer::Yes {
-            Asked::Once
-        } else {
-            Asked::No
+        match (answer, scope) {
+            (Answer::Yes, AnswerScope::Session) => Asked::Session,
+            (Answer::Yes, AnswerScope::Once) => Asked::Once,
+            (Answer::No, _) => Asked::No,
         }
     }
 
