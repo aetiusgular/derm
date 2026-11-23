@@ -45,7 +45,7 @@ mod broker;
 // Step P's seam (the base, 20 Nov 2026): the terminal reader, lane PD's
 // (`contracts/project-tools.md` section 3). The stub changes nothing.
 pub(crate) mod claude_gate; // fix pass 6, note BE section 1.5 (e); pub(crate) for `derm kit register`
-#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
+                            // Wired into `derm run` by P integration (request PD-2).
 pub(crate) mod pty;
 mod standard; // lane 6A // lane 6C's R1, hosted per chat (Tony's R2), integration w6's close
 
@@ -1360,17 +1360,20 @@ impl Drop for Cleanup {
     }
 }
 
-/// Points Claude Code or Codex at the daemon's OTLP receiver for this chat
-/// (`derm_daemon::otel_receiver::apply_export`, which lane B built and lane D
-/// deferred; integration w1's request for lane R). The export's arguments go
-/// right after the harness's command, before the user's own; its variables
-/// join the plan's. Nothing changes when the user already exports OTel, the
-/// endpoint is not the receiver's, or the harness has no export. Under sbx
-/// (E1-12) the endpoint is the receiver's port as the VM names it, and each
-/// variable the export sets is named to sbx (`-e`), which copies it into
-/// the VM from its own environment: no value is an argument. Returns what
-/// was done, for the run record.
-#[allow(clippy::too_many_arguments)]
+/// A line from `derm run` on stderr. While derm holds the chat's terminal
+/// on its own pty the person's terminal is raw (`cfmakeraw` turns `OPOST`
+/// off, as `script` does), so the line ends in `\r\n` (lane PD's Look out
+/// for 3).
+fn say(holding: bool, line: &str) {
+    if holding {
+        let mut e = std::io::stderr().lock();
+        let _ = write!(e, "{line}\r\n");
+        let _ = e.flush();
+    } else {
+        eprintln!("{line}");
+    }
+}
+
 /// The chat's project id and folder (`project::find`), or `None` outside
 /// every project, on a system with no registry, or when the registry is
 /// refused (said once on stderr).
@@ -1397,6 +1400,17 @@ fn chat_project(home: &Path, cwd: &Path) -> Option<(String, String)> {
     }
 }
 
+/// Points Claude Code or Codex at the daemon's OTLP receiver for this chat
+/// (`derm_daemon::otel_receiver::apply_export`, which lane B built and lane D
+/// deferred; integration w1's request for lane R). The export's arguments go
+/// right after the harness's command, before the user's own; its variables
+/// join the plan's. Nothing changes when the user already exports OTel, the
+/// endpoint is not the receiver's, or the harness has no export. Under sbx
+/// (E1-12) the endpoint is the receiver's port as the VM names it, and each
+/// variable the export sets is named to sbx (`-e`), which copies it into
+/// the VM from its own environment: no value is an argument. Returns what
+/// was done, for the run record.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn wire_export(
     p: &mut plan::Plan,
     rest: &[String],
@@ -2284,9 +2298,62 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     if agent_user.is_none() && a.boundary == Boundary::None {
         eprintln!("derm run: {} runs as you", a.harness.id);
     }
-    let mut child = exec::spawn(&launch, &cwd, filter.is_some())
-        .map_err(|e| (127, format!("{}: {e}", p.program)))?;
-    let pid = child.id();
+    // Step P5 (lane PD, request PD-2): the harness on derm's own pty when
+    // derm holds a terminal, so its screen can be read with no control
+    // bytes (`derm_terminal_read`); otherwise today's path, and the start
+    // line says why there is no screen.
+    #[cfg(unix)]
+    let pty_why: Option<&'static str> = pty::session::usable(filter.is_some()).err();
+    #[cfg(not(unix))]
+    let pty_why: Option<&'static str> = Some("no terminal reader on this system");
+    #[cfg(unix)]
+    let mut pty_session: Option<pty::session::Session> = None;
+    #[cfg(unix)]
+    let mut child: Option<std::process::Child> = if pty_why.is_none() {
+        pty_session = Some(
+            pty::session::spawn(&launch, &cwd, pty::session::Terminal::person())
+                .map_err(|e| (127, format!("{}: {e}", p.program)))?,
+        );
+        None
+    } else {
+        Some(
+            exec::spawn(&launch, &cwd, filter.is_some())
+                .map_err(|e| (127, format!("{}: {e}", p.program)))?,
+        )
+    };
+    #[cfg(not(unix))]
+    let mut child: Option<std::process::Child> = Some(
+        exec::spawn(&launch, &cwd, filter.is_some())
+            .map_err(|e| (127, format!("{}: {e}", p.program)))?,
+    );
+    #[cfg(unix)]
+    let holding = pty_session.is_some();
+    #[cfg(not(unix))]
+    let holding = false;
+    let pid = match (&child, {
+        #[cfg(unix)]
+        {
+            pty_session.as_ref().map(|s| s.child.id())
+        }
+        #[cfg(not(unix))]
+        {
+            None::<u32>
+        }
+    }) {
+        (Some(c), _) => c.id(),
+        (None, Some(id)) => id,
+        (None, None) => return Err((1, "the harness did not start".into())),
+    };
+    if let Some(why) = pty_why {
+        if !a.dry_run {
+            say(
+                holding,
+                &format!(
+                    "derm run: no screen for this chat ({why}): derm_terminal_read cannot show it"
+                ),
+            );
+        }
+    }
     // Fix pass 11 (Mac), MW6R5-1: a hook binds its chat token to the start
     // environment of the process this `derm run` started (`gate::daemon::
     // run_gave`, case 268). macOS hides another program's environment when
@@ -2312,12 +2379,15 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         }
     };
     if start_env_hidden {
-        eprintln!("{}", start_env_note(&p.program));
+        say(holding, &start_env_note(&p.program));
     }
     // The filter starts after `run.start` is posted (below), so no record
     // of the chat reaches the daemon before the run's own start; what the
     // agent writes meanwhile waits in its pipe.
-    let pipes = (child.stdin.take(), child.stdout.take());
+    let pipes = match child.as_mut() {
+        Some(c) => (c.stdin.take(), c.stdout.take()),
+        None => (None, None),
+    };
     // The record keeps the shape of the command, not a key passed on it
     // (integration w1, security finding S13; the audit feed's own redactor),
     // and never the harness's own words (finding M8): with the content
@@ -2336,6 +2406,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     // (`run_info_of`): the words that put the agent in full access (case 83).
     let dangerous = &p.full_access;
     let mut base = json!({
+        // Request PD-4: true when derm holds the chat's terminal on its own
+        // pty (a screen for `derm_terminal_read`), else why not.
+        "pty": match pty_why {
+            None => json!(true),
+            Some(why) => json!(why),
+        },
         "boundary": a.boundary.name(),
         // Step P (contracts/events.md 7.1): `{id, folder}`, both "" outside
         // every project; `run.stop` repeats it with the rest of `base`.
@@ -2411,7 +2487,10 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             base["contentFiles"] = json!([name]);
         }
         Some(Err(e)) => {
-            eprintln!("derm run: the argument words were not kept as content ({e})");
+            say(
+                holding,
+                &format!("derm run: the argument words were not kept as content ({e})"),
+            );
             base["contentFailed"] = json!(true);
         }
         None => {}
@@ -2426,7 +2505,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         std::env::consts::ARCH,
     );
     if io_uring == Some("not-audited") {
-        eprintln!("derm run: io_uring operations in this chat are not audited (the audit feed reads syscalls only, case 128)");
+        say(holding, "derm run: io_uring operations in this chat are not audited (the audit feed reads syscalls only, case 128)");
     }
     let io_uring = io_uring.map(|m| json!(m));
     // Lane T's P4-R3: whether derm's kit went on the sbx create, and why
@@ -2463,7 +2542,10 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             base.clone(),
             Some(pid),
         )) {
-            eprintln!("derm run: run.start was not recorded: {e}");
+            say(
+                holding,
+                &format!("derm run: run.start was not recorded: {e}"),
+            );
         }
     }
 
@@ -2526,8 +2608,36 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         _ => None,
     };
 
-    let status =
-        exec::wait(&mut child).map_err(|e| (1, format!("waiting for {}: {e}", p.program)))?;
+    // The screen's publisher (lane PD's `put`), on the daemon's socket in
+    // daemon scope, only while derm holds the terminal.
+    #[cfg(unix)]
+    let publisher = match (&pty_session, &daemon) {
+        (Some(_), Some(d)) => Some(pty::put::Publisher::start(
+            d.socket.clone(),
+            d.token.clone(),
+            chat.clone(),
+        )),
+        _ => None,
+    };
+    #[cfg(unix)]
+    let waited = match (pty_session.as_mut(), child.as_mut()) {
+        (Some(s), _) => s.wait(publisher.as_ref()),
+        (None, Some(c)) => exec::wait(c),
+        (None, None) => Err(std::io::Error::other("no harness")),
+    };
+    #[cfg(not(unix))]
+    let waited = match child.as_mut() {
+        Some(c) => exec::wait(c),
+        None => Err(std::io::Error::other("no harness")),
+    };
+    let status = waited.map_err(|e| (1, format!("waiting for {}: {e}", p.program)))?;
+    #[cfg(unix)]
+    let screens = publisher.map(|pb| {
+        let st = pb.finish(Duration::from_secs(2));
+        json!({"sent": st.sent, "refused": st.refused, "failed": st.failed, "replaced": st.replaced})
+    });
+    #[cfg(not(unix))]
+    let screens: Option<serde_json::Value> = None;
     let (code, signal) = exec::code(&status);
     // The chat's broker ends with its harness, before `run.stop`: its values
     // leave memory with it, and its last records are posted first.
@@ -2580,6 +2690,10 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     if let Some(d) = &daemon {
         let mut detail = base;
         detail["exitCode"] = json!(status.code());
+        // Request PD-4 (contracts/events.md 7.3): the screens `put` sent.
+        if let Some(sc) = &screens {
+            detail["screens"] = sc.clone();
+        }
         detail["signal"] = json!(signal);
         detail["durationMs"] = json!(started.elapsed().as_millis() as u64);
         if let Some(removed) = sandbox_removed {
@@ -3465,8 +3579,7 @@ mod end_to_end {
             .fake
             .lines()
             .into_iter()
-            .filter(|l| l["op"] == "token.mint")
-            .last()
+            .rfind(|l| l["op"] == "token.mint")
             .unwrap();
         assert!(mint.get("project").is_none(), "{mint}");
         let ev = events(&st);

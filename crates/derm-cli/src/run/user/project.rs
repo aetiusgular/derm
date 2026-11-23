@@ -320,7 +320,7 @@ pub(crate) fn codex_gate_args(derm: &str) -> Option<Vec<String>> {
             codex_hook_hash(label, "*", command, *timeout).into(),
         );
         state.insert(
-            &format!("{CODEX_FLAGS_KEY}:{label}:0:0"),
+            format!("{CODEX_FLAGS_KEY}:{label}:0:0"),
             toml_edit::Value::InlineTable(st),
         );
     }

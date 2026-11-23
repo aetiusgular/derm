@@ -387,7 +387,9 @@ pub(crate) fn spawn(plan: &Plan, cwd: &str, term: Terminal) -> io::Result<Sessio
 }
 
 impl Session {
-    /// The chat's screen, as rendered so far.
+    /// The chat's screen, as rendered so far (the tests' window on it;
+    /// `derm run` sends it with `put`).
+    #[cfg(test)]
     pub(crate) fn reader(&mut self) -> &mut Reader {
         &mut self.reader
     }
