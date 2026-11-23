@@ -279,7 +279,24 @@ impl Client {
 
     /// `token.mint` (daemon scope): a fresh chat token.
     pub fn mint(&mut self, chat: &str, harness: &str) -> Result<String, ClientError> {
-        let reply = self.request(&json!({"op": "token.mint", "chat": chat, "harness": harness}))?;
+        self.mint_in(chat, harness, None)
+    }
+
+    /// `token.mint` with the chat's project id (step P,
+    /// `contracts/daemon-protocol.md` 6.1): the daemon's chat-to-project map
+    /// starts here. An older daemon refuses the field (it refuses unknown
+    /// fields on op lines), so `derm run` and the daemon change together.
+    pub fn mint_in(
+        &mut self,
+        chat: &str,
+        harness: &str,
+        project: Option<&str>,
+    ) -> Result<String, ClientError> {
+        let mut req = json!({"op": "token.mint", "chat": chat, "harness": harness});
+        if let Some(p) = project.filter(|p| !p.is_empty()) {
+            req["project"] = json!(p);
+        }
+        let reply = self.request(&req)?;
         let token = reply
             .get("token")
             .and_then(Value::as_str)

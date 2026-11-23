@@ -1371,6 +1371,32 @@ impl Drop for Cleanup {
 /// the VM from its own environment: no value is an argument. Returns what
 /// was done, for the run record.
 #[allow(clippy::too_many_arguments)]
+/// The chat's project id and folder (`project::find`), or `None` outside
+/// every project, on a system with no registry, or when the registry is
+/// refused (said once on stderr).
+fn chat_project(home: &Path, cwd: &Path) -> Option<(String, String)> {
+    #[cfg(unix)]
+    {
+        match crate::project::load(&crate::project::path_in(home)) {
+            Ok(reg) => crate::project::find(&reg, cwd).project().map(|p| {
+                (
+                    p.id.as_str().to_string(),
+                    p.folder.to_string_lossy().into_owned(),
+                )
+            }),
+            Err(why) => {
+                eprintln!("derm run: the project registry is not used: {why}");
+                None
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (home, cwd);
+        None
+    }
+}
+
 pub(crate) fn wire_export(
     p: &mut plan::Plan,
     rest: &[String],
@@ -1555,6 +1581,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             None
         };
 
+    // Step P (request PA-6 and the base's; contracts/projects.md 1.4,
+    // events.md 7.1): the chat's project, by the registry's nearest-folder
+    // and worktree rules, for `token.mint` and `run.start`. A registry that
+    // is refused names the fix; a person's chat still starts (an agent
+    // account's chat is refused in the account route, which reads it again).
+    let chat_project = chat_project(Path::new(&home), Path::new(&cwd));
     // The daemon, unless the user said to run without it.
     let socket = env.socket.clone();
     let dir = socket
@@ -1584,8 +1616,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
                 ));
             }
             token = Some(
-                c.mint(&chat, a.harness.id)
-                    .map_err(|e| (1, e.to_string()))?,
+                c.mint_in(
+                    &chat,
+                    a.harness.id,
+                    chat_project.as_ref().map(|(id, _)| id.as_str()),
+                )
+                .map_err(|e| (1, e.to_string()))?,
             );
             daemon = Some(Daemon {
                 socket,
@@ -2222,6 +2258,11 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             harness_args_at,
         },
     )?;
+    let account_exe: Option<String> = agent_user
+        .as_ref()
+        .and_then(|au| au.get("harnessExe"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     // Request PA-2: an agent account's chat runs with HOME in its project
     // home, so whether derm's gate runs there is the account route's answer
     // (`user::project::harness_gate`), not the person's home's.
@@ -2295,6 +2336,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
     let dangerous = &p.full_access;
     let mut base = json!({
         "boundary": a.boundary.name(),
+        // Step P (contracts/events.md 7.1): `{id, folder}`, both "" outside
+        // every project; `run.stop` repeats it with the rest of `base`.
+        "project": match &chat_project {
+            Some((id, folder)) => json!({"id": id, "folder": folder}),
+            None => json!({"id": "", "folder": ""}),
+        },
         "argv": full_argv,
         "kit": p.kit,
         "host": hostname(),
@@ -2319,16 +2366,26 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // The harness's executable by its real path, so the daemon's join
         // can find the harness under a boundary's wrappers by what it execs
         // (MW5-16, review FP3-S2); null when it cannot be resolved here.
-        "harnessExe": harness_exe(
-            a.program.as_deref().unwrap_or(a.harness.command),
-            std::env::var("PATH").ok().as_deref(),
-        ),
+        // An agent account's chat runs the root-owned install the account
+        // route checked, not what the person's PATH names (request PA-4).
+        "harnessExe": match account_exe.as_deref() {
+            // The same reading (a `#!` script names its interpreter, case
+            // 177), from the account's checked absolute path.
+            Some(exe) => harness_exe(exe, None),
+            None => harness_exe(
+                a.program.as_deref().unwrap_or(a.harness.command),
+                std::env::var("PATH").ok().as_deref(),
+            ),
+        },
         // The binary a launcher starts as the harness (Codex's npm package),
         // so the join finds the harness under the launcher (MW5-28).
-        "harnessChildExe": harness_child_exe(
-            a.program.as_deref().unwrap_or(a.harness.command),
-            std::env::var("PATH").ok().as_deref(),
-        ),
+        "harnessChildExe": match account_exe.as_deref() {
+            Some(exe) => harness_child_exe(exe, None),
+            None => harness_child_exe(
+                a.program.as_deref().unwrap_or(a.harness.command),
+                std::env::var("PATH").ok().as_deref(),
+            ),
+        },
         // The derm that started the chat, by its real path, so the daemon
         // knows the gate's own state writes in a sandbox's tmpfs (box test
         // w6 retest 3, BW6R3-2); null when it cannot be read.
@@ -3325,6 +3382,97 @@ mod end_to_end {
                 .mode()
                 & 0o777,
             0o700
+        );
+    }
+
+    /// Step P (requests PA-6, the base's; contracts/projects.md 1.4,
+    /// events.md 7.1): a chat inside a named folder mints its token with the
+    /// project and records it on `run.start` and `run.stop`; outside every
+    /// project both are "".
+    #[cfg(unix)]
+    #[test]
+    fn a_chat_in_a_named_folder_mints_with_its_project_and_records_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let st = setup("project");
+        let cwd = st.work.to_string_lossy().into_owned();
+        let real = std::fs::canonicalize(&st.work)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let id = derm_core::project::ProjectId::of_real_path(&real);
+        let home = std::path::PathBuf::from(st.env.home.clone().unwrap());
+        let derm_dir = home.join(".derm");
+        std::fs::create_dir_all(&derm_dir).unwrap();
+        std::fs::set_permissions(&derm_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let reg = derm_dir.join("projects.json");
+        std::fs::write(
+            &reg,
+            serde_json::json!({"version": 1, "projects": [
+                {"id": id.as_str(), "folder": real, "name": "work", "added": 1}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&reg, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let code = run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-p",
+                "--cwd",
+                &cwd,
+                "--",
+                "x",
+            ]),
+            &st.env,
+        )
+        .unwrap();
+        assert_eq!(code, 3);
+        let mint = st
+            .fake
+            .lines()
+            .into_iter()
+            .find(|l| l["op"] == "token.mint")
+            .unwrap();
+        assert_eq!(mint["project"], id.as_str(), "{mint}");
+        let ev = events(&st);
+        assert_eq!(ev[0]["kind"], "run.start");
+        assert_eq!(ev[0]["detail"]["project"]["id"], id.as_str(), "{}", ev[0]);
+        assert_eq!(ev[0]["detail"]["project"]["folder"], real);
+        assert_eq!(ev[1]["detail"]["project"]["id"], id.as_str());
+        // Outside every project: no `project` on the mint, "" on the records.
+        std::fs::remove_file(&reg).unwrap();
+        let code = run(
+            &s(&[
+                "pi",
+                "--boundary",
+                "none",
+                "--chat",
+                "chat-q",
+                "--cwd",
+                &cwd,
+                "--",
+                "x",
+            ]),
+            &st.env,
+        )
+        .unwrap();
+        assert_eq!(code, 3);
+        let mint = st
+            .fake
+            .lines()
+            .into_iter()
+            .filter(|l| l["op"] == "token.mint")
+            .last()
+            .unwrap();
+        assert!(mint.get("project").is_none(), "{mint}");
+        let ev = events(&st);
+        let start = ev.iter().rev().find(|e| e["kind"] == "run.start").unwrap();
+        assert_eq!(
+            start["detail"]["project"],
+            serde_json::json!({"id": "", "folder": ""})
         );
     }
 
