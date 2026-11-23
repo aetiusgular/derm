@@ -525,23 +525,29 @@ fn ai_2_a_rule_path_through_a_link_not_roots_is_refused() {
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// Review AI-1 (accounts integration, open, high; Tony's call): every chat
-/// may write the account home, and the next chat runs its harness from
-/// `<home>/.local/bin` and reads its config there, so one chat can plant
-/// code that runs inside the next chat's domain and hands it that chat's
-/// token. Red until the home is split into read-only installs and config
-/// and per-chat writable state (plans/toolkit_agent_accounts_plan.md,
-/// revision 4, call 7).
+/// Review AI-1 (accounts integration, high; Tony's call 7, settled by step
+/// P): the account home was written by every chat, and the next chat ran
+/// its harness from `<home>/.local/bin`. Reworded to cross projects, as the
+/// plan's call 7 says: a project chat runs nothing from a folder any chat
+/// writes, and writes no other project's folders (the cross-project half is
+/// also the base's `pa_two_projects_in_one_account_do_not_reach_each_other`).
+/// `derm agents login`'s domain (`chat_spec`) still writes the account home
+/// and is lane PB's to move (P3).
 #[test]
-#[ignore = "AI-1 open: needs the account home's split, Tony's call"]
 fn ai_1_no_folder_a_chat_runs_from_is_one_every_chat_may_write() {
-    let s = chat_spec(&ChatPaths {
+    let w = vec![
+        "/var/lib/derm/agents/max/projects/0123456789abcdef/home".to_string(),
+        "/var/lib/derm/agents/max/signin/codex".to_string(),
+    ];
+    let s = project_spec(&ProjectPaths {
         folders: &["/srv/agents/p".into()],
-        account_home: "/var/lib/derm/agents/max",
+        writable: &w,
         bridge: None,
-        path: "/var/lib/derm/agents/max/.local/bin:/usr/bin",
+        path: "/usr/local/bin:/usr/bin:/bin",
+        pts: true,
         require_scopes: true,
     });
+    assert!(!s.write.iter().any(|x| x == "/var/lib/derm/agents/max"));
     for e in &s.exec {
         for w in &s.write {
             assert!(
@@ -552,24 +558,40 @@ fn ai_1_no_folder_a_chat_runs_from_is_one_every_chat_may_write() {
     }
 }
 
-/// Review AI-4 (accounts integration, open, medium): `/dev/pts` is fully
-/// open in every chat's domain, and sudo's `use_pty` gives each chat a pty
-/// owned by the account, so a sibling can open another chat's terminal,
-/// write to it and race its input (reproduced by the reviewer). Red until a
-/// chat's terminal is its own (a devpts per chat, or Landlock's later
-/// rights).
+/// Review AI-4 (accounts integration, medium): `/dev/pts` open in every
+/// chat's domain lets a sibling open another chat's terminal. P5's stopgap
+/// keeps it out of a chat whose harness makes no pty (Pi, Claude Code), and
+/// a pty slave then cannot be opened at all, by path or by `TIOCGPTPEER`
+/// (run on ABI 7).
 #[test]
-#[ignore = "AI-4 open: a chat's pty is not its own yet"]
-fn ai_4_a_chat_cannot_open_another_chats_terminal_by_path() {
-    let s = chat_spec(&ChatPaths {
+fn ai_4_a_chat_whose_harness_makes_no_pty_cannot_open_another_chats_terminal() {
+    let s = project_spec(&ProjectPaths {
         folders: &[],
-        account_home: "/var/lib/derm/agents/max",
+        writable: &[],
         bridge: None,
         path: "/usr/bin",
+        pts: makes_ptys("pi"),
+        require_scopes: true,
+    });
+    assert!(!s.write.iter().any(|w| w == PTS), "{:?}", s.write);
+}
+
+/// AI-4's rest, open: a harness that makes ptys (Codex) keeps `/dev/pts`, so
+/// from its chat another chat's terminal can still be opened. Red until a
+/// chat's terminal is its own (lane PG's private devpts, P9).
+#[test]
+#[ignore = "AI-4 open for harnesses that make ptys: lane PG's private devpts"]
+fn ai_4_a_chat_cannot_open_another_chats_terminal_by_path() {
+    let s = project_spec(&ProjectPaths {
+        folders: &[],
+        writable: &[],
+        bridge: None,
+        path: "/usr/bin",
+        pts: makes_ptys("codex"),
         require_scopes: true,
     });
     assert!(
-        !s.write.iter().any(|w| w == "/dev/pts"),
+        !s.write.iter().any(|w| w == PTS),
         "every chat may open every /dev/pts/<n>"
     );
 }

@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 
 use super::super::plan::Plan;
 use super::accounts::{self, Account};
-use super::{anchor, bridge, landlock, Context};
+use super::{anchor, bridge, landlock, project, Context};
 
 /// Exit code for a start the person or the missing terminal stopped (the
 /// same as case 129's).
@@ -133,6 +133,26 @@ pub(crate) fn wrap(
     if let Some(why) = check_account(&acct) {
         return fail(why);
     }
+    // Step P1 (lane PA): the chat's project, before anything starts. A chat
+    // on an agent account outside every named folder is refused (P-C2).
+    let registry = crate::project::load(&crate::project::path_in(Path::new(ctx.home)))
+        .map_err(|why| (1, format!("{why}; a chat on an agent account needs its project, so not starting the harness")))?;
+    let found = crate::project::find(&registry, Path::new(ctx.cwd));
+    let Some(project) = found.project().cloned() else {
+        return Err((
+            1,
+            format!(
+                "{} is in no project; name one with: derm project add {}",
+                ctx.cwd, ctx.cwd
+            ),
+        ));
+    };
+    let harness = launch
+        .env_set
+        .iter()
+        .find(|(k, _)| k == "DERM_HARNESS")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "other".to_string());
     let scope = decide(landlock::abi(), person)?;
     let sudo = super::trusted_tool(super::SUDO, true).map_err(|e| (1, e))?;
     let env_tool = super::trusted_tool(super::ENV, false).map_err(|e| (1, e))?;
@@ -144,7 +164,10 @@ pub(crate) fn wrap(
         .filter(|n| !n.is_empty() && !n.starts_with('-'))
         .ok_or_else(|| (1, format!("{} is not a program name", launch.program)))?
         .to_string();
-    let path = acct.path();
+    // Step P2: the harness is a root-owned install outside every home, found
+    // on the chat's own PATH; the checked path is the one that runs.
+    let path = project::PATH.to_string();
+    let (program_path, program_real) = root_install(&program, &path).map_err(|e| (1, e))?;
 
     // As the account, before any domain: what it must not reach, what it
     // must write (lane V's probe, unchanged).
@@ -176,8 +199,8 @@ pub(crate) fn wrap(
         hidden: &hidden,
         writable: &writable,
     };
-    let found = probe.run().map_err(|e| (1, e))?;
-    if let Some(why) = found.refusal(&acct.name, &program) {
+    let found_probe = probe.run().map_err(|e| (1, e))?;
+    if let Some(why) = found_probe.refusal(&acct.name, &program) {
         return fail(why);
     }
 
@@ -206,18 +229,29 @@ pub(crate) fn wrap(
             libc::atexit(super::finish_at_exit);
         }
     }
-    let mut spec = landlock::chat_spec(&landlock::ChatPaths {
-        folders: &writable,
+    let pc = project::ProjectChat {
         account_home: &acct.home,
+        project: &project.id,
+        folders: &writable,
+        harness: &harness,
         bridge: bridge_dir.as_deref(),
-        path: &path,
         require_scopes: scope.require_scopes,
-    });
+    };
+    let daemon = gateway_daemon(&helper);
+    let entry = daemon
+        .as_deref()
+        .and_then(|d| project::gateway_entry(&harness, d));
+    let entry_rel = entry.as_ref().map(|e| e.rel.clone());
+    let mut spec = project::project_chat_spec(&pc);
     spec.require_landlock = scope.require_landlock;
+    spec.setup = Some(project::project_setup(&pc, entry));
+    spec.reprobe_secs = landlock::reprobe::INTERVAL_SECS;
+    let pts = spec.write.iter().any(|w| w == landlock::PTS);
     set.push((
         landlock::SPEC_VAR.to_string(),
         serde_json::to_string(&spec).map_err(|e| (1, e.to_string()))?,
     ));
+    let assign = project::project_env(&pc);
     rewrite(
         launch,
         &Route {
@@ -225,15 +259,17 @@ pub(crate) fn wrap(
             env_tool: &env_tool,
             helper: &helper,
             user: &acct.name,
-            path: &path,
-            program: &program,
+            assign: &assign,
+            program: &program_path,
         },
         &set,
     );
     eprintln!(
-        "derm run: {program} starts as {} ({}), in its own Landlock domain{}: other chats on the account cannot read its token, trace it{}",
+        "derm run: {program} starts as {} ({}) in project {} ({}), in its own Landlock domain{}: other chats on the account cannot read its token, trace it{}; it writes its project's own home, temp and runtime folders, not the account home or another project's",
         acct.name,
         acct.subscription,
+        project.id,
+        project.folder.display(),
         if scope.require_scopes { "" } else { " without scopes" },
         if scope.require_scopes {
             ", signal it or reach its abstract sockets"
@@ -241,6 +277,33 @@ pub(crate) fn wrap(
             ""
         }
     );
+    eprintln!(
+        "{}",
+        if pts {
+            format!("derm run: {harness} opens terminals for its commands, so this chat keeps /dev/pts: from it, a chat could open another chat's terminal on this account (P5's stopgap holds only while no chat of the account keeps it)")
+        } else {
+            "derm run: /dev/pts is out of this chat's domain: it cannot open another chat's terminal, and its own tools cannot make a new one (Claude Code's background sessions need one)".to_string()
+        }
+    );
+    eprintln!(
+        "derm run: the account's firewall table is checked again every {}s while the chat runs, from outside its domain; the chat is stopped if it no longer holds{}",
+        landlock::reprobe::INTERVAL_SECS,
+        if scope.require_scopes {
+            ""
+        } else {
+            " (without scopes the chat can signal that check and stop it)"
+        }
+    );
+    if entry_rel.is_none() {
+        eprintln!(
+            "derm run: derm's project tools (derm_project) are not set up for {harness} here: {}",
+            if daemon.is_none() {
+                "no root-owned derm-daemon beside derm"
+            } else {
+                "derm writes no entry for this harness"
+            }
+        );
+    }
     Ok(Some(json!({
         "user": acct.name,
         "uid": acct.uid,
@@ -250,8 +313,54 @@ pub(crate) fn wrap(
             "abi": landlock::abi(),
             "scoped": scope.require_scopes,
             "answeredBy": scope.answered_by,
+            "pts": pts,
+            "reprobeSeconds": landlock::reprobe::INTERVAL_SECS,
         },
+        "project": {
+            "id": project.id.as_str(),
+            "folder": project.folder.to_string_lossy(),
+            "found": found.how(),
+            "home": layout_home(&acct.home, &project.id),
+            "gatewayEntry": entry_rel,
+        },
+        "harnessExe": program_real,
     })))
+}
+
+fn layout_home(account_home: &str, id: &crate::project::ProjectId) -> String {
+    format!(
+        "{}/{}",
+        derm_core::project::layout::project_dir(account_home, id),
+        derm_core::project::layout::HOME
+    )
+}
+
+/// `program` on `path` (the project chat's `PATH`): the first folder that
+/// holds it, as that path and as its real path, when root owns it and every
+/// folder above it and no one else can write them (`trusted_tool`). The
+/// harness then runs from a place no chat can change (AI-1).
+pub(crate) fn root_install(program: &str, path: &str) -> Result<(String, String), String> {
+    for dir in path.split(':').filter(|d| d.starts_with('/')) {
+        let cand = format!("{}/{program}", dir.trim_end_matches('/'));
+        if std::fs::symlink_metadata(&cand).is_err() {
+            continue;
+        }
+        return match super::trusted_tool(&cand, false) {
+            Ok(real) => Ok((cand, real)),
+            Err(why) => Err(format!(
+                "{why}: a chat on an agent account runs its harness only from a root-owned install; reinstall it as root"
+            )),
+        };
+    }
+    Err(format!(
+        "{program} is not installed where every agent account runs it ({path}): install it as root, outside any home (for an npm harness: sudo npm install -g <package>), and start the chat again"
+    ))
+}
+
+/// `derm-daemon` beside the helper, when it is a root-owned copy.
+fn gateway_daemon(helper: &str) -> Option<String> {
+    let dir = Path::new(helper).parent()?;
+    super::trusted_tool(&dir.join("derm-daemon").to_string_lossy(), false).ok()
 }
 
 /// Why the account cannot run a chat, or `None`.
@@ -305,15 +414,19 @@ pub(super) struct Route<'a> {
     pub env_tool: &'a str,
     pub helper: &'a str,
     pub user: &'a str,
-    pub path: &'a str,
+    /// `PATH`, `HOME`, `TMPDIR`, `XDG_RUNTIME_DIR` and the harness's own:
+    /// paths only, set by `env` after the helper.
+    pub assign: &'a [(String, String)],
     pub program: &'a str,
 }
 
 /// `sudo -n -u <user> --preserve-env=<names> -- <helper> landlock --
-/// <env> PATH=<path> <program> <args>`. Values go in the environment, names
-/// only on argv.
+/// <env> HOME=<...> TMPDIR=<...> XDG_RUNTIME_DIR=<...> PATH=<...> <program>
+/// <args>`. Secrets go in the environment, names only on argv; the
+/// assignments are paths.
 pub(super) fn rewrite(launch: &mut Plan, r: &Route, set: &[(String, String)]) {
-    for (k, v) in set {
+    let fixes = super::locale_fixes(&|k| std::env::var(k).ok());
+    for (k, v) in set.iter().chain(fixes.iter()) {
         launch.env_set.retain(|(n, _)| n != k);
         launch.env_set.push((k.clone(), v.clone()));
     }
@@ -341,9 +454,9 @@ pub(super) fn rewrite(launch: &mut Plan, r: &Route, set: &[(String, String)]) {
         landlock::SUBCOMMAND.to_string(),
         "--".to_string(),
         r.env_tool.to_string(),
-        format!("PATH={}", r.path),
-        r.program.to_string(),
     ]);
+    args.extend(r.assign.iter().map(|(k, v)| format!("{k}={v}")));
+    args.push(r.program.to_string());
     args.append(&mut launch.args);
     launch.program = r.sudo.to_string();
     launch.args = args;
@@ -531,6 +644,16 @@ mod tests {
             ),
             (landlock::SPEC_VAR.to_string(), spec.to_string()),
         ];
+        let assign = vec![
+            (
+                "HOME".to_string(),
+                "/var/lib/derm/agents/max/projects/6853732bf2a99f2b/home".to_string(),
+            ),
+            (
+                "PATH".to_string(),
+                "/usr/local/bin:/usr/bin:/bin".to_string(),
+            ),
+        ];
         rewrite(
             &mut p,
             &Route {
@@ -538,8 +661,8 @@ mod tests {
                 env_tool: "/usr/bin/env",
                 helper: "/usr/local/bin/derm",
                 user: "derm-max",
-                path: "/var/lib/derm/agents/max/.local/bin:/usr/local/bin:/usr/bin:/bin",
-                program: "claude",
+                assign: &assign,
+                program: "/usr/local/bin/claude",
             },
             &set,
         );
@@ -561,8 +684,9 @@ mod tests {
                 "landlock",
                 "--",
                 "/usr/bin/env",
-                "PATH=/var/lib/derm/agents/max/.local/bin:/usr/local/bin:/usr/bin:/bin",
-                "claude",
+                "HOME=/var/lib/derm/agents/max/projects/6853732bf2a99f2b/home",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "/usr/local/bin/claude",
                 "-p",
                 "hi"
             ]
@@ -579,6 +703,29 @@ mod tests {
                 .map(|(_, v)| v.clone())
         };
         assert_eq!(get(landlock::SPEC_VAR).as_deref(), Some(spec));
+    }
+
+    #[test]
+    fn the_harness_runs_only_from_a_root_owned_install_on_the_chats_path() {
+        // `/bin/sh` is root's on every runner; a folder of this test's own
+        // is not trusted unless the test runs as root.
+        let (cand, real) = root_install("sh", "/nonexistent-dpa:/bin:/usr/bin").unwrap();
+        assert_eq!(cand, "/bin/sh");
+        assert!(real.starts_with('/'));
+        let e = root_install("no-such-harness-dpa", project::PATH).unwrap_err();
+        assert!(
+            e.contains("sudo npm install -g") && e.contains(project::PATH),
+            "{e}"
+        );
+        // SAFETY: geteuid cannot fail.
+        if unsafe { libc::geteuid() } != 0 {
+            let d = std::env::temp_dir().join(format!("dpa-bin-{}", std::process::id()));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("h"), "#!/bin/sh\n").unwrap();
+            let e = root_install("h", &d.to_string_lossy()).unwrap_err();
+            assert!(e.contains("root-owned"), "{e}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     #[test]

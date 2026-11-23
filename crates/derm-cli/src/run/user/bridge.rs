@@ -44,6 +44,12 @@ const HELLO_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_HELLO_BYTES: u64 = 64 * 1024;
 /// Hooks are short-lived; this many at once is far past what one chat makes.
 const MAX_CONNECTIONS: usize = 64;
+/// Peers whose process tree cannot be read (`/proc` mounted `hidepid`, a
+/// process gone before it was read): a share of their own, with a shorter
+/// first-line deadline, so they can delay this chat but never hold it out
+/// (I-2; the shape of case 167's fix in the daemon).
+const MAX_UNPLACED: usize = 8;
+const UNPLACED_DEADLINE: Duration = Duration::from_secs(2);
 /// The policy copy is read only up to this size (the gate's own limit is
 /// smaller; this one only stops a runaway file).
 const MAX_POLICY_BYTES: u64 = 4 * 1024 * 1024;
@@ -91,6 +97,11 @@ pub struct Spec<'a> {
 
 /// Makes the folder, its files and the relay.
 pub fn open(spec: &Spec) -> Result<Bridge, String> {
+    open_placed(spec, real_place)
+}
+
+/// [`open`] with the rule that places a peer (tests give their own).
+fn open_placed(spec: &Spec, place: fn(&UnixStream, u32) -> Place) -> Result<Bridge, String> {
     let me = euid();
     check_base(spec.base, spec.base_parent_owner, me)?;
     if !super::anchor::plain_name(&chat_part(spec.chat)) {
@@ -135,6 +146,9 @@ pub fn open(spec: &Spec) -> Result<Bridge, String> {
         token: spec.token.to_string(),
         stop: bridge.stop.clone(),
         open: Arc::new(AtomicUsize::new(0)),
+        unplaced: Arc::new(AtomicUsize::new(0)),
+        root: std::process::id(),
+        place,
     };
     std::thread::Builder::new()
         .name("derm-agent-bridge".into())
@@ -261,6 +275,50 @@ struct Relay {
     token: String,
     stop: Arc<AtomicBool>,
     open: Arc<AtomicUsize>,
+    /// Open connections whose peer could not be placed.
+    unplaced: Arc<AtomicUsize>,
+    /// This `derm run`'s pid: every process of the chat is below it.
+    root: u32,
+    place: fn(&UnixStream, u32) -> Place,
+}
+
+/// Where a connecting process sits relative to this chat (I-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    /// This `derm run` or a process below it: the chat's own.
+    Ours,
+    /// Placed, and not below this `derm run`: another chat of the account
+    /// that found the socket's path (`/proc/net/unix` lists every bound
+    /// path to every user, run on Linux 6.18; Landlock below ABI 9 does not
+    /// restrict a pathname connect). Dropped at once, before any read.
+    Other,
+    /// Its tree could not be read.
+    Unplaced,
+}
+
+/// The peer by `SO_PEERCRED`'s pid, its ancestry from `/proc`, and the
+/// process pinned by `SO_PEERPIDFD` where the kernel gives one (Linux 6.5),
+/// so a pid that was reused while the ancestry was read places nothing
+/// (`derm_core::peer`, case 97's reads).
+fn real_place(stream: &UnixStream, root: u32) -> Place {
+    let Some(pid) = derm_core::peer::of(stream).and_then(|p| p.pid) else {
+        return Place::Unplaced;
+    };
+    let pidfd = derm_core::peer::pidfd_of(stream);
+    let ancestors = derm_core::peer::ancestors(pid);
+    if pidfd
+        .as_ref()
+        .is_some_and(|fd| !derm_core::peer::pidfd_alive(fd))
+    {
+        return Place::Unplaced;
+    }
+    if pid == root || ancestors.contains(&root) {
+        Place::Ours
+    } else if ancestors.is_empty() {
+        Place::Unplaced
+    } else {
+        Place::Other
+    }
 }
 
 impl Relay {
@@ -296,7 +354,25 @@ impl Relay {
         if peer.uid != self.agent_uid {
             return Ok(());
         }
-        client.set_read_timeout(Some(HELLO_DEADLINE))?;
+        let deadline = match (self.place)(&client, self.root) {
+            Place::Ours => HELLO_DEADLINE,
+            Place::Other => return Ok(()),
+            Place::Unplaced => {
+                if self.unplaced.fetch_add(1, Ordering::SeqCst) >= MAX_UNPLACED {
+                    self.unplaced.fetch_sub(1, Ordering::SeqCst);
+                    return Ok(());
+                }
+                let r = self.serve_one(client, UNPLACED_DEADLINE);
+                self.unplaced.fetch_sub(1, Ordering::SeqCst);
+                return r;
+            }
+        };
+        self.serve_one(client, deadline)
+    }
+
+    /// The first line within `deadline`, then the copy.
+    fn serve_one(&self, client: UnixStream, deadline: Duration) -> std::io::Result<()> {
+        client.set_read_timeout(Some(deadline))?;
         let mut reader = BufReader::new(client.try_clone()?);
         let mut line = Vec::new();
         reader
@@ -516,6 +592,86 @@ mod tests {
         let got = talk(b.socket(), &[&hello(TOKEN)]);
         assert!(got.is_empty(), "{got:?}");
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    }
+
+    /// I-2: another chat of the account that found this bridge's path is
+    /// dropped before any read, so it holds no slot; peers that cannot be
+    /// placed share 8 slots and a 2 s deadline, so the chat's own still
+    /// reach the daemon.
+    #[test]
+    fn i_2_a_peer_from_another_chat_holds_no_slot_and_unplaced_ones_share_eight() {
+        let (_t, base, sock, policy, rx) = setup();
+        let b = open_placed(&spec(&base, &sock, &policy, euid()), |_, _| Place::Other).unwrap();
+        let t0 = std::time::Instant::now();
+        let got = talk(b.socket(), &[&hello(TOKEN)]);
+        assert!(got.is_empty(), "{got:?}");
+        assert!(t0.elapsed() < Duration::from_secs(1), "dropped at once");
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        drop(b);
+
+        let b = open_placed(&spec(&base, &sock, &policy, euid()), |_, _| Place::Unplaced).unwrap();
+        // Nine silent peers: eight wait, the ninth is dropped at once.
+        let mut held = Vec::new();
+        for _ in 0..MAX_UNPLACED {
+            held.push(UnixStream::connect(b.socket()).unwrap());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let ninth = UnixStream::connect(b.socket()).unwrap();
+        ninth
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut buf = [0u8; 1];
+        let t0 = std::time::Instant::now();
+        assert_eq!((&ninth).read(&mut buf).unwrap_or(0), 0);
+        assert!(
+            t0.elapsed() < Duration::from_millis(900),
+            "the ninth is not held"
+        );
+        // The eight end at their 2 s deadline, not 5 s.
+        let t0 = std::time::Instant::now();
+        held[0]
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        assert_eq!((&held[0]).read(&mut buf).unwrap_or(0), 0);
+        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+        drop(held);
+        std::thread::sleep(Duration::from_millis(300));
+        // Once they are gone, an unplaced peer with this chat's hello passes.
+        let got = talk(b.socket(), &[&hello(TOKEN)]);
+        assert_eq!(got.len(), 1, "{got:?}");
+    }
+
+    /// I-2, with the real rule: a process this test started is ours; one
+    /// that left the tree (its parent exited, so init took it) is another
+    /// chat's and is dropped at once, not after the 5 s deadline.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn i_2_a_process_outside_this_derm_runs_tree_is_dropped_at_once() {
+        let (t, base, sock, policy, _rx) = setup();
+        let b = open(&spec(&base, &sock, &policy, euid())).unwrap();
+        let out = t.0.join("took");
+        let script = format!(
+            "import socket,time\ns=socket.socket(socket.AF_UNIX)\ns.connect({:?})\nt=time.time()\ns.settimeout(8)\ntry:\n  s.recv(1)\nexcept Exception:\n  pass\nopen({:?},'w').write(str(time.time()-t))\n",
+            b.socket().to_string_lossy(),
+            out.to_string_lossy()
+        );
+        let Ok(st) = std::process::Command::new("/bin/sh")
+            .args(["-c", "(python3 -I -c \"$1\" &) ; exit 0", "sh", &script])
+            .status()
+        else {
+            return;
+        };
+        assert!(st.success());
+        let t0 = std::time::Instant::now();
+        while !out.exists() && t0.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let Ok(took) = std::fs::read_to_string(&out) else {
+            eprintln!("python3 is not here; not run");
+            return;
+        };
+        let took: f64 = took.trim().parse().unwrap();
+        assert!(took < 1.0, "a process outside the tree waited {took}s");
     }
 
     #[test]

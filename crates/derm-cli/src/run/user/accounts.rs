@@ -49,13 +49,9 @@ impl Account {
         self.name.strip_prefix(PREFIX).unwrap_or(&self.name)
     }
 
-    /// The account's `PATH`: its own installs first, then the system's.
-    pub fn path(&self) -> String {
-        format!(
-            "{}/.local/bin:/usr/local/bin:/usr/bin:/bin",
-            self.home.trim_end_matches('/')
-        )
-    }
+    // No `path()` since step P: a project chat's `PATH` holds no home
+    // folder (`run/user/project.rs`'s `PATH`), and `derm agents login`
+    // builds its own.
 }
 
 pub use super::slug::{plain_slug, PREFIX, SLUG_MAX};
@@ -293,10 +289,9 @@ mod tests {
         assert_eq!(warn, None);
         assert_eq!(a.len(), 2);
         assert_eq!(a[0].slug(), "max");
-        assert_eq!(
-            a[0].path(),
-            "/var/lib/derm/agents/max/.local/bin:/usr/local/bin:/usr/bin:/bin"
-        );
+        // Step P2 removed the home-first `PATH` this checked (AI-1's cause);
+        // a project chat's PATH is `run/user/project.rs`'s, with no home.
+        assert_eq!(a[0].home, "/var/lib/derm/agents/max");
         let (none, warn) = load(&d.0.join("missing.json"), &d.0, me());
         assert!(none.is_empty() && warn.is_none());
     }
