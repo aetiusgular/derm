@@ -30,20 +30,46 @@ ran `sudo`.
 
 | Step | What changes | Undo |
 |---|---|---|
-| 1 | `/usr/local/lib/derm/agents.py` (root's, 0644): the helper the unit and the check run, copied from `accounts.py` and checked by hash | removed with the last account |
-| 2 | The group `derm-agents` (system group, no members listed). An existing group with members is refused | `groupdel`, with the last account |
-| 3 | The user `derm-<slug>`: system user, primary group `derm-agents` and no other group, home `/var/lib/derm/agents/<slug>` (0700), password locked | `userdel --remove` (`--keep-home` keeps it) |
-| 4 | `/etc/derm/agents.json` (root's, 0644): `{"version": 1, "group": "derm-agents", "accounts": [{"name", "uid", "subscription", "home"}]}`, exactly the contract in `plans/parallel_build_accounts.md` section 2. A file there that is not a regular file of root's, is group or world writable, or does not parse is refused, and nothing is written over it | the entry removed; the file goes with the last account |
-| 5 | `/etc/derm/agents.nft` and the table `inet derm_agents`, loaded (below) | written again without the account; `nft delete table inet derm_agents` with the last |
-| 6 | `/etc/systemd/system/derm-agents-nft.service`, enabled: loads the table at boot and again after `nftables.service` restarts or reloads, whose `/etc/nftables.conf` starts with `flush ruleset` on Ubuntu and Debian | `systemctl disable`, removed with the last account |
-| 7 | `/etc/tmpfiles.d/derm-accounts-<you>.conf`: `/run/derm-agent` (root, 0755) and `/run/derm-agent/<your uid>` (yours, 0711), the base of each chat's bridge to the daemon, remade at boot (lane L1's request L1-5) | `rm`, with the last account; the empty folder goes at the next boot |
-| 8 | `/etc/sudoers.d/derm-<slug>`: `<you> ALL=(derm-<slug>) NOPASSWD:SETENV: ALL`, checked with `visudo -c`. Last, so nothing runs as the account before its table is in place | `rm` |
+| 1 | `/usr/local/libexec/derm/agent-user/` (root's, 0755): the undo, `uninstall.sh`, `uninstall-account.sh` and `accounts.py`, copied where only root writes; every folder from `/` to it must be a real folder (no link), root's, and not group or world writable, and a missing one is made root's 0755. Each file's sha256, read back from the copy, goes in `/etc/derm/uninstall.sha256` (root's, 0644, `sha256sum` format). Every undo line names this copy (review AI-8, rules case 284; dpkg keeps maintainer scripts the same way, root's, in `/var/lib/dpkg/info`) | removed with the last account, as the uninstall's last step |
+| 2 | `/usr/local/lib/derm/agents.py` (root's, 0644): the helper the unit and the check run, copied from `accounts.py` and checked by hash, after the same folder check of `/usr/local/lib` | removed with the last account |
+| 3 | The group `derm-agents` (system group, no members listed). An existing group with members is refused | `groupdel`, with the last account |
+| 4 | The user `derm-<slug>`: system user, primary group `derm-agents` and no other group, home `/var/lib/derm/agents/<slug>` (0700), password locked | `userdel --remove` (`--keep-home` keeps it) |
+| 5 | In the home, `signin/` with `claude-code/`, `codex/` and `pi/` (the sign-in store, one folder per harness, outside every project home) and `projects/` (the parent of each project's `home`, `tmp` and `run`, which derm's helper makes as the account): the account's, 0700 (`contracts/projects.md` section 2.2). Made by root through open folders, never through a link; an entry there that is a link or a file is refused and named | they go with the home |
+| 6 | `/etc/derm/agents.json` (root's, 0644): `{"version": 1, "group": "derm-agents", "accounts": [{"name", "uid", "subscription", "home"}]}`, exactly the contract in `plans/parallel_build_accounts.md` section 2. A file there that is not a regular file of root's, is group or world writable, or does not parse is refused, and nothing is written over it | the entry removed; the file goes with the last account |
+| 7 | `/etc/derm/agents.nft` and the table `inet derm_agents`, loaded (below) | written again without the account; `nft delete table inet derm_agents` with the last |
+| 8 | `/etc/systemd/system/derm-agents-nft.service`, enabled: loads the table at boot and again after `nftables.service` restarts or reloads, whose `/etc/nftables.conf` starts with `flush ruleset` on Ubuntu and Debian | `systemctl disable`, removed with the last account |
+| 9 | `/etc/tmpfiles.d/derm-accounts-<you>.conf`: `/run/derm-agent` (root, 0755) and `/run/derm-agent/<your uid>` (yours, 0711), the base of each chat's bridge to the daemon, remade at boot (lane L1's request L1-5) | `rm`, with the last account; the empty folder goes at the next boot |
+| 10 | TIOCSTI off for the machine: `/etc/sysctl.d/90-derm-agents.conf` (`dev.tty.legacy_tiocsti = 0`) and the value set now, after the value before is kept in `/etc/derm/tiocsti.before` (the first install's). Below | the value from before, back, the file removed, with the last account |
+| 11 | `/etc/sudoers.d/derm-<slug>`: `<you> ALL=(derm-<slug>) NOPASSWD:SETENV: ALL`, checked with `visudo -c`. Last, so nothing runs as the account before its table is in place | `rm` |
 
-`uninstall.sh --account <slug>` does every undo, in the reverse order: the
-sudoers rule first, then the account's processes, its entry, the table, the
-user, and the group with the last account. It removes only a user install.sh
-made (its comment is `derm agent <slug>`), and runs on a half-installed
-account too.
+```
+sudo /usr/local/libexec/derm/agent-user/uninstall.sh --account <slug>
+```
+
+does every undo, in the reverse order: the sudoers rule first, then the
+account's processes, its entry, the table, the user, and the group with the
+last account, then, with the last account, TIOCSTI as before, the helper and
+the undo's own copy, last, so a step that stops leaves the undo there to run
+again. That copy checks itself first: every folder to it root's alone and
+each file the sha256 the install recorded, or it changes nothing. It removes
+only a user install.sh made (its comment is `derm agent <slug>`), and runs on
+a half-installed account too.
+
+### TIOCSTI
+
+`TIOCSTI` pushes a byte into a terminal's input as if it were typed. With
+`dev.tty.legacy_tiocsti = 0` it fails with `EIO` for every process without
+`CAP_SYS_ADMIN` (Linux v6.18 and v7.0 `drivers/tty/tty_io.c:2277`, read); the
+sysctl is new in Linux 6.2 (absent at v6.1), and at 6.2 itself it refuses
+every caller, root's too. Without it a process could still push bytes only
+into its own controlling terminal (`tty_io.c:2280`); nothing derm or the
+harnesses run needs it (note CC section 4, option 4d), and a braille reader
+such as brltty keeps it through `CAP_SYS_ADMIN`. systemd-sysctl applies
+`/etc/sysctl.d` at boot, and for one key the file whose name sorts last wins
+(systemd 255 `man/standard-conf.xml`), so `/etc/sysctl.conf` (Debian's and
+Ubuntu's `99-sysctl.conf`) can set it back: the check reads the running value
+and names the files. On a kernel without the sysctl the install says so and
+changes nothing.
 
 ### The table
 
@@ -92,6 +118,10 @@ no other group, home), `agents.nft` against the table rendered again from
 `agents.json` byte for byte, the unit, and `/run/derm/agents-nft.loaded`, a
 marker root writes on each load with the boot id and the table's hash. The
 marker says the table was loaded this boot; it does not see a flush by hand.
+It also checks the undo's copy against `/etc/derm/uninstall.sha256`, that
+TIOCSTI is off now and kept off at boot, and, as root or as the account,
+each account's `signin/` and `projects/` (anyone else cannot look inside a
+0700 home, and the check says it skipped them).
 `--probe`, run as an agent account, asks the kernel: a datagram to 192.0.2.1
 must get `EPERM`, a TCP connect there `EHOSTUNREACH` at once, a datagram to
 127.0.0.53:53 `EPERM`, and a datagram to its own socket on 127.0.0.1 must

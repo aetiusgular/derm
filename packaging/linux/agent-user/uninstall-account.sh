@@ -6,10 +6,17 @@
 # Each step is printed first. In order: the sudoers rule (so nothing new
 # starts as the account), the account's processes, its entry in
 # /etc/derm/agents.json, the table (written again without the account's uid,
-# or deleted with the unit, the marker and the helper when it was the last),
-# the user and its home (the harnesses' logins there go with it unless
-# --keep-home), and the group derm-agents with the last account. The user is
-# removed only if install.sh made it. Runs on a half-installed account too.
+# or deleted with the unit and the marker when it was the last), the user
+# and its home (the harnesses' logins in signin/ and every project's folders
+# go with it unless --keep-home), the group derm-agents with the last
+# account, and, with the last account, TIOCSTI as it was before the install,
+# the helper, and this undo's own copy. The user is removed only if
+# install.sh made it. Runs on a half-installed account too.
+#
+# Run the copy the install keeps where only root writes, as the install's
+# undo line says: sudo /usr/local/libexec/derm/agent-user/uninstall.sh
+# --account <slug>. That copy checks itself against the sha256 the install
+# recorded before it changes anything (review AI-8).
 
 set -euo pipefail
 umask 022
@@ -19,6 +26,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PY=/usr/bin/python3
 NFT=/usr/sbin/nft
 HELPER=/usr/local/lib/derm/agents.py
+UNINSTALLER=/usr/local/libexec/derm/agent-user
 ANCHOR=/etc/derm/agents.json
 RULES=/etc/derm/agents.nft
 UNIT=/etc/systemd/system/derm-agents-nft.service
@@ -44,12 +52,17 @@ while [ $# -gt 0 ]; do
 		--keep-home) KEEP=1; shift ;;
 		--dry-run) DRY=1; shift ;;
 		--yes) YES=1; shift ;;
-		-h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+		-h|--help) sed -n '2,19p' "$0"; exit 0 ;;
 		*) die "unknown argument: $1" ;;
 	esac
 done
 [ -x "$PY" ] || die "$PY is not installed"
 if [ -f "$HELPER" ]; then A=("$PY" -I "$HELPER"); else A=("$PY" -I "$HERE/accounts.py"); fi
+# Root's copy runs only as the install recorded it: every folder to it
+# root's alone, each file the sha256 in /etc/derm/uninstall.sha256.
+if [ "$HERE" = "$UNINSTALLER" ]; then
+	"${A[@]}" verify-uninstaller || die "this copy is not what the install recorded; nothing changed. Write the package out again (derm agents installer <folder>) and run its uninstall.sh"
+fi
 # The same rule as install.sh: 1 to 15 of a-z, 0-9 and -, and never a slug
 # that would name wave 5's derm-agent user or the group (accounts.py).
 "${A[@]}" valid-slug "$SLUG" || die "--account '$SLUG' refused"
@@ -120,20 +133,17 @@ else
 			run "$NFT" delete table inet derm_agents
 		fi
 	fi
-	run rm -f "$RULES" "$UNIT" "$MARKER" "$HELPER"
-	# The bridges' base (install-account.sh step 7). /run/derm-agent/<uid>
+	run rm -f "$RULES" "$UNIT" "$MARKER"
+	# The bridges' base (install-account.sh step 9). /run/derm-agent/<uid>
 	# is left: it is empty between chats, gone at the next boot, and wave 5's
 	# --owner form may use the same folder.
 	for f in /etc/tmpfiles.d/derm-accounts-*.conf; do
 		[ -e "$f" ] && run rm -f "$f"
 	done
 	if [ -d /run/systemd/system ]; then run systemctl daemon-reload; fi
-	if [ "$DRY" = 0 ]; then
-		rmdir /usr/local/lib/derm /run/derm /etc/derm 2>/dev/null || true
-	fi
 fi
 
-say "5. the user $ACCOUNT"
+say "5. the user $ACCOUNT$([ "$KEEP" = 0 ] && echo ", with its home, signin/ and projects/")"
 if [ "$OURS" = 1 ]; then
 	if [ "$KEEP" = 1 ]; then run userdel "$ACCOUNT"; else run userdel --remove "$ACCOUNT"; fi
 else
@@ -154,4 +164,24 @@ elif getent group "$GROUP" >/dev/null; then
 	fi
 fi
 if [ "$DRY" = 0 ] && [ "$KEEP" = 0 ]; then rmdir "$HOMES" /var/lib/derm 2>/dev/null || true; fi
+
+# Last, so a step above that stops leaves the undo in place to run again.
+say "7. with the last account: TIOCSTI as before, the helper, and this undo's copy"
+if [ "$LEFT" -gt 0 ]; then
+	echo "   kept: $LEFT account(s) left"
+elif [ "$DRY" = 1 ]; then
+	echo "   dev.tty.legacy_tiocsti back to $(cat /etc/derm/tiocsti.before 2>/dev/null || echo 'what it is (nothing recorded)'); rm $HELPER; rm -r $UNINSTALLER"
+else
+	before="$("${A[@]}" tiocsti-restore)" || die "TIOCSTI was not put back; set dev.tty.legacy_tiocsti by hand"
+	case "$before" in
+		kept) echo "   dev.tty.legacy_tiocsti: nothing recorded, left as it is" ;;
+		*) echo "   dev.tty.legacy_tiocsti = $before, as before the install; /etc/sysctl.d/90-derm-agents.conf removed" ;;
+	esac
+	# This script may be the copy being removed: bash reads it from a file
+	# it holds open, so the unlink does not cut it short.
+	"${A[@]}" remove-uninstaller
+	echo "   removed $UNINSTALLER and /etc/derm/uninstall.sha256"
+	run rm -f "$HELPER"
+	rmdir /usr/local/lib/derm /run/derm /etc/derm 2>/dev/null || true
+fi
 say "done"

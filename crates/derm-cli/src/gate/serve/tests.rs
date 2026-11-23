@@ -98,6 +98,18 @@ fn run_lines(se: &Session, agent: &str, lines: &[Value], approver: ApproveOutcom
 }
 
 fn run_text(se: &Session, agent: &str, input: &[u8], approver: ApproveOutcome) -> Run {
+    run_text_ids(se, agent, input, approver, false)
+}
+
+/// [`run_text`], with the decide reply carrying `decisionId` when
+/// `send_decision_id` (lane PF's request 1).
+fn run_text_ids(
+    se: &Session,
+    agent: &str,
+    input: &[u8],
+    approver: ApproveOutcome,
+    send_decision_id: bool,
+) -> Run {
     let posted = RefCell::new(Vec::new());
     let asked = RefCell::new(Vec::new());
     let post = |e: &AdapterEvent| {
@@ -122,6 +134,8 @@ fn run_text(se: &Session, agent: &str, input: &[u8], approver: ApproveOutcome) -
         post_later: &post_later,
         approve: &approve,
         daemon_up: &|| false,
+        decisions: Default::default(),
+        send_decision_id,
     };
     let mut out = Vec::new();
     let code = run(&ctx, &mut Cursor::new(input.to_vec()), &mut out);
@@ -357,8 +371,14 @@ fn bw6_3_a_plugin_that_keeps_its_own_records_still_fails_closed_with_no_daemon()
     // An ask Pi's own card would answer is kept before the card, or denied.
     let mut a = approve_req(2, true);
     a["record"] = json!(false);
-    let r = run_lines(&se, "pi", &[hello("pi"), a], no_approver());
-    assert_eq!(r.replies[1]["kind"], "deny", "{}", r.replies[1]);
+    let mut lines = vec![hello("pi")];
+    lines.extend(after_decide(&[a]));
+    let r = run_lines(&se, "pi", &lines, no_approver());
+    // The decide already fails closed here (nothing can be kept), so the
+    // co-process refuses to approve what it denied (AI-7), and the plugin
+    // reads a refusal as a deny (case 228).
+    assert_eq!(r.replies[1]["action"], "deny", "{}", r.replies[1]);
+    assert_eq!(r.replies[2]["ok"], false, "{}", r.replies[2]);
     // With the folder back, the decision is a line of the chat's light log.
     std::fs::remove_file(&local).unwrap();
     let mut d = decide(3, "bash", json!({"command": "ls"}));
@@ -392,7 +412,9 @@ fn an_install_gets_its_install_record_with_the_decision() {
         yes: true,
         by: By::Approver,
     };
-    let r = run_lines(&se, "cline", &[hello("cline"), ap], yes);
+    let mut lines = vec![hello("cline")];
+    lines.extend(after_decide(&[ap]));
+    let r = run_lines(&se, "cline", &lines, yes);
     let kinds: Vec<&str> = r.posted.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(kinds, ["approval", "install.call"]);
     assert_eq!(r.posted[1].harness, "cline");
@@ -571,6 +593,24 @@ fn approve_req(id: u64, can_ask: bool) -> Value {
     json!({"id": id, "op": "approve", "call": {"tool": "write", "input": {"path": "a"}, "chat": "c-1", "toolUseId": "t9"}, "answer": ask_answer(), "canAsk": can_ask})
 }
 
+/// The decide `approve` and `record` go on (review AI-7): the call an
+/// `approve` or `record` line names, decided first in the same co-process,
+/// with `record: false` so it posts nothing of its own.
+fn decided_first(line: &Value) -> Value {
+    json!({"id": "d", "op": "decide", "call": line["call"], "record": false})
+}
+
+/// `[decide, line]` for each line: the session a plugin has, which decides
+/// before it approves or records.
+fn after_decide(lines: &[Value]) -> Vec<Value> {
+    let mut out = vec![];
+    for l in lines {
+        out.push(decided_first(l));
+        out.push(l.clone());
+    }
+    out
+}
+
 #[test]
 fn approve_goes_to_the_daemons_approver_and_records_a_final_answer() {
     let se = session(FIXTURE_POLICY, &[]);
@@ -578,13 +618,10 @@ fn approve_goes_to_the_daemons_approver_and_records_a_final_answer() {
         yes: true,
         by: By::Approver,
     };
-    let r = run_lines(
-        &se,
-        "opencode",
-        &[hello("opencode"), approve_req(1, false)],
-        yes,
-    );
-    assert_eq!(r.replies[1]["kind"], "allow");
+    let mut lines = vec![hello("opencode")];
+    lines.extend(after_decide(&[approve_req(1, false)]));
+    let r = run_lines(&se, "opencode", &lines, yes);
+    assert_eq!(r.replies[2]["kind"], "allow");
     assert_eq!(r.asked.len(), 1);
     assert_eq!(r.asked[0].harness, "opencode");
     assert_eq!(r.asked[0].tool, "write");
@@ -597,13 +634,8 @@ fn approve_goes_to_the_daemons_approver_and_records_a_final_answer() {
         yes: false,
         by: By::Approver,
     };
-    let r = run_lines(
-        &se,
-        "opencode",
-        &[hello("opencode"), approve_req(1, false)],
-        no,
-    );
-    assert_eq!(r.replies[1]["kind"], "deny");
+    let r = run_lines(&se, "opencode", &lines, no);
+    assert_eq!(r.replies[2]["kind"], "deny");
     assert_eq!(r.posted[0].detail["decision"], "deny");
 }
 
@@ -614,33 +646,23 @@ fn with_no_approver_an_ask_is_the_hosts_when_it_can_ask_and_a_deny_when_not() {
         yes: false,
         by: By::None,
     };
-    let r = run_lines(
-        &se,
-        "pi",
-        &[hello("pi"), approve_req(1, true)],
-        none.clone(),
-    );
-    assert_eq!(r.replies[1]["kind"], "harness");
+    let session = |can_ask: bool| {
+        let mut lines = vec![hello("pi")];
+        lines.extend(after_decide(&[approve_req(1, can_ask)]));
+        lines
+    };
+    let r = run_lines(&se, "pi", &session(true), none.clone());
+    assert_eq!(r.replies[2]["kind"], "harness");
     assert!(
         r.posted.is_empty(),
         "the host's prompt decides; the plugin records it"
     );
-    let r = run_lines(&se, "pi", &[hello("pi"), approve_req(1, false)], none);
-    assert_eq!(r.replies[1]["kind"], "deny");
-    let r = run_lines(
-        &se,
-        "pi",
-        &[hello("pi"), approve_req(1, true)],
-        no_approver(),
-    );
-    assert_eq!(r.replies[1]["kind"], "harness");
-    let r = run_lines(
-        &se,
-        "pi",
-        &[hello("pi"), approve_req(1, false)],
-        no_approver(),
-    );
-    assert_eq!(r.replies[1]["kind"], "deny");
+    let r = run_lines(&se, "pi", &session(false), none);
+    assert_eq!(r.replies[2]["kind"], "deny");
+    let r = run_lines(&se, "pi", &session(true), no_approver());
+    assert_eq!(r.replies[2]["kind"], "harness");
+    let r = run_lines(&se, "pi", &session(false), no_approver());
+    assert_eq!(r.replies[2]["kind"], "deny");
 }
 
 #[test]
@@ -650,8 +672,13 @@ fn approve_in_full_access_denies_without_asking() {
         yes: true,
         by: By::Approver,
     };
-    let r = run_lines(&se, "pi", &[hello("pi"), approve_req(1, true)], yes);
-    assert_eq!(r.replies[1]["kind"], "deny");
+    // Under full access decide already denies the ask, so the plugin has
+    // nothing to approve: the co-process refuses an approve for it.
+    let mut lines = vec![hello("pi")];
+    lines.extend(after_decide(&[approve_req(1, true)]));
+    let r = run_lines(&se, "pi", &lines, yes);
+    assert_eq!(r.replies[1]["action"], "deny", "{}", r.replies[1]);
+    assert_eq!(r.replies[2]["ok"], false, "{}", r.replies[2]);
     assert!(r.asked.is_empty());
 }
 
@@ -666,13 +693,14 @@ fn approve_takes_only_an_ask_and_caps_its_timeout() {
         yes: true,
         by: By::Approver,
     };
-    let r = run_lines(&se, "pi", &[hello("pi"), not_ask, long], yes);
-    assert_eq!(r.replies[1]["ok"], false);
+    let mut lines = vec![hello("pi")];
+    lines.extend(after_decide(&[not_ask, long]));
+    let r = run_lines(&se, "pi", &lines, yes);
+    assert_eq!(r.replies[2]["ok"], false, "{}", r.replies[2]);
     assert_eq!(r.asked.len(), 1);
-    assert_eq!(
-        r.asked[0].timeout_seconds,
-        u64::from(gate::HOOK_ASK_CAP_SECONDS)
-    );
+    // AI-7: the timeout is the decision's own (the fixture's 1 s), never
+    // the plugin's, which the cap used to bound.
+    assert_eq!(r.asked[0].timeout_seconds, 1);
 }
 
 #[test]
@@ -681,33 +709,48 @@ fn record_posts_the_plugins_outcome_with_its_label() {
     let rec = json!({"id": 1, "op": "record", "call": {"tool": "bash", "input": {"command": "npm i x"}, "toolUseId": "t1"}, "answer": {"action": "ask", "normalizedTool": "bash", "reason": "secret-like value in input", "redacted": 1}, "decision": "ask", "label": "ask (Cline's approval)", "via": "plugin", "installs": false});
     let bad = json!({"id": 2, "op": "record", "call": {"tool": "bash"}, "answer": ask_answer(), "decision": "maybe"});
     let label = json!({"id": 3, "op": "record", "call": {"tool": "bash"}, "answer": ask_answer(), "decision": "deny", "label": "a\nb"});
-    let r = run_lines(
-        &se,
-        "cline",
-        &[hello("cline"), rec, bad, label],
-        no_approver(),
-    );
+    let mut lines = vec![hello("cline")];
+    lines.extend(after_decide(&[rec, bad, label]));
+    let r = run_lines(&se, "cline", &lines, no_approver());
     assert_eq!(
-        r.replies[1]["posted"], 1,
+        r.replies[2]["posted"], 1,
         "installs: false posts no install record"
     );
     let e = &r.posted[0];
     assert_eq!(e.summary, "bash ask");
     assert_eq!(e.detail["decision"], "ask (Cline's approval)");
     assert_eq!(e.detail["via"], "plugin");
-    assert_eq!(e.detail["redacted"], 1);
-    assert_eq!(r.replies[2]["ok"], false);
-    assert_eq!(r.replies[3]["ok"], false);
+    // AI-7: the redaction count is the decision's own (nothing redacted in
+    // `npm i x`), never the 1 the plugin's answer claimed.
+    assert_eq!(e.detail["redacted"], 0);
+    assert_eq!(r.replies[4]["ok"], false);
+    assert_eq!(r.replies[6]["ok"], false);
 
+    // The decision asks (a new package, case 131): a record of an allow
+    // answer for it widens the decision and is refused (AI-7)...
     let rec = json!({"id": 1, "op": "record", "call": {"tool": "bash", "input": {"command": "npm i x"}, "toolUseId": "t1"}, "answer": {"action": "allow", "normalizedTool": "bash", "reason": "rule bash allow"}, "decision": "allow"});
-    let r = run_lines(&se, "cline", &[hello("cline"), rec], no_approver());
-    assert_eq!(r.replies[1]["posted"], 2);
+    let mut lines = vec![hello("cline")];
+    lines.extend(after_decide(std::slice::from_ref(&rec)));
+    let r = run_lines(&se, "cline", &lines, no_approver());
+    assert_eq!(r.replies[2]["ok"], false, "{}", r.replies[2]);
+    assert!(r.posted.is_empty());
+    // ...while the ask the person then allowed records with its install.
+    let mut rec = rec;
+    rec["answer"]["action"] = json!("ask");
+    let mut lines = vec![hello("cline")];
+    lines.extend(after_decide(&[rec]));
+    let r = run_lines(&se, "cline", &lines, no_approver());
+    assert_eq!(r.replies[2]["posted"], 2, "{}", r.replies[2]);
     assert_eq!(r.posted[1].kind, "install.call");
 
     // An ask the host's own prompt will decide still records its install.
-    let rec = json!({"id": 1, "op": "record", "call": {"tool": "exec", "input": {"command": "npm i x"}}, "answer": {"action": "ask", "normalizedTool": "bash", "reason": "install asks"}, "decision": "ask"});
-    let r = run_lines(&se, "openclaw", &[hello("openclaw"), rec], no_approver());
-    assert_eq!(r.replies[1]["posted"], 2);
+    // (The fixture's policy names no shell alias, so OpenClaw's `exec` would
+    // stay `exec`: the decision's own tool is what counts, AI-7.)
+    let rec = json!({"id": 1, "op": "record", "call": {"tool": "bash", "input": {"command": "npm i x"}}, "answer": {"action": "ask", "normalizedTool": "bash", "reason": "install asks"}, "decision": "ask"});
+    let mut lines = vec![hello("openclaw")];
+    lines.extend(after_decide(&[rec]));
+    let r = run_lines(&se, "openclaw", &lines, no_approver());
+    assert_eq!(r.replies[2]["posted"], 2, "{}", r.replies[2]);
     assert_eq!(r.posted[1].detail["decision"], "ask");
 }
 
@@ -719,10 +762,15 @@ fn a_record_or_event_that_does_not_wait_is_queued_for_the_poster() {
         json!({"id": 2, "op": "event", "event": {"id": "x", "kind": "tool.call"}, "wait": false});
     let bad =
         json!({"id": 3, "op": "event", "event": {"id": "x", "kind": "tool.call"}, "wait": "no"});
-    let r = run_lines(&se, "cline", &[hello("cline"), rec, ev, bad], no_approver());
+    let r = run_lines(
+        &se,
+        "cline",
+        &[hello("cline"), decided_first(&rec), rec, ev, bad],
+        no_approver(),
+    );
     assert!(r.posted.is_empty());
     assert_eq!(r.later.len(), 2);
-    assert_eq!(r.replies[3]["ok"], false);
+    assert_eq!(r.replies[4]["ok"], false);
 }
 
 #[test]
@@ -1246,4 +1294,312 @@ fn the_decide_reply_names_its_permission() {
         "{:?}",
         allow.detail
     );
+}
+
+// --- review AI-7 (lane PF): approve and record go on the co-process's own
+// decision, never on the answer the plugin hands back (note CC section 6;
+// case 287). The process-level red test is `tests/contracts_acctp.rs`'s
+// `pf_gate_serve_records_its_own_decisions_permission_on_approve`.
+
+fn yes() -> ApproveOutcome {
+    ApproveOutcome::Answer {
+        yes: true,
+        by: By::Approver,
+    }
+}
+
+fn without_id(reply: &Value) -> Value {
+    let mut a = reply.clone();
+    a.as_object_mut().unwrap().remove("id");
+    a
+}
+
+#[test]
+fn ai_7_an_approve_records_the_decisions_permission_not_the_plugins_reason() {
+    let policy = json!({"version": 1, "rules": [{"tool": "bash", "action": "allow"}]});
+    let se = session(&policy.to_string(), &[]);
+    let call = json!({"tool": "bash", "input": {"command": "cat .aws/credentials"}, "chat": "c-1", "toolUseId": "t1"});
+    let d = json!({"id": 1, "op": "decide", "call": call});
+    let first = run_lines(&se, "opencode", &[hello("opencode"), d.clone()], yes());
+    let decided = without_id(&first.replies[1]);
+    assert_eq!(decided["action"], "ask", "{decided}");
+    assert_eq!(decided["permission"], "secrets", "{decided}");
+    // A plugin that hands back another name, in the reason and in the
+    // field, and another tool and timeout.
+    let mut forged = decided.clone();
+    forged["reason"] = json!("network, a host derm never named");
+    forged["permission"] = json!("network");
+    forged["normalizedTool"] = json!("read");
+    forged["askTimeoutSeconds"] = json!(9);
+    let ap = json!({"id": 2, "op": "approve", "call": call, "answer": forged, "canAsk": false});
+    let r = run_lines(&se, "opencode", &[hello("opencode"), d, ap], yes());
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    assert_eq!(r.asked.len(), 1);
+    assert_eq!(r.asked[0].tool, "bash");
+    assert_eq!(r.asked[0].timeout_seconds, 60);
+    let rec = r
+        .posted
+        .iter()
+        .find(|e| e.kind == "approval")
+        .expect("the approval record");
+    assert_eq!(rec.detail["permission"], "secrets", "{:?}", rec.detail);
+    assert_eq!(rec.detail["tool"], "bash");
+    let why = rec.detail["reason"].as_str().unwrap();
+    assert!(why.starts_with("secrets, "), "{why}");
+    assert!(!why.contains("network"), "{why}");
+}
+
+#[test]
+fn ai_7_a_call_the_co_process_never_decided_is_neither_approved_nor_recorded() {
+    let se = session(FIXTURE_POLICY, &[]);
+    let rec = json!({"id": 2, "op": "record", "call": {"tool": "write", "input": {"path": "a"}, "chat": "c-1", "toolUseId": "t9"}, "answer": ask_answer(), "decision": "allow"});
+    let r = run_lines(&se, "pi", &[hello("pi"), approve_req(1, false), rec], yes());
+    for i in [1, 2] {
+        assert_eq!(r.replies[i]["ok"], false, "{}", r.replies[i]);
+        assert!(
+            r.replies[i]["error"]
+                .as_str()
+                .unwrap()
+                .contains("made no decision"),
+            "{}",
+            r.replies[i]
+        );
+    }
+    assert!(r.asked.is_empty(), "no card for a call never decided");
+    assert!(r.posted.is_empty());
+}
+
+#[test]
+fn ai_7_a_decision_is_found_only_for_the_call_it_was_made_for() {
+    let se = session(FIXTURE_POLICY, &[]);
+    let base = json!({"id": 1, "op": "approve", "call": {"tool": "write", "input": {"path": "a"}, "chat": "c-1", "toolUseId": "t9"}, "answer": ask_answer(), "canAsk": false});
+    // Decided for one call; approved for one that differs in a part the
+    // decision reads.
+    let changes: [(&str, Value); 4] = [
+        ("input", json!({"path": "b"})),
+        ("chat", json!("c-2")),
+        ("tool", json!("Write")),
+        ("fullAccess", json!(false)),
+    ];
+    for (field, value) in changes {
+        let mut other = base.clone();
+        other["call"][field] = value;
+        let r = run_lines(
+            &se,
+            "pi",
+            &[hello("pi"), decided_first(&base), other],
+            yes(),
+        );
+        assert_eq!(r.replies[2]["ok"], false, "{field}: {}", r.replies[2]);
+        assert!(r.asked.is_empty(), "{field}");
+    }
+    // The same call in another co-process: not this one's decision.
+    let r = run_lines(&se, "pi", &[hello("pi"), base.clone()], yes());
+    assert_eq!(r.replies[1]["ok"], false, "{}", r.replies[1]);
+    // The same call here: approved, under its id or another (the id only
+    // names records; no step of the decision reads it).
+    let r = run_lines(
+        &se,
+        "pi",
+        &[hello("pi"), decided_first(&base), base.clone()],
+        yes(),
+    );
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    let mut relabelled = base.clone();
+    relabelled["call"]["toolUseId"] = json!("t8");
+    let r = run_lines(
+        &se,
+        "pi",
+        &[hello("pi"), decided_first(&base), relabelled],
+        yes(),
+    );
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    assert_eq!(r.asked[0].id, "ap-pi-t8");
+}
+
+#[test]
+fn ai_7_with_a_decision_id_the_approve_names_that_decision() {
+    let se = session(FIXTURE_POLICY, &[]);
+    let call = json!({"tool": "write", "input": {"path": "a"}, "chat": "c-1", "toolUseId": "t9"});
+    let other = json!({"tool": "write", "input": {"path": "z"}, "chat": "c-1", "toolUseId": "t7"});
+    // Ids are new in each co-process, so each case decides and approves
+    // through one context, the approve built from the decide replies.
+    let run = |pick: &str| -> Value {
+        let posted = RefCell::new(Vec::new());
+        let post = |e: &AdapterEvent| {
+            posted.borrow_mut().push(e.clone());
+            crate::gate::daemon::Posted::Daemon
+        };
+        let post_later = |_: AdapterEvent| true;
+        let approve = |_: &ApproveRequest| yes();
+        let ctx = Ctx {
+            agent: "pi".into(),
+            memory_state: memory::state_path(&se.env),
+            env: se.env.clone(),
+            cwd: se.cwd.clone(),
+            post: &post,
+            post_later: &post_later,
+            approve: &approve,
+            daemon_up: &|| false,
+            decisions: Default::default(),
+            send_decision_id: true,
+        };
+        let decide = |id: u64, c: &Value| -> Value {
+            let req = json!({"id": id, "op": "decide", "call": c});
+            op_decide(&ctx, &json!(id), &req)
+        };
+        let a = without_id(&decide(1, &call));
+        let b = without_id(&decide(2, &other));
+        assert!(
+            a["decisionId"]
+                .as_str()
+                .is_some_and(|s| s.len() == 34 && s.starts_with("d-")),
+            "{a}"
+        );
+        assert_ne!(a["decisionId"], b["decisionId"]);
+        let answer = match pick {
+            "own" => a.clone(),
+            // Another call's decision, under this call.
+            "other" => {
+                let mut x = a.clone();
+                x["decisionId"] = b["decisionId"].clone();
+                x
+            }
+            "unknown" => {
+                let mut x = a.clone();
+                x["decisionId"] = json!(format!("d-{}", "0".repeat(32)));
+                x
+            }
+            "bad" => {
+                let mut x = a.clone();
+                x["decisionId"] = json!(7);
+                x
+            }
+            _ => unreachable!(),
+        };
+        op_approve(
+            &ctx,
+            &json!(3),
+            &json!({"id": 3, "op": "approve", "call": call, "answer": answer, "canAsk": false}),
+        )
+    };
+    assert_eq!(run("own")["kind"], "allow");
+    for pick in ["other", "unknown", "bad"] {
+        let r = run(pick);
+        assert_eq!(r["ok"], false, "{pick}: {r}");
+    }
+}
+
+#[test]
+fn ai_7_a_plugins_narrowing_keeps_the_decisions_name_and_a_widening_is_refused() {
+    let se = session(FIXTURE_POLICY, &[]);
+    // Pi's memory index: an allow narrowed to an ask, in the plugin's words.
+    let call = json!({"tool": "read", "input": {"path": "memory/INDEX.md"}, "chat": "c-1", "toolUseId": "t1"});
+    let d = json!({"id": 1, "op": "decide", "call": call});
+    let first = run_lines(&se, "pi", &[hello("pi"), d.clone()], yes());
+    let mut narrowed = without_id(&first.replies[1]);
+    assert_eq!(narrowed["action"], "allow", "{narrowed}");
+    narrowed["action"] = json!("ask");
+    narrowed["reason"] = json!("memory/INDEX.md is the memory index: memory_propose writes it");
+    let ap = json!({"id": 2, "op": "approve", "call": call, "answer": narrowed, "canAsk": false});
+    let r = run_lines(&se, "pi", &[hello("pi"), d.clone(), ap], yes());
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    let rec = r
+        .posted
+        .iter()
+        .find(|e| e.kind == "approval" && e.detail["policyAction"] == "ask")
+        .unwrap();
+    assert!(rec.detail.get("permission").is_none(), "{:?}", rec.detail);
+    assert!(rec.detail["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("memory/INDEX.md is the memory index"));
+
+    // Cline's and Amp's rewrite rule: an allow that redacted a secret-like
+    // value, narrowed to an ask, is `secrets`' by the decision's own count.
+    let call = json!({"tool": "mcp__exa__search", "input": {"q": "x", "api_key": "abc"}, "chat": "c-1", "toolUseId": "t2"});
+    let d = json!({"id": 1, "op": "decide", "call": call});
+    let first = run_lines(&se, "cline", &[hello("cline"), d.clone()], yes());
+    let mut narrowed = without_id(&first.replies[1]);
+    assert_eq!(narrowed["action"], "allow");
+    assert_eq!(narrowed["redacted"], 1);
+    narrowed["action"] = json!("ask");
+    narrowed["reason"] = json!("secrets, secret-like value in input");
+    narrowed["updatedInput"] = Value::Null;
+    let ap = json!({"id": 2, "op": "approve", "call": call, "answer": narrowed, "canAsk": false});
+    let r = run_lines(&se, "cline", &[hello("cline"), d, ap], yes());
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    let rec = r
+        .posted
+        .iter()
+        .find(|e| e.kind == "approval" && e.detail["policyAction"] == "ask")
+        .unwrap();
+    assert_eq!(rec.detail["permission"], "secrets", "{:?}", rec.detail);
+
+    // A deny the plugin hands back as an ask, to approve it: refused.
+    let call =
+        json!({"tool": "mcp__my-server__drop", "input": {}, "chat": "c-1", "toolUseId": "t4"});
+    let d = json!({"id": 1, "op": "decide", "call": call});
+    let first = run_lines(&se, "pi", &[hello("pi"), d.clone()], yes());
+    let mut widened = without_id(&first.replies[1]);
+    assert_eq!(widened["action"], "deny");
+    widened["action"] = json!("ask");
+    let ap = json!({"id": 2, "op": "approve", "call": call, "answer": widened, "canAsk": false});
+    let r = run_lines(&se, "pi", &[hello("pi"), d, ap], yes());
+    assert_eq!(r.replies[2]["ok"], false, "{}", r.replies[2]);
+    assert!(r.asked.is_empty());
+}
+
+#[test]
+fn ai_7_oh_my_pi_finds_its_decision_by_the_name_it_gave() {
+    let se = session(FIXTURE_POLICY, &[]);
+    // `mcp__github_create_issue` is oh-my-pi's name for github/create_issue
+    // (`omp_tool_name`), which asks; the approve names it as decide did.
+    let call =
+        json!({"tool": "mcp__github_create_issue", "input": {}, "chat": "c-1", "toolUseId": "t1"});
+    let d = json!({"id": 1, "op": "decide", "call": call});
+    let first = run_lines(&se, "oh-my-pi", &[hello("oh-my-pi"), d.clone()], yes());
+    let decided = without_id(&first.replies[1]);
+    assert_eq!(decided["action"], "ask", "{decided}");
+    let ap = json!({"id": 2, "op": "approve", "call": call, "answer": decided, "canAsk": false});
+    let r = run_lines(&se, "oh-my-pi", &[hello("oh-my-pi"), d, ap], yes());
+    assert_eq!(r.replies[2]["kind"], "allow", "{}", r.replies[2]);
+    assert_eq!(r.asked[0].tool, "github/create_issue");
+}
+
+#[test]
+fn ai_7_the_oldest_decision_goes_past_the_cap() {
+    let mut kept = decisions::Decisions::default();
+    let answer = GateAnswer {
+        action: Action::Ask,
+        normalized_tool: "write".into(),
+        reason: "rule write ask".into(),
+        updated_input: None,
+        redacted: 0,
+        ask_timeout_seconds: 1,
+        permission: None,
+    };
+    let call = |i: usize| GateCall {
+        harness: "pi".into(),
+        tool: "write".into(),
+        tool_input: json!({"path": i}),
+        chat: Some("c".into()),
+        tool_use_id: Some(format!("t{i}")),
+        full_access: None,
+    };
+    let first = kept.keep(decisions::CallKey::of(&call(0)), &answer);
+    for i in 1..decisions::KEEP {
+        kept.keep(decisions::CallKey::of(&call(i)), &answer);
+    }
+    assert_eq!(kept.len(), decisions::KEEP);
+    assert!(kept
+        .find(Some(&first), &decisions::CallKey::of(&call(0)))
+        .is_some());
+    kept.keep(decisions::CallKey::of(&call(decisions::KEEP)), &answer);
+    assert_eq!(kept.len(), decisions::KEEP);
+    assert!(kept
+        .find(Some(&first), &decisions::CallKey::of(&call(0)))
+        .is_none());
+    assert!(kept.find(None, &decisions::CallKey::of(&call(0))).is_none());
+    assert!(kept.find(None, &decisions::CallKey::of(&call(1))).is_some());
 }
