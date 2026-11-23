@@ -28,8 +28,9 @@
 
 pub mod harness;
 pub mod registry;
-// Step P (the base, 20 Nov 2026): the sign-in store and its links, lane PB's.
-#[allow(dead_code)] // step P stubs; the lane drops this when it wires them
+// Step P: the sign-in store and its links (lane PB). `link_project_home`
+// is lane PA's helper's to call; until that is wired it has no caller here.
+#[allow(dead_code)]
 pub mod signin;
 pub mod tunnel;
 
@@ -113,6 +114,40 @@ pub(crate) const LANDLOCK_SPEC_VAR: &str = "DERM_LANDLOCK_SPEC";
 /// never an open. 0 present, 3 absent; anything else (sudo's own 1 among
 /// them) is unknown.
 const PRESENT: &str = r#"if [ -f "$HOME/$1" ]; then exit 0; fi; exit 3"#;
+
+/// Whether the account's sign-in store folder for a harness is there, a
+/// folder and not a link, asked as the account. 0 there, 3 not.
+const STORE_THERE: &str = r#"if [ -d "$HOME/$1" ] && [ ! -L "$HOME/$1" ]; then exit 0; fi; exit 3"#;
+
+/// Where `status` looks for a harness's sign-in, from the account's home:
+/// the account's store (`signin/<harness>/<file>`, step P3) for a harness
+/// that keeps it there, else the harness's own file in the account's home.
+pub(crate) fn signin_file(h: &harness::SignIn) -> String {
+    match signin::store(h.id).filter(|_| signin::uses_store(h.id)) {
+        Some(st) => format!(
+            "{}/{}/{}",
+            derm_core::project::layout::SIGNIN,
+            h.id,
+            st.file
+        ),
+        None => h.file.to_string(),
+    }
+}
+
+/// What a sign-in gets so it writes into the account's store (step P3):
+/// Codex its home (`CODEX_HOME`, which must be an existing folder, note CD
+/// 2.2), Claude Code its store folder when the switch is on. Paths, not
+/// secrets, so they go on `env`'s argv as `PATH` does (case 85).
+fn login_env(a: &Account, harness: &str) -> Vec<(String, String)> {
+    let dir = signin::store_dir(&a.home, harness);
+    match harness {
+        "codex" => vec![("CODEX_HOME".into(), dir)],
+        "claude-code" if signin::uses_store(harness) => {
+            vec![(signin::CLAUDE_STORE_VAR.into(), dir)]
+        }
+        _ => Vec::new(),
+    }
+}
 
 /// Where this command reads, what it runs, and what it may ask.
 pub(crate) struct Ctx<'a> {
@@ -708,6 +743,23 @@ pub(crate) fn present(ctx: &Ctx<'_>, a: &Account, file: &str) -> Presence {
     }
 }
 
+/// Whether the store folder `rel` is there, asked as the account.
+fn there(ctx: &Ctx<'_>, a: &Account, rel: &str) -> Presence {
+    let st = sudo(ctx)
+        .args(["-n", "-H", "-u", &a.name, "--"])
+        .arg(&ctx.sh)
+        .args(["-c", STORE_THERE, "derm-agents-store", rel])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match st.ok().and_then(|s| s.code()) {
+        Some(0) => Presence::Yes,
+        Some(3) => Presence::No,
+        _ => Presence::Unknown,
+    }
+}
+
 fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     let (flag, rest) = match take(args, "--account") {
         Ok(x) => x,
@@ -739,7 +791,7 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     for a in &all {
         let mut parts = Vec::new();
         for h in harness::ALL {
-            let p = present(ctx, a, h.file);
+            let p = present(ctx, a, &signin_file(h));
             claude |= h.id == "claude-code" && p == Presence::Yes;
             unknown |= p == Presence::Unknown;
             parts.push(format!(
@@ -763,7 +815,7 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     let _ = writeln!(
         ctx.out,
         "read by whether each harness's own sign-in file exists ({}), as the account; derm opened none of them",
-        harness::ALL.iter().map(|h| format!("~/{}", h.file)).collect::<Vec<_>>().join(", ")
+        harness::ALL.iter().map(|h| format!("~/{}", signin_file(h))).collect::<Vec<_>>().join(", ")
     );
     if unknown {
         let _ = writeln!(
@@ -838,14 +890,36 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     };
     let _ = writeln!(
         ctx.out,
-        "signing {} in as {} through {}'s own flow: `{}`; derm reads, copies and stores nothing it writes, and lets it reach only {} on 443, unread",
+        "signing {} in as {} through {}'s own flow: `{}`; derm reads, copies and stores nothing it writes, and lets it reach only {} on 443, unread, through {}, which takes only this sign-in's own proxy credential",
         h.id,
         a.name,
         h.vendor,
         h.argv.join(" "),
-        h.hosts.join(", ")
+        h.hosts.join(", "),
+        t.shown_url()
     );
     let url = t.url();
+    let store_env = login_env(&a, h.id);
+    if let Some((_, dir)) = store_env.first() {
+        match there(ctx, &a, &format!("{}/{}", derm_core::project::layout::SIGNIN, h.id)) {
+            Presence::No => {
+                return fail(
+                    ctx,
+                    1,
+                    &format!(
+                        "{}'s sign-in store {dir} is missing or not a folder; the installer makes it (`derm agents add`)",
+                        a.name
+                    ),
+                )
+            }
+            Presence::Yes | Presence::Unknown => {}
+        }
+        let _ = writeln!(
+            ctx.out,
+            "the sign-in goes into {}'s store {dir}, which every project's chats on {} share",
+            a.name, a.name
+        );
+    }
     // Review AI-3: no `sudo -i` (a login shell reads the account's
     // `.profile`, which any chat on the account can write), and the sign-in
     // in its own Landlock domain, through root's copy of derm. sudo's `-H`
@@ -862,20 +936,26 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     if let Some(first) = &ctx.login_path_first {
         path = format!("{first}:{path}");
     }
+    // I-3: the tunnel's URL carries this sign-in's proxy credential, so it
+    // goes in the environment, through sudo by name (`--preserve-env`; the
+    // installer's rule carries `SETENV`, which sudoers(5) at 1.9.15p5 also
+    // implies for a rule of `ALL`), in both spellings, never on argv, where
+    // any local process reads it (case 85).
     let st = sudo(ctx)
         .env(crate::agents::LANDLOCK_SPEC_VAR, login_spec(&a))
+        .env("HTTPS_PROXY", &url)
+        .env("https_proxy", &url)
         .args(["-u", &a.name, "-H"])
         .arg(format!(
-            "--preserve-env={}",
+            "--preserve-env={},HTTPS_PROXY,https_proxy",
             crate::agents::LANDLOCK_SPEC_VAR
         ))
         .arg("--")
         .arg(&helper)
         .args(["landlock", "--", "/usr/bin/env"])
         .arg(format!("PATH={path}"))
-        .arg(format!("HTTPS_PROXY={url}"))
-        .arg(format!("https_proxy={url}"))
         .args(["NO_PROXY=", "no_proxy="])
+        .args(store_env.iter().map(|(k, v)| format!("{k}={v}")))
         .args(h.argv)
         .status();
     let code = match st {
@@ -890,16 +970,13 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     for why in t.failed() {
         let _ = writeln!(ctx.out, "the tunnel could not reach {why}");
     }
-    let _ = match present(ctx, &a, h.file) {
-        Presence::Yes => writeln!(
-            ctx.out,
-            "{} has {}'s sign-in file (~/{})",
-            a.name, h.id, h.file
-        ),
+    let file = signin_file(h);
+    let _ = match present(ctx, &a, &file) {
+        Presence::Yes => writeln!(ctx.out, "{} has {}'s sign-in file (~/{file})", a.name, h.id),
         Presence::No => writeln!(
             ctx.out,
-            "{} has no {} sign-in file (~/{})",
-            a.name, h.id, h.file
+            "{} has no {} sign-in file (~/{file})",
+            a.name, h.id
         ),
         Presence::Unknown => writeln!(
             ctx.out,

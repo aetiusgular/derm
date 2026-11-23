@@ -3,7 +3,9 @@
 //! local CA it terminates TLS with.
 //!
 //! ```text
-//! derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body:<path>|query:<param>]... [--note <text>]
+//! derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body:<path>|query:<param>]... [--note <text>] [--project <id|folder>]...
+//! derm secret bind <id> --project <id|folder>
+//! derm secret unbind <id> [--project <id|folder>]
 //! derm secret list
 //! derm secret check
 //! derm secret remove <id>
@@ -20,6 +22,12 @@
 //! the Standard tier's blocks deny its reads) and the presets' deny of `derm`
 //! setup verbs (case 147). No verb ever prints a value; `check` reads each value
 //! as a chat start would and says only whether it could.
+//!
+//! `--project`, `bind` and `unbind` say which project's chats a secret is for
+//! (plan step P10's I-4; `derm_egress::bind`): a chat of a project gets only
+//! the secrets bound to it, a chat in no project only those bound to none. A
+//! project is named by its id (16 hex, `derm project list`) or its folder,
+//! whose real path's id is taken (`derm_core::project::ProjectId`).
 
 // Called by `run/broker.rs` (lane 6C's R1, integration w6's close).
 pub mod chain;
@@ -30,7 +38,9 @@ use derm_egress::ca::{self, Ca};
 use derm_egress::secrets::{self, Entry, From};
 
 pub const USAGE: &str = "usage: derm secret <add|list|check|remove|ca> ...
-  derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body:<path>|query:<param>]... [--note <text>]
+  derm secret add <id> --host <h> [--host <h>...] (--env <VAR> | --file <path> | --keychain <service>) [--in body:<path>|query:<param>]... [--note <text>] [--project <id|folder>]...
+  derm secret bind <id> --project <id|folder>
+  derm secret unbind <id> [--project <id|folder>]
   derm secret list
   derm secret check
   derm secret remove <id>
@@ -106,7 +116,7 @@ fn inside_a_chat() -> Option<String> {
 
 pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     let verb = args.first().map(String::as_str);
-    let writes = matches!(verb, Some("add" | "remove"))
+    let writes = matches!(verb, Some("add" | "remove" | "bind" | "unbind"))
         || (verb == Some("ca")
             && matches!(args.get(1).map(String::as_str), Some("create" | "remove")));
     if writes {
@@ -131,6 +141,8 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         Some("list") => list(ctx),
         Some("check") => check(ctx),
         Some("remove") => remove(ctx, &args[1..]),
+        Some("bind") => bind(ctx, &args[1..]),
+        Some("unbind") => unbind(ctx, &args[1..]),
         Some("ca") => ca_verb(ctx, &args[1..]),
         _ => Err(USAGE.to_string()),
     };
@@ -208,8 +220,52 @@ pub(crate) fn parse_add(args: &[String]) -> Result<Entry, String> {
     })
 }
 
+/// The `--project` values out of `args`, each as a project id, and the
+/// rest. A value of 16 lowercase hex is an id; anything else is a folder,
+/// whose real path's id it names.
+pub(crate) fn take_projects(args: &[String]) -> Result<(Vec<String>, Vec<String>), String> {
+    let (mut projects, mut rest) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--project" {
+            let v = args.get(i + 1).ok_or("--project needs a value")?;
+            let id = project_id(v)?;
+            if !projects.contains(&id) {
+                projects.push(id);
+            }
+            i += 2;
+        } else {
+            rest.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((projects, rest))
+}
+
+fn project_id(v: &str) -> Result<String, String> {
+    if derm_core::project::valid_id(v) {
+        return Ok(v.to_string());
+    }
+    let real = std::fs::canonicalize(v)
+        .map_err(|e| format!("--project {v}: not a project id (16 hex) or a folder: {e}"))?;
+    if !real.is_dir() {
+        return Err(format!("--project {v}: not a folder"));
+    }
+    let real = real
+        .to_str()
+        .ok_or_else(|| format!("--project {v}: the folder's path is not UTF-8"))?;
+    Ok(derm_core::project::ProjectId::of_real_path(real)
+        .as_str()
+        .to_string())
+}
+
+fn bindings_path(ctx: &Ctx<'_>) -> PathBuf {
+    derm_egress::bind::path_for(&ctx.home)
+}
+
 fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
-    let e = parse_add(args)?;
+    let (projects, args) = take_projects(args)?;
+    let e = parse_add(&args)?;
     let path = file_path(ctx);
     let mut f = secrets::load(&path)?;
     if f.secrets.iter().any(|x| x.id == e.id) {
@@ -217,12 +273,21 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
     }
     f.secrets.push(e.clone());
     f.check()?;
+    // The bindings file is checked before either file is written, so a bad
+    // one leaves both as they were.
+    let bpath = bindings_path(ctx);
+    let mut b = derm_egress::bind::load(&bpath)?;
+    b.forget(&e.id);
+    for p in &projects {
+        b.bind(&e.id, p)?;
+    }
     // The value must be readable now, as a chat start will read it; it is not
     // kept or shown.
     if let Err(x) = secrets::read_value(&e, ctx.env) {
         let _ = writeln!(ctx.err, "derm secret: warning: the value cannot be read now ({x}); chats fail to start until it can");
     }
     secrets::save(&path, &f)?;
+    derm_egress::bind::save(&bpath, &b)?;
     let _ = writeln!(
         ctx.out,
         "added {} for {} ({})",
@@ -230,6 +295,7 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
         e.hosts.join(", "),
         describe(&e.from)
     );
+    let _ = writeln!(ctx.out, "{}", for_whom(&e.id, b.of(&e.id)));
     let _ = writeln!(
         ctx.out,
         "the agent sees a placeholder in {}; the value goes into a request's headers{}",
@@ -276,6 +342,7 @@ fn describe(f: &From) -> String {
 
 fn list(ctx: &mut Ctx<'_>) -> Result<(), String> {
     let f = secrets::load(&file_path(ctx))?;
+    let b = derm_egress::bind::load(&bindings_path(ctx))?;
     if f.secrets.is_empty() {
         let _ = writeln!(ctx.out, "no secrets ({})", file_path(ctx).display());
     }
@@ -285,9 +352,13 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), String> {
             .as_deref()
             .map(|n| format!("  # {n}"))
             .unwrap_or_default();
+        let whose = match b.of(&e.id) {
+            [] => "no project".to_string(),
+            p => format!("project {}", p.join(",")),
+        };
         let _ = writeln!(
             ctx.out,
-            "{}  {}  {}  -> ${}{note}",
+            "{}  {}  {}  -> ${}  [{whose}]{note}",
             e.id,
             e.hosts.join(","),
             describe(&e.from),
@@ -340,6 +411,72 @@ fn check(ctx: &mut Ctx<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// Which chats get a secret, said after every change to it.
+fn for_whom(id: &str, projects: &[String]) -> String {
+    if projects.is_empty() {
+        format!("{id} is for chats in no project (chats as you); an agent account's chat gets it only once it is bound: derm secret bind {id} --project <id|folder>")
+    } else {
+        format!(
+            "{id} is for chats of project {} only; a chat started after this sees the change",
+            projects.join(", ")
+        )
+    }
+}
+
+fn bind(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
+    let (projects, rest) = take_projects(args)?;
+    let [id] = rest.as_slice() else {
+        return Err("bind needs an id and --project <id|folder>".into());
+    };
+    if projects.is_empty() {
+        return Err("bind needs --project <id|folder>".into());
+    }
+    if !secrets::load(&file_path(ctx))?
+        .secrets
+        .iter()
+        .any(|e| &e.id == id)
+    {
+        return Err(format!("no secret {id}"));
+    }
+    let path = bindings_path(ctx);
+    let mut b = derm_egress::bind::load(&path)?;
+    for p in &projects {
+        b.bind(id, p)?;
+    }
+    derm_egress::bind::save(&path, &b)?;
+    let _ = writeln!(ctx.out, "{}", for_whom(id, b.of(id)));
+    Ok(())
+}
+
+fn unbind(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
+    let (projects, rest) = take_projects(args)?;
+    let [id] = rest.as_slice() else {
+        return Err("unbind needs an id".into());
+    };
+    let path = bindings_path(ctx);
+    let mut b = derm_egress::bind::load(&path)?;
+    if b.of(id).is_empty() {
+        return Err(format!("{id} is bound to no project"));
+    }
+    if projects.is_empty() {
+        b.forget(id);
+    } else {
+        let keep: Vec<String> = b
+            .of(id)
+            .iter()
+            .filter(|p| !projects.contains(p))
+            .cloned()
+            .collect();
+        b.forget(id);
+        for p in &keep {
+            b.bind(id, p)?;
+        }
+    }
+    derm_egress::bind::save(&path, &b)?;
+    let _ = writeln!(ctx.out, "{}", for_whom(id, b.of(id)));
+    Ok(())
+}
+
 fn remove(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
     let id = args.first().ok_or("remove needs an id")?;
     let path = file_path(ctx);
@@ -349,7 +486,11 @@ fn remove(ctx: &mut Ctx<'_>, args: &[String]) -> Result<(), String> {
     if f.secrets.len() == n {
         return Err(format!("no secret {id}"));
     }
+    let bpath = bindings_path(ctx);
+    let mut b = derm_egress::bind::load(&bpath)?;
+    b.forget(id);
     secrets::save(&path, &f)?;
+    derm_egress::bind::save(&bpath, &b)?;
     let _ = writeln!(
         ctx.out,
         "removed {id} (its value, wherever it lives, is untouched)"

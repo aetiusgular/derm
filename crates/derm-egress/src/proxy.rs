@@ -20,6 +20,11 @@
 //! and port were admitted (AZ-4: the tap's and the OTLP receiver's ports), and
 //! the address checked is the address dialled.
 //!
+//! Before any of that, a client must carry the chat's proxy credential
+//! (`auth.rs`; plan step P10's I-4): a connection whose head lacks it gets
+//! 407 and makes no record, since what an outside client names is not the
+//! chat's. The header is hop-by-hop and never goes upstream.
+//!
 //! Each connection gives one `egress.connect` record; each swap one
 //! `secret.inject`; each block of a placeholder or value one `secret.block`.
 //! No record holds a header, a body or a value.
@@ -29,7 +34,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
 };
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -38,6 +43,7 @@ use derm_core::event::{Event, Source};
 use rustls::pki_types::ServerName;
 use serde_json::{json, Map, Value};
 
+use crate::auth::{self, ProxyCredential};
 use crate::ca::Ca;
 use crate::http::{self, Bad, Framing, Head};
 use crate::{decide_with, normal_host, Blocked, Outbound, Policy, Secret, Verdict};
@@ -81,6 +87,11 @@ pub struct Config {
     pub resolve: Resolve,
     /// Where to listen (`127.0.0.1:0` by default).
     pub bind: SocketAddr,
+    /// The chat's proxy credential (plan step P10's I-4): a client must send
+    /// it as `Proxy-Authorization: Basic` on CONNECT or on a plain request,
+    /// else it gets 407 and nothing else. Minted by [`Config::new`]; `None`
+    /// admits any local client, as before step P.
+    pub credential: Option<ProxyCredential>,
 }
 
 impl Config {
@@ -113,6 +124,7 @@ impl Config {
             upstream_tls: Arc::new(tls),
             resolve: Arc::new(|h, p| (h, p).to_socket_addrs().map(Iterator::collect)),
             bind: SocketAddr::from(([127, 0, 0, 1], 0)),
+            credential: Some(ProxyCredential::mint()?),
         })
     }
 }
@@ -122,6 +134,8 @@ pub struct Egress {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    credential: Option<ProxyCredential>,
+    refused: Arc<AtomicU64>,
 }
 
 impl Egress {
@@ -129,10 +143,13 @@ impl Egress {
         let listener = TcpListener::bind(config.bind).map_err(|e| format!("egress listen: {e}"))?;
         let addr = listener.local_addr().map_err(|e| e.to_string())?;
         let stop = Arc::new(AtomicBool::new(false));
+        let credential = config.credential.clone();
+        let refused = Arc::new(AtomicU64::new(0));
         let shared = Arc::new(Shared {
             config,
             open: AtomicUsize::new(0),
             servers: Mutex::new(HashMap::new()),
+            refused: refused.clone(),
         });
         let flag = stop.clone();
         let thread = std::thread::Builder::new()
@@ -165,6 +182,8 @@ impl Egress {
             addr,
             stop,
             thread: Some(thread),
+            credential,
+            refused,
         })
     }
 
@@ -176,9 +195,26 @@ impl Egress {
         self.addr.port()
     }
 
-    /// The proxy URL a client is given (`HTTPS_PROXY`, srt's `parentProxy`).
+    /// The proxy URL a client is given (`HTTPS_PROXY`, srt's `parentProxy`),
+    /// with the chat's credential in its user part when there is one. A
+    /// secret: the client's environment or srt's private settings file only;
+    /// show it with [`Egress::shown_url`].
     pub fn url(&self) -> String {
-        format!("http://{}", self.addr)
+        match &self.credential {
+            Some(c) => c.url(self.addr),
+            None => format!("http://{}", self.addr),
+        }
+    }
+
+    /// [`Egress::url`] as it may be shown: no credential.
+    pub fn shown_url(&self) -> String {
+        auth::shown(&self.url())
+    }
+
+    /// Connections refused for want of the chat's credential (I-4). They
+    /// make no record: what such a client names is not the chat's.
+    pub fn refused_without_credential(&self) -> u64 {
+        self.refused.load(Ordering::SeqCst)
     }
 
     pub fn stop(mut self) {
@@ -206,6 +242,7 @@ struct Shared {
     config: Config,
     open: AtomicUsize,
     servers: Mutex<HashMap<String, Arc<rustls::ServerConfig>>>,
+    refused: Arc<AtomicU64>,
 }
 
 /// What one connection did, for its `egress.connect`.
@@ -494,6 +531,14 @@ impl Shared {
             }
             Err(Bad::Io(_)) => return,
         };
+        // I-4: before anything the head names is read or recorded.
+        if let Some(c) = &self.config.credential {
+            if !c.admits(&head.headers) {
+                self.refused.fetch_add(1, Ordering::SeqCst);
+                let _ = (&w).write_all(auth::REFUSAL);
+                return;
+            }
+        }
         let mut t = Tally::default();
         if head.line[0].eq_ignore_ascii_case("CONNECT") {
             match split_authority(&head.line[1]) {

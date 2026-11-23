@@ -26,6 +26,15 @@
 //!   variables of env-sourced secrets are taken out of the harness's
 //!   environment rather than passed on with their real values.
 //!
+//! The proxy URL is derm-egress's own (`Egress::url`), which carries the
+//! chat's proxy credential in its user part (plan step P10's I-4,
+//! `derm-egress/src/auth.rs`): it goes into the harness's environment, in
+//! both spellings of each name (undici reads `https_proxy` first, Codex and
+//! Claude Code `HTTPS_PROXY`; note CD section 0, item 5), and into srt's
+//! `parentProxy`, which srt 0.0.82 turns into `Proxy-Authorization` toward
+//! derm-egress (`dist/sandbox/parent-proxy.js:255, 270-283`). The start line
+//! shows it without the credential.
+//!
 //! Trust (C4): `NODE_EXTRA_CA_CERTS` (Node, Claude Code), `SSL_CERT_FILE`
 //! (Codex, OpenSSL, Python, Go 1.27 modules; a bundle of the system's roots
 //! plus derm's CA, since it replaces the roots), `CODEX_CA_CERTIFICATE`,
@@ -212,8 +221,11 @@ pub fn plan_for(i: &Input<'_>, account: Option<&str>) -> Result<Plan, String> {
         .iter()
         .map(|(e, _)| secrets::variable(e))
         .collect();
+    // The URL carries the chat's proxy credential (I-4); the line shows it
+    // without (case 85: nothing secret on a start line).
+    let shown = derm_egress::auth::shown(url);
     p.line = Some(format!(
-        "secrets {} brokered by derm-egress at {url} ({}{}); placeholders in {}; this chat trusts derm's CA sha256 {} through {}",
+        "secrets {} brokered by derm-egress at {shown} ({}{}); placeholders in {}; this chat trusts derm's CA sha256 {} through {}",
         ids.join(", "),
         if i.boundary == "srt" { "srt's parentProxy" } else { "the harness's HTTPS_PROXY" },
         match account.filter(|_| i.boundary == "none") {
@@ -311,5 +323,28 @@ pub fn write_trust(dir: &Path, ca_pem: &str) -> Result<(String, String), String>
     Ok((
         ca.to_string_lossy().into_owned(),
         b.to_string_lossy().into_owned(),
+    ))
+}
+
+// `run/broker.rs` (integration's) calls it once it filters a chat's secrets
+// by its project (lane PB's request, `plans/parallel/acctP_PB.md`).
+#[cfg_attr(not(test), allow(dead_code))]
+/// The note a start line carries for the secrets a chat's project left out
+/// (`derm_egress::bind`, I-4), or `None` when none was. `project` is the
+/// chat's (`""` for a chat in no project).
+pub fn left_out_line(
+    bindings: &derm_egress::bind::Bindings,
+    left: &[String],
+    project: &str,
+) -> Option<String> {
+    if left.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "secrets left out of this chat: {}",
+        left.iter()
+            .map(|id| derm_egress::bind::why_left_out(bindings, id, project))
+            .collect::<Vec<_>>()
+            .join("; ")
     ))
 }

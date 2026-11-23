@@ -101,6 +101,9 @@ struct Rig {
     ca: Arc<Ca>,
     up: Upstream,
     events: Arc<Mutex<Vec<Event>>>,
+    /// The chat's `Proxy-Authorization` line (I-4), as a client derm handed
+    /// the URL would send it.
+    auth: String,
 }
 
 fn rig(reply: &'static [u8], admit: bool, policy: Policy) -> Rig {
@@ -142,11 +145,16 @@ fn rig(reply: &'static [u8], admit: bool, policy: Policy) -> Rig {
             .collect();
     }
     cfg.policy = policy;
+    let auth = format!(
+        "Proxy-Authorization: {}\r\n",
+        cfg.credential.as_ref().unwrap().header_value()
+    );
     Rig {
         egress: Egress::start(cfg).unwrap(),
         ca,
         up,
         events,
+        auth,
     }
 }
 
@@ -161,7 +169,8 @@ fn tunnel(
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(
         tcp,
-        "CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n"
+        "CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n{}\r\n",
+        r.auth
     )
     .unwrap();
     let mut br = BufReader::new(tcp.try_clone().unwrap());
@@ -336,7 +345,8 @@ fn a_tunnel_that_is_not_tls_is_closed_and_recorded() {
     tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(
         tcp,
-        "CONNECT evil.test:443 HTTP/1.1\r\n\r\nGET / HTTP/1.1\r\nHost: evil.test\r\n\r\n{PH}"
+        "CONNECT evil.test:443 HTTP/1.1\r\n{}\r\nGET / HTTP/1.1\r\nHost: evil.test\r\n\r\n{PH}",
+        r.auth
     )
     .unwrap();
     let mut out = Vec::new();
@@ -362,7 +372,7 @@ fn a_secret_is_never_swapped_in_over_plain_http_even_for_its_own_host() {
     );
     let mut tcp = TcpStream::connect(r.egress.addr()).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    write!(tcp, "GET http://api.github.com/user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer {PH}\r\n\r\n").unwrap();
+    write!(tcp, "GET http://api.github.com/user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer {PH}\r\n{}\r\n", r.auth).unwrap();
     let mut out = String::new();
     let _ = tcp.read_to_string(&mut out);
     assert!(out.starts_with("HTTP/1.1 403"), "{out}");
@@ -533,4 +543,82 @@ fn on_the_wire_the_value_goes_only_where_the_secrets_placement_says() {
     let e = records(&q, 1);
     assert!(e.iter().any(|x| x.kind == "secret.inject"));
     no_value_in(&e);
+}
+
+/// I-4 (plan step P10; note CC section 6): a local client without the chat's
+/// credential gets 407 and nothing else: no handshake, no byte upstream, no
+/// record under the chat's id. A wrong one, two of them, or one on a plain
+/// request fare the same. The URL the chat is handed carries it; the one a
+/// start line shows does not.
+#[test]
+fn a_client_without_the_chats_proxy_credential_gets_407_and_no_record() {
+    let r = rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        true,
+        Policy::default(),
+    );
+    let wrong = format!(
+        "Proxy-Authorization: {}\r\n",
+        derm_egress::auth::ProxyCredential::mint()
+            .unwrap()
+            .header_value()
+    );
+    let heads = [
+        "CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\n\r\n".to_string(),
+        format!("CONNECT api.github.com:443 HTTP/1.1\r\n{wrong}\r\n"),
+        format!(
+            "CONNECT api.github.com:443 HTTP/1.1\r\n{}{}\r\n",
+            r.auth, r.auth
+        ),
+        format!(
+            "CONNECT api.github.com:443 HTTP/1.1\r\n{}\r\n",
+            r.auth.replace("Proxy-", "")
+        ),
+        format!("GET http://plain.test/ HTTP/1.1\r\nHost: plain.test\r\n{wrong}\r\n"),
+    ];
+    for head in &heads {
+        let mut tcp = TcpStream::connect(r.egress.addr()).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tcp.write_all(head.as_bytes()).unwrap();
+        let mut out = String::new();
+        let _ = tcp.read_to_string(&mut out);
+        assert!(
+            out.starts_with("HTTP/1.1 407 Proxy Authentication Required\r\n")
+                && out.contains("Proxy-Authenticate: Basic realm=\"derm\"\r\n"),
+            "{head:?}: {out}"
+        );
+    }
+    assert_eq!(r.egress.refused_without_credential(), heads.len() as u64);
+    // The chat's own client still gets through, and its connection is the
+    // only one recorded.
+    let mut s = tunnel(&r, "api.github.com", "api.github.com").unwrap();
+    let got = ask(
+        &mut s,
+        "GET /user HTTP/1.1\r\nHost: api.github.com\r\nconnection: close\r\n\r\n",
+    );
+    assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+    let e = records(&r, 1);
+    std::thread::sleep(Duration::from_millis(200));
+    let e2 = r.events.lock().unwrap().clone();
+    assert_eq!(e2.len(), e.len());
+    assert_eq!(
+        e2.iter().filter(|x| x.kind == "egress.connect").count(),
+        1,
+        "{e2:?}"
+    );
+    assert_eq!(r.up.seen.lock().unwrap().len(), 1);
+    // The header never goes upstream.
+    let seen = r.up.seen.lock().unwrap();
+    assert!(seen[0].0.get("proxy-authorization").is_none());
+    drop(seen);
+    let url = r.egress.url();
+    let port = r.egress.port();
+    assert!(
+        url.starts_with("http://derm:") && url.ends_with(&format!("@127.0.0.1:{port}")),
+        "{url}"
+    );
+    assert_eq!(
+        r.egress.shown_url(),
+        format!("http://<credential>@127.0.0.1:{port}")
+    );
 }
