@@ -186,7 +186,7 @@ pub(crate) fn check_settings_files_in(
     } else {
         files[..lead + 3].to_vec()
     };
-    for f in files {
+    for (i, f) in files.into_iter().enumerate() {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
@@ -201,6 +201,20 @@ pub(crate) fn check_settings_files_in(
         if v.get("disableAllHooks") == Some(&Value::Bool(true)) {
             return Err(format!(
                 "{} sets disableAllHooks, which turns every hook off, derm's gate included; derm run does not start a chat it says is gated with no gate",
+                f.display()
+            ));
+        }
+        // P6 (lane PE): Claude Code 2.1.322 decides `crossSessionInbound`
+        // from managed settings first, then the flag (derm's block), then
+        // the user's; a project's or local file may only tighten (its `I()`,
+        // read; run: `plans/parallel/acctP_PE.md`, Research). So only a
+        // managed `accept` outranks derm's `refuse` and lets another
+        // session's message in. A managed `hold` parks every message for the
+        // person's review and delivers none on its own; it is left as the
+        // person's (or their admin's) choice.
+        if i < lead && v.get("crossSessionInbound") == Some(&Value::from("accept")) {
+            return Err(format!(
+                "{} sets crossSessionInbound to accept, which outranks derm's refuse, so another Claude Code session could message this chat; derm's project chats take messages only through derm_message (P6). Set it to refuse or hold, or remove it",
                 f.display()
             ));
         }
@@ -305,10 +319,19 @@ pub fn block(words: &[String], derm: &str, chat: Option<&str>) -> Value {
     // restrictive:!0}`), so a true from another file may still win; derm
     // refuses one at the start (`check_settings_files`) and says so here
     // for the rest (fix pass 6's review).
+    // `crossSessionInbound` refuse (P6, lane PE): on Linux Claude Code's
+    // cross-session inbox takes lines from any process of its user with no
+    // auth line (2.1.322 `ZNr()` is true on Windows only, read), and a line
+    // from another project reached the model by run; with this key it is
+    // refused. derm's block is the flag source, which beats the user's,
+    // the project's and the local file (they may only tighten); a managed
+    // `accept` beats it and is refused at the start (`check_settings_files`).
+    // Messages between chats go through derm's own `derm_message`.
     let mine = json!({
         "hooks": hooks(derm, chat),
         "enabledPlugins": {PLUGIN: false},
         "disableAllHooks": false,
+        "crossSessionInbound": "refuse",
     });
     if let Value::Object(m) = mine {
         merge(&mut out, &m);
@@ -569,6 +592,69 @@ mod tests {
         assert!(check_settings_files_in(&managed, &home, None, &cwd)
             .unwrap_err()
             .contains("not JSON"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// P6 (lane PE): derm's block refuses Claude Code's own cross-session
+    /// inbox, over a user's `--settings` that accepts it, as the last word
+    /// (Claude Code reads only the last `--settings`, case 246).
+    #[test]
+    fn pe_the_block_refuses_claude_codes_cross_session_inbox_over_the_users_words() {
+        let b = block(&[], "/usr/local/bin/derm", Some("c-a"));
+        assert_eq!(b["crossSessionInbound"], "refuse");
+        let b = block(
+            &s(&[
+                "--settings",
+                r#"{"crossSessionInbound":"accept","model":"m"}"#,
+            ]),
+            "/usr/local/bin/derm",
+            None,
+        );
+        assert_eq!(b["crossSessionInbound"], "refuse");
+        assert_eq!(b["model"], "m", "the user's other keys stay");
+    }
+
+    /// P6 (lane PE), from the run against Claude Code 2.1.322 and 2.1.330
+    /// (`plans/parallel/acctP_PE.md`, Research): derm's flag `refuse` held
+    /// against a user's, a project's and a local `accept`, and a managed
+    /// `accept` beat it. So a managed file (or one in its `.d` folder) that
+    /// accepts refuses the start; a managed `hold`, and an `accept` in the
+    /// user's, the project's or the local file, do not.
+    #[test]
+    fn pe_a_managed_file_that_accepts_other_sessions_messages_is_refused() {
+        let d = std::env::temp_dir().join(format!("derm-cg-pe-{}", std::process::id()));
+        let managed = d.join("managed");
+        let home = d.join("home");
+        let cwd = d.join("work");
+        std::fs::create_dir_all(managed.join("managed-settings.d")).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+        let accept = r#"{"crossSessionInbound": "accept"}"#;
+        for f in [
+            home.join(".claude/settings.json"),
+            cwd.join(".claude/settings.json"),
+            cwd.join(".claude/settings.local.json"),
+        ] {
+            std::fs::write(&f, accept).unwrap();
+        }
+        assert!(check_settings_files_in(&managed, &home, None, &cwd).is_ok());
+        std::fs::write(
+            managed.join("managed-settings.json"),
+            r#"{"crossSessionInbound": "hold"}"#,
+        )
+        .unwrap();
+        assert!(check_settings_files_in(&managed, &home, None, &cwd).is_ok());
+        std::fs::write(managed.join("managed-settings.json"), accept).unwrap();
+        let e = check_settings_files_in(&managed, &home, None, &cwd).unwrap_err();
+        assert!(
+            e.contains("managed-settings.json") && e.contains("crossSessionInbound"),
+            "{e}"
+        );
+        std::fs::write(managed.join("managed-settings.json"), "{}").unwrap();
+        std::fs::write(managed.join("managed-settings.d/10-org.json"), accept).unwrap();
+        assert!(check_settings_files_in(&managed, &home, None, &cwd)
+            .unwrap_err()
+            .contains("10-org.json"));
         let _ = std::fs::remove_dir_all(&d);
     }
 }
