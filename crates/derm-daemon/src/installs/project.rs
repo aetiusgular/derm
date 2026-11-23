@@ -280,6 +280,10 @@ struct Chat {
     harness: Vec<String>,
     /// The chat's own folders (`cwd`, `folders`, `project.folder`).
     folders: Vec<String>,
+    /// The chat's bridge folder as `run.start` names it
+    /// (`agentUser.bridge`, request PC R2), when it is one under
+    /// `BRIDGE_ROOT`; else the name is made as `bridge.rs` makes it.
+    bridge: Option<String>,
     /// Whether the chat's Landlock domain scopes abstract sockets
     /// (`agentUser.landlock.scoped`), so a connect that went through reached
     /// a socket of its own domain (Linux v7.0 `include/uapi/linux/
@@ -435,7 +439,10 @@ impl ProjectFlags {
                     } else {
                         !(chat.project_dir.as_deref().is_some_and(|d| inside(p, d))
                             || chat.folders.iter().any(|f| inside(p, f))
-                            || in_bridge(p, &e.chat_id))
+                            || match chat.bridge.as_deref() {
+                                Some(b) => inside(p, b),
+                                None => in_bridge(p, &e.chat_id),
+                            })
                     };
                     let what = if outside {
                         if abstract_ {
@@ -567,6 +574,26 @@ impl ProjectFlags {
             .map(str::to_string)
             .collect();
         let uid = user.get("uid").and_then(Value::as_u64).filter(|u| *u != 0);
+        // Request PC R2: the bridge folder `run.start` names, when it is a
+        // plain folder two parts under `BRIDGE_ROOT` (the person's uid, then
+        // the chat's own name).
+        let bridge = str_at(user, "bridge")
+            .filter(|b| {
+                let n = normal(b);
+                n == *b
+                    && n.strip_prefix(BRIDGE_ROOT)
+                        .and_then(|r| r.strip_prefix('/'))
+                        .is_some_and(|r| {
+                            let parts: Vec<&str> = r.split('/').collect();
+                            parts.len() == 2
+                                && !parts[0].is_empty()
+                                && parts[0].bytes().all(|x| x.is_ascii_digit())
+                                && !parts[1].is_empty()
+                                && parts[1] != "."
+                                && parts[1] != ".."
+                        })
+            })
+            .map(str::to_string);
         let scoped = user
             .get("landlock")
             .and_then(|l| l.get("scoped"))
@@ -588,6 +615,7 @@ impl ProjectFlags {
                 uid,
                 harness,
                 folders,
+                bridge,
                 scoped,
                 ..Chat::default()
             },

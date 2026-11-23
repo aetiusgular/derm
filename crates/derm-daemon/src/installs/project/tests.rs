@@ -609,3 +609,42 @@ fn the_daemon_stores_and_counts_the_project_records() {
     }
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// Request PC R2: the bridge folder `run.start` names is the chat's own,
+/// whatever its name looks like; a name that is not a plain folder two
+/// parts under the bridge root is not taken, and the made name is used.
+#[test]
+fn pc_r2_the_bridge_run_start_names_is_the_chats_own() {
+    let mut f = ProjectFlags::new();
+    let mut e = start(true);
+    let named = format!("{BRIDGE_ROOT}/1000/x-chat-ffffffffffffffffffffffffffffffff");
+    e.detail["agentUser"]["bridge"] = json!(named);
+    f.observe(&e);
+    let at = |f: &mut ProjectFlags, id: &str, path: &str| {
+        let out = f.observe(&os(
+            id,
+            UNIX_CONNECT,
+            5_000,
+            json!({"path": path, "exe": "/usr/bin/curl"}),
+        ));
+        out[0].detail["outside"].clone()
+    };
+    assert_eq!(at(&mut f, "auditd-r2-1", &format!("{named}/daemon.sock")), false);
+    // The made name is not this chat's bridge once run.start names one.
+    let made = format!("{BRIDGE_ROOT}/1000/{CHAT}-0123456789abcdef0123456789abcdef/daemon.sock");
+    assert_eq!(at(&mut f, "auditd-r2-2", &made), true);
+    for bad in [
+        format!("{BRIDGE_ROOT}/1000"),
+        format!("{BRIDGE_ROOT}/1000/../../etc"),
+        "/etc".to_string(),
+        format!("{BRIDGE_ROOT}/u/x"),
+    ] {
+        let mut f = ProjectFlags::new();
+        let mut e = start(true);
+        e.detail["agentUser"]["bridge"] = json!(bad);
+        f.observe(&e);
+        // Not taken: the made name is the chat's bridge again.
+        assert_eq!(at(&mut f, "auditd-r2-3", &made), false, "{bad}");
+        assert_eq!(at(&mut f, "auditd-r2-4", "/etc/passwd.sock"), true, "{bad}");
+    }
+}

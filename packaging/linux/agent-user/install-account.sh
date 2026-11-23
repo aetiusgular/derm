@@ -44,6 +44,13 @@
 #  11. /etc/sudoers.d/derm-<slug>: <you> may start programs as the
 #      account without a password (derm run, derm agents login). Last, so
 #      nothing runs as the account before its table is in place.
+#  12. the account's own audit rules (step P, lane PC's request R4):
+#      /etc/audit/rules.d/50-derm-<uid>.rules from
+#      /usr/local/bin/derm-audit-feed rules --account <slug>, then
+#      augenrules --load, so the Linux feed sees the account's processes
+#      (the person's file names only the person's uid). Only where auditd's
+#      augenrules is there and derm-audit-feed is a root-owned program only
+#      root can change; otherwise it says what to install and goes on.
 
 set -euo pipefail
 umask 022
@@ -58,6 +65,9 @@ UNINSTALLER_SUMS=/etc/derm/uninstall.sha256
 TIOCSTI_CONF=/etc/sysctl.d/90-derm-agents.conf
 ANCHOR=/etc/derm/agents.json
 RULES=/etc/derm/agents.nft
+AUDIT_FEED=/usr/local/bin/derm-audit-feed
+AUGENRULES=/usr/sbin/augenrules
+AUDIT_DIR=/etc/audit/rules.d
 UNIT=/etc/systemd/system/derm-agents-nft.service
 GROUP=derm-agents
 HOMES=/var/lib/derm/agents
@@ -280,6 +290,34 @@ if [ "$DRY" = 0 ]; then
 	visudo -c -q -f "$tmp" || { rm -f "$tmp"; die "visudo refused the rule; the account has no sudo rule"; }
 	install -o root -g root -m 0440 "$tmp" "$SUDOERS"
 	rm -f "$tmp"
+fi
+
+say "12. this account's audit rules in $AUDIT_DIR/50-derm-<its uid>.rules, from $AUDIT_FEED rules --account $SLUG, then augenrules --load (undo: rm, then augenrules --load)"
+# A program root runs must be root's and closed, by its real path, and so
+# must every folder to it (rules case 37).
+feed_ok() {
+	[ -f "$AUDIT_FEED" ] && [ ! -L "$AUDIT_FEED" ] || return 1
+	"$PY" -I "$HERE/accounts.py" trusted-dir "$(dirname "$AUDIT_FEED")" 2>/dev/null || return 1
+	read -r owner mode < <(stat -c '%u %a' "$AUDIT_FEED") || return 1
+	[ "$owner" = 0 ] || return 1
+	case "$mode" in *[2367]?|*[2367]) return 1 ;; esac
+	[ -x "$AUDIT_FEED" ]
+}
+if [ ! -x "$AUGENRULES" ] || [ ! -d "$AUDIT_DIR" ]; then
+	echo "   not installed: no auditd here ($AUGENRULES and $AUDIT_DIR); without it this account's chats have no OS records (no project.control, signin.read or net.unix)"
+elif ! feed_ok; then
+	echo "   not installed: $AUDIT_FEED is not a root-owned program only root can change; install derm-audit-feed there as root, then run this install again"
+elif [ "$DRY" = 1 ]; then
+	echo "   $AUDIT_FEED rules --account $SLUG > $AUDIT_DIR/50-derm-<uid>.rules (0640, root's); $AUGENRULES --load"
+else
+	acct_uid="$(id -u "$ACCOUNT")"
+	audit_file="$AUDIT_DIR/50-derm-$acct_uid.rules"
+	tmp="$(mktemp)"
+	"$AUDIT_FEED" rules --account "$SLUG" --uid "$acct_uid" >"$tmp" || { rm -f "$tmp"; die "derm-audit-feed could not render the account's rules"; }
+	install -o root -g root -m 0640 "$tmp" "$audit_file"
+	rm -f "$tmp"
+	echo "   $audit_file"
+	"$AUGENRULES" --load || echo "   augenrules --load failed: the rules load at the next boot, or run it again"
 fi
 
 DONE=1

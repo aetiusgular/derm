@@ -353,6 +353,8 @@ pub(crate) fn wrap(
         },
         "harnessExe": program_real,
         "gate": {"expected": gate.expected, "how": gate.how},
+        // Request PC R2: the daemon reads the chat's own bridge from here.
+        "bridge": bridge_dir,
     })))
 }
 

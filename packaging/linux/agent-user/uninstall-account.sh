@@ -143,6 +143,17 @@ else
 	if [ -d /run/systemd/system ]; then run systemctl daemon-reload; fi
 fi
 
+# Step P (lane PC's request R4): the account's own audit rules, by its uid
+# while the user is still there.
+if [ "$OURS" = 1 ]; then
+	acct_uid="$(id -u "$ACCOUNT" 2>/dev/null || true)"
+	if [ -n "$acct_uid" ] && [ -e "/etc/audit/rules.d/50-derm-$acct_uid.rules" ]; then
+		say "4b. /etc/audit/rules.d/50-derm-$acct_uid.rules"
+		run rm -f "/etc/audit/rules.d/50-derm-$acct_uid.rules"
+		if [ -x /usr/sbin/augenrules ]; then run /usr/sbin/augenrules --load || true; fi
+	fi
+fi
+
 say "5. the user $ACCOUNT$([ "$KEEP" = 0 ] && echo ", with its home, signin/ and projects/")"
 if [ "$OURS" = 1 ]; then
 	if [ "$KEEP" = 1 ]; then run userdel "$ACCOUNT"; else run userdel --remove "$ACCOUNT"; fi

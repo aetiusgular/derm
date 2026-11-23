@@ -193,6 +193,15 @@ grep -q "^Undo: *sudo $ROOT_UNINSTALL --account max1\$" "$WORK/install.log"; exp
 grep -q "Undo: $LIBEXEC/uninstall.sh --account max1" /etc/sudoers.d/derm-max1; expect "the sudoers comment names it too" 0 "$?"
 runuser -u "$OTHER" -- "$PY" -I "$HELPER" verify-uninstaller; expect "verify-uninstaller as another user" 0 "$?"
 
+case_ "the account's audit rules (step P, PC R4)"
+grep -q "^== 12. this account's audit rules" "$WORK/install.log"; expect "step 12 is named" 0 "$?"
+if [ -x /usr/sbin/augenrules ] && [ -d /etc/audit/rules.d ]; then
+	echo "  not run here: auditd is installed; the box test installs the rules"
+else
+	grep -q "not installed: no auditd here" "$WORK/install.log"; expect "with no auditd it says so and goes on" 0 "$?"
+	expect "no rules file was made" 0 "$(ls /etc/audit/rules.d/50-derm-* 2>/dev/null | wc -l)"
+fi
+
 case_ "TIOCSTI off (note CC 4d)"
 if [ "$TIOCSTI_PRE" = absent ]; then
 	echo "  not run: this kernel has no dev.tty.legacy_tiocsti"
