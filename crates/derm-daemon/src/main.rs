@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: derm-daemon --version\n       derm-daemon --foreground [--socket PATH] [--data-dir PATH]\n       derm-daemon cu-mcp\n       derm-daemon collector-plan --binary ABSOLUTE_PATH";
+const USAGE: &str = "usage: derm-daemon --version\n       derm-daemon --foreground [--socket PATH] [--data-dir PATH]\n       derm-daemon cu-mcp\n       derm-daemon project-mcp\n       derm-daemon collector-plan --binary ABSOLUTE_PATH";
 
 fn main() -> ExitCode {
     // Case 114 before anything mints a token or reads a request (P2-4).
@@ -25,6 +25,13 @@ fn main() -> ExitCode {
     #[cfg(feature = "computer-use")]
     if args.first().map(String::as_str) == Some("cu-mcp") {
         return ExitCode::from(u8::try_from(derm_daemon::computer_use::relay::run()).unwrap_or(1));
+    }
+    // Step P's project tools for a chat in a project (lane PE, request
+    // PE-R5; `contracts/project-tools.md` section 1): `derm_message` and
+    // `derm_terminal_read`. Like `cu-mcp` it stays up with no daemon or
+    // token and answers an error (case 39).
+    if args.first().map(String::as_str) == Some("project-mcp") {
+        return ExitCode::from(u8::try_from(derm_daemon::project::mcp::run()).unwrap_or(1));
     }
     if args.first().map(String::as_str) == Some("collector-plan") {
         return collector_plan(&args[1..]);

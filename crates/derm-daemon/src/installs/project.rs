@@ -597,3 +597,42 @@ impl ProjectFlags {
 
 #[cfg(test)]
 mod tests;
+
+/// Step P's flags per chat over a report's window (request PC R3), in the
+/// shape `derm watch report` reads (`projectFlags`): `{"chats": {<chat>:
+/// {"control", "signinRead", "netUnix", "netUnixOutside"}}, "partial"}`,
+/// `partial` when the read was cut, so the counts are at least these. Only
+/// the daemon's own records count (source `derm`, which no chat token
+/// posts), and at most 64 chats are named.
+pub fn report_flags<'a>(events: impl IntoIterator<Item = &'a Event>, partial: bool) -> Value {
+    let mut chats: Map<String, Value> = Map::new();
+    for ev in events {
+        if ev.source != Source::Derm
+            || ev.chat_id.is_empty()
+            || !matches!(
+                ev.kind.as_str(),
+                kinds::CONTROL | kinds::SIGNIN_READ | kinds::NET_UNIX
+            )
+        {
+            continue;
+        }
+        if chats.len() >= 64 && !chats.contains_key(&ev.chat_id) {
+            continue;
+        }
+        let row = chats.entry(ev.chat_id.clone()).or_insert_with(
+            || json!({"control": 0, "signinRead": 0, "netUnix": 0, "netUnixOutside": 0}),
+        );
+        let bump = |row: &mut Value, k: &str| row[k] = json!(row[k].as_u64().unwrap_or(0) + 1);
+        match ev.kind.as_str() {
+            kinds::CONTROL => bump(row, "control"),
+            kinds::SIGNIN_READ => bump(row, "signinRead"),
+            _ => {
+                bump(row, "netUnix");
+                if ev.detail.get("outside") == Some(&Value::Bool(true)) {
+                    bump(row, "netUnixOutside");
+                }
+            }
+        }
+    }
+    json!({"chats": chats, "partial": partial})
+}

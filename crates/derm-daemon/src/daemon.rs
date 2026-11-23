@@ -1185,6 +1185,9 @@ impl Daemon {
         if let Ok(mut c) = cell.lock() {
             *c = Some(Arc::downgrade(&daemon));
         }
+        // Step P (request PE-R1): the project layer reaches the approver and
+        // the log through the daemon (`approver::project`).
+        approver::project::attach(&daemon);
         // Lane T's P4-R1 (integration w5, continue): a chat's `event` and
         // `approve` over the receiver's HTTP port, for a gate inside an sbx
         // VM. The body is parsed as the socket's line is, and answered under
@@ -1612,6 +1615,12 @@ impl Daemon {
         if event.kind == "exec" && matches!(event.source, Source::Auditd | Source::Eslogger) {
             shape_exec(&mut event);
         }
+        // Step P (request PE-R2; contracts/events.md 7.1): every stored
+        // event carries its chat's project from the daemon's map, whichever
+        // way it arrived (OTel over HTTP, the tap, the OS feeds, the
+        // daemon's own). `op_event` stamps first; a second stamp sees the
+        // daemon's own value and counts nothing.
+        self.project.stamp(&mut event);
         if event.at > 0 {
             if let Value::Object(map) = &mut event.detail {
                 map.entry("harnessAt").or_insert(Value::from(event.at));
@@ -2350,6 +2359,23 @@ impl Daemon {
                 n += 1;
             }
         }
+        // Step P (request PE-R4, case 211): the chats' projects from the
+        // log too, in log order, so a lost or older `chats.json` does not
+        // lose them, and a chat the log saw stop does not come back.
+        let runs = |e: &crate::activity::types::ActivityEvent| {
+            e.source == Source::Run && (e.kind == "run.start" || e.kind == "run.stop")
+        };
+        let mut log = store::read_newest(
+            &self.log_dir,
+            since,
+            i64::MAX,
+            None,
+            crate::project::MAX_CHATS * 2,
+            &runs,
+        )
+        .events;
+        log.sort_by_key(|e| e.at);
+        self.project.replay(&log);
         n
     }
 
@@ -2583,6 +2609,11 @@ impl Daemon {
             // Step P (contracts/daemon-protocol.md 6.4): events whose client
             // `project` the daemon overwrote (lane PE's count).
             "projectOverwritten": self.project.overwritten(),
+            // Request PE-R6: waiting `derm_message`s dropped for room.
+            "projectMessagesDropped": self.project.dropped(),
+            // Request PC R3: step P's flags per chat over the window, from
+            // the same read as `byKind` (`partial` when it was cut).
+            "projectFlags": crate::installs::project::report_flags(&back.events, back.truncated),
             // MW5-34: for a chat, how many of its OS events reached the
             // daemon after the join stopped waiting for a feed that was
             // behind (null when none did, or with no chat).

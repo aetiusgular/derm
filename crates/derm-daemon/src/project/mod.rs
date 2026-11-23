@@ -390,6 +390,44 @@ impl State {
         self.lock().project(chat)
     }
 
+    /// Whether `chat` is a target now: held, not stopped, and seen acting
+    /// since the daemon started or since its mint.
+    pub fn running(&self, chat: &str) -> bool {
+        self.lock().running(chat)
+    }
+
+    /// The log's `run.start` and `run.stop` records, oldest first, after a
+    /// restart (request PE-R4, case 211). A chat the map does not hold yet
+    /// takes its project, harness, account and folder from its `run.start`
+    /// and is not a target until it shows life (as one restored from
+    /// `chats.json`); a chat whose `run.stop` follows is stopped. A chat the
+    /// map already holds (from `chats.json`, or minted or seen since the
+    /// start) is left as it is: the log read can be older than what arrived
+    /// while it was read.
+    pub fn replay(&self, events: &[Event]) {
+        let mut replayed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for event in events {
+            if event.source != Source::Run || !valid_name(&event.chat_id) {
+                continue;
+            }
+            let held = self.lock().chats.contains_key(&event.chat_id);
+            match event.kind.as_str() {
+                "run.start" if !held || replayed.contains(&event.chat_id) => {
+                    self.note_run_start(event);
+                    let mut g = self.lock();
+                    if let Some(c) = g.chats.get_mut(&event.chat_id) {
+                        c.live = false;
+                    }
+                    replayed.insert(event.chat_id.clone());
+                }
+                "run.stop" if replayed.contains(&event.chat_id) => {
+                    self.forget_chat(&event.chat_id);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Sets `event.project` to the project of its chat, whatever the client
     /// sent, and counts an event whose client value was another project
     /// (events.md 7.1). An event with no `project` (every client older than

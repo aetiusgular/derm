@@ -51,10 +51,13 @@ pub fn main(args: &Args) -> u8 {
             return 1;
         }
     };
-    // Step P (lane PC): the report counts records by kind only, so which
+    // Step P (lane PC; request PC R3): the daemon's report names which
     // chat a project flag is and how many Unix connects left the project
+    // (`projectFlags`). An older daemon counts by kind only, so for it they
     // are read here from the tail's backlog, when there is any to read.
-    if PROJECT_KINDS.iter().any(|k| kind_count(&report, k) > 0) {
+    if report.get("projectFlags").is_none()
+        && PROJECT_KINDS.iter().any(|k| kind_count(&report, k) > 0)
+    {
         if let Some(per_chat) = project_flags(&socket, args.value("--chat"), since, until) {
             report["projectFlags"] = per_chat;
         }
@@ -524,6 +527,28 @@ pub fn render(r: &Value) -> String {
             count(n)
         ));
     }
+    // Step P (contracts/daemon-protocol.md 6.4; requests PE-R6 and the
+    // base's): both counts are since the daemon started.
+    if let Some(n) = r
+        .get("projectOverwritten")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!(
+            "events that named another project than their chat's, overwritten by the daemon since it started: {}\n",
+            count(n)
+        ));
+    }
+    if let Some(n) = r
+        .get("projectMessagesDropped")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+    {
+        out.push_str(&format!(
+            "agent messages (derm_message) dropped unread for room since the daemon started: {}\n",
+            count(n)
+        ));
+    }
     let flags = check
         .get("flags")
         .and_then(Value::as_array)
@@ -962,6 +987,19 @@ mod tests {
         r["collectorDropped"] = json!(0);
         let t = render(&r);
         assert!(!t.contains("OS REGISTRATION"), "{t}");
+        assert!(!t.contains("overwritten by the daemon"), "{t}");
+        assert!(!t.contains("dropped unread"), "{t}");
+        r["projectOverwritten"] = json!(3);
+        r["projectMessagesDropped"] = json!(4);
+        let t = render(&r);
+        assert!(
+            t.contains("overwritten by the daemon since it started: 3"),
+            "{t}"
+        );
+        assert!(
+            t.contains("(derm_message) dropped unread for room since the daemon started: 4"),
+            "{t}"
+        );
         assert!(!t.contains("tails dropped"), "{t}");
         assert!(!t.contains("OS EVENTS DROPPED"), "{t}");
     }

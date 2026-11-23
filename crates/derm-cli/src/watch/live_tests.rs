@@ -600,6 +600,10 @@ fn pc_the_report_names_an_account_chats_project_flags_per_chat() {
         json!({"control": 1, "signinRead": 0, "netUnix": 2, "netUnixOutside": 1}),
         "{pf}"
     );
+    // Request PC R3: the daemon's own report carries the same counts, so
+    // the CLI no longer reads the tail's backlog for them.
+    assert_eq!(r["projectFlags"]["chats"][chat], pf["chats"][chat], "{r}");
+    assert_eq!(r["projectFlags"]["partial"], false, "{r}");
     let mut r = r;
     r["projectFlags"] = pf;
     let text = report::render(&r);

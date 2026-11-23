@@ -364,3 +364,95 @@ fn a_chat_tokens_step_p_ops_come_out_of_its_socket_share() {
     }
     assert!(refused > 0, "a burst past the share is refused");
 }
+
+/// Request PE-R4 (case 211): with no `chats.json`, a chat's project comes
+/// back from the log's `run.start`, and a chat whose `run.stop` is in the
+/// log does not come back as running. A chat replayed from the log is not
+/// a target until it shows life, as one from `chats.json` (Look out for I).
+#[test]
+fn pe_r4_the_map_comes_back_from_the_log_when_chats_json_is_gone() {
+    let root = std::env::temp_dir().join(format!(
+        "dpe-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let run = |chat: &str, kind: &str, project: &str| {
+        json!({"op": "event", "event": {
+            "id": format!("run-{chat}-{kind}"), "at": 1, "chatId": chat, "harness": "codex",
+            "source": "run", "kind": kind, "summary": kind,
+            "detail": {"project": {"id": project, "folder": "/srv/p"}}
+        }})
+    };
+    {
+        let f = fixture_at(&root);
+        let mut d = Client::hello(&f, DAEMON_TOKEN);
+        mint(&mut d, "c-live", A);
+        mint(&mut d, "c-done", B);
+        assert_eq!(d.ask(run("c-live", "run.start", A))["ok"], true);
+        assert_eq!(d.ask(run("c-done", "run.start", B))["ok"], true);
+        assert_eq!(d.ask(run("c-done", "run.stop", B))["ok"], true);
+        // Let the log reach the disk before the daemon goes.
+        std::thread::sleep(Duration::from_millis(1_500));
+        std::mem::forget(f);
+    }
+    std::fs::remove_file(root.join("chats.json")).unwrap();
+    let f = fixture_at(&root);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while f.daemon.project.project_of("c-live").is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(f.daemon.project.project_of("c-live"), A, "from the log");
+    let saved = f.daemon.project.saved();
+    let chats: Vec<&str> = saved["chats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["chat"].as_str())
+        .collect();
+    assert!(chats.contains(&"c-live"), "{saved}");
+    assert!(
+        !chats.contains(&"c-done"),
+        "a stopped chat is not running: {saved}"
+    );
+    assert!(
+        !f.daemon.project.running("c-live"),
+        "not live until it shows life"
+    );
+}
+
+/// Request PE-R2 (contracts/events.md 7.1, "every event it stores"): an
+/// event that reaches `ingest` another way than `op_event` (OTel over HTTP,
+/// the tap, an OS feed) carries its chat's project too, and a forged one is
+/// overwritten.
+#[test]
+fn pe_r2_an_event_ingested_outside_op_event_carries_its_chats_project() {
+    let f = fixture();
+    let mut d = Client::hello(&f, DAEMON_TOKEN);
+    mint(&mut d, "c-a", A);
+    for (id, source, project) in [
+        ("otel-pe-r2", derm_core::event::Source::Otel, ""),
+        ("auditd-pe-r2", derm_core::event::Source::Auditd, B),
+    ] {
+        f.daemon.ingest(Event {
+            id: id.into(),
+            at: 1,
+            chat_id: "c-a".into(),
+            harness: "codex".into(),
+            source,
+            kind: "file.write".into(),
+            summary: "x".into(),
+            detail: json!({}),
+            pid: None,
+            approval_id: None,
+            project: project.into(),
+        });
+    }
+    let got = stored(&f, "c-a");
+    for id in ["otel-pe-r2", "auditd-pe-r2"] {
+        let e = got
+            .iter()
+            .find(|e| e["id"] == id)
+            .unwrap_or_else(|| panic!("{id}: {got:?}"));
+        assert_eq!(e["project"], A, "{e}");
+    }
+}

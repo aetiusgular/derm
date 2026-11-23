@@ -15,8 +15,7 @@ use super::*;
 use crate::project::{Asked, Host};
 
 /// Hands the project layer its daemon. Idempotent: the first attach holds.
-/// Unused outside tests until `daemon.rs` calls it (request PE-R1).
-#[cfg_attr(not(all(test, unix)), allow(dead_code))]
+/// `daemon.rs` calls it once the daemon is built (request PE-R1).
 pub(in crate::daemon) fn attach(daemon: &Arc<Daemon>) {
     let host: Arc<dyn Host> = daemon.clone();
     daemon.project.attach(Arc::downgrade(&host));
