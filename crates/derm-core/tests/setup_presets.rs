@@ -139,7 +139,11 @@ fn step_p_presets_answer_derms_project_tools_and_deny_its_writing_verbs() {
                 description: None,
                 input_text: cmd.into(),
             };
-            assert_eq!(evaluate(&policy, &call).action, Action::Deny, "{name}: {cmd}");
+            assert_eq!(
+                evaluate(&policy, &call).action,
+                Action::Deny,
+                "{name}: {cmd}"
+            );
         }
     }
 }

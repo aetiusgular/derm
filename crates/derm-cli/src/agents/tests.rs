@@ -1303,10 +1303,16 @@ fn pc_r5_status_names_the_accounts_audit_rules_file_by_presence() {
     let d = std::env::temp_dir().join(format!("derm-r5-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&d).unwrap();
     let line = super::audit_rules_line(&d, 996);
-    assert!(line.contains("none") && line.contains("50-derm-996.rules"), "{line}");
+    assert!(
+        line.contains("none") && line.contains("50-derm-996.rules"),
+        "{line}"
+    );
     std::fs::write(d.join("50-derm-996.rules"), "-a never,exit\n").unwrap();
     let line = super::audit_rules_line(&d, 996);
-    assert!(line.contains("is there") && line.contains("auditctl -l | grep uid=996"), "{line}");
+    assert!(
+        line.contains("is there") && line.contains("auditctl -l | grep uid=996"),
+        "{line}"
+    );
     let line = super::audit_rules_line(&d.join("absent"), 996);
     assert!(line.contains("no auditd"), "{line}");
     let _ = std::fs::remove_dir_all(&d);

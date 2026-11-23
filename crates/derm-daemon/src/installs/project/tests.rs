@@ -629,7 +629,10 @@ fn pc_r2_the_bridge_run_start_names_is_the_chats_own() {
         ));
         out[0].detail["outside"].clone()
     };
-    assert_eq!(at(&mut f, "auditd-r2-1", &format!("{named}/daemon.sock")), false);
+    assert_eq!(
+        at(&mut f, "auditd-r2-1", &format!("{named}/daemon.sock")),
+        false
+    );
     // The made name is not this chat's bridge once run.start names one.
     let made = format!("{BRIDGE_ROOT}/1000/{CHAT}-0123456789abcdef0123456789abcdef/daemon.sock");
     assert_eq!(at(&mut f, "auditd-r2-2", &made), true);

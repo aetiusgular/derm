@@ -816,7 +816,11 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         // Request PC R5: whether the account's own audit rules file is
         // there (the installer's step 12). Whether auditd has loaded it is
         // root's to read.
-        let _ = writeln!(ctx.out, "  {}", audit_rules_line(Path::new(AUDIT_RULES_DIR), a.uid));
+        let _ = writeln!(
+            ctx.out,
+            "  {}",
+            audit_rules_line(Path::new(AUDIT_RULES_DIR), a.uid)
+        );
     }
     let _ = writeln!(
         ctx.out,
