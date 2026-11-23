@@ -173,6 +173,7 @@ expect "the bridges' base made" "711 $OWNER" "$(stat -c '%a %U' "/run/derm-agent
 UID1="$(id -u derm-max1)"
 expect "max1 groups" "$GID" "$(id -G derm-max1)"
 expect "max1 shadow locked" L "$(passwd -S derm-max1 | cut -d' ' -f2)"
+expect "max1 has no login shell (box research BR-1)" /usr/sbin/nologin "$(getent passwd derm-max1 | cut -d: -f7)"
 expect "home mode" "700 derm-max1 derm-agents" "$(stat -c '%a %U %G' /var/lib/derm/agents/max1)"
 expect "agents.json mode" "644 root" "$(stat -c '%a %U' /etc/derm/agents.json)"
 
@@ -358,6 +359,13 @@ if [ "$TIOCSTI_PRE" != absent ]; then
 	"$INSTALL" --account max1 --subscription "Claude Max, personal" --owner "$OWNER" --yes >/dev/null 2>&1; expect "install again writes it" 0 "$?"
 fi
 
+case_ "an account made with a login shell gets none at the next install (box research BR-1)"
+usermod -s /bin/bash derm-max1
+"$INSTALL" --account max1 --subscription "Claude Max, personal" --owner "$OWNER" --yes >"$WORK/reinstall-shell.log" 2>&1
+expect "reinstall exit" 0 "$?"
+expect "max1's shell after it" /usr/sbin/nologin "$(getent passwd derm-max1 | cut -d: -f7)"
+runuser -u derm-max1 -- /usr/bin/true; expect "a program still starts as max1 (runuser, no shell)" 0 "$?"
+
 case_ "a second account, and a label changed"
 "$INSTALL" --account t2 --subscription "ChatGPT Plus" --owner "$OWNER" --yes >/dev/null 2>&1; expect "install t2" 0 "$?"
 UID2="$(id -u derm-t2)"
@@ -375,7 +383,17 @@ case_ "uninstall max1, through the undo line's own copy"
 getent passwd derm-max1 >/dev/null; expect "...left max1" 0 "$?"
 runuser -u derm-max1 -- sleep 60 &
 sleep 0.3
+# Security review PI-S7: the account's audit rules file found by the
+# account its header names, not by the uid the user has at undo time.
+AUDIT_MADE=0
+[ -d /etc/audit/rules.d ] || { mkdir -p /etc/audit/rules.d; AUDIT_MADE=1; }
+printf '## derm: the Linux OS feed\n## The agent account derm-max1 (uid 424242), home /var/lib/derm/agents/max1: x\n' >/etc/audit/rules.d/50-derm-424242.rules
+printf '## derm: the Linux OS feed\n## The agent account derm-other9 (uid 424243), home /var/lib/derm/agents/other9: x\n' >/etc/audit/rules.d/50-derm-424243.rules
 "$ROOT_UNINSTALL" --account max1 --yes >"$WORK/un1.log" 2>&1; expect "uninstall max1" 0 "$?"
+[ -e /etc/audit/rules.d/50-derm-424242.rules ]; expect "max1's audit rules gone, whatever uid they name" 1 "$?"
+[ -e /etc/audit/rules.d/50-derm-424243.rules ]; expect "another account's audit rules kept" 0 "$?"
+rm -f /etc/audit/rules.d/50-derm-424243.rules
+[ "$AUDIT_MADE" = 0 ] || rm -rf /etc/audit
 runuser -u "$OTHER" -- "$PY" -I "$HELPER" verify-uninstaller; expect "the copy stays for t2" 0 "$?"
 [ "$TIOCSTI_PRE" = absent ] || expect "TIOCSTI stays off for t2" 0 "$(cat "$TIOCSTI")"
 getent passwd derm-max1 >/dev/null; expect "max1 gone" 2 "$?"

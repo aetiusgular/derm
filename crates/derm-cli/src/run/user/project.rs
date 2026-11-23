@@ -67,6 +67,16 @@ pub(crate) fn project_env(c: &ProjectChat<'_>) -> Vec<(String, String)> {
         ("TMPDIR".to_string(), c.part(layout::TMP)),
         ("XDG_RUNTIME_DIR".to_string(), c.part(layout::RUN)),
         ("PATH".to_string(), PATH.to_string()),
+        // Box research BR-1: the account's login shell is
+        // /usr/sbin/nologin, so a remote login as the account (Tailscale
+        // SSH admitted one with no password, 22 Nov) gets no shell, and sudo
+        // hands that shell on as SHELL. Claude Code takes SHELL when it is
+        // bash or zsh, else it looks for one ("is not a valid bash/zsh path,
+        // falling back to detection", 2.1.330 binary); Codex 0.167.2 reads
+        // the passwd shell and falls back to bash on Linux
+        // (`shell-command/src/shell_detect.rs:363-381`). The chat's own is
+        // named here so every harness gets one.
+        ("SHELL".to_string(), posix_shell().to_string()),
     ];
     if c.harness == "claude-code" {
         // The name is read (binary, 2.1.322); that it stops the native
@@ -74,6 +84,16 @@ pub(crate) fn project_env(c: &ProjectChat<'_>) -> Vec<(String, String)> {
         env.push(("DISABLE_AUTOUPDATER".to_string(), "1".to_string()));
     }
     env
+}
+
+/// bash when the machine has it at /bin/bash, else /bin/sh (box research
+/// BR-1).
+fn posix_shell() -> &'static str {
+    if std::path::Path::new("/bin/bash").is_file() {
+        "/bin/bash"
+    } else {
+        "/bin/sh"
+    }
 }
 
 /// The folders a chat of this project writes besides its own: its project's
@@ -246,7 +266,18 @@ pub(crate) fn harness_gate(harness: &str, derm: &str, pi_package: Option<&str>) 
         "pi" => match pi_package {
             Some(pkg) => Gate {
                 args: vec!["-e".into(), pkg.to_string()],
-                env: vec![("DERM_BIN".into(), derm.to_string())],
+                // Security review PI-S1: Pi 1.6.0 loads the package's
+                // `.ts` through jiti with its file cache on (loader.js:503-
+                // 507 names only `moduleCache: false`; jiti 2.7.0 takes
+                // `fsCache` from JITI_FS_CACHE, default true), in
+                // `os.tmpdir()/jiti`, the chat's own TMPDIR. A cached file is
+                // taken when its name and last line match, both computable
+                // from the readable source, so one write there would replace
+                // the gate for the project's next Pi chat. Off.
+                env: vec![
+                    ("DERM_BIN".into(), derm.to_string()),
+                    ("JITI_FS_CACHE".into(), "false".into()),
+                ],
                 expected: true,
                 how: "cli-package",
                 line: format!("derm run: derm's gate reaches Pi from {pkg} on its own command line (-e), which the chat cannot edit"),
@@ -289,9 +320,15 @@ pub(crate) fn codex_gate_args(derm: &str) -> Option<Vec<String>> {
         return None;
     }
     // A derm that does not start would exit 127, which Codex reads as a
-    // non-blocking error and lets the call through (`events/pre_tool_use.rs`
-    // 268-290): any exit but 0 blocks (2).
-    let pre = format!("'{derm}' hook codex pre || exit 2");
+    // non-blocking error and lets the call through. Codex blocks on exit 2
+    // only with a reason on stderr; exit 2 with an empty stderr is a failed
+    // hook and the call runs (`hooks/src/events/pre_tool_use.rs:268-283`,
+    // security review PI-S2). So any exit but 0 prints a reason and exits 2.
+    // A hook killed with bash itself (SIGINT to the shell) still has no
+    // status and fails open, which is why `expected` stays false.
+    let pre = format!(
+        "'{derm}' hook codex pre || {{ echo 'derm gate: no decision, blocked' >&2; exit 2; }}"
+    );
     let post = format!("'{derm}' hook codex post");
     let events = [
         ("PreToolUse", "pre_tool_use", pre, 120u64),
@@ -498,7 +535,12 @@ mod tests {
             .as_inline_table()
             .unwrap();
         let cmd = h0.get("command").unwrap().as_str().unwrap();
-        assert_eq!(cmd, "'/usr/local/bin/derm' hook codex pre || exit 2");
+        // Security review PI-S2: exit 2 blocks only with a reason on
+        // stderr (Codex 0.167.2 `hooks/src/events/pre_tool_use.rs:268-283`).
+        assert_eq!(
+            cmd,
+            "'/usr/local/bin/derm' hook codex pre || { echo 'derm gate: no decision, blocked' >&2; exit 2; }"
+        );
         assert_eq!(h0.get("timeout").unwrap().as_integer(), Some(120));
         let state = t.get("state").unwrap().as_inline_table().unwrap();
         let key = "/<session-flags>/config.toml:pre_tool_use:0:0";
@@ -538,7 +580,21 @@ mod tests {
         let p = harness_gate("pi", d, Some(PI_PACKAGE));
         assert_eq!((p.expected, p.how), (true, "cli-package"));
         assert_eq!(p.args, vec!["-e".to_string(), PI_PACKAGE.to_string()]);
-        assert_eq!(p.env, vec![("DERM_BIN".to_string(), d.to_string())]);
+        // Security review PI-S1: jiti's transform cache, which Pi 1.6.0
+        // leaves on and keeps in the chat's own TMPDIR, is off.
+        assert!(
+            p.env
+                .contains(&("JITI_FS_CACHE".to_string(), "false".to_string())),
+            "{:?}",
+            p.env
+        );
+        assert_eq!(
+            p.env,
+            vec![
+                ("DERM_BIN".to_string(), d.to_string()),
+                ("JITI_FS_CACHE".to_string(), "false".to_string())
+            ]
+        );
         let none = harness_gate("pi", d, None);
         assert_eq!((none.expected, none.how), (false, "none"));
         assert!(
@@ -573,6 +629,24 @@ mod tests {
             .iter()
             .all(|(k, v)| !k.contains("TOKEN") && !v.contains('\n')));
         assert_eq!(env[0].0, "HOME");
+    }
+
+    #[test]
+    fn br_1_every_harness_gets_a_posix_shell_not_the_accounts_no_login_shell() {
+        // The account's passwd shell is /usr/sbin/nologin (box research
+        // BR-1), and sudo hands it on as SHELL; the chat's is a real shell.
+        let id = ProjectId::of_real_path("/srv/a");
+        for h in ["claude-code", "codex", "pi", "other"] {
+            let env = project_env(&chat(&id, &[], h));
+            let shell = env
+                .iter()
+                .find(|(k, _)| k == "SHELL")
+                .map(|(_, v)| v.as_str());
+            assert!(
+                matches!(shell, Some("/bin/bash") | Some("/bin/sh")),
+                "{h}: {shell:?}"
+            );
+        }
     }
 
     #[test]

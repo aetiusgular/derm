@@ -420,6 +420,26 @@ fn pe_r4_the_map_comes_back_from_the_log_when_chats_json_is_gone() {
     );
 }
 
+/// Security review PI-S6: a start and a stop at the same millisecond, read
+/// stop first, replay as start then stop.
+#[test]
+fn pi_s6_a_stop_at_its_starts_own_time_replays_after_it() {
+    let ev = |kind: &str, at: i64| {
+        serde_json::from_value::<crate::activity::types::ActivityEvent>(json!({
+            "id": format!("r-{kind}-{at}"), "at": at, "chatId": "c-x", "harness": "codex",
+            "source": "run", "kind": kind, "summary": kind
+        }))
+        .unwrap()
+    };
+    let mut log = vec![ev("run.stop", 5), ev("run.start", 5), ev("run.start", 1)];
+    crate::daemon::in_replay_order(&mut log);
+    let got: Vec<(i64, &str)> = log.iter().map(|e| (e.at, e.kind.as_str())).collect();
+    assert_eq!(
+        got,
+        vec![(1, "run.start"), (5, "run.start"), (5, "run.stop")]
+    );
+}
+
 /// Request PE-R2 (contracts/events.md 7.1, "every event it stores"): an
 /// event that reaches `ingest` another way than `op_event` (OTel over HTTP,
 /// the tap, an OS feed) carries its chat's project too, and a forged one is

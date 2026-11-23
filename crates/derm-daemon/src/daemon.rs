@@ -2377,7 +2377,7 @@ impl Daemon {
             &runs,
         )
         .events;
-        log.sort_by_key(|e| e.at);
+        in_replay_order(&mut log);
         self.project.replay(&log);
         n
     }
@@ -4795,4 +4795,12 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(root);
     }
+}
+
+/// The log's `run.start` and `run.stop` records in the order they happened,
+/// for [`crate::project::State::replay`]: by time, and at one time a start
+/// before a stop (security review PI-S6: a stop read before its chat's start
+/// at the same millisecond left a stopped chat restored).
+pub(crate) fn in_replay_order(log: &mut [crate::activity::types::ActivityEvent]) {
+    log.sort_by_key(|e| (e.at, e.kind == "run.stop"));
 }

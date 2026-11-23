@@ -8,7 +8,7 @@
 #
 # What it does, each step printed before it runs:
 #   1. A system user and group <agent> (default derm-agent), home
-#      /var/lib/<agent> (0700), shell /bin/bash, password locked, in no other
+#      /var/lib/<agent> (0700), shell /usr/sbin/nologin, password locked, in no other
 #      group. An existing user is used only if this script made it (its
 #      comment says so) and it is in no group that leads to root.
 #   2. /etc/sudoers.d/derm-agent-<owner>: <owner> may start any program as
@@ -99,7 +99,7 @@ fi
 say "1. the user $AGENT"
 if [ "$EXISTS" = 0 ]; then
 	run useradd --system --user-group --create-home --home-dir "$HOME_DIR" \
-		--shell /bin/bash --comment "$MARK $OWNER" "$AGENT"
+		--shell /usr/sbin/nologin --comment "$MARK $OWNER" "$AGENT"
 	run passwd --lock "$AGENT"
 fi
 run chmod 0700 "$HOME_DIR"

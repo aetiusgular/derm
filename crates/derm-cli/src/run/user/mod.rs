@@ -399,7 +399,13 @@ pub(super) fn keep(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
         && !name.as_bytes()[0].is_ascii_digit();
-    plain && !NEVER.contains(&name) && !name.starts_with("XDG_") && !name.starts_with("SUDO_")
+    // JITI_: jiti's own switches decide what Pi loads and from where
+    // (security review PI-S1); derm sets the one it needs on env's argv.
+    plain
+        && !NEVER.contains(&name)
+        && !name.starts_with("XDG_")
+        && !name.starts_with("SUDO_")
+        && !name.starts_with("JITI_")
 }
 
 /// The terminal's variables, kept when derm run has them.
@@ -817,6 +823,8 @@ mod tests {
             "XDG_RUNTIME_DIR",
             "SUDO_USER",
             "LD_PRELOAD",
+            "JITI_FS_CACHE",
+            "JITI_ALIAS",
             "lower",
             "all_proxy",
             "ftp_proxy",

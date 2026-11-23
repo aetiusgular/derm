@@ -23,7 +23,9 @@
 #   3. the group derm-agents (system group, no members listed).
 #   4. the user derm-<slug>: system user, primary group derm-agents and
 #      no other group, home /var/lib/derm/agents/<slug> (0700), password
-#      locked, shell /bin/bash.
+#      locked, shell /usr/sbin/nologin (no login reaches it: a remote login
+#      that skips the password, as Tailscale SSH did on the box, gets no
+#      shell; derm starts programs as it through sudo, which needs none).
 #   5. in that home, signin/ with claude-code/, codex/ and pi/ (the sign-in
 #      store, one folder per harness) and projects/ (each project's folders
 #      go there): the account's, 0700 (contracts/projects.md section 2.2).
@@ -193,13 +195,20 @@ else
 fi
 
 say "4. the user $ACCOUNT (undo: userdel --remove $ACCOUNT)"
+NOLOGIN=/usr/sbin/nologin
+[ -x "$NOLOGIN" ] || NOLOGIN=/sbin/nologin
+[ -x "$NOLOGIN" ] || die "no nologin shell at /usr/sbin/nologin or /sbin/nologin; an agent account gets no login shell"
 run install -d -o root -g root -m 0755 /var/lib/derm "$HOMES"
 if [ "$USER_EXISTS" = 0 ]; then
 	run useradd --system --gid "$GROUP" --no-user-group --create-home --home-dir "$HOME_DIR" \
-		--shell /bin/bash --comment "$COMMENT" "$ACCOUNT"
+		--shell "$NOLOGIN" --comment "$COMMENT" "$ACCOUNT"
 	run passwd --lock "$ACCOUNT"
 else
 	echo "   exists"
+	# An account made before box research BR-1 had /bin/bash.
+	if [ "$(getent passwd "$ACCOUNT" | cut -d: -f7)" != "$NOLOGIN" ]; then
+		run usermod --shell "$NOLOGIN" "$ACCOUNT"
+	fi
 fi
 run chmod 0700 "$HOME_DIR"
 if [ "$DRY" = 0 ]; then

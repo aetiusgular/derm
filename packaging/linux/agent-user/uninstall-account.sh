@@ -143,15 +143,20 @@ else
 	if [ -d /run/systemd/system ]; then run systemctl daemon-reload; fi
 fi
 
-# Step P (lane PC's request R4): the account's own audit rules, by its uid
-# while the user is still there.
-if [ "$OURS" = 1 ]; then
-	acct_uid="$(id -u "$ACCOUNT" 2>/dev/null || true)"
-	if [ -n "$acct_uid" ] && [ -e "/etc/audit/rules.d/50-derm-$acct_uid.rules" ]; then
-		say "4b. /etc/audit/rules.d/50-derm-$acct_uid.rules"
-		run rm -f "/etc/audit/rules.d/50-derm-$acct_uid.rules"
-		if [ -x /usr/sbin/augenrules ]; then run /usr/sbin/augenrules --load || true; fi
-	fi
+# Step P (lane PC's request R4): the account's own audit rules. Found by
+# the account the file's header names ("## The agent account derm-<slug>
+# (uid N)", derm-audit-feed rules --account), not by the uid the user has
+# now: a user already gone, or a uid given again, would leave the file to
+# audit a later user under derm's rules (security review PI-S7).
+audit_files=()
+for f in /etc/audit/rules.d/50-derm-*.rules; do
+	[ -f "$f" ] && [ ! -L "$f" ] || continue
+	grep -qF -- "## The agent account $ACCOUNT (uid " "$f" && audit_files+=("$f")
+done
+if [ "${#audit_files[@]}" -gt 0 ]; then
+	say "4b. ${audit_files[*]}"
+	run rm -f "${audit_files[@]}"
+	if [ -x /usr/sbin/augenrules ]; then run /usr/sbin/augenrules --load || true; fi
 fi
 
 say "5. the user $ACCOUNT$([ "$KEEP" = 0 ] && echo ", with its home, signin/ and projects/")"

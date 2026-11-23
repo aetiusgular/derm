@@ -41,7 +41,7 @@ ran `sudo`.
 | 9 | `/etc/tmpfiles.d/derm-accounts-<you>.conf`: `/run/derm-agent` (root, 0755) and `/run/derm-agent/<your uid>` (yours, 0711), the base of each chat's bridge to the daemon, remade at boot (lane L1's request L1-5) | `rm`, with the last account; the empty folder goes at the next boot |
 | 10 | TIOCSTI off for the machine: `/etc/sysctl.d/90-derm-agents.conf` (`dev.tty.legacy_tiocsti = 0`) and the value set now, after the value before is kept in `/etc/derm/tiocsti.before` (the first install's). Below | the value from before, back, the file removed, with the last account |
 | 11 | `/etc/sudoers.d/derm-<slug>`: `<you> ALL=(derm-<slug>) NOPASSWD:SETENV: ALL`, checked with `visudo -c`. Last, so nothing runs as the account before its table is in place | `rm` |
-| 12 | The account's own audit rules (step P, lane PC's request R4): `/etc/audit/rules.d/50-derm-<uid>.rules` (root's, 0640) from `/usr/local/bin/derm-audit-feed rules --account <slug> --uid <uid>`, then `augenrules --load`, so the Linux feed sees the account's processes; without them an account chat has no OS records and no `project.control`, `signin.read` or `net.unix`. Only where `/usr/sbin/augenrules` and `/etc/audit/rules.d` are there and `derm-audit-feed` is a root-owned program in a folder only root can change (case 37); otherwise the step says what to install and the install goes on | `rm`, then `augenrules --load` (the account's undo, step 4b) |
+| 12 | The account's own audit rules (step P, lane PC's request R4): `/etc/audit/rules.d/50-derm-<uid>.rules` (root's, 0640) from `/usr/local/bin/derm-audit-feed rules --account <slug> --uid <uid>`, then `augenrules --load`, so the Linux feed sees the account's processes; without them an account chat has no OS records and no `project.control`, `signin.read` or `net.unix`. Only where `/usr/sbin/augenrules` and `/etc/audit/rules.d` are there and `derm-audit-feed` is a root-owned program in a folder only root can change (case 37); otherwise the step says what to install and the install goes on | `rm` of each `50-derm-*.rules` whose header names the account, whatever uid it names, then `augenrules --load` (the account's undo, step 4b) |
 
 ```
 sudo /usr/local/libexec/derm/agent-user/uninstall.sh --account <slug>
@@ -177,7 +177,7 @@ sudo packaging/linux/agent-user/install.sh --owner <you>
 
 | Change | Where | Undo |
 |---|---|---|
-| A system user and group, default `derm-agent`, home `/var/lib/derm-agent` (0700), shell `/bin/bash`, password locked, in no other group | `/etc/passwd`, `/etc/group`, `/etc/shadow` | `userdel --remove derm-agent` |
+| A system user and group, default `derm-agent`, home `/var/lib/derm-agent` (0700), shell `/usr/sbin/nologin` (box research BR-1), password locked, in no other group | `/etc/passwd`, `/etc/group`, `/etc/shadow` | `userdel --remove derm-agent` |
 | You may start any program as `derm-agent` without a password: `<you> ALL=(derm-agent) NOPASSWD:SETENV: ALL`. Nothing lets `derm-agent` run anything as you or root. Checked with `visudo -c` first | `/etc/sudoers.d/derm-agent-<you>` (0440 root; no `.` in the name, which both sudo and sudo-rs skip) | `rm` the file |
 | The folder for each chat's bridge: `/run/derm-agent` (root, 0755) and `/run/derm-agent/<your uid>` (yours, 0711), remade at boot | `/etc/tmpfiles.d/derm-agent-<you>.conf` | `rm` the file and `/run/derm-agent/<uid>` |
 | Who runs whose agents, read by `derm run` and by the gate inside the harness | `/etc/derm/agent-users.json` (root, 0644) | your entry removed; the file goes when empty |

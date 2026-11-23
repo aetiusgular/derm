@@ -288,6 +288,27 @@ pub(crate) fn start_env_note(program: &str) -> String {
     )
 }
 
+/// The derm Claude Code's gate runs, for this chat. Box research BR-2
+/// (`plans/parallel/acctP_box_research.md`, 22 Nov, V by the start line on
+/// the box): an account chat's gate named the person's own build under
+/// `/home/<person>`, which the account cannot enter (`test -r /home/opone`
+/// false as `derm-box`), so every hook of that chat ran a program it could
+/// not reach. An account chat's gate is derm's root copy, the same one its
+/// helper runs ([`user::chat::helper_binary`]).
+fn claude_gate_derm(
+    on_account: bool,
+    person: impl FnOnce() -> Option<String>,
+    root_copy: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    if on_account {
+        return root_copy();
+    }
+    person().ok_or_else(|| {
+        "derm's own path cannot be read, so derm cannot register its gate for Claude Code"
+            .to_string()
+    })
+}
+
 /// derm as the gate derm run registers names it (fix pass 7, FP6-R3): by
 /// Homebrew's `opt` link when Homebrew installed it, as `derm connect`
 /// names it (`connect::gate::self_path`, MW5B-6: `brew upgrade` removes the
@@ -1576,26 +1597,38 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         ),
     ))?;
     let chat = a.chat.clone().unwrap_or_else(new_chat_id);
+    // The agent account, decided once (the accounts build; lane L4's R4),
+    // before Claude Code's gate, which names derm's root copy for an
+    // account chat (box research BR-2).
+    #[cfg(target_os = "linux")]
+    let account = user::chat_account(a.boundary.name(), a.account.as_deref(), &home)?;
     // Fix pass 6 (note BE section 1.5, option (e)): Claude Code's gate is
     // derm's own `--settings` registration, by the path of this derm. Both
     // are checked before anything starts.
-    let claude_gate_by =
-        if a.harness.id == "claude-code" && a.boundary != Boundary::Sbx {
-            claude_gate::check_user_settings(&a.rest).map_err(|e| (2, e))?;
-            claude_gate::check_settings_files(
-                Path::new(&home),
-                std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
-                Path::new(&cwd),
-            )
-            .map_err(|e| (2, e))?;
-            Some(gate_exe().ok_or((
-            1,
-            "derm's own path cannot be read, so derm cannot register its gate for Claude Code"
-                .to_string(),
-        ))?)
-        } else {
-            None
-        };
+    let claude_gate_by = if a.harness.id == "claude-code" && a.boundary != Boundary::Sbx {
+        claude_gate::check_user_settings(&a.rest).map_err(|e| (2, e))?;
+        claude_gate::check_settings_files(
+            Path::new(&home),
+            std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+            Path::new(&cwd),
+        )
+        .map_err(|e| (2, e))?;
+        #[cfg(target_os = "linux")]
+        let on_account = account.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let on_account = false;
+        Some(
+            claude_gate_derm(on_account, gate_exe, || {
+                #[cfg(target_os = "linux")]
+                return user::chat::helper_binary();
+                #[cfg(not(target_os = "linux"))]
+                return Err("no agent accounts here".to_string());
+            })
+            .map_err(|e| (1, e))?,
+        )
+    } else {
+        None
+    };
 
     // Step P (request PA-6 and the base's; contracts/projects.md 1.4,
     // events.md 7.1): the chat's project, by the registry's nearest-folder
@@ -2014,11 +2047,9 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         });
         sink
     });
-    // The agent account, decided once (the accounts build; lane L4's R4):
-    // the broker brokers an account's chat and puts its trust files in
+    // The agent account was decided before Claude Code's gate (box research
+    // BR-2): the broker brokers an account's chat and puts its trust files in
     // /tmp, which the chat's Landlock domain reads; the launch below runs it.
-    #[cfg(target_os = "linux")]
-    let account = user::chat_account(a.boundary.name(), a.account.as_deref(), &home)?;
     #[cfg(target_os = "linux")]
     let (account_name, account_slug) = (
         account.as_ref().map(|x| x.name.clone()),
@@ -2732,6 +2763,28 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn br_2_an_account_chats_claude_code_gate_is_derms_root_copy_not_the_persons() {
+        let person = || Some("/home/opone/derm/target/release/derm".to_string());
+        let root = || Ok::<_, String>("/usr/local/bin/derm".to_string());
+        assert_eq!(
+            super::claude_gate_derm(true, person, root).unwrap(),
+            "/usr/local/bin/derm"
+        );
+        assert_eq!(
+            super::claude_gate_derm(false, person, root).unwrap(),
+            "/home/opone/derm/target/release/derm"
+        );
+        // No root copy: the account chat does not start, and the person's
+        // path is never the fallback.
+        let none = || Err::<String, _>("no root copy".to_string());
+        assert_eq!(
+            super::claude_gate_derm(true, person, none).unwrap_err(),
+            "no root copy"
+        );
+        assert!(super::claude_gate_derm(false, || None, root).is_err());
+    }
+
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
