@@ -396,7 +396,7 @@ fn add_prints_the_installer_line_and_runs_nothing_without_a_yes() {
     );
     assert!(r
         .out
-        .contains("sudo derm-agents-install/uninstall.sh --account work"));
+        .contains("undo: sudo /usr/local/libexec/derm/agent-user/uninstall.sh --account work"));
     assert_eq!(r.asked, 0);
     assert_eq!(sudo_log(&st), "", "--print runs nothing");
     // No terminal: printed, not run, not asked.

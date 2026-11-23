@@ -2025,6 +2025,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             dry_run: a.dry_run,
             temp: &broker_temp,
             account: account_name.as_deref(),
+            project: chat_project.as_ref().map_or("", |(id, _)| id.as_str()),
         },
         &mut p,
         &|k| std::env::var(k).ok(),

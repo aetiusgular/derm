@@ -68,6 +68,9 @@ pub struct Chat<'a> {
     /// The agent account the chat runs as (`derm-<slug>`), when it is one
     /// (the accounts build, lane L4's request R4).
     pub account: Option<&'a str>,
+    /// The chat's project id, `""` in no project (step P, I-4): a chat gets
+    /// only the secrets bound to its project, or the unbound ones.
+    pub project: &'a str,
 }
 
 /// Sets up the chat's broker and applies the chain to `p`. `env` reads `derm
@@ -83,6 +86,16 @@ pub fn wire(
     let file = secrets::load(&path).map_err(|e| {
         format!("{e}; fix it with `derm secret`, or move it away to run with no secrets")
     })?;
+    // Request PB-1 (lane PB's request 1; I-4): the bindings are read as
+    // `secrets.json` is, and a refused file stops the start the same way.
+    // Values and placeholders are made from the kept file only, so they pair.
+    let bindings = derm_egress::bind::load(&derm_egress::bind::path_for(c.home)).map_err(|e| {
+        format!("{e}; fix it with `derm secret bind` or `derm secret unbind`, or move it away")
+    })?;
+    let (file, left) = derm_egress::bind::for_project(&file, &bindings, c.project);
+    if let Some(line) = chain::left_out_line(&bindings, &left, c.project) {
+        p.notes.push(format!("derm run: {line}"));
+    }
     if file.secrets.is_empty() {
         return Ok(Broker::none());
     }

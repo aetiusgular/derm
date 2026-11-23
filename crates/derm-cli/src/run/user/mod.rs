@@ -373,6 +373,15 @@ pub(super) fn trusted_tool(path: &str, setid: bool) -> Result<String, String> {
 /// the agents' user, or change what a program loads.
 #[cfg(unix)]
 pub(super) fn keep(name: &str) -> bool {
+    // The lower-case proxy names, which derm sets itself beside the upper
+    // ones (`secret/chain.rs`), so both spellings reach the harness: undici
+    // (Pi) reads `https_proxy` before `HTTPS_PROXY` (undici 8.12.4
+    // `env-http-proxy-agent.js:33-38`), and the person's own, where their
+    // sudoers keeps it, must not win over derm's (request PB-2). Only names
+    // derm set reach this filter.
+    if matches!(name, "https_proxy" | "http_proxy" | "no_proxy") {
+        return true;
+    }
     const NEVER: &[&str] = &[
         "HOME",
         "PATH",
@@ -794,6 +803,10 @@ mod tests {
             "NODE_USE_ENV_PROXY",
             "ANTHROPIC_BASE_URL",
             "GEMINI_CLI_DERM_CHAT_TOKEN_FILE",
+            // PB-2: the lower-case proxy names derm sets.
+            "https_proxy",
+            "http_proxy",
+            "no_proxy",
         ] {
             assert!(keep(ok), "{ok}");
         }
@@ -805,6 +818,8 @@ mod tests {
             "SUDO_USER",
             "LD_PRELOAD",
             "lower",
+            "all_proxy",
+            "ftp_proxy",
             "1X",
             "A-B",
             "",

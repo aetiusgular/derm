@@ -433,6 +433,18 @@ pub fn secrets_check(home: Option<&Path>, problems: &mut Vec<String>) -> Value {
         }
     };
     let n = file.secrets.len();
+    // Request PB-5 (step P, I-4): the project bindings are read as
+    // `derm run` reads them; a refused file stops every chat's start too.
+    let bind_path = derm_egress::bind::path_for(home);
+    let bound = match derm_egress::bind::load(&bind_path) {
+        Ok(b) => json!(b.projects.len()),
+        Err(e) => {
+            problems.push(format!(
+                "{e}: derm cannot read the secrets' project bindings, so every chat refuses to start; fix it with `derm secret bind` or `derm secret unbind`, or move the file away"
+            ));
+            json!("unreadable")
+        }
+    };
     let ca = match Ca::load(&ca::dir_for(home)) {
         Ok(Some(c)) => {
             let days = c.days_left();
@@ -456,7 +468,7 @@ pub fn secrets_check(home: Option<&Path>, problems: &mut Vec<String>) -> Value {
             json!({"state": "unreadable"})
         }
     };
-    json!({"state": "ok", "secrets": n, "ca": ca})
+    json!({"state": "ok", "secrets": n, "ca": ca, "bound": bound})
 }
 
 fn platform() -> &'static str {

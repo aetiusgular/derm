@@ -888,6 +888,19 @@ fn the_report_names_the_secrets_file_and_the_ca() {
     assert_eq!(r["ca"]["state"], "present");
     assert!(r["ca"]["daysLeft"].as_i64().unwrap() > 300);
     assert!(problems.is_empty(), "{problems:?}");
+    assert_eq!(r["bound"], 0, "{r}");
+    // Request PB-5: the bindings file is checked as a chat start checks it.
+    let bind = derm_egress::bind::path_for(&h);
+    std::fs::write(&bind, "{").unwrap();
+    std::fs::set_permissions(&bind, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut problems = Vec::new();
+    let r = super::secrets_check(Some(&h), &mut problems);
+    assert_eq!(r["bound"], "unreadable", "{r}");
+    assert!(
+        problems.iter().any(|p| p.contains("derm secret bind")),
+        "{problems:?}"
+    );
+    std::fs::remove_file(&bind).unwrap();
     // A file others can read is refused, as a chat start refuses it.
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     let mut problems = Vec::new();

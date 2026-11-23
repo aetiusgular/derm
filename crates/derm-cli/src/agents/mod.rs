@@ -511,7 +511,9 @@ fn add(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     );
     let _ = writeln!(
         ctx.out,
-        "  undo: derm agents installer derm-agents-install && sudo derm-agents-install/uninstall.sh --account {}",
+        // Root's own copy of the undo, checked by its hash when it runs
+        // (lane PF's AI-8; request PF-2).
+        "  undo: sudo /usr/local/libexec/derm/agent-user/uninstall.sh --account {}",
         quote(slug)
     );
     if print_only {

@@ -57,6 +57,7 @@ fn chat<'a>(h: &'a Path, t: &'a Path, tier: &'a str, boundary: &'a str, dry: boo
         dry_run: dry,
         temp: t,
         account: None,
+        project: "",
     }
 }
 
@@ -352,4 +353,47 @@ fn the_file_a_secret_is_read_from_is_hidden_by_every_sandbox_derm_writes() {
     assert!(
         crate::connect::sandbox::codex_profile(&ctx).contains(&real.to_string_lossy().into_owned())
     );
+}
+
+/// Request PB-1 (lane PB's request 1; I-4): a chat gets only the secrets
+/// bound to its own project, a chat in no project only the unbound ones,
+/// and the start names what was left out. Shown by a dry run, which reads
+/// no value: the plan holds a placeholder per secret the chat gets.
+#[test]
+fn pb_r1_a_chat_gets_only_the_secrets_bound_to_its_project() {
+    let (h, t, v) = home("pbr1");
+    let a = "aaaaaaaaaaaaaaaa";
+    let b = "bbbbbbbbbbbbbbbb";
+    secrets_file(
+        &h,
+        vec![
+            entry("gh-a", From::File(v.to_string_lossy().into_owned())),
+            entry("gh-b", From::File(v.to_string_lossy().into_owned())),
+            entry("free", From::File(v.to_string_lossy().into_owned())),
+        ],
+    );
+    let mut bind = derm_egress::bind::Bindings::default();
+    bind.projects.insert("gh-a".into(), vec![a.into()]);
+    bind.projects.insert("gh-b".into(), vec![b.into()]);
+    derm_egress::bind::save(&derm_egress::bind::path_for(&h), &bind).unwrap();
+    for (project, kept, left) in [
+        (a, "gh-a", vec!["gh-b"]),
+        (b, "gh-b", vec!["gh-a"]),
+        ("", "free", vec!["gh-a", "gh-b"]),
+    ] {
+        let mut p = srt_plan();
+        let mut c = chat(&h, &t, "whole", "srt", true);
+        c.project = project;
+        let _b = wire(&c, &mut p, &no_env, None).unwrap();
+        let text = format!("{p:?}");
+        assert!(text.contains(kept), "{project}: {text}");
+        for l in &left {
+            let note = p.notes.iter().find(|n| n.contains(l));
+            assert!(
+                note.is_some(),
+                "{project}: {l} named as left out: {:?}",
+                p.notes
+            );
+        }
+    }
 }

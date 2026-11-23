@@ -168,6 +168,13 @@ pub(crate) fn wrap(
     // on the chat's own PATH; the checked path is the one that runs.
     let path = project::PATH.to_string();
     let (program_path, program_real) = root_install(&program, &path).map_err(|e| (1, e))?;
+    // Request PB-4 (contracts/projects.md 2.3): Pi below 1.5.1 locks the
+    // link's path, not the store's file, so two projects can lose a sign-in
+    // write (note CD C1; Pi 1.5.1 `CHANGELOG.md:96`). The version is read
+    // from the install's own package.json, nothing is run.
+    if harness == "pi" {
+        pi_floor(Path::new(&program_real)).map_err(|e| (1, e))?;
+    }
 
     // As the account, before any domain: what it must not reach, what it
     // must write (lane V's probe, unchanged).
@@ -347,6 +354,45 @@ pub(crate) fn wrap(
         "harnessExe": program_real,
         "gate": {"expected": gate.expected, "how": gate.how},
     })))
+}
+
+/// The Pi an agent account runs, by the `package.json` of the install its
+/// program sits in (`dist/cli.js` two folders down), at least 1.5.1.
+pub(crate) fn pi_floor(program_real: &Path) -> Result<String, String> {
+    const NAME: &str = "@earendil-works/pi-coding-agent";
+    let fix =
+        "install Pi 1.6.0 as root (sudo npm install -g @earendil-works/pi-coding-agent@1.6.0)";
+    for dir in program_real.ancestors().skip(1).take(4) {
+        let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if v.get("name").and_then(Value::as_str) != Some(NAME) {
+            continue;
+        }
+        let version = v.get("version").and_then(Value::as_str).unwrap_or("");
+        let parts: Vec<u64> = version
+            .split(['-', '+'])
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0))
+            .collect();
+        let at_least = parts.len() == 3 && (parts[0], parts[1], parts[2]) >= (1, 5, 1);
+        return if at_least {
+            Ok(version.to_string())
+        } else {
+            Err(format!(
+                "Pi {version} on an agent account: below 1.5.1 Pi locks the sign-in link, not the file, so two projects can lose a sign-in write; {fix}"
+            ))
+        };
+    }
+    Err(format!(
+        "{} is not in a Pi install derm can read the version of; {fix}",
+        program_real.display()
+    ))
 }
 
 /// Puts derm's gate words before the harness's own (request PA-2): for
@@ -600,6 +646,38 @@ mod tests {
             said: Vec::new(),
             asked: Vec::new(),
         }
+    }
+
+    #[test]
+    fn pb_4_pi_below_1_5_1_is_refused_on_an_agent_account() {
+        let t = std::env::temp_dir().join(format!("pb4-{}", std::process::id()));
+        let cli = t.join("dist/cli.js");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, "").unwrap();
+        let pkg = |v: &str| {
+            std::fs::write(
+                t.join("package.json"),
+                format!(r#"{{"name":"@earendil-works/pi-coding-agent","version":"{v}"}}"#),
+            )
+            .unwrap()
+        };
+        for (v, ok) in [
+            ("1.4.0", false),
+            ("1.5.0", false),
+            ("1.5.1", true),
+            ("1.6.0", true),
+            ("2.0.0-rc.1", true),
+        ] {
+            pkg(v);
+            assert_eq!(pi_floor(&cli).is_ok(), ok, "{v}: {:?}", pi_floor(&cli));
+        }
+        std::fs::write(
+            t.join("package.json"),
+            r#"{"name":"other","version":"9.9.9"}"#,
+        )
+        .unwrap();
+        assert!(pi_floor(&cli).is_err(), "not Pi's package");
+        let _ = std::fs::remove_dir_all(&t);
     }
 
     #[test]
