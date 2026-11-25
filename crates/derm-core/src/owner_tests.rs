@@ -53,6 +53,76 @@ fn trusts_no_one_when_the_file_is_broken_or_names_nonsense() {
     assert!(owners_for(998, Some(&two)).uids.is_empty());
 }
 
+fn accounts(uids: &[u32]) -> String {
+    let a: Vec<Value> = uids
+        .iter()
+        .map(|u| json!({"name": format!("derm-a{u}"), "uid": u, "subscription": "s", "home": format!("/var/lib/derm/agents/a{u}")}))
+        .collect();
+    json!({"version": 1, "group": "derm-agents", "accounts": a}).to_string()
+}
+
+/// Review R2 (red first): an agent account trusts the people who own a
+/// bridge base, never itself or another account.
+#[test]
+fn r2_an_agent_account_trusts_the_bridges_people_and_never_an_account() {
+    let text = accounts(&[996, 995]);
+    assert_eq!(
+        owners_for_account(996, Some(&text), &[1000, 1001, 995, 996]),
+        Some(trusted(&[1000, 1001], true)),
+    );
+    // Not an account: the old rules decide.
+    assert_eq!(owners_for_account(1000, Some(&text), &[1000]), None);
+    assert_eq!(owners_for_account(996, None, &[1000]), None);
+    // No bridge base: no one, every call asks.
+    let o = owners_for_account(996, Some(&text), &[]).unwrap();
+    assert!(o.uids.is_empty() && o.agent && o.problem.is_some(), "{o:?}");
+    // Root is never a bridge's person.
+    let o = owners_for_account(996, Some(&text), &[0]).unwrap();
+    assert!(o.uids.is_empty(), "{o:?}");
+    // A file that cannot be read whole: no one.
+    for bad in [
+        "{",
+        r#"{"version":2,"accounts":[]}"#,
+        r#"{"version":1,"accounts":[{"uid":"996"}]}"#,
+    ] {
+        let o = owners_for_account(996, Some(bad), &[1000]).unwrap();
+        assert!(o.uids.is_empty() && o.problem.is_some(), "{bad}: {o:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn r2_bridge_owners_are_the_folders_that_name_their_own_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: getuid has no preconditions.
+    let me = unsafe { libc::getuid() };
+    let root = std::env::temp_dir().join(format!("derm-bridges-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mine = root.join(me.to_string());
+    std::fs::create_dir(&mine).unwrap();
+    std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o711)).unwrap();
+    // Named for someone else, owned by me: not theirs, dropped.
+    let other = root.join((me + 1).to_string());
+    std::fs::create_dir(&other).unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o711)).unwrap();
+    // Not a number, a link, one others can write: dropped.
+    std::fs::create_dir(root.join("x")).unwrap();
+    std::os::unix::fs::symlink(&mine, root.join("7")).unwrap();
+    assert_eq!(bridge_owners(&root, me), vec![me]);
+    std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(bridge_owners(&root, me).is_empty());
+    std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o711)).unwrap();
+    // A root others can write trusts nothing under it.
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(bridge_owners(&root, me).is_empty());
+    // A root of someone else's trusts nothing under it.
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(bridge_owners(&root, me + 7).is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[cfg(unix)]
 mod anchor {
     use super::*;

@@ -99,6 +99,22 @@ pub fn main(args: &[String]) -> u8 {
         eprintln!("derm doctor: running `{cli} --version` as you, with a clean environment and a time limit");
     }
     let mut report = doctor(&row, &env, &Probes::real(), live, run_gate);
+    // Tony's call 4a: on a machine with agent accounts, the Claude Code they
+    // run (the root install on the account chats' PATH) against the release
+    // the shared sign-in store variable was verified at.
+    #[cfg(target_os = "linux")]
+    if id_of(&row) == "claude-code" {
+        let (accounts, _) = crate::run::user::accounts::load_default();
+        if !accounts.is_empty() {
+            let found =
+                crate::run::user::chat::root_install("claude", crate::run::user::project::PATH)
+                    .ok()
+                    .and_then(|(_, real)| {
+                        crate::agents::signin::claude_version_of(Path::new(&real))
+                    });
+            account_store_into(&mut report, found.as_deref());
+        }
+    }
     report["at"] = json!(std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -265,6 +281,26 @@ impl Probes {
             version: probe_version,
             node: find_on_path("node", &std::env::var("PATH").unwrap_or_default()),
             sh: PathBuf::from("/bin/sh"),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn id_of(row: &Value) -> &str {
+    row.get("id").and_then(Value::as_str).unwrap_or("")
+}
+
+/// Tony's call 4a: `accountStore` in the report, and the note among its
+/// problems when the release is not the verified one (or cannot be read).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn account_store_into(report: &mut Value, found: Option<&str>) {
+    report["accountStore"] = json!({
+        "verifiedAt": crate::agents::signin::CLAUDE_STORE_VERIFIED_AT,
+        "found": found,
+    });
+    if let Some(note) = crate::agents::signin::claude_store_note(found) {
+        if let Some(p) = report.get_mut("problems").and_then(Value::as_array_mut) {
+            p.push(json!(note));
         }
     }
 }

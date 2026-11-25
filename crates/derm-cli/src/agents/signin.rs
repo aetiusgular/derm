@@ -50,6 +50,55 @@ pub const CLAUDE_CODE_STORE: bool = true;
 /// SB(){let e=process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;...}`).
 pub const CLAUDE_STORE_VAR: &str = "CLAUDE_SECURESTORAGE_CONFIG_DIR";
 
+/// The Claude Code release `CLAUDE_STORE_VAR` was read at (its binary) and
+/// run at on the box (P-B1, 22 Nov 2026). The variable is not in Claude
+/// Code's documentation, so another release may drop it (rules case 81).
+pub const CLAUDE_STORE_VERIFIED_AT: &str = "2.1.322";
+
+/// Tony's call 4a: the Claude Code version of a root install, read from the
+/// `package.json` of the npm package its program sits in (the main package
+/// `@anthropic-ai/claude-code`, whose `bin/claude.exe` 2.1.322 installs, or
+/// a platform package `@anthropic-ai/claude-code-<os>-<arch>`), up to four
+/// folders above `program_real`; nothing is run, as `pi_floor` reads Pi's.
+/// `None` when no such file is found (a binary copied by hand, say).
+pub fn claude_version_of(program_real: &Path) -> Option<String> {
+    for dir in program_real.ancestors().skip(1).take(4) {
+        let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        let name = v
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if name != "@anthropic-ai/claude-code" && !name.starts_with("@anthropic-ai/claude-code-") {
+            continue;
+        }
+        return v
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty() && s.len() <= 64 && !s.chars().any(char::is_control))
+            .map(str::to_string);
+    }
+    None
+}
+
+/// Tony's call 4a: the line an account chat's start and `derm doctor` print
+/// when the Claude Code that runs is not the one the store variable was
+/// verified at; `None` when it is. The chat still starts.
+pub fn claude_store_note(found: Option<&str>) -> Option<String> {
+    let what = match found {
+        Some(v) if v == CLAUDE_STORE_VERIFIED_AT => return None,
+        Some(v) => format!("unverified at {v}"),
+        None => "the version of the Claude Code that runs could not be read from its install, so it is unverified".to_string(),
+    };
+    Some(format!(
+        "Claude Code's shared sign-in store variable ({CLAUDE_STORE_VAR}, not in its documentation) is verified at {CLAUDE_STORE_VERIFIED_AT}; {what}: a release that ignores it finds no sign-in in the project home and asks to sign in, and a sign-in there stays in that project home (rules case 81)"
+    ))
+}
+
 /// Why a Claude Code chat on an agent account is refused if the switch is
 /// turned off again.
 pub const CLAUDE_CODE_OFF: &str = "Claude Code's shared sign-in store is off until the box shows a renewal keeps it (P-B1, plans/parallel_build_accounts.md 8.5); a Claude Code chat on an agent account is refused until then (contracts/projects.md 2.3)";
@@ -127,6 +176,20 @@ pub fn link_project_home(
     harness: &str,
 ) -> Result<Linked, String> {
     link_with(account_home, project_home, harness, CLAUDE_CODE_STORE)
+}
+
+/// Tony's call 7a: Pi's `auth.json` in a chat's own agent folder
+/// (`PI_CODING_AGENT_DIR`), a link to the account's store as a project home's
+/// was. Pi 1.6.0 reads `auth.json` from its agent folder (`config.js`
+/// `getAuthPath`) and locks the resolved file (`core/auth-storage.js:34-66`),
+/// so linked folders share one lock as linked homes did.
+pub fn link_pi_agent_dir(account_home: &Path, agent_dir: &Path) -> Result<Linked, String> {
+    const PI_AGENT_DIR: Store = Store {
+        harness: "pi",
+        file: "auth.json",
+        links: &[("auth.json", "auth.json")],
+    };
+    imp::link(account_home, agent_dir, &PI_AGENT_DIR)
 }
 
 /// [`link_project_home`] with the Claude Code switch given (tests).
@@ -396,6 +459,70 @@ mod imp {
 
     pub(super) fn link(_: &Path, _: &Path, _: &Store) -> Result<Linked, String> {
         Err("agent accounts are Linux only for now".into())
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    /// Tony's call 4a (red first; rules case 81's pattern).
+    #[test]
+    fn call_4a_a_claude_code_not_at_the_verified_version_is_named() {
+        let d = std::env::temp_dir().join(format!("derm-cc-ver-{}", uuid::Uuid::new_v4().simple()));
+        let bin = d.join("lib/node_modules/@anthropic-ai/claude-code/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude.exe"), b"").unwrap();
+        let pkg = d.join("lib/node_modules/@anthropic-ai/claude-code/package.json");
+        std::fs::write(
+            &pkg,
+            r#"{"name":"@anthropic-ai/claude-code","version":"2.1.330"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            claude_version_of(&bin.join("claude.exe")).as_deref(),
+            Some("2.1.330")
+        );
+        std::fs::write(
+            &pkg,
+            r#"{"name":"@anthropic-ai/claude-code","version":"2.1.322"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            claude_version_of(&bin.join("claude.exe")).as_deref(),
+            Some("2.1.322")
+        );
+        // Another package's file is not Claude Code's.
+        std::fs::write(&pkg, r#"{"name":"left-pad","version":"2.1.322"}"#).unwrap();
+        assert_eq!(claude_version_of(&bin.join("claude.exe")), None);
+        let _ = std::fs::remove_dir_all(&d);
+        // The platform package holds the binary itself.
+        let d = std::env::temp_dir().join(format!("derm-cc-ver-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"name":"@anthropic-ai/claude-code-linux-x64","version":"2.1.322"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            claude_version_of(&d.join("claude")).as_deref(),
+            Some("2.1.322")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+
+        assert_eq!(claude_store_note(Some("2.1.322")), None);
+        let n = claude_store_note(Some("2.1.330")).unwrap();
+        assert!(
+            n.contains("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+                && n.contains("verified at 2.1.322")
+                && n.contains("unverified at 2.1.330"),
+            "{n}"
+        );
+        let n = claude_store_note(None).unwrap();
+        assert!(
+            n.contains("verified at 2.1.322") && n.contains("could not be read"),
+            "{n}"
+        );
     }
 }
 

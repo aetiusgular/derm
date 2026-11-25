@@ -2309,6 +2309,19 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             policy: &policy_path,
             account: account_slug.as_deref(),
             harness_args_at,
+            ungated: a.ungated,
+            sign_in_sink: daemon.as_ref().map(|d| {
+                let d = RunPoster::new(d);
+                let sink: derm_egress::Sink = Arc::new(move |events: Vec<Event>| {
+                    for mut e in events {
+                        e.source = Source::Run;
+                        if let Err(err) = d.post(&e) {
+                            eprintln!("derm run: a sign-in tunnel record was not recorded: {err}");
+                        }
+                    }
+                });
+                sink
+            }),
         },
     )?;
     let account_exe: Option<String> = agent_user

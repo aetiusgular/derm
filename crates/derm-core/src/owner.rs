@@ -21,6 +21,13 @@ use serde_json::Value;
 
 /// The anchor file (`ANCHOR` in `owner.ts`).
 pub const ANCHOR: &str = "/etc/derm/agent-users.json";
+/// The agent accounts' file (`plans/parallel_build_accounts.md` section 2;
+/// `derm-cli`'s `run/user/accounts.rs` reads it whole for `derm run`).
+pub const ACCOUNTS: &str = "/etc/derm/agents.json";
+/// Where root's install makes one bridge base per person,
+/// `/run/derm-agent/<the person's uid>`, 0711 and the person's
+/// (`packaging/linux/agent-user/install-account.sh`, its tmpfiles line).
+pub const BRIDGES: &str = "/run/derm-agent";
 /// The anchor's size cap, read only by [`read_anchor`] (Unix).
 #[cfg(unix)]
 const MAX_BYTES: u64 = 64 * 1024;
@@ -103,6 +110,95 @@ pub fn owners_for(uid: u32, text: Option<&str>) -> Owners {
             format!("{ANCHOR} names uid {uid} for more than one owner"),
         ),
     }
+}
+
+/// Review R2 (P fix 2): whose files the gate trusts when this process is an
+/// agent account (`/etc/derm/agents.json`, the accounts build), or `None`
+/// when it is not one. An account's chats write its own files, the project
+/// home's settings included, so the account never trusts its own uid (nor
+/// any account's): before this it did, since the accounts are not in
+/// `agent-users.json`, and a project home's `~/.claude/settings.json` could
+/// name a policy the chat wrote (`DERM_POLICY`) and have the next chat's gate
+/// apply it. An account trusts the people whose bridge bases root's install
+/// made (`bridges`: the owners of `/run/derm-agent/<uid>`, [`bridge_owners`]):
+/// the bridge's policy copy, socket and token file are theirs
+/// (`run/user/bridge.rs`), and an account cannot write as a person. A file
+/// it cannot read whole trusts no one, so every call asks. `text` is the
+/// accounts file's text, `None` when there is none.
+pub fn owners_for_account(uid: u32, text: Option<&str>, bridges: &[u32]) -> Option<Owners> {
+    let text = text?;
+    let parsed: Value = match serde_json::from_str(text) {
+        Ok(v) => v,
+        Err(_) => return Some(none(true, format!("{ACCOUNTS} is not JSON"))),
+    };
+    let list = match (parsed.get("version"), parsed.get("accounts")) {
+        (Some(v), Some(Value::Array(a))) if v.as_u64() == Some(1) => a,
+        _ => return Some(none(true, format!("{ACCOUNTS} is not version 1"))),
+    };
+    let mut uids = Vec::new();
+    for a in list {
+        match a
+            .get("uid")
+            .and_then(Value::as_u64)
+            .and_then(|u| u32::try_from(u).ok())
+        {
+            Some(u) => uids.push(u),
+            None => {
+                return Some(none(
+                    true,
+                    format!("{ACCOUNTS} has an account without a uid"),
+                ))
+            }
+        }
+    }
+    if !uids.contains(&uid) {
+        return None;
+    }
+    let people: Vec<u32> = bridges
+        .iter()
+        .copied()
+        .filter(|b| *b != 0 && !uids.contains(b))
+        .collect();
+    if people.is_empty() {
+        return Some(none(
+            true,
+            format!("no bridge folder under {BRIDGES} names the person this account works for"),
+        ));
+    }
+    Some(Owners {
+        uids: people,
+        agent: true,
+        problem: None,
+    })
+}
+
+/// The owners of `<root>/<uid>` folders that name their own owner, are not
+/// links and are closed to group and other writes, with `root` itself a
+/// folder of `trusted`'s that no one else can write (tests pass their own
+/// root and owner; outside them `/run/derm-agent` and 0). Accounts are
+/// dropped by the caller.
+#[cfg(unix)]
+pub fn bridge_owners(root: &std::path::Path, trusted: u32) -> Vec<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let ok_root = std::fs::symlink_metadata(root)
+        .is_ok_and(|m| m.is_dir() && m.uid() == trusted && m.mode() & 0o022 == 0);
+    if !ok_root {
+        return Vec::new();
+    }
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<u32> = rd
+        .flatten()
+        .filter_map(|e| {
+            let n: u32 = e.file_name().to_str()?.parse().ok()?;
+            let m = std::fs::symlink_metadata(e.path()).ok()?;
+            (m.is_dir() && m.uid() == n && m.mode() & 0o022 == 0).then_some(n)
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// What reading the anchor gave.
@@ -197,6 +293,22 @@ pub fn trusted_owners() -> Option<Owners> {
         Anchor::Absent => owners_for(uid, None),
         Anchor::Text(t) => owners_for(uid, Some(&t)),
         Anchor::Problem(p) => none(false, p),
+    };
+    // Review R2: an agent account, unless lane V's file already placed this
+    // uid (as an agents' user) or refused.
+    let o = if o.agent || o.problem.is_some() {
+        o
+    } else {
+        match read_anchor(std::path::Path::new(ACCOUNTS), std::path::Path::new("/"), 0) {
+            Anchor::Absent => o,
+            Anchor::Text(t) => owners_for_account(
+                uid,
+                Some(&t),
+                &bridge_owners(std::path::Path::new(BRIDGES), 0),
+            )
+            .unwrap_or(o),
+            Anchor::Problem(p) => none(false, p),
+        }
     };
     *cached = Some(o.clone());
     Some(o)

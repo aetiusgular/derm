@@ -90,6 +90,14 @@ pub(crate) struct Context<'a> {
     /// Codex session subcommand (request PA-2, case 184).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub harness_args_at: Option<usize>,
+    /// Where an account chat's sign-in tunnel posts its records, as source
+    /// `run` (Tony's call 3b); `None` with no daemon.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub sign_in_sink: Option<derm_egress::Sink>,
+    /// `derm run --ungated`: a Pi account chat with no root-owned gate
+    /// package runs anyway, with no derm gate (Tony's call 6a).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub ungated: bool,
 }
 
 /// Where `sudo` and `env` must be: root's, never found on `PATH` (case 37).
@@ -326,6 +334,8 @@ pub(crate) fn finish() {
     if let Ok(mut slot) = BRIDGE.lock() {
         slot.take();
     }
+    #[cfg(target_os = "linux")]
+    chat::finish_sign_in_route();
 }
 
 #[cfg(unix)]
@@ -954,6 +964,8 @@ mod tests {
                 policy: "/home/tony/.derm/policy.json",
                 account: None,
                 harness_args_at: None,
+                sign_in_sink: None,
+                ungated: false,
             };
             assert_eq!(wrap_with(&mut p, &ctx), Ok(None));
         }

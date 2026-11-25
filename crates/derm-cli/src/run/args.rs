@@ -93,6 +93,10 @@ pub struct Args {
     /// `--account <slug>`: the agent account this chat runs as (the accounts
     /// build, request L1-2); `None` means `agents.default`.
     pub account: Option<String>,
+    /// `--ungated`: an agent account's Pi chat with no root-owned gate
+    /// package runs with no derm gate (Tony's call 6a); `run.start` records
+    /// it. Only with `--boundary none`.
+    pub ungated: bool,
     pub rest: Vec<String>,
     /// The program from `-- <program> ...` (case 80), when no harness id was
     /// given. `None` means the harness's own command.
@@ -102,7 +106,7 @@ pub struct Args {
 pub const USAGE: &str =
     "usage: derm run <harness> --boundary sbx|srt|none [--chat ID] [--cwd DIR] \
 [--gateway-url URL] [--model-url URL] [--allow-host HOST:PORT]... [--kit REF] [--no-daemon] \
-[--no-tap] [--asks allow] [--tier standard|whole] [--taint ask|deny|record] [--account SLUG] [--dry-run] [-- harness args...]
+[--no-tap] [--asks allow] [--tier standard|whole] [--taint ask|deny|record] [--account SLUG] [--ungated] [--dry-run] [-- harness args...]
        derm run --boundary sbx|srt|none [options] -- <program> [args...]";
 
 /// A program named after `--` (case 80): an absolute path, or a bare name
@@ -320,6 +324,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         tier: None,
         taint: None,
         account: None,
+        ungated: false,
         rest: Vec::new(),
         program: None,
     };
@@ -391,6 +396,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                     other => return Err(format!("--taint is ask, deny or record, not {other:?}")),
                 })
             }
+            "--ungated" => out.ungated = true,
             "--account" => {
                 let v = take("--account")?;
                 if !super::user::slug::plain_slug(&v) {
@@ -447,6 +453,9 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     // build); under srt or sbx it would be a second one nobody asked for.
     if out.account.is_some() && out.boundary != Boundary::None {
         return Err("--account runs the chat as an agent account; it needs --boundary none".into());
+    }
+    if out.ungated && out.boundary != Boundary::None {
+        return Err("--ungated is for an agent account's chat; it needs --boundary none".into());
     }
     if out.account.is_some() && !cfg!(target_os = "linux") {
         return Err(
@@ -846,5 +855,20 @@ mod tests {
             argv.extend(s(rest));
             assert!(parse(&argv).is_ok(), "{rest:?} was refused");
         }
+    }
+
+    /// Tony's call 6a: `--ungated` is read, and only with `--boundary none`.
+    #[test]
+    fn call_6a_ungated_needs_boundary_none() {
+        let s = |w: &[&str]| w.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert!(
+            parse(&s(&["pi", "--boundary", "none", "--ungated"]))
+                .unwrap()
+                .ungated
+        );
+        assert!(!parse(&s(&["pi", "--boundary", "none"])).unwrap().ungated);
+        assert!(parse(&s(&["pi", "--boundary", "srt", "--ungated"]))
+            .unwrap_err()
+            .contains("--boundary none"));
     }
 }

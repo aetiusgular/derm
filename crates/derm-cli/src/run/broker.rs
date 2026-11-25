@@ -182,10 +182,10 @@ pub fn wire(
         sink.unwrap_or_else(|| Arc::new(|_| {})),
     )?;
     config.policy = policy_for(&file.secrets);
-    // An agent account's chat (case 283; Tony's 22 Nov call): its
-    // harness's sign-in host passes through unread, and claude.ai's
-    // connector proxy is closed; a secret's own host is never passed
-    // through, so its value is still swapped there.
+    // Every brokered chat (case 283; Tony's call 2a): its harness's sign-in
+    // host passes through unread; an agent account's chat also has
+    // claude.ai's connector proxy closed (Tony's 22 Nov call). A secret's own
+    // host is never passed through, so its value is still swapped there.
     let (pass, deny) = account_egress(c.harness, c.account);
     config.pass_through = pass
         .into_iter()
@@ -197,12 +197,16 @@ pub fn wire(
         .iter()
         .map(|(h, p)| format!("{h}:{p}"))
         .collect();
-    if c.account.is_some() {
+    if c.account.is_some() || !passed.is_empty() {
         p.notes.push(format!(
-            "derm run: derm-egress passes {} through unread for {}'s own sign-in renewal, and closes {}",
+            "derm run: derm-egress passes {} through unread for {}'s own sign-in renewal (it checks the TLS server name, never the bytes){}",
             if passed.is_empty() { "no host".to_string() } else { passed.join(", ") },
             c.harness,
-            deny.join(", ")
+            if deny.is_empty() {
+                String::new()
+            } else {
+                format!(", and closes {}", deny.join(", "))
+            }
         ));
     }
     let egress = Egress::start(config)?;
@@ -236,13 +240,14 @@ pub fn wire(
     })
 }
 
-/// What derm-egress does differently for an agent account's chat: the
-/// harness's own sign-in host relayed unread (case 283), and claude.ai's
-/// connector proxy closed (Tony's 22 Nov call). Nothing for a person's chat.
+/// What derm-egress relays unread and what it closes, for a brokered chat:
+/// the harness's own sign-in host relayed unread for every brokered chat
+/// (case 283 for an account's; Tony's call 2a, 24 Nov 2026, for the
+/// person's own, whose renewal before this went through derm-egress's TLS
+/// termination, `acctP_fix.md` Look out for 9), and claude.ai's connector
+/// proxy closed for an agent account's chat only (Tony's 22 Nov call): a
+/// person's own chat keeps its claude.ai connectors.
 pub fn account_egress(harness: &str, account: Option<&str>) -> (Vec<(String, u16)>, Vec<String>) {
-    if account.is_none() {
-        return (Vec::new(), Vec::new());
-    }
     let pass = super::harness::sign_in_hosts(harness)
         .iter()
         .filter_map(|hp| {
@@ -250,7 +255,12 @@ pub fn account_egress(harness: &str, account: Option<&str>) -> (Vec<(String, u16
             Some((h.to_string(), p.parse().ok()?))
         })
         .collect();
-    (pass, vec![MCP_PROXY.to_string()])
+    let deny = if account.is_some() {
+        vec![MCP_PROXY.to_string()]
+    } else {
+        Vec::new()
+    };
+    (pass, deny)
 }
 
 /// claude.ai's connector proxy (Claude Code 2.1.322's `MCP_PROXY_URL`),

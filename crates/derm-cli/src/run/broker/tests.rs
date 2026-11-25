@@ -414,7 +414,20 @@ fn case_283_an_account_chats_egress_passes_its_sign_in_host_and_closes_mcp_proxy
     let (pass, deny) = account_egress("pi", Some("derm-max"));
     assert!(pass.is_empty());
     assert_eq!(deny.len(), 1);
-    for h in ["claude-code", "codex"] {
-        assert_eq!(account_egress(h, None), (Vec::new(), Vec::new()), "{h}");
-    }
+}
+
+/// Tony's call 2a (red first): the person's own brokered chats pass their
+/// harness's sign-in host through unread too, so a renewal there no longer
+/// goes through derm-egress's TLS termination (`acctP_fix.md`, Look out for
+/// 9); `mcp-proxy.anthropic.com` stays closed for agent accounts only, so a
+/// person's chat keeps its claude.ai connectors.
+#[test]
+fn call_2a_a_persons_brokered_chat_passes_its_sign_in_host_and_keeps_its_connectors() {
+    let (pass, deny) = account_egress("claude-code", None);
+    assert_eq!(pass, vec![("platform.claude.com".to_string(), 443)]);
+    assert!(deny.is_empty(), "{deny:?}");
+    let (pass, deny) = account_egress("codex", None);
+    assert_eq!(pass, vec![("auth.openai.com".to_string(), 443)]);
+    assert!(deny.is_empty(), "{deny:?}");
+    assert_eq!(account_egress("pi", None), (Vec::new(), Vec::new()));
 }

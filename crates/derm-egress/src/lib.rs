@@ -27,6 +27,7 @@
 pub mod auth;
 pub mod bind;
 pub mod ca;
+pub mod hello;
 pub mod http;
 pub mod place;
 pub mod proxy;

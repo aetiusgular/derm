@@ -175,6 +175,15 @@ pub(crate) fn wrap(
     if harness == "pi" {
         pi_floor(Path::new(&program_real)).map_err(|e| (1, e))?;
     }
+    // Tony's call 4a: the store variable is verified at one release; another
+    // is named, and the chat still starts.
+    let claude_version = (harness == "claude-code")
+        .then(|| crate::agents::signin::claude_version_of(Path::new(&program_real)));
+    if let Some(found) = &claude_version {
+        if let Some(note) = crate::agents::signin::claude_store_note(found.as_deref()) {
+            eprintln!("derm run: {note}");
+        }
+    }
 
     // As the account, before any domain: what it must not reach, what it
     // must write (lane V's probe, unchanged).
@@ -239,7 +248,17 @@ pub(crate) fn wrap(
     // Case 283: the chat's own way to its harness's sign-in host, for a
     // renewal; a brokered chat's derm-egress passes the same hosts through.
     let person_env = |k: &str| std::env::var(k).ok();
-    let route = sign_in_route(&harness, &launch.env_set, &person_env).map_err(|e| (1, e))?;
+    // Tony's call 3b: each connection recorded, as source `run`.
+    let recorder = ctx
+        .sign_in_sink
+        .clone()
+        .map(|sink| crate::agents::tunnel::Recorder {
+            sink,
+            chat: ctx.chat.to_string(),
+            harness: harness.clone(),
+        });
+    let route =
+        sign_in_route(&harness, &launch.env_set, &person_env, recorder).map_err(|e| (1, e))?;
     let route_hosts = route.as_ref().map(|r| r.hosts.clone());
     if let Some(r) = &route {
         set.extend(r.env.iter().cloned());
@@ -255,6 +274,9 @@ pub(crate) fn wrap(
     }
     if let Ok(mut slot) = SIGN_IN_ROUTE.lock() {
         *slot = route.map(|r| r.tunnel);
+    }
+    if let Some(line) = store_line(&harness, &acct.home) {
+        eprintln!("{line}");
     }
     let pc = project::ProjectChat {
         account_home: &acct.home,
@@ -293,12 +315,36 @@ pub(crate) fn wrap(
     } else {
         None
     };
+    let ungated_by_flag = if harness == "pi" {
+        !pi_gate_decision(pi_pkg.as_deref(), ctx.ungated).map_err(|e| (1, e))?
+    } else {
+        false
+    };
     let gate = project::harness_gate(&harness, &helper, pi_pkg.as_deref());
     place_gate_args(&mut launch.args, ctx.harness_args_at, &harness, &gate.args);
     let mut assign = project::project_env(&pc);
     assign.extend(gate.env.iter().cloned());
     if !gate.line.is_empty() {
         eprintln!("{}", gate.line);
+    }
+    // Review R1 and R2 (case RV-1): Claude Code reads the project home's
+    // settings, whose `env` would outrank argv; every variable derm sets
+    // that is not a secret goes into derm's flag block too.
+    if harness == "claude-code" {
+        let mut env_now: Vec<(String, String)> = launch.env_set.clone();
+        env_now.extend(set.iter().cloned());
+        let store = vec![(
+            crate::agents::signin::CLAUDE_STORE_VAR.to_string(),
+            crate::agents::signin::store_dir(&acct.home, "claude-code"),
+        )];
+        crate::run::claude_gate::pin_account_env(
+            &mut launch.args,
+            &env_now,
+            &assign,
+            &store,
+            ctx.token,
+        )
+        .map_err(|e| (1, e))?;
     }
     rewrite(
         launch,
@@ -372,13 +418,69 @@ pub(crate) fn wrap(
             "gatewayEntry": entry_rel,
         },
         "harnessExe": program_real,
+        // Tony's call 4a: the Claude Code release found, against the one the
+        // store variable was verified at.
+        "storeVariable": claude_version.as_ref().map(|found| json!({
+            "verifiedAt": crate::agents::signin::CLAUDE_STORE_VERIFIED_AT,
+            "found": found,
+        })),
         "gate": {"expected": gate.expected, "how": gate.how},
+        // Tony's call 1a, not built: the store is not hidden from the
+        // chat's commands (note CE section 2; lane PG).
+        "signInStore": store_line(&harness, &acct.home).map(|_| json!({
+            "hiddenFromTools": false,
+            "detectedBy": "signin.read",
+        })),
+        // Tony's call 6a: started with `--ungated`, with no derm gate.
+        "ungatedByFlag": ungated_by_flag,
         // Case 283: the chat's own sign-in tunnel's hosts, or null (a
         // brokered chat's derm-egress, or a harness with none).
         "signInTunnel": route_hosts,
         // Request PC R2: the daemon reads the chat's own bridge from here.
         "bridge": bridge_dir,
     })))
+}
+
+/// Tony's call 1a, not built (note CE section 2): what the start says of the
+/// sign-in store's reach. Neither Claude Code's sandbox nor Codex's runs
+/// inside the chat's Landlock domain (a domain may not mount, and both start
+/// bubblewrap; Codex's Landlock-only mode refuses read restrictions), so the
+/// store stays readable to every command the chat runs until lane PG's mount
+/// layer; Pi has no sandbox of its own. `signin.read` flags a read by
+/// anything but the harness (lane PC). `None` for a harness with no store.
+pub(crate) fn store_line(harness: &str, account_home: &str) -> Option<String> {
+    if !derm_core::project::layout::SIGNIN_HARNESSES.contains(&harness) {
+        return None;
+    }
+    let dir = crate::agents::signin::store_dir(account_home, harness);
+    let why = if harness == "pi" {
+        "Pi has no sandbox of its own"
+    } else {
+        "its own sandbox cannot run inside this chat's Landlock domain, so derm's mount layer (lane PG) is what will hide it"
+    };
+    Some(format!(
+        "derm run: {harness}'s sign-in store {dir} is readable by every command this chat runs ({why}); a read by anything but {harness} is flagged (signin.read)"
+    ))
+}
+
+/// The flag a Pi account chat with no root-owned gate package needs to run
+/// ungated (Tony's call 6a).
+pub(crate) const UNGATED_FLAG: &str = "--ungated";
+
+/// Tony's call 6a (review PI-S5): a Pi chat on an agent account with no
+/// root-owned copy of derm's Pi package runs with no derm gate, so it is
+/// refused by default, naming the install line; `--ungated` runs it as
+/// before, and `run.start` says so. `Ok(true)`: gated; `Ok(false)`: ungated
+/// by the flag.
+pub(crate) fn pi_gate_decision(package: Option<&str>, ungated: bool) -> Result<bool, String> {
+    match (package, ungated) {
+        (Some(_), _) => Ok(true),
+        (None, true) => Ok(false),
+        (None, false) => Err(format!(
+            "a Pi chat on an agent account runs only with derm's gate, from a root-owned copy of derm's Pi package at {pkg}, and there is none; install it (sudo install -d -o root -g root -m 0755 {pkg} && sudo cp -r <derm>/packages/derm-pi/. {pkg}/), or start the chat with {UNGATED_FLAG} to run it with no derm gate, which run.start records",
+            pkg = super::project::PI_PACKAGE
+        )),
+    }
 }
 
 /// The Pi an agent account runs, by the `package.json` of the install its
@@ -441,6 +543,7 @@ pub(crate) fn sign_in_route(
     harness: &str,
     env_set: &[(String, String)],
     person_env: &dyn Fn(&str) -> Option<String>,
+    record: Option<crate::agents::tunnel::Recorder>,
 ) -> Result<Option<SignInRoute>, String> {
     let hosts = super::super::harness::sign_in_hosts(harness);
     let proxied = env_set
@@ -455,7 +558,7 @@ pub(crate) fn sign_in_route(
         .collect();
     // The person's own http:// proxy, as the login's tunnel follows it.
     let upstream = crate::agents::tunnel::upstream_from(person_env).unwrap_or(None);
-    let tunnel = crate::agents::tunnel::Tunnel::start(&names, upstream)
+    let tunnel = crate::agents::tunnel::Tunnel::start_with(&names, upstream, record)
         .map_err(|e| format!("the chat's sign-in tunnel did not open: {e}"))?;
     let url = tunnel.url();
     let loopback = "localhost,127.0.0.1,::1".to_string();
@@ -475,6 +578,49 @@ pub(crate) fn sign_in_route(
 /// serve until the process ends).
 static SIGN_IN_ROUTE: std::sync::Mutex<Option<crate::agents::tunnel::Tunnel>> =
     std::sync::Mutex::new(None);
+
+/// At the chat's end, what its sign-in tunnel refused or could not reach,
+/// once each, and how many connections it turned away for want of room
+/// (review R7: the records hold each connection; this is the line a person
+/// at the terminal sees).
+pub(crate) fn finish_sign_in_route() {
+    let Ok(mut slot) = SIGN_IN_ROUTE.lock() else {
+        return;
+    };
+    let Some(t) = slot.take() else {
+        return;
+    };
+    for line in sign_in_route_lines(&t.refused(), &t.failed(), t.over_cap()) {
+        eprintln!("{line}");
+    }
+}
+
+pub(crate) fn sign_in_route_lines(
+    refused: &[String],
+    failed: &[String],
+    over_cap: u64,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if !refused.is_empty() {
+        out.push(format!(
+            "derm run: the chat's sign-in tunnel refused: {}",
+            refused.join("; ")
+        ));
+    }
+    if !failed.is_empty() {
+        out.push(format!(
+            "derm run: the chat's sign-in tunnel could not reach: {}",
+            failed.join("; ")
+        ));
+    }
+    if over_cap > 0 {
+        out.push(format!(
+            "derm run: the chat's sign-in tunnel turned away {over_cap} connection(s) over its cap of {}",
+            crate::agents::tunnel::MAX_CONNECTIONS
+        ));
+    }
+    out
+}
 
 /// Puts derm's gate words before the harness's own (request PA-2): for
 /// Codex past a session subcommand, beside the tap's and the export's `-c`
@@ -736,7 +882,7 @@ mod tests {
     fn case_283_an_unbrokered_account_chat_gets_its_own_sign_in_tunnel() {
         use std::io::{Read, Write};
         let none = |_: &str| None;
-        let r = sign_in_route("claude-code", &[], &none)
+        let r = sign_in_route("claude-code", &[], &none, None)
             .unwrap()
             .expect("a route for Claude Code");
         assert_eq!(r.hosts, ["platform.claude.com:443"]);
@@ -783,7 +929,7 @@ mod tests {
             got.starts_with("HTTP/1.1 200") || got.starts_with("HTTP/1.1 502"),
             "admitted (502 where this machine cannot reach it): {got}"
         );
-        let c = sign_in_route("codex", &[], &none).unwrap().unwrap();
+        let c = sign_in_route("codex", &[], &none, None).unwrap().unwrap();
         assert_eq!(c.hosts, ["auth.openai.com:443"]);
         // A brokered chat (derm-egress is its proxy) and a harness with no
         // sign-in host get none.
@@ -791,11 +937,204 @@ mod tests {
             "HTTPS_PROXY".to_string(),
             "http://derm:x@127.0.0.1:1".to_string(),
         )];
-        assert!(sign_in_route("claude-code", &brokered, &none)
+        assert!(sign_in_route("claude-code", &brokered, &none, None)
             .unwrap()
             .is_none());
-        assert!(sign_in_route("pi", &[], &none).unwrap().is_none());
-        assert!(sign_in_route("other", &[], &none).unwrap().is_none());
+        assert!(sign_in_route("pi", &[], &none, None).unwrap().is_none());
+        assert!(sign_in_route("other", &[], &none, None).unwrap().is_none());
+    }
+
+    /// A sink that keeps what the chat's tunnel posts.
+    fn kept() -> (
+        crate::agents::tunnel::Recorder,
+        std::sync::Arc<std::sync::Mutex<Vec<derm_core::event::Event>>>,
+    ) {
+        let got: std::sync::Arc<std::sync::Mutex<Vec<derm_core::event::Event>>> =
+            std::sync::Arc::default();
+        let g = got.clone();
+        (
+            crate::agents::tunnel::Recorder {
+                sink: std::sync::Arc::new(move |e| g.lock().unwrap().extend(e)),
+                chat: "c-3b".into(),
+                harness: "claude-code".into(),
+            },
+            got,
+        )
+    }
+
+    fn wait_for(
+        got: &std::sync::Mutex<Vec<derm_core::event::Event>>,
+        n: usize,
+    ) -> Vec<derm_core::event::Event> {
+        let t = std::time::Instant::now();
+        loop {
+            let e = got.lock().unwrap().clone();
+            if e.len() >= n || t.elapsed() > std::time::Duration::from_secs(10) {
+                return e;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Tony's call 3b and review R7 (red first): the chat's sign-in tunnel
+    /// posts one `signin.connect` per connection, as source `run`, naming the
+    /// target, admitted or refused, the server name and the bytes, never the
+    /// credential. Review R3 through the tunnel: plain bytes and a hello for
+    /// another server are refused there too.
+    #[test]
+    fn call_3b_the_chats_sign_in_tunnel_records_each_connection() {
+        use std::io::{Read, Write};
+        let none = |_: &str| None;
+        let (rec, got) = kept();
+        let r = sign_in_route("claude-code", &[], &none, Some(rec))
+            .unwrap()
+            .expect("a route for Claude Code");
+        let auth = format!("Proxy-Authorization: {}\r\n", r.tunnel.authorization());
+        let ask = |head: String, then: &[u8]| {
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", r.tunnel.port)).unwrap();
+            c.set_read_timeout(Some(std::time::Duration::from_secs(20)))
+                .unwrap();
+            c.write_all(head.as_bytes()).unwrap();
+            c.write_all(then).unwrap();
+            let mut b = Vec::new();
+            let _ = c.read_to_end(&mut b);
+            String::from_utf8_lossy(&b).into_owned()
+        };
+        let out = ask(
+            format!("CONNECT mcp-proxy.anthropic.com:443 HTTP/1.1\r\n{auth}\r\n"),
+            b"",
+        );
+        assert!(out.starts_with("HTTP/1.1 403"), "{out}");
+        // Admitted by name; this machine may not reach it (502, failed).
+        let _ = ask(
+            format!("CONNECT platform.claude.com:443 HTTP/1.1\r\n{auth}\r\n"),
+            b"GET / HTTP/1.1\r\n\r\n",
+        );
+        let _ = ask(
+            format!("CONNECT platform.claude.com:443 HTTP/1.1\r\n{auth}\r\n"),
+            &derm_egress::hello::client_hello_for(Some("other-tenant.example")),
+        );
+        let e = wait_for(&got, 3);
+        assert_eq!(e.len(), 3, "{e:?}");
+        let text = serde_json::to_string(&e).unwrap();
+        let cred = r.tunnel.authorization();
+        let secret = cred.trim_start_matches("Basic ");
+        assert!(!text.contains(secret), "a record holds the credential");
+        for x in &e {
+            assert_eq!(x.kind, "signin.connect");
+            assert_eq!(x.source, derm_core::event::Source::Run);
+            assert_eq!(x.chat_id, "c-3b");
+            for k in [
+                "connectHost",
+                "port",
+                "verdict",
+                "bytesUp",
+                "bytesDown",
+                "startedAt",
+                "endedAt",
+            ] {
+                assert!(x.detail.get(k).is_some(), "{k}: {}", x.detail);
+            }
+        }
+        let mcp = e
+            .iter()
+            .find(|x| x.detail["connectHost"] == "mcp-proxy.anthropic.com")
+            .unwrap();
+        assert_eq!(mcp.detail["verdict"], "refused", "{}", mcp.detail);
+        let claude: Vec<_> = e
+            .iter()
+            .filter(|x| x.detail["connectHost"] == "platform.claude.com")
+            .collect();
+        assert_eq!(claude.len(), 2);
+        for x in claude {
+            // Unreachable here: failed. Reachable: refused for its first
+            // flight (plain bytes, or another server's name).
+            let v = x.detail["verdict"].as_str().unwrap();
+            assert!(v == "refused" || v == "failed", "{}", x.detail);
+            if v == "refused" {
+                let why = x.detail["reason"].as_str().unwrap();
+                assert!(
+                    why == "the tunnel does not carry TLS"
+                        || why == "the TLS server name is not the tunnel's host",
+                    "{why}"
+                );
+            }
+            assert_eq!(x.detail["bytesUp"], 0, "{}", x.detail);
+        }
+    }
+
+    /// Review R6 (red first): the tunnel holds at most its cap, and a
+    /// connection over it is refused and recorded, never a new thread.
+    #[test]
+    fn r6_the_chats_sign_in_tunnel_holds_at_most_its_cap() {
+        use std::io::Read;
+        let none = |_: &str| None;
+        let (rec, got) = kept();
+        let r = sign_in_route("claude-code", &[], &none, Some(rec))
+            .unwrap()
+            .unwrap();
+        // Hold the cap's worth of connections open with half a head.
+        let cap = crate::agents::tunnel::MAX_CONNECTIONS;
+        let mut held = Vec::new();
+        for _ in 0..cap {
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", r.tunnel.port)).unwrap();
+            std::io::Write::write_all(&mut c, b"CONNECT ").unwrap();
+            held.push(c);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", r.tunnel.port)).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut b = String::new();
+        let _ = c.read_to_string(&mut b);
+        assert!(b.starts_with("HTTP/1.1 503"), "{b:?}");
+        assert_eq!(r.tunnel.over_cap(), 1);
+        let e = wait_for(&got, 1);
+        assert!(
+            e.iter()
+                .any(|x| x.detail["reason"] == crate::agents::tunnel::OVER_CAP),
+            "{e:?}"
+        );
+        drop(held);
+    }
+
+    /// Tony's call 1a, not built: the start says the store is readable by
+    /// the chat's commands, and why, per harness.
+    #[test]
+    fn call_1a_the_start_says_the_store_is_not_hidden_from_the_chats_commands() {
+        let c = store_line("claude-code", "/var/lib/derm/agents/box").unwrap();
+        assert!(
+            c.contains("/var/lib/derm/agents/box/signin/claude-code") && c.contains("lane PG"),
+            "{c}"
+        );
+        let p = store_line("pi", "/var/lib/derm/agents/box").unwrap();
+        assert!(
+            p.contains("no sandbox of its own") && p.contains("signin.read"),
+            "{p}"
+        );
+        assert!(store_line("codex", "/a").unwrap().contains("lane PG"));
+        assert_eq!(store_line("other", "/a"), None);
+    }
+
+    /// Tony's call 6a (red first).
+    #[test]
+    fn call_6a_a_pi_account_chat_without_derms_package_is_refused_unless_ungated() {
+        assert_eq!(
+            pi_gate_decision(Some("/usr/local/lib/derm/derm-pi"), false),
+            Ok(true)
+        );
+        assert_eq!(
+            pi_gate_decision(Some("/usr/local/lib/derm/derm-pi"), true),
+            Ok(true)
+        );
+        let e = pi_gate_decision(None, false).unwrap_err();
+        assert!(
+            e.contains(super::super::project::PI_PACKAGE)
+                && e.contains("sudo")
+                && e.contains(UNGATED_FLAG),
+            "{e}"
+        );
+        assert_eq!(pi_gate_decision(None, true), Ok(false));
     }
 
     #[test]

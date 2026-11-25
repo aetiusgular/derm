@@ -32,15 +32,48 @@
 //! 2.1.322 and Codex 0.167.2 send it unasked on CONNECT (the sources in
 //! `derm-egress/src/auth.rs`); the header never goes on, since the tunnel
 //! writes its own CONNECT upstream and passes only what follows the head.
+//!
+//! P fix 2 (`plans/parallel/acctP_review.md`): since P integration's fix pass
+//! the tunnel also serves an agent account's chat for the chat's whole life
+//! (case 283), where every tool command holds the credential. So it reads
+//! the client's ClientHello without terminating it and admits only a server
+//! name that is the CONNECT host (review R3; case RV-2;
+//! `derm_egress::hello`), holds at most [`MAX_CONNECTIONS`] connections,
+//! closes one quiet for [`IDLE`] (review R6; case RV-3), and in a chat posts
+//! one `signin.connect` record per connection, as source `run`, which no
+//! chat token may post (Tony's call 3b; review R7): the target, admitted or
+//! refused or failed, the server name, the bytes each way, start and end.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use derm_core::event::{Event, Source};
 use derm_egress::auth::{self, ProxyCredential};
+use serde_json::json;
 
 const HEAD_MAX: usize = 8 * 1024;
+
+/// Connections one tunnel holds at once (review R6). A sign-in makes one or
+/// two; Claude Code 2.1.322's renewal one (P-B1's proxy log, box research).
+/// derm-egress holds 256 for a whole chat's traffic (`MAX_CONNECTIONS`); this
+/// route carries only sign-ins.
+pub const MAX_CONNECTIONS: usize = 16;
+/// An admitted connection with nothing either way this long is closed
+/// (derm-egress's `UPSTREAM_IDLE`).
+pub const IDLE: Duration = Duration::from_secs(600);
+/// What a connection over the cap is told and recorded with.
+pub const OVER_CAP: &str = "the tunnel holds as many connections as it takes";
+
+/// Where a chat's tunnel posts its records (Tony's call 3b).
+#[derive(Clone)]
+pub struct Recorder {
+    pub sink: derm_egress::Sink,
+    pub chat: String,
+    pub harness: String,
+}
 
 pub struct Tunnel {
     pub port: u16,
@@ -50,6 +83,8 @@ pub struct Tunnel {
     refused: Arc<Mutex<Vec<String>>>,
     /// Admitted hosts the tunnel could not reach, with why, once each.
     failed: Arc<Mutex<Vec<String>>>,
+    /// Connections closed at accept for want of room (review R6).
+    over_cap: Arc<AtomicU64>,
 }
 
 /// The person's own HTTP proxy, and the hosts that skip it.
@@ -120,35 +155,84 @@ pub fn upstream_from(env: &dyn Fn(&str) -> Option<String>) -> Result<Option<Upst
 }
 
 impl Tunnel {
-    /// Listens on `127.0.0.1:0` and serves until the process ends.
+    /// Listens on `127.0.0.1:0` and serves until the process ends: the
+    /// login's, which records nothing (it reports at its end).
     pub fn start(allow: &[&str], upstream: Option<Upstream>) -> std::io::Result<Tunnel> {
+        Tunnel::start_with(allow, upstream, None)
+    }
+
+    /// [`Tunnel::start`], posting a `signin.connect` per connection to
+    /// `record` (a chat's tunnel).
+    pub fn start_with(
+        allow: &[&str],
+        upstream: Option<Upstream>,
+        record: Option<Recorder>,
+    ) -> std::io::Result<Tunnel> {
         let credential = ProxyCredential::mint().map_err(std::io::Error::other)?;
         let l = TcpListener::bind(("127.0.0.1", 0))?;
         let port = l.local_addr()?.port();
         let allow: Arc<Vec<String>> = Arc::new(allow.iter().map(|h| format!("{h}:443")).collect());
         let refused = Arc::new(Mutex::new(Vec::new()));
         let failed = Arc::new(Mutex::new(Vec::new()));
-        let (r, f) = (refused.clone(), failed.clone());
+        let over_cap = Arc::new(AtomicU64::new(0));
+        let (r, f, oc) = (refused.clone(), failed.clone(), over_cap.clone());
         let up = Arc::new(upstream);
         let cred = credential.clone();
+        let open = Arc::new(AtomicUsize::new(0));
+        let rec = Arc::new(record);
         std::thread::spawn(move || {
-            for c in l.incoming().flatten() {
+            for mut c in l.incoming().flatten() {
+                if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    oc.fetch_add(1, Ordering::SeqCst);
+                    let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    let _ = c.shutdown(Shutdown::Both);
+                    if let Some(rc) = rec.as_ref() {
+                        let started = now_ms();
+                        post(
+                            rc,
+                            &Outcome {
+                                verdict: "refused",
+                                reason: Some(OVER_CAP.into()),
+                                ..Outcome::default()
+                            },
+                            started,
+                        );
+                    }
+                    continue;
+                }
                 let (allow, r, f, up) = (allow.clone(), r.clone(), f.clone(), up.clone());
-                let cred = cred.clone();
-                std::thread::spawn(move || {
-                    let dial = |t: &str| {
-                        let host = t.rsplit_once(':').map_or(t, |(h, _)| h);
-                        let got = match up.as_ref() {
-                            Some(u) if !u.skips(host) => dial_via(&u.addr, t),
-                            _ => dial_public(t),
+                let open_after_fail = open.clone();
+                let (cred, open, rec) = (cred.clone(), open.clone(), rec.clone());
+                let spawned = std::thread::Builder::new()
+                    .name("derm-signin-tunnel".into())
+                    .spawn(move || {
+                        let started = now_ms();
+                        let dial = |t: &str| {
+                            let host = t.rsplit_once(':').map_or(t, |(h, _)| h);
+                            let got = match up.as_ref() {
+                                Some(u) if !u.skips(host) => dial_via(&u.addr, t),
+                                _ => dial_public(t),
+                            };
+                            if let Err(why) = &got {
+                                note(&f, why.clone());
+                            }
+                            got
                         };
-                        if let Err(why) = &got {
-                            note(&f, why.clone());
+                        let out = serve(c, &allow, &r, Some(&cred), &dial);
+                        // A client without the chat's credential makes no
+                        // record, as in derm-egress (I-4): what it names is
+                        // not the chat's. It is counted in `refused()`.
+                        if let (Some(rc), false) = (rec.as_ref(), out.no_credential) {
+                            post(rc, &out, started);
                         }
-                        got
-                    };
-                    serve(c, &allow, &r, Some(&cred), &dial)
-                });
+                        open.fetch_sub(1, Ordering::SeqCst);
+                    });
+                if spawned.is_err() {
+                    // Counted for a thread that never ran (a failed spawn no
+                    // longer panics the accept thread, review R6).
+                    open_after_fail.fetch_sub(1, Ordering::SeqCst);
+                }
             }
         });
         Ok(Tunnel {
@@ -156,7 +240,13 @@ impl Tunnel {
             credential,
             refused,
             failed,
+            over_cap,
         })
+    }
+
+    /// Connections closed at accept because the tunnel was full.
+    pub fn over_cap(&self) -> u64 {
+        self.over_cap.load(Ordering::SeqCst)
     }
 
     pub fn failed(&self) -> Vec<String> {
@@ -314,15 +404,89 @@ fn dial_public(target: &str) -> Result<TcpStream, String> {
 /// What the refusal list says of a client without the sign-in's credential.
 pub const NO_CREDENTIAL: &str = "a client without this sign-in's proxy credential";
 
+/// What one connection did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Outcome {
+    /// `host:port` the CONNECT named, when it named one.
+    pub target: Option<String>,
+    /// `admitted`, `refused` or `failed` (the host could not be reached).
+    pub verdict: &'static str,
+    pub reason: Option<String>,
+    /// The ClientHello's server name, lowercased, when one was read.
+    pub server_name: Option<String>,
+    pub up: u64,
+    pub down: u64,
+    /// The client had no credential (it makes no record).
+    pub no_credential: bool,
+}
+
+/// A chat tunnel's record of one connection (Tony's call 3b): what was
+/// asked, the answer, the server name, the bytes, start and end; never the
+/// credential or a byte of what was carried.
+fn post(rc: &Recorder, o: &Outcome, started: i64) {
+    let (host, port) = o
+        .target
+        .as_deref()
+        .and_then(|t| t.rsplit_once(':'))
+        .map(|(h, p)| (Some(h.to_string()), p.parse::<u16>().ok()))
+        .unwrap_or((None, None));
+    let mut d = serde_json::Map::new();
+    d.insert("connectHost".into(), json!(host));
+    d.insert("port".into(), json!(port));
+    d.insert("verdict".into(), json!(o.verdict));
+    if let Some(r) = &o.reason {
+        d.insert("reason".into(), json!(r));
+    }
+    d.insert("sni".into(), json!(o.server_name));
+    d.insert("bytesUp".into(), json!(o.up));
+    d.insert("bytesDown".into(), json!(o.down));
+    d.insert("startedAt".into(), json!(started));
+    d.insert("endedAt".into(), json!(now_ms()));
+    d.insert("route".into(), json!("tunnel"));
+    let summary = format!(
+        "{} {}",
+        o.verdict,
+        o.target.as_deref().unwrap_or("(no CONNECT target)")
+    );
+    (rc.sink)(vec![Event {
+        project: String::new(),
+        id: format!("signin-{}", uuid::Uuid::new_v4().simple()),
+        at: now_ms(),
+        chat_id: rc.chat.clone(),
+        harness: rc.harness.clone(),
+        source: Source::Run,
+        kind: SIGNIN_CONNECT.into(),
+        summary,
+        detail: serde_json::Value::Object(d),
+        pid: None,
+        approval_id: None,
+    }]);
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The record a chat's tunnel posts per connection (`contracts/events.md`
+/// 7.4).
+pub const SIGNIN_CONNECT: &str = "signin.connect";
+
 /// One client: read the head, check the credential (when there is one),
-/// admit or refuse, then copy both ways.
+/// admit or refuse, then the ClientHello, then copy both ways.
 pub fn serve(
     mut c: TcpStream,
     allow: &[String],
     refused: &Mutex<Vec<String>>,
     credential: Option<&ProxyCredential>,
     dial: &dyn Fn(&str) -> Result<TcpStream, String>,
-) {
+) -> Outcome {
+    let mut out = Outcome {
+        verdict: "refused",
+        ..Outcome::default()
+    };
     let _ = c.set_read_timeout(Some(Duration::from_secs(10)));
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
@@ -331,10 +495,14 @@ pub fn serve(
             break i + 4;
         }
         if buf.len() >= HEAD_MAX {
-            return;
+            out.reason = Some("a head with no end".into());
+            return out;
         }
         match c.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => {
+                out.reason = Some("the client closed before its head ended".into());
+                return out;
+            }
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
     };
@@ -343,40 +511,107 @@ pub fn serve(
         if !cred.admits_head(&head) {
             note(refused, NO_CREDENTIAL.into());
             let _ = c.write_all(auth::REFUSAL);
-            return;
+            out.no_credential = true;
+            out.reason = Some(NO_CREDENTIAL.into());
+            return out;
         }
     }
-    let Some(t) = target(&head).filter(|t| allow.iter().any(|a| a == t)) else {
-        let asked = target(&head).unwrap_or_else(|| "a request that is not CONNECT".into());
+    out.target = target(&head);
+    let Some(t) = out.target.clone().filter(|t| allow.iter().any(|a| a == t)) else {
+        let asked = out
+            .target
+            .clone()
+            .unwrap_or_else(|| "a request that is not CONNECT".into());
         note(refused, asked);
+        out.reason = Some("not this sign-in's host".into());
         let _ = c
             .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        return;
+        return out;
     };
+    let host = t
+        .rsplit_once(':')
+        .map_or(t.as_str(), |(h, _)| h)
+        .to_string();
     let mut up = match dial(&t) {
         Ok(u) => u,
-        Err(_) => {
+        Err(why) => {
             let _ = c.write_all(
                 b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             );
-            return;
+            out.verdict = "failed";
+            out.reason = Some(why);
+            return out;
         }
     };
     if c.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
         .is_err()
-        || up.write_all(&buf[end..]).is_err()
     {
-        return;
+        out.verdict = "failed";
+        out.reason = Some("the client closed".into());
+        return out;
     }
-    let _ = c.set_read_timeout(None);
-    let (Ok(mut c2), Ok(mut up2)) = (c.try_clone(), up.try_clone()) else {
-        return;
+    // The ClientHello, from what came with the head and then the socket,
+    // read without terminating it (review R3, case RV-2).
+    let mut first = std::io::Cursor::new(buf[end..].to_vec()).chain(&mut c);
+    let hello = derm_egress::hello::read_client_hello(&mut first);
+    match &hello.server_name {
+        Ok(name) if *name == host => out.server_name = Some(name.clone()),
+        Ok(name) => {
+            out.server_name = Some(name.clone());
+            note(refused, format!("{t} with the TLS server name {name}"));
+            out.reason = Some(derm_egress::proxy::SNI_NOT_HOST.into());
+            let _ = up.shutdown(Shutdown::Both);
+            return out;
+        }
+        Err(why) => {
+            note(refused, format!("{t}: {}", why.reason()));
+            out.reason = Some(why.reason().into());
+            let _ = up.shutdown(Shutdown::Both);
+            return out;
+        }
+    }
+    out.verdict = "admitted";
+    if up.write_all(&hello.bytes).is_err() {
+        return out;
+    }
+    let _ = c.set_read_timeout(Some(IDLE));
+    let _ = up.set_read_timeout(Some(IDLE));
+    let (Ok(mut c2), Ok(mut up2), Ok(up_close)) = (c.try_clone(), up.try_clone(), up.try_clone())
+    else {
+        return out;
     };
+    let sent = Arc::new(AtomicU64::new(hello.bytes.len() as u64));
+    let counted = sent.clone();
     let t1 = std::thread::spawn(move || {
-        let _ = std::io::copy(&mut c2, &mut up2);
+        let mut b = [0u8; 16 * 1024];
+        loop {
+            match c2.read(&mut b) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if up2.write_all(&b[..n]).is_err() {
+                        break;
+                    }
+                    counted.fetch_add(n as u64, Ordering::SeqCst);
+                }
+            }
+        }
         let _ = up2.shutdown(Shutdown::Write);
     });
-    let _ = std::io::copy(&mut up, &mut c);
+    let mut b = [0u8; 16 * 1024];
+    loop {
+        match up.read(&mut b) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if c.write_all(&b[..n]).is_err() {
+                    break;
+                }
+                out.down += n as u64;
+            }
+        }
+    }
     let _ = c.shutdown(Shutdown::Write);
+    let _ = up_close.shutdown(Shutdown::Read);
     let _ = t1.join();
+    out.up = sent.load(Ordering::SeqCst);
+    out
 }

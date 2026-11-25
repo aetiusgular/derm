@@ -749,3 +749,207 @@ fn a_closed_host_gets_nothing_through_egress() {
     );
     assert!(r.up.seen.lock().unwrap().is_empty());
 }
+
+/// CONNECT to a pass-through host, then the TLS handshake by a client that
+/// trusts only the vendor's CA, naming `sni`.
+fn pass_client(
+    r: &Rig,
+    host: &str,
+    sni: &str,
+) -> Result<rustls::StreamOwned<rustls::ClientConnection, TcpStream>, String> {
+    let tcp = connect_200(r, host);
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(r.up.ca.cert_der().clone()).unwrap();
+    let mut cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let conn = rustls::ClientConnection::new(
+        Arc::new(cfg),
+        ServerName::try_from(sni.to_string()).unwrap(),
+    )
+    .unwrap();
+    let mut s = rustls::StreamOwned::new(conn, tcp.try_clone().unwrap());
+    s.flush().map_err(|e| e.to_string())?;
+    while s.conn.is_handshaking() {
+        s.conn.complete_io(&mut s.sock).map_err(|e| e.to_string())?;
+    }
+    Ok(s)
+}
+
+/// CONNECT `host:443` with the chat's credential; the stream after the 200.
+fn connect_200(r: &Rig, host: &str) -> TcpStream {
+    let mut tcp = TcpStream::connect(r.egress.addr()).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    write!(
+        tcp,
+        "CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n{}\r\n",
+        r.auth
+    )
+    .unwrap();
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        assert_eq!(tcp.read(&mut b).unwrap(), 1, "the proxy closed");
+        head.push(b[0]);
+    }
+    let line = String::from_utf8_lossy(&head);
+    assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+    tcp
+}
+
+fn sign_in_rig(reply: &'static [u8], policy: Policy) -> Rig {
+    rig_with(
+        reply,
+        true,
+        policy,
+        vec![("platform.claude.com".into(), 443)],
+    )
+}
+
+/// Review R3, probe R-1 inverted (rules case RV-2): a pass-through admits by
+/// its CONNECT name, so the TLS inside must ask for that name. A ClientHello
+/// for another server reaches nothing, and the record names what it asked.
+#[test]
+fn rv2_a_pass_through_refuses_a_hello_for_another_server_name() {
+    let r = sign_in_rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        Policy::default(),
+    );
+    if let Ok(mut s) = pass_client(&r, "platform.claude.com", "other-tenant.example") {
+        let out = ask(
+            &mut s,
+            "GET / HTTP/1.1\r\nHost: other-tenant.example\r\nconnection: close\r\n\r\n",
+        );
+        assert!(!out.starts_with("HTTP/1.1 200"), "{out}");
+    }
+    let e = records(&r, 1);
+    let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+    assert_eq!(c.detail["verdict"], "blocked", "{:?}", c.detail);
+    assert_eq!(
+        c.detail["reason"], "the TLS server name is not the tunnel's host",
+        "{:?}",
+        c.detail
+    );
+    assert_eq!(c.detail["sni"], "other-tenant.example", "{:?}", c.detail);
+    assert_eq!(c.detail["passThrough"], true, "{:?}", c.detail);
+    assert_eq!(c.detail["bytesUp"], 0, "nothing went up: {:?}", c.detail);
+    assert!(r.up.seen.lock().unwrap().is_empty());
+}
+
+/// Review R3, probe R-2 inverted: bytes that are not TLS never go up.
+#[test]
+fn rv2_a_pass_through_refuses_bytes_that_are_not_tls() {
+    let r = sign_in_rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        Policy::default(),
+    );
+    let mut tcp = connect_200(&r, "platform.claude.com");
+    tcp.write_all(b"GET / HTTP/1.1\r\nHost: platform.claude.com\r\n\r\n")
+        .unwrap();
+    let mut out = Vec::new();
+    let _ = tcp.read_to_end(&mut out);
+    let e = records(&r, 1);
+    let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+    assert_eq!(c.detail["verdict"], "blocked", "{:?}", c.detail);
+    assert_eq!(
+        c.detail["reason"], "the tunnel does not carry TLS",
+        "{:?}",
+        c.detail
+    );
+    assert_eq!(c.detail["bytesUp"], 0, "{:?}", c.detail);
+}
+
+/// Review R9: a pass-through that carried TLS says so, with the server name
+/// it read.
+#[test]
+fn r9_a_pass_through_record_names_its_tls_and_server_name() {
+    let r = sign_in_rig(
+        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+        Policy::default(),
+    );
+    let mut s = pass_client(&r, "platform.claude.com", "platform.claude.com").unwrap();
+    let got = ask(
+        &mut s,
+        "POST /v1/oauth/token HTTP/1.1\r\nHost: platform.claude.com\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
+    );
+    assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+    let e = records(&r, 1);
+    let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+    assert_eq!(c.detail["verdict"], "forwarded", "{:?}", c.detail);
+    assert_eq!(c.detail["tls"], true, "{:?}", c.detail);
+    assert_eq!(c.detail["sni"], "platform.claude.com", "{:?}", c.detail);
+    assert_eq!(c.detail["sniMatched"], true, "{:?}", c.detail);
+}
+
+/// Review R4: a pass-through host meets the chat's deny list and allow list
+/// as every other host does.
+#[test]
+fn r4_a_pass_through_host_meets_the_deny_list_and_the_allow_list() {
+    for (policy, why) in [
+        (
+            Policy {
+                deny: vec!["platform.claude.com".into()],
+                ..Policy::default()
+            },
+            "the host is closed to this chat",
+        ),
+        (
+            Policy {
+                allow: Some(vec!["api.github.com".into()]),
+                ..Policy::default()
+            },
+            "the host is not on this chat's allow list",
+        ),
+    ] {
+        let r = sign_in_rig(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok", policy);
+        let mut tcp = TcpStream::connect(r.egress.addr()).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        write!(
+            tcp,
+            "CONNECT platform.claude.com:443 HTTP/1.1\r\nHost: platform.claude.com:443\r\n{}\r\n",
+            r.auth
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let _ = tcp.read_to_end(&mut out);
+        let e = records(&r, 1);
+        let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+        assert_eq!(c.detail["verdict"], "blocked", "{why}: {:?}", c.detail);
+        assert_eq!(c.detail["reason"], why, "{:?}", c.detail);
+        assert!(r.up.seen.lock().unwrap().is_empty());
+    }
+}
+
+/// Review R5: the count of bytes sent down survives a client that stops
+/// reading and closes (`io::copy` returns `Err` with no count).
+#[test]
+fn r5_a_pass_through_counts_what_went_down_when_the_client_closes_early() {
+    let mut big = b"HTTP/1.1 200 OK\r\ncontent-length: 4194304\r\n\r\n".to_vec();
+    big.extend(std::iter::repeat_n(b'x', 4 << 20));
+    let reply: &'static [u8] = Box::leak(big.into_boxed_slice());
+    let r = sign_in_rig(reply, Policy::default());
+    let mut s = pass_client(&r, "platform.claude.com", "platform.claude.com").unwrap();
+    s.write_all(b"GET /big HTTP/1.1\r\nHost: platform.claude.com\r\nconnection: close\r\n\r\n")
+        .unwrap();
+    s.flush().unwrap();
+    let mut got = 0usize;
+    let mut b = [0u8; 16 * 1024];
+    while got < 100 * 1024 {
+        match s.read(&mut b) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got += n,
+        }
+    }
+    assert!(got >= 100 * 1024, "{got}");
+    drop(s);
+    let e = records(&r, 1);
+    let c = e.iter().find(|x| x.kind == "egress.connect").unwrap();
+    let down = c.detail["bytesDown"].as_u64().unwrap();
+    assert!(down >= 100 * 1024, "bytesDown {down}: {:?}", c.detail);
+}

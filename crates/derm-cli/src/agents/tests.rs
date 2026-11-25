@@ -807,9 +807,36 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
     let w = Watch::on(&c);
     let r = go(&st, &["login", "claude-code", "--account", "max"], |_| {});
     assert_eq!(r.code, 0, "{} {}", r.out, r.err);
+    // Review R8 (red first): Claude Code reads the account home's
+    // `~/.claude/settings.json`, whose `env` would outrank argv (a leftover
+    // from before step P, BR-4), so the store folder and the updater keys go
+    // in a `--settings` flag block before `auth login`, which 2.1.322 takes
+    // for its `auth` commands too (run: the block's folder was opened, the
+    // user file's not).
+    let args = std::fs::read_to_string(seen.with_extension("args")).unwrap();
+    let (block, rest) = args
+        .trim_end()
+        .strip_prefix("--settings ")
+        .and_then(|a| a.rsplit_once(' '))
+        .and_then(|(b, last)| {
+            b.rsplit_once(' ')
+                .map(|(b, auth)| (b, format!("{auth} {last}")))
+        })
+        .expect("a --settings block before the sign-in's words");
+    assert_eq!(rest, "auth login", "{args}");
+    let v: serde_json::Value = serde_json::from_str(block).unwrap();
     assert_eq!(
-        std::fs::read_to_string(seen.with_extension("args")).unwrap(),
-        "auth login\n"
+        v["env"]["CLAUDE_SECURESTORAGE_CONFIG_DIR"], "/var/lib/derm/agents/max/signin/claude-code",
+        "{v}"
+    );
+    assert_eq!(v["env"]["DISABLE_AUTOUPDATER"], "1", "{v}");
+    assert_eq!(v["env"]["DISABLE_UPDATES"], "1", "{v}");
+    for k in ["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"] {
+        assert_eq!(v["env"][k], "", "{v}");
+    }
+    assert!(
+        v["env"].get("HTTPS_PROXY").is_none(),
+        "no credential on argv: {v}"
     );
     // Review AI-3: no login shell, and the sign-in starts through derm
     // landlock with its domain's spec in the environment only.
@@ -853,7 +880,10 @@ fn login_runs_the_harnesss_own_sign_in_as_the_account_and_opens_nothing_it_wrote
         "{helper}"
     );
     assert!(helper.trim_end().ends_with("|spec=yes"), "{helper}");
-    assert!(!helper.contains("{\""), "the spec is not on argv: {helper}");
+    assert!(
+        !helper.contains("\"require_landlock\"") && !helper.contains("\"requireLandlock\""),
+        "the spec is not on argv: {helper}"
+    );
     // Only derm's fixed variables reach sudo; none of the person's keys.
     let env = std::fs::read_to_string(seen.with_extension("env")).unwrap();
     for k in env.lines() {
@@ -947,7 +977,11 @@ fn br_4_the_sign_in_runs_the_root_install_by_path_with_its_updater_off() {
     );
     let helper = std::fs::read_to_string(st.d.0.join("helper.log")).unwrap();
     assert!(
-        helper.contains(&format!(" {} auth login", root.join("claude").display())),
+        helper.contains(&format!(" {} --settings ", root.join("claude").display()))
+            && helper
+                .trim_end()
+                .trim_end_matches("|spec=yes")
+                .ends_with(" auth login"),
         "{helper}"
     );
     assert_eq!(r.code, 0, "{} {}", r.out, r.err);
@@ -1075,11 +1109,15 @@ fn the_tunnel_admits_only_the_sign_in_hosts_and_passes_bytes_unread() {
     use std::net::{TcpListener, TcpStream};
     let up = TcpListener::bind("127.0.0.1:0").unwrap();
     let up_addr = up.local_addr().unwrap();
+    // A real first flight for the admitted host (review R3: the tunnel reads
+    // the ClientHello's server name before anything goes up).
+    let hello = derm_egress::hello::client_hello_for(Some("platform.claude.com"));
+    let n = hello.len();
     let echo = std::thread::spawn(move || {
         let (mut s, _) = up.accept().unwrap();
-        let mut b = [0u8; 5];
+        let mut b = vec![0u8; n + 2];
         s.read_exact(&mut b).unwrap();
-        s.write_all(&b.iter().rev().copied().collect::<Vec<_>>())
+        s.write_all(&b.iter().rev().take(5).copied().collect::<Vec<_>>())
             .unwrap();
     });
     let allow = vec!["platform.claude.com:443".to_string()];
@@ -1105,14 +1143,18 @@ fn the_tunnel_admits_only_the_sign_in_hosts_and_passes_bytes_unread() {
                 .as_bytes(),
         )
         .unwrap();
-        c.write_all(b"\x16\x03\x01").unwrap();
+        c.write_all(&hello[..3]).unwrap();
         let mut head = [0u8; 39];
         c.read_exact(&mut head).unwrap();
         assert_eq!(&head, b"HTTP/1.1 200 Connection established\r\n\r\n");
+        c.write_all(&hello[3..]).unwrap();
         c.write_all(b"\x00\x01").unwrap();
         let mut back = [0u8; 5];
         c.read_exact(&mut back).unwrap();
-        assert_eq!(&back, b"\x01\x00\x01\x03\x16");
+        let mut sent = hello.clone();
+        sent.extend_from_slice(b"\x00\x01");
+        let want: Vec<u8> = sent.iter().rev().take(5).copied().collect();
+        assert_eq!(back.to_vec(), want, "the bytes went up unchanged");
         drop(c);
         let mut c = TcpStream::connect(addr).unwrap();
         c.write_all(format!("CONNECT statsig.anthropic.com:443 HTTP/1.1\r\n{pa}\r\n").as_bytes())
@@ -1212,7 +1254,8 @@ fn the_tunnel_goes_on_through_the_persons_proxy_and_names_its_refusal() {
                     .push(head.lines().next().unwrap_or("").to_string());
                 if head.starts_with("CONNECT platform.claude.com:443 ") {
                     c.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
-                    let mut x = [0u8; 3];
+                    let n = derm_egress::hello::client_hello_for(Some("platform.claude.com")).len();
+                    let mut x = vec![0u8; n];
                     c.read_exact(&mut x).unwrap();
                     c.write_all(&x).unwrap();
                 } else {
@@ -1243,10 +1286,13 @@ fn the_tunnel_goes_on_through_the_persons_proxy_and_names_its_refusal() {
     let mut head = [0u8; 39];
     c.read_exact(&mut head).unwrap();
     assert_eq!(&head, b"HTTP/1.1 200 Connection established\r\n\r\n");
-    c.write_all(b"abc").unwrap();
-    let mut back = [0u8; 3];
+    // A real ClientHello for the host (review R3), echoed back by the
+    // stand-in proxy's far side.
+    let hello = derm_egress::hello::client_hello_for(Some("platform.claude.com"));
+    c.write_all(&hello).unwrap();
+    let mut back = vec![0u8; hello.len()];
     c.read_exact(&mut back).unwrap();
-    assert_eq!(&back, b"abc");
+    assert_eq!(back, hello);
     let mut c = connect("auth.openai.com:443");
     let mut r = String::new();
     c.read_to_string(&mut r).unwrap();

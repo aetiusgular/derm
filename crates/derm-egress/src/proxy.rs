@@ -54,6 +54,10 @@ pub type Sink = Arc<dyn Fn(Vec<Event>) + Send + Sync>;
 /// a local server).
 pub type Resolve = Arc<dyn Fn(&str, u16) -> io::Result<Vec<SocketAddr>> + Send + Sync>;
 
+/// A pass-through's ClientHello asked for another server than its CONNECT
+/// host (review R3).
+pub const SNI_NOT_HOST: &str = "the TLS server name is not the tunnel's host";
+
 /// Connections open at once; more are closed at accept.
 pub const MAX_CONNECTIONS: usize = 256;
 const CLIENT_IDLE: Duration = Duration::from_secs(120);
@@ -155,7 +159,7 @@ impl Egress {
         let refused = Arc::new(AtomicU64::new(0));
         let shared = Arc::new(Shared {
             config,
-            open: AtomicUsize::new(0),
+            open: Arc::new(AtomicUsize::new(0)),
             servers: Mutex::new(HashMap::new()),
             refused: refused.clone(),
         });
@@ -248,7 +252,9 @@ impl Drop for Egress {
 
 struct Shared {
     config: Config,
-    open: AtomicUsize,
+    /// Connections open, the client-to-vendor copies a pass-through leaves
+    /// behind included (review R5).
+    open: Arc<AtomicUsize>,
     servers: Mutex<HashMap<String, Arc<rustls::ServerConfig>>>,
     refused: Arc<AtomicU64>,
 }
@@ -616,8 +622,11 @@ impl Shared {
         Ok(c)
     }
 
-    /// A sign-in host's tunnel (case 283): dialled as any other, then bytes
-    /// both ways, unread.
+    /// A sign-in host's tunnel (case 283): dialled as any other, then the
+    /// client's ClientHello read without terminating it (review R3, case
+    /// RV-2): not TLS, no server name, or a name that is not the CONNECT
+    /// host, and nothing goes up. Then bytes both ways, unread, each way
+    /// counted as it goes (review R5).
     fn pass(&self, mut client: Duplex, t: &mut Tally) {
         t.pass = true;
         let up = match self.dial(t) {
@@ -638,43 +647,88 @@ impl Shared {
         {
             return;
         }
-        let _ = client.w.set_read_timeout(Some(UPSTREAM_IDLE));
-        let _ = client.r.get_ref().set_read_timeout(Some(UPSTREAM_IDLE));
-        let (Ok(mut up_w), Ok(mut down_w)) = (up.try_clone(), client.w.try_clone()) else {
-            return;
-        };
-        // What the client sent after its head, already in the buffer.
-        let early = client.r.buffer().to_vec();
-        if up_w.write_all(&early).is_err() {
-            return;
-        }
-        client.r.consume(early.len());
-        let mut from_client = client.r;
-        let sent = Arc::new(AtomicU64::new(early.len() as u64));
-        let counted = sent.clone();
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        std::thread::spawn(move || {
-            let mut b = [0u8; 16 * 1024];
-            loop {
-                match from_client.read(&mut b) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if up_w.write_all(&b[..n]).is_err() {
-                            break;
-                        }
-                        counted.fetch_add(n as u64, Ordering::SeqCst);
-                    }
+        let hello = crate::hello::read_client_hello(&mut client.r);
+        t.tls = !matches!(
+            hello.server_name,
+            Err(crate::hello::NotHello::NotTls) | Err(crate::hello::NotHello::Closed)
+        );
+        match &hello.server_name {
+            Ok(name) => {
+                t.sni = Some(name.clone());
+                if normal_host(name) != t.host {
+                    t.blocked = Some(SNI_NOT_HOST.into());
                 }
             }
-            let _ = up_w.shutdown(Shutdown::Write);
-            let _ = done_tx.send(());
-        });
+            Err(crate::hello::NotHello::Closed) => {}
+            Err(why) => t.blocked = Some(why.reason().into()),
+        }
+        if t.blocked.is_some() || hello.bytes.is_empty() {
+            let _ = up.shutdown(Shutdown::Both);
+            return;
+        }
+        let _ = client.w.set_read_timeout(Some(UPSTREAM_IDLE));
+        let _ = client.r.get_ref().set_read_timeout(Some(UPSTREAM_IDLE));
+        let (Ok(mut up_w), Ok(mut down_w), Ok(up_close)) =
+            (up.try_clone(), client.w.try_clone(), up.try_clone())
+        else {
+            return;
+        };
+        if up_w.write_all(&hello.bytes).is_err() {
+            return;
+        }
+        let mut from_client = client.r;
+        let sent = Arc::new(AtomicU64::new(hello.bytes.len() as u64));
+        let counted = sent.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        // The copy up is a connection's worth of resources until it ends:
+        // counted in `open`, so a flood of closed pass-throughs whose copies
+        // linger (Windows, where a shutdown does not wake the read) meets
+        // MAX_CONNECTIONS (review R5).
+        let open = self.open.clone();
+        open.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("derm-egress-pass-up".into())
+            .spawn(move || {
+                let mut b = [0u8; 16 * 1024];
+                loop {
+                    match from_client.read(&mut b) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if up_w.write_all(&b[..n]).is_err() {
+                                break;
+                            }
+                            counted.fetch_add(n as u64, Ordering::SeqCst);
+                        }
+                    }
+                }
+                let _ = up_w.shutdown(Shutdown::Write);
+                let _ = done_tx.send(());
+                open.fetch_sub(1, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            self.open.fetch_sub(1, Ordering::SeqCst);
+            return;
+        }
         let mut from_up = up;
-        let down = io::copy(&mut from_up, &mut down_w).unwrap_or(0);
-        // The vendor closed: nothing more can go up, so the client's side
-        // ends too. A shutdown does not wake a blocked read on every system
-        // (Windows CI), so the record does not wait long for that copy; the
-        // copy ends when the client closes or goes quiet.
+        let mut down = 0u64;
+        let mut b = [0u8; 16 * 1024];
+        loop {
+            match from_up.read(&mut b) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if down_w.write_all(&b[..n]).is_err() {
+                        break;
+                    }
+                    down += n as u64;
+                }
+            }
+        }
+        // One side is done: the vendor's socket is closed for both copies
+        // (a clone shares it), so the copy up ends at its next write and the
+        // vendor sees the close now; the client's side ends too. A shutdown
+        // does not wake a blocked read on every system (Windows CI), so the
+        // record does not wait long for the copy up.
+        let _ = up_close.shutdown(Shutdown::Both);
         let _ = down_w.shutdown(Shutdown::Both);
         let _ = done_rx.recv_timeout(Duration::from_secs(1));
         t.up = sent.load(Ordering::SeqCst);
@@ -688,6 +742,17 @@ impl Shared {
             .iter()
             .any(|(h, p)| normal_host(h) == t.host && *p == t.port)
         {
+            // The deny list, the allow list and the host's own checks first,
+            // as for every other host (review R4); the server name is read
+            // in `pass`.
+            if let Some(b) = self.host_check(t, &self.config.secrets) {
+                t.pass = true;
+                let _ = client
+                    .w
+                    .write_all(&http::status_page(403, "Forbidden", &b.reason()));
+                self.block_records(t, &b);
+                return;
+            }
             return self.pass(client, t);
         }
         if client

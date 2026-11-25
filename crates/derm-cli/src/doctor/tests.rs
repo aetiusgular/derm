@@ -1128,3 +1128,17 @@ fn fp9_every_presets_verified_version_still_reads() {
         "2.36.0"
     ));
 }
+
+/// Tony's call 4a: `derm doctor claude-code` names the store variable's
+/// verified release against the one agent accounts run.
+#[test]
+fn call_4a_doctor_names_the_store_variables_release() {
+    let mut r = json!({"problems": []});
+    super::account_store_into(&mut r, Some("2.1.322"));
+    assert_eq!(r["accountStore"]["found"], "2.1.322");
+    assert!(r["problems"].as_array().unwrap().is_empty(), "{r}");
+    let mut r = json!({"problems": []});
+    super::account_store_into(&mut r, Some("2.1.330"));
+    let p = r["problems"][0].as_str().unwrap();
+    assert!(p.contains("unverified at 2.1.330"), "{p}");
+}

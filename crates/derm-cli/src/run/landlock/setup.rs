@@ -89,6 +89,27 @@ pub(crate) fn make(s: &Setup) -> Result<Vec<(String, String)>, String> {
             );
         }
     }
+    // Review R2's rest (case RV-1): what derm cannot pin in its flag block,
+    // since the block is on argv, is refused here, as the account, before
+    // the domain, when the project home's user settings name it.
+    if s.harness == "claude-code" {
+        claude_settings_refusal(&parts[0], &project_home)?;
+    }
+    // Tony's call 7a (review PI-S3): Pi reads extensions, settings packages,
+    // `shellPath`, `shellCommandPrefix`, `models.json` and its project trust
+    // from its agent folder, which in the project home is the chat's to
+    // write; each Pi chat gets a folder of its own instead.
+    if s.harness == "pi" {
+        let run_text = format!("{dir_text}/{}", layout::RUN);
+        return pi_agent_dir(
+            &parts[2],
+            &run_text,
+            &s.account_home,
+            &project_home,
+            &PiRoot::system(),
+            me,
+        );
+    }
     if layout::SIGNIN_HARNESSES.contains(&s.harness.as_str()) {
         let linked = crate::agents::signin::link_project_home(
             Path::new(&s.account_home),
@@ -98,6 +119,193 @@ pub(crate) fn make(s: &Setup) -> Result<Vec<(String, String)>, String> {
         return Ok(linked.env);
     }
     Ok(Vec::new())
+}
+
+/// Where a Pi account chat's agent folder is filled from (Tony's call 7a):
+/// `settings.json` and `models.json` in a root-owned folder, every part of
+/// its path root's and closed to group and other writes, read as
+/// `derm_core::owner::read_anchor` reads the anchor. With no folder, derm's
+/// own settings ([`PI_DEFAULT_SETTINGS`]) and no `models.json`.
+pub(crate) struct PiRoot {
+    pub dir: std::path::PathBuf,
+    pub from: std::path::PathBuf,
+    pub trusted: u32,
+}
+
+impl PiRoot {
+    pub(crate) fn system() -> PiRoot {
+        PiRoot {
+            dir: PI_ROOT_SETTINGS.into(),
+            from: "/".into(),
+            trusted: 0,
+        }
+    }
+}
+
+/// The root-owned folder a Pi account chat's agent folder is filled from.
+pub(crate) const PI_ROOT_SETTINGS: &str = "/etc/derm/pi-agent";
+
+/// derm's own Pi settings for an account chat, when root wrote none: no
+/// package, no extension, and a project's own `.pi` never trusted (Pi
+/// 1.6.0's `defaultProjectTrust`, `core/settings-manager.js:789-792`; with
+/// `never` and no trust record, `core/project-trust.js:42-47` answers
+/// untrusted, and `-a` on the chat's own command line still wins: run).
+pub(crate) const PI_DEFAULT_SETTINGS: &str = "{\n  \"defaultProjectTrust\": \"never\"\n}\n";
+
+/// Makes the chat's own Pi agent folder under the project's runtime folder
+/// (`run`, open as `run_fd`), fills it from `root`, links its `auth.json` to
+/// the account's store, and returns `PI_CODING_AGENT_DIR` and
+/// `PI_CODING_AGENT_SESSION_DIR` (the project home's `.pi/agent/sessions`,
+/// so the project's sessions are kept across chats; Pi 1.6.0 `main.js:
+/// 593-596`).
+pub(crate) fn pi_agent_dir(
+    run_fd: &OwnedFd,
+    run_text: &str,
+    account_home: &str,
+    project_home: &str,
+    root: &PiRoot,
+    me: u32,
+) -> Result<Vec<(String, String)>, String> {
+    use derm_core::owner::{read_anchor, Anchor};
+    let read_root = |name: &str| -> Result<Option<String>, String> {
+        let f = root.dir.join(name);
+        match read_anchor(&f, &root.from, root.trusted) {
+            Anchor::Absent => Ok(None),
+            Anchor::Text(t) => Ok(Some(t)),
+            Anchor::Problem(p) => Err(format!(
+                "{p}: Pi's settings for agent accounts come only from a root-owned file that no one else can write; fix it or remove it, and start the chat again"
+            )),
+        }
+    };
+    let settings = match read_root("settings.json")? {
+        None => PI_DEFAULT_SETTINGS.to_string(),
+        Some(t) => {
+            let mut v: serde_json::Value = serde_json::from_str(&t)
+                .map_err(|e| format!("{}/settings.json is not JSON: {e}", root.dir.display()))?;
+            let o = v
+                .as_object_mut()
+                .ok_or_else(|| format!("{}/settings.json is not an object", root.dir.display()))?;
+            o.entry("defaultProjectTrust")
+                .or_insert_with(|| serde_json::Value::from("never"));
+            let mut t = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+            t.push('\n');
+            t
+        }
+    };
+    let models = read_root("models.json")?;
+    let name = format!("pi-agent-{}", uuid::Uuid::new_v4().simple());
+    let shown = format!("{run_text}/{name}");
+    let c = cname(&name)?;
+    // SAFETY: `c` lives across the call; `run_fd` is an open folder. A new
+    // name, so nothing a chat left there is reused.
+    if unsafe { libc::mkdirat(run_fd.as_raw_fd(), c.as_ptr(), 0o700) } != 0 {
+        return Err(format!("{shown}: {}", std::io::Error::last_os_error()));
+    }
+    let dir = private_dir(run_fd, &name, me, &shown)?;
+    new_file(&dir, "settings.json", &settings, me)?;
+    if let Some(m) = models {
+        new_file(&dir, "models.json", &m, me)?;
+    }
+    crate::agents::signin::link_pi_agent_dir(Path::new(account_home), Path::new(&shown))?;
+    Ok(vec![
+        ("PI_CODING_AGENT_DIR".to_string(), shown),
+        (
+            "PI_CODING_AGENT_SESSION_DIR".to_string(),
+            format!("{project_home}/.pi/agent/sessions"),
+        ),
+    ])
+}
+
+/// Review R2's rest: an agent account's Claude Code reads its user settings
+/// from `<project home>/.claude/settings.json`, which the chat writes, and
+/// applies its `env` over the process's (2.1.322; review run "st6"). derm
+/// pins every variable it sets in its flag block (`claude_gate::
+/// pin_account_env`), except those it may not put on argv
+/// (`claude_gate::NOT_ON_ARGV`: the proxy URLs with their credential, the
+/// tap's route, the export's headers, the chat token). A file that names one
+/// of those, is a link, or is not JSON derm can read, stops the start: a
+/// planted `ANTHROPIC_BASE_URL` would send the sign-in's bearer token to a
+/// listener of the chat's own. The file is read here, after the chat that
+/// wrote it ended and before this chat starts; a chat of the same project
+/// running beside it could still write it after this read (I; open, low).
+fn claude_settings_refusal(home: &OwnedFd, project_home: &str) -> Result<(), String> {
+    let shown = format!("{project_home}/.claude/settings.json");
+    let dir = match open_no_follow(home.as_raw_fd(), ".claude", libc::O_DIRECTORY)? {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    let Some(f) = open_no_follow(dir.as_raw_fd(), "settings.json", libc::O_NONBLOCK)? else {
+        return Ok(());
+    };
+    let m = fstat(f.as_raw_fd())?;
+    if m.st_mode & libc::S_IFMT != libc::S_IFREG || m.st_size > 1024 * 1024 {
+        return Err(format!(
+            "{shown} is not a plain file under 1 MiB; move it out of the way and start the chat again"
+        ));
+    }
+    let mut text = String::new();
+    use std::io::Read;
+    std::fs::File::from(f)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("{shown}: {e}"))?;
+    settings_env_refusal(&text, crate::run::claude_gate::NOT_ON_ARGV)
+        .map_err(|why| format!("{shown} {why}; remove it there and start the chat again"))
+}
+
+/// Why a Claude Code settings file's `env` may not run in an account chat,
+/// or `Ok`: it names one of `names` (in any letter case: Claude Code reads
+/// the name as written, and the environment of a POSIX process is
+/// case-sensitive, so only exact names matter; case folding is not applied).
+pub(crate) fn settings_env_refusal(text: &str, names: &[&str]) -> Result<(), String> {
+    let v: serde_json::Value =
+        serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|_| {
+            "is not JSON derm can read, so derm cannot tell what its env sets".to_string()
+        })?;
+    let Some(env) = v.get("env") else {
+        return Ok(());
+    };
+    let Some(env) = env.as_object() else {
+        return Err("has an env that is not an object".into());
+    };
+    let named: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| env.contains_key(*n))
+        .collect();
+    if named.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "sets {} in its env, which derm sets for this chat and cannot pin (a credential or a route to one)",
+            named.join(", ")
+        ))
+    }
+}
+
+/// `name` in the folder `dir`, opened without following a link; `None` when
+/// it is not there.
+fn open_no_follow(dir: RawFd, name: &str, extra: i32) -> Result<Option<OwnedFd>, String> {
+    let c = cname(name)?;
+    // SAFETY: `c` lives across the call; `dir` is an open folder.
+    let fd = unsafe {
+        libc::openat(
+            dir,
+            c.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | extra,
+        )
+    };
+    if fd < 0 {
+        let e = std::io::Error::last_os_error();
+        return match e.raw_os_error() {
+            Some(libc::ENOENT) => Ok(None),
+            Some(libc::ELOOP) | Some(libc::ENOTDIR) => Err(format!(
+                "{name} in the project home is a link or not what it should be; derm follows no link there"
+            )),
+            _ => Err(format!("{name}: {e}")),
+        };
+    }
+    // SAFETY: a new descriptor that nothing else owns.
+    Ok(Some(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
 /// A relative path of plain parts only.
@@ -327,6 +535,148 @@ mod tests {
             Ok(_) => {}
             Err(e) => assert!(e.contains("sign-in"), "{e}"),
         }
+    }
+
+    /// Review R2's rest (case RV-1): a project home whose Claude Code user
+    /// settings name a variable derm sets and cannot pin stops the start.
+    #[test]
+    fn rv_1_a_project_home_settings_env_derm_cannot_pin_stops_the_start() {
+        let a = account();
+        let store = a.0.join("signin").join("claude-code");
+        std::fs::create_dir_all(&store).unwrap();
+        for d in [a.0.join("signin"), store.clone()] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let s = setup(&a.0, "claude-code", Vec::new());
+        make(&s).unwrap();
+        let claude = a.0.join("projects").join(&s.project).join("home/.claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let file = claude.join("settings.json");
+        std::fs::write(&file, r#"{"env":{"DERM_POLICY":"/x","KEEP":"1"}}"#).unwrap();
+        assert!(make(&s).is_ok(), "a name derm pins in its block is fine");
+        for planted in [
+            r#"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9"}}"#,
+            r#"{"env":{"HTTPS_PROXY":"http://127.0.0.1:9"}}"#,
+            r#"{"env":{"DERM_CHAT_TOKEN":"x"}}"#,
+            r#"{"env":{"OTEL_EXPORTER_OTLP_HEADERS":"x"}}"#,
+            "{not json",
+        ] {
+            std::fs::write(&file, planted).unwrap();
+            let e = make(&s).unwrap_err();
+            assert!(e.contains("settings.json"), "{planted}: {e}");
+        }
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", &file).unwrap();
+        assert!(make(&s).unwrap_err().contains("link"));
+        std::fs::remove_file(&file).unwrap();
+        assert!(make(&s).is_ok());
+    }
+
+    fn pi_store(a: &Tmp) {
+        let store = a.0.join("signin").join("pi");
+        std::fs::create_dir_all(&store).unwrap();
+        for d in [a.0.join("signin"), store] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    fn var<'a>(env: &'a [(String, String)], k: &str) -> Option<&'a str> {
+        env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str())
+    }
+
+    /// Tony's call 7a (red first; review PI-S3): each Pi chat gets its own
+    /// agent folder under the project's runtime folder, with derm's settings
+    /// and the store's `auth.json`; the project home's `~/.pi/agent`, which
+    /// the chat writes, is not what Pi reads.
+    #[test]
+    fn call_7a_each_pi_chat_gets_its_own_agent_folder() {
+        let a = account();
+        pi_store(&a);
+        let s = setup(&a.0, "pi", Vec::new());
+        let env = make(&s).unwrap();
+        let dir = var(&env, "PI_CODING_AGENT_DIR")
+            .expect("an agent folder")
+            .to_string();
+        let run = a.0.join("projects").join(&s.project).join("run");
+        assert!(Path::new(&dir).starts_with(&run), "{dir}");
+        let m = std::fs::symlink_metadata(&dir).unwrap();
+        assert!(m.is_dir() && m.mode() & 0o7777 == 0o700, "{dir}");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&dir).join("settings.json")).unwrap(),
+            PI_DEFAULT_SETTINGS
+        );
+        assert_eq!(
+            std::fs::read_link(Path::new(&dir).join("auth.json")).unwrap(),
+            a.0.join("signin/pi/auth.json")
+        );
+        let home = a.0.join("projects").join(&s.project).join("home");
+        assert_eq!(
+            var(&env, "PI_CODING_AGENT_SESSION_DIR"),
+            Some(home.join(".pi/agent/sessions").to_str().unwrap())
+        );
+        // A second chat gets a second folder.
+        let env2 = make(&s).unwrap();
+        assert_ne!(var(&env2, "PI_CODING_AGENT_DIR").unwrap(), dir);
+    }
+
+    /// Tony's call 7a: a root-owned folder fills it instead, and one that is
+    /// not root's stops the start.
+    #[test]
+    fn call_7a_the_agent_folder_is_filled_from_root_owned_settings() {
+        let a = account();
+        pi_store(&a);
+        let s = setup(&a.0, "pi", Vec::new());
+        make(&s).unwrap();
+        let proj = a.0.join("projects").join(&s.project);
+        let run_fd = super::super::rule_fd(proj.join("run").to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        let run_fd: OwnedFd = run_fd.into();
+        // SAFETY: getuid has no preconditions.
+        let me = unsafe { libc::getuid() };
+        let rootdir = a.0.join("etc-pi");
+        std::fs::create_dir(&rootdir).unwrap();
+        std::fs::set_permissions(&rootdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            rootdir.join("settings.json"),
+            r#"{"defaultProvider":"local"}"#,
+        )
+        .unwrap();
+        std::fs::write(rootdir.join("models.json"), r#"{"providers":{}}"#).unwrap();
+        for f in ["settings.json", "models.json"] {
+            std::fs::set_permissions(rootdir.join(f), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        let root = PiRoot {
+            dir: rootdir.clone(),
+            from: a.0.clone(),
+            trusted: me,
+        };
+        let run_text = proj.join("run").to_string_lossy().into_owned();
+        let home_text = proj.join("home").to_string_lossy().into_owned();
+        let acct = a.0.to_string_lossy().into_owned();
+        let env = pi_agent_dir(&run_fd, &run_text, &acct, &home_text, &root, me).unwrap();
+        let dir = Path::new(var(&env, "PI_CODING_AGENT_DIR").unwrap()).to_path_buf();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(v["defaultProvider"], "local");
+        assert_eq!(
+            v["defaultProjectTrust"], "never",
+            "derm's default where root names none"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("models.json")).unwrap(),
+            r#"{"providers":{}}"#
+        );
+        // A file others can write is refused, and so the start.
+        std::fs::set_permissions(
+            rootdir.join("models.json"),
+            std::fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        let e = pi_agent_dir(&run_fd, &run_text, &acct, &home_text, &root, me).unwrap_err();
+        assert!(e.contains("models.json"), "{e}");
     }
 
     #[test]

@@ -1014,6 +1014,33 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     } else {
         &[]
     };
+    // Review R8: Claude Code reads the account home's `~/.claude/settings.json`
+    // as its user settings, whose `env` outranks argv (2.1.322, review run
+    // "st6"), and a chat before step P could leave one there (BR-4); derm's
+    // flag block, which beats it (run "st7"), carries the store folder and
+    // the updater keys, and the loader's empty. `claude --settings <block>
+    // auth login` reads the block for its `auth` commands too (run in P fix
+    // 2: the block's folder was opened, the user file's not). No credential
+    // goes in it: argv is every user's to read (case 85).
+    let flag_block: Vec<String> = if h.id == "claude-code" {
+        let mut env = serde_json::Map::new();
+        for (k, v) in store_env.iter() {
+            env.insert(k.clone(), serde_json::Value::from(v.as_str()));
+        }
+        for (k, v) in no_updates {
+            env.insert((*k).to_string(), serde_json::Value::from(*v));
+        }
+        for k in crate::run::claude_gate::ACCOUNT_LOADER {
+            env.insert((*k).to_string(), serde_json::Value::from(""));
+        }
+        env.insert("PATH".into(), serde_json::Value::from(path.as_str()));
+        vec![
+            "--settings".to_string(),
+            serde_json::json!({ "env": env }).to_string(),
+        ]
+    } else {
+        Vec::new()
+    };
     // I-3: the tunnel's URL carries this sign-in's proxy credential, so it
     // goes in the environment, through sudo by name (`--preserve-env`; the
     // installer's rule carries `SETENV`, which sudoers(5) at 1.9.15p5 also
@@ -1036,6 +1063,7 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
         .args(store_env.iter().map(|(k, v)| format!("{k}={v}")))
         .args(no_updates.iter().map(|(k, v)| format!("{k}={v}")))
         .arg(&program)
+        .args(&flag_block)
         .args(words)
         .status();
     let code = match st {
@@ -1049,6 +1077,14 @@ fn login(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     }
     for why in t.failed() {
         let _ = writeln!(ctx.out, "the tunnel could not reach {why}");
+    }
+    if t.over_cap() > 0 {
+        let _ = writeln!(
+            ctx.out,
+            "the tunnel turned away {} connection(s) over its cap of {}",
+            t.over_cap(),
+            tunnel::MAX_CONNECTIONS
+        );
     }
     let file = signin_file(h);
     let _ = match present(ctx, &a, &file) {

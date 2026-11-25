@@ -385,6 +385,145 @@ pub const ACCOUNT_ENV: &[(&str, &str)] = &[
     ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
 ];
 
+/// The loader's variables, pinned empty in an account chat's block: a
+/// project home's user settings `env` reaches derm's own hook, and an empty
+/// value from the flag source wins over a user one (review R2, run "ldp2"
+/// with Claude Code 2.1.322; glibc's ld.so takes an empty `LD_PRELOAD` as
+/// none).
+pub const ACCOUNT_LOADER: &[&str] = &["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"];
+
+/// What derm's gate reads from its environment (`gate/daemon.rs`,
+/// `gate/policy.rs`, `gate/core.rs`, `gate/serve/`): pinned in an account
+/// chat's block, to derm's value when derm set one, else to empty, which
+/// every reader takes as unset (`Env::get` trims and drops an empty value;
+/// `load_for_hook` drops an empty `DERM_POLICY`), so a project home's
+/// settings cannot name a policy, a socket, a token file or a mode for the
+/// gate (review R2).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const ACCOUNT_GATE_VARS: &[&str] = &[
+    "DERM_POLICY",
+    "DERM_DAEMON_SOCKET",
+    "DERM_CHAT_TOKEN_FILE",
+    "GEMINI_CLI_DERM_CHAT_TOKEN_FILE",
+    "DERM_CHAT_ID",
+    "DERM_RUN",
+    "DERM_BOUNDARY",
+    "DERM_OTLP_ENDPOINT",
+    "DERM_FULL_ACCESS",
+    "DERM_ASKS",
+    "DERM_MEMORY_STATE",
+    "DERM_CONTROL_PATHS",
+];
+
+/// Never in the block: it is on argv, which every user of the machine can
+/// read (`/proc/<pid>/cmdline`), so a value that is a credential or a route
+/// to one stays in the environment only (case 85). A project home's
+/// settings can still name these; the helper refuses such a file at the
+/// chat's start (`landlock::setup`, review R2's rest).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub const NOT_ON_ARGV: &[&str] = &[
+    "DERM_CHAT_TOKEN",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "ANTHROPIC_BASE_URL",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+];
+
+/// Review R1 and R2 (case RV-1): an agent account's Claude Code reads its
+/// user settings from the project home, which the chat writes, and 2.1.322
+/// applies each source's `env` over the process's in the order user,
+/// project, local, flag, policy (`Uo()` over `ci`, `Object.assign(process.env,
+/// ...)` per source; run "st6": user beats argv, "st7": flag beats user, and
+/// "dpol": a user value for `DERM_POLICY` reached derm's hook). So every
+/// variable derm sets for the chat that is not a secret also goes into derm's
+/// block, the last `--settings` before any `--` in `args`: the store folder
+/// (R1), the bridge's paths, the chat's homes, `PATH` and `SHELL`; the gate's
+/// other variables empty; the loader's empty. `env_set` is what `derm run`
+/// sets (only its `DERM_` and `OTEL_` names, `CLAUDE_CODE_ENABLE_TELEMETRY`
+/// and the `NO_PROXY` pair are taken: the export's endpoint would otherwise
+/// be a project home's to point at a listener of its own, which the
+/// headers helper then hands the chat token), `assign` the paths `env` sets after the helper, `extra` the
+/// helper's own (Claude Code's store folder). A value holding `token` or a
+/// URL with a user part is refused, never written.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn pin_account_env(
+    args: &mut [String],
+    env_set: &[(String, String)],
+    assign: &[(String, String)],
+    extra: &[(String, String)],
+    token: Option<&str>,
+) -> Result<(), String> {
+    let end = args.iter().position(|w| w == "--").unwrap_or(args.len());
+    let at = args[..end]
+        .iter()
+        .rposition(|w| w == "--settings")
+        .filter(|i| i + 1 < end)
+        .ok_or("internal: derm's --settings block is not in Claude Code's arguments")?;
+    let mut block: Value = serde_json::from_str(&args[at + 1])
+        .map_err(|e| format!("internal: derm's --settings block: {e}"))?;
+    let derms = block
+        .pointer("/hooks/PreToolUse/0/hooks/0/args/0")
+        .and_then(Value::as_str)
+        == Some("hook");
+    if !derms {
+        return Err("internal: the last --settings is not derm's block".into());
+    }
+    let mut env = Map::new();
+    for k in ACCOUNT_GATE_VARS.iter().chain(ACCOUNT_LOADER) {
+        env.insert((*k).to_string(), Value::from(""));
+    }
+    let taken = env_set
+        .iter()
+        .filter(|(k, _)| {
+            k.starts_with("DERM_")
+                || k.starts_with("OTEL_")
+                || matches!(
+                    k.as_str(),
+                    "NO_PROXY" | "no_proxy" | "CLAUDE_CODE_ENABLE_TELEMETRY"
+                )
+        })
+        .chain(assign)
+        .chain(extra)
+        .filter(|(k, _)| {
+            !NOT_ON_ARGV.contains(&k.as_str()) && !ACCOUNT_LOADER.contains(&k.as_str())
+        })
+        // The helper's spec (`run/landlock` `SPEC_VAR`), removed before it execs.
+        .filter(|(k, _)| k != "DERM_LANDLOCK_SPEC");
+    for (k, v) in taken {
+        let userinfo = v.split_once("://").is_some_and(|(_, rest)| {
+            rest.split(['/', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .contains('@')
+        });
+        if token.is_some_and(|t| !t.is_empty() && v.contains(t)) || userinfo {
+            return Err(format!(
+                "internal: {k} holds a credential and would reach Claude Code's command line; refusing to start"
+            ));
+        }
+        env.insert(k.clone(), Value::from(v.as_str()));
+    }
+    match block.get_mut("env") {
+        Some(Value::Object(have)) => {
+            for (k, v) in env {
+                have.insert(k, v);
+            }
+        }
+        _ => {
+            block["env"] = Value::Object(env);
+        }
+    }
+    args[at + 1] = serde_json::to_string(&block).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Adds derm's block as the last `--settings` of Claude Code's arguments.
 /// Call it after every other edit of Claude Code's `--settings`: the
 /// Standard tier's and the OTel export's.
@@ -451,6 +590,142 @@ mod tests {
         assert_eq!(b["env"]["DISABLE_AUTOUPDATER"], "0", "{b}");
         assert!(b["env"].get("DISABLE_UPDATES").is_none(), "{b}");
         assert_eq!(b["disableClaudeAiConnectors"], false, "{b}");
+    }
+
+    /// Review R1 and R2 (red first; rules case RV-1): the variables derm
+    /// sets for an account chat are in derm's flag block too, so a project
+    /// home's `~/.claude/settings.json` `env` cannot move the store, the
+    /// policy, the bridge's socket or token file, or load a library into
+    /// derm's hook; and nothing secret reaches argv.
+    #[test]
+    fn rv_1_an_account_chats_block_pins_every_variable_derm_sets() {
+        let words = vec!["-p".to_string(), "go".to_string()];
+        let mut args = words.clone();
+        let b = block_for(&words, "/usr/local/bin/derm", Some("c1"), true);
+        args.extend(["--settings".to_string(), b.to_string()]);
+        args.extend(["--".to_string(), "--settings".to_string(), "{}".to_string()]);
+        let tok = "a".repeat(64);
+        let env_set = vec![
+            ("DERM_CHAT_ID".to_string(), "c1".to_string()),
+            ("DERM_CHAT_TOKEN".to_string(), tok.clone()),
+            (
+                "DERM_CHAT_TOKEN_FILE".to_string(),
+                "/run/derm-agent/1000/c1-x/chat.token".to_string(),
+            ),
+            (
+                "DERM_DAEMON_SOCKET".to_string(),
+                "/run/derm-agent/1000/c1-x/daemon.sock".to_string(),
+            ),
+            (
+                "DERM_POLICY".to_string(),
+                "/run/derm-agent/1000/c1-x/policy.json".to_string(),
+            ),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://derm:cred@127.0.0.1:9".to_string(),
+            ),
+            (
+                "NO_PROXY".to_string(),
+                "localhost,127.0.0.1,::1".to_string(),
+            ),
+            (
+                "ANTHROPIC_BASE_URL".to_string(),
+                "http://127.0.0.1:1/r/route/anthropic".to_string(),
+            ),
+            ("OTHER".to_string(), "x".to_string()),
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+                "http://127.0.0.1:4318".to_string(),
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+                format!("authorization=Bearer {tok}"),
+            ),
+        ];
+        let assign = vec![
+            (
+                "HOME".to_string(),
+                "/var/lib/derm/agents/box/projects/p/home".to_string(),
+            ),
+            (
+                "TMPDIR".to_string(),
+                "/var/lib/derm/agents/box/projects/p/tmp".to_string(),
+            ),
+            (
+                "XDG_RUNTIME_DIR".to_string(),
+                "/var/lib/derm/agents/box/projects/p/run".to_string(),
+            ),
+            (
+                "PATH".to_string(),
+                "/usr/local/bin:/usr/bin:/bin".to_string(),
+            ),
+            ("SHELL".to_string(), "/bin/bash".to_string()),
+            ("DISABLE_UPDATES".to_string(), "1".to_string()),
+        ];
+        let extra = vec![(
+            "CLAUDE_SECURESTORAGE_CONFIG_DIR".to_string(),
+            "/var/lib/derm/agents/box/signin/claude-code".to_string(),
+        )];
+        pin_account_env(&mut args, &env_set, &assign, &extra, Some(&tok)).unwrap();
+        let at = args.iter().position(|w| w == "--").unwrap();
+        let i = args[..at].iter().rposition(|w| w == "--settings").unwrap();
+        let v: Value = serde_json::from_str(&args[i + 1]).unwrap();
+        let env = &v["env"];
+        assert_eq!(
+            env["CLAUDE_SECURESTORAGE_CONFIG_DIR"], "/var/lib/derm/agents/box/signin/claude-code",
+            "R1: {v}"
+        );
+        assert_eq!(
+            env["DERM_POLICY"], "/run/derm-agent/1000/c1-x/policy.json",
+            "R2: {v}"
+        );
+        assert_eq!(
+            env["DERM_DAEMON_SOCKET"],
+            "/run/derm-agent/1000/c1-x/daemon.sock"
+        );
+        assert_eq!(
+            env["DERM_CHAT_TOKEN_FILE"],
+            "/run/derm-agent/1000/c1-x/chat.token"
+        );
+        assert_eq!(env["DERM_CHAT_ID"], "c1");
+        for k in [
+            "HOME",
+            "TMPDIR",
+            "XDG_RUNTIME_DIR",
+            "PATH",
+            "SHELL",
+            "DISABLE_UPDATES",
+        ] {
+            assert!(env[k].is_string(), "{k}: {v}");
+        }
+        assert_eq!(env["NO_PROXY"], "localhost,127.0.0.1,::1");
+        assert_eq!(env["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://127.0.0.1:4318");
+        for k in ACCOUNT_LOADER {
+            assert_eq!(env[*k], "", "{k}: {v}");
+        }
+        for k in [
+            "DERM_FULL_ACCESS",
+            "DERM_ASKS",
+            "DERM_MEMORY_STATE",
+            "GEMINI_CLI_DERM_CHAT_TOKEN_FILE",
+        ] {
+            assert_eq!(env[k], "", "{k} pinned empty: {v}");
+        }
+        for k in NOT_ON_ARGV {
+            assert!(env.get(*k).is_none(), "{k} on argv: {v}");
+        }
+        assert!(env.get("OTHER").is_none(), "only derm's own names: {v}");
+        let all = args.join(" ");
+        assert!(!all.contains(&tok), "the chat token reached argv");
+        assert!(!all.contains("cred@"), "a proxy credential reached argv");
+        // The user's own `--settings` after `--` is the prompt's and untouched.
+        assert_eq!(args[args.len() - 1], "{}");
+        // A value that holds the token or a credential is refused.
+        let mut again = args.clone();
+        let bad = vec![("DERM_RUN".to_string(), format!("x{tok}"))];
+        assert!(pin_account_env(&mut again, &bad, &[], &[], Some(&tok)).is_err());
+        let bad = vec![("TMPDIR".to_string(), "http://u:p@h/".to_string())];
+        assert!(pin_account_env(&mut again, &[], &bad, &[], Some(&tok)).is_err());
     }
 
     #[test]

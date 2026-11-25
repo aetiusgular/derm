@@ -49,6 +49,7 @@ fn role(test: &str) {
         "b" => role_b(),
         "a" => role_a(),
         "fs" => role_fs(),
+        "mount" => role_mount(),
         other => panic!("unknown role {other}"),
     }
     std::process::exit(0);
@@ -330,6 +331,140 @@ fn role_fs() {
         "sh": sh,
     });
     println!("LLCHECK {got}");
+}
+
+/// D: what bubblewrap does first, as the harness's own sandbox would run it
+/// for a tool command (Claude Code 2.1.322 and Codex 0.167.2 both start
+/// bwrap on Linux): a new user and mount namespace, then `/` made a slave
+/// mount (bubblewrap's `Failed to make / slave`, the first mount it makes).
+fn role_mount() {
+    // unshare(CLONE_NEWUSER) refuses a process with more than one thread
+    // (EINVAL, unshare(2)), and libtest runs this role on a thread of its
+    // own, so the attempt is made in a forked child, which has one. The
+    // child makes only the two system calls and exits with what they said:
+    // 0 mounted; 64 + errno, unshare refused; 128 + errno, mount refused.
+    // SAFETY: fork; the child calls only unshare, mount and _exit, which are
+    // async-signal-safe.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        unsafe {
+            if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
+                libc::_exit(64 + *libc::__errno_location() % 64);
+            }
+            let r = libc::mount(
+                std::ptr::null(),
+                c"/".as_ptr(),
+                std::ptr::null(),
+                libc::MS_SLAVE | libc::MS_REC,
+                std::ptr::null(),
+            );
+            libc::_exit(if r == 0 {
+                0
+            } else {
+                128 + *libc::__errno_location() % 64
+            });
+        }
+    }
+    let mut status = 0;
+    // SAFETY: waits for the child just forked.
+    unsafe { libc::waitpid(pid, &mut status, 0) };
+    let code = libc::WEXITSTATUS(status);
+    let got = json!({
+        "unshare": code == 0 || code >= 128,
+        "unshareErrno": if (64..128).contains(&code) { code - 64 } else { 0 },
+        "mount": code == 0,
+        "mountErrno": if code >= 128 { code - 128 } else { 0 },
+    });
+    println!("LLCHECK {got}");
+}
+
+/// Tony's call 1a's premise, pinned (P fix 2, note CE): the harness's own
+/// sandbox cannot run inside an account chat's Landlock domain. Linux denies
+/// a mount to a thread with filesystem restrictions ("Threads sandboxed with
+/// filesystem restrictions cannot modify filesystem topology, whether via
+/// mount(2) or pivot_root(2)", the kernel's Landlock documentation, 6.18),
+/// and bubblewrap's first step is a mount; run in P fix 2 with Codex
+/// 0.167.2's own bwrap: "bwrap: Failed to make / slave: Operation not
+/// permitted", as root too. So 1a waits for lane PG's mount layer. Where
+/// this machine allows no user namespace at all, the control fails and the
+/// test says so and stops.
+#[test]
+fn call_1a_premise_no_mount_inside_an_account_chats_domain() {
+    const T: &str = "call_1a_premise_no_mount_inside_an_account_chats_domain";
+    role(T);
+    if abi() < 1 {
+        eprintln!("not run: this kernel has no Landlock");
+        return;
+    }
+    let exe = Exe::new();
+    let mut c = spawn_role(&exe, T, "mount", None, &[]);
+    let control: Value = serde_json::from_str(&line_of(&mut c)).unwrap();
+    let _ = c.wait();
+    if control["mount"] != true {
+        eprintln!("not run: no user namespace with a mount here outside a domain: {control}");
+        return;
+    }
+    let base =
+        std::env::temp_dir().join(format!("llcheck-mount-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&base).unwrap();
+    if let Some(u) = role_uid() {
+        std::os::unix::fs::chown(&base, Some(u), Some(u)).unwrap();
+    }
+    let s = |p: &str| base.join(p).to_string_lossy().into_owned();
+    let mut spec = chat_spec(&ChatPaths {
+        folders: &[s("")],
+        account_home: &s(""),
+        bridge: None,
+        path: "/usr/local/bin:/usr/bin:/bin",
+        require_scopes: false,
+    });
+    spec.check_network = false;
+    spec.exec
+        .push(exe.path.parent().unwrap().to_string_lossy().into_owned());
+    let mut c = spawn_role(&exe, T, "mount", Some(&spec), &[]);
+    let inside: Value = serde_json::from_str(&line_of(&mut c)).unwrap();
+    let _ = c.wait();
+    let _ = std::fs::remove_dir_all(&base);
+    eprintln!("call 1a's premise: outside a domain {control}; inside {inside}");
+    assert_eq!(
+        inside["mount"], false,
+        "a mount inside the domain: {inside}"
+    );
+    if inside["unshare"] == true {
+        assert_eq!(inside["mountErrno"], libc::EPERM, "{inside}");
+    }
+}
+
+/// Tony's call 1a (red; waits for lane PG): the commands a harness's tools
+/// run in an account chat cannot read the account's sign-in store, while the
+/// harness itself still reads and renews it. Neither harness's own sandbox
+/// can do it inside derm's domain (the premise test above; Codex 0.167.2's
+/// Landlock-only mode refuses read restrictions, `linux-sandbox/src/
+/// seccomp.rs:82-88`), so the store is hidden by derm's own mount layer, a
+/// per-chat bubblewrap around the harness with the tool commands in a
+/// further namespace where `signin/` is not mounted (plans/
+/// parallel_build_accounts.md 8.4, lane PG). The spec has no such layer
+/// today: every chat's domain writes the store folder.
+#[test]
+#[ignore = "call 1a: rests on lane PG's mount layer (note CE section 2); a tool command still reads signin/<harness>/"]
+fn call_1a_a_tool_command_in_an_account_chat_cannot_read_the_sign_in_store() {
+    let w = vec![
+        "/var/lib/derm/agents/max/projects/0123456789abcdef/home".to_string(),
+        "/var/lib/derm/agents/max/signin/claude-code".to_string(),
+    ];
+    let s = project_spec(&ProjectPaths {
+        folders: &["/srv/agents/p".into()],
+        writable: &w,
+        bridge: None,
+        path: "/usr/local/bin:/usr/bin:/bin",
+        pts: false,
+        require_scopes: true,
+    });
+    assert!(
+        !s.write.iter().chain(&s.read).any(|x| x.contains("/signin")),
+        "the store is in the domain every tool command of the chat inherits: {:?}",
+        s.write
+    );
 }
 
 /// The chat's own folders, bridge and home, and nothing of another chat's
