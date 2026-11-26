@@ -431,3 +431,98 @@ fn call_2a_a_persons_brokered_chat_passes_its_sign_in_host_and_keeps_its_connect
     assert!(deny.is_empty(), "{deny:?}");
     assert_eq!(account_egress("pi", None), (Vec::new(), Vec::new()));
 }
+
+/// BT-12 (P box test, high; red first): an agent account's brokered chat
+/// reached every host but `mcp-proxy.anthropic.com` through derm-egress,
+/// which runs as the person, past the account's loopback-only firewall
+/// (`example.com` 200 from inside the chat, box step 15). Its egress allows
+/// only its secrets' own hosts and its harness's sign-in pass-through; a
+/// person's own chat keeps no allow list.
+#[test]
+fn bt_12_an_account_chats_egress_reaches_only_its_secrets_hosts_and_the_pass_through() {
+    use derm_egress::{decide_with, Blocked, Outbound};
+    let entries = vec![entry("gh", From::Env("GH_X".into()))];
+    let blocked = |p: &Policy, host: &str| {
+        decide_with(
+            &Outbound {
+                connect_host: host,
+                sni: Some(host),
+                target: "",
+                headers: &[],
+                body: b"",
+            },
+            &[],
+            p,
+        )
+        .blocked
+    };
+    let (acct, pass) = egress_rules(&entries, "claude-code", Some("derm-box"));
+    assert_eq!(pass, vec![("platform.claude.com".to_string(), 443)]);
+    assert_eq!(blocked(&acct, "example.com"), Some(Blocked::NotAllowed));
+    assert_eq!(
+        blocked(&acct, "api.anthropic.com"),
+        Some(Blocked::NotAllowed)
+    );
+    assert_eq!(blocked(&acct, "api.github.com"), None);
+    assert_eq!(blocked(&acct, "platform.claude.com"), None);
+    assert!(blocked(&acct, "mcp-proxy.anthropic.com").is_some());
+    let (person, _) = egress_rules(&entries, "claude-code", None);
+    assert!(person.allow.is_none(), "{:?}", person.allow);
+    assert_eq!(blocked(&person, "example.com"), None);
+    assert_eq!(blocked(&person, "mcp-proxy.anthropic.com"), None);
+}
+
+/// MP-1 (P Mac test; red first): under srt with the sign-in host shut (srt
+/// on macOS with a keychain store, case 186; Codex with a keyring, FP5R-5),
+/// the start said derm-egress passes that host through for renewal, a route
+/// srt never opens. The note names a pass-through only where the boundary
+/// admits the host.
+#[test]
+fn mp_1_the_egress_note_names_no_pass_through_the_boundary_keeps_shut() {
+    let (h, t, v) = home("mp1");
+    Ca::generate()
+        .unwrap()
+        .save(&ca::dir_for(&h), false)
+        .unwrap();
+    secrets_file(
+        &h,
+        vec![entry("gh", From::File(v.to_string_lossy().into_owned()))],
+    );
+    let says = |p: &Plan| {
+        p.notes
+            .iter()
+            .any(|n| n.contains("passes auth.openai.com:443 through"))
+    };
+    let mut shut = srt_plan();
+    let _b = wire(
+        &chat(&h, &t, "whole", "srt", false),
+        &mut shut,
+        &no_env,
+        None,
+    )
+    .unwrap();
+    assert!(!says(&shut), "{:?}", shut.notes);
+    let mut open = Plan {
+        srt_settings: Some(
+            r#"{"network":{"allowedDomains":["api.github.com","auth.openai.com:443"]}}"#.into(),
+        ),
+        ..Plan::default()
+    };
+    let _b = wire(
+        &chat(&h, &t, "whole", "srt", false),
+        &mut open,
+        &no_env,
+        None,
+    )
+    .unwrap();
+    assert!(says(&open), "{:?}", open.notes);
+    let mut none = Plan::default();
+    let _b = wire(
+        &chat(&h, &t, "standard", "none", false),
+        &mut none,
+        &no_env,
+        None,
+    )
+    .unwrap();
+    assert!(says(&none), "{:?}", none.notes);
+}

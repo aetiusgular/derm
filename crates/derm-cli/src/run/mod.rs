@@ -926,6 +926,18 @@ fn words_at(args: &[String], rest: &[String]) -> Option<usize> {
     None
 }
 
+/// The `PATH` an agent account's chat runs with (`run/user/project.rs`
+/// `PATH`), where its harness's `#!/usr/bin/env node` finds `node`
+/// (BT-14, P box test: with no `PATH` an npm harness's `harnessExe` was
+/// null on an account).
+const ACCOUNT_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
+/// An agent account's harness by its checked absolute path, read on the
+/// account's `PATH` (BT-14).
+fn account_harness_exe(exe: &str) -> Option<String> {
+    harness_exe(exe, Some(ACCOUNT_PATH))
+}
+
 /// What the OS feeds will name as the harness's executable, by its real
 /// path: the program as given or the first match on PATH, with every link
 /// resolved, or, for a script, the interpreter its `#!` line names (through
@@ -1421,6 +1433,18 @@ fn chat_project(home: &Path, cwd: &Path) -> Option<(String, String)> {
         let _ = (home, cwd);
         None
     }
+}
+
+/// Where Claude Code's OTel headers helper goes: the daemon's folder under
+/// `--boundary none` as the person; nowhere (the token in the header
+/// variable instead, as under srt) for an agent account's chat, which runs
+/// as another uid that cannot enter the person's runtime folder (BT-10, P
+/// box test: "otelHeadersHelper failed ... exited 126 ... Permission
+/// denied", so an account chat exported no OTel). The chat token is the
+/// agent's anyway (case 66), and the header variable stays off argv (the
+/// account's `--preserve-env`; `claude_gate::NOT_ON_ARGV`).
+fn export_helper_dir(none: bool, on_account: bool, dir: &Path) -> Option<&Path> {
+    (none && !on_account).then_some(dir)
 }
 
 /// Points Claude Code or Codex at the daemon's OTLP receiver for this chat
@@ -1946,7 +1970,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             a.harness.id,
             inputs.otlp.as_deref(),
             token.as_deref(),
-            (a.boundary == Boundary::None).then_some(helper_dir.as_path()),
+            export_helper_dir(a.boundary == Boundary::None, account.is_some(), &helper_dir),
             content_days.is_some(),
             a.boundary == Boundary::Sbx,
         )
@@ -2499,7 +2523,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         "harnessExe": match account_exe.as_deref() {
             // The same reading (a `#!` script names its interpreter, case
             // 177), from the account's checked absolute path.
-            Some(exe) => harness_exe(exe, None),
+            Some(exe) => account_harness_exe(exe),
             None => harness_exe(
                 a.program.as_deref().unwrap_or(a.harness.command),
                 std::env::var("PATH").ok().as_deref(),
@@ -2508,7 +2532,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         // The binary a launcher starts as the harness (Codex's npm package),
         // so the join finds the harness under the launcher (MW5-28).
         "harnessChildExe": match account_exe.as_deref() {
-            Some(exe) => harness_child_exe(exe, None),
+            Some(exe) => harness_child_exe(exe, Some(ACCOUNT_PATH)),
             None => harness_child_exe(
                 a.program.as_deref().unwrap_or(a.harness.command),
                 std::env::var("PATH").ok().as_deref(),
@@ -3221,6 +3245,40 @@ mod end_to_end {
             Some(want_node)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// BT-10 (P box test, medium; red first): an account chat's OTel
+    /// headers helper sat in the person's runtime folder, which the account
+    /// cannot enter, so Claude Code exported nothing.
+    #[test]
+    fn bt_10_an_account_chat_gets_no_helper_in_the_persons_folder() {
+        let d = Path::new("/home/p/.derm/run/derm/otel-helper/derm-x");
+        assert_eq!(export_helper_dir(true, false, d), Some(d));
+        assert_eq!(export_helper_dir(true, true, d), None);
+        assert_eq!(export_helper_dir(false, false, d), None);
+    }
+
+    /// BT-14 (P box test, low; red first): `run.start`'s `harnessExe` was
+    /// null for an npm harness on an agent account: `#!/usr/bin/env node`
+    /// was resolved with no `PATH`. The account's own `PATH` is the one.
+    #[cfg(unix)]
+    #[test]
+    fn bt_14_an_account_harness_script_names_its_interpreter_on_the_accounts_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("dbt14-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let script = d.join("launcher.js");
+        std::fs::write(&script, "#!/usr/bin/env sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let want = ACCOUNT_PATH
+            .split(':')
+            .map(|p| std::path::Path::new(p).join("sh"))
+            .find(|p| p.exists())
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .map(|p| p.to_string_lossy().into_owned());
+        assert!(want.is_some());
+        assert_eq!(account_harness_exe(script.to_str().unwrap()), want);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Box test w5 retest, BW5R-5: Pi from its own installer runs as a

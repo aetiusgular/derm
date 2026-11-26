@@ -213,3 +213,45 @@ mod anchor {
         problem(read_anchor(&t.file, &t.root, me() + 1), "not owned by uid");
     }
 }
+
+/// BT-11: a hint names only a base listing would have found; a path not
+/// under the root, one through `..`, a first part that is no plain number,
+/// and a base not named by its own owner name no one.
+#[cfg(unix)]
+#[test]
+fn bt_11_a_hint_names_only_a_bridge_base_of_its_own_owner() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: getuid has no preconditions.
+    let me = unsafe { libc::getuid() };
+    let root = std::env::temp_dir().join(format!("derm-bt11-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mine = root.join(me.to_string());
+    std::fs::create_dir(&mine).unwrap();
+    std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o711)).unwrap();
+    let other = root.join((me + 1).to_string());
+    std::fs::create_dir(&other).unwrap();
+    std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o711)).unwrap();
+    let tok = mine.join("chat-x/chat.token");
+    assert_eq!(bridge_owners_for(&root, me, &[tok.as_path()]), vec![me]);
+    for bad in [
+        std::path::PathBuf::from("/tmp/x/chat.token"),
+        root.join("../x/chat.token"),
+        root.join(format!("+{me}/chat.token")),
+        other.join("chat-x/chat.token"),
+    ] {
+        // Listing still finds mine; the hint adds no one.
+        assert_eq!(
+            bridge_owners_for(&root, me, &[bad.as_path()]),
+            vec![me],
+            "{bad:?}"
+        );
+    }
+    std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o731)).unwrap();
+    assert!(bridge_owners_for(&root, me, &[tok.as_path()]).is_empty());
+    // A root of someone else's trusts no hint.
+    std::fs::set_permissions(&mine, std::fs::Permissions::from_mode(0o711)).unwrap();
+    assert!(bridge_owners_for(&root, me + 7, &[tok.as_path()]).is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}

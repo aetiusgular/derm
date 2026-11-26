@@ -654,12 +654,21 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(
         r.out.contains(
-            r#"derm-max ("Claude Max (work)"): claude-code signed in, codex not signed in"#
+            r#"derm-max ("Claude Max (work)"): claude-code sign-in file there, codex no sign-in file"#
         ),
         "{}",
         r.out
     );
     assert!(r.out.contains("derm opened none of them"));
+    // BT-9 (P box test, low; red first): after Claude Code emptied the
+    // store's tokens the line said "signed in". It says what was read, a
+    // file's presence, and that the file is not checked.
+    assert!(!r.out.contains("signed in"), "{}", r.out);
+    assert!(
+        r.out.contains("a file there is not checked: it can hold a sign-in the harness cleared or the vendor ended"),
+        "{}",
+        r.out
+    );
     assert!(r.out.contains("~/signin/codex/auth.json"), "{}", r.out);
     assert!(
         r.out.contains("~/signin/claude-code/.credentials.json"),
@@ -679,7 +688,7 @@ fn status_reads_presence_of_the_harnesss_own_file_and_warns_of_individual_use() 
     std::fs::remove_file(st.home.join("signin/claude-code/.credentials.json")).unwrap();
     let r = go(&st, &["status", "--account", "max"], |_| {});
     assert!(
-        r.out.contains("claude-code not signed in"),
+        r.out.contains("claude-code no sign-in file"),
         "the account home's old file is not the store's: {}",
         r.out
     );
@@ -776,7 +785,8 @@ fn status_opens_no_login_file() {
     let (wc, wx) = (Watch::on(&c), Watch::on(&x));
     let r = go(&st, &["status", "--account", "max"], |_| {});
     assert!(
-        r.out.contains("claude-code signed in, codex signed in"),
+        r.out
+            .contains("claude-code sign-in file there, codex sign-in file there"),
         "{}",
         r.out
     );

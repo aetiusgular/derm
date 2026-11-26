@@ -197,7 +197,12 @@ runuser -u "$OTHER" -- "$PY" -I "$HELPER" verify-uninstaller; expect "verify-uni
 case_ "the account's audit rules (step P, PC R4)"
 grep -q "^== 12. this account's audit rules" "$WORK/install.log"; expect "step 12 is named" 0 "$?"
 if [ -x /usr/sbin/augenrules ] && [ -d /etc/audit/rules.d ]; then
-	echo "  not run here: auditd is installed; the box test installs the rules"
+	# BT-1: the line says whether this account's own rules loaded.
+	if grep -q "not installed: .*derm-audit-feed" "$WORK/install.log"; then
+		echo "  not run here: auditd is installed but no root derm-audit-feed; the box test installs the rules"
+	else
+		grep -qE "this account's [0-9]+ audit rules are loaded|only [0-9]+ of this account's [0-9]+ audit rules are loaded" "$WORK/install.log"; expect "step 12 says whether the account's own rules loaded (BT-1)" 0 "$?"
+	fi
 else
 	grep -q "not installed: no auditd here" "$WORK/install.log"; expect "with no auditd it says so and goes on" 0 "$?"
 	expect "no rules file was made" 0 "$(ls /etc/audit/rules.d/50-derm-* 2>/dev/null | wc -l)"

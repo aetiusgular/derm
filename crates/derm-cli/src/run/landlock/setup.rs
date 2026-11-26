@@ -78,7 +78,27 @@ pub(crate) fn make(s: &Setup) -> Result<Vec<(String, String)>, String> {
         parts.push(private_dir(&proj, part, me, &format!("{dir_text}/{part}"))?);
     }
     let project_home = format!("{dir_text}/{}", layout::HOME);
-    for f in &s.files {
+    // BT-2 and BT-17: Claude Code's own state file is merged, not made only
+    // when missing, so a project home skips Claude Code's onboarding and
+    // keeps derm's entry after Claude Code wrote the file first.
+    if s.harness == "claude-code" {
+        let entry = s.files.iter().find(|f| f.rel == CLAUDE_JSON);
+        if let Err(why) = claude_json(&parts[0], entry.map(|f| f.text.as_str()), me) {
+            eprintln!(
+                "derm {}: {project_home}/{CLAUDE_JSON}: {why}; derm's onboarding seed and gateway entry were not written there",
+                super::SUBCOMMAND
+            );
+        }
+    }
+    // FX3-1: Pi reads `mcp.json` from its agent folder, which call 7a makes
+    // per chat, so its entry goes there (below), not into the project home.
+    let pi_entry = (s.harness == "pi")
+        .then(|| s.files.iter().find(|f| f.rel == PI_MCP))
+        .flatten();
+    for f in s.files.iter().filter(|f| {
+        !(s.harness == "claude-code" && f.rel == CLAUDE_JSON)
+            && !(s.harness == "pi" && f.rel == PI_MCP)
+    }) {
         // An entry is a convenience: a name that is not a plain path, or a
         // folder on its way that is not this account's own, leaves that
         // entry out and says so; the chat still starts.
@@ -108,6 +128,7 @@ pub(crate) fn make(s: &Setup) -> Result<Vec<(String, String)>, String> {
             &project_home,
             &PiRoot::system(),
             me,
+            pi_entry.map(|f| f.text.as_str()),
         );
     }
     if layout::SIGNIN_HARNESSES.contains(&s.harness.as_str()) {
@@ -165,6 +186,7 @@ pub(crate) fn pi_agent_dir(
     project_home: &str,
     root: &PiRoot,
     me: u32,
+    mcp: Option<&str>,
 ) -> Result<Vec<(String, String)>, String> {
     use derm_core::owner::{read_anchor, Anchor};
     let read_root = |name: &str| -> Result<Option<String>, String> {
@@ -205,6 +227,9 @@ pub(crate) fn pi_agent_dir(
     new_file(&dir, "settings.json", &settings, me)?;
     if let Some(m) = models {
         new_file(&dir, "models.json", &m, me)?;
+    }
+    if let Some(m) = mcp {
+        new_file(&dir, "mcp.json", m, me)?;
     }
     crate::agents::signin::link_pi_agent_dir(Path::new(account_home), Path::new(&shown))?;
     Ok(vec![
@@ -280,6 +305,103 @@ pub(crate) fn settings_env_refusal(text: &str, names: &[&str]) -> Result<(), Str
             named.join(", ")
         ))
     }
+}
+
+/// Pi's MCP file under the project home's agent folder, where derm's
+/// gateway entry for Pi sits (`run/user/project.rs` `gateway_entry`).
+const PI_MCP: &str = ".pi/agent/mcp.json";
+/// Claude Code's user state file under the project home (`~/.claude.json`).
+const CLAUDE_JSON: &str = ".claude.json";
+/// Past this a `.claude.json` is not read (Claude Code's grows with its
+/// project list; this only stops a runaway file).
+const CLAUDE_JSON_MAX: i64 = 8 * 1024 * 1024;
+
+/// BT-2 and BT-17 (P box test): `.claude.json` in the project home with
+/// `hasCompletedOnboarding: true` and, when `entry` is given (derm's gateway
+/// entry, `{"mcpServers": {"derm_project": ...}}`), derm's server merged in;
+/// every other key the harness or the person wrote stays. A new file is
+/// seeded as Claude Code 2.1.322's own sandbox seeds a fresh config folder
+/// (`{hasCompletedOnboarding: true, autoUpdates: false}`, its `Oa()`, read in
+/// the binary): its onboarding's preflight fetches `api.anthropic.com`
+/// outside the tap, which the chat's sign-in tunnel refuses, and Claude Code
+/// then exits (`process.exit(1)`, BT-2). The file is opened without
+/// following a link, must be a regular file of this account's with one
+/// link, and is replaced by a new file renamed over it, never written in
+/// place; a file that is not a JSON object is left as it is (an error).
+/// Nothing is written when nothing changes. A chat of the same project
+/// running beside this one can write the file between the read and the
+/// rename, as two Claude Codes on one config folder can (I; open, low).
+fn claude_json(home: &OwnedFd, entry: Option<&str>, me: u32) -> Result<(), String> {
+    use serde_json::{Map, Value};
+    let found = open_no_follow(home.as_raw_fd(), CLAUDE_JSON, libc::O_NONBLOCK)?;
+    let (mut obj, fresh) = match found {
+        None => {
+            let mut m = Map::new();
+            m.insert("autoUpdates".into(), Value::Bool(false));
+            (m, true)
+        }
+        Some(fd) => {
+            let st = fstat(fd.as_raw_fd())?;
+            if st.st_mode & libc::S_IFMT != libc::S_IFREG
+                || st.st_uid != me
+                || st.st_nlink != 1
+                || st.st_size > CLAUDE_JSON_MAX
+            {
+                return Err(
+                    "not a plain file of this account's with one link, or too large".into(),
+                );
+            }
+            let mut text = String::new();
+            use std::io::Read;
+            std::fs::File::from(fd)
+                .read_to_string(&mut text)
+                .map_err(|e| e.to_string())?;
+            match serde_json::from_str::<Value>(&text) {
+                Ok(Value::Object(m)) => (m, false),
+                _ => return Err("not a JSON object".into()),
+            }
+        }
+    };
+    let mut changed = fresh;
+    if obj.get("hasCompletedOnboarding") != Some(&Value::Bool(true)) {
+        obj.insert("hasCompletedOnboarding".into(), Value::Bool(true));
+        changed = true;
+    }
+    if let Some(e) = entry {
+        let v: Value = serde_json::from_str(e).map_err(|e| e.to_string())?;
+        let servers = v
+            .get("mcpServers")
+            .and_then(Value::as_object)
+            .ok_or("derm's entry has no mcpServers")?;
+        let list = obj
+            .entry("mcpServers")
+            .or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
+            .ok_or("its mcpServers is not an object")?;
+        for (k, x) in servers {
+            if list.get(k) != Some(x) {
+                list.insert(k.clone(), x.clone());
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    let text = serde_json::to_string_pretty(&Value::Object(obj)).map_err(|e| e.to_string())?;
+    let tmp = format!("{CLAUDE_JSON}.derm-{}", uuid::Uuid::new_v4().simple());
+    new_file(home, &tmp, &text, me)?;
+    let (a, b) = (cname(&tmp)?, cname(CLAUDE_JSON)?);
+    // SAFETY: both names live across the call; `home` is an open folder.
+    // renameat replaces the name, never a link's target.
+    let r = unsafe { libc::renameat(home.as_raw_fd(), a.as_ptr(), home.as_raw_fd(), b.as_ptr()) };
+    if r != 0 {
+        let e = std::io::Error::last_os_error();
+        // SAFETY: as above.
+        unsafe { libc::unlinkat(home.as_raw_fd(), a.as_ptr(), 0) };
+        return Err(e.to_string());
+    }
+    Ok(())
 }
 
 /// `name` in the folder `dir`, opened without following a link; `None` when
@@ -655,7 +777,7 @@ mod tests {
         let run_text = proj.join("run").to_string_lossy().into_owned();
         let home_text = proj.join("home").to_string_lossy().into_owned();
         let acct = a.0.to_string_lossy().into_owned();
-        let env = pi_agent_dir(&run_fd, &run_text, &acct, &home_text, &root, me).unwrap();
+        let env = pi_agent_dir(&run_fd, &run_text, &acct, &home_text, &root, me, None).unwrap();
         let dir = Path::new(var(&env, "PI_CODING_AGENT_DIR").unwrap()).to_path_buf();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
@@ -675,8 +797,139 @@ mod tests {
             std::fs::Permissions::from_mode(0o666),
         )
         .unwrap();
-        let e = pi_agent_dir(&run_fd, &run_text, &acct, &home_text, &root, me).unwrap_err();
+        let e = pi_agent_dir(&run_fd, &run_text, &acct, &home_text, &root, me, None).unwrap_err();
         assert!(e.contains("models.json"), "{e}");
+    }
+
+    /// FX3-1 (found reading Pi 1.6.0 for this pass; red first): Pi's MCP
+    /// extension reads `mcp.json` from its agent folder (`getAgentDir()`,
+    /// `PI_CODING_AGENT_DIR` first; `dist/extensions/mcp/index.js:1200`,
+    /// `config.js:4-5, 105`), which call 7a made a folder of each chat's own,
+    /// so derm's entry in the project home's `.pi/agent/mcp.json` was never
+    /// read. It goes into the chat's agent folder.
+    #[test]
+    fn fx3_1_a_pi_chats_agent_folder_holds_derms_gateway_entry() {
+        let a = account();
+        pi_store(&a);
+        let entry =
+            crate::run::user::project::gateway_entry("pi", "/usr/local/bin/derm-daemon").unwrap();
+        assert_eq!(entry.rel, ".pi/agent/mcp.json");
+        let s = setup(&a.0, "pi", vec![entry.clone()]);
+        let env = make(&s).unwrap();
+        let dir = var(&env, "PI_CODING_AGENT_DIR").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(Path::new(dir).join("mcp.json")).unwrap(),
+            entry.text
+        );
+        // Not left where Pi no longer reads it.
+        let home = a.0.join("projects").join(&s.project).join("home");
+        assert!(!home.join(".pi/agent/mcp.json").exists());
+    }
+
+    fn claude_store(a: &Tmp) {
+        let store = a.0.join("signin").join("claude-code");
+        std::fs::create_dir_all(&store).unwrap();
+        for d in [a.0.join("signin"), store] {
+            std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    fn claude_json(a: &Tmp, s: &Setup) -> serde_json::Value {
+        let f =
+            a.0.join("projects")
+                .join(&s.project)
+                .join("home/.claude.json");
+        serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap()
+    }
+
+    fn derm_entry() -> File {
+        crate::run::user::project::gateway_entry("claude-code", "/usr/local/bin/derm-daemon")
+            .unwrap()
+    }
+
+    /// BT-2 (P box test, high; red first): a new project home's first Claude
+    /// Code chat ran Claude Code 2.1.322's onboarding, whose preflight calls
+    /// `api.anthropic.com` outside the tap; the tunnel refused it and the
+    /// chat exited (and, during a renewal, emptied the account's sign-in,
+    /// BT-8). The project home's `.claude.json` is seeded as Claude Code's own
+    /// sandbox seeds a fresh config folder (`hasCompletedOnboarding: true`,
+    /// `autoUpdates: false`; its `Oa()`, read in the 2.1.322 binary), with
+    /// derm's entry, and with no root `derm-daemon` too.
+    #[test]
+    fn bt_2_a_fresh_project_homes_claude_json_skips_onboarding_and_holds_derms_entry() {
+        let a = account();
+        claude_store(&a);
+        let s = setup(&a.0, "claude-code", vec![derm_entry()]);
+        make(&s).unwrap();
+        let v = claude_json(&a, &s);
+        assert_eq!(v["hasCompletedOnboarding"], true, "{v}");
+        assert_eq!(v["autoUpdates"], false, "{v}");
+        assert_eq!(
+            v["mcpServers"]["derm_project"]["args"][0], "project-mcp",
+            "{v}"
+        );
+        let f =
+            a.0.join("projects")
+                .join(&s.project)
+                .join("home/.claude.json");
+        assert_eq!(std::fs::metadata(&f).unwrap().mode() & 0o777, 0o600);
+        // No root derm-daemon: no entry, still no onboarding.
+        let b = account();
+        claude_store(&b);
+        let s = setup(&b.0, "claude-code", Vec::new());
+        make(&s).unwrap();
+        let v = claude_json(&b, &s);
+        assert_eq!(v["hasCompletedOnboarding"], true, "{v}");
+        assert!(v.get("mcpServers").is_none(), "{v}");
+    }
+
+    /// BT-17 (P box test, medium; red first): Claude Code writes
+    /// `.claude.json` on its first start, and derm's entry was written only
+    /// where no file was (`O_EXCL`), so it never reached a project home where
+    /// Claude Code had run, while `run.start` named it. It is merged into the
+    /// harness's own file, which keeps every other key; a link there is not
+    /// followed or replaced, and a file that is not a JSON object is left.
+    #[test]
+    fn bt_17_derms_entry_is_merged_into_an_existing_claude_json() {
+        let a = account();
+        claude_store(&a);
+        let s = setup(&a.0, "other", Vec::new());
+        make(&s).unwrap();
+        let home = a.0.join("projects").join(&s.project).join("home");
+        let f = home.join(".claude.json");
+        std::fs::write(
+            &f,
+            r#"{"numStartups":3,"theme":"dark","mcpServers":{"mine":{"type":"stdio","command":"/bin/true"}}}"#,
+        )
+        .unwrap();
+        let s = setup(&a.0, "claude-code", vec![derm_entry()]);
+        make(&s).unwrap();
+        let v = claude_json(&a, &s);
+        assert_eq!(v["numStartups"], 3, "{v}");
+        assert_eq!(v["theme"], "dark", "{v}");
+        assert_eq!(v["mcpServers"]["mine"]["command"], "/bin/true", "{v}");
+        assert_eq!(v["mcpServers"]["derm_project"]["type"], "stdio", "{v}");
+        assert_eq!(v["hasCompletedOnboarding"], true, "{v}");
+        // An existing file keeps its own autoUpdates (derm's block pins the
+        // updater off anyway, R1).
+        assert!(v.get("autoUpdates").is_none(), "{v}");
+        // A link in its place is neither followed nor replaced; the chat
+        // still starts.
+        std::fs::remove_file(&f).unwrap();
+        let target = a.0.join("elsewhere.json");
+        std::fs::write(&target, "{}").unwrap();
+        std::os::unix::fs::symlink(&target, &f).unwrap();
+        make(&s).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{}");
+        assert!(std::fs::symlink_metadata(&f)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // Not a JSON object: left as it is.
+        std::fs::remove_file(&f).unwrap();
+        std::fs::write(&f, "[1]").unwrap();
+        make(&s).unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "[1]");
     }
 
     #[test]

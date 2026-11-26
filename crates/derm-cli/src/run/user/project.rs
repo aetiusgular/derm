@@ -226,6 +226,9 @@ pub(crate) fn gateway_entry(harness: &str, daemon: &str) -> Option<setup::File> 
 /// `dist/main.js:636`, `core/resource-loader.js:386`,
 /// `core/package-manager.js:790-802`), so nothing is written into the
 /// project home, where the chat could take it out again.
+/// Node's module compile cache off (`NODE_DISABLE_COMPILE_CACHE`, Node 22's
+/// `module.enableCompileCache` docs; run on 22.23.5).
+const NODE_CACHE_OFF: (&str, &str) = ("NODE_DISABLE_COMPILE_CACHE", "1");
 pub(crate) const PI_PACKAGE: &str = "/usr/local/lib/derm/derm-pi";
 
 /// Codex's key for a hook from its session flags (`-c`): the synthetic
@@ -310,9 +313,13 @@ fn harness_gate_only(harness: &str, derm: &str, pi_package: Option<&str>) -> Gat
                 // taken when its name and last line match, both computable
                 // from the readable source, so one write there would replace
                 // the gate for the project's next Pi chat. Off.
+                // P box test, Look out for 34: Node's compile cache, which Pi
+                // 1.6.0 turns on (`dist/bundle/cli.js:4`) in the same TMPDIR
+                // and the next chat reads, off too.
                 env: vec![
                     ("DERM_BIN".into(), derm.to_string()),
                     ("JITI_FS_CACHE".into(), "false".into()),
+                    (NODE_CACHE_OFF.0.into(), NODE_CACHE_OFF.1.into()),
                 ],
                 expected: true,
                 how: "cli-package",
@@ -320,6 +327,7 @@ fn harness_gate_only(harness: &str, derm: &str, pi_package: Option<&str>) -> Gat
             },
             None => Gate {
                 how: "none",
+                env: vec![(NODE_CACHE_OFF.0.into(), NODE_CACHE_OFF.1.into())],
                 line: format!("derm run: NO DERM GATE for this Pi chat: Pi reads derm's package from a root-owned copy at {PI_PACKAGE} on an agent account, and there is none (sudo install -d -o root -g root -m 0755 {PI_PACKAGE} && sudo cp -r <derm>/packages/derm-pi/. {PI_PACKAGE}/); its calls run ungated"),
                 ..Gate::default()
             },
@@ -671,10 +679,23 @@ mod tests {
             p.env,
             vec![
                 ("DERM_BIN".to_string(), d.to_string()),
-                ("JITI_FS_CACHE".to_string(), "false".to_string())
+                ("JITI_FS_CACHE".to_string(), "false".to_string()),
+                ("NODE_DISABLE_COMPILE_CACHE".to_string(), "1".to_string())
             ]
         );
+        // P box test, Look out for 34 (red first): Pi 1.6.0 turns Node's
+        // compile cache on (`dist/bundle/cli.js:4`, `enableCompileCache()`),
+        // in `os.tmpdir()/node-compile-cache`, the chat's own TMPDIR, read by
+        // the project's next Pi chat as it loads Pi and derm's package. Off,
+        // with or without derm's package (Node 22.23.5, run: status 3,
+        // "Disabled by NODE_DISABLE_COMPILE_CACHE").
         let none = harness_gate("pi", d, None);
+        assert!(
+            none.env
+                .contains(&("NODE_DISABLE_COMPILE_CACHE".to_string(), "1".to_string())),
+            "{:?}",
+            none.env
+        );
         assert_eq!((none.expected, none.how), (false, "none"));
         assert!(
             none.args.is_empty() && none.line.contains("NO DERM GATE"),

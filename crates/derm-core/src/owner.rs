@@ -201,6 +201,71 @@ pub fn bridge_owners(root: &std::path::Path, trusted: u32) -> Vec<u32> {
     out
 }
 
+/// BT-11 (P box test, high): [`bridge_owners`], with the bridge folders the
+/// gate was handed (`hints`: the paths in `DERM_POLICY`,
+/// `DERM_DAEMON_SOCKET` and `DERM_CHAT_TOKEN_FILE`) as candidates too. Inside
+/// an account chat's Landlock domain `root` cannot be listed (the domain
+/// grants `READ_DIR` only on the chat's own bridge folder; run on the box,
+/// step 11), but a path's metadata can still be read (the kernel's Landlock
+/// docs, "Current limitations": `stat(2)` is not restricted), so a hint's
+/// first part under `root` names a candidate, checked as a listed one is:
+/// `root` a folder of `trusted`'s no one else can write, the candidate a
+/// folder, not a link, named by its own owner's uid, closed to group and
+/// other writes. A hint can only name a base that root's install made for
+/// its owner, which listing would have found too, so it widens nothing; one
+/// that is not under `root`, or whose first part is not a plain number,
+/// names no one.
+#[cfg(unix)]
+pub fn bridge_owners_for(
+    root: &std::path::Path,
+    trusted: u32,
+    hints: &[&std::path::Path],
+) -> Vec<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let ok_root = std::fs::symlink_metadata(root)
+        .is_ok_and(|m| m.is_dir() && m.uid() == trusted && m.mode() & 0o022 == 0);
+    if !ok_root {
+        return Vec::new();
+    }
+    let mut out = bridge_owners(root, trusted);
+    for h in hints {
+        let Ok(rel) = h.strip_prefix(root) else {
+            continue;
+        };
+        let Some(std::path::Component::Normal(first)) = rel.components().next() else {
+            continue;
+        };
+        let Some(n) = first
+            .to_str()
+            .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|t| t.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let ok = std::fs::symlink_metadata(root.join(first))
+            .is_ok_and(|m| m.is_dir() && m.uid() == n && m.mode() & 0o022 == 0);
+        if ok {
+            out.push(n);
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The paths a gate was handed that sit in a bridge folder (BT-11): the
+/// three variables derm's flag block pins for an account chat
+/// (`run/claude_gate.rs` `ACCOUNT_GATE_VARS`).
+#[cfg(unix)]
+pub fn bridge_hints() -> Vec<std::path::PathBuf> {
+    ["DERM_POLICY", "DERM_DAEMON_SOCKET", "DERM_CHAT_TOKEN_FILE"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .collect()
+}
+
 /// What reading the anchor gave.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Anchor {
@@ -304,7 +369,14 @@ pub fn trusted_owners() -> Option<Owners> {
             Anchor::Text(t) => owners_for_account(
                 uid,
                 Some(&t),
-                &bridge_owners(std::path::Path::new(BRIDGES), 0),
+                &bridge_owners_for(
+                    std::path::Path::new(BRIDGES),
+                    0,
+                    &bridge_hints()
+                        .iter()
+                        .map(|p| p.as_path())
+                        .collect::<Vec<_>>(),
+                ),
             )
             .unwrap_or(o),
             Anchor::Problem(p) => none(false, p),

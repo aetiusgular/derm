@@ -168,6 +168,10 @@ pub(crate) fn wrap(
     // on the chat's own PATH; the checked path is the one that runs.
     let path = project::PATH.to_string();
     let (program_path, program_real) = root_install(&program, &path).map_err(|e| (1, e))?;
+    // BT-15: an npm harness's whole package, not only its entry script.
+    if let Some(pkg) = npm_package(Path::new(&program_real)) {
+        closed_package(&pkg, 0).map_err(|e| (1, e))?;
+    }
     // Request PB-4 (contracts/projects.md 2.3): Pi below 1.5.1 locks the
     // link's path, not the store's file, so two projects can lose a sign-in
     // write (note CD C1; Pi 1.5.1 `CHANGELOG.md:96`). The version is read
@@ -371,6 +375,7 @@ pub(crate) fn wrap(
             ""
         }
     );
+    eprintln!("{PATHNAME_SOCKETS_LINE}");
     eprintln!(
         "{}",
         if pts {
@@ -673,6 +678,92 @@ pub(crate) fn root_install(program: &str, path: &str) -> Result<(String, String)
     Err(format!(
         "{program} is not installed where every agent account runs it ({path}): install it as root, outside any home (for an npm harness: sudo npm install -g <package>), and start the chat again"
     ))
+}
+
+/// BT-18 (P box test, medium): the domain's line names abstract sockets and
+/// another project's folders, which read as covering a pathname Unix socket
+/// there; it does not (run on the box: a chat in one project connected to
+/// another project's Claude Code inbox in `run/cc-socks/`, and only Claude
+/// Code's own `crossSessionInbound: "refuse"` stopped the message). Said at
+/// the start until lane PG's mount layer closes it.
+pub(crate) const PATHNAME_SOCKETS_LINE: &str = "derm run: this chat can still connect to a pathname Unix socket in another project's folders of this account (its domain does not cover connect(2) on one, and the files are the account's own); derm flags such a connect (net.unix, outside its project) and does not block it; lane PG's mount layer closes it";
+
+/// The npm package `program_real` runs from (BT-15): the nearest folder
+/// above it whose parent is a `node_modules` folder, or a scope (`@x`) in
+/// one, as `<prefix>/lib/node_modules/<package>` and
+/// `<prefix>/lib/node_modules/@scope/<package>` lay out a global install.
+/// `None` for a program in no package (Claude Code's native binary).
+pub(crate) fn npm_package(program_real: &Path) -> Option<PathBuf> {
+    let is = |p: Option<&Path>, n: &str| p.and_then(Path::file_name).is_some_and(|f| f == n);
+    for dir in program_real.ancestors().skip(1) {
+        let parent = dir.parent();
+        if is(parent, "node_modules") {
+            return Some(dir.to_path_buf());
+        }
+        let scoped = parent
+            .and_then(Path::file_name)
+            .and_then(|f| f.to_str())
+            .is_some_and(|f| f.starts_with('@'));
+        if scoped && is(parent.and_then(Path::parent), "node_modules") {
+            return Some(dir.to_path_buf());
+        }
+    }
+    None
+}
+
+/// Every entry under the npm package `root` the `trusted` uid's and closed
+/// to group and other writes (BT-15): `sudo npm install -g` keeps each
+/// tarball entry's owner (node-tar sets `preserveOwner` when run as root,
+/// `lib/unpack.js:177-178`, read on the box), so an entry script of root's
+/// can load a dependency file another uid can rewrite. A link is taken as
+/// itself, never followed (its target, inside the package, is walked as its
+/// own entry); a link's own mode means nothing, its owner does. At most
+/// 100,000 entries and 32 levels. The refusal names the fix.
+pub(crate) fn closed_package(root: &Path, trusted: u32) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let fix = |p: &Path, why: &str| {
+        format!(
+            "{} {why}: a harness on an agent account runs only from a package every file of which only root can change; run `sudo chown -R root:root {r} && sudo chmod -R go-w {r}` (npm run as root keeps each tarball's file owners), and start the chat again",
+            p.display(),
+            r = root.display()
+        )
+    };
+    let mut seen = 0usize;
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((d, depth)) = stack.pop() {
+        let rd = std::fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        for e in rd {
+            let e = e.map_err(|e| format!("{}: {e}", d.display()))?;
+            seen += 1;
+            if seen > 100_000 {
+                return Err(format!(
+                    "{} holds more than 100,000 entries",
+                    root.display()
+                ));
+            }
+            let path = e.path();
+            let m =
+                std::fs::symlink_metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            if m.uid() != trusted {
+                return Err(fix(&path, &format!("is uid {}'s, not root's", m.uid())));
+            }
+            if m.file_type().is_symlink() {
+                continue;
+            }
+            if m.mode() & 0o022 != 0 {
+                return Err(fix(&path, "can be written by group or others"));
+            }
+            if m.is_dir() {
+                if depth >= 32 {
+                    return Err(format!("{} is more than 32 folders deep", root.display()));
+                }
+                stack.push((path, depth + 1));
+            } else if !m.is_file() {
+                return Err(fix(&path, "is not a file or a folder"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `derm-daemon` beside the helper, when it is a root-owned copy.
@@ -1360,6 +1451,75 @@ mod tests {
             assert!(e.contains("root-owned"), "{e}");
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// BT-15 (P box test, medium; red first): `sudo npm install -g` keeps
+    /// each tarball entry's uid (node-tar's `preserveOwner` is true as root,
+    /// `unpack.js:177-178`, read on the box), and Pi 1.6.0's install left 124
+    /// files owned by other uids, one of them a login user's, under derm's
+    /// "root-owned install", while derm checked only the entry script and its
+    /// folders. The whole package the harness runs from is walked: every
+    /// entry the trusted uid's and closed to group and other writes, a link
+    /// only as itself, and the refusal names the `chown` line.
+    #[test]
+    fn bt_15_an_npm_harness_runs_only_from_a_package_closed_entry_by_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let me = derm_core::platform::effective_user();
+        let base = std::env::temp_dir().join(format!("dpa-npm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let pkg = base.join("lib/node_modules/@earendil-works/pi-coding-agent");
+        let dep = pkg.join("node_modules/proper-lockfile/lib");
+        std::fs::create_dir_all(pkg.join("dist")).unwrap();
+        std::fs::create_dir_all(&dep).unwrap();
+        std::fs::write(pkg.join("dist/cli.js"), "#!/usr/bin/env node\n").unwrap();
+        std::fs::write(pkg.join("package.json"), "{}").unwrap();
+        std::fs::write(dep.join("lockfile.js"), "x").unwrap();
+        std::os::unix::fs::symlink(
+            "../proper-lockfile/lib/lockfile.js",
+            pkg.join("node_modules/.bin-x"),
+        )
+        .unwrap();
+        let real = pkg.join("dist/cli.js");
+        assert_eq!(npm_package(&real).as_deref(), Some(pkg.as_path()));
+        // Codex's unscoped layout, and a native binary in no package.
+        let codex = base.join("lib/node_modules/codex/bin/codex.js");
+        assert_eq!(
+            npm_package(&codex).as_deref(),
+            Some(base.join("lib/node_modules/codex").as_path())
+        );
+        assert_eq!(npm_package(Path::new("/usr/local/bin/claude")), None);
+        assert_eq!(closed_package(&pkg, me), Ok(()));
+        // One dependency's file others may write: refused, with the fix.
+        std::fs::set_permissions(
+            dep.join("lockfile.js"),
+            std::fs::Permissions::from_mode(0o664),
+        )
+        .unwrap();
+        let e = closed_package(&pkg, me).unwrap_err();
+        assert!(
+            e.contains("lockfile.js") && e.contains("chown -R root:root"),
+            "{e}"
+        );
+        std::fs::set_permissions(
+            dep.join("lockfile.js"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        // Another uid's file (as root only: chown needs it).
+        if me == 0 {
+            std::os::unix::fs::chown(dep.join("lockfile.js"), Some(501), None).unwrap();
+            let e = closed_package(&pkg, 0).unwrap_err();
+            assert!(e.contains("lockfile.js"), "{e}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// BT-18: the start says pathname sockets in another project are
+    /// reachable and only flagged.
+    #[test]
+    fn bt_18_the_start_says_another_projects_pathname_sockets_are_reachable() {
+        assert!(PATHNAME_SOCKETS_LINE.contains("pathname Unix socket in another project"));
+        assert!(PATHNAME_SOCKETS_LINE.contains("does not block it"));
     }
 
     #[test]

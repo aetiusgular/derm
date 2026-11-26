@@ -22,6 +22,9 @@ const B_PID: &str = "DERM_LLCHECK_B_PID";
 const B_SOCK: &str = "DERM_LLCHECK_B_SOCK";
 const FS_BASE: &str = "DERM_LLCHECK_FS_BASE";
 const TOKEN: &str = "tok-of-chat-B";
+const OWN_ROOT: &str = "DERM_LLCHECK_OWN_ROOT";
+const OWN_HINT: &str = "DERM_LLCHECK_OWN_HINT";
+const OWN_TRUSTED: &str = "DERM_LLCHECK_OWN_TRUSTED";
 
 fn test_name(f: &str) -> String {
     let m = module_path!();
@@ -50,6 +53,7 @@ fn role(test: &str) {
         "a" => role_a(),
         "fs" => role_fs(),
         "mount" => role_mount(),
+        "owners" => role_owners(),
         other => panic!("unknown role {other}"),
     }
     std::process::exit(0);
@@ -546,6 +550,110 @@ fn a_chats_domain_reaches_its_own_folders_and_no_other_chats() {
     );
 }
 
+/// E: in a chat's domain, whom the gate finds as the person the account
+/// works for: by listing the bridges' root (what the gate did through P fix
+/// 2), and from the bridge folder it was handed (BT-11's fix).
+fn role_owners() {
+    let root = std::path::PathBuf::from(std::env::var(OWN_ROOT).unwrap());
+    let hint = std::path::PathBuf::from(std::env::var(OWN_HINT).unwrap());
+    let trusted: u32 = std::env::var(OWN_TRUSTED).unwrap().parse().unwrap();
+    let got = json!({
+        "listed": derm_core::owner::bridge_owners(&root, trusted),
+        "named": derm_core::owner::bridge_owners_for(&root, trusted, &[hint.as_path()]),
+    });
+    println!("LLCHECK {got}");
+}
+
+/// BT-11 (P box test, high; red first): inside an account chat's domain the
+/// gate could not list `/run/derm-agent` (the domain grants `READ_DIR` only on
+/// the chat's own bridge folder), so it found no person, trusted no one, and
+/// every call asked with no daemon. Run inside a real chat domain made by the
+/// real helper, not beside it: the bridge's base is found from the bridge
+/// folder the gate was handed, by `stat` alone, which Landlock does not
+/// restrict (the kernel's Landlock docs, "Current limitations"; the box's
+/// `ls -ld /run/derm-agent` inside a chat, step 11).
+#[test]
+fn bt_11_inside_a_chats_domain_the_gate_finds_the_person_from_its_bridge() {
+    use std::os::unix::fs::PermissionsExt;
+    const T: &str = "bt_11_inside_a_chats_domain_the_gate_finds_the_person_from_its_bridge";
+    role(T);
+    if abi() < 1 {
+        eprintln!("not run: this kernel has no Landlock");
+        return;
+    }
+    let me = derm_core::platform::effective_user();
+    // As root the account is `nobody` and the person a third uid; as a plain
+    // user both are this uid (the folders still have to name their owner).
+    let person = if role_uid().is_some() { 65533 } else { me };
+    let name = format!("llcheck-own-{}", uuid::Uuid::new_v4().simple());
+    let base = if role_uid().is_some() {
+        std::path::Path::new("/run").join(name)
+    } else {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(name)
+    };
+    let root = base.join("derm-agent");
+    let person_dir = root.join(person.to_string());
+    let bridge = person_dir.join("derm-chat1-0123");
+    std::fs::create_dir_all(&bridge).unwrap();
+    std::fs::write(bridge.join("chat.token"), b"t").unwrap();
+    for (d, mode) in [
+        (&base, 0o755),
+        (&root, 0o755),
+        (&person_dir, 0o711),
+        (&bridge, 0o711),
+    ] {
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    std::fs::set_permissions(
+        bridge.join("chat.token"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    if role_uid().is_some() {
+        for d in [&person_dir, &bridge] {
+            std::os::unix::fs::chown(d, Some(person), Some(person)).unwrap();
+        }
+    }
+    let base = std::fs::canonicalize(&base).unwrap();
+    let root = base.join("derm-agent");
+    let bridge = root.join(person.to_string()).join("derm-chat1-0123");
+    let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+    let mut spec = chat_spec(&ChatPaths {
+        folders: &[s(&base.join("none"))],
+        account_home: &s(&base.join("home")),
+        bridge: Some(&s(&bridge)),
+        path: "/usr/local/bin:/usr/bin:/bin",
+        require_scopes: false,
+    });
+    spec.check_network = false;
+    let exe = Exe::new();
+    spec.exec
+        .push(exe.path.parent().unwrap().to_string_lossy().into_owned());
+    let env = [
+        (OWN_ROOT, s(&root)),
+        (OWN_HINT, s(&bridge.join("chat.token"))),
+        (OWN_TRUSTED, me.to_string()),
+    ];
+    // Outside a domain both ways find the person.
+    let mut c = spawn_role(&exe, T, "owners", None, &env);
+    let outside: Value = serde_json::from_str(&line_of(&mut c)).unwrap();
+    let _ = c.wait();
+    let mut c = spawn_role(&exe, T, "owners", Some(&spec), &env);
+    let inside: Value = serde_json::from_str(&line_of(&mut c)).unwrap();
+    let _ = c.wait();
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(outside, json!({"listed": [person], "named": [person]}));
+    // Listing is refused in the domain (the box's finding); the bridge the
+    // gate was handed still names the person.
+    assert_eq!(
+        inside,
+        json!({"listed": [], "named": [person]}),
+        "inside the domain"
+    );
+}
+
 /// The helper starts nothing when it cannot make what the spec asks for.
 #[test]
 fn the_helper_refuses_a_missing_or_bad_spec_and_a_usage_error() {
@@ -658,6 +766,72 @@ fn ai_2_a_rule_path_through_a_link_not_roots_is_refused() {
     let deep = base.join("bin").join("secret.txt");
     assert!(rule_fd(&deep.to_string_lossy()).is_err());
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// BT-5 (P box test, medium; red first): every rule path of derm's helper
+/// was opened with `openat2`, and the Linux feed records each `openat2` as a
+/// write, since its flags sit in a struct the record does not show
+/// (`derm-audit-linux` `action.rs:53-58`, `rules.rs`), so a 3-second chat
+/// raised "write outside folders" for `/etc`, `/usr/bin` and the rest, and
+/// `signin.read` for the store folder (the box's records: `exe` derm, uid
+/// the account's, syscall `openat2`). The rule paths are opened with
+/// `openat(O_PATH | O_NOFOLLOW)` one part at a time, which the feed reads as
+/// an open of no file (`pathOnly`). Run on a thread whose seccomp filter
+/// fails `openat2` with ENOSYS: the opens still work, and a link still
+/// fails them.
+#[test]
+fn bt_5_the_helpers_rule_opens_use_no_openat2() {
+    let base = std::env::temp_dir().join(format!("derm-bt5-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(base.join("real")).unwrap();
+    std::os::unix::fs::symlink(base.join("real"), base.join("ln")).unwrap();
+    let b = base.clone();
+    let got = std::thread::spawn(move || {
+        // SAFETY: plain integers; the filter applies to this thread only.
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0), 0);
+            let filter = [
+                libc::sock_filter {
+                    code: 0x20,
+                    jt: 0,
+                    jf: 0,
+                    k: 0,
+                },
+                libc::sock_filter {
+                    code: 0x15,
+                    jt: 0,
+                    jf: 1,
+                    k: libc::SYS_openat2 as u32,
+                },
+                libc::sock_filter {
+                    code: 0x06,
+                    jt: 0,
+                    jf: 0,
+                    k: 0x0005_0000 | libc::ENOSYS as u32,
+                },
+                libc::sock_filter {
+                    code: 0x06,
+                    jt: 0,
+                    jf: 0,
+                    k: 0x7fff_0000,
+                },
+            ];
+            let prog = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr() as *mut libc::sock_filter,
+            };
+            assert_eq!(
+                libc::prctl(libc::PR_SET_SECCOMP, 2, &prog as *const libc::sock_fprog),
+                0
+            );
+        }
+        let real = rule_fd(&b.join("real").to_string_lossy()).map(|f| f.is_some());
+        let usr = rule_fd("/usr").map(|f| f.is_some());
+        (real, usr)
+    })
+    .join()
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&base);
+    assert_eq!(got, (Ok(true), Ok(true)));
 }
 
 /// Review AI-1 (accounts integration, high; Tony's call 7, settled by step

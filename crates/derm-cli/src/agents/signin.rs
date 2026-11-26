@@ -62,6 +62,23 @@ pub const CLAUDE_STORE_VERIFIED_AT: &str = "2.1.322";
 /// folders above `program_real`; nothing is run, as `pi_floor` reads Pi's.
 /// `None` when no such file is found (a binary copied by hand, say).
 pub fn claude_version_of(program_real: &Path) -> Option<String> {
+    claude_version_with(program_real, CLAUDE_BUILDS)
+}
+
+/// BT-3 (P box test, low): Claude Code's native binary installed bare (box
+/// research's `install -m 0755`, no `package.json` beside it) is known by
+/// its size and sha256, from the npm package each was taken from. 2.1.322:
+/// `@anthropic-ai/claude-code-linux-x64@2.1.322`'s `claude`, 341,914,128
+/// bytes (V by run, `npm pack` and `sha256sum` here, 26 Nov; its prefix is
+/// the pin every note records). Hashed only when the size matches.
+pub const CLAUDE_BUILDS: &[(u64, &str, &str)] = &[(
+    341_914_128,
+    "bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478",
+    "2.1.322",
+)];
+
+/// [`claude_version_of`] with the table of known bare builds.
+pub fn claude_version_with(program_real: &Path, builds: &[(u64, &str, &str)]) -> Option<String> {
     for dir in program_real.ancestors().skip(1).take(4) {
         let Ok(text) = std::fs::read_to_string(dir.join("package.json")) else {
             continue;
@@ -82,7 +99,32 @@ pub fn claude_version_of(program_real: &Path) -> Option<String> {
             .filter(|s| !s.is_empty() && s.len() <= 64 && !s.chars().any(char::is_control))
             .map(str::to_string);
     }
-    None
+    bare_build(program_real, builds)
+}
+
+/// A bare file's build from `builds`, by size first, then sha256 (BT-3).
+fn bare_build(program_real: &Path, builds: &[(u64, &str, &str)]) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let size = std::fs::metadata(program_real).ok()?.len();
+    if !builds.iter().any(|(n, _, _)| *n == size) {
+        return None;
+    }
+    let mut f = std::fs::File::open(program_real).ok()?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).ok()?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    builds
+        .iter()
+        .find(|(n, x, _)| *n == size && *x == hex)
+        .map(|(_, _, v)| v.to_string())
 }
 
 /// Tony's call 4a: the line an account chat's start and `derm doctor` print
@@ -465,6 +507,35 @@ mod imp {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+
+    /// BT-3 (P box test, low; red first): the pinned 2.1.322 installed as a
+    /// bare binary was named "could not be read from its install". A bare
+    /// file whose size and sha256 are a known build's is that build.
+    #[test]
+    fn bt_3_a_bare_binary_is_known_by_its_size_and_hash() {
+        use sha2::{Digest, Sha256};
+        let d =
+            std::env::temp_dir().join(format!("derm-cc-bare-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&d).unwrap();
+        let bin = d.join("claude");
+        std::fs::write(&bin, b"a stand-in for a bare native build").unwrap();
+        let bytes = std::fs::read(&bin).unwrap();
+        let hex: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let table = [(bytes.len() as u64, hex.as_str(), "2.1.322")];
+        assert_eq!(
+            claude_version_with(&bin, &table).as_deref(),
+            Some("2.1.322")
+        );
+        // Same size, other bytes: unknown.
+        std::fs::write(&bin, b"A stand-in for a bare native build").unwrap();
+        assert_eq!(claude_version_with(&bin, &table), None);
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(CLAUDE_BUILDS[0].1.len(), 64);
+        assert!(CLAUDE_BUILDS[0].1.starts_with("bfb3703ad5380242"));
+    }
 
     /// Tony's call 4a (red first; rules case 81's pattern).
     #[test]

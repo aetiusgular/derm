@@ -360,11 +360,10 @@ pub(crate) fn apply(spec: &Spec) -> Result<Applied, String> {
 /// link to `/run/derm-agent/<uid>` widened the next chat's domain to every
 /// chat's bridge and `chat.token`. Every part of `p` that is a link must be
 /// root's (merged /usr's `/bin -> usr/bin`; a chat cannot make one), and the
-/// real path is then opened with `openat2(RESOLVE_NO_SYMLINKS)`, so a link
-/// put there after the check fails the open instead of being followed
-/// (openat2(2): Linux 5.6, before Landlock's 5.13; libc 0.2.189's
-/// `SYS_openat2`, 437 on x86_64 and aarch64, and `RESOLVE_NO_SYMLINKS`
-/// 0x04, read).
+/// real path is then opened one part at a time with
+/// `openat(O_PATH | O_NOFOLLOW)`, so a link put there after the check fails
+/// the open instead of being followed (BT-5 replaced `openat2`'s
+/// `RESOLVE_NO_SYMLINKS`, which the Linux feed records as a write).
 pub(crate) fn rule_fd(p: &str) -> Result<Option<std::fs::File>, String> {
     use std::os::fd::FromRawFd;
     use std::os::unix::fs::MetadataExt;
@@ -391,35 +390,61 @@ pub(crate) fn rule_fd(p: &str) -> Result<Option<std::fs::File>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{p}: {e}")),
     };
-    let c = std::ffi::CString::new(real.as_os_str().as_encoded_bytes())
-        .map_err(|_| format!("{p}: a NUL in the path"))?;
-    // SAFETY: `open_how` is plain integers (libc marks it non-exhaustive),
-    // and zero is the kernel's "nothing asked" for each field.
-    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
-    how.flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
-    how.resolve = libc::RESOLVE_NO_SYMLINKS;
-    // SAFETY: `c` and `how` live across the call; the size is `how`'s.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            c.as_ptr(),
-            &how as *const libc::open_how,
-            std::mem::size_of::<libc::open_how>(),
+    // BT-5 (P box test): one part at a time with `openat(O_PATH |
+    // O_NOFOLLOW)`, which follows no link at any part, as
+    // `RESOLVE_NO_SYMLINKS` did; not `openat2`, which the Linux feed records
+    // as a write of every rule path (its flags are in a struct the audit
+    // record does not show). A link at the last part opens as the link
+    // itself under `O_PATH | O_NOFOLLOW` (open(2)), so it is refused by its
+    // type; one above it fails `O_DIRECTORY`.
+    let refused = |e: std::io::Error| {
+        format!(
+            "{} (for {p}): {e}; a link may have been put there since it was checked",
+            real.display()
+        )
+    };
+    let parts: Vec<_> = real.components().skip(1).collect();
+    let root = std::ffi::CString::new("/").expect("no NUL");
+    // SAFETY: a constant path; the descriptor is checked below.
+    let mut fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
         )
     };
     if fd < 0 {
-        let e = std::io::Error::last_os_error();
-        if e.kind() == std::io::ErrorKind::NotFound {
-            return Ok(None);
-        }
-        return Err(format!(
-            "{} (for {p}): {e}; a link may have been put there since it was checked",
-            real.display()
-        ));
+        return Err(refused(std::io::Error::last_os_error()));
     }
-    // SAFETY: the kernel returned a new descriptor that nothing else owns.
-    Ok(Some(unsafe { std::fs::File::from_raw_fd(fd as i32) }))
+    // SAFETY: a new descriptor that nothing else owns.
+    let mut held = unsafe { std::fs::File::from_raw_fd(fd) };
+    for (i, c) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        let name = std::ffi::CString::new(c.as_os_str().as_encoded_bytes())
+            .map_err(|_| format!("{p}: a NUL in the path"))?;
+        let dir = if last { 0 } else { libc::O_DIRECTORY };
+        // SAFETY: `name` lives across the call; `held` is an open folder.
+        fd = unsafe {
+            libc::openat(
+                std::os::fd::AsRawFd::as_raw_fd(&held),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC | dir,
+            )
+        };
+        if fd < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(refused(e));
+        }
+        // SAFETY: as above.
+        held = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    let m = held.metadata().map_err(refused)?;
+    if m.file_type().is_symlink() {
+        return Err(refused(std::io::Error::from_raw_os_error(libc::ELOOP)));
+    }
+    Ok(Some(held))
 }
 
 fn set_no_new_privs() -> Result<(), String> {

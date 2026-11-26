@@ -826,8 +826,9 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
                 "{} {}",
                 h.id,
                 match p {
-                    Presence::Yes => "signed in",
-                    Presence::No => "not signed in",
+                    // BT-9: what was read, not what it means.
+                    Presence::Yes => "sign-in file there",
+                    Presence::No => "no sign-in file",
                     Presence::Unknown => "unknown",
                 }
             ));
@@ -850,7 +851,7 @@ fn status(ctx: &mut Ctx<'_>, args: &[String]) -> u8 {
     }
     let _ = writeln!(
         ctx.out,
-        "read by whether each harness's own sign-in file exists ({}), as the account; derm opened none of them",
+        "read by whether each harness's own sign-in file exists ({}), as the account; derm opened none of them, so a file there is not checked: it can hold a sign-in the harness cleared or the vendor ended (run the harness as the account to know)",
         harness::ALL.iter().map(|h| format!("~/{}", signin_file(h))).collect::<Vec<_>>().join(", ")
     );
     if unknown {

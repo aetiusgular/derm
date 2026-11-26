@@ -69,6 +69,7 @@ ANCHOR=/etc/derm/agents.json
 RULES=/etc/derm/agents.nft
 AUDIT_FEED=/usr/local/bin/derm-audit-feed
 AUGENRULES=/usr/sbin/augenrules
+AUDITCTL=/usr/sbin/auditctl
 AUDIT_DIR=/etc/audit/rules.d
 UNIT=/etc/systemd/system/derm-agents-nft.service
 GROUP=derm-agents
@@ -326,7 +327,26 @@ else
 	install -o root -g root -m 0640 "$tmp" "$audit_file"
 	rm -f "$tmp"
 	echo "   $audit_file"
-	"$AUGENRULES" --load || echo "   augenrules --load failed: the rules load at the next boot, or run it again"
+	# BT-1 (P box test): augenrules reads every file in $AUDIT_DIR, and an
+	# error in another one (a duplicate rule, a `-F dir=` folder that is not
+	# there) made this say the load failed while the account's own rules had
+	# loaded. What counts is whether this account's rules are in the kernel.
+	load_out="$("$AUGENRULES" --load 2>&1)"
+	load_rc=$?
+	want="$(grep -cE '^-[aw] ' "$audit_file")"
+	if [ -x "$AUDITCTL" ]; then
+		have="$("$AUDITCTL" -l 2>/dev/null | grep -cE "(^|[^a])uid=${acct_uid}( |$)")"
+		if [ "$have" -ge "$want" ]; then
+			echo "   this account's $want audit rules are loaded"
+			[ "$load_rc" = 0 ] || echo "   augenrules --load reported errors in other lines of /etc/audit/audit.rules, which it makes from every file in $AUDIT_DIR; they are not this account's"
+		else
+			echo "   only $have of this account's $want audit rules are loaded; augenrules --load said:"
+			printf '%s\n' "$load_out" | head -n 5 | sed 's/^/     /'
+			echo "   fix those lines' files in $AUDIT_DIR, then run $AUGENRULES --load again"
+		fi
+	elif [ "$load_rc" != 0 ]; then
+		echo "   augenrules --load failed and $AUDITCTL is not there to read what loaded; the rules load at the next boot, or run it again"
+	fi
 fi
 
 DONE=1

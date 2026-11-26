@@ -181,31 +181,46 @@ pub fn wire(
         Arc::new(ca),
         sink.unwrap_or_else(|| Arc::new(|_| {})),
     )?;
-    config.policy = policy_for(&file.secrets);
     // Every brokered chat (case 283; Tony's call 2a): its harness's sign-in
     // host passes through unread; an agent account's chat also has
-    // claude.ai's connector proxy closed (Tony's 22 Nov call). A secret's own
-    // host is never passed through, so its value is still swapped there.
-    let (pass, deny) = account_egress(c.harness, c.account);
-    config.pass_through = pass
-        .into_iter()
-        .filter(|(h, _)| !file.secrets.iter().any(|e| e.hosts.iter().any(|x| x == h)))
-        .collect();
-    config.policy.deny = deny.clone();
+    // claude.ai's connector proxy closed (Tony's 22 Nov call) and reaches
+    // only its secrets' hosts and that pass-through (BT-12).
+    let (policy, pass) = egress_rules(&file.secrets, c.harness, c.account);
+    let deny = policy.deny.clone();
+    config.policy = policy;
+    config.pass_through = pass;
     let passed: Vec<String> = config
         .pass_through
         .iter()
         .map(|(h, p)| format!("{h}:{p}"))
         .collect();
-    if c.account.is_some() || !passed.is_empty() {
+    // MP-1 (P Mac test): the note names only a pass-through the boundary
+    // admits. srt's own allow list (already in the plan) leaves the sign-in
+    // host out where derm keeps it shut (srt on macOS with a keychain store,
+    // case 186; Codex with a keyring, FP5R-5), and a route srt never opens is
+    // not one to name.
+    let named: Vec<&String> = passed
+        .iter()
+        .filter(|hp| c.boundary != "srt" || srt_admits(p.srt_settings.as_deref(), hp))
+        .collect();
+    if c.account.is_some() || !named.is_empty() {
         p.notes.push(format!(
-            "derm run: derm-egress passes {} through unread for {}'s own sign-in renewal (it checks the TLS server name, never the bytes){}",
-            if passed.is_empty() { "no host".to_string() } else { passed.join(", ") },
+            "derm run: derm-egress passes {} through unread for {}'s own sign-in renewal (it checks the TLS server name, never the bytes){}{}",
+            if named.is_empty() {
+                "no host".to_string()
+            } else {
+                named.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            },
             c.harness,
             if deny.is_empty() {
                 String::new()
             } else {
                 format!(", and closes {}", deny.join(", "))
+            },
+            if c.account.is_some() {
+                "; the account's chat reaches no other host through it but its secrets' own (BT-12)"
+            } else {
+                ""
             }
         ));
     }
@@ -261,6 +276,47 @@ pub fn account_egress(harness: &str, account: Option<&str>) -> (Vec<(String, u16
         Vec::new()
     };
     (pass, deny)
+}
+
+/// Whether srt's settings admit `host:port` (`network.allowedDomains`).
+fn srt_admits(settings: Option<&str>, host_port: &str) -> bool {
+    settings
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .and_then(|v| v.pointer("/network/allowedDomains").cloned())
+        .and_then(|l| l.as_array().cloned())
+        .is_some_and(|l| l.iter().any(|x| x.as_str() == Some(host_port)))
+}
+
+/// derm-egress's rules and pass-through for a brokered chat: [`policy_for`],
+/// the sign-in pass-through and the closed hosts of [`account_egress`] (a
+/// secret's own host is never passed through, so its value is still swapped
+/// there), and, for an agent account's chat, an allow list of its secrets'
+/// own hosts and the pass-through (BT-12, P box test: derm-egress runs as the
+/// person, outside the account's nftables table, so with no allow list a
+/// binding of any secret gave the account's chats every host its firewall
+/// denies, `example.com` 200 in box step 15). The tap's model route is
+/// loopback and goes direct (`NO_PROXY`, `secret/chain.rs`), so it needs no
+/// entry. A person's own chat keeps no allow list, as before.
+pub fn egress_rules(
+    entries: &[Entry],
+    harness: &str,
+    account: Option<&str>,
+) -> (Policy, Vec<(String, u16)>) {
+    let mut policy = policy_for(entries);
+    let (pass, deny) = account_egress(harness, account);
+    let pass: Vec<(String, u16)> = pass
+        .into_iter()
+        .filter(|(h, _)| !entries.iter().any(|e| e.hosts.iter().any(|x| x == h)))
+        .collect();
+    policy.deny = deny;
+    if account.is_some() {
+        let mut allow: Vec<String> = entries.iter().flat_map(|e| e.hosts.clone()).collect();
+        allow.extend(pass.iter().map(|(h, _)| h.clone()));
+        allow.sort();
+        allow.dedup();
+        policy.allow = Some(allow);
+    }
+    (policy, pass)
 }
 
 /// claude.ai's connector proxy (Claude Code 2.1.322's `MCP_PROXY_URL`),
