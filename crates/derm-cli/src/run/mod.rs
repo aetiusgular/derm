@@ -1961,6 +1961,12 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
         p.env_set
             .push(("TMPDIR".into(), dir.to_string_lossy().into_owned()));
     }
+    // BT-10: an agent account (Linux only) gets no helper in the person's
+    // runtime folder.
+    #[cfg(target_os = "linux")]
+    let export_on_account = account.is_some();
+    #[cfg(not(target_os = "linux"))]
+    let export_on_account = false;
     let (export, export_at) = if a.dry_run {
         (json!("dry run"), None)
     } else {
@@ -1970,7 +1976,7 @@ fn run_io(argv: &[String], env: &RunEnv, filter: Option<StdioFilter>) -> Result<
             a.harness.id,
             inputs.otlp.as_deref(),
             token.as_deref(),
-            export_helper_dir(a.boundary == Boundary::None, account.is_some(), &helper_dir),
+            export_helper_dir(a.boundary == Boundary::None, export_on_account, &helper_dir),
             content_days.is_some(),
             a.boundary == Boundary::Sbx,
         )
